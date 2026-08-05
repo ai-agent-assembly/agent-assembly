@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useAgentLineageQuery, useTopologyNodeRecentEvents, type LineageStep } from '../../features/topology/api'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import {
+  useAgentLineageQuery,
+  useTopologyNodeRecentEvents,
+  type LineageStep,
+  type RecentEvent,
+} from '../../features/topology/api'
 import {
   usePreviewEnforcementCascade,
   useResumeAgent,
@@ -86,6 +91,58 @@ function deriveBudgetDisplay(node: TopologyNode): BudgetDisplay {
   }
 }
 
+/**
+ * The budget-burn section: spend over the (possibly absent) limit, the burn
+ * percent or its absence marker, and the progress bar. Extracted so its
+ * absence branches do not sit in the panel's render (AAASM-5618).
+ */
+function BudgetBurn({ spend, budget }: Readonly<{ spend: number; budget: BudgetDisplay }>) {
+  const { budgetLimit, percent, ratioBucket } = budget
+  return (
+    <section className="node-detail-panel__section" data-testid="node-detail-budget">
+      <div className="node-detail-panel__section-label">budget burn</div>
+      <div className="node-detail-panel__budget-row">
+        <span data-testid="node-detail-budget-amount">
+          ${spend.toFixed(2)} /{' '}
+          <TruthfulValue
+            value={budgetLimit}
+            format={(v) => `$${v.toFixed(2)}`}
+            testId="node-detail-budget-limit"
+          />
+        </span>
+        <span className="node-detail-panel__budget-percent" data-testid="node-detail-budget-percent">
+          {percent === null ? (
+            <AbsenceMarker state="unconfigured" detail={NO_LIMIT_DETAIL} testId="node-detail-budget-percent-absent" />
+          ) : (
+            `${percent}%`
+          )}
+        </span>
+      </div>
+      {/* An indeterminate progressbar omits `aria-valuenow` entirely; that
+          is ARIA's own encoding of "the value is unknown". Sending 0 would
+          announce an unburnt budget to a screen reader on no evidence. */}
+      <div
+        className="node-detail-panel__progress"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent ?? undefined}
+        aria-label={percent === null ? `Budget burn unknown — ${NO_LIMIT_DETAIL.toLowerCase()}` : undefined}
+        data-truth-state={percent === null ? 'unconfigured' : undefined}
+        data-testid="node-detail-progress"
+      >
+        {percent !== null && (
+          <div
+            className="node-detail-panel__progress-fill"
+            style={{ width: `${percent}%` }}
+            data-ratio-bucket={ratioBucket}
+          />
+        )}
+      </div>
+    </section>
+  )
+}
+
 /** A cross-team relationship for the selected node: direction + peer. */
 interface CrossTeamEdge {
   readonly key: string
@@ -169,6 +226,250 @@ function LineageBody({
   )
 }
 
+/**
+ * The recent-events section body: loading/error hints, an empty-activity hint,
+ * or the event list. Extracted so its four branch points do not sit inside the
+ * panel's render (AAASM-5618).
+ */
+function RecentEvents({
+  isLoading,
+  isError,
+  recent,
+}: Readonly<{ isLoading: boolean; isError: boolean; recent: readonly RecentEvent[] }>) {
+  return (
+    <section className="node-detail-panel__section" data-testid="node-detail-recent">
+      <div className="node-detail-panel__section-label">recent events</div>
+      {isLoading && <div className="node-detail-panel__hint">Loading…</div>}
+      {isError && (
+        <div className="node-detail-panel__hint node-detail-panel__hint--err">
+          Failed to load recent events.
+        </div>
+      )}
+      {!isLoading && !isError && recent.length === 0 && (
+        <div className="node-detail-panel__hint">No recent activity.</div>
+      )}
+      {recent.length > 0 && (
+        <ul className="node-detail-panel__events">
+          {recent.map((ev) => (
+            <li key={ev.id} className="node-detail-panel__event" data-testid="node-detail-event">
+              <span className="node-detail-panel__event-time">{ev.timestamp}</span>
+              <span className="node-detail-panel__event-type">{ev.type}</span>
+              <span className="node-detail-panel__event-message">{ev.message}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+/**
+ * The enforcement-mode toggle for the actions section: strengthen (→ enforce)
+ * when the node is in shadow, the Admin-only weaken affordance otherwise, and
+ * the reason hint a non-Admin caller sees in its place. Extracted so its nested
+ * shadow/admin branch does not inflate the panel's render (AAASM-5618).
+ */
+function EnforcementToggle({
+  isShadow,
+  canWrite,
+  canAdmin,
+  strengthenBusy,
+  onStrengthen,
+  onOpenShadow,
+}: Readonly<{
+  isShadow: boolean
+  canWrite: boolean
+  canAdmin: boolean
+  strengthenBusy: boolean
+  onStrengthen: () => void
+  onOpenShadow: () => void
+}>) {
+  if (isShadow) {
+    return (
+      <button
+        type="button"
+        className="node-detail-panel__action"
+        data-testid="node-detail-shadow-mode"
+        disabled={strengthenBusy || !canWrite}
+        title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+        onClick={onStrengthen}
+      >
+        {strengthenBusy ? '⛨ Returning to enforce…' : '⛨ Return to enforce'}
+      </button>
+    )
+  }
+  if (canAdmin) {
+    return (
+      <button
+        type="button"
+        className="node-detail-panel__action"
+        data-testid="node-detail-shadow-mode"
+        disabled={strengthenBusy}
+        onClick={onOpenShadow}
+      >
+        ◐ Switch to shadow mode
+      </button>
+    )
+  }
+  // A non-Admin caller on an enforce node sees no shadow affordance; surface
+  // why rather than silently omitting the row.
+  return (
+    <div className="node-detail-panel__hint" data-testid="node-detail-shadow-admin-hint">
+      {SHADOW_ADMIN_HINT}
+    </div>
+  )
+}
+
+/** The suspend/resume control — Resume on a suspended agent, else Suspend. */
+function SuspendToggle({
+  isSuspended,
+  mutationBusy,
+  resumePending,
+  onResume,
+  onSuspend,
+}: Readonly<{
+  isSuspended: boolean
+  mutationBusy: boolean
+  resumePending: boolean
+  onResume: () => void
+  onSuspend: () => void
+}>) {
+  if (isSuspended) {
+    return (
+      <button
+        type="button"
+        className="node-detail-panel__action"
+        data-testid="node-detail-suspend"
+        disabled={mutationBusy}
+        onClick={onResume}
+      >
+        {resumePending ? '▶ Resuming…' : '▶ Resume agent'}
+      </button>
+    )
+  }
+  return (
+    <button
+      type="button"
+      className="node-detail-panel__action node-detail-panel__action--danger"
+      data-testid="node-detail-suspend"
+      disabled={mutationBusy}
+      onClick={onSuspend}
+    >
+      ■ Suspend agent
+    </button>
+  )
+}
+
+/**
+ * The actions section: view-trace, the (backend-blocked) apply-team-policy
+ * button, the enforcement-mode toggle, and suspend/resume. Extracted so its
+ * branch points do not sit inside the panel's render (AAASM-5618).
+ */
+function NodeActions({
+  node,
+  onViewTrace,
+  isShadow,
+  isSuspended,
+  canWrite,
+  canAdmin,
+  strengthenBusy,
+  mutationBusy,
+  mutationError,
+  resumePending,
+  enforcementError,
+  onStrengthen,
+  onOpenShadow,
+  onResume,
+  onSuspend,
+}: Readonly<{
+  node: TopologyNode
+  onViewTrace: (agentId: string, sessionId: string) => void
+  isShadow: boolean
+  isSuspended: boolean
+  canWrite: boolean
+  canAdmin: boolean
+  strengthenBusy: boolean
+  mutationBusy: boolean
+  mutationError: boolean
+  resumePending: boolean
+  enforcementError: string | null
+  onStrengthen: () => void
+  onOpenShadow: () => void
+  onResume: () => void
+  onSuspend: () => void
+}>) {
+  return (
+    <section className="node-detail-panel__section" data-testid="node-detail-actions">
+      <div className="node-detail-panel__section-label">actions</div>
+      <button
+        type="button"
+        className="node-detail-panel__action node-detail-panel__action--primary"
+        data-testid="node-detail-view-trace"
+        disabled={!node.latestSessionId}
+        title={
+          node.latestSessionId
+            ? undefined
+            : 'No recent session for this agent yet — run a trace to enable.'
+        }
+        onClick={() => {
+          if (node.latestSessionId) onViewTrace(node.id, node.latestSessionId)
+        }}
+      >
+        View trace →
+      </button>
+      {/* Team-policy apply still has no production write path — disabled
+          with a reason, matching the View-trace button (AAASM-5140). */}
+      <button
+        type="button"
+        className="node-detail-panel__action"
+        data-testid="node-detail-apply-policy"
+        disabled
+        title={NO_BACKEND_TITLE}
+      >
+        ⚖ Apply team policy
+      </button>
+      {/* Enforcement-mode toggle (AAASM-5341), driven by the node's canonical
+          `mode` (AAASM-5289). Shadow → enforce is a plain strengthen (write
+          scope); enforce → shadow opens the weaken form and is Admin-only,
+          matching the backend authz — the server stays authoritative. */}
+      <EnforcementToggle
+        isShadow={isShadow}
+        canWrite={canWrite}
+        canAdmin={canAdmin}
+        strengthenBusy={strengthenBusy}
+        onStrengthen={onStrengthen}
+        onOpenShadow={onOpenShadow}
+      />
+      {enforcementError !== null && (
+        <div
+          className="node-detail-panel__hint node-detail-panel__hint--err"
+          data-testid="node-detail-enforcement-error"
+          role="alert"
+        >
+          {enforcementError}
+        </div>
+      )}
+      {/* Suspend/resume — real gateway wiring (AAASM-5071). A suspended agent
+          shows Resume; otherwise Suspend opens the reason dialog. */}
+      <SuspendToggle
+        isSuspended={isSuspended}
+        mutationBusy={mutationBusy}
+        resumePending={resumePending}
+        onResume={onResume}
+        onSuspend={onSuspend}
+      />
+      {mutationError && (
+        <div
+          className="node-detail-panel__hint node-detail-panel__hint--err"
+          data-testid="node-detail-action-error"
+        >
+          Action failed — please retry.
+        </div>
+      )}
+    </section>
+  )
+}
+
 export interface NodeDetailPanelProps {
   readonly node: TopologyNode | null
   readonly onClose: () => void
@@ -184,6 +485,34 @@ export interface NodeDetailPanelProps {
   readonly edges?: readonly TopologyEdge[]
   /** Fired after a successful suspend/resume so the caller can refresh the graph. */
   readonly onAgentMutated?: () => void
+}
+
+/**
+ * Dismiss the panel on Escape or a click outside it, but only while `active`.
+ * Extracted from the panel body so its two listener effects do not sit in the
+ * render (AAASM-5618). `active` is false while a modal dialog is open, so the
+ * dialog owns Escape / outside-click and the panel does not close under it.
+ */
+function usePanelDismiss(active: boolean, panelRef: RefObject<HTMLDivElement | null>, onClose: () => void) {
+  useEffect(() => {
+    if (!active) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [active, onClose])
+
+  useEffect(() => {
+    if (!active) return
+    const handleDown = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    document.addEventListener('mousedown', handleDown)
+    return () => document.removeEventListener('mousedown', handleDown)
+  }, [active, onClose, panelRef])
 }
 
 /**
@@ -216,30 +545,11 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
     [node, nodes, edges],
   )
 
-  useEffect(() => {
-    if (!node || suspendOpen || shadowOpen) return
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [node, onClose, suspendOpen, shadowOpen])
-
-  useEffect(() => {
-    if (!node || suspendOpen || shadowOpen) return
-    const handleDown = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    document.addEventListener('mousedown', handleDown)
-    return () => document.removeEventListener('mousedown', handleDown)
-  }, [node, onClose, suspendOpen, shadowOpen])
+  usePanelDismiss(Boolean(node) && !suspendOpen && !shadowOpen, panelRef, onClose)
 
   if (!node) return null
 
   const budget = deriveBudgetDisplay(node)
-  const { budgetLimit, percent, ratioBucket } = budget
   const recent = (recentEventsQuery.data ?? []).slice(0, RECENT_EVENT_LIMIT)
   const lineageChain = lineageQuery.data?.ancestors ?? []
   const mutationBusy = suspendMutation.isPending || resumeMutation.isPending
@@ -363,47 +673,7 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           />
         </section>
 
-        <section className="node-detail-panel__section" data-testid="node-detail-budget">
-          <div className="node-detail-panel__section-label">budget burn</div>
-          <div className="node-detail-panel__budget-row">
-            <span data-testid="node-detail-budget-amount">
-              ${node.budgetSpend.toFixed(2)} /{' '}
-              <TruthfulValue
-                value={budgetLimit}
-                format={(v) => `$${v.toFixed(2)}`}
-                testId="node-detail-budget-limit"
-              />
-            </span>
-            <span className="node-detail-panel__budget-percent" data-testid="node-detail-budget-percent">
-              {percent === null ? (
-                <AbsenceMarker state="unconfigured" detail={NO_LIMIT_DETAIL} testId="node-detail-budget-percent-absent" />
-              ) : (
-                `${percent}%`
-              )}
-            </span>
-          </div>
-          {/* An indeterminate progressbar omits `aria-valuenow` entirely; that
-              is ARIA's own encoding of "the value is unknown". Sending 0 would
-              announce an unburnt budget to a screen reader on no evidence. */}
-          <div
-            className="node-detail-panel__progress"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={percent ?? undefined}
-            aria-label={percent === null ? `Budget burn unknown — ${NO_LIMIT_DETAIL.toLowerCase()}` : undefined}
-            data-truth-state={percent === null ? 'unconfigured' : undefined}
-            data-testid="node-detail-progress"
-          >
-            {percent !== null && (
-              <div
-                className="node-detail-panel__progress-fill"
-                style={{ width: `${percent}%` }}
-                data-ratio-bucket={ratioBucket}
-              />
-            )}
-          </div>
-        </section>
+        <BudgetBurn spend={node.budgetSpend} budget={budget} />
 
         {/* Policy inheritance — the agent's real cascade, carried per node by
             GET /api/v1/topology (AAASM-5099). */}
@@ -440,138 +710,31 @@ export function NodeDetailPanel({ node, onClose, onViewTrace, nodes = [], edges 
           </section>
         )}
 
-        <section className="node-detail-panel__section" data-testid="node-detail-recent">
-          <div className="node-detail-panel__section-label">recent events</div>
-          {recentEventsQuery.isLoading && (
-            <div className="node-detail-panel__hint">Loading…</div>
-          )}
-          {recentEventsQuery.isError && (
-            <div className="node-detail-panel__hint node-detail-panel__hint--err">
-              Failed to load recent events.
-            </div>
-          )}
-          {!recentEventsQuery.isLoading && !recentEventsQuery.isError && recent.length === 0 && (
-            <div className="node-detail-panel__hint">No recent activity.</div>
-          )}
-          {recent.length > 0 && (
-            <ul className="node-detail-panel__events">
-              {recent.map(ev => (
-                <li key={ev.id} className="node-detail-panel__event" data-testid="node-detail-event">
-                  <span className="node-detail-panel__event-time">{ev.timestamp}</span>
-                  <span className="node-detail-panel__event-type">{ev.type}</span>
-                  <span className="node-detail-panel__event-message">{ev.message}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <RecentEvents
+          isLoading={recentEventsQuery.isLoading}
+          isError={recentEventsQuery.isError}
+          recent={recent}
+        />
 
-        <section className="node-detail-panel__section" data-testid="node-detail-actions">
-          <div className="node-detail-panel__section-label">actions</div>
-          <button
-            type="button"
-            className="node-detail-panel__action node-detail-panel__action--primary"
-            data-testid="node-detail-view-trace"
-            disabled={!node.latestSessionId}
-            title={
-              node.latestSessionId
-                ? undefined
-                : 'No recent session for this agent yet — run a trace to enable.'
-            }
-            onClick={() => {
-              if (node.latestSessionId) onViewTrace(node.id, node.latestSessionId)
-            }}
-          >
-            View trace →
-          </button>
-          {/* Team-policy apply still has no production write path — disabled
-              with a reason, matching the View-trace button (AAASM-5140). */}
-          <button
-            type="button"
-            className="node-detail-panel__action"
-            data-testid="node-detail-apply-policy"
-            disabled
-            title={NO_BACKEND_TITLE}
-          >
-            ⚖ Apply team policy
-          </button>
-          {/* Enforcement-mode toggle (AAASM-5341), driven by the node's
-              canonical `mode` (AAASM-5289). Shadow → enforce is a plain
-              strengthen (write scope); enforce → shadow opens the weaken form
-              and is Admin-only, matching the backend authz — the server stays
-              authoritative regardless. */}
-          {isShadow ? (
-            <button
-              type="button"
-              className="node-detail-panel__action"
-              data-testid="node-detail-shadow-mode"
-              disabled={strengthenBusy || !canWrite}
-              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
-              onClick={handleStrengthen}
-            >
-              {strengthenBusy ? '⛨ Returning to enforce…' : '⛨ Return to enforce'}
-            </button>
-          ) : (
-            canAdmin && (
-              <button
-                type="button"
-                className="node-detail-panel__action"
-                data-testid="node-detail-shadow-mode"
-                disabled={strengthenBusy}
-                onClick={openShadowDialog}
-              >
-                ◐ Switch to shadow mode
-              </button>
-            )
-          )}
-          {/* A non-Admin caller on an enforce node sees no shadow affordance;
-              surface why rather than silently omitting the row. */}
-          {!isShadow && !canAdmin && (
-            <div
-              className="node-detail-panel__hint"
-              data-testid="node-detail-shadow-admin-hint"
-            >
-              {SHADOW_ADMIN_HINT}
-            </div>
-          )}
-          {enforcementMutation.isError && !shadowOpen && (
-            <div
-              className="node-detail-panel__hint node-detail-panel__hint--err"
-              data-testid="node-detail-enforcement-error"
-              role="alert"
-            >
-              {enforcementMutation.error.message}
-            </div>
-          )}
-          {/* Suspend/resume — real gateway wiring (AAASM-5071). A suspended
-              agent shows Resume; otherwise Suspend opens the reason dialog. */}
-          {isSuspended ? (
-            <button
-              type="button"
-              className="node-detail-panel__action"
-              data-testid="node-detail-suspend"
-              disabled={mutationBusy}
-              onClick={handleResume}
-            >
-              {resumeMutation.isPending ? '▶ Resuming…' : '▶ Resume agent'}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="node-detail-panel__action node-detail-panel__action--danger"
-              data-testid="node-detail-suspend"
-              disabled={mutationBusy}
-              onClick={() => setSuspendOpen(true)}
-            >
-              ■ Suspend agent
-            </button>
-          )}
-          {mutationError && (
-            <div className="node-detail-panel__hint node-detail-panel__hint--err" data-testid="node-detail-action-error">
-              Action failed — please retry.
-            </div>
-          )}
-        </section>
+        <NodeActions
+          node={node}
+          onViewTrace={onViewTrace}
+          isShadow={isShadow}
+          isSuspended={isSuspended}
+          canWrite={canWrite}
+          canAdmin={canAdmin}
+          strengthenBusy={strengthenBusy}
+          mutationBusy={mutationBusy}
+          mutationError={mutationError}
+          resumePending={resumeMutation.isPending}
+          enforcementError={
+            enforcementMutation.isError && !shadowOpen ? enforcementMutation.error.message : null
+          }
+          onStrengthen={handleStrengthen}
+          onOpenShadow={openShadowDialog}
+          onResume={handleResume}
+          onSuspend={() => setSuspendOpen(true)}
+        />
       </aside>
 
       {suspendOpen && (
