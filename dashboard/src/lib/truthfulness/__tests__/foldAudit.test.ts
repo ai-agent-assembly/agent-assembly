@@ -150,10 +150,10 @@ const AUDIT: readonly FoldSite[] = [
   },
   {
     file: 'pages/OverviewPage.tsx',
-    calls: 4,
+    calls: 3,
     disposition: 'hazardous',
     reason:
-      'Mixed. `alerts` is guarded by `parseAlertList`; `enforcement` is a Map built client-side. `approvals` inherits the `?? []` and renders a confident "0 pending approvals". `policies` is the *same* defect AAASM-5369 fixed for the nav rail — `usePoliciesQuery` checks `!data?.items` for truthiness only, so `{"items":[{},{}]}` still counts to a confident 2 here. That one is the direct sibling of this ticket and should take the same decoder. Follow-up: AAASM-5379 (the literal `undefined` it renders), AAASM-5378 (the approvals `?? []`), AAASM-5380 (the migration).',
+      'Mixed, and one fold lighter since AAASM-5380 slice S2. `alerts` is guarded by `parseAlertList`; `enforcement` is a Map built client-side. `approvals` inherits the `?? []` and renders a confident "0 pending approvals". The `policies` fold that used to live here is now decoded through `decodePolicyList` (features/policies/schema.ts) and no longer counts an unread body — closing AAASM-5379, the literal `undefined ACTIVE POLICIES` it rendered. Follow-up: AAASM-5378 (the approvals `?? []`), AAASM-5380 (the remaining three folds).',
   },
   {
     file: 'pages/TeamsPage.tsx',
