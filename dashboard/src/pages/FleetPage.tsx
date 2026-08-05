@@ -7,7 +7,9 @@ import {
   flexRender,
   createColumnHelper,
   type ColumnDef,
+  type Header,
   type SortingState,
+  type Table,
 } from '@tanstack/react-table'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { useAgentsQuery, useActiveSessionsQuery, useAgentEnforcementQuery, useTrustQuery, type Agent } from '../features/agents/api'
@@ -292,6 +294,189 @@ function bulkResultOutcome(
   }
 }
 
+interface FleetBulkBarProps {
+  readonly selectedCount: number
+  readonly canWrite: boolean
+  readonly busy: boolean
+  readonly resuming: boolean
+  readonly onShadow: () => void
+  readonly onSuspend: () => void
+  readonly onResume: () => void
+  readonly onClear: () => void
+}
+
+/**
+ * Bulk-action bar shown when one or more agents are selected. Its own component
+ * so the four write-gated buttons and their repeated `canWrite` guards do not
+ * inflate the page's render.
+ */
+function FleetBulkBar({
+  selectedCount,
+  canWrite,
+  busy,
+  resuming,
+  onShadow,
+  onSuspend,
+  onResume,
+  onClear,
+}: FleetBulkBarProps) {
+  const writeHint = canWrite ? undefined : WRITE_REQUIRED_HINT
+  return (
+    <div className="fleet-bulkbar" data-testid="fleet-bulkbar">
+      <span className="fleet-bulkbar__count" data-testid="fleet-bulkbar-count">
+        {selectedCount} selected
+      </span>
+      <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+        <button
+          type="button"
+          className="fleet-bulkbar__btn"
+          onClick={onShadow}
+          disabled={!canWrite}
+          title={writeHint}
+          data-testid="fleet-bulkbar-shadow"
+        >
+          → shadow mode
+        </button>
+        <button
+          type="button"
+          className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
+          onClick={onSuspend}
+          disabled={busy || !canWrite}
+          title={writeHint}
+          data-testid="fleet-bulkbar-suspend"
+        >
+          ■ suspend
+        </button>
+        <button
+          type="button"
+          className="fleet-bulkbar__btn"
+          onClick={onResume}
+          disabled={busy || !canWrite}
+          title={writeHint}
+          data-testid="fleet-bulkbar-resume"
+        >
+          {resuming ? 'Resuming…' : '▶ resume'}
+        </button>
+      </Tooltip>
+      <button
+        type="button"
+        className="fleet-bulkbar__btn fleet-bulkbar__btn--ghost"
+        onClick={onClear}
+        data-testid="fleet-bulkbar-clear"
+      >
+        clear
+      </button>
+    </div>
+  )
+}
+
+/** The sort-direction glyph for a sortable header, or nothing for a fixed one. */
+function FleetSortIndicator({ header }: Readonly<{ header: Header<FleetAgent, unknown> }>) {
+  if (!header.column.getCanSort()) return null
+  const sorted = header.column.getIsSorted()
+  const { glyph, label } = sortIndicator(sorted)
+  return (
+    <span
+      className={`fleet-table__sort${sorted ? '' : ' fleet-table__sort--inactive'}`}
+      data-testid={`fleet-sort-${header.column.id}`}
+      aria-label={label}
+    >
+      {glyph}
+    </span>
+  )
+}
+
+interface FleetAgentsTableProps {
+  readonly table: Table<FleetAgent>
+  readonly loading: boolean
+  readonly filterEmpty: boolean
+  readonly totalAgentsText: string
+  readonly onRowNavigate: (id: string) => void
+  readonly onClearFilters: () => void
+}
+
+/**
+ * The agents grid: sortable header, skeleton-or-rows body, and the
+ * filtered-empty callout. Its own component so the header/row/cell maps and
+ * their per-cell class branches do not sit inside the page's render.
+ */
+function FleetAgentsTable({
+  table,
+  loading,
+  filterEmpty,
+  totalAgentsText,
+  onRowNavigate,
+  onClearFilters,
+}: FleetAgentsTableProps) {
+  return (
+    <div className="fleet-table__wrap">
+      <table className="fleet-table" data-testid="agents-table">
+        <thead>
+          {table.getHeaderGroups().map((hg) => (
+            <tr key={hg.id}>
+              {hg.headers.map((header) => (
+                <th
+                  key={header.id}
+                  className={`fleet-table__th${header.column.getCanSort() ? ' fleet-table__th--sortable' : ''}${NUMERIC_COLUMN_IDS.has(header.column.id) ? ' fleet-table__th--numeric' : ''}`}
+                  onClick={header.column.getToggleSortingHandler()}
+                >
+                  {flexRender(header.column.columnDef.header, header.getContext())}
+                  <FleetSortIndicator header={header} />
+                </th>
+              ))}
+            </tr>
+          ))}
+        </thead>
+        <tbody>
+          {loading ? (
+            <SkeletonRows />
+          ) : (
+            table.getRowModel().rows.map((row) => (
+              <tr
+                key={row.id}
+                data-testid="agent-row"
+                className={`fleet-table__row${row.original.flagged ? ' fleet-table__row--flagged' : ''}`}
+                onClick={(e) => {
+                  if (clickOnInteractive(e)) return
+                  onRowNavigate(row.original.id)
+                }}
+              >
+                {row.getVisibleCells().map((cell) => (
+                  <td
+                    key={cell.id}
+                    className={`fleet-table__cell${NUMERIC_COLUMN_IDS.has(cell.column.id) ? ' fleet-table__cell--numeric' : ''}`}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+      {filterEmpty && (
+        <output className="fleet-empty fleet-empty--filtered" data-testid="fleet-filter-empty">
+          <p className="fleet-empty__title">no agents match these filters</p>
+          <p className="fleet-empty__body">
+            All {totalAgentsText} registered agents were excluded by the current filters.
+            They are URL-persisted, so a shared or bookmarked link can arrive already narrowed.
+          </p>
+          <div className="fleet-empty__action">
+            <button
+              type="button"
+              className="fleet-page__btn"
+              onClick={onClearFilters}
+              data-testid="fleet-filter-empty-clear"
+            >
+              Clear filters
+            </button>
+          </div>
+        </output>
+      )}
+    </div>
+  )
+}
+
 export function FleetPage() {
   const navigate = useNavigate()
   const { toast } = useToast()
@@ -506,51 +691,16 @@ export function FleetPage() {
           frameworks={frameworks}
           onChange={setFilters}
           rightSlot={selected.size > 0 ? (
-            <div className="fleet-bulkbar" data-testid="fleet-bulkbar">
-              <span className="fleet-bulkbar__count" data-testid="fleet-bulkbar-count">
-                {selected.size} selected
-              </span>
-              <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
-                <button
-                  type="button"
-                  className="fleet-bulkbar__btn"
-                  onClick={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
-                  disabled={!canWrite}
-                  title={canWrite ? undefined : WRITE_REQUIRED_HINT}
-                  data-testid="fleet-bulkbar-shadow"
-                >
-                  → shadow mode
-                </button>
-                <button
-                  type="button"
-                  className="fleet-bulkbar__btn fleet-bulkbar__btn--danger"
-                  onClick={() => setShowBulkSuspendDialog(true)}
-                  disabled={bulkSuspendPending || bulkResumePending || !canWrite}
-                  title={canWrite ? undefined : WRITE_REQUIRED_HINT}
-                  data-testid="fleet-bulkbar-suspend"
-                >
-                  ■ suspend
-                </button>
-                <button
-                  type="button"
-                  className="fleet-bulkbar__btn"
-                  onClick={() => ignorePromise(onClickBulkResume())}
-                  disabled={bulkSuspendPending || bulkResumePending || !canWrite}
-                  title={canWrite ? undefined : WRITE_REQUIRED_HINT}
-                  data-testid="fleet-bulkbar-resume"
-                >
-                  {bulkResumePending ? 'Resuming…' : '▶ resume'}
-                </button>
-              </Tooltip>
-              <button
-                type="button"
-                className="fleet-bulkbar__btn fleet-bulkbar__btn--ghost"
-                onClick={() => setSelected(new Set())}
-                data-testid="fleet-bulkbar-clear"
-              >
-                clear
-              </button>
-            </div>
+            <FleetBulkBar
+              selectedCount={selected.size}
+              canWrite={canWrite}
+              busy={bulkSuspendPending || bulkResumePending}
+              resuming={bulkResumePending}
+              onShadow={() => toast(`Switched ${selected.size} agents to shadow mode (mock)`, 'info')}
+              onSuspend={() => setShowBulkSuspendDialog(true)}
+              onResume={() => ignorePromise(onClickBulkResume())}
+              onClear={() => setSelected(new Set())}
+            />
           ) : undefined}
         />
       )}
@@ -577,83 +727,14 @@ export function FleetPage() {
           the claim neither state is entitled to make. `filter-empty` keeps
           it — the columns are still meaningful there. */}
       {view === 'agents' && tableState !== 'unavailable' && tableState !== 'fleet-empty' && (
-        <div className="fleet-table__wrap">
-          <table className="fleet-table" data-testid="agents-table">
-            <thead>
-              {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id}>
-                  {hg.headers.map((header) => (
-                    <th
-                      key={header.id}
-                      className={`fleet-table__th${header.column.getCanSort() ? ' fleet-table__th--sortable' : ''}${NUMERIC_COLUMN_IDS.has(header.column.id) ? ' fleet-table__th--numeric' : ''}`}
-                      onClick={header.column.getToggleSortingHandler()}
-                    >
-                      {flexRender(header.column.columnDef.header, header.getContext())}
-                      {header.column.getCanSort() && (() => {
-                        const sorted = header.column.getIsSorted()
-                        const { glyph, label } = sortIndicator(sorted)
-                        return (
-                          <span
-                            className={`fleet-table__sort${sorted ? '' : ' fleet-table__sort--inactive'}`}
-                            data-testid={`fleet-sort-${header.column.id}`}
-                            aria-label={label}
-                          >
-                            {glyph}
-                          </span>
-                        )
-                      })()}
-                    </th>
-                  ))}
-                </tr>
-              ))}
-            </thead>
-            <tbody>
-              {tableState === 'loading' ? (
-                <SkeletonRows />
-              ) : (
-                table.getRowModel().rows.map((row) => (
-                  <tr
-                    key={row.id}
-                    data-testid="agent-row"
-                    className={`fleet-table__row${row.original.flagged ? ' fleet-table__row--flagged' : ''}`}
-                    onClick={(e) => {
-                      if (clickOnInteractive(e)) return
-                      navigate(`/agents/${row.original.id}`)
-                    }}
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <td
-                        key={cell.id}
-                        className={`fleet-table__cell${NUMERIC_COLUMN_IDS.has(cell.column.id) ? ' fleet-table__cell--numeric' : ''}`}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-          {tableState === 'filter-empty' && (
-            <output className="fleet-empty fleet-empty--filtered" data-testid="fleet-filter-empty">
-              <p className="fleet-empty__title">no agents match these filters</p>
-              <p className="fleet-empty__body">
-                All {totalAgentsText} registered agents were excluded by the current filters.
-                They are URL-persisted, so a shared or bookmarked link can arrive already narrowed.
-              </p>
-              <div className="fleet-empty__action">
-                <button
-                  type="button"
-                  className="fleet-page__btn"
-                  onClick={() => setFilters(DEFAULT_FLEET_FILTERS)}
-                  data-testid="fleet-filter-empty-clear"
-                >
-                  Clear filters
-                </button>
-              </div>
-            </output>
-          )}
-        </div>
+        <FleetAgentsTable
+          table={table}
+          loading={tableState === 'loading'}
+          filterEmpty={tableState === 'filter-empty'}
+          totalAgentsText={totalAgentsText}
+          onRowNavigate={(id) => navigate(`/agents/${id}`)}
+          onClearFilters={() => setFilters(DEFAULT_FLEET_FILTERS)}
+        />
       )}
 
       {/* Drawer overlay (Agent Detail) renders via nested route — sits on top
