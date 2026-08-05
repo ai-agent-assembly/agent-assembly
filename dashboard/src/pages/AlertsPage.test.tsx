@@ -377,6 +377,90 @@ describe('AlertsPage when the alerts query fails', () => {
   })
 })
 
+// ── AAASM-5380 S5: a schema-invalid 200 must degrade, not crash or fabricate ─
+//
+// The folds now run through `decodeAlertRules` / `decodeAlertList`. Before the
+// migration a non-array rules body threw inside `indexRulesById` at render (the
+// live defect the foldAudit recorded as hazardous), and a malformed alerts body
+// rode a cast into a fabricated list. These prove both degrade to an absence.
+
+describe('AlertsPage when the rules body is not the schema (AAASM-5380 S5)', () => {
+  // A truthy non-array body — exactly what `indexRulesById` used to build a Map
+  // from and throw on. `q<>` lets us inject a body the type says is a rule list
+  // but the wire is entitled to send.
+  function setupBadRules() {
+    return setup({
+      alerts: pageOf([FIRING, { ...FIRING, id: 'a-2', severity: 'CRITICAL' }]),
+      rules: q<readonly AlertRule[]>({
+        data: { not: 'an array' } as unknown as readonly AlertRule[],
+        isPending: false,
+        isLoading: false,
+        isError: false,
+      }),
+    })
+  }
+
+  it('renders the page rather than crashing indexRulesById on a non-array body', () => {
+    setupBadRules()
+    // Vacuity guard: assert the page rendered at all before asserting on the
+    // rules-derived surface — a crash would fail here first.
+    expect(screen.getByRole('heading', { level: 1, name: 'Alerts' })).toBeInTheDocument()
+    // The alerts themselves are unaffected — the alerts fold is a separate query.
+    expect(screen.getByTestId('alerts-count')).toHaveTextContent('2 alerts')
+  })
+
+  it('reports the categories as an explicit unknown, not four zeroes', () => {
+    setupBadRules()
+    const chip = screen.getByTestId('alerts-category-budget')
+    // Not a fabricated count of 0 — an absence the decoder produced.
+    expect(chip.textContent).not.toMatch(/\d/)
+    expect(chip).toBeDisabled()
+    expect(chip.querySelector('[data-truth-state="unknown"]')).not.toBeNull()
+  })
+
+  it('does not claim there are no rules configured on an unreadable body', () => {
+    setupBadRules()
+    expect(screen.queryByTestId('alerts-empty-no-rules')).not.toBeInTheDocument()
+  })
+})
+
+describe('AlertsPage when the alerts items are malformed (AAASM-5380 S5)', () => {
+  // Rows with an unrecognised severity — `parseAlertList` throws
+  // `AlertShapeError`, which `decodeAlertList` catches and turns into an
+  // absence rather than letting a cast fabricate an empty or wrong list.
+  function setupMalformedItems() {
+    return setup({
+      alerts: q<AlertsPageResult>({
+        data: {
+          items: [{ id: 'x', severity: 'catastrophic' }] as unknown as readonly Alert[],
+          total: 1,
+          page: 1,
+          perPage: 50,
+        },
+        isPending: false,
+        isLoading: false,
+        isError: false,
+      }),
+    })
+  }
+
+  it('renders an absence surface, not a fabricated empty list', () => {
+    setupMalformedItems()
+    // Vacuity guard: the page rendered.
+    expect(screen.getByRole('heading', { level: 1, name: 'Alerts' })).toBeInTheDocument()
+    const surface = screen.getByTestId('alerts-unavailable')
+    expect(surface).toHaveAttribute('data-truth-state', 'unknown')
+    // The empty state would be the fabricated "No alerts in this window" claim.
+    expect(screen.queryByTestId('alerts-empty-no-alerts')).not.toBeInTheDocument()
+  })
+
+  it('does not report a count of zero alerts for an unreadable body', () => {
+    setupMalformedItems()
+    const count = screen.getByTestId('alerts-count')
+    expect(count).not.toHaveTextContent(/\d+ alert/)
+  })
+})
+
 // ── AAASM-5123: a truncated page must not read as the whole fleet ───────────
 
 describe('AlertsPage when the server has more alerts than one page', () => {
