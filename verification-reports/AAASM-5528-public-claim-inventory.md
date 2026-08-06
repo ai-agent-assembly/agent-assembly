@@ -1,0 +1,264 @@
+# AAASM-5528 — public claim inventory
+
+Cross-repository inventory of public documentation claims that exceed the
+guarantees the shipped implementation supports.
+
+- **Ticket:** [AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528)
+  (P0 Bug) · **Epic:** [AAASM-5526](https://lightning-dust-mite.atlassian.net/browse/AAASM-5526)
+- **Goal:** CBLPCRLM-13 — Verified Product Truth and Protection Boundaries
+- **Fix version:** agent-assembly v0.0.1-rc.7
+- **Compiled:** 2026-08-06
+
+## Why this file lives here
+
+This is an evidence artifact, not book content. It sits in `verification-reports/`
+alongside `AAASM-5276-claude-code-mechanism-matrix.md` — the precedent this
+repository already uses for measured evidence cited by
+[ADR 0030](../docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md)
+and [the limitations page](../docs/src/devtools/limitations.md). It is deliberately
+**not** under `docs/src/`: a page there must be registered in `docs/src/SUMMARY.md`
+to be reachable, and that file is owned by a concurrent ticket (AAASM-5604), so a
+page added there now would render as an orphan.
+
+`agent-assembly` is the right repository for the artifact because it owns both the
+[capability matrix](../docs/src/governance/capability-matrix.md) and the
+[protection ladder](../docs/src/devtools/protection-levels.md) that the corrected
+copy is measured against.
+
+## Method
+
+Every claim below was checked against the implementation, not against another
+document or a code comment. Where a doc and the code disagreed, the code won.
+Line numbers are from the base commit of the AAASM-5528 branches.
+
+### Claim classes
+
+| Class | Meaning |
+|---|---|
+| **absolute** | Universal quantifier over agent behaviour (`every`, `everything`, `cannot bypass`, `nowhere to hide`). |
+| **unbounded scope** | Real capability described without the routing / transport / host boundary that limits it. |
+| **observe-presented-as-prevent** | A telemetry-only mechanism described as blocking or catching. |
+| **platform-overreach** | Support asserted more broadly than the platform gate in code allows. |
+| **no-code-change** | "No code changes" without naming the launch, env and trust-store prerequisites. |
+
+### Verdicts
+
+`remove` — claim deleted · `qualify` — rewritten with its boundary ·
+`keep-with-boundary` — retained because it already names its boundary, or the word
+is used in a non-claim sense.
+
+## Evidence base
+
+The three findings that drive most replacements. Each was read in the
+implementation and independently re-checked before being used in public copy.
+
+### E1 — the eBPF layer is observe-only, OpenSSL-only, x86_64-only, and fails open
+
+| Fact | Evidence |
+|---|---|
+| TLS uprobes/uretprobes attach to `SSL_write` / `SSL_read` **only** | `aa-ebpf/src/uprobe.rs:68,80,92` |
+| Library resolved by scanning `/proc/<pid>/maps` for the substring `libssl.so`, fallback list is `libssl.so.3` / `libssl.so.1.1` only | `aa-ebpf/src/uprobe.rs:149-164,199` |
+| Go `crypto/tls`, rustls, BoringSSL, GnuTLS, NSS are **not** covered | stated in-probe at `aa-ebpf-probes/src/ssl_probes.rs:17-32` (AAASM-3872) |
+| File-I/O kprobes target hardcoded `__x64_sys_*` symbols — **x86_64 only** | `aa-ebpf/src/kprobe.rs:145-160`, test asserts the prefix at `:240-247` |
+| TLS, file-I/O and exec probes are **observe-only**; the path "blocklist" only sets `event.flags = 1` | `aa-ebpf-probes/src/main.rs:119-122`; `aa-ebpf/src/maps.rs:31`; `aa-runtime/src/ebpf_control.rs:24-29` |
+| No LSM, no seccomp-BPF anywhere — **no code path returns a denial** | absence verified across all `.rs` |
+| The only enforcing path is the opt-in syscall guard, via **asynchronous** `bpf_send_signal(SIGKILL)` — the offending syscall still completes | `aa-ebpf-probes/src/syscall_guard.rs:55-60,189-195` |
+| Guard is off unless `AA_EBPF_CONFINE_PID` is set **and** policy lowers a non-empty allowlist | `aa-runtime/src/ebpf_control.rs:137-140,157-162` |
+| Platform gate: Linux, kernel ≥ 5.8, BTF at `/sys/kernel/btf/vmlinux` | `aa-runtime/src/layer.rs:52-67,97,133-135` |
+| Load/attach failure **fails open** — degrade, warn, agent proceeds | `aa-runtime/src/ebpf_control.rs:204-213,320-352,378-385` |
+| Fork propagation fails open at 1024 PIDs; confined child runs unconfined | `aa-ebpf-probes/src/syscall_guard.rs:94,235-241` |
+
+### E2 — the proxy sees only explicitly-routed traffic, and by default MitMs three hosts
+
+| Fact | Evidence |
+|---|---|
+| `llm_only` defaults to **`true`** | `aa-proxy/src/config.rs:48` |
+| Under it, only `api.openai.com`, `api.anthropic.com`, `api.cohere.com` are TLS-intercepted | `aa-proxy/src/intercept/detect.rs:27-35` |
+| Every other host takes a raw bidirectional tunnel with **no inspection** | `aa-proxy/src/proxy/mod.rs:1058-1060,1129-1137` |
+| **No** transparent redirect exists (no iptables/pfctl/TPROXY/`SO_ORIGINAL_DST`) — traffic arrives only if the client speaks the HTTP proxy protocol | absence verified repo-wide |
+| `HTTP_PROXY`/`HTTPS_PROXY` are injected **only** by `aasm run` | `aa-cli/src/commands/run.rs:321-324` |
+| A tool launched outside `aasm run` inherits neither the proxy nor `NODE_EXTRA_CA_CERTS` and is not protected | `aa-devtool-claude-code/src/lifecycle.rs:1010-1013`; measured, `docs/src/devtools/limitations.md` |
+| One local **root** CA, CN `Agent Assembly CA`, at `~/.aa/ca/` — per-domain **leaf** certs are minted from it. "Per-host CA" is the wrong description | `aa-proxy/src/tls/ca.rs:28-34,78-84,184-210` |
+| Trust-store installation is **macOS-only** | `aa-proxy/src/tls/ca.rs:214,223,229`; `aa-proxy/src/lib.rs:63-68` |
+| HTTP/1.1 with `Content-Length` only. No ALPN is configured, so no HTTP/2, gRPC or WebSocket; `Transfer-Encoding: chunked` is rejected | `aa-proxy/src/proxy/http.rs:266-270`; ALPN absent from `aa-proxy/src` |
+| Egress allow/deny comes from `AA_PROXY_DENIED_HOSTS` / `AA_PROXY_NETWORK_ALLOWLIST`, **empty by default** — out of the box the proxy denies nothing | `aa-proxy/src/config.rs:75-85,168-170` |
+| The `--policy` document does not configure the running proxy | `aa-policy/src/resolve.rs:234-244` |
+| Credential DLP default is `RedactOnly` (forward), not `Block` | `aa-proxy/src/config.rs:20-23` |
+| Gateway is consulted at exactly one call site — the MCP path | `aa-proxy/src/proxy/mod.rs:1098` |
+| Synchronous pre-execution denial **does** exist: CONNECT-time 403, in-tunnel host re-check, credential `Block`, and MCP `tools/call` — each returns before dialling upstream | `aa-proxy/src/proxy/mod.rs:1033-1040,822-833,895-908,627-633` |
+
+### E3 — SDK denial is real but bounded to patched framework tool seams
+
+| Fact | Evidence |
+|---|---|
+| A deny raises **before** the wrapped tool body runs, in all three SDKs | `python-sdk/.../_shared/tool_governance.py:225-228` (body at `:237`); `node-sdk/src/wrappers/with-assembly.ts:164-165,216-217`; `go-sdk/assembly/tool_wrapper.go:82-87,127-128` |
+| Requires an explicit `init_assembly()` / `initAssembly()` / `assembly.Init()`; Go additionally requires explicit `WrapTools` | `python-sdk/agent_assembly/__init__.py:24`; `node-sdk/src/init-assembly.ts:162-165`; `go-sdk/assembly/wrap_tools.go:13,28` |
+| Raw HTTP, `subprocess`, and filesystem access are **not** intercepted by any SDK | nothing patches `requests`/`httpx`/`urllib`/`subprocess` |
+| Node's LangChain **callback** handler is audit-only — it records a denial and does not throw | `node-sdk/src/adapters/langchain/assembly-callback-handler.ts:12-21,35-59` |
+| The SDK is explicitly not the authoritative gate | `aa-sdk-client/src/decision.rs:32-33`; ADR 0002 |
+
+### E4 — credential *injection* is unreachable in a shipped build, and the agent process holds the raw value
+
+The "secrets are injected at runtime and never enter the model context" family of
+claims rests on a capability that cannot be reached by a user of a released
+build. Every citation below was re-verified directly.
+
+| Fact | Evidence |
+|---|---|
+| The dispatch path exists and is unit-tested | `proto/secrets.proto:12` (`SecretsService.DispatchTool`); `aa-gateway/src/secrets/resolver.rs:95`; `aa-gateway/src/secrets/store.rs:31`; HTTP `aa-api/src/routes/dispatch.rs:125`; gRPC `aa-gateway/src/service/secrets_service.rs:39` |
+| **Nothing can populate the store.** Both production constructions instantiate a fresh empty `InMemorySecretsStore` | `aa-api/src/state.rs:449`; `aa-gateway/src/server.rs:693` |
+| There is **no registration route** — `openapi/v1.yaml` exposes only `/api/v1/dispatch_tool` | `openapi/v1.yaml:2661` |
+| There is **no `aasm secrets` command** | absence verified in `aa-cli/src/commands/` |
+| Registration exists only in a test helper | `aa-integration-tests/tests/common/mod.rs:246` |
+| Consequence: every `${NAME}` resolves to `UnknownPlaceholder` → 422 / `FailedPrecondition` | resolver behaviour |
+| No placeholder substitution exists in `aa-runtime`; no `SecretResolution` type exists anywhere | absence verified |
+| **The gateway returns the resolved plaintext to the caller** — it does not make the outbound call itself | `aa-api/src/routes/dispatch.rs:179-183`; `proto/secrets.proto:36-39` |
+| **`aasm run` hands the child the entire parent environment**, so a shell or file tool in the agent can read any credential the operator exported. The masking helper is used only for `--dry-run` preview text | `aa-cli/src/commands/run.rs:306` (`std::env::vars().collect()`); masking at `:434`, `:480` |
+| There is **no Stripe detector** — no `Stripe` entry in `CredentialKind` or the literal table; the OpenAI detector keys on `sk-` (hyphen) while Stripe uses `sk_` (underscore) | `aa-security/src/scanner.rs:14-55,95-162` |
+| Model **responses** are never scanned — the upstream body is a raw `tokio::io::copy` | `aa-proxy/src/proxy/mod.rs:958` |
+| `AlertAndRedact` / `AlertOnly` emission is unimplemented, so `AlertOnly` forwards the raw secret **and** raises no alert | `aa-gateway/src/engine/mod.rs:1468-1473,1478,1487` |
+| A secret split by a separator (`中`, emoji, space, tab, newline) scans clean — accepted residual | `aa-security/src/scanner.rs:1071-1092,3012-3030` (AAASM-5368) |
+
+The net accurate statement is the inverse of the published one: the product does
+not today keep a credential out of the agent's reach. What it does is **scan
+outbound requests on the inspected hosts and redact recognised credentials
+before forwarding** — with `RedactOnly` as the default, `Block` opt-in, and
+detection bounded to the scanner's pattern set.
+
+---
+
+## Inventory — `ai-agent-assembly/official-website`
+
+| # | File:line | Exact quoted claim | Class | Verdict | Replacement | Evidence |
+|---|---|---|---|---|---|---|
+| W1 | `src/components/home/index.tsx:319` | "Kernel uprobes on SSL libraries plus exec/file syscall hooks catch everything, including bypass attempts (Linux)." | absolute · observe-presented-as-prevent · platform-overreach | qualify | "Observe-only kernel probes — OpenSSL uprobes plus exec/file syscall hooks — surface activity the layers above never saw. Linux x86_64 only; it reports, it does not block." | E1 |
+| W2 | `src/components/home/index.tsx:311` | "A sidecar MitM proxy enforces network-egress policy with no code changes — catches what the SDK misses." | no-code-change · unbounded scope | qualify | Names `aasm run`, proxy-env routing and CA trust as the prerequisites. | E2 |
+| W3 | `src/components/home/index.tsx:303` | "In-process hooks (Python, Node.js, Go) emit events and apply pre-execution allow/deny." | unbounded scope | qualify | Bounds to wrapped framework tool calls after explicit init. | E3 |
+| W4 | `src/components/home/index.tsx:48-53` | "sits between your agents and the outside world and enforces policy, tracks cost, and intercepts unsafe actions — at the SDK, the network proxy, and the kernel." | unbounded scope | qualify | Bounds mediation to the paths it is wired into. | E1 · E2 · E3 |
+| W5 | `src/components/home/index.tsx:275` | "Three boundaries for every agent" | absolute | qualify | "Three boundaries for a governed agent" | E3 |
+| W6 | `src/components/home/index.tsx:233` | "Every agent gets a verifiable identity scoped to a team" | absolute | qualify | "Each registered agent carries a team-scoped identity" — scope bounded to registration. | registry is populated on register, not ambiently |
+| W7 | `src/components/home/index.tsx:350` | "from a one-line SDK import to kernel-level enforcement" | observe-presented-as-prevent | qualify | "…to kernel-level observation" | E1 |
+| W8 | `src/pages/product.tsx:36-38` | "sits between your agents and the outside world — it enforces policy, tracks cost, and intercepts unsafe actions at runtime." | unbounded scope | qualify | Adds the managed-path boundary. | E2 · E3 |
+| W9 | `src/pages/product.tsx:52-53` | "Agent Assembly adds that boundary without you rewriting your agents." | no-code-change | qualify | Names the launch/routing requirement. | E2 |
+| W10 | `src/pages/product.tsx:150` | "Three independently-deployable layers … Adopt the depth you need." | unbounded scope | qualify | Distinguishes the enforcing layers from the observing one. | E1 |
+| W11 | `blog/2026-06-25-…/index.md:17-18` | "uprobes on SSL libraries plus exec/file syscall hooks catch everything, including deliberate bypass attempts." | absolute · observe-presented-as-prevent | qualify | Same correction as W1, at the post's technical depth. | E1 |
+| W12 | `blog/2026-06-25-…/index.md:16` | "enforces network egress with no code changes; catches what the SDK misses." | no-code-change | qualify | Names routing + CA trust. | E2 |
+| W13 | `blog/2026-06-25-…/index.md:20-22` | "the proxy and eBPF layers are where the boundary becomes hard to cross" | absolute | qualify | eBPF raises detection, not the boundary. | E1 |
+| W14 | `i18n/zh-Hant/code.json` | zh-Hant mirrors of W1–W7 | (inherits) | qualify | Translated in lockstep. | — |
+| W15 | `src/components/home/index.tsx:131-135` | Hero terminal mock: "secret STRIPE_KEY injected at runtime — never in context" | absolute · feature-not-shipped | qualify | Advertises an unreachable capability using the one credential type with no detector. Replaced with a redaction line naming a credential a shipped detector matches. | E4 |
+| W16 | `src/components/home/index.tsx:257` | "Real credentials are injected at execution time and never enter the model context the agent can see." | absolute · feature-not-shipped | remove | "Agent Assembly scans your agents' outbound traffic and redacts credentials before they reach a model or an API." | E4 |
+| W17 | `src/pages/product.tsx:109-116` | "Credentials injected at execution time" / "Secrets never enter the model context" | absolute · feature-not-shipped | remove | Replaced with the redact-before-forward description and its default. | E4 |
+
+## Inventory — `ai-agent-assembly/agent-assembly` (mdBook, `docs/src/`)
+
+| # | File:line | Exact quoted claim | Class | Verdict | Replacement | Evidence |
+|---|---|---|---|---|---|---|
+| A1 | `introduction/overview.md:5` | "it checks every action an agent tries to take against rules you define" | absolute | qualify | Bounds to actions on a governed path. | E1 · E2 · E3 |
+| A2 | `introduction/overview.md:7-8` | "a security checkpoint that an AI agent cannot walk around." | absolute | remove | Replaced with a checkpoint-on-the-governed-path formulation. | E2 (unmanaged launch is a measured bypass) |
+| A3 | `introduction/overview.md:21-24` | "Every time an agent tries to call a tool, reach the network, or spend money on a model call, the runtime evaluates that action" | absolute | qualify | "Each time a governed action reaches the runtime…" | E3 |
+| A4 | `introduction/README.md:5` | "evaluates every action against policy and budget" | absolute | qualify | "evaluates the actions routed to it" | E3 |
+| A5 | `introduction/README.md:20` | "so nothing slips through" | absolute | qualify | "so each layer narrows what the layer above it missed" | E1 |
+| A6 | `introduction/three-layer-model.md:19` | "Outbound HTTPS, with no code change" | no-code-change | qualify | Adds routing + CA + transport constraints. | E2 |
+| A7 | `introduction/three-layer-model.md:20` | "Everything else, including bypass attempts" | absolute · observe-presented-as-prevent | qualify | "OpenSSL TLS plaintext, exec and file syscalls — observed, not blocked" | E1 |
+| A8 | `introduction/three-layer-model.md:37` | "Run all three and an action has nowhere to hide." | absolute | remove | Replaced with a union-coverage statement that names the residual gaps. | E1 · E2 |
+| A9 | `introduction/concepts.md:58` | "**audit** records everything" | absolute | qualify | "records each evaluated action" | E3 |
+| A10 | `security/three-layer-defense.md:20` | "Outbound HTTPS, no code change" | no-code-change | qualify | As A6. | E2 |
+| A11 | `security/three-layer-defense.md:21` | "Everything else, including bypass attempts" | absolute · observe-presented-as-prevent | qualify | As A7, plus "Detection authority" recast as detection, not enforcement. | E1 |
+| A12 | `security/three-layer-defense.md:56-63` | "it sees TLS plaintext and process activity **even when the agent never adopted the SDK and never routed through the proxy**. It is the floor." | unbounded scope · platform-overreach | qualify | Bounds to OpenSSL-linked processes on Linux x86_64, observe-only. | E1 |
+| A13 | `security/three-layer-defense.md:77-78` | "Run all three and an action has nowhere to hide — an attempt to evade a higher layer simply surfaces at a lower one." | absolute | remove | Replaced with the enumerated residual-gap list. | E1 |
+| A14 | `security/three-layer-defense.md:125-127` | "an action only escapes governance if it evades *every deployed* layer. With eBPF present, the bypass path collapses to 'caught at Layer 3.'" | absolute | qualify | Names the four ways an action still escapes with eBPF deployed. | E1 |
+| A15 | `architecture/infra-overview.md:15` | "decides, records, and persists every action" | absolute | qualify | "every action it receives" | E3 |
+| A16 | `architecture/infra-overview.md:22` | "enforces network-egress policy with no code changes." | no-code-change | qualify | As A6. | E2 |
+| A17 | `architecture/infra-overview.md:24` | "catches everything, including bypass attempts. **Linux-only.**" | absolute · platform-overreach | qualify | As A7 + x86_64. | E1 |
+| A18 | `architecture/infra-overview.md:60` | Mermaid node label "*no code changes*" | no-code-change | qualify | "requires proxy routing" | E2 |
+| A19 | `architecture/README.md:5` | "routing every action through one central **gateway**" | absolute | qualify | "routing governed actions through one central gateway" | E3 |
+| A20 | `governance/capability-matrix.md:22` | "The tool cannot bypass enforcement, but may operate without constraint if AAASM is offline." | absolute | qualify | "The tool cannot bypass enforcement **on the managed path**…" | E2 |
+| A21 | `governance/capability-matrix.md:34` | "every action emits an audit event" | absolute | qualify | "every observed action emits an audit event" | E3 |
+| A22 | `governance/capability-matrix.md:246` | "All outbound HTTPS from the machine" | unbounded scope | qualify | "Outbound HTTPS **routed through it**; under the default `llm_only` only the three built-in LLM hosts are inspected" | E2 |
+| A23 | `quick-start/requirements.md:79` | "Intercepts outbound HTTPS via MitM with a per-host CA — no code changes" | no-code-change | qualify | Corrects the CA model and names the prerequisites. | E2 |
+| A24 | `quick-start/requirements.md:80` | "Catches everything else, including bypass attempts" | absolute · observe-presented-as-prevent | qualify | As A7. | E1 |
+| A25 | `quick-start/first-run.md:125` | "The shim reports every action to the gateway over gRPC." | absolute | qualify | "reports the calls it wraps" | E3 |
+| A26 | `quick-start/first-run.md:126` | "**Sidecar proxy (no code changes):**" | no-code-change | qualify | "(no agent code changes; requires proxy routing)" | E2 |
+| A27 | `quick-start/first-run.md:128` | "kernel hooks catch everything else, including bypass attempts." | absolute | qualify | As A7. | E1 |
+| A28 | `usage-guide/self-hosting.md:24` | "which checks every action with the gateway" | absolute | qualify | "which checks the actions it receives with the gateway" | E3 |
+| A29 | `usage-guide/interception-layers.md:15` | "Enforces network-egress policy with no code change." | no-code-change | qualify | As A6. | E2 |
+| A30 | `usage-guide/interception-layers.md:16` | "Everything else, including deliberate bypass attempts." | absolute | qualify | As A7. | E1 |
+| A31 | `usage-guide/interception-layers.md:30-32` | "defense-in-depth that an agent cannot bypass … This is the catch-all backstop." | absolute | qualify | "raises the chance of detecting a bypass … a detection backstop, not a catch-all" | E1 |
+| A32 | `usage-guide/interception-layers.md:39` | "eBPF sits underneath both as the bypass-proof floor." | absolute | remove | "eBPF sits underneath both as an observation floor." | E1 |
+
+### Kept without change (`agent-assembly`)
+
+| File:line | Text | Why kept |
+|---|---|---|
+| `introduction/three-layer-model.md:5,64` | "routes every **observed** action"; diagram edge "audit-only events" | Already boundary-correct, and the diagram edge is positive evidence for the eBPF fix. |
+| `security/trust-boundaries.md:102` | "Everything left of the runtime is untrusted…" | `everything` scopes a diagram region, not a product guarantee; the statement is accurate. |
+| `architecture/system-architecture.md:120`, `architecture/components.md:186`, `architecture/building.md:38` | "the two foundation leaves everything else builds on", "Build everything" | Non-claim uses (dependency graph, a make target). |
+| `quick-start/first-run.md:33` | "`low-risk` allows and audits everything" | Accurately describes a specific bundled policy file. |
+| `usage-guide/self-hosting.md:12,21,71,79` | "runs everything *for* you", "reads everything through the REST API" | Non-claim uses about deployment scope and a read path. |
+| `devtools/product-brief.md` §8, `devtools/limitations.md`, `devtools/protection-levels.md` | Guarantee/limit pairs | Already the model of correctly-bounded copy; used as the target register for the rewrites and as the link destination. |
+| `usage-guide/govern-an-agent.md:236` | "**Routing is not proof.**" | Already correct; not in this ticket's path ownership. |
+
+## Inventory — `ai-agent-assembly/docs`
+
+| # | File:line | Exact quoted claim | Class | Verdict | Replacement | Evidence |
+|---|---|---|---|---|---|---|
+| D1 | `docs/src/README.md:26` | "It works across your whole fleet of agents and does not require you to rewrite your existing agent code." | absolute · no-code-change | remove | Replaced with a per-agent, per-path statement naming the launch requirement. | E2 · E3 |
+| D2 | `docs/src/README.md:22` | "decides, before each action runs, whether an agent is allowed…" | unbounded scope | qualify | "before each **governed** action runs" | E3 |
+| D3 | `docs/src/README.md:24` | "catches risky calls (and bypass attempts) at the SDK, network, and kernel levels." | unbounded scope · observe-presented-as-prevent | qualify | Splits enforcement (SDK, proxy) from detection (kernel). | E1 |
+| D4 | `docs/src/README.md:83` | "applies allow/deny decisions before any network request leaves the process" | absolute | qualify | Bounds to wrapped tool calls; notes raw HTTP is not intercepted. | E3 |
+| D5 | `docs/src/README.md:84` | "intercepts outbound HTTPS using a per-host CA … No code changes required." | no-code-change | qualify | Corrects the CA model, names routing and macOS-only trust install. | E2 |
+| D6 | `docs/src/README.md:85` | "kernel-level hooks that watch SSL libraries and process syscalls to catch bypass attempts at the OS level. Linux only." | observe-presented-as-prevent · platform-overreach | qualify | "observe-only … OpenSSL … Linux x86_64" | E1 |
+| D7 | `docs/src/comparison.md:3` | "a security checkpoint in front of every agent action" | absolute | qualify | "in front of each governed agent action" | E3 |
+| D8 | `docs/src/comparison.md:31` | "Network-level interception (no code change)" | no-code-change | qualify | Footnoted with the routing/CA/transport prerequisites. | E2 |
+
+### Kept without change (`docs`)
+
+| File:line | Text | Why kept |
+|---|---|---|
+| `docs/src/comparison.md:32` | "Kernel-level bypass **detection** (eBPF) ✓" | Already says detection, which is what the layer does. |
+| `docs/src/README.md:87` | "All three layers report to the gateway" | Accurate: it scopes the layers, not agent behaviour. |
+
+## Findings in repositories this ticket does not own
+
+Reported, not edited.
+
+| Repo | File:line | Claim | Class | Recommended owner |
+|---|---|---|---|---|
+| `examples` | `docs/concepts.md:33` | "Catch everything, including attempts to bypass the SDK or proxy layers. Linux-only; requires elevated privileges." | absolute · observe-presented-as-prevent · platform-overreach | Same correction as A7/W1. Needs a follow-up ticket under AAASM-5526. |
+| `examples` | `README.md:7` | "intercepts, inspects, and enforces policies on tool calls made by AI agents — without requiring you to rewrite your agent code" | no-code-change | Follow-up ticket. |
+| `agent-assembly` | `.claude/CLAUDE.md` (three-layer section) | "kernel uprobes on SSL libs + exec/file syscalls; catches **everything**, including bypass attempts." | absolute · observe-presented-as-prevent | **Propagation root.** Not public copy, but it is the instruction file that seeds this wording into new documentation. Recommended follow-up; deliberately not edited here to stay inside this ticket's stated path ownership. |
+| workspace root | `CLAUDE.md` (architecture section) | "Catches everything else, including bypass attempts." | absolute | Same as above. |
+| `cloud` | — | No public over-claim found. `cannot bypass` hits are about SSO/DB enum enforcement and are accurate; `three-layer` hits describe the FastAPI layering, an unrelated sense. | — | none |
+| `horonomy-official-website` | `design/v1/homepage-directions/…dc.html:678` | "with every action inside an explicit boundary" | absolute | Different product (Horonomy), and a design artifact rather than shipped copy. Flagged only. |
+
+Vendored `.venv` / `node_modules` / generated OpenAPI-schema matches were excluded —
+they are third-party or generated text, not authored product claims.
+
+## Summary by claim class
+
+Counts are per claim row; a row with two classes is counted under each.
+
+| Class | official-website | agent-assembly | docs | Total |
+|---|---|---|---|---|
+| absolute | 5 | 20 | 3 | **28** |
+| unbounded scope | 4 | 3 | 4 | **11** |
+| observe-presented-as-prevent | 3 | 7 | 2 | **12** |
+| platform-overreach | 1 | 3 | 1 | **5** |
+| no-code-change | 3 | 9 | 2 | **14** |
+
+| Verdict | official-website | agent-assembly | docs | Total |
+|---|---|---|---|---|
+| remove | 0 | 4 | 1 | **5** |
+| qualify | 13 | 28 | 7 | **48** |
+| keep-with-boundary | 0 | 7 | 2 | **9** |
+
+Actionable rows: **15** (official-website, one deferred) · **32** (agent-assembly) ·
+**8** (docs).
+
+## Deferred
+
+| Item | Reason |
+|---|---|
+| Removing the unreachable `DispatchTool` surface, or wiring a real secret store | Out of scope: this ticket corrects *claims*, not implementation (see the ticket's "Out of scope"). E4 is recorded here so the capability is not re-advertised, and warrants its own ticket under AAASM-5526. |
+| `docs/src/adr/**`, `docs/src/SUMMARY.md` | Owned by AAASM-5604 concurrently. |
+| `docs/src/quickstart-saas.md`, `cloud-deployment.md`, `open-core-boundary.md` (`docs` repo) | Owned by AAASM-5612 concurrently. |
