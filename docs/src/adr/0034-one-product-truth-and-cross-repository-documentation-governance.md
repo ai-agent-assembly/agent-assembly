@@ -836,6 +836,70 @@ Waivers live in the repository whose text they cover, are listed in that
 repository's `TRUTH-ADOPTION.md` under `exceptions`, and are read by the
 AAASM-5599 check.
 
+#### What the ban does not reach
+
+The ban is on **assertion in the product's own voice**, not on the letters. A
+document that could never print the words could not quote a customer, reproduce a
+licence, show a reviewer what bad wording looks like, or record that a claim was
+withdrawn — and the last of those is how this ADR's own history is kept. Six
+classes may therefore carry the literal text, and only when each instance is
+explicitly classified and presented as a **non-product assertion**:
+
+| Class | What it is | Marker |
+| --- | --- | --- |
+| Attributed third-party quotation | Someone else's words, with the attribution travelling in the same block | `attributed-quotation` |
+| Legal or contractual literal | Verbatim text a licence, contract or regulator requires be reproduced unaltered | `legal-literal` |
+| Trademark or fixed external term | A product name or external term of art that cannot be paraphrased without becoming wrong | `external-term` |
+| Negative example | Wording shown *because* it is prohibited | `negative-example` |
+| Historical withdrawn claim | A superseded claim kept for the record and marked as withdrawn | `historical-withdrawn` |
+| Test fixture or adversarial input | A string a check consumes, not a sentence a reader reads | `test-fixture` |
+
+Three bounds apply to every one of them, and an instance that breaks any one is
+back to being a product claim:
+
+1. **Labelled at the point of use**, in a form a machine can see. Prose that says
+   "the quotation below is not our claim" satisfies a reader and nothing else, so
+   the label is an HTML comment fence around the exempted text:
+
+   ```text
+   <!-- truth-exempt: <class> — <reason> -->
+   … the exempted text …
+   <!-- /truth-exempt -->
+   ```
+
+   The class is one of the six above and the reason is required. An unknown class,
+   a missing reason or an unclosed fence is an error, not a lenient pass —
+   otherwise the marker becomes the general bypass this decision just removed.
+2. **Never in the product's own voice.** The surrounding text must not adopt the
+   statement, agree with it, or use it as a premise.
+3. **Never in a heading, a summary, page metadata, SEO text, marketing copy, or a
+   user-facing conclusion.** Those are exactly the positions the label does not
+   travel to: a heading is quoted alone in a table of contents, a `<meta
+   description>` is quoted alone in a search result. Promotion into one of them
+   converts the text back into a product claim regardless of the marker, and the
+   W10 check rejects a heading inside a marked block.
+
+**Worked examples.** The same phrase, in five positions. The first is the only one
+the ban reaches, and it has no waiver available.
+
+<!-- truth-exempt: negative-example — worked examples for Decision 10; each row deliberately carries wording ADR 0033 forbidden design 7 bans -->
+
+| # | The text, as it would appear | Verdict |
+| --- | --- | --- |
+| 1 | A feature page reading *"Agent Assembly cannot be bypassed."* | **Forbidden.** A product assertion in the product's own voice. Not publishable, and no waiver exists to make it publishable; the ADR 0030 protection-state ladder and the platform matrix say what may be claimed instead |
+| 2 | A customer page reading *"We chose it because it cannot be bypassed."* — Jane Roe, Example Corp, 2026-07-14, with a link to the source | Permitted as `attributed-quotation`, in the body only. Lifting it into the page's `<h2>`, its hero strapline or its `<meta description>` is bound 3 and forbidden |
+| 3 | A DPA appendix reproducing a customer's contractual definition of *"immutable audit"* unaltered | Permitted as `legal-literal`, in the appendix that identifies it as contract text. The product's description of the audit log elsewhere on the page must still be accurate, and may not quietly borrow the definition |
+| 4 | Row 1 of this very table | Permitted as `negative-example`. It is inside this section's marked block, under a heading that names it as an example, and no sentence here adopts it |
+| 5 | A release-history entry reading *"v0.0.1-rc.4's notes described the audit log as immutable. That claim was withdrawn on 2026-08-06 (AAASM-5528); it was not true of any released build."* | Permitted as `historical-withdrawn`. The withdrawal travels in the same sentence, so the claim cannot be read forward as current |
+
+<!-- /truth-exempt -->
+
+Row 1 is the case worth restating, because it is the one a bounded waiver used to
+appear to solve: there is no version of it — no ninety-day limit, no named owner,
+no `waiver-approver`, no fail-closed expiry — that makes the sentence true for
+ninety days. The claim is either supported by evidence, in which case the route is
+an amendment to ADR 0033's list, or it is not, in which case it is not published.
+
 ### 11. Contributor guidance, for humans and for coding agents
 
 The contributor-facing form of this specification is
