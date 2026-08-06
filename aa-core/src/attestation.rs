@@ -554,4 +554,16 @@ mod tests {
         let a = at(basis, SelectedMode::Unset, NOW);
         assert!(!a.asserts_coverage_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
     }
+
+    /// §7 defect 3: `LayerSet::SDK` is asserted unconditionally, independent of
+    /// whether any agent adopted the SDK. Shipping a hook is not adopting it.
+    #[test]
+    fn assumed_present_basis_cannot_claim_coverage() {
+        let basis = AttestationBasis::AssumedPresent;
+        assert_eq!(basis.claim_ceiling(), ClaimTerm::Unmeasured);
+        assert!(!basis.is_evidence());
+
+        let a = at(basis, SelectedMode::Unset, NOW);
+        assert!(!a.asserts_coverage_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+    }
 }
