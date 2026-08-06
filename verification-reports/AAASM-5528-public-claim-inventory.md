@@ -42,6 +42,7 @@ Line numbers are from the base commit of the AAASM-5528 branches.
 | **no-code-change** | "No code changes" without naming the launch, env and trust-store prerequisites. |
 | **overstated-crypto-guarantee** | A cryptographic property asserted stronger than the primitive in use (a signature where there is an unkeyed digest; immutability where there is convention). |
 | **feature-not-shipped** | A capability advertised as current that cannot be reached in a released build. |
+| **mislabelled-mechanism** | The right guarantee attributed to the wrong component, so a reader cannot locate or verify it. |
 
 ### Verdicts
 
@@ -190,7 +191,9 @@ descriptions of one mechanism.
 | A17 | `architecture/infra-overview.md:24` | "catches everything, including bypass attempts. **Linux-only.**" | absolute · platform-overreach | qualify | As A7 + x86_64. | E1 |
 | A18 | `architecture/infra-overview.md:60` | Mermaid node label "*no code changes*" | no-code-change | qualify | "requires proxy routing" | E2 |
 | A19 | `architecture/README.md:5` | "routing every action through one central **gateway**" | absolute | qualify | "routing governed actions through one central gateway" | E3 |
-| A20 | `governance/capability-matrix.md:22` | "The tool cannot bypass enforcement, but may operate without constraint if AAASM is offline." | absolute | qualify | "The tool cannot bypass enforcement **on the managed path**…" | E2 |
+| A20 | `governance/capability-matrix.md:22` | "The tool cannot bypass enforcement, but may operate without constraint if AAASM is offline." | absolute | remove | Absolute deleted, not softened. The tier now names what mediates (SDK/wrapper seam, `aa-proxy`), the platform (CA trust-store install macOS-only), and the decision timing (both synchronous), followed by a boundary note enumerating unmanaged launch, direct calls, unsupported transports, hosts not under MitM, opaque SaaS hosts, and AAASM-offline. | E1 · E2 · E3 |
+| A33 | `.claude/CLAUDE.md` (three-layer section) | "kernel uprobes on SSL libs + exec/file syscalls; catches **everything**, including bypass attempts. **Linux-only.**" | absolute · observe-presented-as-prevent · platform-overreach | qualify | Observe-only, OpenSSL, Linux x86_64, fails open; described as one possible host mechanism. | E1 |
+| A34 | `.claude/CLAUDE.md` (crate map + prose) | "`aa-runtime` \| Authoritative enforcement pipeline (`RuntimeScanner`)" | mislabelled-mechanism | qualify | Splits the allow/deny/pending gate (`handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) from the scan/redact stage (`RuntimeScanner`, `aa-runtime/src/pipeline/enforcement.rs:182`), which is authoritative *versus the SDK's own scan*, not the policy gate. | verified directly |
 | A21 | `governance/capability-matrix.md:34` | "every action emits an audit event" | absolute | qualify | "every observed action emits an audit event" | E3 |
 | A22 | `governance/capability-matrix.md:246` | "All outbound HTTPS from the machine" | unbounded scope | qualify | "Outbound HTTPS **routed through it**; under the default `llm_only` only the three built-in LLM hosts are inspected" | E2 |
 | A23 | `quick-start/requirements.md:79` | "Intercepts outbound HTTPS via MitM with a per-host CA — no code changes" | no-code-change | qualify | Corrects the CA model and names the prerequisites. | E2 |
@@ -248,7 +251,7 @@ Reported, not edited.
 |---|---|---|---|---|
 | `examples` | `docs/concepts.md:33` | "Catch everything, including attempts to bypass the SDK or proxy layers. Linux-only; requires elevated privileges." | absolute · observe-presented-as-prevent · platform-overreach | Same correction as A7/W1. Needs a follow-up ticket under AAASM-5526. |
 | `examples` | `README.md:7` | "intercepts, inspects, and enforces policies on tool calls made by AI agents — without requiring you to rewrite your agent code" | no-code-change | Follow-up ticket. |
-| `agent-assembly` | `.claude/CLAUDE.md` (three-layer section) | "kernel uprobes on SSL libs + exec/file syscalls; catches **everything**, including bypass attempts." | absolute · observe-presented-as-prevent | **Propagation root.** Not public copy, but it is the instruction file that seeds this wording into new documentation. Recommended follow-up; deliberately not edited here to stay inside this ticket's stated path ownership. |
+| `agent-assembly` | `.claude/CLAUDE.md` | *Fixed in this ticket* — see rows A33/A34. It is the propagation root: every coding agent reads it before writing public copy. |
 | workspace root | `CLAUDE.md` (architecture section) | "Catches everything else, including bypass attempts." | absolute | Same as above. |
 | `cloud` | — | No public over-claim found. `cannot bypass` hits are about SSO/DB enum enforcement and are accurate; `three-layer` hits describe the FastAPI layering, an unrelated sense. | — | none |
 | `horonomy-official-website` | `design/v1/homepage-directions/…dc.html:678` | "with every action inside an explicit boundary" | absolute | Different product (Horonomy), and a design artifact rather than shipped copy. Flagged only. |
