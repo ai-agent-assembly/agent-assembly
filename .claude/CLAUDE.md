@@ -20,18 +20,33 @@ Governance is enforced through three independently-deployable layers, ordered by
 latency cost (lowest first) and detection authority (highest first):
 
 1. **SDK layer (in-process)** — language SDKs call a thin Rust shim (`aa-ffi-*` in
-   the SDK repos) over **`aa-sdk-client`**, which emits events to the gateway and
-   applies pre-execution allow/deny. Fastest path; requires SDK adoption.
-2. **Sidecar proxy (`aa-proxy`)** — MitM of outbound HTTPS via a per-host CA;
-   enforces network-egress policy with no code changes.
-3. **eBPF (`aa-ebpf*`)** — kernel uprobes on SSL libs + exec/file syscalls; catches
-   everything, including bypass attempts. **Linux-only.**
+   the SDK repos) over **`aa-sdk-client`**, which emits events and denies a wrapped
+   framework tool call before it runs. Fastest path; requires SDK adoption *and* an
+   explicit initializer call. Advisory only — see ADR 0002.
+2. **Sidecar proxy (`aa-proxy`)** — MitM of outbound HTTPS using per-host certificates
+   minted from a local root CA; enforces network-egress policy with no *agent code*
+   change. Requires the process to honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
+   (trust-store install is macOS-only). HTTP/1.1 only, and `llm_only` defaults to
+   `true`, so only the built-in LLM hosts are decrypted.
+3. **eBPF (`aa-ebpf*`)** — kernel uprobes on OpenSSL + exec/file syscall hooks.
+   **Observe-only**: the probes emit telemetry and return no verdict, so this layer
+   detects, it does not block. **Linux x86_64 only**, and it fails open if it cannot
+   attach. It is one possible host mechanism, not a general enforcement layer.
+
+> **Do not restate these as absolutes.** Public copy derived from this file was the
+> source of the AAASM-5528 truthfulness bug ("catches everything, including bypass
+> attempts"). Every layer claim must name its boundary; see
+> `verification-reports/AAASM-5528-public-claim-inventory.md` for the evidence and
+> `docs/src/devtools/limitations.md` for the measured limits.
 
 The **gateway (`aa-gateway`)** is the brain: agent registry, policy engine
 (`src/policy/`), per-team budgets (`src/budget/`), gRPC for SDKs + HTTP/OpenAPI
 (via `aa-api`) for the dashboard. The **runtime (`aa-runtime`)** is the authoritative
-enforcement point. The **CLI (`aa-cli`)** ships the `aasm` binary
-(`aasm topology` / `policy` / `dashboard`).
+chokepoint, but split the two things it does: the allow/deny/pending gate is
+`handle_policy_query` (`aa-runtime/src/pipeline/mod.rs:407`), while `RuntimeScanner`
+(`aa-runtime/src/pipeline/enforcement.rs:182`) is the scan/redact/normalize stage —
+authoritative *versus the untrusted SDK's own scan*, not the policy gate. The
+**CLI (`aa-cli`)** ships the `aasm` binary (`aasm topology` / `policy` / `dashboard`).
 
 ### Crate map (flat at repo root, not under `crates/`)
 
@@ -40,7 +55,7 @@ enforcement point. The **CLI (`aa-cli`)** ships the `aasm` binary
 | `aa-core` | Wire types (`aa_core::types`), storage traits (`aa_core::storage`), conformance harnesses |
 | `aa-proto` | Protobuf/tonic definitions (committed generated code) |
 | `aa-gateway` / `aa-api` | Gateway brain + HTTP/OpenAPI surface |
-| `aa-runtime` | Authoritative enforcement pipeline (`RuntimeScanner`) |
+| `aa-runtime` | Authoritative chokepoint: policy gate (`handle_policy_query`) + scan/redact stage (`RuntimeScanner`) |
 | `aa-sdk-client` | FFI-agnostic client the SDK shims pin by git SHA |
 | `aa-security` | Credential scanner + redaction (leaf crate) |
 | `aa-proxy` / `aa-ebpf*` / `aa-sandbox` | Interception layers 2 & 3 |
