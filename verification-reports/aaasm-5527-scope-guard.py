@@ -3,7 +3,11 @@
 
 Run before pushing any change to either AAASM-5527 artifact:
 
-    python3 verification-reports/aaasm-5527-scope-guard.py
+    python3 -B verification-reports/aaasm-5527-scope-guard.py
+
+`-B` matters: `.gitignore` covers `__pycache__/` under `docs/ci/`, `scripts/` and
+`scripts/research/` but NOT under `verification-reports/`, so a plain run leaves
+a `.pyc` that the next `git add -A` will commit. It did exactly that once.
 
 Why this exists
 ---------------
