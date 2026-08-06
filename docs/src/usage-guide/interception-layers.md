@@ -95,6 +95,9 @@ kprobes, and the `sched_process_exec` tracepoint — run on Linux.
 ## Result
 
 You can match the interception layer (or stack of layers) to the requirement:
-SDK for precision where you own the code, proxy for code-free egress control,
-eBPF for a bypass-proof kernel backstop on Linux — all feeding one gateway and
-one audit log.
+SDK for precision where you own the code, proxy for egress control without
+touching agent code, eBPF for kernel-level *detection* of what escaped both on
+Linux x86_64 — all feeding one gateway and one audit log.
+
+Match the requirement to what the layer can promise, too: the SDK and the proxy
+can deny an action before it runs; eBPF tells you an action happened.
