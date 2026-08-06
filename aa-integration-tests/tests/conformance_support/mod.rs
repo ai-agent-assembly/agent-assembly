@@ -27,12 +27,20 @@
 //! * `NODE_TLS_REJECT_UNAUTHORIZED` is never set. A TLS failure is a finding.
 
 pub mod harness;
-pub mod outcome;
 pub mod probe;
 pub mod proxy;
 
+/// The evidence ledger (AAASM-5465), re-exported under its historical name.
+///
+/// A `use`, not a `mod`: the file lives at `tests/evidence/mod.rs` and is
+/// declared **once per test binary**, because several suites include both this
+/// support directory and `spike_support`, and two `#[path]` declarations of one
+/// file in a single binary is `clippy::duplicate_mod`. Every including binary
+/// therefore carries `#[path = "evidence/mod.rs"] mod evidence;` at its root.
+pub use crate::evidence as outcome;
+pub use crate::evidence::Measurement;
+
 pub use harness::{walk, ConformanceHarness, HarnessOptions, MEASURED_TOOL_VERSION};
-pub use outcome::Measurement;
 pub use probe::AdjudicatingProbe;
 pub use proxy::RestartableProxy;
 
@@ -67,13 +75,17 @@ pub fn assert_no_raw_secret(surfaces: &[(String, String)], needle: &str, scenari
 /// that exists *to take* this measurement can fail on a skip it never asked
 /// for. Recording here rather than at the call site means no opt-out path can
 /// forget to declare itself.
+///
+/// Recorded as [`Measurement::UnsupportedPlatform`] rather than a generic skip:
+/// no amount of provisioning on *this* runner would change the answer, which is
+/// the opposite of what [`require_claude`] reports and needs a different fix.
 pub fn require_macos(scenario: &str) -> bool {
     if cfg!(target_os = "macos") {
         return true;
     }
     let reason = format!("macOS-only scenario; this host is {}", std::env::consts::OS);
     println!("SKIP [{scenario}]: {reason}");
-    outcome::record(scenario, Measurement::Skipped, &reason);
+    outcome::record(scenario, Measurement::UnsupportedPlatform, &reason);
     false
 }
 
@@ -86,31 +98,53 @@ pub fn require_macos(scenario: &str) -> bool {
 /// the real-tool lane provisions the binary itself, so a skip *there* is a
 /// broken lane rather than an honest opt-out, and only a machine-readable
 /// record makes that difference assertable.
+///
+/// Recorded as [`Measurement::ToolAbsent`], which is the outcome a CI lane can
+/// act on — install the binary, or fix the `AA_SPIKE_CLAUDE_BIN` it already set.
 pub fn require_claude(scenario: &str) -> Option<std::path::PathBuf> {
+    match locate_claude() {
+        Ok(path) => Some(path),
+        Err(reason) => {
+            println!("SKIP [{scenario}]: {reason}");
+            outcome::record(scenario, Measurement::ToolAbsent, &reason);
+            None
+        }
+    }
+}
+
+/// Locate the real `claude` binary without declaring anything.
+///
+/// The counterpart to [`require_claude`] for callers that want the binary as
+/// *decoration* — a version string in a receipt, say — rather than as a
+/// precondition. Those callers must not print `SKIP` or write a ledger record:
+/// a scenario that measured everything it claims to measure, and merely could
+/// not stamp a version, is not a scenario that declined, and reporting it as one
+/// makes every genuine skip line less believable.
+///
+/// Returns the reason it could not be found on `Err`, so a caller that *is*
+/// gating on it does not have to re-derive the message.
+pub fn locate_claude() -> Result<std::path::PathBuf, String> {
     if let Some(explicit) = std::env::var_os("AA_SPIKE_CLAUDE_BIN") {
         let path = std::path::PathBuf::from(explicit);
         if path.exists() {
-            return Some(path);
+            return Ok(path);
         }
-        let reason = format!("AA_SPIKE_CLAUDE_BIN points at {}, which does not exist", path.display());
-        println!("SKIP [{scenario}]: {reason}");
-        outcome::record(scenario, Measurement::Skipped, &reason);
-        return None;
+        return Err(format!(
+            "AA_SPIKE_CLAUDE_BIN points at {}, which does not exist",
+            path.display()
+        ));
     }
-    let found = std::process::Command::new("which")
+    std::process::Command::new("which")
         .arg("claude")
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| std::path::PathBuf::from(s.trim()))
-        .filter(|p| p.exists());
-    if found.is_none() {
-        let reason = "no `claude` binary on PATH (expected on Linux CI); set AA_SPIKE_CLAUDE_BIN to opt in";
-        println!("SKIP [{scenario}]: {reason}");
-        outcome::record(scenario, Measurement::Skipped, reason);
-    }
-    found
+        .filter(|p| p.exists())
+        .ok_or_else(|| {
+            "no `claude` binary on PATH (expected on Linux CI); set AA_SPIKE_CLAUDE_BIN to opt in".to_string()
+        })
 }
 
 /// Read a workspace-relative source file.

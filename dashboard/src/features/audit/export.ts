@@ -46,8 +46,26 @@ const CSV_HEADER = [
 
 /** RFC 4180 cell escaping: quote a field only when it contains a delimiter. */
 function csvCell(value: unknown): string {
-  const s = value == null ? '' : String(value)
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  // Primitives stringify by their own rules; anything else (objects, arrays,
+  // functions) goes through `JSON.stringify` so no `String(anObject)` path can
+  // yield `[object Object]` (S6551).
+  const s = csvStringify(value)
+  return /[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s
+}
+
+/** Stringify a cell value, reserving `String()` for primitives only. */
+function csvStringify(value: unknown): string {
+  if (value == null) return ''
+  switch (typeof value) {
+    case 'string':
+      return value
+    case 'number':
+    case 'boolean':
+    case 'bigint':
+      return String(value)
+    default:
+      return JSON.stringify(value) ?? ''
+  }
 }
 
 /**

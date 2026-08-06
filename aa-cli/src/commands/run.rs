@@ -1311,6 +1311,12 @@ mod tests {
     /// leak here reaches stdout and from there a CI log.
     #[test]
     fn no_gateway_credential_reaches_the_launched_tool() {
+        // `build_child_env` inherits the process environment, so this assertion
+        // is only meaningful when no unrelated test has a stray `AA_*` var set.
+        // Hold the shared env lock so we observe the environment between other
+        // env-mutating tests (e.g. integrations' `AA_DEVINT_TOKEN_FILE`), not
+        // mid-mutation — otherwise this flakes under the shared-process harness.
+        let _guard = crate::test_support::env_guard();
         let handle = stub_handle(Some("team-a"));
         let env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
 

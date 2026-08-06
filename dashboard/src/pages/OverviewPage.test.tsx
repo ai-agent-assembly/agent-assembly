@@ -73,6 +73,27 @@ function makeAlert(overrides: Partial<Alert> = {}): Alert {
   }
 }
 
+/**
+ * A conforming approval row.
+ *
+ * Carries the fields `decodeApprovalList` proves — `id`, `agent_id`, `action`,
+ * `status`, `expires_at`, `created_at` — so the happy-path folds see a body the
+ * decoder accepts. AAASM-5380 slice S8 folds this page's approvals through that
+ * decoder, so a bare `{ id }` no longer conforms.
+ */
+function makeApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    id: 'ap-1',
+    agent_id: 'research-bot',
+    action: 'shell.exec',
+    status: 'pending',
+    reason: 'requires human decision',
+    created_at: '2026-01-01T12:00:00Z',
+    expires_at: '2026-01-01T13:00:00Z',
+    ...overrides,
+  } as unknown as Approval
+}
+
 /** Enforcement counts for the default single-agent fleet. */
 const FULL_ENFORCEMENT: AgentEnforcementLookup = new Map([['agent-1', { blocked: 4, scrubbed: 12 }]])
 
@@ -213,7 +234,7 @@ describe('OverviewPage', () => {
   it('renders the headline sections with live-derived KPIs', () => {
     setup({
       agents: [makeAgent(), makeAgent({ id: 'a2', name: 'sales-bot' })],
-      approvals: [{ id: 'ap-1' }, { id: 'ap-2' }] as unknown as Approval[],
+      approvals: [makeApproval({ id: 'ap-1' }), makeApproval({ id: 'ap-2' })],
       policies: [{ name: 'p-1' }] as unknown as Policy[],
       alerts: [makeAlert()],
     })
@@ -328,10 +349,10 @@ describe('OverviewPage', () => {
       setup({
         agents: [makeAgent()],
         approvals: [
-          { id: 'ap-1', created_at: '2026-05-20T11:55:00Z' }, // 5m — urgent
-          { id: 'ap-2', created_at: '2026-05-20T11:30:00Z' }, // 30m — urgent
-          { id: 'ap-3', created_at: '2026-05-20T10:00:00Z' }, // 2h — not urgent
-        ] as unknown as Approval[],
+          makeApproval({ id: 'ap-1', created_at: '2026-05-20T11:55:00Z' }), // 5m — urgent
+          makeApproval({ id: 'ap-2', created_at: '2026-05-20T11:30:00Z' }), // 30m — urgent
+          makeApproval({ id: 'ap-3', created_at: '2026-05-20T10:00:00Z' }), // 2h — not urgent
+        ],
       })
       renderPage()
       const approvals = screen.getByTestId('overview-approvals')
@@ -348,6 +369,117 @@ describe('OverviewPage', () => {
     const count = screen.getByTestId('overview-policy-count')
     expect(count).toHaveAttribute('data-truth-state', 'unavailable')
     expect(visibleText(count)).toBe('—')
+  })
+
+  // ── AAASM-5379 / AAASM-5380 — the undecoded policies fold ────────────────
+  it('renders the active-policy count as unknown on a schema-invalid 200 — never a count, never undefined', () => {
+    // `{"items":[{}]}` used to reach this fold as two unread rows: the count
+    // read `.length` off a body nobody had decoded and the L2 card rendered the
+    // literal `undefined ACTIVE POLICIES` (AAASM-5379). `certainFromShapedQuery`
+    // decodes it first, so a row with no `name` degrades to an explicit absence.
+    setup({
+      agents: [makeAgent()],
+      policiesState: { data: [{}, {}] as unknown as Policy[] },
+    })
+    renderPage()
+    // Vacuity guard: the page and the count node render at all, so the
+    // assertions below are checking a real DOM rather than an empty one.
+    expect(screen.getByTestId('overview-page')).toBeInTheDocument()
+    const count = screen.getByTestId('overview-policy-count')
+    expect(count).toBeInTheDocument()
+    // The count is withheld, not fabricated: unknown state, a bare dash, and
+    // neither the confident "2" the unread rows would have produced nor the
+    // literal "undefined" AAASM-5379 observed.
+    expect(count).toHaveAttribute('data-truth-state', 'unknown')
+    // Assert on the *visible* text (screen-reader sentence stripped): the
+    // decoder's own reason contains the word "undefined" (Zod's "received
+    // undefined"), which is a legitimate part of the announcement — the defect
+    // is the word rendered *on the card*, and there the operator sees only `—`.
+    const visible = visibleText(count)
+    expect(visible).toBe('—')
+    expect(visible).not.toContain('2')
+    expect(visible).not.toContain('undefined')
+  })
+
+  it('renders the active-policy count as unknown when the policies body is not an array', () => {
+    // A truthy non-array `items` survived `!data?.items` and reached this fold as
+    // an object whose `.length` is `undefined` — the direct source of the
+    // literal `undefined` on the governance card.
+    setup({
+      agents: [makeAgent()],
+      policiesState: { data: { not: 'a list' } as unknown as Policy[] },
+    })
+    renderPage()
+    const count = screen.getByTestId('overview-policy-count')
+    expect(count).toHaveAttribute('data-truth-state', 'unknown')
+    const visible = visibleText(count)
+    expect(visible).toBe('—')
+    expect(visible).not.toContain('undefined')
+  })
+
+  // ── AAASM-5380 slice S8 — the three folds migrated onto decoders ─────────
+  it('renders the approvals count as unknown on a schema-invalid 200 — never a fabricated count', () => {
+    // The Overview card reads only the count (and, defensively, `created_at`),
+    // so `decodeApprovalCount` accepts count-only rows — a row missing
+    // `agent_id`/`action` is a perfectly countable approval here. What it must
+    // still reject is a body that is not a readable list at all (non-object
+    // rows), which used to survive the `?? []` cast and be counted with
+    // `.length`, rendering a confident number the body could not support. That
+    // now degrades to a dash and the sub-line does not read "queue clear".
+    setup({
+      agents: [makeAgent()],
+      approvalsState: { data: ['nope', 42] as unknown as Approval[] },
+    })
+    renderPage()
+    // Vacuity guard: the page and the count node render at all.
+    expect(screen.getByTestId('overview-page')).toBeInTheDocument()
+    const count = screen.getByTestId('overview-approval-count')
+    expect(count).toBeInTheDocument()
+    expect(count).toHaveAttribute('data-truth-state', 'unknown')
+    const visible = visibleText(count)
+    expect(visible).toBe('—')
+    expect(visible).not.toContain('2')
+    // Absence, not a fabricated all-clear.
+    expect(screen.getByTestId('overview-approvals')).not.toHaveTextContent('queue clear')
+  })
+
+  it('renders the firing-alert count as unknown on a schema-invalid 200 — never a fabricated count', () => {
+    // A non-array alerts body used to reach the KPI derivation and throw in the
+    // `.filter`, or (for a bad row) be counted. `decodeAlertList` wraps
+    // `parseAlertList`, so it degrades to an absence rather than a number.
+    setup({
+      agents: [makeAgent()],
+      alertsState: { data: { not: 'a list' } as unknown as Alert[] },
+    })
+    renderPage()
+    expect(screen.getByTestId('overview-page')).toBeInTheDocument()
+    const firing = screen.getByTestId('overview-firing-count')
+    expect(firing).toBeInTheDocument()
+    expect(firing).toHaveAttribute('data-truth-state', 'unknown')
+    expect(visibleText(firing)).toBe('—')
+    // A bad alerts body must not read as "nothing is firing".
+    expect(screen.getByTestId('overview-top-issue')).not.toHaveTextContent('No critical issues')
+  })
+
+  it('renders blocked/scrubbed as unknown on a schema-invalid enforcement body — never a fabricated count', () => {
+    // The query builds a `Map` from the wire; a value that mistypes `blocked`
+    // (a proxy or version-skew leaving the query to build `{ blocked: NaN }`)
+    // used to be summed into a fabricated "blocked / 24h". `decodeEnforcementLookup`
+    // rejects the malformed lookup, so the KPIs propagate the absence.
+    setup({
+      agents: [makeAgent()],
+      enforcement: new Map([
+        ['agent-1', { blocked: 'lots' as unknown as number, scrubbed: 3 }],
+      ]) as unknown as AgentEnforcementLookup,
+    })
+    renderPage()
+    expect(screen.getByTestId('overview-page')).toBeInTheDocument()
+    for (const id of ['overview-blocked', 'overview-stripped', 'overview-scrubbed']) {
+      const tile = screen.getByTestId(id)
+      expect(tile).toBeInTheDocument()
+      expect(tile).toHaveAttribute('data-truth-state', 'unknown')
+      expect(visibleText(tile)).toBe('—')
+    }
   })
 
   it('renders the firing-alert count and panels as unavailable when the alerts query fails', () => {
@@ -536,7 +668,7 @@ describe('OverviewPage', () => {
   it('routes each drill-down action to its destination page', () => {
     setup({
       agents: [makeAgent()],
-      approvals: [{ id: 'ap-1' }] as unknown as Approval[],
+      approvals: [makeApproval({ id: 'ap-1' })],
       policies: [{ name: 'p-1' }] as unknown as Policy[],
       alerts: [makeAlert()],
     })

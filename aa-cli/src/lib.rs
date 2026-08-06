@@ -2,6 +2,7 @@
 
 use clap::Parser;
 
+pub mod auth;
 pub mod client;
 pub mod commands;
 pub mod config;

@@ -11,9 +11,10 @@ import { useAgentsQuery } from '../features/agents/api'
 import { usePoliciesQuery } from '../features/policies/api'
 import { inactivePolicyBadgeFromQuery } from '../features/policies/policyBadge'
 import { useAlertsQuery } from '../features/alerts/api'
+import { decodeAlertList } from '../features/alerts/schema'
 import { criticalFiringBadge } from '../features/alerts/alertBadge'
 import { DEFAULT_ALERT_FILTERS } from '../features/alerts/types'
-import { certainFromQuery, isKnown, type Certain } from '../lib/truthfulness'
+import { certainFromShapedQuery, isKnown, type Certain } from '../lib/truthfulness'
 import { AbsenceMarker } from './truthfulness'
 import { TraceDrawerProvider } from './trace/TraceDrawerProvider'
 import { TraceDrawer } from './trace/TraceDrawer'
@@ -33,7 +34,12 @@ const GROUP_LABEL: Record<RouteGroup, string> = {
 // from the build mode (real, not a placeholder org/env): a production bundle
 // reads `prod`, a dev server `dev`, anything else (e.g. the test runner) its
 // raw mode. See design/v1/hi-fi/shell.jsx (`acme · prod · v3.4.1`).
-const ENV_LABEL = import.meta.env.PROD ? 'prod' : import.meta.env.DEV ? 'dev' : import.meta.env.MODE
+function resolveEnvLabel(): string {
+  if (import.meta.env.PROD) return 'prod'
+  if (import.meta.env.DEV) return 'dev'
+  return import.meta.env.MODE
+}
+const ENV_LABEL = resolveEnvLabel()
 
 // Non-canonical shell destinations that still deserve a breadcrumb label
 // (they live outside CANONICAL_ROUTES because they aren't rail entries).
@@ -208,7 +214,14 @@ export function AppShell() {
   // failed request into "0 critical" and therefore into no badge at all. The
   // query *outcome* is carried through instead, so an outage stays an outage
   // all the way to the DOM.
-  const criticalAlerts = criticalFiringBadge(certainFromQuery(alerts))
+  //
+  // AAASM-5380 slice S8: decoded through `decodeAlertList` rather than
+  // `certainFromQuery`. `readAlertsPage` already runs `parseAlertList` and throws
+  // on a non-array `items`, so this fold was safe at fetch — but `decodeAlertList`
+  // *is* `parseAlertList` wrapped as a total decoder (features/alerts/schema.ts),
+  // so this is a faithful swap with no behaviour change that also empties the
+  // undecoded-fold set the ratchet guarded.
+  const criticalAlerts = criticalFiringBadge(certainFromShapedQuery(alerts, decodeAlertList))
   // AAASM-5186 carried the fail-open (`policies.data ?? []`) out of this file;
   // AAASM-5369 moved the fold itself into `features/policies/policyBadge.ts`.
   // Both the reasoning and the AAASM-5196 caveat live there now, next to the

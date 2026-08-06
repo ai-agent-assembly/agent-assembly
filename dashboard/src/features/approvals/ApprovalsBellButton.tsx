@@ -1,12 +1,13 @@
 import { Link } from 'react-router'
 import { AbsenceMarker } from '../../components/truthfulness'
 import {
-  certainFromQuery,
+  certainFromShapedQuery,
   isKnown,
   TRUTH_STATE_META,
   type TruthState,
 } from '../../lib/truthfulness'
-import { useApprovalsQuery, type Approval } from './api'
+import { useApprovalsQuery } from './api'
+import { decodeApprovalList } from './schema'
 
 /**
  * Header affordance for the pending-approvals queue.
@@ -17,15 +18,21 @@ import { useApprovalsQuery, type Approval } from './api'
  * nothing was waiting. This is the one approvals surface present on every
  * route, so it carried the widest reach of the defect the Live-Ops pane had.
  *
- * The three cases are now distinct: a loaded queue with work shows its count, a
- * loaded queue with none shows no badge (a real zero is a real answer, and a
- * permanent "0" in the header chrome is noise), and a queue that could not be
- * obtained shows the shared absence marker. The link's `aria-label` carries the
- * same distinction, because the badge itself is decorative to assistive tech.
+ * AAASM-5380 closes the case that outlived that fix: a successful `200` whose
+ * body is not an approvals list. `useApprovalsQuery` used to return
+ * `data?.items ?? []`, so a body with no `items` counted to zero and the
+ * aria-label read "no approvals are waiting" from a body nobody could parse. The
+ * count is now folded through `certainFromShapedQuery` with `decodeApprovalList`
+ * (`features/approvals/schema.ts`): only a validated array reaches `.length`, so
+ * a malformed or absent body renders the shared absence marker, and the four
+ * cases stay distinct — work, a real empty queue (no badge, a real zero is a
+ * real answer), an outage, and an unreadable body. The link's `aria-label`
+ * carries the same distinction, because the badge itself is decorative to
+ * assistive tech.
  */
 export function ApprovalsBellButton() {
   const query = useApprovalsQuery()
-  const approvals = certainFromQuery<Approval[]>(query)
+  const approvals = certainFromShapedQuery(query, decodeApprovalList)
 
   // Destructured up front so the absence branch stays narrowed for both the
   // label and the marker below — `count === null` alone tells TypeScript

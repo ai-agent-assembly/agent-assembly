@@ -106,20 +106,20 @@ export function detectDelegationCycles(edges: readonly TopologyEdge[]): Readonly
  * - A node reachable only through a pure cycle (no external root) is never hit
  *   by the BFS; it falls back to depth 0 so every node always has a depth.
  */
-export function computeHierarchy(
-  nodes: readonly TopologyNode[],
-  edges: readonly TopologyEdge[],
-): HierarchyResult {
-  const adj = delegationAdjacency(edges)
+/** Ids that are the target of at least one delegation edge. */
+function delegationTargets(edges: readonly TopologyEdge[]): Set<string> {
   const hasIncoming = new Set<string>()
   for (const e of edges) {
-    if (e.kind !== DELEGATION) continue
-    hasIncoming.add(e.target)
+    if (e.kind === DELEGATION) hasIncoming.add(e.target)
   }
+  return hasIncoming
+}
 
-  const rootIds = new Set<string>()
-  for (const n of nodes) if (!hasIncoming.has(n.id)) rootIds.add(n.id)
-
+/**
+ * Shortest delegation-hop depth from any root, seeded at depth 0. Already-visited
+ * nodes are skipped, so a cycle cannot re-enqueue a node into an infinite loop.
+ */
+function bfsDepths(rootIds: ReadonlySet<string>, adj: ReadonlyMap<string, string[]>): Map<string, number> {
   const depthById = new Map<string, number>()
   const queue: Array<{ id: string; depth: number }> = []
   for (const id of rootIds) {
@@ -135,6 +135,21 @@ export function computeHierarchy(
       queue.push({ id: child, depth: depth + 1 })
     }
   }
+
+  return depthById
+}
+
+export function computeHierarchy(
+  nodes: readonly TopologyNode[],
+  edges: readonly TopologyEdge[],
+): HierarchyResult {
+  const adj = delegationAdjacency(edges)
+  const hasIncoming = delegationTargets(edges)
+
+  const rootIds = new Set<string>()
+  for (const n of nodes) if (!hasIncoming.has(n.id)) rootIds.add(n.id)
+
+  const depthById = bfsDepths(rootIds, adj)
 
   for (const n of nodes) if (!depthById.has(n.id)) depthById.set(n.id, 0)
 

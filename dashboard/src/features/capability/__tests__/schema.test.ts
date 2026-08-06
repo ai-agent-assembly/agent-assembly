@@ -10,7 +10,7 @@
  * one this file exists to catch.
  */
 import { describe, expect, it } from 'vitest'
-import { decodeCascadeFields } from '../schema'
+import { decodeCascadeFields, decodeMatrixShape } from '../schema'
 
 /** The envelope `GET /api/v1/capability/matrix` sends, as far as this fold reads it. */
 const live = (policyCount: number, cascadeLoaded = true) => ({
@@ -104,5 +104,84 @@ describe('decodeCascadeFields, on the bodies that fabricated a zero', () => {
       // fabrication this decoder exists to stop.
       expect(result.reason).not.toMatch(/no policy document is loaded/i)
     }
+  })
+})
+
+/**
+ * The page decoder's row-level readability (AAASM-5380 slice S6).
+ *
+ * `decodeMatrixShape` used to check only that the four collections were lists,
+ * so `{ agents: [{}], resources: [{}], policies: [{}], sampleCalls: [{}] }`
+ * passed and then threw in `populatedCellCount` (`agent.caps[resource.id]`),
+ * hitting the ErrorBoundary. S6 tightens it to require the two fields the grid
+ * indexes a cell by: a readable `caps` on each agent row, an `id` on each
+ * resource row. Both directions matter — it must reject the throwing bodies and
+ * still accept a healthy one, including rows carrying fields it never checks.
+ */
+const liveMatrix = () => ({
+  agents: [{ id: 'a1', name: 'alpha', caps: { gmail: { read: 'allow' } } }],
+  resources: [{ id: 'gmail', name: 'Gmail', paths: [] }],
+  policies: [{ id: 'p0' }],
+  sampleCalls: [],
+})
+
+describe('decodeMatrixShape, on the bodies a healthy gateway sends', () => {
+  it('accepts a matrix whose agent rows carry a caps object and resources an id', () => {
+    expect(decodeMatrixShape(liveMatrix()).ok).toBe(true)
+  })
+
+  it('accepts an empty fleet — no rows means no unreadable row', () => {
+    expect(decodeMatrixShape({ agents: [], resources: [], policies: [], sampleCalls: [] }).ok).toBe(
+      true,
+    )
+  })
+
+  it('accepts rows carrying fields it never checks', () => {
+    const body = liveMatrix()
+    body.agents[0] = { ...body.agents[0], unexpected: true } as never
+    expect(decodeMatrixShape(body).ok).toBe(true)
+  })
+})
+
+describe('decodeMatrixShape, on the caps-less-row body that reached the boundary', () => {
+  it('rejects the four-empty-object-collections body AAASM-5380 falsified with', () => {
+    const result = decodeMatrixShape({
+      agents: [{}],
+      resources: [{}],
+      policies: [{}],
+      sampleCalls: [{}],
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects an agent row missing a caps object — the field populatedCellCount indexes', () => {
+    const body = liveMatrix()
+    body.agents[0] = { id: 'a1', name: 'alpha' } as never
+    const result = decodeMatrixShape(body)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toContain('caps')
+  })
+
+  it('rejects an agent row whose caps is a non-object, which the index cannot read', () => {
+    const body = liveMatrix()
+    body.agents[0] = { id: 'a1', caps: 'nope' } as never
+    expect(decodeMatrixShape(body).ok).toBe(false)
+  })
+
+  it('rejects a resource row missing an id — the cell key would be undefined', () => {
+    const body = liveMatrix()
+    body.resources[0] = { name: 'Gmail', paths: [] } as never
+    const result = decodeMatrixShape(body)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toContain('id')
+  })
+
+  it('names a cause the operator can act on, without throwing on a scalar', () => {
+    for (const body of [{}, 42, 'matrix', null]) {
+      const result = decodeMatrixShape(body)
+      expect(result.ok).toBe(false)
+    }
+    const result = decodeMatrixShape({ agents: [{}], resources: [{}], policies: [], sampleCalls: [] })
+    if (!result.ok) expect(result.reason).toMatch(/proxy|deploy|newer or older/)
   })
 })

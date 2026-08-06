@@ -6,6 +6,16 @@
   display: flex;
   justify-content: center;
   align-items: center;
+  /* Reset native <dialog> UA defaults so the scrim renders identically
+     whether the container element is a <div> or a <dialog open>. */
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
 }
 
 .suspend-dialog {

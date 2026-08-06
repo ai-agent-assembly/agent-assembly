@@ -18,12 +18,27 @@ export const APPROVALS_QUERY_KEY = ['approvals'] as const
 export function useApprovalsQuery() {
   return useQuery({
     queryKey: APPROVALS_QUERY_KEY,
-    queryFn: async (): Promise<Approval[]> => {
+    // AAASM-5380: `data?.items ?? []` used to fabricate a clear queue. A `200`
+    // whose body has no `items` — a proxy-rewritten response, a version skew —
+    // became a *known* empty list, and the header bell then said "no approvals
+    // are waiting" and the Live-Ops pool "No pending approvals" on the strength
+    // of a body neither could parse. The fallback is `?? null`, not `?? []`, and
+    // that difference is the fix: `null` is an explicit no-payload that
+    // `certainFromShapedQuery` reports as an absence, where `[]` was a fabricated
+    // known-empty queue. (`null` rather than bare `undefined` because TanStack
+    // Query v5 rejects a `queryFn` resolving to `undefined`; `null` is a valid
+    // cached value that the fold still reads as absence.) A present-but-malformed
+    // `items` is returned intact and reaches `decodeApprovalList`
+    // (`features/approvals/schema.ts`) as the value to validate, rather than a
+    // `.map` that throws at render. The cache stays typed `Approval[]` — the rows
+    // are `ApprovalResponse` when they conform — so the stream and the decide
+    // mutations that write it are unchanged.
+    queryFn: async (): Promise<Approval[] | null> => {
       const { data, error } = await api.GET('/api/v1/approvals', {
         params: { query: { per_page: 100 } },
       })
       if (error) throw new Error('Failed to fetch approvals')
-      return data?.items ?? []
+      return data?.items ?? null
     },
   })
 }

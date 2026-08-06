@@ -27,6 +27,13 @@
 //! Detection runs against the real `claude` binary, so on a host without one
 //! (Linux CI) every test prints `SKIP:` and returns. A skip is visible in the
 //! output rather than looking like a pass.
+//!
+//! **This suite is the extreme case** (AAASM-5465): *every* test here is gated,
+//! so on Linux CI the binary reports "5 passed" having asserted nothing at all.
+//! Each skip is therefore also recorded in the shared evidence ledger, and
+//! `.ci/test-evidence-summary.sh` nets those records against the runner's pass
+//! count so a lane with zero substantive cases cannot read as a lane that
+//! measured five.
 
 use std::process::Output;
 use std::sync::Arc;
@@ -37,15 +44,35 @@ use aa_runtime::devint::{DevIntServer, DevIntServerConfig, DevIntServices, Engin
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-/// Locate the real `claude` binary, or explain the skip.
-fn require_claude() -> bool {
+/// The evidence ledger, shared verbatim with the `aa-integration-tests` suites
+/// that decline for the same reason (AAASM-5465).
+///
+/// Included by path rather than copied: one CI summary reads every suite's
+/// records, and two implementations of "what a decline looks like" would drift
+/// until the summary quietly stopped seeing one of them. The module deliberately
+/// has no dependencies, so including it here costs `aa-cli` no dev-dependency.
+///
+/// Reaching outside the package directory is safe for the published tarball
+/// because `.ci/strip-for-publish.sh` deletes this whole file before
+/// `cargo workspaces publish` runs — the include can never become a dangling
+/// path in a crates.io release.
+#[path = "../../aa-integration-tests/tests/evidence/mod.rs"]
+mod evidence;
+
+/// Locate the real `claude` binary, or declare the skip against `scenario`.
+///
+/// `scenario` is the test's own name: the ledger keys one record per scenario,
+/// and a suite where every case declines has to be able to say *which* five.
+fn require_claude(scenario: &str) -> bool {
     let found = std::process::Command::new("which")
         .arg("claude")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !found {
-        println!("SKIP: no `claude` binary on PATH (expected on Linux CI)");
+        let reason = "no `claude` binary on PATH (expected on Linux CI)";
+        println!("SKIP [{scenario}]: {reason}");
+        evidence::record(scenario, evidence::Measurement::ToolAbsent, reason);
     }
     found
 }
@@ -207,7 +234,7 @@ fn stderr(out: &Output) -> String {
 /// The whole user journey, through the compiled binary.
 #[test]
 fn the_command_family_drives_the_native_claude_code_integration() {
-    if !require_claude() {
+    if !require_claude("the_command_family_drives_the_native_claude_code_integration") {
         return;
     }
     let h = Harness::start();
@@ -325,10 +352,78 @@ fn the_command_family_drives_the_native_claude_code_integration() {
     assert!(restored.get("permissions").is_none(), "{restored}");
 }
 
+/// AAASM-5454, against the **real** adapter: `plan` and `status` must not
+/// contradict each other about whether `Host Enforced` can be reached here.
+///
+/// The bug was reported from exactly this pair, one after the other on one
+/// macOS host: `plan --install-managed-settings` answered
+/// `planned level: host_enforced` while `status` answered
+/// `unavailable on this platform`. The two surfaces read the same adapter
+/// declaration, so the assertion is agreement rather than a fixed verdict —
+/// which is also what keeps it honest on a Linux host that happens to have the
+/// tool installed, where the adapter genuinely answers unsupported.
+#[test]
+fn status_and_plan_agree_with_the_real_adapter_about_host_enforcement() {
+    if !require_claude("status_and_plan_agree_with_the_real_adapter_about_host_enforcement") {
+        return;
+    }
+    let h = Harness::start();
+    assert!(h
+        .aasm(&["install", "claude-code", "--scope", "user", "--yes"])
+        .status
+        .success());
+
+    let status: serde_json::Value =
+        serde_json::from_str(&stdout(&h.aasm(&["status", "claude-code", "--output", "json"]))).expect("status JSON");
+    let host = status["levels"]
+        .as_array()
+        .expect("levels")
+        .iter()
+        .find(|l| l["level"] == "host_enforced")
+        .expect("the rung must be named, never omitted");
+    let reachable = host["available"] == serde_json::json!(true);
+
+    let plan = h.aasm(&["plan", "claude-code", "--install-managed-settings"]);
+    let planned = format!("{}{}", stdout(&plan), stderr(&plan));
+    let plan_says_reachable = planned.contains("planned level:   host_enforced");
+    assert_eq!(
+        reachable, plan_says_reachable,
+        "plan and status disagree about host enforcement.\n--- status ---\n{status:#}\n--- plan ---\n{planned}"
+    );
+
+    let rendered = stdout(&h.aasm(&["status", "claude-code"]));
+    if reachable {
+        assert!(
+            !rendered.contains("unavailable on this platform"),
+            "a mechanism this adapter supports was reported as impossible here:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("--install-managed-settings"),
+            "a reachable rung did not name the command that reaches it:\n{rendered}"
+        );
+        assert_eq!(
+            host["achieved"],
+            serde_json::json!(false),
+            "nothing attested an endpoint-managed policy, so the rung is not reached"
+        );
+    }
+
+    // macOS is the platform the mechanism exists for, and the one the defect
+    // told it was impossible. `MacOsAdminAuthority::availability` answers
+    // `Unavailable` only off macOS; a non-terminal stdin is `NonInteractive`,
+    // which is a runtime condition and not a missing capability.
+    if cfg!(target_os = "macos") {
+        assert!(
+            reachable,
+            "macOS must report host enforcement as reachable:\n{status:#}"
+        );
+    }
+}
+
 /// `--scope managed` alone is not the explicit opt-in the privileged write needs.
 #[test]
 fn a_managed_scope_install_is_refused_and_names_the_flag_that_opts_in() {
-    if !require_claude() {
+    if !require_claude("a_managed_scope_install_is_refused_and_names_the_flag_that_opts_in") {
         return;
     }
     let h = Harness::start();
@@ -347,7 +442,7 @@ fn a_managed_scope_install_is_refused_and_names_the_flag_that_opts_in() {
 /// still changes nothing.
 #[test]
 fn the_managed_install_plan_discloses_path_content_diff_backup_and_rollback() {
-    if !require_claude() {
+    if !require_claude("the_managed_install_plan_discloses_path_content_diff_backup_and_rollback") {
         return;
     }
     let h = Harness::start();
@@ -377,7 +472,7 @@ fn the_managed_install_plan_discloses_path_content_diff_backup_and_rollback() {
 /// prompt nobody can answer — and reports it as Unavailable, not as a success.
 #[test]
 fn a_non_interactive_managed_install_fails_safely_instead_of_waiting() {
-    if !require_claude() {
+    if !require_claude("a_non_interactive_managed_install_fails_safely_instead_of_waiting") {
         return;
     }
     let h = Harness::start();
@@ -398,7 +493,7 @@ fn a_non_interactive_managed_install_fails_safely_instead_of_waiting() {
 /// And without `--yes`, a non-interactive run does not even reach the service.
 #[test]
 fn a_managed_install_without_confirmation_changes_nothing() {
-    if !require_claude() {
+    if !require_claude("a_managed_install_without_confirmation_changes_nothing") {
         return;
     }
     let h = Harness::start();

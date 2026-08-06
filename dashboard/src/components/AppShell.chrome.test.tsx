@@ -35,7 +35,12 @@ const mockState = vi.hoisted(() => ({
     error: unknown
   },
   alerts: { data: undefined, isPending: false, isError: false, error: null } as {
-    data: { severity: string; status: string }[] | undefined
+    // `unknown`, because the shell now folds the alerts body through
+    // `decodeAlertList` (= `parseAlertList`, AAASM-5380 slice S8), so the tests
+    // must be able to place a body the decoder *rejects* — a non-array, or a row
+    // with no id — not just well-formed rows. A real `useAlertsQuery` result is
+    // an `Alert[]` whose rows each carry a string id.
+    data: unknown
     isPending: boolean
     isError: boolean
     error: unknown
@@ -105,9 +110,9 @@ describe('AppShell chrome — count badges (AAASM-5021)', () => {
   it('renders the Alerts and Policy badges only when their counts are > 0', () => {
     mockState.alerts = {
       data: [
-        { severity: 'CRITICAL', status: 'FIRING' },
-        { severity: 'CRITICAL', status: 'FIRING' },
-        { severity: 'LOW', status: 'FIRING' },
+        { id: 'al-1', severity: 'CRITICAL', status: 'FIRING' },
+        { id: 'al-2', severity: 'CRITICAL', status: 'FIRING' },
+        { id: 'al-3', severity: 'INFO', status: 'FIRING' },
       ],
       isPending: false,
       isError: false,
@@ -129,7 +134,7 @@ describe('AppShell chrome — count badges (AAASM-5021)', () => {
   it('hides both badges when the counts are zero', () => {
     // Present-but-empty data (a real, resolved query) must fabricate no badge.
     mockState.alerts = {
-      data: [{ severity: 'LOW', status: 'FIRING' }],
+      data: [{ id: 'al-1', severity: 'INFO', status: 'FIRING' }],
       isPending: false,
       isError: false,
       error: null,
@@ -151,8 +156,8 @@ describe('AppShell chrome — count badges (AAASM-5021)', () => {
     // on the nav item permanently (AAASM-5149).
     mockState.alerts = {
       data: [
-        { severity: 'CRITICAL', status: 'RESOLVED' },
-        { severity: 'CRITICAL', status: 'SUPPRESSED' },
+        { id: 'al-1', severity: 'CRITICAL', status: 'RESOLVED' },
+        { id: 'al-2', severity: 'CRITICAL', status: 'SUPPRESSED' },
       ],
       isPending: false,
       isError: false,
@@ -591,5 +596,65 @@ describe('AppShell chrome — a policies response the shell cannot read (AAASM-5
 
     expect(screen.getByTestId('nav-badge-policy')).toHaveTextContent('2')
     expect(screen.queryByTestId('nav-badge-absent-policy')).not.toBeInTheDocument()
+  })
+})
+
+describe('AppShell chrome — an alerts response the shell cannot read (AAASM-5380)', () => {
+  beforeEach(() => {
+    mockState.agents = { data: undefined, isError: false, dataUpdatedAt: 0 }
+    mockState.policies = { data: [], isPending: false, isError: false, error: null }
+    mockState.alerts = { data: [], isPending: false, isError: false, error: null }
+    mockState.policiesEnabled = true
+  })
+
+  // The bodies a proxy, a partial deploy, or a version-skewed API produce. The
+  // shell now folds the alerts body through `decodeAlertList` (= `parseAlertList`,
+  // AAASM-5380 slice S8), so each of these degrades to an absence rather than
+  // being read for a critical count.
+  const UNREADABLE: readonly [string, unknown][] = [
+    ['a non-array where the alerts list should be', { not: 'a list' }],
+    ['a row with no id', [{ severity: 'CRITICAL', status: 'FIRING' }]],
+    ['a row with an unrecognised severity', [{ id: 'a', severity: 'NUCLEAR', status: 'FIRING' }]],
+  ]
+
+  for (const [description, data] of UNREADABLE) {
+    it(`marks the Alerts badge absent rather than counting a critical for ${description}`, () => {
+      mockState.alerts = { data, isPending: false, isError: false, error: null }
+      renderShellAt('/overview')
+
+      // Vacuity guard: the badge element must exist to be checked. A fold that
+      // fabricated a critical count and then suppressed a zero, or one that
+      // unmounted the shell, would delete this node rather than fail on it.
+      const badge = screen.getByTestId('nav-badge-alerts')
+      expect(badge).toBeInTheDocument()
+
+      const marker = screen.getByTestId('nav-badge-absent-alerts')
+      // `unknown`, not `unavailable`: the request succeeded. Saying it failed
+      // would route the operator to retry something that is not broken.
+      expect(marker).toHaveAttribute('data-truth-state', 'unknown')
+      // No number where a critical count would go — the badge renders the
+      // absent marker, not a numeral. The shell is also still mounted.
+      expect(badge.className).toContain('appshell__nav-badge--absent')
+      expect(marker.querySelector('.truth-absent__glyph')?.textContent).toBe(NO_DATA)
+      expect(screen.getByTestId('appshell')).toBeInTheDocument()
+    })
+  }
+
+  it('still shows a real critical count when the body is readable', () => {
+    // The guard must not swallow the measurement: without this the block would
+    // pass against a fold that reported every response as unreadable.
+    mockState.alerts = {
+      data: [
+        { id: 'al-1', severity: 'CRITICAL', status: 'FIRING' },
+        { id: 'al-2', severity: 'CRITICAL', status: 'FIRING' },
+      ],
+      isPending: false,
+      isError: false,
+      error: null,
+    }
+    renderShellAt('/overview')
+
+    expect(screen.getByTestId('nav-badge-alerts')).toHaveTextContent('2')
+    expect(screen.queryByTestId('nav-badge-absent-alerts')).not.toBeInTheDocument()
   })
 })

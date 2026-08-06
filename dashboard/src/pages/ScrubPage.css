@@ -74,6 +74,11 @@
 }
 
 .scrub-stats {
+  /* Reset <fieldset> UA defaults (margin/border/min-inline-size) so the strip
+     renders identically now that it is a semantic <fieldset> group. */
+  margin: 0;
+  border: 0;
+  min-inline-size: 0;
   padding: 8px 24px;
   background: var(--paper-2);
   border-bottom: 1px solid var(--line);

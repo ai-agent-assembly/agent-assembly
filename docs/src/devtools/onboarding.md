@@ -366,8 +366,12 @@ split by how it was obtained:
   invisible.
 
 Every rung of the ladder is listed, **including the ones this host cannot
-reach**. `host_enforced` renders as *unavailable on this platform* rather than
-being omitted: silence there reads as "there is nothing above what I have".
+reach**: silence there reads as "there is nothing above what I have". What is
+said about a rung comes from the adapter — `host_enforced` reads *not active*
+where the mechanism is supported and nothing has reached it yet (with the
+command that reaches it named underneath), *unsupported by this integration*
+where the adapter declared it unsupported, and *not established by this
+reading* where nothing was declared at all.
 
 The timestamp is part of the claim. A status says *verified at T*, not *true
 now*.

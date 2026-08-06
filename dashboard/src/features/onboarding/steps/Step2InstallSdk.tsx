@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { AbsenceMarker } from '../../../components/truthfulness'
-import { certainFromQuery, isKnown, type Certain } from '../../../lib/truthfulness'
+import { certainFromShapedQuery, isKnown, type Certain } from '../../../lib/truthfulness'
 import { probeGatewayHealth, type GatewayHealth } from '../api'
+import { decodeGatewayHealth } from '../schema'
 import { buildProbeLines } from './probeLines'
 import './Steps.css'
 
@@ -73,7 +74,12 @@ export function Step2InstallSdk({ onProbed }: Readonly<Step2InstallSdkProps>) {
   const handleProbe = async () => {
     setPhase('probing')
     setResult(null)
-    const certain = certainFromQuery(await probeGatewayHealth())
+    // Decode at the render boundary rather than trusting the outcome's `T`: the
+    // 2xx path in `../api` returns the body unchecked, so a `200` whose body has
+    // no `checks` used to reach `buildProbeLines` and throw a `TypeError` in
+    // `Object.entries(health.checks)`. `certainFromShapedQuery` degrades that to
+    // an `unknown` absence the transcript renders as a failure line (AAASM-5380).
+    const certain = certainFromShapedQuery(await probeGatewayHealth(), decodeGatewayHealth)
     setResult(certain)
     setPhase('answered')
     // Reported in both directions — a degraded or unreachable gateway clears

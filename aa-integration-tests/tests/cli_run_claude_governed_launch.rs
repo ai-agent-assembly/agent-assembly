@@ -64,6 +64,13 @@
 
 // `common/mod.rs` carries its own inner `#![allow(dead_code)]`; only the unused
 // imports need allowing here (this file uses just `common::cli::CliFixture`).
+/// The evidence ledger (AAASM-5465), declared once per test binary.
+///
+/// The support modules re-export it rather than declaring their own, because a
+/// binary including two of them would otherwise load the same file twice.
+#[path = "evidence/mod.rs"]
+pub mod evidence;
+
 #[allow(unused_imports)]
 mod common;
 
@@ -879,12 +886,23 @@ mod real_binary_governed_launch {
 
 /// A skip must be legible in the output; a test binary that silently contains
 /// no tests is indistinguishable from a passing one.
+///
+/// The whole `governed_launch` module is `#[cfg(unix)]`, so on any other host
+/// this binary's *only* test is this one — a green result carrying no evidence
+/// whatsoever about AC4. Recording it (AAASM-5465) is what lets the CI summary
+/// net it out of the pass count and say so.
 #[cfg(not(unix))]
 #[test]
 fn governed_launch_is_not_measured_on_this_host() {
-    println!(
-        "SKIP [AAASM-201 AC4]: the governed-launch evidence needs a POSIX shell stand-in for the \
-         `claude` binary; this host is {}. AC4 is NOT evidenced here.",
+    let reason = format!(
+        "the governed-launch evidence needs a POSIX shell stand-in for the `claude` binary; this \
+         host is {}. AC4 is NOT evidenced here.",
         std::env::consts::OS
+    );
+    println!("SKIP [AAASM-201 AC4]: {reason}");
+    conformance_support::outcome::record(
+        "aaasm-201-ac4-governed-launch",
+        conformance_support::Measurement::UnsupportedPlatform,
+        &reason,
     );
 }

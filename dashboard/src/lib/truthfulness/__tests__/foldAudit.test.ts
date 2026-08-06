@@ -1,181 +1,62 @@
 /**
- * The repo-wide disposition of every undecoded `certainFromQuery` fold
- * (AAASM-5369).
+ * The undecoded-fold ratchet, retired to a bare invariant (AAASM-5380).
  *
- * ## Why a test and not a document
+ * ## What this used to be, and why it is smaller now
  *
- * AAASM-5366 shipped `certainFromShapedQuery`, whose whole design argument is
- * that the guarantee should be a type error rather than something to remember.
- * That works for the lanes that call it. It says nothing about the lanes that
- * still call `certainFromQuery` with a `QueryOutcome<T>` whose `T` is an
- * unverified wire claim — and it cannot, because those lanes compile perfectly.
+ * AAASM-5366 shipped `certainFromShapedQuery`, whose design argument is that the
+ * "decode before you read a field" guarantee should be a type error rather than
+ * something to remember — true only for the lanes that call it. For the lanes
+ * that still called `certainFromQuery` with a `QueryOutcome<T>` whose `T` was an
+ * unverified wire claim, this file was the ratchet: it carried an `AUDIT` list of
+ * every such fold with a stated disposition, asserted the *set of files* and the
+ * *count per file* against that list, and failed if either grew. Some entries
+ * were recorded as live defects awaiting their own tickets under the AAASM-5380
+ * umbrella.
  *
- * A prose audit of them decays the day someone adds the nineteenth. So the
- * audit lives here: the list below is the complete, frozen set of undecoded
- * folds outside `lib/truthfulness/`, each with a stated reason. Adding a new
- * `certainFromQuery` call anywhere fails this file, and the only ways to make
- * it pass again are to migrate the fold onto a decoder or to write down why it
- * is safe. That is exactly the review this ticket was raised out of, made
- * automatic.
+ * AAASM-5380 slice S8 migrated the last of them — the Overview approvals/alerts/
+ * enforcement folds and the shell's alerts badge — onto `certainFromShapedQuery`.
+ * With the set empty, the machinery that tracked *which* files fold and *how
+ * many times* each does has nothing left to track: there is no allowlist in
+ * `.eslintrc.cjs` and no `AUDIT` array here. So the per-file bookkeeping, the
+ * count assertions, and the allowlist-vs-AUDIT agreement check are gone.
  *
- * ## What a disposition means
+ * ## What it guards now
  *
- * - `guarded-at-fetch` — the query function *validates* the body and throws on
- *   anything it cannot read, so a schema-invalid `200` reaches the fold as
- *   `unavailable` and the fold's own field reads are unreachable. This is a
- *   claim about specific lines of code, cited in each entry, not about a
- *   comment nearby: two of the comments in this area asserted safety that the
- *   code did not provide.
- * - `constructed-client-side` — the query function builds the value itself
- *   (a `Map`, an object literal), so there is no wire shape to mistrust.
- * - `hazardous` — a schema-invalid `200` reaches the fold intact and produces
- *   either a `TypeError` or a fabricated value. **These are live defects.**
- *   They are recorded rather than fixed here because each needs its own
- *   decoder, its own absence rendering and its own mutation proof, and folding
- *   eight page migrations into a shell-and-capability bugfix would make the
- *   diff unreviewable. Each names the ticket that carries it.
+ * Three things, each still meaningful with the set empty:
  *
- * `hazardous` is deliberately allowed to pass this test. A test that failed on
- * them would be turned off within a day, and the value here is the ratchet:
- * the *set* cannot grow silently, and nothing can move out of `hazardous`
- * without someone editing this file and saying why.
+ *  1. **Zero undecoded folds anywhere in app code.** The whole point of the
+ *     migration — a scan across `src/**` (excluding the vocabulary itself, tests
+ *     and stories) that fails if *any* file calls `certainFromQuery`. This is the
+ *     old `countCalls`-over-the-tree total, asserted to be 0 rather than compared
+ *     to a per-file list. A new `certainFromQuery(` (or `certainFromQuery<`) call
+ *     lands here; migrate it onto `certainFromShapedQuery`.
+ *  2. **No inline suppression of the `no-restricted-imports` rule.** Two lines
+ *     defeat both halves of the old ratchet at once — an
+ *     `// eslint-disable-next-line no-restricted-imports` above
+ *     `import { certainFromQuery as fold }` silences the lint rule (the directive
+ *     is genuinely used, so `--report-unused-disable-directives` stays quiet) and
+ *     the text scan skips `import` lines and looks for `certainFromQuery(`/`<`, so
+ *     `fold(` is invisible. A suppression must therefore be argued for in
+ *     `.eslintrc.cjs`, in the open, not in the file that wants it.
+ *  3. **The migrated modules' exported `*FromQuery` folds still reject a body
+ *     that is not their schema.** The scan above catches a fold that skips the
+ *     decoder; the export sweep below catches a fold that *has* a decoder and
+ *     gets it wrong, by putting the bodies a proxy or a version-skewed API
+ *     produce through every `*FromQuery` these modules export.
  *
  * ## Exactly how much of this is machine-checked
  *
- * Two things, and they are the two that decay: the **set of files** that fold a
- * query undecoded, and the **count per file**. Nothing here resolves a query
- * function or re-derives a disposition — those came from a human reading each
- * `queryFn`, and the `reason` strings are that human's claim, checked only for
- * shape. Do not describe this file as machine-checking the dispositions; the
- * AAASM-5369 review caught exactly that overstatement being made about it, on a
- * PR whose subject is artefacts claiming properties the code does not provide.
- *
- * The set and the count are enforced by a **text scan**, which an import alias
- * (`import { certainFromQuery as fold }`) or a namespace call (`T.certainFromQuery`)
- * would slip past. The compiler-enforced half of the ratchet is the
- * `no-restricted-imports` rule in `.eslintrc.cjs`, whose allowlist is the same
- * eleven files; it catches aliasing and namespace access for free. Neither half
- * is sufficient alone — the lint rule cannot count folds within a file, and this
- * scan cannot see through a rename.
+ * The scan sees source *text*, so an import alias or a namespace call would slip
+ * past it — that hole is covered by the `no-restricted-imports` rule in
+ * `.eslintrc.cjs`, which resolves imports. Neither half is sufficient alone: the
+ * lint rule cannot count folds within a file (moot now that the count is zero),
+ * and this scan cannot see through a rename. The inline-suppressor check (2) is
+ * what stops the third door that defeats both.
  */
 import { describe, expect, it } from 'vitest'
 import * as capabilityApi from '../../../features/capability/api'
 import * as policyBadge from '../../../features/policies/policyBadge'
 import { isKnown, type Certain, type QueryOutcome } from '..'
-import eslintrc from '../../../../.eslintrc.cjs'
-
-/**
- * The allowlist as ESLint actually reads it.
- *
- * Taken from the config object rather than re-typed here, so this compares the
- * two lists instead of comparing this file to a copy of itself. The allowlist
- * override is the one that switches `no-restricted-imports` off for a set of
- * literal paths; the other such override targets glob patterns (the
- * vocabulary's own module and the test files), which is what distinguishes
- * them.
- */
-const ESLINT_ALLOWLIST: readonly string[] = (eslintrc.overrides ?? [])
-  .filter((o) => o.rules?.['no-restricted-imports'] === 'off')
-  .filter((o) => o.files.every((f) => !f.includes('*')))
-  .flatMap((o) => o.files)
-
-type Disposition = 'guarded-at-fetch' | 'constructed-client-side' | 'hazardous'
-
-interface FoldSite {
-  /** Path relative to `src/`. */
-  readonly file: string
-  /** How many undecoded `certainFromQuery` calls this file makes. */
-  readonly calls: number
-  readonly disposition: Disposition
-  /** Why — citing the code that makes it so, not a comment that claims it. */
-  readonly reason: string
-}
-
-/**
- * Every undecoded fold in the dashboard, as of AAASM-5369.
- *
- * Verified by reading each query function, not by trusting the annotation at
- * the call site — the annotation is the thing under suspicion.
- */
-const AUDIT: readonly FoldSite[] = [
-  {
-    file: 'components/AppShell.tsx',
-    calls: 1,
-    disposition: 'guarded-at-fetch',
-    reason:
-      'The alerts fold. `readAlertsPage` runs `parseAlertList` (features/alerts/parseAlert.ts), which throws `AlertShapeError` on a non-array `items` and on any row without a string id or with an unrecognised severity/status. So `alerts.data` is a validated `Alert[]` or the query is in error. This is the one fold that runs outside every ErrorBoundary in the tree — the sibling policies fold in the same component was AAASM-5369 site 1 — and it is safe only because that parse throws first.',
-  },
-  {
-    file: 'components/agentDetail/agentPosture.ts',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'A non-array `resources` throws inside the generator `tallyVerdicts` consumes, at render, outside any queryFn. A truthy non-array `policies` makes `cascadeEvidenceOf` read `.length` as `undefined`, which is not `0`, so the empty-cascade guard is skipped and counting proceeds on unread data. `api/capability.ts` casts the body (`data as CapabilityMatrix`); the hook only incidentally checks `agents` via `.find`. Follow-up: AAASM-5380.',
-  },
-  {
-    file: 'features/approvals/ApprovalsBellButton.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'features/approvals/api.ts returns `data?.items ?? []`, so a body with no `items` becomes a known empty queue and the header aria-label reads "no approvals are waiting" — an affirmative all-clear from an unread body. The AAASM-5167 comment claiming "the three cases are now distinct" holds for a transport failure only. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
-  },
-  {
-    file: 'features/onboarding/steps/Step2InstallSdk.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'The non-2xx path is validated by `asHealthResponse`, but the 2xx path in features/onboarding/api.ts returns the body unchecked, and `buildProbeLines` calls `Object.entries(health.checks)` — a TypeError on a 200 without `checks`. It cannot emit a false "gateway reachable" (a missing `status` fails `!== "ok"`), so this is a crash rather than a fabrication. Follow-up: AAASM-5380.',
-  },
-  {
-    file: 'features/onboarding/steps/Step5EnrollAgent.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'features/onboarding/api.ts reads `data.total` / `data.items` off a cast body. A missing `total` renders an empty meter and the pane prints "the registry answered: no agents registered yet"; a non-array `items` throws in `.map` at render. Note there is no `?? []` here — the hook throws on an absent body and then reads `data.total` / `data.items` raw, so this is a cast, not a fail-open. Follow-up: AAASM-5380.',
-  },
-  {
-    file: 'pages/AlertsPage.tsx',
-    calls: 3,
-    disposition: 'hazardous',
-    reason:
-      'Two of the three are safe — `alertsState` and `totalState` come through `parseAlertList` / `finiteOrNull`. The third, `rulesState`, comes from `useAlertRulesQuery`, which is a bare `as` cast over `response.json()`; `indexRulesById` then builds a Map from it and throws on a non-array. Recorded as hazardous because the file contains a live one. Follow-up: AAASM-5380.',
-  },
-  {
-    file: 'pages/CostsPage.tsx',
-    calls: 2,
-    disposition: 'hazardous',
-    reason:
-      'Both hooks in features/teams/api.ts end in `data as CostSummary` / `data as TopologyOverview` — the module comment calls them accepted-risk casts. Every downstream read is optional-chained, so nothing throws; instead `whenEmpty: "unconfigured"` never fires (the body is non-null) and `countBlockedByBudget` returns a measured-looking `known(0)` teams blocked by budget. Follow-up: AAASM-5380.',
-  },
-  {
-    file: 'pages/FleetPage.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'features/agents/api.ts returns `data?.items ?? []`, so a body with no `items` renders the "no agents registered" empty state — an affirmative claim about the fleet from an unread body. A truthy non-array `items` throws in a sibling `.map` on the same render. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
-  },
-  {
-    file: 'pages/LiveOpsPage.tsx',
-    calls: 1,
-    disposition: 'hazardous',
-    reason:
-      'Same `?? []` in features/approvals/api.ts as the bell. ApprovalPool then renders "No pending approvals / Nothing is waiting for a human decision right now" with no absence badge. The comment there frames the `?? []` as a safety property; it is the fail-open. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
-  },
-  {
-    file: 'pages/OverviewPage.tsx',
-    calls: 4,
-    disposition: 'hazardous',
-    reason:
-      'Mixed. `alerts` is guarded by `parseAlertList`; `enforcement` is a Map built client-side. `approvals` inherits the `?? []` and renders a confident "0 pending approvals". `policies` is the *same* defect AAASM-5369 fixed for the nav rail — `usePoliciesQuery` checks `!data?.items` for truthiness only, so `{"items":[{},{}]}` still counts to a confident 2 here. That one is the direct sibling of this ticket and should take the same decoder. Follow-up: AAASM-5379 (the literal `undefined` it renders), AAASM-5378 (the approvals `?? []`), AAASM-5380 (the migration).',
-  },
-  {
-    file: 'pages/TeamsPage.tsx',
-    calls: 2,
-    disposition: 'hazardous',
-    reason:
-      'The topology-agents hook constructs its object but passes `nodes` through a `?? []`, so a missing `nodes` renders a confident "0 unclaimed" chip and a truthy non-array throws in `.filter`. The overview hook is a bare cast, and a missing `total_agent_count` makes the census `unaccountedFor` compute to `NaN` rather than reporting the disagreement it exists to report. Follow-up: AAASM-5378 (the `?? []`), AAASM-5380 (the fold).',
-  },
-]
 
 /**
  * Every source file, as text, resolved by Vite rather than by `node:fs`.
@@ -203,9 +84,10 @@ function isExempt(relPath: string): boolean {
 /**
  * Count real calls, not mentions.
  *
- * A line that is a comment or an import names the helper without calling it,
- * and this area is unusually comment-heavy — counting those would make the
- * expected numbers meaningless and the ratchet fire on a docs edit.
+ * A line that is a comment or an import names the helper without calling it, and
+ * this area is unusually comment-heavy — counting those would make the invariant
+ * fire on a docs edit. Kept from the old ratchet unchanged: it is the exact
+ * counter whose per-tree total the migration drove to zero.
  */
 function countCalls(source: string): number {
   let calls = 0
@@ -220,93 +102,55 @@ function countCalls(source: string): number {
   return calls
 }
 
-describe('the undecoded-fold audit is complete', () => {
-  const found = new Map<string, number>()
+describe('no app-code fold reads a body it has not decoded', () => {
+  const folds = new Map<string, number>()
   for (const [path, source] of Object.entries(SOURCES)) {
     const rel = path.replace(/^\/src\//, '')
     if (isExempt(rel)) continue
     const calls = countCalls(source)
-    if (calls > 0) found.set(rel, calls)
+    if (calls > 0) folds.set(rel, calls)
   }
 
-  it('finds folds at all, so the comparison below cannot pass vacuously', () => {
+  it('sees the tree at all, so the assertion below cannot pass vacuously', () => {
     // If the scanner broke — a renamed helper, a changed source root, a regex
-    // that matches nothing — every assertion in this file would agree that the
-    // empty set equals the empty set. It must see the real ones first.
-    expect(found.size).toBeGreaterThan(5)
-    expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(10)
+    // that matches nothing — it would agree the empty set has no folds while a
+    // live one sat in the tree. Prove it is actually reading source first: the
+    // repo has thousands of ts/tsx files, and this test's own name string
+    // contains neither `certainFromQuery(` nor `<`, so it is not itself counted.
+    expect(Object.keys(SOURCES).length).toBeGreaterThan(100)
   })
 
-  it('records every file that folds a query without a decoder', () => {
-    // A new `certainFromQuery` anywhere lands here. Migrate it onto
-    // `certainFromShapedQuery`, or add it above with a stated reason.
-    expect([...found.keys()].sort()).toEqual(AUDIT.map((s) => s.file).sort())
+  it('finds zero undecoded certainFromQuery folds anywhere in app code', () => {
+    // AAASM-5380 emptied the set. A new `certainFromQuery(` or `certainFromQuery<`
+    // call in any non-exempt file lands here — migrate it onto
+    // `certainFromShapedQuery` (src/lib/truthfulness/shape.ts), which cannot be
+    // called without a decoder because its parameter is `unknown`.
+    expect(Object.fromEntries(folds)).toEqual({})
   })
 
-  it('records how many folds each file makes, so a new one in an old file lands too', () => {
-    // Without this, adding a fifth fold to OverviewPage.tsx would pass — the
-    // file is already listed. The count is what makes the ratchet per-fold.
-    const expected = Object.fromEntries(AUDIT.map((s) => [s.file, s.calls]))
-    expect(Object.fromEntries([...found].sort())).toEqual(
-      Object.fromEntries(Object.entries(expected).sort()),
-    )
-  })
-
-  /**
-   * What this block does **not** do (AAASM-5369 review).
-   *
-   * It reads no query function and resolves no import. These are assertions
-   * about the *prose* — that a reason is long enough to be a reason, that a
-   * "safe" verdict names a mechanism, that a "hazardous" one names its ticket.
-   * The dispositions themselves were established by a human reading each query
-   * function, and nothing here re-derives that.
-   *
-   * The distinction matters because this PR's own review caught the claim
-   * "machine-checked disposition" being made about exactly this code. The
-   * machine checks two things: the *set* of files, and the *count* per file.
-   * Everything else in `AUDIT` is an author's claim, and should be read as one.
-   */
-  it('gives every entry a prose reason of the shape its disposition requires', () => {
-    for (const site of AUDIT) {
-      expect(site.reason.length).toBeGreaterThan(80)
-      // A disposition of "safe" has to name what makes it safe.
-      if (site.disposition !== 'hazardous') {
-        expect(site.reason).toMatch(/throw|constructs|built|Map/i)
-      }
-      // A live defect has to name the ticket tracking it, not just say that
-      // one exists. A bare "Follow-up." is the same untraceable gesture this
-      // audit replaced prose with.
-      //
-      // Anchored to the `Follow-up:` marker, not a bare /AAASM-\d+/ (AAASM-5369
-      // delta review): two of these reasons already cite an unrelated ticket in
-      // their body — AAASM-5167 for the approvals comment, AAASM-5369 for the
-      // sibling defect — so the loose form matched them even after the
-      // follow-up was reverted to a bare "Follow-up.", and the assertion passed
-      // with the exact defect it was added to catch.
-      if (site.disposition === 'hazardous') {
-        expect(site.reason).toMatch(/Follow-up: AAASM-\d+/)
-      }
-    }
+  it('has not silently lost the two lanes AAASM-5369 migrated', () => {
+    // Neither may reappear as an undecoded fold: both call
+    // `certainFromShapedQuery`, and a regression that reverted either would show
+    // up in the scan above rather than as a silent loss of the guarantee.
+    expect(folds.has('features/capability/api.ts')).toBe(false)
+    expect(folds.has('features/policies/policyBadge.ts')).toBe(false)
   })
 
   /**
    * The third door, which neither half of the ratchet was watching
    * (AAASM-5369 delta review).
    *
-   * The eslintrc's allowlist is not the only way to ship an undecoded fold. Two
-   * lines defeat *both* halves at once:
+   * Two lines defeat *both* halves at once:
    *
    *   // eslint-disable-next-line no-restricted-imports
    *   import { certainFromQuery as fold } from '../lib/truthfulness'
    *
    * ESLint stays silent because the directive is genuinely used, so
    * `--report-unused-disable-directives` does not fire either; and `countCalls`
-   * skips `import` lines and looks for `certainFromQuery` followed by `(` or
-   * `<`, so `fold(` is invisible to it. Verified: eslint exit 0 and this file
-   * 18/18 green, with a live undecoded fold in the tree.
-   *
-   * Suppressing the rule is therefore a decision that has to be made in the
-   * open, in `.eslintrc.cjs`, rather than in the file that wants the exemption.
+   * skips `import` lines and looks for `certainFromQuery` followed by `(` or `<`,
+   * so `fold(` is invisible to it. Suppressing the rule is therefore a decision
+   * that has to be made in the open, in `.eslintrc.cjs`, rather than in the file
+   * that wants the exemption.
    */
   it('lets no file suppress the undecoded-fold rule inline', () => {
     const suppressors: string[] = []
@@ -317,23 +161,6 @@ describe('the undecoded-fold audit is complete', () => {
     }
     expect(suppressors).toEqual([])
   })
-
-  /**
-   * The eslintrc allowlist and this AUDIT are one list kept in two places, and
-   * the premise of the whole ratchet is that manual bookkeeping decays. So the
-   * bookkeeping is checked too.
-   */
-  it('agrees with the eslintrc allowlist, file for file', () => {
-    expect([...ESLINT_ALLOWLIST].sort()).toEqual(AUDIT.map((s) => `src/${s.file}`).sort())
-  })
-
-  it('has not quietly relabelled the two lanes AAASM-5369 migrated', () => {
-    // Neither may reappear here: both now call `certainFromShapedQuery`, and a
-    // regression that reverted either would show up as a new audit entry rather
-    // than as a silent loss of the guarantee.
-    expect(found.has('features/capability/api.ts')).toBe(false)
-    expect(found.has('features/policies/policyBadge.ts')).toBe(false)
-  })
 })
 
 /**
@@ -343,7 +170,7 @@ describe('the undecoded-fold audit is complete', () => {
  * It does not name folds. It enumerates every `*FromQuery` a migrated module
  * exports and puts the same unreadable bodies through all of them, so a fold
  * added to one of these modules later without a decoder fails here without
- * anyone remembering to add a case for it. The audit above catches a fold that
+ * anyone remembering to add a case for it. The scan above catches a fold that
  * skips the decoder; this catches a fold that has one and gets it wrong.
  */
 describe('every *FromQuery the migrated modules export, on a body that is not its schema', () => {

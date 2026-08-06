@@ -86,10 +86,14 @@ and an editor extension must see one word for one thing.
 
 Two display rules are load-bearing:
 
-1. **`Host Enforced` is rendered as *unavailable on this platform*, not
-   omitted.** Silence reads as "there is nothing above what I have", which is
-   the over-claim the level model exists to prevent. The reference client emits
-   the line unconditionally.
+1. **`Host Enforced` is named on every status, not omitted.** Silence reads as
+   "there is nothing above what I have", which is the over-claim the level model
+   exists to prevent. *What* is said about it is the adapter's answer, read from
+   its declared capability support — a client may not assert that a platform
+   cannot do something it has not examined (AAASM-5454). The reference client
+   still emits one fixed sentence (`HOST_ENFORCED_UNAVAILABLE` in
+   `src/render.ts`); `aa-cli` is the surface that distinguishes *available*,
+   *unsupported* and *unmeasured*, and is the one to follow for new clients.
 2. **Exercised evidence is shown separately from read-back evidence.** A
    configuration that exists is not protection. `splitEvidence()` partitions by
    `EvidenceView.kind`, and the status renderer prints the two on their own

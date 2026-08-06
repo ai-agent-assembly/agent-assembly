@@ -114,36 +114,39 @@ export const decodeCascadeFields: Decoder<CascadeFields> = (body: unknown) => {
  *
  * ## What this checks, and what it leaves open
  *
- * Elements are **not** inspected — only that each collection is a list. What
- * this adds over the `data as CapabilityMatrix` cast in `api/capability.ts` is
- * exactly one thing: a check that the collections are collections. That closes
- * the `{}` body, where `agents` was `undefined` and `.filter` threw.
+ * The four collections must be lists, and — since AAASM-5380 slice S6 — each
+ * `agents` row must carry a readable `caps` object and each `resources` row an
+ * `id`. What this adds over the `data as CapabilityMatrix` cast in
+ * `api/capability.ts` is exactly those two things: the collections are
+ * collections, and the two fields the grid indexes a cell by are present and
+ * the right type. That closes both the `{}` body — where `agents` was
+ * `undefined` and `.filter` threw — and the caps-less-row body below.
  *
- * It does **not** close a malformed *row*. An earlier draft of this comment
- * claimed every field these rows are read for is "either rendered as an opaque
- * display value or validated at the point of use". That is false, and was
- * falsified with `{ agents: [{}], resources: [{}], policies: [{}],
- * sampleCalls: [{}] }` — all four collections present, so this decoder passes
- * and the absence guard is skipped, then `populatedCellCount` reads
- * `agent.caps[resource.id]` and throws `TypeError: Cannot read properties of
+ * ## Why exactly `caps` and `resources[].id`, and nothing more
+ *
+ * `{ agents: [{}], resources: [{}], policies: [{}], sampleCalls: [{}] }` used to
+ * pass this decoder — all four collections present, so the absence guard was
+ * skipped — and then `populatedCellCount` (`verb.ts`) read
+ * `agent.caps[resource.id]` and threw `TypeError: Cannot read properties of
  * undefined (reading 'undefined')`. `caps` is required on the generated
- * `CapabilityAgent`, so that body is schema-invalid, and the operator gets the
- * ErrorBoundary rather than an absence. The crash predates AAASM-5369 and is
- * unchanged by it; what does not predate it is a comment asserting otherwise,
- * which is why this paragraph exists rather than a quieter edit.
+ * `CapabilityAgent`, so that body is schema-invalid, yet the operator got the
+ * ErrorBoundary rather than an absence.
  *
- * Row-level validation is **AAASM-5380**, not a line here. Adding
- * `caps: z.record(z.unknown())` to the agent element does stop that specific
- * throw — verified — but it trades the crash for a grid of blank rows with
- * every cell `n/a`, which on a governance surface is the worse of the two:
- * a visible failure becomes a plausible-looking one. Deciding what a
- * half-readable matrix should *render* is the design question that ticket
- * carries; picking the one field that happens to throw today would leave this
- * docstring overclaiming again for every other field.
+ * The two fields validated are precisely the ones the grid read indexes by:
+ * `populatedCellCount` / `cellDecisions` / `agentCells` all evaluate
+ * `agent.caps[resource.id]?.[verb]`. A row missing `caps` throws on the index;
+ * a resource missing `id` yields an `undefined` key that quietly reads every
+ * cell as `na`. Both fold to an explicit absence now — the operator gets the
+ * "could not be read" surface (`CapabilityPage`'s `capability-unreadable-state`)
+ * rather than an ErrorBoundary or a plausible-looking all-`na` grid. This is
+ * deliberately still not a full row decode: cell *decisions* are validated at
+ * the point of use by `isDecision`/`decisionMeta` (AAASM-5217), and every other
+ * row field is rendered as an opaque display value, so widening further would
+ * blank a determinable grid on a field nothing indexes by.
  */
 export interface MatrixShape {
-  readonly agents: readonly unknown[]
-  readonly resources: readonly unknown[]
+  readonly agents: readonly { readonly caps: Record<string, unknown> }[]
+  readonly resources: readonly { readonly id: string }[]
   readonly policies: readonly unknown[]
   readonly sampleCalls: readonly unknown[]
 }
@@ -153,8 +156,12 @@ type GeneratedCarriesMatrixShape = CapabilityMatrixResponse extends MatrixShape 
 export const MATRIX_SHAPE_IS_ON_THE_WIRE: GeneratedCarriesMatrixShape = true
 
 const matrixShapeSchema = z.object({
-  agents: z.array(z.unknown()),
-  resources: z.array(z.unknown()),
+  // `caps` and `resources[].id` are the two fields the grid indexes a cell by
+  // (`agent.caps[resource.id]`); an agent row without a readable `caps` throws
+  // in `populatedCellCount`, a resource row without an `id` reads every cell as
+  // `na`. Other row fields stay unchecked — they render as opaque values.
+  agents: z.array(z.object({ caps: z.record(z.string(), z.unknown()) }).passthrough()),
+  resources: z.array(z.object({ id: z.string() }).passthrough()),
   policies: z.array(z.unknown()),
   sampleCalls: z.array(z.unknown()),
 }) satisfies z.ZodType<MatrixShape>

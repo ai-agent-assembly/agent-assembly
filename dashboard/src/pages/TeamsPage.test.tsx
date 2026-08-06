@@ -340,6 +340,64 @@ describe('TeamsPage — every agent is reachable from some grouping (AAASM-5157)
     expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
   })
 
+  it('reports a schema-invalid 200 as unknown, never as zero unclaimed (AAASM-5573)', async () => {
+    setupMocks(makeOverview(2), TEAM_MEMBERS)
+    // A 200 whose `nodes` are rows missing the fields the orphan list reads (and
+    // that a non-array would defeat too). Before the decoder the `?? []` cast
+    // rendered a confident "0 unclaimed" chip from an unread body, and a
+    // non-array threw in `selectOrphanAgents`' `.filter`. `decodeTopologyNodes`
+    // now folds it to `unknown`.
+    vi.spyOn(teamsApi, 'useTopologyAgentsQuery').mockReturnValue(
+      mockQuery<TopologyAgents>({
+        data: { nodes: [{ id: 'x' }], unclaimedObservable: true } as unknown as TopologyAgents,
+        isPending: false,
+        isFetching: false,
+        isError: false,
+        error: null,
+      }),
+    )
+    await openOrphans()
+
+    // Vacuity guard: the orphan pane renders.
+    expect(screen.getByTestId('orphan-detail-pane')).toBeInTheDocument()
+
+    // Explicit absence, not a fabricated "0 unclaimed" chip or count. The count
+    // value carries the `unknown` marker and renders the NO_DATA dash rather
+    // than a numeral. (A bare `.not.toHaveTextContent('0')` would false-fail:
+    // the operator-facing reason string names the offending array index `0`.)
+    const countValue = screen.getByTestId('team-list-orphan-count-value')
+    expect(countValue).toHaveAttribute('data-truth-state', 'unknown')
+    expect(countValue).toHaveTextContent('—')
+    const absent = screen.getByTestId('orphan-agents-absent')
+    expect(absent).toHaveAttribute('data-truth-state', 'unknown')
+    expect(screen.queryByTestId('orphan-agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('orphan-agents-list')).not.toBeInTheDocument()
+  })
+
+  it('reports the census as unknown, never NaN, when the overview omits total_agent_count (AAASM-5380)', async () => {
+    // The defect this closes: `useTopologyOverviewQuery` ends in `data as
+    // TopologyOverview`, so a `200` missing the required `total_agent_count`
+    // reached `reconcileAgentCensus` intact and made `unaccountedFor` compute to
+    // `undefined - grouped === NaN`; `NaN === 0` is false, so `CensusNotice`
+    // rendered a disagreement worded with `NaN`. `decodeTopologyOverview` now
+    // folds the body to `unknown` before the census sees it, so the notice is
+    // withheld rather than shown with a nonsense figure.
+    const overview = makeOverview(2, ORPHANS)
+    const { total_agent_count: _t, ...noTotal } = overview
+    void _t
+    setupMocks(noTotal as unknown as TopologyOverview, [...TEAM_MEMBERS, ...ORPHANS])
+    await openOrphans()
+
+    // The orphan pane still renders (the nodes fold is unaffected).
+    expect(screen.getByTestId('orphan-detail-pane')).toBeInTheDocument()
+    expect(screen.getAllByTestId('orphan-agent-row')).toHaveLength(2)
+
+    // The census could not be reconciled, so no mismatch notice is shown — and
+    // crucially nothing renders `NaN`.
+    expect(screen.queryByTestId('orphan-census-mismatch')).not.toBeInTheDocument()
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument()
+  })
+
   it('keeps the unclaimed section reachable while the team list is failing', async () => {
     setupMocks(makeOverview(2, ORPHANS), [...TEAM_MEMBERS, ...ORPHANS])
     vi.spyOn(teamsApi, 'useTopologyOverviewQuery').mockReturnValue(

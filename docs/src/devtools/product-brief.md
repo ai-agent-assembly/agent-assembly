@@ -458,12 +458,19 @@ three rungs that do claim something, which is why the rest of this section count
   who can see which is which can reason about their own risk; a user shown a single word cannot.
 - **Always report the next level up and why it is not active.** The status renderer does this
   twice over: the ladder lists every rung, and a separate `Next level up:` line carries the
-  service's reason for the rung immediately above the one achieved. `host_enforced` is a special
-  case in the ladder — `aa-cli` marks that rung unavailable unconditionally
-  (`aa-cli/src/commands/integrations/model.rs`, pinned by the
-  `host_enforced_is_always_present_and_always_unavailable` test), so it renders as
-  `unavailable on this platform` on **every** host, macOS included, rather than as
-  "not installed — requires `--install-managed-settings`".
+  service's reason for the rung immediately above the one achieved. Whether a rung can be
+  reached at all is the **adapter's** answer, never the client's: `aa-cli` reads
+  `host_enforced` reachability out of the adapter's declared capability support
+  (`aa-cli/src/commands/integrations/model.rs`), and distinguishes three states —
+  *available* (a path exists; the limitation names the command that takes it),
+  *unsupported* (the adapter said no, and its own reason is printed) and *unmeasured*
+  (nothing was declared, so nothing is asserted in either direction). A client may not
+  manufacture a claim about a platform it has not examined; before AAASM-5454 `aa-cli`
+  hardcoded that rung unavailable and so told every macOS user — the one platform where the
+  mechanism works — that it was impossible for them.
+- **Available is not achieved.** A reachable rung still reports `achieved: false` until the
+  evidence justifies it. Reachability is a statement about a path; the level is a statement
+  about a measurement, and the two never substitute for one another.
 - **Degrade loudly.** Losing a criterion mid-session drops the level and surfaces it. There is no
   state in which the level shown is higher than the evidence supports.
 

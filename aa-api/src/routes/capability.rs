@@ -671,8 +671,6 @@ fn project_matrix(
     state: &AppState,
     hits: &crate::routes::policy_hits::PolicyHitCounts,
 ) -> CapabilityMatrix {
-    use aa_core::Capability as C;
-
     // Resource columns: the three system families, then every tool any visible
     // agent declared or any applicable policy names, de-duplicated and sorted so
     // the column order is stable across requests.
@@ -703,54 +701,8 @@ fn project_matrix(
             aa_core::RiskTier::from_proto_i32(record.risk_tier)
         };
 
-        let egress_denied = cascade_denies_all_egress(&cascade);
-        let mut cells: BTreeMap<String, CapCell> = BTreeMap::new();
-        for (rid, _, _) in SYSTEM_RESOURCES {
-            cells.insert(rid.to_string(), system_cell(&caps, rid, egress_denied, over_perm_tier));
-        }
-        for tool in agent_tools.iter().filter(|t| !is_system_resource(t)) {
-            // A tool is invoked, never read/written/deleted — the capability
-            // model has one grant per tool, so only `exec` is meaningful.
-            //
-            // Most-restrictive wins across the two stages that can block a tool:
-            // the `tools` map (stage 3) and the capability set (stage 3.5). The
-            // evaluator returns on the first `Deny`, so either one is final.
-            let exec = if cascade_denies_tool(&cascade, tool) {
-                Decision::Deny
-            } else {
-                decide(&caps, &C::McpTool(tool.clone()))
-            };
-            cells.insert(
-                tool.clone(),
-                CapCell {
-                    read: Decision::Na,
-                    write: Decision::Na,
-                    delete: Decision::Na,
-                    exec,
-                    flag: None,
-                },
-            );
-        }
-
-        // Agent-level over-permission signal (ADR 0029). Present only for an
-        // evaluated agent (resolvable tier + non-empty cascade); `Some(true)`
-        // when any system cell is flagged, else the honest `Some(false)`
-        // "evaluated, within baseline". Unevaluated agents stay `None` — never a
-        // fabricated verdict.
-        let (flagged, note) = match over_perm_tier {
-            Some(tier) => {
-                let offenders = over_permission_offenders(&cells, tier);
-                let flagged = !offenders.is_empty();
-                let note = flagged.then(|| {
-                    format!(
-                        "{tier:?}-risk agent granted {} beyond its tier baseline",
-                        offenders.join(", ")
-                    )
-                });
-                (Some(flagged), note)
-            }
-            None => (None, None),
-        };
+        let cells = build_capability_cells(&caps, &cascade, &agent_tools, over_perm_tier);
+        let (flagged, note) = agent_flag_and_note(&cells, over_perm_tier);
 
         agents.push(CapabilityAgent {
             id: id_hex,
@@ -831,6 +783,72 @@ fn project_matrix(
         // measurements. The dashboard renders the whole grid as "not evaluated"
         // when this is `false` rather than trusting those cells.
         cascade_loaded: state.policy_engine.cascade_loaded(),
+    }
+}
+
+/// Build the per-resource capability cells for one agent: the three system
+/// families plus every non-system tool it can reach, each resolved
+/// most-restrictive-wins across the `tools` map and the capability set.
+fn build_capability_cells(
+    caps: &aa_core::CapabilitySet,
+    cascade: &[Arc<aa_gateway::policy::PolicyDocument>],
+    agent_tools: &std::collections::BTreeSet<String>,
+    over_perm_tier: Option<aa_core::RiskTier>,
+) -> BTreeMap<String, CapCell> {
+    use aa_core::Capability as C;
+
+    let egress_denied = cascade_denies_all_egress(cascade);
+    let mut cells: BTreeMap<String, CapCell> = BTreeMap::new();
+    for (rid, _, _) in SYSTEM_RESOURCES {
+        cells.insert(rid.to_string(), system_cell(caps, rid, egress_denied, over_perm_tier));
+    }
+    for tool in agent_tools.iter().filter(|t| !is_system_resource(t)) {
+        // A tool is invoked, never read/written/deleted — the capability
+        // model has one grant per tool, so only `exec` is meaningful.
+        //
+        // Most-restrictive wins across the two stages that can block a tool:
+        // the `tools` map (stage 3) and the capability set (stage 3.5). The
+        // evaluator returns on the first `Deny`, so either one is final.
+        let exec = if cascade_denies_tool(cascade, tool) {
+            Decision::Deny
+        } else {
+            decide(caps, &C::McpTool(tool.clone()))
+        };
+        cells.insert(
+            tool.clone(),
+            CapCell {
+                read: Decision::Na,
+                write: Decision::Na,
+                delete: Decision::Na,
+                exec,
+                flag: None,
+            },
+        );
+    }
+    cells
+}
+
+/// Agent-level over-permission signal (ADR 0029). Present only for an evaluated
+/// agent (resolvable tier + non-empty cascade); `Some(true)` when any system
+/// cell is flagged, else the honest `Some(false)` "evaluated, within baseline".
+/// Unevaluated agents stay `None` — never a fabricated verdict.
+fn agent_flag_and_note(
+    cells: &BTreeMap<String, CapCell>,
+    over_perm_tier: Option<aa_core::RiskTier>,
+) -> (Option<bool>, Option<String>) {
+    match over_perm_tier {
+        Some(tier) => {
+            let offenders = over_permission_offenders(cells, tier);
+            let flagged = !offenders.is_empty();
+            let note = flagged.then(|| {
+                format!(
+                    "{tier:?}-risk agent granted {} beyond its tier baseline",
+                    offenders.join(", ")
+                )
+            });
+            (Some(flagged), note)
+        }
+        None => (None, None),
     }
 }
 

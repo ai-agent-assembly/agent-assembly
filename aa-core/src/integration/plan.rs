@@ -360,31 +360,7 @@ impl IntegrationPlan {
                 return Err(PlanError::DuplicateStepId { id: step.id.clone() });
             }
             seen_ids.push(&step.id);
-
-            if let Some(found) = step.action.settings_scope() {
-                if found != self.settings_scope {
-                    return Err(PlanError::SettingsScopeMismatch {
-                        id: step.id.clone(),
-                        expected: self.settings_scope,
-                        found,
-                    });
-                }
-            }
-
-            if let super::step::StepPrivilege::PrivilegedHost { consent_prompt } = &step.privilege {
-                if consent_prompt.trim().is_empty() {
-                    return Err(PlanError::PrivilegedStepIncomplete {
-                        id: step.id.clone(),
-                        missing: "a consent prompt",
-                    });
-                }
-                if step.reversal.is_none() {
-                    return Err(PlanError::PrivilegedStepIncomplete {
-                        id: step.id.clone(),
-                        missing: "a reversal step",
-                    });
-                }
-            }
+            self.validate_step(step)?;
         }
 
         let cap = self.profile.max_reportable_level();
@@ -403,6 +379,36 @@ impl IntegrationPlan {
                          routing a tool's traffic elsewhere is not evidence that anything inspected it"
                     .to_string(),
             });
+        }
+
+        Ok(())
+    }
+
+    /// Validate one step's scope and privilege consistency in isolation.
+    fn validate_step(&self, step: &IntegrationStep) -> Result<(), PlanError> {
+        if let Some(found) = step.action.settings_scope() {
+            if found != self.settings_scope {
+                return Err(PlanError::SettingsScopeMismatch {
+                    id: step.id.clone(),
+                    expected: self.settings_scope,
+                    found,
+                });
+            }
+        }
+
+        if let super::step::StepPrivilege::PrivilegedHost { consent_prompt } = &step.privilege {
+            if consent_prompt.trim().is_empty() {
+                return Err(PlanError::PrivilegedStepIncomplete {
+                    id: step.id.clone(),
+                    missing: "a consent prompt",
+                });
+            }
+            if step.reversal.is_none() {
+                return Err(PlanError::PrivilegedStepIncomplete {
+                    id: step.id.clone(),
+                    missing: "a reversal step",
+                });
+            }
         }
 
         Ok(())

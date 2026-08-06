@@ -180,13 +180,16 @@ describe('probeGatewayHealth', () => {
 })
 
 describe('useRegisteredAgentsQuery', () => {
-  it('returns the registry total and the first page of agents', async () => {
+  it('returns the registry envelope intact for the render boundary to decode', async () => {
+    // AAASM-5380: the hook no longer reshapes to `{ total, items }` — it carries
+    // the paginated body through untouched so `decodeRegistryAnswer` can validate
+    // it at the render boundary. It reads no field itself.
     apiGet.mockResolvedValue(ok({ items: [AGENT], page: 1, per_page: 100, total: 1 }))
 
     const { result } = renderHook(() => useRegisteredAgentsQuery(true), { wrapper })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual({ total: 1, items: [AGENT] })
+    expect(result.current.data).toEqual({ items: [AGENT], page: 1, per_page: 100, total: 1 })
     expect(apiGet).toHaveBeenCalledWith('/api/v1/agents', {
       params: { query: { per_page: 100 } },
     })
@@ -198,7 +201,7 @@ describe('useRegisteredAgentsQuery', () => {
     const { result } = renderHook(() => useRegisteredAgentsQuery(true), { wrapper })
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(result.current.data).toEqual({ total: 0, items: [] })
+    expect(result.current.data).toEqual({ items: [], page: 1, per_page: 100, total: 0 })
   })
 
   it('throws on a non-OK response rather than reporting zero agents', async () => {
@@ -229,13 +232,18 @@ describe('useRegisteredAgentsQuery', () => {
     expect(apiGet).toHaveBeenCalledTimes(1)
   })
 
-  it('throws when a 200 carries no payload, rather than coercing it to total 0', async () => {
+  it('carries an absent 200 body as null rather than coercing it to total 0', async () => {
+    // AAASM-5380: a 200 with no body is no longer thrown here — it is carried as
+    // `null` (not `{ total: 0 }`) so `certainFromShapedQuery` reports it as an
+    // absence at the render boundary, never as a counted, confirmed zero. `null`
+    // rather than bare `undefined` because TanStack Query v5 rejects a `queryFn`
+    // resolving to `undefined`.
     apiGet.mockResolvedValue({ data: undefined, error: undefined, response: res(200) })
 
     const { result } = renderHook(() => useRegisteredAgentsQuery(true), { wrapper })
 
-    await waitFor(() => expect(result.current.isError).toBe(true))
-    expect(result.current.error?.message).toBe('Agent registry returned no payload')
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(result.current.data).toBeNull()
   })
 
   it('does not touch the gateway while disabled', () => {

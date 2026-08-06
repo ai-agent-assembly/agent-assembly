@@ -16,8 +16,12 @@ To report a security issue, use GitHub's private vulnerability reporting:
 2. Click **"Report a vulnerability"**.
 3. Fill in the details and submit.
 
-Alternatively, email **security@agent-assembly.dev** with the subject line:
-`[SECURITY] agent-assembly — <brief description>`.
+<!-- BEGIN GENERATED: security_contact_email -->
+Alternatively, email **security@agent-assembly.com**
+
+> **Legacy address.** `security@agent-assembly.dev` remains a legacy compatibility alias. During the in-progress migration to the canonical `security@agent-assembly.com` identity, the legacy address continues to receive mail via Cloudflare Email Routing, so a report sent there still reaches us. The canonical mailbox is not yet live-sending.
+<!-- END GENERATED: security_contact_email -->
+with the subject line: `[SECURITY] agent-assembly — <brief description>`.
 
 ### What to include
 
@@ -30,8 +34,10 @@ Alternatively, email **security@agent-assembly.dev** with the subject line:
 
 | Stage | Target |
 |---|---|
+<!-- BEGIN GENERATED: security_sla -->
 | Initial acknowledgement | Within 2 business days |
 | Severity assessment | Within 5 business days |
+<!-- END GENERATED: security_sla -->
 | Patch or mitigation | Dependent on severity (Critical: 7 days, High: 14 days, Medium/Low: next release) |
 
 ## Deployment posture — gateway gRPC agent plane

@@ -321,6 +321,41 @@ impl From<&wire::EvidenceView> for EvidenceRow {
     }
 }
 
+/// What a status read established about a rung's *reachability*.
+///
+/// Three states, deliberately not two. Collapsing them is how AAASM-5454
+/// happened: "the adapter says this host cannot" and "nobody told us anything"
+/// were both rendered as a platform limitation, so the CLI asserted a fact
+/// about macOS that it had never established and that was false.
+///
+/// There is no `Unavailable` variant, and that absence is the point. A claim
+/// that a *platform* cannot do something belongs to the adapter, which is the
+/// only party that looked; this client can report that claim (it arrives as
+/// [`Self::Unsupported`] with the adapter's own sentence) but must never
+/// manufacture one.
+///
+/// Reachability is also not achievement. [`Self::Available`] says a path
+/// exists, never that anything was installed, exercised or measured — that is
+/// what [`LevelRow::achieved`] is for, and the two must stay separate for the
+/// same reason `verify` refuses a vacuous pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LevelAvailability {
+    /// The adapter declares the mechanism supported on this host.
+    Available,
+    /// The adapter declares it unsupported, and said why.
+    Unsupported,
+    /// Nothing was declared, so nothing is established — in either direction.
+    Unmeasured,
+}
+
+impl LevelAvailability {
+    /// Whether a path to this rung exists on this host.
+    pub fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
 /// One rung of the protection ladder, with what it does not cover.
 ///
 /// Every rung is listed on every status read, including the ones that are not
@@ -333,10 +368,35 @@ pub struct LevelRow {
     pub level: String,
     /// Whether the evidence currently supports it.
     pub achieved: bool,
-    /// Whether this host can reach it at all.
+    /// Whether this host can reach it at all. Kept as a boolean for scripts
+    /// that already branch on it, and derived from [`Self::availability`] in
+    /// [`LevelRow::new`] so the two cannot disagree.
     pub available: bool,
-    /// What it does not protect, or why it is unavailable.
+    /// What the reading established about reachability, at full resolution.
+    pub availability: LevelAvailability,
+    /// What it does not protect, or why it is not active.
     pub limitation: String,
+}
+
+impl LevelRow {
+    /// Build a rung, deriving `available` from `availability`.
+    ///
+    /// The only constructor, so a caller cannot set a boolean that contradicts
+    /// the state next to it.
+    fn new(
+        level: impl Into<String>,
+        achieved: bool,
+        availability: LevelAvailability,
+        limitation: impl Into<String>,
+    ) -> Self {
+        Self {
+            level: level.into(),
+            achieved,
+            available: availability.is_available(),
+            availability,
+            limitation: limitation.into(),
+        }
+    }
 }
 
 /// The policy a governed launch would run under, as this reading could
@@ -489,6 +549,11 @@ impl StatusReport {
             })
             .unwrap_or_default();
 
+        // Resolved once, from the adapter's own declaration, and used for both
+        // the ladder rung and the `next level up` row. Deriving it twice is how
+        // the two came to contradict each other.
+        let host_enforcement = host_enforcement_availability(summary);
+
         Self {
             tool_id: view.tool_id.clone(),
             phase: view.phase.clone(),
@@ -502,13 +567,23 @@ impl StatusReport {
             state_remediation: non_empty(&view.state_remediation),
             repair_available: !view.drift_mismatched.is_empty(),
             drift_mismatched: view.drift_mismatched.clone(),
-            next_level: view.next_level.as_ref().map(|n| LevelRow {
-                achieved: false,
-                available: !n.blocked_because.to_ascii_lowercase().contains("unavailable"),
-                level: n.level.clone(),
-                limitation: n.blocked_because.clone(),
+            next_level: view.next_level.as_ref().map(|n| {
+                LevelRow::new(
+                    n.level.clone(),
+                    false,
+                    if n.level == HOST_ENFORCED_LEVEL {
+                        host_enforcement
+                    } else {
+                        LevelAvailability::Available
+                    },
+                    n.blocked_because.clone(),
+                )
             }),
-            levels: ladder(&view.achieved_level, &unsupported),
+            levels: ladder(
+                &view.achieved_level,
+                host_enforcement,
+                host_enforcement_limitation(view, summary, host_enforcement),
+            ),
             exercised_evidence,
             read_back_evidence,
             absent_evidence,
@@ -534,47 +609,120 @@ const LADDER: [&str; 6] = [
     "host_enforced",
 ];
 
+/// The DI-API's name for the endpoint-managed host-enforcement mechanism.
+const HOST_ENFORCEMENT_CAPABILITY: &str = "host_enforcement";
+
+/// The ladder rung that mechanism is the only route to.
+const HOST_ENFORCED_LEVEL: &str = "host_enforced";
+
+/// Whether this host can reach `host_enforced`, as **the adapter** answered it.
+///
+/// The adapter is the only party that looked at the platform, so it is the only
+/// party entitled to an answer. Before AAASM-5454 this was the constant
+/// `false`, which told every macOS user — the one platform where the mechanism
+/// works, since AAASM-5298 — that it was impossible for them.
+///
+/// Anything other than a declaration this build understands resolves to
+/// [`LevelAvailability::Unmeasured`]: `absent` means nobody declared anything,
+/// and a token a newer runtime added is one this build must not interpret.
+/// Neither is evidence that the host cannot.
+fn host_enforcement_availability(summary: Option<&wire::ToolSummary>) -> LevelAvailability {
+    match declared_host_enforcement(summary).map(|c| c.support.as_str()) {
+        Some("supported") => LevelAvailability::Available,
+        Some("unsupported") => LevelAvailability::Unsupported,
+        _ => LevelAvailability::Unmeasured,
+    }
+}
+
+/// The adapter's host-enforcement declaration, when the summary carries one.
+fn declared_host_enforcement(summary: Option<&wire::ToolSummary>) -> Option<&wire::CapabilityView> {
+    summary.and_then(|s| {
+        s.capabilities
+            .iter()
+            .find(|c| c.capability == HOST_ENFORCEMENT_CAPABILITY)
+    })
+}
+
+/// The sentence shown beside the `host_enforced` rung.
+///
+/// Sourced from the adapter wherever the adapter said anything, because only
+/// the adapter has looked at this host. Two places carry its words: the
+/// capability declaration's reason, and its evidence about the mechanism —
+/// where an `absent` row's `outcome` *is* the reason it is not active, and any
+/// other kind carries its own detail.
+///
+/// The fallbacks exist for an adapter that said neither, and none of them
+/// asserts a platform limitation. That is the AAASM-5454 defect exactly: the
+/// old fallback fired precisely when the mechanism **was** supported — the
+/// adapter only lands in the unsupported list when it is not — so the one
+/// platform that can reach the rung was the only one told it cannot.
+fn host_enforcement_limitation(
+    view: &wire::StatusView,
+    summary: Option<&wire::ToolSummary>,
+    availability: LevelAvailability,
+) -> String {
+    declared_host_enforcement(summary)
+        .and_then(|c| non_empty(&c.reason))
+        .or_else(|| {
+            view.evidence
+                .iter()
+                .find(|e| e.mechanism == HOST_ENFORCEMENT_CAPABILITY)
+                .and_then(|e| non_empty(if e.kind == "absent" { &e.outcome } else { &e.detail }))
+        })
+        .unwrap_or_else(|| match availability {
+            // Names the command rather than a platform, and stays true whether
+            // or not the rung has already been reached: it is how it is reached.
+            LevelAvailability::Available => format!(
+                "reachable on this host: `aasm integrations install {} --install-managed-settings` \
+                 installs the endpoint-managed policy and attests it. Reaching it is one privileged \
+                 file write you are asked to authorize",
+                view.tool_id
+            ),
+            LevelAvailability::Unsupported => {
+                "this integration declares host enforcement unsupported and gave no reason".to_string()
+            }
+            LevelAvailability::Unmeasured => {
+                "nothing was declared about host enforcement for this tool, so this reading \
+                 establishes neither that it can be reached nor that it cannot"
+                    .to_string()
+            }
+        })
+}
+
 /// The three rungs a user is asked to reason about, each with its honest limit.
 ///
 /// The limitation strings are the product brief's §7.1–§7.3 "honest limit" rows.
 /// They are stated unconditionally rather than only when a rung is missed,
 /// because a user reading `Gateway Protected ✓` needs to know what it still
 /// does not cover.
-fn ladder(achieved: &str, unsupported: &[UnsupportedRow]) -> Vec<LevelRow> {
+fn ladder(achieved: &str, host_enforcement: LevelAvailability, host_limitation: String) -> Vec<LevelRow> {
     let rank = |name: &str| LADDER.iter().position(|l| *l == name);
     let reached = |name: &str| match (rank(achieved), rank(name)) {
         (Some(a), Some(b)) => a >= b,
         _ => false,
     };
-    let host_reason = unsupported
-        .iter()
-        .find(|u| u.capability == "host_enforcement")
-        .map(|u| u.reason.clone())
-        .unwrap_or_else(|| "unavailable on this platform".to_string());
 
     vec![
-        LevelRow {
-            level: "integrated".to_string(),
-            achieved: reached("integrated"),
-            available: true,
-            limitation: "constrains the tool's startup posture; claims nothing about traffic \
-                         and nothing about host-level bypass"
-                .to_string(),
-        },
-        LevelRow {
-            level: "gateway_protected".to_string(),
-            achieved: reached("gateway_protected"),
-            available: true,
-            limitation: "protects the paths it sees; an unmanaged launch, a hardcoded endpoint \
-                         or a pinned client is outside its scope"
-                .to_string(),
-        },
-        LevelRow {
-            level: "host_enforced".to_string(),
-            achieved: reached("host_enforced"),
-            available: false,
-            limitation: host_reason,
-        },
+        LevelRow::new(
+            "integrated",
+            reached("integrated"),
+            LevelAvailability::Available,
+            "constrains the tool's startup posture; claims nothing about traffic \
+             and nothing about host-level bypass",
+        ),
+        LevelRow::new(
+            "gateway_protected",
+            reached("gateway_protected"),
+            LevelAvailability::Available,
+            "protects the paths it sees; an unmanaged launch, a hardcoded endpoint \
+             or a pinned client is outside its scope",
+        ),
+        LevelRow::new(
+            HOST_ENFORCED_LEVEL,
+            reached(HOST_ENFORCED_LEVEL),
+            host_enforcement,
+            host_limitation,
+        ),
     ]
 }
 
@@ -945,19 +1093,84 @@ mod tests {
         }
     }
 
-    /// Product brief §7.3: the rung must be *named and reported as unavailable*,
-    /// never omitted — silence reads as "there is nothing above what I have".
-    #[test]
-    fn host_enforced_is_always_present_and_always_unavailable() {
-        let report = StatusReport::from_view(runtime(), &status_view("gateway_protected"), None);
-        let host = report
+    /// A `ToolSummary` declaring exactly one thing about host enforcement.
+    fn summary_declaring(support: &str, reason: &str) -> wire::ToolSummary {
+        wire::ToolSummary {
+            tool_id: "claude-code".to_string(),
+            display_name: "Claude Code".to_string(),
+            detected: true,
+            detected_version: "2.1.220".to_string(),
+            compatibility: "compatible".to_string(),
+            capabilities: vec![wire::CapabilityView {
+                capability: "host_enforcement".to_string(),
+                support: support.to_string(),
+                reason: reason.to_string(),
+            }],
+            adapter_ceiling: "l2_enforce".to_string(),
+        }
+    }
+
+    fn host_rung(report: &StatusReport) -> &LevelRow {
+        report
             .levels
             .iter()
             .find(|l| l.level == "host_enforced")
-            .expect("host_enforced must be listed even though it cannot be reached");
-        assert!(!host.available);
-        assert!(!host.achieved);
-        assert!(!host.limitation.is_empty());
+            .expect("host_enforced must be listed whatever the adapter said about it")
+    }
+
+    /// Product brief §7.3: the rung is *named*, never omitted — silence reads as
+    /// "there is nothing above what I have".
+    ///
+    /// AAASM-5454: naming it is not licence to invent its answer. Whether this
+    /// host can reach it is the adapter's declaration, read straight through.
+    /// Hardcoding `false` here told every macOS user that the one platform the
+    /// mechanism works on cannot do it.
+    #[test]
+    fn host_enforced_is_always_present_and_reports_the_adapters_own_availability() {
+        for (support, expected) in [
+            ("supported", LevelAvailability::Available),
+            ("unsupported", LevelAvailability::Unsupported),
+            // Nothing was declared. That is not a platform verdict.
+            ("absent", LevelAvailability::Unmeasured),
+            // A token this build does not know is not one it may interpret.
+            ("some_future_token", LevelAvailability::Unmeasured),
+        ] {
+            let summary = summary_declaring(support, "the adapter's own sentence");
+            let report = StatusReport::from_view(runtime(), &status_view("gateway_protected"), Some(&summary));
+            let host = host_rung(&report);
+            assert_eq!(host.availability, expected, "support {support:?}");
+            assert_eq!(host.available, expected.is_available(), "support {support:?}");
+            assert!(!host.achieved, "support {support:?}");
+            assert!(!host.limitation.is_empty(), "support {support:?}");
+        }
+    }
+
+    /// No summary at all is the same as no declaration: unmeasured, and never a
+    /// statement about the platform.
+    #[test]
+    fn a_status_read_with_no_capability_declaration_leaves_host_enforcement_unmeasured() {
+        let report = StatusReport::from_view(runtime(), &status_view("gateway_protected"), None);
+        assert_eq!(host_rung(&report).availability, LevelAvailability::Unmeasured);
+        assert!(!host_rung(&report).available);
+    }
+
+    /// Reachable is not reached. A rung the adapter supports and the evidence
+    /// has not justified stays `achieved: false` — availability is a statement
+    /// about a path, never about a measurement.
+    #[test]
+    fn an_available_rung_is_not_thereby_an_achieved_one() {
+        let summary = summary_declaring("supported", "");
+        let report = StatusReport::from_view(runtime(), &status_view("gateway_protected"), Some(&summary));
+        let host = host_rung(&report);
+        assert!(host.available, "the adapter said this host can reach it");
+        assert!(!host.achieved, "nothing has established host enforcement here");
+        assert!(
+            report
+                .exercised_evidence
+                .iter()
+                .all(|e| e.mechanism != "host_enforcement"),
+            "the fixture must not smuggle in host-enforcement evidence"
+        );
     }
 
     /// Product brief §7.4: exercised and read-back evidence stay separable, so
@@ -984,22 +1197,143 @@ mod tests {
 
     #[test]
     fn a_host_enforcement_reason_from_the_adapter_is_preferred_over_our_own_wording() {
-        let summary = wire::ToolSummary {
-            tool_id: "claude-code".to_string(),
-            display_name: "Claude Code".to_string(),
-            detected: true,
-            detected_version: "2.1.220".to_string(),
-            compatibility: "compatible".to_string(),
-            capabilities: vec![wire::CapabilityView {
-                capability: "host_enforcement".to_string(),
-                support: "unsupported".to_string(),
-                reason: "macOS Endpoint Security is an explicit non-goal".to_string(),
-            }],
-            adapter_ceiling: "l2_enforce".to_string(),
-        };
+        let summary = summary_declaring("unsupported", "macOS Endpoint Security is an explicit non-goal");
         let report = StatusReport::from_view(runtime(), &status_view("integrated"), Some(&summary));
-        let host = report.levels.iter().find(|l| l.level == "host_enforced").expect("row");
-        assert_eq!(host.limitation, "macOS Endpoint Security is an explicit non-goal");
+        assert_eq!(
+            host_rung(&report).limitation,
+            "macOS Endpoint Security is an explicit non-goal"
+        );
+    }
+
+    /// The adapter says why the rung is not active through its *evidence* as
+    /// well as its capability declaration — an `absent` row's outcome is that
+    /// sentence. A supported mechanism carries no capability reason, so this is
+    /// the branch that supplies the adapter's own words on macOS.
+    #[test]
+    fn a_supported_rung_takes_its_sentence_from_the_adapters_absent_evidence() {
+        let mut view = status_view("gateway_protected");
+        view.evidence.push(wire::EvidenceView {
+            mechanism: "host_enforcement".to_string(),
+            kind: "absent".to_string(),
+            outcome: "host enforcement is not active: no endpoint-managed settings file was verified. \
+                      Install it with `aasm integrations install claude-code --install-managed-settings`"
+                .to_string(),
+            observed_at_unix_secs: 1_700_000_000,
+            detail: "known bypasses this integration cannot observe".to_string(),
+        });
+        let summary = summary_declaring("supported", "");
+        let report = StatusReport::from_view(runtime(), &view, Some(&summary));
+        let host = host_rung(&report);
+        assert!(host.available);
+        assert!(
+            host.limitation.starts_with("host enforcement is not active"),
+            "the adapter's own sentence was replaced: {}",
+            host.limitation
+        );
+        assert!(
+            host.limitation.contains("--install-managed-settings"),
+            "the reachable path was not named: {}",
+            host.limitation
+        );
+    }
+
+    /// AAASM-5454's second bug: the fallback fired exactly when the mechanism
+    /// *was* supported, and asserted a platform limitation nobody established.
+    /// No fallback may say anything about a platform, in any state.
+    #[test]
+    fn no_fallback_asserts_a_platform_limitation() {
+        for support in ["supported", "unsupported", "absent"] {
+            // No capability reason and no host-enforcement evidence: every
+            // branch below is this client's own wording.
+            let summary = summary_declaring(support, "");
+            let report = StatusReport::from_view(runtime(), &status_view("gateway_protected"), Some(&summary));
+            let limitation = host_rung(&report).limitation.to_ascii_lowercase();
+            assert!(!limitation.is_empty(), "support {support:?}");
+            for forbidden in [
+                "unavailable on this platform",
+                "on this platform",
+                "not supported by macos",
+            ] {
+                assert!(
+                    !limitation.contains(forbidden),
+                    "support {support:?} claimed {forbidden:?}: {limitation}"
+                );
+            }
+        }
+    }
+
+    /// A plan from an adapter that either did or did not rule host enforcement
+    /// out.
+    fn plan_view(declares_unsupported: bool) -> wire::PlanView {
+        wire::PlanView {
+            schema_version: 1,
+            plan_id: "plan-1".to_string(),
+            tool_id: "claude-code".to_string(),
+            profile: "recommended".to_string(),
+            settings_scope: "managed".to_string(),
+            policy_profile: None,
+            planned_level: if declares_unsupported {
+                "gateway_protected"
+            } else {
+                "host_enforced"
+            }
+            .to_string(),
+            adapter_ceiling: "l2_enforce".to_string(),
+            steps: Vec::new(),
+            unsupported: if declares_unsupported {
+                vec![wire::UnsupportedMechanismView {
+                    capability: "host_enforcement".to_string(),
+                    reason: "the adapter's own sentence".to_string(),
+                }]
+            } else {
+                Vec::new()
+            },
+            warnings: Vec::new(),
+        }
+    }
+
+    /// The two surfaces a user compares must not contradict each other.
+    ///
+    /// AAASM-5454 was reported as exactly this contradiction, on one host in
+    /// one minute: `plan` answered `planned level: host_enforced` while
+    /// `status` answered `unavailable on this platform`. Both derive from the
+    /// same adapter declaration, so both must reach the same answer.
+    #[test]
+    fn plan_and_status_agree_on_whether_host_enforcement_is_reachable() {
+        for (support, reachable) in [("supported", true), ("unsupported", false)] {
+            let plan = PlanReport::from_view(runtime(), &plan_view(!reachable));
+            let status = StatusReport::from_view(
+                runtime(),
+                &status_view("integrated"),
+                Some(&summary_declaring(support, "the adapter's own sentence")),
+            );
+
+            let plan_says_reachable = !plan.unsupported.iter().any(|u| u.capability == "host_enforcement");
+            let status_says_reachable = host_rung(&status).available;
+
+            assert_eq!(
+                plan_says_reachable, reachable,
+                "the plan fixture is wrong for {support:?}"
+            );
+            assert_eq!(
+                status_says_reachable, plan_says_reachable,
+                "plan and status disagree about host enforcement for a {support:?} adapter: \
+                 plan reachable={plan_says_reachable}, status reachable={status_says_reachable}"
+            );
+        }
+    }
+
+    /// A supported-but-not-yet-reached rung must tell the user how to reach it,
+    /// even when the adapter volunteered nothing.
+    #[test]
+    fn the_available_fallback_names_the_command_that_reaches_the_rung() {
+        let summary = summary_declaring("supported", "");
+        let report = StatusReport::from_view(runtime(), &status_view("gateway_protected"), Some(&summary));
+        let limitation = &host_rung(&report).limitation;
+        assert!(
+            limitation.contains("aasm integrations install claude-code --install-managed-settings"),
+            "the reachable path was not named: {limitation}"
+        );
     }
 
     #[test]

@@ -30,13 +30,14 @@ import type { Alert, AlertFilters, AlertRule, AlertSeverity, AlertStatus } from 
 import { alertsCountLabel, coversWholeFleet } from '../features/alerts/alertsCoverage'
 import { TruthfulValue } from '../components/truthfulness'
 import {
-  certainFromQuery,
+  certainFromShapedQuery,
   isKnown,
   known,
   mapCertain,
   propagateAbsence,
   type Certain,
 } from '../lib/truthfulness'
+import { decodeAlertList, decodeAlertRules, decodeAlertTotal } from '../features/alerts/schema'
 import { Tooltip } from '../components/Tooltip'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 
@@ -84,24 +85,36 @@ export function AlertsPage() {
   // Both queries are lifted into the shared truthfulness vocabulary before
   // anything is derived from them, so an outage can only ever propagate as an
   // absence — never as an empty list that later reads as "nothing is wrong".
-  const alertsState: Certain<readonly Alert[]> = certainFromQuery({
-    isPending: alertsQuery.isPending,
-    isError: alertsQuery.isError,
-    error: alertsQuery.error,
-    data: alertsQuery.data?.items,
-  })
-  const totalState: Certain<number> = certainFromQuery({
-    isPending: alertsQuery.isPending,
-    isError: alertsQuery.isError,
-    error: alertsQuery.error,
-    data: alertsQuery.data?.total,
-  })
-  const rulesState: Certain<readonly AlertRule[]> = certainFromQuery({
-    isPending: rulesQuery.isPending,
-    isError: rulesQuery.isError,
-    error: rulesQuery.error,
-    data: rulesQuery.data,
-  })
+  // AAASM-5380 S5: each fold now runs through a decoder, so a schema-invalid
+  // 200 reports an absence rather than reaching a field read. The rules fold in
+  // particular used to crash — `indexRulesById` threw on a non-array body.
+  const alertsState: Certain<readonly Alert[]> = certainFromShapedQuery(
+    {
+      isPending: alertsQuery.isPending,
+      isError: alertsQuery.isError,
+      error: alertsQuery.error,
+      data: alertsQuery.data?.items,
+    },
+    decodeAlertList,
+  )
+  const totalState: Certain<number> = certainFromShapedQuery(
+    {
+      isPending: alertsQuery.isPending,
+      isError: alertsQuery.isError,
+      error: alertsQuery.error,
+      data: alertsQuery.data?.total,
+    },
+    decodeAlertTotal,
+  )
+  const rulesState: Certain<readonly AlertRule[]> = certainFromShapedQuery(
+    {
+      isPending: rulesQuery.isPending,
+      isError: rulesQuery.isError,
+      error: rulesQuery.error,
+      data: rulesQuery.data,
+    },
+    decodeAlertRules,
+  )
 
   const loadedAlerts = useMemo(
     () => (isKnown(alertsState) ? alertsState.value : []),
@@ -353,11 +366,17 @@ export function AlertsPage() {
                 />
               )}
             </span>
-            <div
+            <fieldset
               data-testid="alerts-view-toggle"
-              role="group"
               aria-label="Alert view"
-              style={{ display: 'flex', gap: '0.25rem' }}
+              style={{
+                display: 'flex',
+                gap: '0.25rem',
+                margin: 0,
+                padding: 0,
+                border: 0,
+                minInlineSize: 0,
+              }}
             >
               {(['table', 'cards'] as const).map((mode) => {
                 const active = viewMode === mode
@@ -382,7 +401,7 @@ export function AlertsPage() {
                   </button>
                 )
               })}
-            </div>
+            </fieldset>
           </div>
 
           <AlertsFeedBody

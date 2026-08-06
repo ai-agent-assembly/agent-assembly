@@ -45,19 +45,96 @@
  * measured-looking `0` — the same lie with a citation.
  */
 
+import { z } from 'zod'
 import { cascadeEvidenceOf } from '../../features/capability/summary'
 import { VERBS, type CapabilityAgent, type Resource } from '../../features/capability/types'
 import {
   absent,
-  certainFromQuery,
+  certainFromShapedQuery,
+  conforms,
   isKnown,
   propagateAbsence,
   tallyVerdicts,
+  violates,
   type CapabilityVerdict,
   type Certain,
+  type Decoder,
   type QueryOutcome,
 } from '../../lib/truthfulness'
 import type { ScopedCapabilityMatrix } from './useAgentCapabilityMatrix'
+
+/**
+ * The slice of the scoped matrix this projection reads (AAASM-5380 slice S6).
+ *
+ * `deriveAgentPosture` used to take a `QueryOutcome<ScopedCapabilityMatrix>` and
+ * fold it with `certainFromQuery` — a cast, not a check. The scoped matrix is
+ * built client-side by `useAgentCapabilityMatrixQuery` from a body that
+ * `api/capability.ts` produced with `data as CapabilityMatrix`, so the three
+ * fields this module reads carried an unverified wire claim through to render:
+ *
+ *  - `resources` is iterated by `agentCells`, whose values `tallyVerdicts`
+ *    consumes. A non-array `resources` makes the `for…of` throw *inside the
+ *    generator, at render*, outside any queryFn — the AppShell ErrorBoundary,
+ *    not an absence.
+ *  - `policies`' length is read by `cascadeEvidenceOf`. A truthy non-array
+ *    `policies` reads `.length` as `undefined`, which is not `0`, so the
+ *    empty-cascade guard is skipped and the tally proceeds on unread data.
+ *  - `agent`'s `caps` is indexed by `agentCells` (`agent.caps[resource.id]`); a
+ *    row with no readable `caps` throws the same way `populatedCellCount` does.
+ *
+ * So this decoder is narrower than `decodeMatrixShape`: that one answers "is
+ * this the four-collection page matrix"; this answers "is this the scoped slice
+ * the posture panel counts". `agent` is `null`-or-a-readable-row, and only
+ * `resources` and `policies` of the collections are required — the panel never
+ * reads `agents` or `sampleCalls`, and requiring them would blank a posture that
+ * is perfectly determinable.
+ */
+export interface ScopedMatrixShape {
+  readonly agent: { readonly caps: Record<string, unknown> } | null
+  readonly resources: readonly unknown[]
+  readonly policies: readonly unknown[]
+}
+
+/**
+ * A conforming scoped matrix still carries these fields under these names.
+ *
+ * Binds {@link ScopedMatrixShape} to the shape the hook constructs, so a rename
+ * in `useAgentCapabilityMatrix.ts` resolves to `never` and stops compiling
+ * rather than silently reporting every live response as unreadable.
+ */
+type HookCarriesScopedShape = ScopedCapabilityMatrix extends ScopedMatrixShape ? true : never
+export const SCOPED_SHAPE_IS_ON_THE_WIRE: HookCarriesScopedShape = true
+
+const scopedMatrixSchema = z.object({
+  // `caps` is the object `agentCells` indexes; a row without a readable one
+  // throws exactly as `populatedCellCount` does. `null` is a real answer — the
+  // agent has no row in the matrix — and is handled downstream, not here.
+  agent: z.union([z.object({ caps: z.record(z.string(), z.unknown()) }).passthrough(), z.null()]),
+  resources: z.array(z.unknown()),
+  policies: z.array(z.unknown()),
+}) satisfies z.ZodType<ScopedMatrixShape>
+
+/**
+ * Decode the scoped-matrix slice the posture panel reads, or say why it could
+ * not be read. Total, per the {@link Decoder} contract — a decoder that throws
+ * re-creates the render-time unmount this migration exists to prevent.
+ */
+/** The first thing wrong with the body, as a short operator-facing phrase. */
+function firstFault(error: z.ZodError): string {
+  const issue = error.issues[0]
+  if (!issue) return 'unreadable'
+  const path = issue.path.join('.')
+  return path === '' ? issue.message : `${path}: ${issue.message}`
+}
+
+export const decodeScopedMatrix: Decoder<ScopedMatrixShape> = (body: unknown) => {
+  const parsed = scopedMatrixSchema.safeParse(body)
+  if (parsed.success) return conforms(parsed.data)
+  const fault = firstFault(parsed.error)
+  return violates(
+    `The capability matrix came back in a shape this dashboard cannot read (${fault}), so this agent's posture cannot be stated. A proxy rewriting the response, a partial deploy, or a dashboard newer or older than the API all produce this.`,
+  )
+}
 
 /**
  * The two posture figures this projection can measure, each either a count or
@@ -114,14 +191,17 @@ function* agentCells(
  * no policy document loaded `decide()` falls through to `Allow` for every cell,
  * so counting them would report a permissive agent nothing granted.
  */
-export function deriveAgentPosture(outcome: QueryOutcome<ScopedCapabilityMatrix>): AgentPosture {
-  const matrix = certainFromQuery(outcome)
+export function deriveAgentPosture(outcome: QueryOutcome<unknown>): AgentPosture {
+  const matrix = certainFromShapedQuery(outcome, decodeScopedMatrix)
   if (!isKnown(matrix)) {
-    const carried = propagateAbsence<ScopedCapabilityMatrix, number>(matrix)
+    const carried = propagateAbsence<ScopedMatrixShape, number>(matrix)
     return { allow: carried, deny: carried }
   }
 
-  const { agent, resources, policies } = matrix.value
+  // Array-ness and `agent.caps` readability are now proven; the projection to
+  // the richer types is the narrow cast `decodeScopedMatrix` documents. Element
+  // contents beyond `caps` are unverified and read as opaque display values.
+  const { agent, resources, policies } = matrix.value as unknown as ScopedCapabilityMatrix
   if (agent === null) {
     // The matrix loaded and this agent is simply not in it — no resource claims
     // have been observed for it. Nothing evaluated its capabilities, so a `0`

@@ -42,7 +42,7 @@ export function ForgotPasswordPage() {
         <h1 className="login-page__brand-title">Reset your password</h1>
       </header>
 
-      <section className="login-page__card" role="region" aria-label="Password reset">
+      <section className="login-page__card" aria-label="Password reset">
         {mode === 'request' ? (
           <RequestForm onHasToken={() => setMode('confirm')} />
         ) : (
@@ -83,9 +83,9 @@ function RequestForm({ onHasToken }: Readonly<{ onHasToken: () => void }>) {
   if (sent) {
     return (
       <>
-        <p role="status" className="login-page__notice">
+        <output className="login-page__notice">
           {NEUTRAL_RESET_MESSAGE}
-        </p>
+        </output>
         <p className="login-page__switch">
           Already have a reset link?{' '}
           <button type="button" className="login-page__switch-btn" onClick={onHasToken}>
@@ -157,12 +157,12 @@ function ConfirmForm({ initialToken }: Readonly<{ initialToken: string }>) {
 
   if (done) {
     return (
-      <p role="status" className="login-page__notice">
+      <output className="login-page__notice">
         Your password has been reset.{' '}
         <Link to="/login" className="login-page__switch-btn">
           Sign in
         </Link>
-      </p>
+      </output>
     )
   }
 

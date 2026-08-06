@@ -20,10 +20,13 @@ import { TeamBudgetBar } from './TeamBudgetBar'
 import { Tooltip } from '../Tooltip'
 import './TopologyGraph.css'
 
+/** The three node-card size buckets, keyed by budget-burn ratio. */
+type SizeVariant = 'small' | 'medium' | 'large'
+
 // Inline closed 3-member literal union, not a raw wire string — narrow-union
 // Record gap (AAASM-5245 gap 2).
 // eslint-disable-next-line no-restricted-syntax
-const SIZE_VARIANT: Record<'small' | 'medium' | 'large', { w: number; h: number }> = {
+const SIZE_VARIANT: Record<SizeVariant, { w: number; h: number }> = {
   small: { w: 76, h: 44 },
   medium: { w: 96, h: 56 },
   large: { w: 116, h: 68 },
@@ -733,150 +736,29 @@ export function TopologyGraph({
         const node = nodeById.get(pos.id) ?? pos.source
         const bucket = bucketForRatio(node.budgetSpend, node.budgetLimit)
         const dims = SIZE_VARIANT[bucket]
-        const x = (pos.x ?? width / 2) - dims.w / 2
-        const y = (pos.y ?? height / 2) - dims.h / 2
-
-        // Delegation-tree badges (AAASM-5033), all edge-derived client-side.
-        const depth = depthById.get(node.id) ?? 0
-        const isRoot = rootIds.has(node.id)
-        const inCycle = cycleNodeIds.has(node.id)
-        // Cross-team relationships the filtered canvas is not drawing
-        // (AAASM-5138). Only meaningful while a team filter is narrowing the
-        // view — see the `teamFilterActive` prop.
-        const crossTeamCount = teamFilterActive ? (crossTeamDegree.get(node.id) ?? 0) : 0
-        // Dimmed when a node is selected and this one is neither it nor a
-        // neighbour (AAASM-5137). `null` connectedIds means nothing is selected,
-        // so nothing dims.
-        const dimmed = connectedIds ? !connectedIds.has(node.id) : false
-
-        const handleClick = onNodeClick ? () => onNodeClick(node) : undefined
-        const handleKeyDown = onNodeClick
-          ? (e: KeyboardEvent<SVGGElement>) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onNodeClick(node)
-              }
-            }
-          : undefined
-
         return (
-          <g
+          <TopologyNodeCard
             key={node.id}
-            className="topology-node"
-            data-testid="topology-node"
-            data-status={node.status}
-            data-size-bucket={bucket}
-            data-selected={selectedNodeId === node.id ? 'true' : undefined}
-            data-dimmed={dimmed ? 'true' : undefined}
-            data-depth={depth}
-            data-root={isRoot ? 'true' : undefined}
-            data-in-cycle={inCycle ? 'true' : undefined}
-            data-flagged={node.flagged ? 'true' : undefined}
-            data-cross-team-count={crossTeamCount > 0 ? String(crossTeamCount) : undefined}
-            data-mode={node.mode}
-            data-trust={node.trust != null ? String(node.trust) : undefined}
-            transform={`translate(${x}, ${y})`}
-            role={onNodeClick ? 'button' : undefined}
-            tabIndex={onNodeClick ? 0 : undefined}
-            onClick={handleClick}
-            onKeyDown={handleKeyDown}
-            style={onNodeClick ? { cursor: 'pointer' } : undefined}
-          >
-            <rect className="topology-node__card" x={0} y={0} width={dims.w} height={dims.h} rx={4} />
-            <rect className="topology-node__stripe" x={0} y={0} width={3} height={dims.h} rx={2} />
-            <text className="topology-node__name" x={11} y={22}>
-              {node.flagged ? '⚑ ' : ''}{truncate(node.name, node.flagged ? 12 : 14)}
-            </text>
-            {/* Root / depth badge (top-right): roots read `root`, delegates `L<n>`. */}
-            <text
-              className={`topology-node__depth${isRoot ? ' topology-node__depth--root' : ''}`}
-              data-testid="topology-node-depth"
-              x={dims.w - 6}
-              y={12}
-              textAnchor="end"
-            >
-              {isRoot ? 'root' : `L${depth}`}
-            </text>
-            {node.framework && (
-              <text className="topology-node__framework" x={11} y={35}>
-                {node.framework}
-              </text>
-            )}
-            {/* Enforcement-mode badge (right of the framework row), rendered
-                only when the node carries a mode — see types.ts / PR notes.
-                Narrow (small-bucket) cards have no room for the word beside the
-                framework text, so they show the colour-coded glyph alone; wider
-                cards show `<glyph> <mode>`. */}
-            {node.mode && (
-              <text
-                className={`topology-node__mode topology-node__mode--${node.mode}`}
-                data-testid="topology-node-mode"
-                data-mode-label={dims.w >= SIZE_VARIANT.medium.w ? 'full' : 'glyph'}
-                x={dims.w - 6}
-                y={35}
-                textAnchor="end"
-              >
-                {dims.w >= SIZE_VARIANT.medium.w ? `${MODE_GLYPH[node.mode]} ${node.mode}` : MODE_GLYPH[node.mode]}
-                {crossTeamCount > 0 && <CrossTeamBadge count={crossTeamCount} leadingSpace />}
-              </text>
-            )}
-            {/* Same badge, standalone, for a node carrying no mode — the count
-                must not depend on whether the mode badge happens to render. */}
-            {!node.mode && crossTeamCount > 0 && (
-              <text
-                className="topology-node__mode"
-                x={dims.w - 6}
-                y={35}
-                textAnchor="end"
-              >
-                <CrossTeamBadge count={crossTeamCount} />
-              </text>
-            )}
-            {/* An unconfigured ceiling renders the shared `—` glyph rather than
-                `$0`. SVG `<text>` cannot host the `<span>`-based TruthfulValue,
-                so the glyph and the screen-reader sentence are placed by hand —
-                from the same vocabulary, never a locally-invented one. */}
-            <text
-              className="topology-node__budget"
-              data-testid="topology-node-budget"
-              data-truth-state={node.budgetLimit === null ? 'unconfigured' : undefined}
-              x={11}
-              y={dims.h - 8}
-            >
-              {node.budgetLimit === null && (
-                <title>{`Budget limit: ${TRUTH_STATE_META.unconfigured.announcement}`}</title>
-              )}
-              ${node.budgetSpend.toFixed(1)} / {formatLimit(node.budgetLimit, 0)}
-            </text>
-            {/* Trust badge (top-left): the agent's trust score. Rendered only
-                when `trust` is a number — the topology API carries the field but
-                currently always sends `null` (no trust-analytics source yet), so
-                this stays hidden until real data lands (AAASM-5036). */}
-            {node.trust != null && (
-              <text
-                className="topology-node__trust"
-                data-testid="topology-node-trust"
-                x={6}
-                y={12}
-                textAnchor="start"
-              >
-                ◈ {node.trust}
-              </text>
-            )}
-            {/* Cycle marker (bottom-right): the danger dashed card border is the
-                primary signal; this ⟳ glyph makes it unambiguous. */}
-            {inCycle && (
-              <text
-                className="topology-node__cycle"
-                data-testid="topology-node-cycle"
-                x={dims.w - 6}
-                y={dims.h - 6}
-                textAnchor="end"
-              >
-                ⟳
-              </text>
-            )}
-          </g>
+            node={node}
+            x={(pos.x ?? width / 2) - dims.w / 2}
+            y={(pos.y ?? height / 2) - dims.h / 2}
+            bucket={bucket}
+            dims={dims}
+            // Delegation-tree badges (AAASM-5033), all edge-derived client-side.
+            depth={depthById.get(node.id) ?? 0}
+            isRoot={rootIds.has(node.id)}
+            inCycle={cycleNodeIds.has(node.id)}
+            // Cross-team relationships the filtered canvas is not drawing
+            // (AAASM-5138). Only meaningful while a team filter is narrowing the
+            // view — see the `teamFilterActive` prop.
+            crossTeamCount={teamFilterActive ? (crossTeamDegree.get(node.id) ?? 0) : 0}
+            // Dimmed when a node is selected and this one is neither it nor a
+            // neighbour (AAASM-5137). `null` connectedIds means nothing is
+            // selected, so nothing dims.
+            dimmed={connectedIds ? !connectedIds.has(node.id) : false}
+            selected={selectedNodeId === node.id}
+            onNodeClick={onNodeClick}
+          />
         )
       })}
       </g>
@@ -890,6 +772,235 @@ export function TopologyGraph({
       <div className="topology-graph__zoom-readout" data-testid="topology-zoom-readout">{Math.round(zoom * 100)}%</div>
     </div>
     </div>
+  )
+}
+
+/** Everything one node card needs, resolved by the caller from live data. */
+interface TopologyNodeCardProps {
+  readonly node: TopologyNode
+  readonly x: number
+  readonly y: number
+  readonly bucket: SizeVariant
+  readonly dims: { w: number; h: number }
+  readonly depth: number
+  readonly isRoot: boolean
+  readonly inCycle: boolean
+  readonly crossTeamCount: number
+  readonly dimmed: boolean
+  readonly selected: boolean
+  readonly onNodeClick?: (node: TopologyNode) => void
+}
+
+/**
+ * One agent's node card on the canvas.
+ *
+ * Its own component rather than an inline `positions.map` body so the badge
+ * stack (root/depth, mode, cross-team, trust, cycle) and its click/keyboard
+ * wiring read as one unit instead of a wall of ternaries inside the canvas
+ * render — the same split already applied to {@link TeamCluster}.
+ */
+/** Click + keyboard handlers for an interactive node card, or none when inert. */
+function nodeCardHandlers(node: TopologyNode, onNodeClick?: (node: TopologyNode) => void) {
+  if (!onNodeClick) return { handleClick: undefined, handleKeyDown: undefined }
+  const handleClick = () => onNodeClick(node)
+  const handleKeyDown = (e: KeyboardEvent<SVGGElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onNodeClick(node)
+    }
+  }
+  return { handleClick, handleKeyDown }
+}
+
+/** The subset of a node card's props that drive its `data-*` attributes. */
+type NodeCardDataInput = Pick<
+  TopologyNodeCardProps,
+  'node' | 'bucket' | 'selected' | 'dimmed' | 'depth' | 'isRoot' | 'inCycle' | 'crossTeamCount'
+>
+
+/** The `data-*` attribute bag for a node card's outer `<g>`. */
+function nodeCardDataAttrs({
+  node,
+  bucket,
+  selected,
+  dimmed,
+  depth,
+  isRoot,
+  inCycle,
+  crossTeamCount,
+}: NodeCardDataInput): Record<string, string | number | undefined> {
+  return {
+    'data-testid': 'topology-node',
+    'data-status': node.status,
+    'data-size-bucket': bucket,
+    'data-selected': selected ? 'true' : undefined,
+    'data-dimmed': dimmed ? 'true' : undefined,
+    'data-depth': depth,
+    'data-root': isRoot ? 'true' : undefined,
+    'data-in-cycle': inCycle ? 'true' : undefined,
+    'data-flagged': node.flagged ? 'true' : undefined,
+    'data-cross-team-count': crossTeamCount > 0 ? String(crossTeamCount) : undefined,
+    'data-mode': node.mode,
+    'data-trust': node.trust != null ? String(node.trust) : undefined,
+  }
+}
+
+/** Card name row (top-left), with the flag glyph and truncation baked in. */
+function NodeNameRow({ node }: Readonly<{ node: TopologyNode }>) {
+  return (
+    <text className="topology-node__name" x={11} y={22}>
+      {node.flagged ? '⚑ ' : ''}{truncate(node.name, node.flagged ? 12 : 14)}
+    </text>
+  )
+}
+
+/** Root / depth badge (top-right): roots read `root`, delegates `L<n>`. */
+function NodeDepthBadge({ depth, isRoot, cardW }: Readonly<{ depth: number; isRoot: boolean; cardW: number }>) {
+  return (
+    <text
+      className={`topology-node__depth${isRoot ? ' topology-node__depth--root' : ''}`}
+      data-testid="topology-node-depth"
+      x={cardW - 6}
+      y={12}
+      textAnchor="end"
+    >
+      {isRoot ? 'root' : `L${depth}`}
+    </text>
+  )
+}
+
+/**
+ * Enforcement-mode badge and/or the standalone cross-team badge (right of the
+ * framework row).
+ *
+ * Narrow (small-bucket) cards have no room for the word beside the framework
+ * text, so they show the colour-coded glyph alone; wider cards show
+ * `<glyph> <mode>`. The cross-team count rides on the mode badge when there is
+ * one, else renders standalone — it must not depend on a mode being present.
+ */
+function NodeModeRow({
+  node,
+  dims,
+  crossTeamCount,
+}: Readonly<{ node: TopologyNode; dims: { w: number; h: number }; crossTeamCount: number }>) {
+  const fullModeLabel = dims.w >= SIZE_VARIANT.medium.w
+  if (node.mode) {
+    return (
+      <text
+        className={`topology-node__mode topology-node__mode--${node.mode}`}
+        data-testid="topology-node-mode"
+        data-mode-label={fullModeLabel ? 'full' : 'glyph'}
+        x={dims.w - 6}
+        y={35}
+        textAnchor="end"
+      >
+        {fullModeLabel ? `${MODE_GLYPH[node.mode]} ${node.mode}` : MODE_GLYPH[node.mode]}
+        {crossTeamCount > 0 && <CrossTeamBadge count={crossTeamCount} leadingSpace />}
+      </text>
+    )
+  }
+  if (crossTeamCount > 0) {
+    return (
+      <text className="topology-node__mode" x={dims.w - 6} y={35} textAnchor="end">
+        <CrossTeamBadge count={crossTeamCount} />
+      </text>
+    )
+  }
+  return null
+}
+
+/**
+ * Budget row (bottom-left).
+ *
+ * An unconfigured ceiling renders the shared `—` glyph rather than `$0`. SVG
+ * `<text>` cannot host the `<span>`-based TruthfulValue, so the glyph and the
+ * screen-reader sentence are placed by hand — from the same vocabulary, never a
+ * locally-invented one.
+ */
+function NodeBudgetRow({ node, cardH }: Readonly<{ node: TopologyNode; cardH: number }>) {
+  return (
+    <text
+      className="topology-node__budget"
+      data-testid="topology-node-budget"
+      data-truth-state={node.budgetLimit === null ? 'unconfigured' : undefined}
+      x={11}
+      y={cardH - 8}
+    >
+      {node.budgetLimit === null && (
+        <title>{`Budget limit: ${TRUTH_STATE_META.unconfigured.announcement}`}</title>
+      )}
+      ${node.budgetSpend.toFixed(1)} / {formatLimit(node.budgetLimit, 0)}
+    </text>
+  )
+}
+
+function TopologyNodeCard({
+  node,
+  x,
+  y,
+  bucket,
+  dims,
+  depth,
+  isRoot,
+  inCycle,
+  crossTeamCount,
+  dimmed,
+  selected,
+  onNodeClick,
+}: TopologyNodeCardProps) {
+  const { handleClick, handleKeyDown } = nodeCardHandlers(node, onNodeClick)
+
+  return (
+    <g
+      className="topology-node"
+      {...nodeCardDataAttrs({ node, bucket, selected, dimmed, depth, isRoot, inCycle, crossTeamCount })}
+      transform={`translate(${x}, ${y})`}
+      role={onNodeClick ? 'button' : undefined}
+      tabIndex={onNodeClick ? 0 : undefined}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+      style={onNodeClick ? { cursor: 'pointer' } : undefined}
+    >
+      <rect className="topology-node__card" x={0} y={0} width={dims.w} height={dims.h} rx={4} />
+      <rect className="topology-node__stripe" x={0} y={0} width={3} height={dims.h} rx={2} />
+      <NodeNameRow node={node} />
+      <NodeDepthBadge depth={depth} isRoot={isRoot} cardW={dims.w} />
+      {node.framework && (
+        <text className="topology-node__framework" x={11} y={35}>
+          {node.framework}
+        </text>
+      )}
+      <NodeModeRow node={node} dims={dims} crossTeamCount={crossTeamCount} />
+      <NodeBudgetRow node={node} cardH={dims.h} />
+      {/* Trust badge (top-left): the agent's trust score. Rendered only
+          when `trust` is a number — the topology API carries the field but
+          currently always sends `null` (no trust-analytics source yet), so
+          this stays hidden until real data lands (AAASM-5036). */}
+      {node.trust != null && (
+        <text
+          className="topology-node__trust"
+          data-testid="topology-node-trust"
+          x={6}
+          y={12}
+          textAnchor="start"
+        >
+          ◈ {node.trust}
+        </text>
+      )}
+      {/* Cycle marker (bottom-right): the danger dashed card border is the
+          primary signal; this ⟳ glyph makes it unambiguous. */}
+      {inCycle && (
+        <text
+          className="topology-node__cycle"
+          data-testid="topology-node-cycle"
+          x={dims.w - 6}
+          y={dims.h - 6}
+          textAnchor="end"
+        >
+          ⟳
+        </text>
+      )}
+    </g>
   )
 }
 
@@ -925,7 +1036,7 @@ function CrossTeamBadge({ count, leadingSpace = false }: Readonly<{ count: numbe
  * budget — an unconfigured limit (`null`) has no ratio, so the card takes the
  * base size, exactly as a zero limit already did.
  */
-function bucketForRatio(spend: number, limit: number | null): 'small' | 'medium' | 'large' {
+function bucketForRatio(spend: number, limit: number | null): SizeVariant {
   if (limit === null || limit <= 0) return 'small'
   const ratio = spend / limit
   if (ratio < 0.5) return 'small'

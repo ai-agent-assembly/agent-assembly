@@ -25,6 +25,13 @@
 //! the deterministic scanner's `sk-ant-` pattern so redaction is genuinely
 //! exercised.
 
+/// The evidence ledger (AAASM-5465), declared once per test binary.
+///
+/// The support modules re-export it rather than declaring their own, because a
+/// binary including two of them would otherwise load the same file twice.
+#[path = "evidence/mod.rs"]
+pub mod evidence;
+
 #[allow(dead_code, unused_imports)]
 mod spike_support;
 

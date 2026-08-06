@@ -3,12 +3,12 @@ import { useNavigate } from 'react-router'
 import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EmptyState } from '../components/EmptyState'
-import { ErrorState } from '../components/states'
-import { TruthfulValue } from '../components/truthfulness'
+import { StatusState, TruthfulValue } from '../components/truthfulness'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
-import { certainFromQuery, mapCertain } from '../lib/truthfulness'
+import { certainFromShapedQuery, mapCertain } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
-import { useApprovalsQuery, type Approval } from '../features/approvals/api'
+import { useApprovalsQuery } from '../features/approvals/api'
+import { decodeApprovalList } from '../features/approvals/schema'
 import { useApprovalsStream } from '../features/approvals/useApprovalsStream'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import {
@@ -152,7 +152,11 @@ export function LiveOpsPage() {
   // the ops socket subscribes to `violation,ops_change` and never sees one.
   const approvalsQuery = useApprovalsQuery()
   const { connected: approvalsLive } = useApprovalsStream()
-  const approvals = certainFromQuery<Approval[]>(approvalsQuery)
+  // AAASM-5380: folded through `decodeApprovalList` so a malformed or absent
+  // `items` reaches the pane as an absence (the pool renders its unavailable
+  // state, the chip renders `TruthfulValue`'s marker) rather than the fabricated
+  // empty queue the old `?? []` produced.
+  const approvals = certainFromShapedQuery(approvalsQuery, decodeApprovalList)
   const waitingCount = mapCertain(approvals, (list) => list.length)
 
   // Derived map: every override whose WS-reported status already matches
@@ -288,7 +292,8 @@ export function LiveOpsPage() {
     // data the truthfulness vocabulary exists to forbid. `ErrorState` maps to
     // StatusState's `unavailable` (role="alert"), so the severity is announced.
     streamBody = (
-      <ErrorState
+      <StatusState
+        state="unavailable"
         title="P1 · Runtime disconnected"
         description={
           <>
@@ -297,8 +302,12 @@ export function LiveOpsPage() {
             will propagate until the stream reconnects.
           </>
         }
-        onRetry={reconnect}
-        retryLabel="Reconnect"
+        testId="error-state"
+        action={
+          <button type="button" className="truth-state__retry" onClick={reconnect}>
+            Reconnect
+          </button>
+        }
       />
     )
   } else if (status === 'connected' && ops.length === 0) {
@@ -328,7 +337,7 @@ export function LiveOpsPage() {
       <header className="live-page__header">
         <div className="live-page__header-lead">
           <h1 className="live-page__title">
-            Live Operations
+            Live Operations{' '}
             <span
               className={`live-page__pill live-page__pill--${pill.tone}`}
               data-testid="live-ops-state-pill"

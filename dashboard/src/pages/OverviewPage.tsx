@@ -2,10 +2,14 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { useAgentsQuery, useAgentEnforcementQuery } from '../features/agents/api'
 import { toFleetAgent } from '../features/agents/fleetTypes'
-import { useApprovalsQuery, type Approval } from '../features/approvals/api'
+import { useApprovalsQuery } from '../features/approvals/api'
+import { decodeApprovalCount, type ApprovalCountRow } from '../features/approvals/schema'
+import { decodeEnforcementLookup } from '../features/agents/schema'
 import { deriveApprovalsSummary, formatApprovalsSummary } from '../features/approvals/summary'
 import { usePoliciesQuery } from '../features/policies/api'
+import { decodePolicyList } from '../features/policies/schema'
 import { useAlertsQuery } from '../features/alerts/api'
+import { decodeAlertList } from '../features/alerts/schema'
 import type { Alert, AlertFilters } from '../features/alerts/types'
 import { useEnforcementTimelineQuery } from '../features/overview/api'
 import { EnforcementTimeline } from '../components/overview/EnforcementTimeline'
@@ -14,7 +18,7 @@ import {
   NO_DATA,
   TRUTH_STATE_META,
   absent,
-  certainFromQuery,
+  certainFromShapedQuery,
   isKnown,
   mapCertain,
   type Certain,
@@ -282,7 +286,7 @@ function RecentAlertRow({ alert }: Readonly<{ alert: Alert }>) {
  * already-loaded approvals. The mock's "(PII)" category tag is intentionally
  * absent: nothing on the approval record classifies a request as PII.
  */
-function queueNote(approvals: Certain<readonly Approval[]>): string {
+function queueNote(approvals: Certain<readonly ApprovalCountRow[]>): string {
   if (!isKnown(approvals)) return `queue ${TRUTH_STATE_META[approvals.state].label.toLowerCase()}`
   if (approvals.value.length === 0) return 'queue clear'
   return (
@@ -324,10 +328,21 @@ export function OverviewPage() {
   // its own provenance instead of collapsing to `?? []`, which turned a 503
   // into "0" and, for approvals, into the affirmative "queue clear"
   // (AAASM-5115).
-  const approvals = certainFromQuery(approvalsQuery)
-  const policies = certainFromQuery(policiesQuery)
-  const alerts = certainFromQuery(alertsQuery)
-  const enforcement = certainFromQuery(enforcementQuery)
+  // AAASM-5380: every fold on this page is now decoded before anything reads a
+  // field off it, closing the umbrella ticket's final slice (S8). Each malformed
+  // `200` degrades to an explicit absence — a `—` with a reason — rather than a
+  // `.length` on an unread body (the literal `undefined ACTIVE POLICIES` of
+  // AAASM-5379), a `?? []` "0 pending approvals", or a `NaN` blocked count.
+  //
+  // `enforcement` decodes the `Map` the query already built from the wire, not a
+  // response body: `useAgentEnforcementQuery` folds `AgentEnforcementCounts[]`
+  // into a lookup keyed by agent id, and `decodeEnforcementLookup` verifies that
+  // lookup's value shape before `deriveOverviewKpis` treats its presence as a
+  // reason to sum the per-agent counts off `fleet`.
+  const approvals = certainFromShapedQuery(approvalsQuery, decodeApprovalCount)
+  const policies = certainFromShapedQuery(policiesQuery, decodePolicyList)
+  const alerts = certainFromShapedQuery(alertsQuery, decodeAlertList)
+  const enforcement = certainFromShapedQuery(enforcementQuery, decodeEnforcementLookup)
 
   const {
     total,

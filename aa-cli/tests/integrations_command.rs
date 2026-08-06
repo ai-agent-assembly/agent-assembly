@@ -311,8 +311,12 @@ fn verify_emits_machine_readable_assertions() {
 
 // ── status: evidence, and the rung this host cannot reach ────────────────────
 
+/// The rung is named on every read, and what is said about it is the
+/// **adapter's** answer — product brief §7.3 for the naming, AAASM-5454 for the
+/// answer. An adapter that declares the mechanism unsupported gets its own
+/// sentence printed; nothing here substitutes a platform claim of the CLI's own.
 #[test]
-fn status_reports_host_enforced_as_unavailable_rather_than_omitting_it() {
+fn status_reports_an_unsupported_host_enforcement_with_the_adapters_own_reason() {
     let h = Harness::start(|f| f);
     assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
 
@@ -320,8 +324,16 @@ fn status_reports_host_enforced_as_unavailable_rather_than_omitting_it() {
     assert_eq!(code(&output), exit::SUCCESS, "{}", combined(&output));
     let rendered = stdout(&output);
     assert!(
-        rendered.contains("host_enforced") && rendered.contains("unavailable on this platform"),
-        "the ladder hid the rung this host cannot reach:\n{rendered}"
+        rendered.contains("host_enforced"),
+        "the ladder hid a rung instead of naming it:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("unsupported by this integration"),
+        "an unsupported rung was not marked as unsupported:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("host enforcement is not available on this platform"),
+        "the adapter's own reason was replaced by wording of the CLI's own:\n{rendered}"
     );
     assert!(
         rendered.contains("Exercised evidence") && rendered.contains("Read-back evidence"),
@@ -332,6 +344,53 @@ fn status_reports_host_enforced_as_unavailable_rather_than_omitting_it() {
         rendered.contains("Runtime:"),
         "status did not report runtime connectivity"
     );
+}
+
+/// The defect this ticket was filed for, in the shape a macOS user meets it:
+/// the adapter declares host enforcement **supported**, nothing has reached it
+/// yet, and `status` used to answer "unavailable on this platform" — a claim
+/// about the host that nobody established and that is false on the only
+/// platform where the mechanism works.
+#[test]
+fn status_reports_a_supported_host_enforcement_as_reachable_never_as_unavailable() {
+    let h = Harness::start(|f| f.supporting_host_enforcement());
+    assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+
+    let output = h.aasm(&["status", "claude-code"]);
+    assert_eq!(code(&output), exit::SUCCESS, "{}", combined(&output));
+    let rendered = stdout(&output);
+    assert!(
+        rendered.contains("host_enforced"),
+        "the ladder hid the rung entirely:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("unavailable on this platform"),
+        "a supported mechanism was reported as impossible on this host:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("--install-managed-settings"),
+        "a reachable rung did not name the command that reaches it:\n{rendered}"
+    );
+    // Reachable is not reached. The rung must not read as protection that
+    // exists — nothing has attested an endpoint-managed policy here.
+    assert_eq!(
+        ladder_mark(&rendered, "host_enforced"),
+        "not active",
+        "an available rung was rendered as though it had been measured:\n{rendered}"
+    );
+}
+
+/// The mark `status` printed beside one ladder rung.
+///
+/// Read off the rendered table rather than the JSON, because the mark is the
+/// thing a human actually reads and the thing AAASM-5454 got wrong.
+fn ladder_mark(rendered: &str, level: &str) -> String {
+    rendered
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix(level))
+        .unwrap_or_else(|| panic!("the ladder never named {level}:\n{rendered}"))
+        .trim()
+        .to_string()
 }
 
 #[test]
@@ -345,13 +404,85 @@ fn status_separates_exercised_evidence_from_read_back_in_json() {
     assert!(!json["exercised_evidence"].as_array().expect("array").is_empty());
     assert!(json["read_back_evidence"].is_array());
     assert!(json["observed_at_unix_secs"].as_u64().is_some());
-    let host = json["levels"]
+    let host = host_level(&json);
+    assert_eq!(host["available"], serde_json::json!(false));
+    assert_eq!(
+        host["availability"],
+        serde_json::json!("unsupported"),
+        "an adapter that declared a refusal must not read as one that declared nothing"
+    );
+}
+
+/// The `host_enforced` rung of a JSON status.
+fn host_level(json: &serde_json::Value) -> &serde_json::Value {
+    json["levels"]
         .as_array()
         .expect("levels")
         .iter()
         .find(|l| l["level"] == "host_enforced")
-        .expect("host_enforced must be listed");
-    assert_eq!(host["available"], serde_json::json!(false));
+        .expect("host_enforced must be listed")
+}
+
+/// AAASM-5454's headline symptom: two surfaces of the same binary, on the same
+/// host, in the same minute, contradicting each other about whether the rung is
+/// reachable — and the discouraging one being the false one.
+///
+/// Both directions are asserted, because agreement that only holds when the
+/// answer is "no" is what the bug already had.
+#[test]
+fn plan_and_status_agree_on_whether_host_enforcement_is_reachable() {
+    for supported in [true, false] {
+        let h = Harness::start(|f| if supported { f.supporting_host_enforcement() } else { f });
+        assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+
+        let plan: serde_json::Value =
+            serde_json::from_str(&stdout(&h.aasm(&["plan", "claude-code", "--output", "json"]))).expect("plan JSON");
+        let status: serde_json::Value =
+            serde_json::from_str(&stdout(&h.aasm(&["status", "claude-code", "--output", "json"])))
+                .expect("status JSON");
+
+        let plan_says_reachable = !plan["unsupported"]
+            .as_array()
+            .expect("unsupported")
+            .iter()
+            .any(|u| u["capability"] == "host_enforcement");
+        let status_says_reachable = host_level(&status)["available"] == serde_json::json!(true);
+
+        assert_eq!(
+            plan_says_reachable, supported,
+            "the plan disagreed with the adapter's declaration (supported={supported})"
+        );
+        assert_eq!(
+            status_says_reachable, plan_says_reachable,
+            "plan and status disagree about host enforcement (supported={supported}): \
+             plan reachable={plan_says_reachable}, status reachable={status_says_reachable}"
+        );
+    }
+}
+
+/// Availability is a statement about a path. It must never carry an implication
+/// that something was installed, exercised or attested — the three states stay
+/// three, and none of them is `achieved`.
+#[test]
+fn a_reachable_rung_is_not_reported_as_a_measured_one() {
+    let h = Harness::start(|f| f.supporting_host_enforcement());
+    assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+
+    let status: serde_json::Value =
+        serde_json::from_str(&stdout(&h.aasm(&["status", "claude-code", "--output", "json"]))).expect("status JSON");
+    let host = host_level(&status);
+    assert_eq!(host["available"], serde_json::json!(true));
+    assert_eq!(host["availability"], serde_json::json!("available"));
+    assert_eq!(
+        host["achieved"],
+        serde_json::json!(false),
+        "a reachable rung was reported as reached"
+    );
+    assert_ne!(
+        status["achieved_level"],
+        serde_json::json!("host_enforced"),
+        "the ladder claimed a level no evidence supports"
+    );
 }
 
 // ── drift and repair ─────────────────────────────────────────────────────────
