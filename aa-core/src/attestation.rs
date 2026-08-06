@@ -78,6 +78,18 @@ pub enum ClaimTerm {
     ApprovalRequired,
     /// A planned control is configured but unavailable, so the achieved level
     /// is below the planned level.
+    ///
+    /// **Known divergence from the recorded evidence bar (AAASM-5654).** ADR
+    /// 0033 §6 and ADR 0030 §4.1 both require *Degraded* to be backed by a
+    /// `LayerDegradation` event or an ADR 0030 `Degraded` state **carrying
+    /// both the planned and the achieved level**. This term is derived from
+    /// [`SelectedMode::Enabled`] plus an unsubstantiated basis alone, and the
+    /// pair it carries is (`selected_mode`, `basis`) rather than two ladder
+    /// rungs — there is no ladder for these components to have rungs on.
+    ///
+    /// That is a weaker bar than either ADR states, so the same word will
+    /// exist on the public surface backed by two different standards. Consumers
+    /// rendering both sources must namespace them rather than merge them.
     Degraded,
     /// No control inspected this action or payload; nothing is known about it.
     ///
