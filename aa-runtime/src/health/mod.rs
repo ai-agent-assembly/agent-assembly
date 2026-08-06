@@ -696,4 +696,28 @@ mod tests {
         }
         assert_eq!(json["protection"]["any_coverage_verified"], false);
     }
+
+    /// The unauthenticated body must not name the exact build.
+    #[test]
+    fn the_health_body_carries_the_release_series_not_the_exact_build() {
+        assert_eq!(version_series("0.0.1-rc.7"), "0.0.1");
+        assert_eq!(version_series("1.2.3+build.5"), "1.2.3");
+        assert_eq!(version_series("1.2.3"), "1.2.3");
+
+        let attestation = crate::layer::LayerDetector::attest(TEST_NOW);
+        // Positive control: the crate version really does carry a pre-release
+        // suffix, so this assertion is not vacuous.
+        assert!(
+            attestation.component_version.contains('-'),
+            "crate version {} has no pre-release part, so this test proves nothing",
+            attestation.component_version
+        );
+
+        let report = ProtectionReport::evaluate(&attestation, TEST_NOW);
+        assert!(!report.attestation.component_version.contains('-'));
+        assert_eq!(
+            report.attestation.component_version,
+            version_series(env!("CARGO_PKG_VERSION"))
+        );
+    }
 }
