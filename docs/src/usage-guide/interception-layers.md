@@ -99,5 +99,7 @@ SDK for precision where you own the code, proxy for egress control without
 touching agent code, eBPF for kernel-level *detection* of what escaped both on
 Linux — all feeding one gateway and one audit log.
 
-Match the requirement to what the layer can promise, too: the SDK and the proxy
-can deny an action before it runs; eBPF tells you an action happened.
+Match the requirement to what the layer can promise, too: the proxy denies an
+action before it leaves the machine; the SDK evaluates in-process but is
+advisory, since a non-cooperating agent never calls it; eBPF tells you an action
+happened.

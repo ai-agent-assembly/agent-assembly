@@ -27,7 +27,10 @@ agent can reach, so it can *report* actions the higher layers never saw —
 including deliberate attempts to bypass the SDK.
 
 Note the distinction the table draws, because it decides what each layer can
-promise: layers 1 and 2 can **deny an action before it runs**; layer 3 **reports
+promise: layer 2 **denies an action before it runs**; layer 1 evaluates before
+the call but is **advisory** — `aa-sdk-client` has no in-tree caller that
+refuses, and a non-cooperating process simply never asks it
+(`aa-sdk-client/src/decision.rs:32-33`, ADR 0002); layer 3 **reports
 what it observed**. Its probes emit telemetry and return no verdict, so an action
 it sees is an action that already happened.
 

@@ -28,12 +28,12 @@ The tiers describe mediation, not universal coverage. An earlier revision of thi
 page said an L2 tool "cannot bypass enforcement", which is not true of any tier
 here and is contradicted by measured bypasses. The accurate statement:
 
-**What mediates at L2, and when.** Two mechanisms, both deciding *before* the
-action proceeds:
+**What mediates at L2, and when.** Two mechanisms evaluate before the action
+proceeds, but only one of them is an enforcement point:
 
 | Mechanism | What it mediates | Platform | Decision timing |
 |---|---|---|---|
-| SDK / wrapper seam | Framework tool calls the SDK wraps, after its initializer runs | Wherever the SDK runs (macOS, Linux) | Synchronous — the deny raises before the wrapped body executes |
+| SDK / wrapper seam (**advisory**) | Framework tool calls the SDK wraps, after its initializer runs | Wherever the SDK runs (macOS, Linux) | Synchronous — the language wrapper raises before the wrapped body executes. But `aa-sdk-client` has no in-tree caller that refuses (`decision.rs:32-33`) and the call is voluntary, so this is defense-in-depth, not the gate (ADR 0002) |
 | `aa-proxy` | Outbound HTTP/1.1 **routed to the proxy**, on a host under MitM | macOS and Linux. CA trust-store install is automatic at proxy start on macOS; on Linux run `sudo aasm proxy install-ca`. Windows is unsupported | Synchronous — a denial returns 403 (or a JSON-RPC error for MCP `tools/call`) without dialling upstream |
 
 **What is outside the boundary.** These are not enforced at any tier on this
