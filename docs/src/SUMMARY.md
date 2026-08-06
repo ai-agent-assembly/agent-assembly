@@ -189,6 +189,7 @@
   - [0031 - OSS Native Account Authentication](adr/0031-oss-native-account-authentication.md)
   - [0032 - Local-First Sensitive-Data Provider Architecture](adr/0032-local-first-sensitive-data-provider-architecture.md)
   - [0033 - Canonical Governance & Enforcement Architecture](adr/0033-canonical-governance-and-enforcement-architecture.md)
+  - [0034 - One Product Truth & Cross-Repository Documentation Governance](adr/0034-one-product-truth-and-cross-repository-documentation-governance.md)
 
 # Research
 
