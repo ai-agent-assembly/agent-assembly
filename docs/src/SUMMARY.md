@@ -186,6 +186,7 @@
   - [0030 - Developer Integration Boundaries & Local Trust Model](adr/0030-developer-integration-boundaries-and-trust-model.md)
   - [0031 - OSS Native Account Authentication](adr/0031-oss-native-account-authentication.md)
   - [0032 - Local-First Sensitive-Data Provider Architecture](adr/0032-local-first-sensitive-data-provider-architecture.md)
+  - [0033 - Canonical Governance & Enforcement Architecture](adr/0033-canonical-governance-and-enforcement-architecture.md)
 
 # Research
 
