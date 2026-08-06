@@ -43,10 +43,18 @@ arrives after the money is gone.
 
 ## Audit
 
-The **audit trail** is the immutable, append-only record of every decision the
-gateway makes — both allows and denies — together with the action that prompted
-it. Because it is tamper-evident and complete, it answers the accountability
-question for any agent: *what did it do, when, and was it permitted?* Audit
+The **audit trail** is the hash-chained record of the decisions the gateway
+makes — both allows and denies — together with the action that prompted it. Each
+entry in the per-session JSONL log carries an unkeyed SHA-256 digest over its own
+fields plus the preceding entry's digest, and `aasm audit verify-chain` re-walks
+it, so careless alteration is detectable. Read the guarantee precisely: the chain
+is **tamper-evident, not tamper-proof and not immutable** — it is unkeyed, so it
+is not a signature; it covers the JSONL sink only, and the database mirror stores
+no chain metadata; the log is append-only by convention rather than by
+constraint, since retention pruning deletes rows; and emission is best-effort, so
+a dropped entry is indistinguishable from tampering. Within those bounds it
+answers the accountability question for a governed agent: *what did it do, when,
+and was it permitted?* Audit
 records use a single wire format regardless of which interception layer observed
 the action, so the gateway presents one unified history. Audit data underpins
 debugging, incident response, and [compliance

@@ -26,8 +26,8 @@ then decides, on its own, which actions to take to reach it. Agent Assembly
 governs those actions. Each time a governed action reaches the runtime — a tool
 call the SDK wraps, an outbound request routed through the proxy, a model call
 on an inspected host — the runtime evaluates that action against a **policy** and
-a **budget**, returns *allow* or *deny* before the action runs, and writes an
-immutable **audit** record of the decision. Actions that reach none of those
+a **budget**, returns *allow* or *deny* before the action runs, and writes a
+hash-chained **audit** record of the decision. Actions that reach none of those
 interception points are neither evaluated nor recorded.
 
 A governing gateway, pointed at a reference policy, is one command away:
@@ -78,9 +78,12 @@ the agent may do." It provides:
 - **Budget control.** Per-team spend is tracked and enforced; a request that
   would breach the budget is denied, so a runaway loop is stopped, not just
   reported after the fact.
-- **An immutable audit trail.** Every decision the runtime makes — allow and deny
-  alike — is recorded, giving teams a tamper-evident account of the agent
+- **A hash-chained audit trail.** Every decision the runtime makes — allow and
+  deny alike — is recorded, giving teams a tamper-*evident* account of the agent
   behavior that was observed, for debugging, incident response, and compliance.
+  Tamper-evident is not immutable: the SHA-256 chain is unkeyed, covers the JSONL
+  sink only, and retention pruning deletes rows. See
+  [Audit](concepts.md#audit).
 - **Defense that does not depend on the agent's cooperation.** Enforcement is
   layered across three independent interception points (see [the three-layer
   model](three-layer-model.md)), so governance can still hold when an agent skips

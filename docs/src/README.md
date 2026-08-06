@@ -1,6 +1,6 @@
 # agent-assembly
 
-**agent-assembly** is the open-source core of the AI Agent Assembly governance platform. It enforces policy on AI agents — what they may call, spend, and connect to — and records every decision in an immutable audit trail.
+**agent-assembly** is the open-source core of the AI Agent Assembly governance platform. It enforces policy on AI agents — what they may call, spend, and connect to — and records every decision it makes in a hash-chained, tamper-evident audit trail.
 
 This book is the contributor and operator reference for the core. If you build *with* a language SDK instead, read the per-SDK guides below.
 

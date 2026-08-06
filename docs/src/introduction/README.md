@@ -2,8 +2,8 @@
 
 **agent-assembly** is a governance and security runtime for AI agents. It sits
 between an agent and the tools, models, and networks it reaches for, evaluates
-the actions routed to it against policy and budget, and records the outcome in an
-immutable audit trail. It is the open-source core of the AI Agent Assembly platform.
+the actions routed to it against policy and budget, and records the outcome in a
+hash-chained audit trail. It is the open-source core of the AI Agent Assembly platform.
 
 This section is the place to start. It explains *what* the runtime is and the
 problem it solves, defines the handful of [core concepts](concepts.md) the rest
