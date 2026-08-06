@@ -50,6 +50,27 @@ pub fn emit(report: &impl Report, output: OutputFormat) {
     }
 }
 
+/// The operator-facing name of an integration state.
+///
+/// The DI-API's four tokens are `ladder | drifted | degraded | incompatible`,
+/// and `ladder` means "on the ordinary ladder — nothing anomalous". Printed
+/// verbatim it is decodable only by a reader who already knows the other three
+/// and can infer that this one is the good case (AAASM-5635). The separation
+/// itself is load-bearing and stays: only the word a person reads changes, and
+/// the wire token `--output json` publishes is untouched.
+///
+/// A token this build does not know is named as unrecognized rather than
+/// forwarded. Passing it through is how `ladder` reached a user in the first
+/// place, and this client is not entitled to translate a word it has never
+/// seen — reporting it, unread, is.
+fn human_state(token: &str) -> String {
+    match token {
+        "ladder" => "ok".to_string(),
+        "drifted" | "degraded" | "incompatible" => token.to_string(),
+        other => format!("unrecognized ({other})"),
+    }
+}
+
 fn tick(value: bool) -> &'static str {
     if value {
         "yes"
@@ -136,7 +157,12 @@ impl Report for ToolListReport {
                 tool.tool_id,
                 tool.detected_version.as_deref().unwrap_or("-"),
                 tool.compatibility,
-                tool.integration_state.as_deref().unwrap_or("not_integrated"),
+                // `None` is this CLI's own "no status could be read", not one
+                // of the service's state tokens, so it does not go through the
+                // rename.
+                tool.integration_state
+                    .as_deref()
+                    .map_or_else(|| "not_integrated".to_string(), human_state),
                 tool.achieved_level.as_deref().unwrap_or("-"),
             ));
             for warning in &tool.warnings {
@@ -219,7 +245,7 @@ impl Report for StatusReport {
         out.push_str(&format!("{} — {}\n", self.tool_id, self.achieved_level));
         out.push_str(&format!("  observed at:     {} (unix)\n", self.observed_at_unix_secs));
         out.push_str(&format!("  lifecycle phase: {}\n", self.phase));
-        out.push_str(&format!("  state:           {}\n", self.state));
+        out.push_str(&format!("  state:           {}\n", human_state(&self.state)));
         out.push_str(&format!("  planned level:   {}\n", self.planned_level));
         out.push_str(&format!("  compatibility:   {}\n", self.compatibility));
         out.push_str(&format!("  adapter ceiling: {}\n", self.adapter_ceiling));
