@@ -713,6 +713,64 @@ banned phrase should prefer E3 — put it in backticks, as this page does
 throughout — which is both silent and semantically right, since what is being
 named is a literal pattern rather than an assertion.
 
+#### 6.3.1 What the exemptions are for: non-product assertions
+
+E1–E6 are **syntactic** — they describe where a checker stops looking. They exist
+to serve a **semantic** rule, and the semantic rule is the one that governs when
+the two disagree.
+
+> **A banned absolute may carry its literal text only when it is explicitly
+> classified and presented as a non-product assertion.**
+
+Six classes qualify, and the list is closed:
+
+| # | Class | Example |
+| --- | --- | --- |
+| N1 | Attributed third-party quotation | A customer's or auditor's own published wording, attributed |
+| N2 | Legally required or contractual verbatim text | A control description a contract obliges the product to reproduce |
+| N3 | Trademarked names and fixed external terminology | A third party's product name that contains a listed word |
+| N4 | Negative examples demonstrating prohibited wording | This page; ADR 0033 forbidden design 7; `.claude/CLAUDE.md:42-44` |
+| N5 | Historical claims clearly marked withdrawn or superseded | A changelog entry recording what a prior release said, marked as corrected |
+| N6 | Test fixtures and adversarial examples | A checker's positive-control corpus |
+
+Two conditions apply to all six, and both are part of the class rather than
+optional good practice:
+
+1. **The text must be attributed or labelled**, so a reader can tell whose
+   assertion it is. An unattributed quotation is not N1; it is a claim.
+2. **It must not be presented as an Agent Assembly capability.** Placement is
+   what decides this, not intent.
+
+**The placement carve-out — where a non-product assertion may never appear.**
+Even a correctly classified N1–N6 string is a product claim again if it appears
+in a **heading, a page or section summary, front matter or other metadata, SEO or
+social-preview text, marketing copy, or a user-facing conclusion**. Those
+positions are read as the page speaking in its own voice, and quotation marks
+around a phrase in an `<h2>` do not survive the reader's eye, a search-result
+snippet, or a social card.
+
+So the checker applies E1–E6 **only in body context**. In a heading line, in YAML
+front matter, in an HTML `<meta>` element, or inside a `title:`/`description:`
+value, **E6 does not apply** — a quoted banned absolute there keeps its rule's
+own severity. E1–E5 continue to apply everywhere, because a fenced code block or
+a link destination is not prose in any position.
+
+**Reconciling the two lists.** E3 and E6 are the mechanisms; N1–N6 are the
+permissions. They are close but not identical, and the difference is the point:
+
+- A string can satisfy a syntactic exemption and fail the semantic rule — a
+  banned absolute in backticks inside a marketing headline is E3-exempt and is
+  still a product claim. The placement carve-out is what catches it.
+- A string can satisfy the semantic rule and still need a mechanism — an N1
+  attributed quotation must actually be *in* an E6 quoted span, or the checker
+  has no way to see that it is quoted.
+- Nothing outside N1–N6 is licensed by any exemption. E1–E6 tell a checker where
+  to stop; they do not tell an author that the text is permitted.
+
+This is the ruling recorded in [§7.4](#74-banned-absolutes-are-never-waivable),
+and it is what keeps that ruling usable rather than absolute to the point of
+forbidding this page.
+
 ### 6.4 The soft-wrap trap
 
 A multi-word pattern matched per physical line misses every instance that a hard
@@ -779,13 +837,20 @@ where it is written — the `exceptions` block of a repository's
 what each field means **when the rule waived is a claim-wording rule**, which is
 the one thing the two documents above leave to the caller.
 
+> **Read [§7.4](#74-banned-absolutes-are-never-waivable) first.** A waiver may
+> waive process, timing and review sequencing. It may **never** waive factual
+> truthfulness, so no waiver in this section reaches a banned absolute
+> (`CLAIM-ABS-*`) or an undifferentiated verb (`CLAIM-VERB-01`). What remains
+> waivable here is the ADR 0034 **D-dimension** rules — §2.2's extent,
+> distribution and strength comparisons, and Rule M.
+
 | Field | For a claim-wording waiver |
 | --- | --- |
 | `id` | Stable identifier, referenced from the waived text so a reader of the page can find the waiver |
-| `rule` | The rule id from [§5.3](#53-the-rule-set) — e.g. `CLAIM-ABS-06` — or a D-dimension from ADR 0034 §2.1. Not a prose description |
+| `rule` | A D-dimension from ADR 0034 §2.1, or Rule M. Not a prose description. A `CLAIM-ABS-*` or `CLAIM-VERB-01` id is **accepted and validated but never applied** — [§7.4](#74-banned-absolutes-are-never-waivable) |
 | `text` | The **exact string** permitted, byte for byte, including case. A waiver covers a string, never a page, a section or a topic |
 | `scope` | Repository, path, and the surface(s). A waiver for a T6 sentence does not travel to the T4 page it was derived from |
-| `justification` | Why the rule cannot be satisfied by rewording. *"The reviewer preferred it"* is not a justification; *"this is a verbatim quotation of a third party's published wording"* is |
+| `justification` | Why the rule cannot be satisfied by rewording. *"The reviewer preferred it"* is not a justification; *"the manifest row is being re-derived under AAASM-nnnn and lands next week"* is. A justification that amounts to *the claim is not supported but we want to publish it* is the case [§7.4](#74-banned-absolutes-are-never-waivable) forbids |
 | `evidence` | What supports the claim in the absence of the rule — normally the manifest row id, plus the bound that the waived wording omits |
 | `approver` | A `waiver-approver` who is **not** the author and not the sole owning-class reviewer |
 | `issued` | Date the approval was given |
@@ -810,29 +875,32 @@ Note what this means for `expires` in practice: during an open release window,
 "the next release tag" is usually sooner than 90 days, so most claim-wording
 waivers are shorter-lived than the ceiling suggests.
 
-### 7.3 Worked example
+### 7.3 Worked example, and a worked non-example
 
-A waiver in a repository's `TRUTH-ADOPTION.md`:
+A valid waiver in a repository's `TRUTH-ADOPTION.md`. It waives a **D3
+distribution** requirement — a process bound, not a truth bound — while the
+missing platform qualifier is being sourced:
 
 ```yaml
 exceptions:
   - id: WV-2026-014
-    rule: CLAIM-ABS-06
-    text: "audit trail for every action the gateway receives"
+    rule: D3                        # ADR 0034 2.1 - platform
+    text: "installs from the Homebrew tap"
     scope:
       repository: ai-agent-assembly/docs
-      paths: [docs/src/compliance-overview.md]
+      paths: [docs/src/quickstart.md]
       surfaces: [T5]
     justification: >
-      Verbatim quotation of the SOC 2 control language the customer's auditor
-      supplied. Rewording it breaks the mapping the page exists to provide.
+      The tap ships macOS arm64 and x86_64 today and a Linux formula is in
+      review under AAASM-nnnn. Naming only macOS now would be an understatement
+      that has to be reverted in a fortnight; the sentence is scheduled to gain
+      its platform list when that lands.
     evidence:
-      manifest_rows: [S1]
-      omitted_bound: "gateway-received actions only; actions outside the
-        governed path are Unmeasured (ADR 0033 §4)"
+      manifest_rows: [H4]
+      omitted_bound: "released_platforms: [macos_arm64, macos_x86_64]"
     approver: truth-owner-docs-hub
-    issued: 2026-08-06
-    expires: 2026-09-15
+    issued: 2026-08-07
+    expires: 2026-09-04
 ```
 
 Three properties to copy: `text` is the exact string and nothing wider; `scope`
@@ -840,42 +908,112 @@ names one path and one surface; and `evidence` states the bound the waived
 wording drops, so a reader of the waiver learns the true claim without leaving
 the record.
 
-### 7.4 An unresolved conflict — do not resolve it in a pull request
+**The non-example, because it is the one people will try.** A waiver against
+`CLAIM-ABS-06` for the string `audit trail for every action the gateway
+receives`, justified as a verbatim quotation of a customer's audit-control
+language, is **not** valid. Two things are wrong with it, and only the second is
+obvious:
 
-**The governing documents disagree about whether a banned absolute may be waived
-at all, and this page does not settle it.**
+1. It asks a waiver to authorise an absolute product claim, which
+   [§7.4](#74-banned-absolutes-are-never-waivable) forbids outright. The checker
+   validates the record and does not apply it.
+2. The stated justification is actually a **class N1** situation — an attributed
+   third-party quotation — and N1 needs no waiver at all. The correct remedy is
+   [§6.3.1](#631-what-the-exemptions-are-for-non-product-assertions): attribute
+   the quotation to the auditor, place it in a quoted span in body text, and keep
+   it out of the heading and the page summary. The page then carries the string
+   lawfully, with no waiver, no expiry, and no renewal.
 
-- ADR 0034 Decision 10's opening sentence defines a waiver as a permission to
-  publish against a rule in that ADR *"or against ADR 0033's banned-absolutes
-  list"*, and its validation requirement W8 says the ADR *"adds the waiver
-  mechanism, not the check"* for exactly that list.
-- ADR 0034 Decision 10's unwaivable category 1 is *"an ADR 0033 **forbidden
-  design**"*. The banned-absolutes list **is** ADR 0033 forbidden design 7.
-- [content-ownership.md](content-ownership.md)'s *Absolutes* section and
-  [the adoption record](truth-adoption-record.md)'s `exceptions` section each
-  restate the flat form — that an ADR 0033 forbidden design cannot be waived —
-  in a paragraph whose subject is the absolutes list.
+That is the general shape. Reaching for a waiver against a `CLAIM-ABS-*` rule is
+almost always a sign that the text is either an unsupported claim, which must be
+reworded, or a non-product assertion, which must be classified and placed.
 
-A reconciling reading exists: unwaivable category 1's own rationale is *"those
-are architectural bans"*, which fits forbidden designs 1–6, 8 and 9 and does not
-fit a wording ban. Under that reading, forbidden design 7 is carved out by name
-in Decision 10's first sentence and is waivable. But the flat form is stated
-three times, and choosing between them changes which sentences in three
-documents are wrong. That is an amendment to an Accepted ADR, and ADR 0034
-Decision 11 is explicit that an agent must escalate a question the ADR did not
-settle rather than settle it in the pull request at hand.
+### 7.4 Banned absolutes are never waivable
 
-**Interim rule, so that AAASM-5599 has no decision to make.** A checker
-**validates** a waiver whose `rule` is one of `CLAIM-ABS-01` … `CLAIM-ABS-12`
-— fields, approver, expiry, all of it — and **does not apply it**. The
-diagnostic keeps its severity from [§5.3](#53-the-rule-set). This is the
-fail-closed behaviour and it is correct under both readings: if the flat reading
-holds it is the rule, and if the reconciling reading holds it is merely stricter
-than necessary for a bounded period. Waivers against ADR 0034 D-dimension rules
-and against `CLAIM-VERB-01` are unaffected and apply normally.
+**This is settled.** The question was escalated from an earlier revision of this
+page, and the owner ruled:
 
-Owner of the resolution: an amendment to ADR 0034 Decision 10, with a matching
-correction to whichever of the two other pages ends up wrong.
+> A waiver may waive process, timing, review sequencing, or temporary governance
+> requirements. It must never waive factual truthfulness or authorise publishing
+> an unsupported absolute product claim. […] A time limit, named owner, approver,
+> or fail-closed expiry does not make an unsupported claim true.
+
+So the rule, without qualification:
+
+> **No waiver, of any form, permits publishing a phrase on ADR 0033 forbidden
+> design 7's banned-absolutes list.** A checker **validates** a waiver whose
+> `rule` is one of `CLAIM-ABS-01` … `CLAIM-ABS-12` — fields, approver, expiry,
+> all of it — and **never applies it**. The diagnostic keeps its severity from
+> [§5.3](#53-the-rule-set).
+
+Full validation is retained deliberately rather than rejecting such a waiver
+outright: a malformed record and a well-formed-but-inapplicable one are different
+situations, and the author is owed the difference.
+
+**What the checker emits.** A `CLAIM-ABS-*` waiver that validates but is not
+applied emits an additional `info` diagnostic naming this section, so the author
+can see that the waiver was well-formed and why it did not take effect. Silence
+here would be a third implementation choice left to the reader, which
+[the preamble](#claim-vocabulary-prohibited-absolutes-and-waiver-policy) declares
+a defect.
+
+**`CLAIM-VERB-01` is on the same footing.** Its source is ADR 0033 §6's
+undifferentiated-verb requirement, which is neither a rule in ADR 0034 nor an
+entry on the banned-absolutes list — so no sentence in either ADR authorises a
+waiver against it. An earlier revision of this page said such waivers "apply
+normally", which was a governance hole on the permissive side. They do not: a
+`CLAIM-VERB-01` waiver is validated and not applied, exactly as a `CLAIM-ABS-*`
+waiver is. Waivers against ADR 0034 D-dimension rules are unaffected and apply
+normally.
+
+**What the ruling does not forbid** is the six non-product-assertion classes in
+[§6.3.1](#631-what-the-exemptions-are-for-non-product-assertions). Those are not
+waivers and are not exceptions to the ban — a quotation attributed to a third
+party is not the product asserting anything, so there is no product claim to
+waive. The ban and the classes are complementary, and the placement carve-out is
+what stops a class from becoming a loophole.
+
+#### The drafting defect this ruling exposes, and who fixes it
+
+The ruling contradicts six statements currently in force, and correcting them is
+**[AAASM-5671](https://lightning-dust-mite.atlassian.net/browse/AAASM-5671)**, an
+amendment to ADR 0034 with matching corrections to the two sibling pages. It is
+not this page's to make, and this page must not be read as having made it.
+
+Statements AAASM-5671 strikes or narrows:
+
+| Location | Statement |
+| --- | --- |
+| ADR 0034 Decision 10, opening | A waiver is a permission to publish *"against a rule in this ADR **or against ADR 0033's banned-absolutes list**"* |
+| ADR 0034 Decision 10, `rule` field | *"The rule waived — a D-dimension, a forbidden design, **a banned absolute**"* |
+| ADR 0034 validation requirement W8 | *"this ADR **adds the waiver mechanism**, not the check"* |
+| ADR 0034 traceability | *"**This ADR supplies the waiver mechanism over it**, not the check"* |
+| [content-ownership.md](content-ownership.md) *Absolutes* | *"**Who may waive it** is ADR 0034 Decision 10 — an expiring, string-scoped waiver…"* |
+| [content-ownership.md](content-ownership.md) hand-off 2 | *"**Waiver semantics** — who may approve publishing against a rule here **or against ADR 0033's banned-absolutes list**"* |
+
+The statements already consistent with the ruling are ADR 0034 Decision 10's
+unwaivable category 1 (*"an ADR 0033 forbidden design. Those are architectural
+bans; they are amended in 0033 or they hold"*) and its two restatements — in
+[content-ownership.md](content-ownership.md)'s *Absolutes* section and
+[the adoption record](truth-adoption-record.md)'s `exceptions` section.
+
+Two things are worth recording precisely, because an earlier revision of this
+page got the shape of the evidence wrong in the direction that flattered its own
+conclusion:
+
+- **Only the ADR statement is independent.** Both sibling pages derive their
+  sentence from Decision 10 and cite it; neither is a separate witness. The split
+  was six statements to one, not one to three.
+- **[content-ownership.md](content-ownership.md)'s *Absolutes* section states
+  both forms, six lines apart, in the same paragraph on the same subject** — it
+  names Decision 10 as the mechanism by which the absolutes ban *is* waived, and
+  then says an ADR 0033 forbidden design cannot be waived. It is a witness for
+  both readings, and that internal contradiction is the tightest evidence that a
+  drafting defect existed. AAASM-5671 corrects it.
+
+**Sequencing.** AAASM-5671 merges before this page. Until it does, a reader
+comparing this section with ADR 0034 will find the six statements above still
+present; that window is tracked, not overlooked.
 
 ## 8. Self-test and the current baseline
 
@@ -971,7 +1109,7 @@ with an unclamped guard window, reports the tree as more compliant than it is.
 | Implementing the rule table, the pipeline and the diagnostics | [AAASM-5599](https://lightning-dust-mite.atlassian.net/browse/AAASM-5599) |
 | The bounded synonym set for ADR 0034 §2.0 limb 1, shared with hand-off 8's bound-token list | [AAASM-5599](https://lightning-dust-mite.atlassian.net/browse/AAASM-5599) |
 | Adding any phrase from [§5.4](#54-proposed-extensions-that-require-an-adr-0033-amendment) to the banned list | An amendment to ADR 0033 fd-7, with [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) |
-| Resolving the waivability conflict in [§7.4](#74-an-unresolved-conflict--do-not-resolve-it-in-a-pull-request) | An amendment to ADR 0034 Decision 10 |
+| Striking the six waivable-form statements the [§7.4](#74-banned-absolutes-are-never-waivable) ruling contradicts | [AAASM-5671](https://lightning-dust-mite.atlassian.net/browse/AAASM-5671) — merges before this page |
 | The T3 Approved Claims Registry, which will supply `⟨id⟩` | [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531) / [AAASM-5600](https://lightning-dust-mite.atlassian.net/browse/AAASM-5600) |
 | Clearing the [§8](#8-self-test-and-the-current-baseline) baseline | [AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528) |
 | The release gate that consumes `finding` diagnostics | [AAASM-5602](https://lightning-dust-mite.atlassian.net/browse/AAASM-5602) |
