@@ -613,4 +613,22 @@ mod tests {
         }
         .is_evidence());
     }
+
+    /// The adjudication → §6 term mapping, asserted as a table so a change to
+    /// any row is a deliberate edit rather than a silent drift.
+    #[test]
+    fn adjudicated_outcomes_map_to_their_adr_0033_terms() {
+        let table = [
+            (AdjudicatedOutcome::Blocked, ClaimTerm::DeniedBeforeExecution),
+            (AdjudicatedOutcome::Redacted, ClaimTerm::Redacted),
+            (AdjudicatedOutcome::HeldForApproval, ClaimTerm::ApprovalRequired),
+            (AdjudicatedOutcome::DecidedAdvisory, ClaimTerm::Evaluated),
+            (AdjudicatedOutcome::Flagged, ClaimTerm::Detected),
+            (AdjudicatedOutcome::Recorded, ClaimTerm::Observed),
+            (AdjudicatedOutcome::Inconclusive, ClaimTerm::Unmeasured),
+        ];
+        for (outcome, expected) in table {
+            assert_eq!(outcome.claim(), expected, "{outcome:?}");
+        }
+    }
 }
