@@ -70,6 +70,7 @@ pub mod fixture;
 pub mod lifecycle;
 pub mod negotiate;
 pub mod projection;
+pub mod provenance;
 pub mod scope;
 pub mod server;
 pub mod service;
@@ -86,6 +87,9 @@ pub use client::{ClientError, DevIntClient, Negotiated};
 pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
 pub use lifecycle::{IntegrationLifecycle, LifecycleError};
 pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
+pub use provenance::{
+    BuildIdentity, PeerProvenance, ProvenanceVerdict, RuntimeMultiplicity, RuntimeProvenance, BUILD_SHA,
+};
 pub use scope::{TokenScope, ToolScope};
 pub use server::{DevIntServer, DevIntServerConfig, DevIntServices};
 pub use service::{
