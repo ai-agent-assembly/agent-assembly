@@ -881,8 +881,17 @@ pub struct RemoveReport {
     pub tool_id: String,
     /// Whether this was a preview that changed nothing.
     pub dry_run: bool,
-    /// The id the executing call refers to.
-    pub plan_id: String,
+    /// The id the executing call refers to, when a plan was authored.
+    ///
+    /// `None` is a *stated* absence, not a missing value. The service authors a
+    /// reversal from an integration receipt and refuses when it holds none, so
+    /// a tool with nothing installed has **no** removal plan rather than an
+    /// unnamed one — and this command decides that case from the lifecycle
+    /// phase without ever sending the Remove verb. Carrying `String::new()` for
+    /// it printed `(plan )` to a person and `"plan_id": ""` to a script, which
+    /// is indistinguishable from a plan the runtime failed to name
+    /// (AAASM-5629).
+    pub plan_id: Option<String>,
     /// The restoration actions, in order.
     pub steps: Vec<StepRow>,
     /// What removal knowingly leaves behind.
@@ -898,7 +907,10 @@ impl RemoveReport {
             runtime,
             tool_id: view.tool_id.clone(),
             dry_run,
-            plan_id: view.plan_id.clone(),
+            // proto3 cannot tell an absent string from an empty one, so a
+            // runtime that answered without naming the plan is reported as
+            // having named none rather than as having named `""`.
+            plan_id: non_empty(&view.plan_id),
             steps: view.steps.iter().map(StepRow::from).collect(),
             residual: view.residual.clone(),
             warnings: view.warnings.clone(),

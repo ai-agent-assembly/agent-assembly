@@ -405,11 +405,18 @@ impl Report for RepairReport {
 impl Report for RemoveReport {
     fn render_human(&self) -> String {
         let mut out = String::new();
+        // The plan identity rides on the one line that is always printed, so a
+        // reader never has to work out which of the conditional blocks below
+        // would have carried it. A run that authored no plan says so here in
+        // the same shape `repair` states its own no-op (AAASM-5629).
         out.push_str(&format!(
-            "{} — {} (plan {})\n",
+            "{} — {} ({})\n",
             self.tool_id,
             if self.dry_run { "removal preview" } else { "removal" },
-            self.plan_id
+            match &self.plan_id {
+                Some(id) => format!("plan {id}"),
+                None => "nothing to remove".to_string(),
+            }
         ));
         out.push_str("\nRestoration actions:\n");
         render_steps(&mut out, &self.steps);
