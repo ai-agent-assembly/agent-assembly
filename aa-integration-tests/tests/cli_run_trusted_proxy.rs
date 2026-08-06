@@ -31,6 +31,13 @@
 #[allow(unused_imports)]
 mod proxy_trust_support;
 
+/// The evidence ledger (AAASM-5465). Every case in this file is `#[cfg(unix)]`,
+/// so on any other host the binary reports one green test that measured nothing;
+/// the ledger is what makes that legible to the CI summary rather than only to a
+/// human reading stdout.
+#[path = "evidence/mod.rs"]
+mod evidence;
+
 #[cfg(unix)]
 mod refusals {
     use super::proxy_trust_support::{aasm_binary, foreign_incarnation_token, prefixed_path, TrustedProxy};
@@ -379,9 +386,15 @@ exit 0
 #[cfg(not(unix))]
 #[test]
 fn proxy_trust_refusals_are_not_measured_on_this_host() {
-    println!(
-        "SKIP [AAASM-5323]: these cases need a POSIX shell stand-in for `claude` and POSIX file \
-         modes; this host is {}.",
+    let reason = format!(
+        "these cases need a POSIX shell stand-in for `claude` and POSIX file modes; this host is \
+         {}.",
         std::env::consts::OS
+    );
+    println!("SKIP [AAASM-5323]: {reason}");
+    evidence::record(
+        "aaasm-5323-proxy-trust-refusals",
+        evidence::Measurement::UnsupportedPlatform,
+        &reason,
     );
 }
