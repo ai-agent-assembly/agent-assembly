@@ -34,6 +34,15 @@ rows marked *(branch position)* — self-correction rows added during review, wh
 subject text did not exist at the base commit and whose line numbers therefore
 refer to the branch.
 
+Every source path cited in this artifact was checked against `git ls-files` and
+`git check-ignore`: all are committed, and none is generated or build-produced.
+That check exists because the parallel AAASM-5638 audit found a pre-existing ADR
+citation to `aa-proto/_embedded/proto/audit.proto`, which is gitignored and
+produced by `build.rs` — it resolved for one reviewer only because their builds
+had created the directory, and fails on a clean tree. Whether a generated path
+resolves depends on what you ran, not on what is committed, so any such citation
+must be marked generated.
+
 ### Claim classes
 
 | Class | Meaning |
@@ -85,7 +94,11 @@ implementation and independently re-checked before being used in public copy.
 | `HTTP_PROXY`/`HTTPS_PROXY` are injected by `aasm run` **and** by installed developer integrations, which write them into the tool's own configuration so they persist independently of `aasm run` | `aa-cli/src/commands/run.rs:322-323`; `aa-devtool-claude-code/src/lib.rs:379-380` and `lifecycle.rs:929-930`; `aa-devtool-codex/src/lib.rs:301`; `aa-devtool-windsurf/src/lib.rs:312` |
 | A tool launched outside `aasm run` inherits neither the proxy nor `NODE_EXTRA_CA_CERTS` and is not protected | `aa-devtool-claude-code/src/lifecycle.rs:1010-1013`; measured, `docs/src/devtools/limitations.md` |
 | One local **root** CA, CN `Agent Assembly CA`, at `~/.aa/ca/` — per-domain **leaf** certs are minted from it. "Per-host CA" is the wrong description | `aa-proxy/src/tls/ca.rs:28-34,78-84,184-210` |
-| On macOS the install is **attempted** at proxy start, gated only on `!ca.is_installed()?`. It shells out to `security add-trusted-cert`, which **requires admin authorization** — macOS prompts, and because the call propagates with `?`, a refusal **fails proxy startup**. "Installed automatically" reads as silent and unattended and is wrong | `aa-proxy/src/lib.rs:64-69`; `aa-proxy/src/tls/keychain.rs:16-42` |
+| On macOS a System Keychain trust install is **attempted automatically at proxy start**, gated only on whether the certificate is already installed. The block runs unconditionally on macOS from `pub async fn run` | `aa-proxy/src/lib.rs:41,62-67` |
+| `CaStore::install` no-ops if already trusted, else calls `keychain::add_trusted_cert` | `aa-proxy/src/tls/ca.rs:215,219` |
+| That shells out to `security add-trusted-cert`, which **requires admin authorization** — macOS prompts | `aa-proxy/src/tls/keychain.rs:16,18,23-32` |
+| Because `ca.install()?` propagates out of `run`, **a refused prompt fails proxy startup**. "Installed automatically" reads as silent and unattended, and is wrong | `aa-proxy/src/lib.rs:65` |
+| The Claude Code integration deliberately **does not rely on** this trust store — it establishes trust per-launch through `NODE_EXTRA_CA_CERTS`. Note "does not *rely on*", not "does not *use*": the integration path does not depend on it, but the proxy binary does attempt it at startup, so the stronger phrasing would contradict `lib.rs:62-67` | `aa-devtool-claude-code/src/lifecycle.rs:653-659` |
 | CA install is **also implemented on Linux** — `sudo aasm proxy install-ca` copies to `/usr/local/share/ca-certificates/aa-proxy.crt` and runs `update-ca-certificates`. Windows is unsupported | `aa-cli/src/commands/proxy/ca.rs:79-82,150-188`; `uninstall_linux` at `:191`; wired at `proxy/mod.rs:26,45`; Windows arm at `ca.rs:87` |
 | **On MitM'd hosts**, HTTP/1.1 with `Content-Length` only; no ALPN is configured, so HTTP/2, gRPC and WebSocket cannot be inspected there, and a chunked request is dropped with no HTTP response rather than a 403. On hosts not under MitM those protocols work, tunnelled and uninspected — there is no WebSocket handling in `aa-proxy/src` at all | `aa-proxy/src/proxy/http.rs:266-270`; ALPN absent from `aa-proxy/src` |
 | Egress allow/deny comes from `AA_PROXY_DENIED_HOSTS` / `AA_PROXY_NETWORK_ALLOWLIST`, both **empty by default**. That is *not* "denies nothing": an SSRF guard denies unconditionally ahead of both lists | lists at `aa-proxy/src/config.rs:75-85`; SSRF guard at `aa-proxy/src/proxy/mod.rs:940-947`, pinned by the test at `:1967` |
@@ -283,6 +296,7 @@ Reported, not edited.
 | workspace root | `CLAUDE.md` (architecture section) | "Catches everything else, including bypass attempts." | absolute | Same as above. |
 | `agent-assembly` | `docs/src/devtools/governance-limits/claude-code.md` | eBPF uprobes described as "the only **enforcement** path" for file read/write | observe-presented-as-prevent | Same class as A7/A36. Not edited here — the file is outside this ticket's changed set and its correction belongs with the governance-limits page owner. Needs a follow-up under AAASM-5526. |
 | `agent-assembly` | `docs/src/protocol/CHANGELOG.md` | historical "immutable audit record" | overstated-crypto-guarantee | Left as-is: a changelog records what was said at the time. |
+| `agent-assembly` | `aa-devtool-claude-code/src/lifecycle.rs:657-659` (`HOST_ENFORCEMENT_REASON`, a user-visible CLI string) | "Agent Assembly **never adds** its certificate authority to the macOS system trust store" | absolute · unbounded scope | True of the *integration* path, which uses `NODE_EXTRA_CA_CERTS`; false at product scope, because `aa-proxy/src/lib.rs:62-67` attempts exactly that install at proxy start. Surfaced by the AAASM-5638 citation audit. Not edited here — it is Rust source outside this ticket's changed set. Needs a follow-up under AAASM-5526. |
 | `cloud` | — | No public over-claim found. | — | none |
 | `horonomy-official-website` | `design/v1/homepage-directions/…dc.html:678` | "with every action inside an explicit boundary" | absolute | Different product (Horonomy), and a design artifact rather than shipped copy. Flagged only. |
 
