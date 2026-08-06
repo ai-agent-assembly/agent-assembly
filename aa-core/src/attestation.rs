@@ -965,4 +965,35 @@ mod tests {
             );
         }
     }
+
+    /// Future-dated layers are permanently fresh, so an ingested attestation
+    /// could report a coverage claim forever. The check states that invariant
+    /// rather than clamping it, because such a payload is one to reject.
+    #[test]
+    fn future_dated_layers_fail_the_consistency_check() {
+        let consistent = ProtectionAttestation::new(
+            "0.0.1",
+            "test",
+            NOW,
+            vec![at(AttestationBasis::AssumedPresent, SelectedMode::Unset, NOW)],
+        );
+        assert!(consistent.timestamps_are_consistent());
+
+        let ahead = ProtectionAttestation::new(
+            "0.0.1",
+            "test",
+            NOW,
+            vec![at(
+                AttestationBasis::Adjudicated {
+                    outcome: AdjudicatedOutcome::Blocked,
+                },
+                SelectedMode::Unset,
+                NOW + 1,
+            )],
+        );
+        assert!(!ahead.timestamps_are_consistent());
+        // The hazard the check exists for: it is fresh, and stays fresh.
+        assert!(ahead.layers[0].is_fresh(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+        assert!(ahead.layers[0].is_fresh(NOW + 10_000_000, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+    }
 }
