@@ -323,8 +323,14 @@ jq -e '.runtime.provenance.standing == "verified"' result.json \
 
 `--allow-unverified-runtime` downgrades both refusals to a stderr warning for a
 deliberately mixed installation. It does **not** change what is reported: the
-standing still reaches `--output json`, so a result obtained through it stays
-marked as unverified rather than passing as verified.
+standing reaches `--output json` *and* rides above the result in the table
+rendering, so a result obtained through it stays marked as unverified rather
+than passing as verified.
+
+It also disarms the **multiplicity** refusal, which is not an identity cause at
+all. With more than one runtime reachable the command answers from whichever one
+it connected to and the others are never consulted; `reachable_runtimes` says how
+many there were, and `standing` cannot read `verified` while that is above one.
 
 ## Environment
 

@@ -124,10 +124,18 @@ pub struct IntegrationsArgs {
     /// well and describes *its* host — which is how a healthy tool got reported
     /// as not installed (AAASM-5628).
     ///
+    /// It also disarms the **multiplicity** refusal, which is not an identity
+    /// cause at all: with more than one runtime reachable the command proceeds
+    /// against whichever one it connected to, and the others are never
+    /// consulted. Two runtimes compiled from one commit have identical
+    /// identities, so no identity check can notice there are two — the reported
+    /// standing is what carries it, and it never reads `verified` while
+    /// `reachable_runtimes` is above one.
+    ///
     /// Pass this only for a deliberately mixed installation. It changes whether
-    /// the command proceeds, never what it reports: the standing still appears
-    /// in `--output json`, so a result recorded through it stays marked as
-    /// unverified.
+    /// the command proceeds, never what it reports: the standing appears in
+    /// `--output json` and above the result in the table rendering, so a result
+    /// recorded through it stays marked as unverified.
     #[arg(long, global = true)]
     pub allow_unverified_runtime: bool,
 }
@@ -221,6 +229,9 @@ NOTES:
     changes host state or asserts that enforcement is established.
 
     Pass --allow-unverified-runtime to downgrade both refusals to a warning.
+    That includes the more-than-one-listening refusal, which is not an identity
+    cause: the command then answers from whichever runtime it reached and the
+    others are never consulted. The reported standing carries it either way.
 
 {}",
         exit::help_table()
