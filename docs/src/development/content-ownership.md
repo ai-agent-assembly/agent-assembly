@@ -235,14 +235,30 @@ the same thing". It is directional:
 Detail is a fact a reader does not need in order to act correctly. A bound is a fact
 that, if removed, lets a reader act correctly on a case the canonical source excludes.
 
-The test is a single question, and it is answerable without judgement about tone:
+### Reviewing a restatement for widening
 
-> **Is there a situation in which a reader who read only the derivative would act,
-> and a reader who read the canonical source would not?**
+There is a question that catches the common case quickly:
 
-If yes, the derivative widened the claim, however carefully it is worded.
+> **First-pass heuristic.** Is there a situation in which a reader who read only the
+> derivative would act, and a reader who read the canonical source would not?
 
-### Moves that widen a claim
+A *yes* is conclusive: the derivative widened the claim, however carefully it is
+worded. **A *no* is not conclusive**, and it is worth knowing exactly why before you
+lean on it, because two of the eight recurring moves below slip past it:
+
+- *Replacing a measurement with an adjective* — both readers act, so the heuristic
+  returns no widening. The damage is that the reader cannot tell whether the system
+  meets their threshold.
+- *Restating a limit as a default* — the reader who saw only the derivative acts
+  **less**, not more, so the heuristic points the wrong way entirely.
+
+It also cannot see understating at all, since that error is a *narrowing*.
+
+So the heuristic is a filter, not the review. **The review is the eight-move table**:
+walk it, and for each move state what the restatement keeps. That is what the
+[pre-PR checklist](#before-you-open-a-pr-that-touches-public-content) asks for.
+
+#### Moves that widen a claim
 
 Each of these is a widening even when every individual word is accurate. They are
 listed because they are the ones that recur.
@@ -293,7 +309,7 @@ Requirements:
 
 - It carries a canonical link in the same section, not merely in a footer or a
   "further reading" list at the end of the page.
-- It survives the [widening review](#an-outer-layer-may-narrow-a-claim-it-may-not-widen-one).
+- It survives the [widening review](#reviewing-a-restatement-for-widening) — the eight-move walk, not just the heuristic.
 - It carries the maturity label the canonical source carries, when one applies.
 
 #### Worked example: a compliant L0 summary
@@ -541,9 +557,12 @@ hits one should escalate rather than settle it in a content PR.
 - [ ] For each fact this layer does **not** own, the change is a link, a summary, a
       quotation or a generated region — and carries the canonical link in the same
       section.
-- [ ] No claim was widened: the [widening test](#an-outer-layer-may-narrow-a-claim-it-may-not-widen-one)
-      was applied to each restatement, and each edited claim still names its platform,
-      its preconditions and its ADR 0033 §6 term.
+- [ ] No claim was widened: each restatement was walked against **all eight**
+      [moves that widen a claim](#moves-that-widen-a-claim) — not only the first-pass
+      heuristic, which cannot see two of them — and each edited claim still names its
+      platform, its preconditions and its ADR 0033 §6 term.
+- [ ] No claim was *understated* either: nothing says less than the canonical source
+      supports. The heuristic cannot detect this direction at all.
 - [ ] Any new hand-maintained copy is declared with an owner, a canonical link, a
       reason generation was not used, and a re-verification trigger.
 - [ ] No `BEGIN GENERATED` region was hand-edited; generators were re-run instead.
