@@ -920,7 +920,10 @@ platform, and a shipped feature can be *Unmeasured* on a path. Each must
 [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621)'s to settle,
 not this ADR's.** That hand-off also bounds the forbidden-designs list: this ADR's
 banned absolutes bind *architecture and product descriptions*; how the ban is policed
-across repos, and who may waive it, is 5621's.
+across repos was 5621's, and so was the question of waiver.
+[ADR 0034 Decision 10](0034-one-product-truth-and-cross-repository-documentation-governance.md#10-waivers-and-exceptions)
+has since settled that question: an absolute on this list **may not be waived**, by
+anyone, for any period (AAASM-5671).
 
 ### F. The published wire contract — a decision, not an inventory item (owner: AAASM-5605 + protocol review)
 
