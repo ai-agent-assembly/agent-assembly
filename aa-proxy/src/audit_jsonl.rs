@@ -32,8 +32,45 @@ pub enum ProxyAuditDecision {
     /// Request forwarded with secrets replaced by `[REDACTED:<Kind>]`
     /// markers in the body (policy `redact_only`).
     ForwardedRedacted,
-    /// Request blocked at the proxy; upstream never dialled (policy `block`).
+    /// Request blocked at the proxy; upstream never dialled — either by the
+    /// credential verdict (policy `block`) or by a rule, in which case
+    /// [`ProxyAuditEntry::refusal_rule`] names it.
     Blocked,
+}
+
+/// Which **rule** refused a request, on a record whose decision is
+/// [`ProxyAuditDecision::Blocked`] (AAASM-5449).
+///
+/// These are the proxy's most provable preventions: each is applied before any
+/// dial exists on the code path, so the 403 (or JSON-RPC error envelope) is
+/// written *instead of* the bytes going. Until this field existed they were
+/// logged and discarded, so ADR 0032 §8 could count redaction-with-forwarding
+/// but not the refusals a reader would find hardest to argue with.
+///
+/// Why the rule belongs on the record rather than only in the log: a
+/// fail-closed credential block and a denylist refusal are both `Blocked` with
+/// an empty finding list, and a consumer that cannot tell them apart cannot
+/// attribute a prevention to the control that made it.
+///
+/// `None` on a credential verdict's own refusal. What refused it is already
+/// spelled by [`ProxyAuditEntry::credential_findings`] and the decision, and
+/// relabelling those records would change what an existing line means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalRule {
+    /// Operator denylist (`AA_PROXY_DENIED_HOSTS`) matched the host.
+    EgressDenylist,
+    /// A non-empty network allowlist did not match the host.
+    EgressAllowlist,
+    /// The host was an IP literal in a blocked range (loopback, RFC-1918,
+    /// link-local, cloud metadata) — the SSRF guard.
+    SsrfBlockedAddress,
+    /// A cleartext `http://` request addressed a known LLM provider, which
+    /// would bypass the HTTPS-only DLP path entirely.
+    PlaintextLlmDowngrade,
+    /// The gateway denied an MCP `tools/call`, or the call could not be
+    /// evaluated and was refused fail-closed.
+    McpToolCall,
 }
 
 /// A single audit record emitted by the proxy's data path.
@@ -56,6 +93,11 @@ pub struct ProxyAuditEntry {
     pub path: String,
     /// What the proxy did with the request.
     pub decision: ProxyAuditDecision,
+    /// Which rule refused it, when a rule did (AAASM-5449).
+    ///
+    /// `None` for anything that is not a rule refusal, including the credential
+    /// verdict's own `Blocked`. See [`RefusalRule`].
+    pub refusal_rule: Option<RefusalRule>,
     /// What was **observed** about whether the payload left this process.
     ///
     /// [`Self::decision`] is what the proxy resolved to do; this is what
@@ -368,6 +410,7 @@ mod tests {
             method: "POST".into(),
             path: "/v1/chat/completions".into(),
             decision: ProxyAuditDecision::ForwardedRedacted,
+            refusal_rule: None,
             execution: ExecutionEvidence::new(
                 EnforcementPoint::PreTransmission,
                 TransmissionEvidence::ForwardedClean,
@@ -415,6 +458,7 @@ mod tests {
             method: "GET".into(),
             path: "/".into(),
             decision,
+            refusal_rule: None,
             execution: ExecutionEvidence::unrecorded(EnforcementMode::Enforce),
             probe_correlation: None,
             credential_findings: vec![],
@@ -545,6 +589,7 @@ mod tests {
             method: "POST".into(),
             path: "/v1/do".into(),
             decision: ProxyAuditDecision::ForwardedRedacted,
+            refusal_rule: None,
             execution: ExecutionEvidence::new(
                 EnforcementPoint::PreTransmission,
                 TransmissionEvidence::ForwardedClean,
@@ -692,6 +737,54 @@ mod tests {
         assert_eq!(first, before + 1);
         assert_eq!(second, before + 2);
         assert_eq!(dropped_entries(), before + 2);
+    }
+
+    /// A rule refusal and a fail-closed credential block are both `Blocked`
+    /// with an empty finding list, so without this field a consumer cannot
+    /// attribute a prevention to the control that made it (AAASM-5449).
+    #[test]
+    fn a_refusal_rule_round_trips_and_stays_absent_on_a_verdict_record() {
+        let entry = ProxyAuditEntry {
+            refusal_rule: Some(RefusalRule::EgressDenylist),
+            ..clean_entry("evil.example", ProxyAuditDecision::Blocked)
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(
+            json.contains("\"egress_denylist\""),
+            "the rule must be spelled on the line: {json}"
+        );
+        let back: ProxyAuditEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.refusal_rule, Some(RefusalRule::EgressDenylist));
+
+        // Non-vacuity: the field really does distinguish, rather than being
+        // present on every record.
+        let verdict_block = clean_entry("api.example", ProxyAuditDecision::Blocked);
+        assert!(
+            verdict_block.refusal_rule.is_none(),
+            "a credential verdict's refusal names no rule"
+        );
+    }
+
+    /// Every rule is a distinct on-the-wire token: two rules that serialised to
+    /// the same string would silently merge two controls into one count.
+    #[test]
+    fn every_refusal_rule_serializes_distinctly() {
+        let rules = [
+            RefusalRule::EgressDenylist,
+            RefusalRule::EgressAllowlist,
+            RefusalRule::SsrfBlockedAddress,
+            RefusalRule::PlaintextLlmDowngrade,
+            RefusalRule::McpToolCall,
+        ];
+        let mut seen = Vec::new();
+        for rule in rules {
+            let json = serde_json::to_string(&rule).unwrap();
+            assert!(!seen.contains(&json), "{rule:?} collides with an earlier rule: {json}");
+            let back: RefusalRule = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, rule);
+            seen.push(json);
+        }
+        assert_eq!(seen.len(), rules.len());
     }
 
     /// A probe's own traffic must be identifiable in the record, so a consumer

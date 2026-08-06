@@ -378,6 +378,9 @@ impl ProxyServer {
             // body-only redaction left target secrets in cleartext (AAASM-4738).
             path: self.interceptor.redact_target(id.target),
             decision,
+            // A verdict-driven record: what refused it, if anything did, is the
+            // credential scan, which the findings already say (AAASM-5449).
+            refusal_rule: None,
             findings: verdict.findings.clone(),
             redacted_body,
             probe_correlation,
