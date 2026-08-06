@@ -38,6 +38,7 @@
 //! only in discipline: missing evidence resolves downward in both.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
 
 #[cfg(feature = "serde")]
@@ -434,5 +435,93 @@ impl LayerAttestation {
     /// control acted on an action.
     pub fn asserts_coverage_at(&self, now_unix_secs: u64, window_secs: u64) -> bool {
         self.verified_state_at(now_unix_secs, window_secs).asserts_coverage()
+    }
+}
+
+/// Schema version of the attestation payload.
+///
+/// The ticket requires a *versioned contract*, because a consumer that renders
+/// this — the public trust surface among them — must be able to refuse a
+/// payload it does not understand rather than guess at it. Bump on any change
+/// to the meaning of an existing field; additive optional fields do not bump.
+pub const ATTESTATION_SCHEMA_VERSION: u32 = 1;
+
+/// The complete protection attestation for one process at one instant.
+///
+/// Carries the provenance a consumer needs to decide whether to trust it at
+/// all: which schema, which build, which platform, and when it was produced.
+/// Without those, a rendered table cannot distinguish "this build has no host
+/// mechanism" from "this build's host mechanism is off".
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ProtectionAttestation {
+    /// [`ATTESTATION_SCHEMA_VERSION`] at the time of production.
+    pub schema_version: u32,
+    /// Version of the component that produced this attestation.
+    pub component_version: String,
+    /// Target triple the producing build was compiled for. A claim is only
+    /// meaningful against the platform it was made on (ADR 0033 §5.3).
+    pub platform: String,
+    /// When this attestation was produced, as seconds since the Unix epoch.
+    pub generated_at_unix_secs: u64,
+    /// The window beyond which a basis stops counting as evidence.
+    pub freshness_window_secs: u64,
+    /// One entry per governance component, including the ones that cannot run.
+    ///
+    /// Components that are absent are listed, not omitted: an omitted component
+    /// is indistinguishable from one that was never considered, and the whole
+    /// point is that a consumer can see the gap.
+    pub layers: Vec<LayerAttestation>,
+}
+
+impl ProtectionAttestation {
+    /// Construct an attestation at the current schema version.
+    pub fn new(
+        component_version: impl Into<String>,
+        platform: impl Into<String>,
+        generated_at_unix_secs: u64,
+        layers: Vec<LayerAttestation>,
+    ) -> Self {
+        Self {
+            schema_version: ATTESTATION_SCHEMA_VERSION,
+            component_version: component_version.into(),
+            platform: platform.into(),
+            generated_at_unix_secs,
+            freshness_window_secs: DEFAULT_ATTESTATION_FRESHNESS_SECS,
+            layers,
+        }
+    }
+
+    /// Every component's claim as of `now_unix_secs`, in declaration order.
+    pub fn verified_states_at(&self, now_unix_secs: u64) -> Vec<(&str, ClaimTerm)> {
+        self.layers
+            .iter()
+            .map(|l| {
+                (
+                    l.component.as_str(),
+                    l.verified_state_at(now_unix_secs, self.freshness_window_secs),
+                )
+            })
+            .collect()
+    }
+
+    /// Whether *any* component substantiates a coverage claim right now.
+    ///
+    /// The honest answer to "is this agent governed at all". On a build with no
+    /// component in any action's path this is `false`, and it must be allowed
+    /// to be `false` — a system that cannot say "nothing is verified" cannot be
+    /// trusted when it says something is.
+    pub fn any_coverage_verified_at(&self, now_unix_secs: u64) -> bool {
+        self.layers
+            .iter()
+            .any(|l| l.asserts_coverage_at(now_unix_secs, self.freshness_window_secs))
+    }
+
+    /// Components that were selected but cannot substantiate coverage.
+    pub fn degraded_at(&self, now_unix_secs: u64) -> Vec<&LayerAttestation> {
+        self.layers
+            .iter()
+            .filter(|l| l.verified_state_at(now_unix_secs, self.freshness_window_secs) == ClaimTerm::Degraded)
+            .collect()
     }
 }
