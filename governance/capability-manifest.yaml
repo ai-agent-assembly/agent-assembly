@@ -2121,14 +2121,29 @@ capabilities:
   platform:
   - linux
   - macos
-  launch_path: routed, CA trusted, AA_PROXY_GATEWAY_ENDPOINT set, non-LLM MitM'd host
+  launch_path: routed through aa-proxy, CA trusted, gateway endpoint configured, request
+    reaching a MitM'd non-LLM host
   preconditions:
   - kind: env
     name: AA_PROXY_GATEWAY_ENDPOINT
     required_value: <set>
+    note: without it the proxy has no control plane to adjudicate against; this is what
+      makes the row's default_state off
+  - kind: env
+    name: AA_PROXY_MITM_HOSTS
+    required_value: <set>
+    optional: true
+    note: the targeted route. should_mitm (aa-proxy/src/proxy/mod.rs:1385-1388) unions
+      detect_api(host) with a mitm_hosts match and the llm_only branch at :1333 consults
+      it, so naming hosts here adjudicates exactly those hosts with llm_only left true
   - kind: env
     name: AA_PROXY_LLM_ONLY
-    required_value: <set>
+    required_value: 'false'
+    optional: true
+    note: the wide route, and a consequence of the managed CLI path rather than a
+      requirement of MCP adjudication. aa-cli/src/commands/proxy/start.rs:129-133 and
+      aa-runtime/src/runtime.rs:257-258 both set it, bringing every host on the machine
+      under TLS MitM. Either this or AA_PROXY_MITM_HOSTS reaches the capability
   transport: https POST, HTTP/1.1, explicit Content-Length
   interception_component: evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614 invoked at :834
     -> aa-gateway PolicyService.CheckAction
@@ -2197,9 +2212,14 @@ capabilities:
     claimed
   tickets:
   - AAASM-5533
-  notes: 'The only gateway-bound pre-dial block in the system. Mediation is COUPLED to whole-machine
-    MitM: the only supported route sets AA_PROXY_GATEWAY_ENDPOINT and forces AA_PROXY_LLM_ONLY=false
-    (aa-cli/src/commands/proxy/start.rs:128-135; aa-runtime/src/runtime.rs:246-259).'
+  - AAASM-5666
+  findings:
+  - F7
+  notes: The only gateway-bound pre-dial block in the system. Mediation is coupled to
+    whole-machine MitM on the convenience path but not in the mechanism; which of the two
+    optional preconditions is used decides which, and both are recorded there rather than
+    restated here. What does not exist is a CLI flag producing the targeted configuration,
+    or any documentation saying it is available (AAASM-5527 finding F7).
   q3_changed_answer: true
 - id: M2
   domain: mcp
@@ -3271,11 +3291,11 @@ capabilities:
   platform:
   - linux
   - macos
-  launch_path: AA_PROXY_PROVIDER_KEYS=host=key set in the proxy's environment
+  launch_path: provider keys configured in the proxy's environment
   preconditions:
   - kind: env
     name: AA_PROXY_PROVIDER_KEYS
-    required_value: <set>
+    required_value: host=key
   transport: tls_mitm_llm_host
   interception_component: CredentialStore::from_env aa-proxy/src/credentials.rs:198 -> authorization_for
     :238 -> serialize_http_request_with_auth aa-proxy/src/proxy/http.rs:353, which STRIPS
@@ -4135,7 +4155,10 @@ capabilities:
   preconditions:
   - kind: env
     name: AA_PROXY_MCP_FAIL_OPEN
-    required_value: <set>
+    required_value: '1'
+    optional: true
+    note: an escape hatch, not a requirement; when set it degrades this row to
+      forward-without-enforcement
   transport: https
   interception_component: 'startup: refuses to start (aa-proxy/src/proxy/mod.rs:270-286);
     per-call: Deny -32000 (:666-688)'
@@ -4185,7 +4208,7 @@ capabilities:
   default_state: closed
   reachability: shipped_with_platform_exception
   known_bypasses:
-  - AA_PROXY_MCP_FAIL_OPEN=1 degrades both points to forward-without-enforcement
+  - setting the fail-open escape hatch degrades both points to forward-without-enforcement
   evidence:
   - kind: test
     path: aa-proxy/src/config.rs:957-966
