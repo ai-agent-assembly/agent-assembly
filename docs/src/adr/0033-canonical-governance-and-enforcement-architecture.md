@@ -713,8 +713,30 @@ Pages that reference the model and need their claims re-termed:
 - [ ] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
       tier definition asserts "The tool cannot bypass enforcement"**, a banned absolute
       (the forbidden-designs list, item 7) that the verified bypass surface in §4 contradicts.
+- [ ] `docs/src/architecture/data-flows.md:14-17` — a structural `L1 SDK / L2 proxy /
+      L3 eBPF` mermaid subgraph. Same class as the pages marked "rewrite" above; it was
+      missed on the first pass because the file never uses the words "three-layer".
+- [ ] `docs/src/usage-guide/overview.md` — routes readers to "Choosing interception
+      layers" as the architecture-in-practice entry point.
 - [ ] `docs/src/SUMMARY.md` — TOC entries for the two retired pages and the
       "Choosing interception layers" entry.
+
+**Not affected — checked and cleared** (recorded so the next pass does not re-open them):
+`dashboard/src/features/capability/api.ts` (its only hit is `:51`, *"Three independent
+ways the cell verdicts can be untrustworthy"* — unrelated) and
+`docs/src/devtools/developer-integration-api.md` (its only layer content is `:61,:67`,
+the DI-API OS + capability-token auth stack, which this ADR explicitly leaves alone).
+
+**Inbound links must be fixed in the same change as any page retirement**, or the
+`Doc Links` job breaks. Fourteen files link to the three pages marked for rewrite:
+`docs/src/architecture/workflows.md`, `docs/src/devtools/product-brief.md`,
+`docs/src/introduction/concepts.md`, `docs/src/introduction/overview.md`,
+`docs/src/introduction/README.md` (×2), `docs/src/security/overview.md` (×2),
+`docs/src/security/protection-model.md` (×2),
+`docs/src/security/release-threat-model.md`, `docs/src/security/threat-model.md`,
+`docs/src/security/trust-boundaries.md`, `docs/src/usage-guide/container-base-images.md`
+(×2), `docs/src/usage-guide/examples.md`, `docs/src/usage-guide/overview.md`, and
+`docs/src/SUMMARY.md` (×3).
 
 **Deliberately excluded — historical records, do not rewrite:**
 `docs/release/v0.0.1-beta.4.md`, `verification-reports/AAASM-1066.md`,
@@ -725,11 +747,14 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
 ### B. Repository and crate documentation (owner: AAASM-5605)
 
 - [ ] `README.md` — the repo's front door carries the model.
-- [ ] `CLAUDE.md` and `.claude/CLAUDE.md` — both contain a "three-layer interception
-      model" section presented as the *"single most important architectural insight"*.
-      `.claude/CLAUDE.md` additionally labels `aa-runtime` the "Authoritative enforcement
-      pipeline (`RuntimeScanner`)", which §6 shows is a post-action redactor, and
-      describes eBPF as catching *"everything, including bypass attempts"*.
+- [ ] `SECURITY.md:71-72` — *"The sidecar proxy and eBPF layers remain the authoritative
+      backstop for bypass attempts."* The superseded model **and** a banned absolute, in
+      the security front door. Highest-priority item in this section.
+- [ ] `.claude/CLAUDE.md` — carries the "three-layer interception model" section,
+      labels `aa-runtime` the "Authoritative enforcement pipeline (`RuntimeScanner`)"
+      (which §6 and the ADR 0018 amendment withdraw), and describes eBPF as catching
+      *"everything, including bypass attempts"*. Note there is **no tracked root
+      `CLAUDE.md`** in this repository — `.claude/CLAUDE.md` is the only file to change.
 - [ ] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
       `aa-sandbox`, `aa-sdk-client`.
 - [ ] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three
@@ -742,12 +767,35 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       producer; that crate is a dead stub (every program body returns `0` with a TODO,
       it is not a workspace member, and `aa-ebpf/build.rs:50,90` builds only
       `aa-ebpf-probes`). Stale, independent of this ADR.
+- [ ] In-code absolutes and model references, each a banned phrase or the superseded
+      framing in a doc comment: `aa-ebpf-probes/src/ssl_probes.rs:28` (*"the proxy …
+      and the syscall/socket layer remain the catch-all"* — directly disproved by §4 and
+      §5.1, and one line past the honest caveat at `:19-27`),
+      `aa-runtime/src/pipeline/mod.rs:439` (*"unbypassable"*),
+      `aa-runtime/tests/aaasm_2568_gate_verification.rs:1` (*"cannot be bypassed"*),
+      `aa-ebpf/src/lib.rs:1`, `aa-proxy/src/main.rs:10`, `aa-cli/src/commands/run.rs:51`,
+      `aa-core/src/net.rs:3`, `aa-runtime/src/runtime.rs:885,1018,1020`.
 
-### C. Dashboard and design assets (owner: AAASM-5605, coordinate with the design-fidelity Epic)
+### C. Dashboard and design assets (owner: AAASM-5605 — **requires re-opening ADR 0025**)
 
-- [ ] `dashboard/src/pages/OverviewPage.tsx`,
-      `dashboard/src/features/capability/api.ts`
-- [ ] `design/v2/hi-fi/overview.jsx`, `design/v2/hi-fi/live-ops.jsx`
+> **Declared conflict with [ADR 0025](0025-design-v2-authoritative-visual-spec.md).**
+> `0025:195-196` makes *"any change to `design/v2/hi-fi/` that is **not** theme-related"*
+> a reconsideration trigger for that ADR, because it breaks the "v2 = v1 + tokenisation"
+> invariant its carry-over argument depends on. The items below prescribe exactly such a
+> change. This is a real conflict, declared here rather than absorbed: **the executing
+> ticket must re-open ADR 0025**, not just "coordinate with" the design Epic.
+
+- [ ] `dashboard/src/pages/OverviewPage.tsx`
+- [ ] A **third rival triad** — `L1·IDENTITY / L2·CAPABILITY / L3·SCRUB` — which reuses
+      the `L1/L2/L3` labels for something that is not the interception model at all:
+      `dashboard/src/features/trace/decision.ts`,
+      `dashboard/src/features/liveOps/PipelineCanvas.tsx`,
+      `dashboard/src/features/liveOps/CastleMoat.tsx`,
+      `dashboard/src/components/trace/LayerSteps.test.tsx`, and
+      `design/v2/hi-fi/trace.jsx`. Renaming the interception layers without renaming
+      these leaves two different `L1/L2/L3` vocabularies in one product surface.
+- [ ] `design/v2/hi-fi/overview.jsx`, `design/v2/hi-fi/live-ops.jsx`,
+      `design/v2/hi-fi/trace.jsx`, `design/v2/hi-fi/scrub.jsx`
 - [ ] `design/v1/**` (`overview.jsx`, `live-ops.jsx`, `hi-fi/`, `wireframes/`) —
       superseded design generation; annotate rather than redraw.
 
@@ -758,16 +806,87 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       `aa-integration-tests/tests/fixtures/e2e/three_layers_driver.py` — the scenarios
       remain valid as *deployment* coverage; the naming and the narrative comments assert
       the superseded model.
+- [ ] `.github/workflows/ci.yml:1076` — job name `e2e — Layer 3 eBPF (Linux)`. A job
+      name is a published artifact: it appears on every PR's check list.
 
 ### E. Product website and Docs Hub (owner: [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586), [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609))
 
+The Docs Hub is a **separate repository** (`ai-agent-assembly/docs`). Nothing in this
+ADR's PR touches it; these are named so the owning tickets have a concrete list rather
+than a category.
+
+- [ ] `docs/src/security-model.md` — **highest priority.** It presents a *fourth* rival
+      model, an "IronClaw five-layer defense" (Boundary / Identity / Policy / Vault /
+      Telemetry), states that the *"eBPF sensor (`aa-ebpf`) catches kernel-level bypass
+      attempts"* (forbidden design 2, and disproved by §5.1), says policy is
+      *"evaluated by the gateway policy engine before every agent action"* (a banned
+      absolute, and contradicted by §2 and §4), and explicitly re-entrenches the
+      superseded model: *"The three interception points … the SDK layer, the sidecar
+      proxy, and the eBPF sensor … They are two views of one system, not two competing
+      models."* Reconciling five-layer against six-element is the substantive work here,
+      not a find-and-replace. Note this page is being edited concurrently on branch
+      `v0.0.1-rc.7/AAASM-5612/remove_unverified_saas_claims`.
+- [ ] `docs/src/source-of-truth.md` — see the vocabulary ruling below.
+- [ ] `docs/src/saas-claim-publication-checklist.md` — the publication gate must check
+      against §6's vocabulary, not an ad-hoc list.
+- [ ] The IronClaw layer table wherever it is reproduced across the Hub.
 - [ ] Product / "How It Works" pages rewritten around managed enforcement paths (5586).
 - [ ] "What Ships Today" and "Choose Your Enforcement Path" evaluator guides published
-      against §5.3 and §6 (5609).
+      against §5.3 and §6 (5609). These guides will quote §2's caller table — which is
+      why that table now distinguishes gateway-bound blocking from local proxy policy.
 - [ ] Host adapter support boundaries documented per
       [AAASM-5606](https://lightning-dust-mite.atlassian.net/browse/AAASM-5606).
 
-### F. Jira items to annotate as superseded (owner: [AAASM-5607](https://lightning-dust-mite.atlassian.net/browse/AAASM-5607))
+#### Vocabulary ruling — enforcement terms vs. lifecycle labels
+
+Two vocabularies exist and must not absorb each other:
+
+| Vocabulary | Owner | Answers |
+| --- | --- | --- |
+| Enforcement and claim terms (§6) — Observed · Detected · Evaluated · Denied before execution · Redacted · Approval required · Degraded · Unmeasured · Experimental · Planned · Unsupported | **ADR 0033 (this ADR)** | *What did the product do to this action, when, and on what evidence?* |
+| Maturity labels — `🧪 Release candidate`, `🗺️ Planned`, and siblings in the Docs Hub's `source-of-truth.md` | **Docs Hub `source-of-truth.md`** | *How finished is this feature?* |
+
+They are **orthogonal**: a `🧪 Release candidate` feature can be *Unsupported* on a
+platform, and a shipped feature can be *Unmeasured* on a path. Each must
+**cross-reference** the other; neither may redefine the other's terms.
+
+**Precedence between them — and the waiver mechanism when they conflict — is
+[AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621)'s to settle,
+not this ADR's.** That hand-off also bounds the forbidden-designs list: this ADR's
+banned absolutes bind *architecture and product descriptions*; how the ban is policed
+across repos, and who may waive it, is 5621's.
+
+### F. The published wire contract — a decision, not an inventory item (owner: AAASM-5605 + protocol review)
+
+The three-layer model is not only prose: it is frozen into a **published, versioned
+contract**, including a crates.io-shipped copy. `LayerDegradation` is analysed in §3.2
+and §6 of this ADR, and the artifacts that encode it are:
+
+- [ ] `proto/audit.proto:248,251` — `LayerDegradationEvent`, documented as recording
+      *"that an interception layer became unavailable"*.
+- [ ] `aa-proto/_embedded/proto/audit.proto:248` — the **published mirror**. This ships
+      to crates.io, so the name is already in consumers' hands.
+- [ ] `openapi/v1.yaml:10331,10357` — the REST surface.
+- [ ] `dashboard/src/api/generated/schema.d.ts:6553` — generated; regenerates from the
+      OpenAPI change rather than being edited.
+- [ ] `aa-api/src/models/ws_payloads.rs:39,92` and
+      `aa-runtime/src/pipeline/event.rs:90,96` — the Rust-side mirrors.
+
+**This needs a decision before any of the above is touched**, and it belongs to the
+executing ticket plus a protocol reviewer, not to a documentation pass:
+
+> Is `LayerDegradation` **kept as-is** for wire compatibility — accepting that the
+> canonical architecture and the published contract use different words for the same
+> concept — or is it **renamed** on a normal deprecation path with the old field
+> retained until consumers migrate?
+
+This ADR's recommendation is to **keep the wire name and document the mapping**: the
+concept `LayerDegradation` encodes ("a control that was expected is not available") is
+exactly this ADR's **Degraded** term, so the contract is semantically correct even
+though its noun is from the superseded vocabulary. Renaming a published proto message
+to improve a word is not worth a consumer break. Record whichever way it goes.
+
+### G. Jira items to annotate as superseded (owner: [AAASM-5607](https://lightning-dust-mite.atlassian.net/browse/AAASM-5607))
 
 Model-defining or still-referenced — these need a superseded-by reference to this ADR,
 and their vocabulary re-framed if they are reopened:
