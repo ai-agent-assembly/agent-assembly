@@ -52,6 +52,9 @@ docs/ci/__pycache__/
 scripts/__pycache__/
 scripts/research/__pycache__/
 
+# Python bytecode cache from the AAASM-5527 coverage-matrix scope guard
+verification-reports/__pycache__/
+
 # Conformance outcome ledger, written under the workspace by the conformance
 # workflow so job-level `env:` can name it — `runner.temp` is a steps-only
 # context and cannot be used there (AAASM-5326).
