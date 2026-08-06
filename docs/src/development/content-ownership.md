@@ -714,7 +714,10 @@ following, each of which belongs to
 7. **Whether the two maturity vocabularies are one axis or two**, and if two, what
    each is called — see
    [the split](#known-non-conforming-instance-two-maturity-vocabularies). This
-   crosses an org boundary, which is why it is not settled here.
+   crosses an org boundary, which is why it is not settled here. 5621 decides;
+   [AAASM-5655](https://lightning-dust-mite.atlassian.net/browse/AAASM-5655) carries
+   the answer to the company site, so the decision cannot be made and then stranded
+   on this side of the boundary.
 8. **Who owns a translation's accuracy**, and whether a fuzzy entry blocks
    publication — see [Translations](#translations-are-a-fourth-case-and-they-have-their-own-trigger).
 9. **Whether the generation marker dialects are normalised onto one spelling**, and
@@ -785,3 +788,4 @@ version — and the enforcement that goes with it — is
 | [AAASM-5580](https://lightning-dust-mite.atlassian.net/browse/AAASM-5580) | Parent Epic — audience-based information architecture and progressive disclosure |
 | [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) | Blocked by this page; formalises it as an ADR and settles the [hand-offs](#what-this-page-hands-off) above |
 | [AAASM-5594](https://lightning-dust-mite.atlassian.net/browse/AAASM-5594) | Blocked by this page; designs the product-site and Docs Hub sitemaps against these ownership boundaries |
+| [AAASM-5655](https://lightning-dust-mite.atlassian.net/browse/AAASM-5655) | Carries 5621's maturity-vocabulary decision across the org boundary to the company site — hand-off 7's downstream |
