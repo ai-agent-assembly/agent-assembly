@@ -400,7 +400,7 @@ Mapped onto the verified mechanisms:
 | `aa-sdk-client` | **Evaluated** (advisory); it is not an enforcement point in this repo |
 | eBPF TLS / file / exec probes | **Observed** / **Detected** |
 | eBPF syscall guard | **Detected**, plus asynchronous process termination — explicitly **not** *Denied before execution* (§5.1) |
-| `aa-devtool-*` config writes | **Configured** tool-governance; not a data-path term at all |
+| `aa-devtool-*` config writes | **Not a data-path claim at all.** Writing a tool's own settings file is tool-governance; it takes effect only if the tool honours those keys, which for the macOS managed-settings path is explicitly unmeasured. Any data-path prevention these adapters deliver is `aa-proxy`'s, borrowed via injected launch environment |
 | `aa-sandbox` | **Denied before execution**, for WASM-marked tools handed to it; it is not in any agent's normal tool-call path |
 
 Note one consequence for the read surface: ADR 0018's five-way `RuntimeVerdict`
