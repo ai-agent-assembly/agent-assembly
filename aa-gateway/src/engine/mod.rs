@@ -7,6 +7,7 @@ pub mod decision;
 pub mod detection;
 pub(crate) mod rate_limit;
 pub mod scope_index;
+pub mod sensitive_data;
 pub(crate) mod watcher;
 
 pub use scope_index::PolicyId;
@@ -311,6 +312,18 @@ pub struct PolicyEngine {
     /// `PolicyInvalidated` event out to every subscribed Assembly so their L1
     /// caches drop stale decisions within ~100 ms instead of awaiting TTL.
     invalidation_hub: Option<Arc<crate::invalidation::InvalidationHub>>,
+    /// AAASM-5440 — where a decision carrying canonical findings is projected
+    /// for the durable sensitive-data tier. `None` leaves the projection
+    /// unwritten, which is the default: ADR 0032 §8 makes the whole tier
+    /// opt-in, and an engine that was never given a sink must behave exactly as
+    /// it did before this field existed.
+    ///
+    /// Deliberately **not** carried into either simulation engine
+    /// ([`Self::ephemeral_for_simulation`] and the one
+    /// [`Self::simulate_against`] builds inline): a dry run applies no
+    /// enforcement and writes no audit entry, so it must not deposit rows in a
+    /// governance table either.
+    sensitive_data: Option<sensitive_data::SensitiveDataProjectionSink>,
 }
 
 /// Error returned when loading a policy from a file fails.
@@ -496,6 +509,7 @@ impl PolicyEngine {
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
+            sensitive_data: None,
             decision_cache: DecisionCache::new(100_000),
         })
     }
@@ -791,6 +805,7 @@ impl PolicyEngine {
             registry: None,
             policy_epoch,
             invalidation_hub: None,
+            sensitive_data: None,
             decision_cache: DecisionCache::new(100_000),
         }
     }
@@ -829,6 +844,7 @@ impl PolicyEngine {
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
+            sensitive_data: None,
             decision_cache: DecisionCache::new(100_000),
         })
     }
@@ -872,6 +888,7 @@ impl PolicyEngine {
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
+            sensitive_data: None,
             decision_cache: DecisionCache::new(100_000),
         }
     }
@@ -1065,6 +1082,11 @@ impl PolicyEngine {
             registry: self.registry.clone(),
             policy_epoch: self.policy_epoch.clone(),
             invalidation_hub: None,
+            // AAASM-5440 — a replay scores a *hypothetical* document against a
+            // recorded action. It reaches `evaluate_primary`, which projects; a
+            // sink here would file rows describing enforcement that never
+            // happened, under the same tenant as the real ones.
+            sensitive_data: None,
             decision_cache: DecisionCache::new(1),
         };
         ephemeral.evaluate(ctx, action)
@@ -1097,6 +1119,12 @@ impl PolicyEngine {
             registry: self.registry.clone(),
             policy_epoch: self.policy_epoch.clone(),
             invalidation_hub: None,
+            // AAASM-5440 — a dry run reaches **both** seams (an empty cascade
+            // routes to `evaluate_primary`, a populated one to
+            // `evaluate_with_cascade`), so this `None` is the only thing keeping
+            // the Simulate panel out of a governance table. ADR 0032: a
+            // simulation applies no enforcement and writes no audit entry.
+            sensitive_data: None,
             decision_cache: DecisionCache::new(1),
         }
     }
@@ -1550,9 +1578,30 @@ impl PolicyEngine {
 
     /// Single-policy evaluation path: used when no scoped policies are registered.
     ///
-    /// This is the original 7-stage pipeline from before AAASM-220. When the
-    /// `scope_index` is empty, `evaluate` delegates here for full backward compat.
+    /// AAASM-5440 — the projection write is here, wrapping the pipeline, rather
+    /// than at each of the pipeline's post-Stage-6 exits. Stage 6 has three of
+    /// them (the `credential_action: block` short-circuit, the budget deny, the
+    /// final allow) and every one can carry findings, so a per-exit call site is
+    /// three chances to add a fourth exit later and record nothing from it. The
+    /// wrapper cannot be escaped by a new `return`.
+    ///
+    /// This is the seam AAASM-5440's primary-path falsification test cuts:
+    /// removing the `project_sensitive_data` call below kills the primary tests
+    /// and leaves every cascade test green.
     fn evaluate_primary(&self, ctx: &aa_core::AgentContext, action: &aa_core::GovernanceAction) -> EvaluationResult {
+        let result = self.evaluate_primary_inner(ctx, action);
+        self.project_sensitive_data(ctx, action, &result);
+        result
+    }
+
+    /// The 7-stage pipeline itself — the original from before AAASM-220. When
+    /// the `scope_index` is empty, `evaluate` delegates here for full backward
+    /// compat.
+    fn evaluate_primary_inner(
+        &self,
+        ctx: &aa_core::AgentContext,
+        action: &aa_core::GovernanceAction,
+    ) -> EvaluationResult {
         let policy = self.policy.load();
 
         // Stage 1 — Schedule: check active hours window.
@@ -1874,7 +1923,29 @@ impl PolicyEngine {
     /// Cascade evaluation path: runs `merge_decisions` across all scoped policies,
     /// then applies rate-limit (stage 4), budget (stage 7), and credential scan
     /// (stage 6) at the engine level.
+    ///
+    /// AAASM-5440 — wraps the pipeline for the same reason
+    /// [`Self::evaluate_primary`] does: this path has six early returns after
+    /// Stage 6's scan, and a per-exit call site would be six chances to add a
+    /// seventh that records nothing.
+    ///
+    /// This is the **second, independent** seam. It is wired separately rather
+    /// than by hoisting the call into [`Self::evaluate`] because the two paths
+    /// are separately reachable (`simulate_against` reaches only the primary
+    /// one) and because a single hoisted call site cannot be falsified per
+    /// path — one mutation would kill every test and prove neither seam.
     fn evaluate_with_cascade(
+        &self,
+        cascade: Vec<Arc<PolicyDocument>>,
+        ctx: &aa_core::AgentContext,
+        action: &aa_core::GovernanceAction,
+    ) -> EvaluationResult {
+        let result = self.evaluate_with_cascade_inner(cascade, ctx, action);
+        self.project_sensitive_data(ctx, action, &result);
+        result
+    }
+
+    fn evaluate_with_cascade_inner(
         &self,
         cascade: Vec<Arc<PolicyDocument>>,
         ctx: &aa_core::AgentContext,
@@ -2137,6 +2208,74 @@ impl PolicyEngine {
             None => pricing.fallback_cost_usd(input_tokens, output_tokens),
         };
         cost.to_f64().unwrap_or(0.0)
+    }
+
+    /// Attach the durable sensitive-data projection (AAASM-5440).
+    ///
+    /// Without a sink the engine writes no projection at all, which is the
+    /// default state and the pre-AAASM-5440 behaviour. The sink is a channel
+    /// handle, so attaching it costs one `try_send` per action that carried a
+    /// finding and nothing at all for an action that did not.
+    #[must_use]
+    pub fn with_sensitive_data_sink(mut self, sink: sensitive_data::SensitiveDataProjectionSink) -> Self {
+        self.sensitive_data = Some(sink);
+        self
+    }
+
+    /// Project one evaluation into the durable sensitive-data tier (AAASM-5440).
+    ///
+    /// Called from both enforcement seams with the decision **already
+    /// computed**, which is the whole of AC3: nothing here is read by the
+    /// pipeline, so no value this function produces — and no failure it hits —
+    /// can move a policy outcome. It takes `&EvaluationResult` rather than
+    /// owning it for the same reason.
+    ///
+    /// Does nothing when the action produced no canonical findings. An action
+    /// with nothing sensitive in it is not a sensitive-data decision, and writing
+    /// a zero-finding event for every governed call would drown the tier the
+    /// dashboards read in rows about nothing.
+    fn project_sensitive_data(
+        &self,
+        ctx: &aa_core::AgentContext,
+        action: &aa_core::GovernanceAction,
+        result: &EvaluationResult,
+    ) {
+        let Some(sink) = self.sensitive_data.as_ref() else {
+            return;
+        };
+        if result.canonical_findings.is_empty() {
+            return;
+        }
+
+        // The same authoritative resolution the cascade selection uses — the
+        // registered owner, never the client-asserted lineage (AAASM-3729). A
+        // projection scoped by a forgeable tenancy would file one tenant's
+        // findings under another's dashboard.
+        let lineage = self.authoritative_lineage(ctx);
+        let mode = self
+            .registry
+            .as_ref()
+            .and_then(|registry| registry.get(ctx.agent_id.as_bytes()))
+            .and_then(|record| record.enforcement_mode)
+            .unwrap_or(aa_core::EnforcementMode::Enforce);
+        // Minted here rather than derived from the action so two identical
+        // actions are two events: the projection's idempotency key is the event
+        // id, and a derived one would silently collapse a repeated leak into a
+        // single row under first-write-wins.
+        let event_id = format!("{:032x}", rand::random::<u128>());
+
+        match sensitive_data::project_decision(
+            ctx,
+            action,
+            &lineage,
+            mode,
+            result,
+            aa_core::time::Timestamp::from(std::time::SystemTime::now()),
+            &event_id,
+        ) {
+            Ok(decision) => sink.record(decision),
+            Err(refusal) => sink.refuse(refusal),
+        }
     }
 
     /// Resolve the budget tenancy (`team_id`, `org_id`) for `ctx` from the
@@ -2557,6 +2696,7 @@ mod tests {
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
+            sensitive_data: None,
             decision_cache: DecisionCache::new(1_024),
         }
     }
@@ -4760,6 +4900,7 @@ mod tests {
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
+            sensitive_data: None,
             decision_cache: DecisionCache::new(1_024),
         }
     }
