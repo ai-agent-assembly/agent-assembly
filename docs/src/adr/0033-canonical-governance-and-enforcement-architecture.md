@@ -460,7 +460,7 @@ an undifferentiated verb like "protects", "enforces" or "catches".
 | **Denied before execution** | The action did not take effect, and the decision preceded the effect | A refusal by a component that sits *before* the effect (today: `aa-proxy` pre-dial, or an SDK shim that honoured a `Deny`) |
 | **Redacted** | The action proceeded with content removed | A redaction record naming the fields |
 | **Approval required** | The action was held pending a human decision | A pending approval record |
-| **Degraded** | A planned control is configured but unavailable, so the achieved level is below the planned level | A `LayerDegradation` or ADR 0030 `Degraded` state carrying both levels |
+| **Degraded** | A planned control is configured but unavailable, so the achieved level is below the planned level | A `LayerDegradation` event or an ADR 0030 `Degraded` state, carrying both levels. `LayerDegradation` is a **retained legacy wire name** for exactly this term — kept deliberately for compatibility, see the Migration checklist §F |
 | **Unmeasured** | No control observed this path; nothing is known | The honest state for anything outside the boundary (§4) |
 | **Experimental** | Implemented but not validated for production use | Named implementation plus the validation that is missing |
 | **Planned** | Decided but not implemented | A ticket reference; no capability claim |
@@ -902,19 +902,22 @@ and §6 of this ADR, and the artifacts that encode it are:
 - [ ] `aa-api/src/models/ws_payloads.rs:39,92` and
       `aa-runtime/src/pipeline/event.rs:90,96` — the Rust-side mirrors.
 
-**This needs a decision before any of the above is touched**, and it belongs to the
-executing ticket plus a protocol reviewer, not to a documentation pass:
+**Decided: keep the wire name `LayerDegradation`.** It is a retained legacy name, not
+an oversight, and the items above are therefore *documentation-of-mapping* tasks — none
+of them renames a field.
 
-> Is `LayerDegradation` **kept as-is** for wire compatibility — accepting that the
-> canonical architecture and the published contract use different words for the same
-> concept — or is it **renamed** on a normal deprecation path with the old field
-> retained until consumers migrate?
+The rationale is a distinction worth stating generally, because it will recur: **a
+contract's *name* and a vocabulary's *term* are different artifacts with different
+compatibility costs.** The concept `LayerDegradation` encodes — "a control that was
+expected is not available" — is exactly this ADR's **Degraded** term. The contract is
+therefore *semantically* correct; only its noun comes from the superseded vocabulary.
+Renaming a proto message already shipped to crates.io via
+`aa-proto/_embedded/proto/audit.proto:248` would break consumers to improve a word.
 
-This ADR's recommendation is to **keep the wire name and document the mapping**: the
-concept `LayerDegradation` encodes ("a control that was expected is not available") is
-exactly this ADR's **Degraded** term, so the contract is semantically correct even
-though its noun is from the superseded vocabulary. Renaming a published proto message
-to improve a word is not worth a consumer break. Record whichever way it goes.
+**Consequently, AAASM-5605 must not rename these fields.** What it must do is record
+the mapping (`LayerDegradation` on the wire ⇒ *Degraded* in §6) wherever the event is
+documented, so a reader of the audit stream can find the term and a reader of this ADR
+can find the field.
 
 ### G. Jira items to annotate as superseded (owner: [AAASM-5607](https://lightning-dust-mite.atlassian.net/browse/AAASM-5607))
 
