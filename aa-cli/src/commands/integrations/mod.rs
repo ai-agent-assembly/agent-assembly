@@ -112,6 +112,19 @@ pub struct IntegrationsArgs {
     /// in CI, where leaving a daemon behind is worse than failing.
     #[arg(long, global = true)]
     pub no_autostart: bool,
+
+    /// Proceed even when the runtime that answers cannot be shown to be this
+    /// build.
+    ///
+    /// By default `aasm` refuses (exit 10) rather than report what an
+    /// unidentified runtime said. A runtime from another checkout, or one
+    /// whose executable has been deleted, answers perfectly well and describes
+    /// *its* host — which is how a healthy tool got reported as not installed
+    /// (AAASM-5628). Pass this only for a deliberately mixed installation; the
+    /// verdict still appears in `--output json`, so a result recorded through
+    /// it stays marked as unverified.
+    #[arg(long, global = true)]
+    pub allow_unverified_runtime: bool,
 }
 
 /// The Developer Integration lifecycle, one subcommand per stage.
@@ -137,6 +150,7 @@ pub enum IntegrationsCommands {
 pub fn dispatch(args: IntegrationsArgs, output: OutputFormat) -> ExitCode {
     let options = SessionOptions {
         no_autostart: args.no_autostart,
+        allow_unverified_runtime: args.allow_unverified_runtime,
         ..Default::default()
     };
     match args.command {
@@ -180,6 +194,11 @@ NOTES:
     Lifecycle commands run inside the Agent Assembly runtime, which owns the
     only audited implementation of them. There is no in-process fallback; when
     no runtime is listening, aasm starts one and says so on stderr.
+
+    Every command reports which build answered — version, commit, pid and
+    executable — and refuses (exit 10) when the runtime that answers is not
+    verifiably the build this aasm ships with, or when more than one runtime is
+    listening. A reachable socket is not evidence that the right thing answered.
 
 {}",
         exit::help_table()
