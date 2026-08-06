@@ -209,8 +209,22 @@ pub struct Session {
     ///
     /// Carried on the session rather than recomputed by each command, so every
     /// surface reports the *same* verdict about the *same* connection.
+    ///
+    /// **It is a snapshot taken at the handshake, and it does not track the
+    /// runtime afterwards.** `executable_present` in particular is the peer's
+    /// assertion about the instant it answered `Hello`; a worktree deleted
+    /// between then and the verb this command is about to send is not observed,
+    /// so a `verified` standing on a report means "the runtime was identifiable
+    /// when the session opened", never "it still is". Re-verifying per verb was
+    /// not adopted: the peer would have to be asked again on every call, and the
+    /// window it would close is a few milliseconds wide while the window this
+    /// check exists to close — a stale runtime serving a whole campaign — is
+    /// hours or days. The narrowing is worth naming rather than implying.
     pub provenance: ProvenanceVerdict,
     /// How many runtimes were reachable when this session opened.
+    ///
+    /// Also a snapshot: a runtime that starts after `survey_runtimes` ran is
+    /// not counted. See that function for the scan's other two limits.
     pub multiplicity: RuntimeMultiplicity,
 }
 
