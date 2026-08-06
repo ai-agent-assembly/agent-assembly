@@ -197,12 +197,20 @@ can be promoted to a hard `Deny` (`:1662-1663`), atomic budget reservation can `
 (`:1669`), and agent suspension is enforced (`:1700`).
 
 But its Deny stops nothing by itself. **The gateway prevents only transitively, and is
-exactly as strong as the caller that blocks on its answer:**
+exactly as strong as the caller that blocks on its answer.** The set of callers that do
+so is narrower than "the proxy":
 
-| Caller | Blocks on the answer? | Consequence of `Deny` |
+| Caller | Blocks on a gateway answer? | Consequence of `Deny` |
 | --- | --- | --- |
-| `aa-proxy` (`proxy/mod.rs:433-484`) | Yes, synchronously, before dialling upstream | Bytes do not leave the machine. This is the strongest binding in the system. |
-| `aa-runtime` `handle_policy_query` (`pipeline/mod.rs:452-487`) | Yes | A `Deny` is returned to the SDK — which must then honour it (§4). |
+| `aa-proxy`, **MCP `tools/call` on a non-LLM MitM'd host, gateway configured** | Yes, synchronously, before dialling upstream | `evaluate_mcp_request` (`aa-proxy/src/proxy/mod.rs:834`) returns `McpEvalOutcome::Deny`; the handler answers the client and returns **without** reaching `dial_upstream_tls` (`:836-846` vs. the dial at `:910`). This is the only gateway-bound pre-dial block in the system. |
+| `aa-proxy`, **LLM-provider hosts** (the only hosts MitM'd under the `llm_only` default) | **No** | `handle_llm_mitm` (`:1038-1240`) contains no gateway reference at all. Its refusal at `:1153` is the local `Interceptor`'s `VerdictDecision::Block`, not a gateway decision. |
+| `aa-proxy`, **CONNECT-time egress** | **No** | Refusal comes from local configuration — `self.config.network_allowlist` and the denied-host list (`:960-966`) — not from the control plane. |
+| `aa-runtime` `handle_policy_query` (`aa-runtime/src/pipeline/mod.rs:159-175`) | Yes | A `Deny` is returned to the SDK — which must then honour it (§4). |
+
+The distinction matters for anyone choosing an enforcement path: a gateway `Deny` stops
+bytes **only** for MCP tool-call envelopes on non-LLM MitM'd hosts with a gateway
+endpoint configured. Everything else the proxy refuses, it refuses on its own local
+policy — which is real prevention, but it is *not* the control plane deciding.
 
 Therefore: **the gateway is E1 and only E1.** Describing it as a fourth interception
 layer misstates both what it holds (no traffic) and what it can do alone (nothing to
@@ -393,8 +401,8 @@ Mapped onto the verified mechanisms:
 
 | Mechanism | Highest term it can legitimately reach today |
 | --- | --- |
-| `aa-proxy` CONNECT / in-tunnel / DLP / MCP adjudication | **Denied before execution** (for traffic that traverses it and is MitM'd) |
-| `aa-gateway` `check_action` | **Evaluated**; reaches *Denied before execution* only through a blocking caller |
+| `aa-proxy` CONNECT / in-tunnel / DLP / MCP adjudication | **Denied before execution**, for traffic that traverses it and is MitM'd. Note the decision *source* differs by path (§2): CONNECT, DLP and LLM-host refusals are local policy; only MCP `tools/call` on a non-LLM MitM'd host is a gateway decision |
+| `aa-gateway` `check_action` | **Evaluated**; reaches *Denied before execution* only through a blocking caller, and today that is the MCP path plus an SDK shim that honours the answer |
 | `aa-runtime` `handle_policy_query` | **Evaluated**; *Denied before execution* only if the SDK shim honours the answer |
 | `aa-runtime` `RuntimeScanner` | **Redacted** — it runs on `IpcFrame::EventReport` (`aa-runtime/src/pipeline/mod.rs:127`), i.e. *after* the action, and returns counters, not a verdict (`aa-runtime/src/pipeline/enforcement.rs:113-143`, `:221-231`) |
 | `aa-sdk-client` | **Evaluated** (advisory); it is not an enforcement point in this repo |
