@@ -234,6 +234,16 @@ impl BuildIdentity {
     /// Nothing else is consulted. `pid`, executable name, executable path,
     /// DI-API version and package version are not proof of identical build
     /// content — individually or in combination — so none of them appears here.
+    ///
+    /// One consequence worth stating: **`build_id_source` is reported but never
+    /// decides**, so a [`IdentityComparison::Match`] can carry a *mismatched*
+    /// `build_id_source` field. A `checkout` build and a `packaged` build of the
+    /// same commit are one build and must compare equal — the SHA is the shared
+    /// artifact identity, and the mechanism that produced it is metadata about
+    /// how each side learned it. A reader scanning the field list will therefore
+    /// see `mismatched build_id_source` beside a match; that is correct, not a
+    /// contradiction. What `sha_source` does decide is whether the SHA is
+    /// *authoritative* at all, which is checked before this point.
     pub fn compare(&self, other: &Self) -> IdentityComparison {
         let mut fields = vec![compare_field(
             "core_version",
@@ -348,6 +358,11 @@ fn compare_field(field: &'static str, expected: &str, reported: &str, authoritat
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityComparison {
     /// Two authoritative identities agree.
+    ///
+    /// The agreement is on `build_sha` alone. `build_id_source` may be reported
+    /// as *mismatched* inside a `Match` — a `checkout` build and a `packaged`
+    /// build of one commit are one build — so a reader must not treat a
+    /// mismatched field in [`Self::fields`] as contradicting this variant.
     Match {
         /// The field that proved it. Never `core_version`, which can falsify
         /// but not verify.
