@@ -741,4 +741,57 @@ mod tests {
         );
         assert_eq!(att.generated_at_unix_secs, ATTEST_NOW);
     }
+
+    /// The proxy-present branch is unreachable on a host with no `aa-proxy` on
+    /// `$PATH`, which is most of them — so the branch is exercised here with a
+    /// real executable on a real `$PATH`. Without this, "no test failed" would
+    /// only mean the branch never ran.
+    ///
+    /// ADR 0033 §7: finding the binary is exactly the signal that looks like
+    /// coverage and is not.
+    #[test]
+    fn a_proxy_binary_on_path_attests_as_unmeasured_not_protecting() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var(AA_LAYERS_ENV);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake = dir.path().join("aa-proxy");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+
+        let original = std::env::var_os("PATH");
+        let mut entries = vec![dir.path().to_path_buf()];
+        if let Some(p) = &original {
+            entries.extend(std::env::split_paths(p));
+        }
+        std::env::set_var("PATH", std::env::join_paths(entries).expect("join PATH"));
+
+        let set = LayerDetector::detect();
+        let att = LayerDetector::attest(ATTEST_NOW);
+
+        match original {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+
+        // Positive control: the branch under test actually ran.
+        assert!(
+            set.contains(LayerSet::PROXY),
+            "the fake aa-proxy was not discovered, so this test proved nothing"
+        );
+
+        let (term, layer) = state_of(&att, "proxy");
+        assert!(
+            matches!(layer.basis, AttestationBasis::ArtifactPresent { .. }),
+            "expected an artifact-presence basis, got {:?}",
+            layer.basis
+        );
+        assert_eq!(term, ClaimTerm::Unmeasured);
+        assert!(!layer.basis.is_evidence());
+        assert!(!att.any_coverage_verified_at(ATTEST_NOW));
+    }
 }
