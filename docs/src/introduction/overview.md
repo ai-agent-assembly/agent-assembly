@@ -16,7 +16,7 @@
 > up, **security and operations** teams keeping them safe, and the **planners**
 > who need to know the controls exist. With it you can decide which tools an
 > agent may use, stop it from leaking data or overspending, and review exactly
-> what every agent did and why.
+> what was observed and decided.
 
 ## What it is
 
