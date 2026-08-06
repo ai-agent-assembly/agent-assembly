@@ -258,9 +258,55 @@ Column conventions:
 - **Level** columns use ADR 0030's ladder for dev-tool rows and ADR 0033 §6
   elsewhere. "Target" is this spike's *recommendation*, not a commitment.
 
-## D1 · Framework tool calls and direct function calls
+## D1 · Framework tool calls, SDK adapters and direct function calls
 
-*(SDK seam rows — see below.)*
+The SDK seam is where the product is strongest against actor A1 and where it is
+structurally silent against A3. Three facts govern the whole domain:
+
+1. **Nothing is on before an explicit initialiser call** — `init_assembly()` /
+   `initAssembly()` / `assembly.Init()`. Import alone patches nothing in any SDK.
+2. **Go additionally requires an explicit `WrapTools`**; `Init` alone wraps nothing.
+3. **A deny is only as strong as the seam it sits on**, and the seams differ by
+   framework — three distinct kinds coexist: a *raising* wrapper, a *string-returning*
+   wrapper, and a *lineage-only* observer that cannot block at all.
+
+### D1 · Table 1 — coverage
+
+| ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
+|---|---|---|---|---|---|---|---|---|---|
+| **S1** | Wrapped framework tool call, raising deny | `pydantic_ai`, `google_adk`, `microsoft_agent_framework`, `mcp` (`ClientSession.call_tool`), `langchain` handler · Python | all · in-process after `init_assembly()` · UDS to `aa-runtime` | monkeypatch, deny raised in `_shared/tool_governance.py:225-228` before `invoke_original()` at `:237` | pre | enforce · sync | **fail-closed** — unreachable runtime yields a `_FailClosedInterceptor` that denies every call (`core/runtime_interceptor.py:375-376`, `:521-540`) | **Denied before execution** | B2 |
+| **S2** | Wrapped framework tool call, string-returning deny | `crewai`, `openai_agents`, `haystack`, `smolagents`, `agno`, `llamaindex` · Python | as S1 | monkeypatch returning a `[BLOCKED …]` string **before** the original body | pre | enforce · sync | fail-closed | **Denied before execution** | B2 |
+| **S3** | Graph / workflow node execution | `langgraph` · Python; `langgraph`, `mastra` · Node | as S1 | monkeypatch of `StateGraph.compile` / `Agent.prototype.generate` | post | **observe · best-effort** | n/a — no decision is taken | **Observed** — the Node hook says so in-tree: *"performs NO in-process tool-governance check, so a policy DENY will NOT block"* (`node-sdk/src/hooks/langgraph.ts:99-108`) | B2 |
+| **S4** | LangChain tool call via the **callback handler**, Node | `@langchain/core` · Node | all · auto-detected at `initAssembly()` · — | `assembly-callback-handler.ts:34` `handleToolStart` | post | **observe · best-effort** | n/a | **Observed** — records a `pendingDenials` entry and never throws; the class doc states `@langchain/core` discards the return value so it *"can only observe, never preempt"* (`:13-21`) | B2 |
+| **S5** | LangChain tool call via the **explicit wrapper**, Node | `@langchain/core` · Node | all · tools passed as `config.langchain.tools` · — | `wrap-tool-with-assembly.ts:80` replaces `tool.invoke`; throws at `:90` before `originalInvoke` at `:107` | pre | enforce · sync | A **frozen** `invoke` is skipped with a stderr warning and the tool runs **ungoverned** (`:50-58`) | **Denied before execution** — *conditional on the check-capable mode below* | B1 |
+| **S6** | Vercel AI SDK / OpenAI Agents tool call, Node | `ai`, `@openai/agents` · Node | all · auto-detected · — | `hooks/ai-sdk.ts:143` throws before `executeOriginal()` at `:161`; `hooks/openai-agents.ts:272-274` returns a deny string before `:287` | pre | enforce · sync | see S7 | **Denied before execution** — *conditional on S7* | B2 |
+| **S7** | **The Node default mode routes every check through an allow-all no-op** | all Node frameworks · Node | all · `initAssembly()` with defaults · — | `createClient` (`core/init-assembly.ts:167`): `const mode = config.mode ?? "auto"` (`:171`); only `CHECK_CAPABLE_MODE = "napi-inprocess"` (`:144`) builds a real client (`:201-224`); **every other mode falls through to `createNoopGatewayClient` at `:226`**, whose `check` is `async () => ({ denied: false, pending: false })` (`gateway/client.ts:40`) | pre | **enforce in shape, allow-all in effect** | The tool seams are patched and every verdict is "allow" | **Unmeasured** ⚠ Q3 | — |
+| **S8** | Wrapped tool call, Go | any · Go | all · `assembly.Init()` **and** an explicit `WrapTools` · UDS/FFI | `assembly/tool_wrapper.go:83` `runGovernanceGate` returns an error before `t.inner.Call` at `:87` | pre | enforce · sync | **fail-closed and strongest of the three** — `failClosed: true` by default (`defaults.go:14`); a `nil` client denies (`:59-69`); `REDACT`, `UNSPECIFIED` and unknown decision codes all become errors, none silently allows (`ffi_governance_client.go:110,117,127`) | **Denied before execution** | B1 |
+| **S9** | Go default build without `-tags aa_ffi_go` + CGO | any · Go | all · default `go build` · — | `internal/ffi/binding_select_fallback.go:5-7` → `fallback_uds_nocgo.go:18-20` returns `statusRuntimeUnavailable` | pre | enforce · sync | Every wrapped tool call **denies** | **Denied before execution** — but by unavailability, not by policy ⚠ Q3 | B1 |
+| **S10** | Direct function call that does not pass a patched seam | any · any | all · any · — | *none* | none | — · — | n/a | **Unmeasured** | — |
+| **S11** | Framework with no adapter | e.g. any Node framework other than the five detected; any Go framework | all · any · — | *none* | none | — · — | n/a | **Unmeasured** | — |
+| **S12** | Raw HTTP, subprocess, filesystem, DB driver, browser automation from inside an SDK-adopting process | any · Python / Node / Go | all · any · — | *none in any SDK* | none | — · — | n/a | **Unmeasured** ⚠ Q4 | — |
+| **S13** | The SDK honouring a `Deny` it received | any · Rust core | all · any · UDS | `aa-sdk-client::resolve_decision` | pre | advisory | — | **Evaluated** only ⚠ Q4 | — |
+
+### D1 · Table 2 — risk and evidence
+
+| ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
+|---|---|---|---|---|---|---|
+| **S1** · **S2** | `AA_AGENT_ID`, or the SDK's persisted `did:key` identity | Tool name and arguments | Not calling the framework's dispatch; using an unadapted framework; never calling `init_assembly()`; anything in S12 | `aa-integration-tests/tests/e2e_sdk_python.rs`, `e2e_policy_sdk.rs` — both run on `main` (`cargo nextest run --workspace --exclude aa-ebpf`, `.github/workflows/ci.yml:555-586`) | **Denied before execution** (B2) | Hold; document the two deny shapes (see below) |
+| **S3** · **S4** | as S1 | Node/tool name for lineage only | The mechanism cannot block; there is nothing to bypass | Present, but they are lineage tests — they cannot evidence prevention | **Observed** | Either add a blocking seam or stop listing these frameworks as governed |
+| **S5** · **S6** | as S1 | Tool name and arguments | S7 defeats all of them by default; a frozen `invoke` degrades to ungoverned with only a stderr line | `node-sdk` unit tests; `aa-integration-tests/tests/e2e_sdk_node.rs` | **Denied before execution** only under `mode: "napi-inprocess"` | Make the check-capable mode reachable by default, or fail loudly rather than warn |
+| **S7** | — | — | This *is* the bypass, and it is the default. Three partial mitigations exist and none closes it: explicit `enforcementMode: "enforce"` + non-capable mode throws (`:183-190`); explicit `langchain.tools` under a fail-closed posture throws (`:590-605`); **auto-detected frameworks produce a warning only, never a throw** (`:427-465`, `:515-523`), deliberately, to preserve zero-config | **Gap** — no test asserts that the default path enforces, because it does not | **Unmeasured** | [AAASM-4991](https://lightning-dust-mite.atlassian.net/browse/AAASM-4991) already owns this and is still open. **It must be closed before any page claims Node pre-execution denial** |
+| **S8** · **S9** | `AA_AGENT_ID` / `did:key` | Tool name and arguments | Not calling `WrapTools`; S12. One residual fail-open: a binding that does not implement `policyQuerier` returns `DecisionAllow` (`internal/ffi/query_policy.go:55-59`) — documented as test bindings only, and both production bridges implement it | `aa-integration-tests/tests/e2e_sdk_go.rs` | **Denied before execution** | Hold. Go is the reference posture the other two should match |
+| **S10** · **S11** · **S12** | — | — | This is the residual by construction — B1/B2 do not extend to B3 | **Gap by design.** Recorded so no page can imply otherwise | **Unmeasured** | Never claim beyond B2 for an SDK seam |
+| **S13** | — | — | `resolve_decision` has **zero non-test callers in this repository** — verified with a positive control in the same probe: `query_policy` has real callers (`aa-sdk-client/src/client.rs:247` plus CLI and tests), `resolve_decision` matches only its own definition and its `#[cfg(test)]` module. Refusal lives in the out-of-repo FFI shims | **Gap** — the in-repo artifact that would prove the SDK honours a deny does not exist | **Evaluated** (advisory) | Per ADR 0002 this is correct and should stay advisory; the claim wording must match |
+
+> **Two deny shapes inside one SDK.** Six Python adapters return a `[BLOCKED …]`
+> string and five raise `PolicyViolationError`. Both prevent the tool body from
+> running, so both are *Denied before execution* — but a caller that catches only
+> `PolicyViolationError` will silently treat a blocked call as a successful one
+> whose result happens to be a string. That is a real integration hazard and it is
+> not documented anywhere. Flagged for AAASM-5531 as a manifest field
+> (`deny_signal: raise | sentinel_value`).
 
 ## D2 · Host actions: shell, subprocess, filesystem, browser, database
 
