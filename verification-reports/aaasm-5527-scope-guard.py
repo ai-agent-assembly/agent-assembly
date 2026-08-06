@@ -35,15 +35,18 @@ Found by review after the guard shipped. Recorded so the next person does not
 over-trust an exit code. Routed to AAASM-5531 / AAASM-5536 rather than fixed
 here, because hardening the guard is manifest work, not artifact work.
 
-1. **A deleted Coverage term passes unnoticed.** The Markdown/YAML comparison
-   skips any row whose cell carries no bolded term (`if not want or not seen:
-   continue`), which is why it compares 79 rows and not 80 — `N5` legitimately
-   splits its coverage across a qualifier. Deleting a term outright would look
-   identical to that. Fix: assert presence, with `N5` allowlisted.
-2. **An extra, stronger term alongside the correct one passes.** The check is
-   `want in seen`, so a cell reading `**Denied before execution** / **Redacted**`
-   would have satisfied it — exactly the shape of blocker A. Fix: compare the
-   cell's term set against `{coverage} | set(qualifiers.values())` exactly.
+1. **A deleted Coverage term still passes unnoticed.** The comparison skips any
+   row whose Coverage cell carries no bolded term, which is why it compares 79
+   rows and not 80 — one row legitimately carries its coverage in a qualifier.
+   Deleting a term outright looks identical to that. Fix: assert presence, with
+   the legitimate row allowlisted. **Still open.**
+2. ~~An extra, stronger term alongside the correct one passes.~~ **Closed.** The
+   check now compares the cell's term set against
+   `{coverage} | set(qualifiers.values())` and requires the primary to be
+   present, so `**Denied before execution** / **Redacted**` fails. The same fix
+   scoped the scan to the Coverage column, located from each table's header row;
+   it previously scanned the whole line, which was equivalent in practice — no
+   row carries a §6 term in a second cell — but not by construction.
 3. **`RETRACTED` is hand-maintained.** It caught blockers A, C, D and I because
    someone remembered to add those phrases, and missed the fifth separator-
    citation site because nobody added `1071-1092` — in the same round the guard
@@ -170,25 +173,73 @@ def main() -> int:
 
     # ── 3. THE ROUND-3 RULE: a coverage change must reach every site ───────
     # Blocker A: C2 was retyped in the YAML and not the Markdown.
-    md_cov = {}
-    for line in md.splitlines():
-        m = re.match(r"\|\s+\*\*([A-Z]+\d+)\*\*\s+\|", line)
-        if not m:
+    #
+    # This scans ONLY the Coverage column, located from each table's own header
+    # row. An earlier version scanned the whole line, which happened to give the
+    # right answer — no row currently carries a §6 term in a second cell — but
+    # was right by accident: the first Notes cell to contain a bolded §6 term,
+    # which is natural prose here, would have satisfied the check on the wrong
+    # column. The abandoned `cells` local that a static-analysis bot flagged as
+    # a dead store was the start of this fix; this is it finished.
+    def cells_of(line: str) -> list[str]:
+        parts = line.split("|")
+        if parts and not parts[0].strip():
+            parts = parts[1:]
+        if parts and not parts[-1].strip():
+            parts = parts[:-1]
+        return [p.strip() for p in parts]
+
+    def is_separator(line: str) -> bool:
+        body = line.replace("|", "").replace(" ", "")
+        return bool(body) and set(body) <= set("-:")
+
+    md_cov: dict[str, set[str]] = {}
+    lines = md.splitlines()
+    cov_idx: int | None = None
+    for i, line in enumerate(lines):
+        if line.startswith("#"):
+            cov_idx = None                      # a heading ends the table's scope
             continue
-        cells = [c.strip() for c in line.split("|")]
-        hits = [t for t in TERM_MD.values() if f"**{t}**" in line]
+        if not line.startswith("|"):
+            continue
+        cs = cells_of(line)
+        if i + 1 < len(lines) and is_separator(lines[i + 1]):
+            cov_idx = next(
+                (k for k, c in enumerate(cs)
+                 if c.replace("*", "").strip().lower().startswith("coverage")),
+                None,
+            )
+            continue
+        if cov_idx is None or cov_idx >= len(cs) or not cs:
+            continue
+        m = re.match(r"\*\*([A-Z]+\d+)\*\*$", cs[0])
+        if not m:
+            continue                            # multi-id cells (C4 · C5 · C6) are not compared
+        hits = {t for t in TERM_MD.values() if f"**{t}**" in cs[cov_idx]}
         if hits:
             md_cov.setdefault(m.group(1), set()).update(hits)
+
     compared = 0
     for r in rows:
-        want = TERM_MD.get(r.get("coverage"))
+        primary = TERM_MD.get(r.get("coverage"))
         seen = md_cov.get(r["id"])
-        if not want or not seen:
+        if not primary or not seen:
             continue
         compared += 1
-        check(want in seen,
-              f"{r['id']}: YAML coverage={r['coverage']!r} but the Markdown cell carries {sorted(seen)} "
-              f"and not '{want}' — a retype that reached one file only")
+        # EXACT set, not membership. `primary in seen` would accept an extra,
+        # stronger term sitting alongside the correct one — blocker A written as
+        # "**Denied before execution** / **Redacted**" would have passed.
+        want = {primary} | {
+            TERM_MD[v] for v in (r.get("coverage_qualifiers") or {}).values()
+            if v in TERM_MD
+        }
+        check(seen <= want,
+              f"{r['id']}: the Markdown Coverage cell carries {sorted(seen)}, which is not "
+              f"covered by YAML coverage + qualifiers {sorted(want)} — a retype that reached "
+              f"one file only, or a term with no qualifier backing it")
+        check(primary in seen,
+              f"{r['id']}: YAML coverage={r['coverage']!r} but the Markdown Coverage cell "
+              f"carries {sorted(seen)} and not '{primary}'")
     note.append(f"{compared:>4}  rows with a Markdown Coverage cell, all agreeing with the YAML")
 
     # ── 4. the row-count table must be real, not stale ─────────────────────

@@ -714,6 +714,7 @@ capabilities:
       load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: B5
     coverage: observed
+    coverage_qualifiers: {path_blocklist: detected}   # the blocklist sets an alert bit; the syscall still proceeds
     q4_changed_answer: true
     known_bypasses:
       - "x86_64 only — 16 __x64_sys_ matches vs 0 __arm64_sys_ in aa-ebpf/src/kprobe.rs"
@@ -966,6 +967,7 @@ capabilities:
       On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: denied_before_execution
+    coverage_qualifiers: {credential_dlp: redacted}   # the same path both refuses and redacts
     redaction_actor: proxy_scanner
     known_bypasses: ["only 3 hosts: api.openai.com, api.anthropic.com, api.cohere.com (aa-proxy/src/intercept/detect.rs:31-34)", N5, N8, N9, N10, N11]
     evidence: [aa-integration-tests/tests/e2e_secret_interception.rs, aa-integration-tests/tests/e2e_mcp_redact.rs]
@@ -1167,6 +1169,7 @@ capabilities:
       On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unsupported
+    coverage_qualifiers: {hosts_not_mitmd: unmeasured}   # unsupported on MitM'd hosts; tunnelled and unmeasured elsewhere
     known_bypasses: ["the MitM ServerConfig sets no alpn_protocols (mod.rs:1342-1346); the HTTP/2 preface is rejected as a malformed request line"]
     evidence: ["GAP — 0 matches for alpn repo-wide"]
     evidence_runs_on_main: none
@@ -2916,6 +2919,7 @@ capabilities:
     boundary_class: B5
     boundary_attained: false
     coverage: experimental
+    coverage_qualifiers: {tls_file_exec_probes: observed, path_blocklist: detected}   # the probes observe/detect; only the opt-in guard is experimental
     q3_changed_answer: true
     q4_changed_answer: true
     known_bypasses: ["everything — the loader daemon does not ship"]
