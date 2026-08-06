@@ -71,6 +71,8 @@ pub mod lifecycle;
 pub mod negotiate;
 pub mod projection;
 pub mod provenance;
+#[cfg(test)]
+mod provenance_falsification;
 pub mod scope;
 pub mod server;
 pub mod service;
