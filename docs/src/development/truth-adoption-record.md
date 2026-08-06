@@ -10,7 +10,7 @@ sanctioned alternative.
 This page is the template and its field reference. It is contributor
 documentation, not a decision: the decision that a record is required, what it
 must contain and where it lives is ADR 0034's
-[Decision 4](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md).
+[Decision 4](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#4-the-adoption-record).
 Where this page and the ADR disagree, the ADR wins and this page is the thing that
 changes.
 
@@ -22,8 +22,13 @@ changes.
 
 ADR 0034's **adoption matrix** has already applied that test to every repository
 in the organisation, so look the repository up there rather than re-deriving the
-answer. Note what the test is *not*: visibility. Two private repositories require
-a record and two public ones do not.
+answer. Note what the test is *not*: visibility — private repositories both do and
+do not require records, and so do public ones. Look yours up; do not infer it.
+
+*(No count is quoted here on purpose. The matrix owns those numbers, and a
+hand-maintained tally in a second file is the prohibited duplication class that
+this record exists to prevent — the first draft of this page carried one, and it
+was already wrong in both halves before the ADR had merged.)*
 
 ## Where it goes
 
@@ -37,6 +42,19 @@ repository whose configuration is missing.
 Copy this whole block into `TRUTH-ADOPTION.md` and fill it in. Delete no field:
 a field that does not apply takes an explicit empty value (`[]`, `none`) so a
 reader can tell "considered and empty" from "forgotten".
+
+> **The front matter is authoritative; the prose sections restate it for human
+> readers and must not diverge.** Six fields — `owners`, `claim_namespaces`,
+> `enforcement`, `exceptions`, `local_adrs` and the `adr_revision` /
+> `last_reviewed_*` pair — appear twice in this template, once as YAML and once as
+> prose. Tools read the YAML: ADR 0034's Decision 10 has waivers "listed under
+> `exceptions`, and read by the AAASM-5599 check". Without a stated precedence the
+> prose copy would be an unlinked hand-maintained duplicate of the YAML — the
+> pattern this whole record exists to stop. The
+> [AAASM-5601](https://lightning-dust-mite.atlassian.net/browse/AAASM-5601)
+> validator **cross-checks the prose against the front matter** and fails on a
+> divergence; a repository that prefers not to maintain both may delete the prose
+> sections and keep the YAML.
 
 ````markdown
 ---
@@ -199,6 +217,12 @@ The release version and date at which the record was last checked against the
 ADR. A version alone is ambiguous once a version is re-cut; a date alone does not
 say what was shipping. Both.
 
+Name a version that has actually been **cut**. ADR 0034 §6.3 forbids evidence that
+names a tree not describing the ref it is cited for, and a record claiming review
+against an unreleased version makes exactly that mistake — there is no tree to
+have reviewed against. If the work is happening during an open release window, the
+honest value is the last cut tag.
+
 ## Two failure modes worth naming
 
 **`markdownlint` does not validate front matter.** A record whose YAML is
@@ -236,7 +260,7 @@ enforcement:
   note: "No AAASM-5599 check wired here yet; review-enforced until it lands."
 local_adrs: []
 exceptions: []
-last_reviewed_version: "v0.0.1-rc.7"
+last_reviewed_version: "v0.0.1-rc.6"   # the latest CUT tag, not the open one
 last_reviewed_date: "2026-08-06"
 ```
 
