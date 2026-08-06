@@ -34,7 +34,7 @@ proceeds, but only one of them is an enforcement point:
 | Mechanism | What it mediates | Platform | Decision timing |
 |---|---|---|---|
 | SDK / wrapper seam (**advisory**) | Framework tool calls the SDK wraps, after its initializer runs | Wherever the SDK runs (macOS, Linux) | Synchronous — the language wrapper raises before the wrapped body executes. But `aa-sdk-client` has no in-tree caller that refuses (`decision.rs:32-33`) and the call is voluntary, so this is defense-in-depth, not the gate (ADR 0002) |
-| `aa-proxy` | Outbound HTTP/1.1 **routed to the proxy**, on a host under MitM | macOS and Linux. CA trust-store install is automatic at proxy start on macOS; on Linux run `sudo aasm proxy install-ca`. Windows is unsupported | Synchronous — a denial returns 403 (or a JSON-RPC error for MCP `tools/call`) without dialling upstream |
+| `aa-proxy` | Outbound HTTP/1.1 **routed to the proxy**, on a host under MitM | macOS and Linux; Windows unsupported. On macOS the CA install is *attempted* at proxy start and shells out to `security add-trusted-cert`, which requires admin authorization — macOS prompts, and a refusal fails proxy startup. On Linux run `sudo aasm proxy install-ca` | Synchronous — a denial returns 403 (or a JSON-RPC error for MCP `tools/call`) without dialling upstream |
 
 **What is outside the boundary.** These are not enforced at any tier on this
 page, and each needs a separate control:

@@ -26,7 +26,9 @@ latency cost (lowest first) and detection authority (highest first):
 2. **Sidecar proxy (`aa-proxy`)** — MitM of outbound HTTPS using per-host certificates
    minted from a local root CA; enforces network-egress policy with no *agent code*
    change. Requires the process to honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
-   (automatic at proxy start on macOS; `sudo aasm proxy install-ca` on Linux —
+   (on macOS *attempted* at proxy start via `security add-trusted-cert`, which needs
+   admin authorization — a refused prompt fails proxy startup, `aa-proxy/src/lib.rs:64-69`
+   + `tls/keychain.rs:16`; on Linux `sudo aasm proxy install-ca`,
    `aa-cli/src/commands/proxy/ca.rs:150-188`; Windows unsupported). HTTP/1.1 only on
    MitM'd hosts, and `llm_only` defaults to `true`, so only the built-in LLM hosts
    are decrypted.
