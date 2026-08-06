@@ -62,11 +62,20 @@ schema:
     - evidence_quality          # unit_only | wire_level
     - boundary_conditional_on   # what the boundary depends on holding
     - boundary_attained         # false where the class is named but not reached
-    - coverage_split            # per-aspect coverage, e.g. connection vs payload
-    - coverage_e4               # platform rows: E4's coverage where it differs from E3
-    - coverage_in_kernel        # coverage at the probe, before the missing audit bridge
-    - coverage_mcp_path         # where the MCP path differs from the LLM path
-    - coverage_node_default     # where the Node default mode differs from the others
+    - coverage_qualifiers       # THE general rule for secondary coverage.
+                                # A mapping {aspect: <coverage term>} used wherever
+                                # one row's coverage differs by aspect — connection
+                                # vs payload, E3 vs E4, MCP path vs LLM path, one
+                                # SDK vs the others. Replaces five ad-hoc keys that
+                                # were declared rather than resolved; values are
+                                # the same closed ADR 0033 §6 enum as `coverage`.
+    - released_matrix           # channel -> platforms, REQUIRED where the two do
+                                # not factorise (every aa-proxy row: macOS is
+                                # crates.io-only per release.yml:274)
+    - current_level_scope       # e.g. tool_governance_only — an ADR 0030 rung
+                                # that is reachable but does NOT imply data-path prevention
+    - notes
+    - tickets
     - response_side_posture     # where request and response postures differ
     - failure_posture_node      # where one SDK diverges from the others
     - q3_changed_answer
@@ -112,7 +121,7 @@ schema:
       #   absent_mechanism        no such mechanism exists in the tree
       #   stubbed_default         the code path exists but the default config
       #                           routes past it (S7)
-      [shipped, shipped_crates_io_only, dead_code, absent_mechanism, stubbed_default]
+      [shipped, shipped_with_platform_exception, shipped_crates_io_only, dead_code, absent_mechanism, stubbed_default]
     boundary_class:
       B1: universal within one patched function
       B2: universal within one framework
@@ -519,9 +528,12 @@ capabilities:
     known_bypasses:
       - "resolve_decision has ZERO non-test callers in this repository; refusal lives in the out-of-repo FFI shims"
     evidence: >-
-      GAP. Positive control in the same probe: query_policy has real callers
-      (aa-sdk-client/src/client.rs:247 plus CLI and tests); resolve_decision
-      matches only its own definition and its #[cfg(test)] module.
+      GAP. Counted per crate: resolve_decision has 24 references in
+      aa-sdk-client/src (definition, docs, #[cfg(test)]) and 0 in BOTH
+      aa-cli/src and aa-runtime/src. An earlier revision claimed CLI coverage as
+      the positive control; that was wrong — query_policy is likewise 0 outside
+      aa-sdk-client, so it never discriminated. Both symbols are confined to
+      their own crate; the consumers are the out-of-repo FFI shims (ADR 0002).
     evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "correct per ADR 0002 — keep advisory, make the claim wording match"
@@ -854,7 +866,12 @@ capabilities:
     default_state: open            # both lists empty by default
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -891,7 +908,12 @@ capabilities:
     default_state: on              # the one network control that is not default-open
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -925,7 +947,12 @@ capabilities:
     default_state: on
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -961,7 +988,12 @@ capabilities:
     default_state: off             # llm_only defaults true; mitm_hosts empty
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -996,7 +1028,12 @@ capabilities:
     default_state: on              # this IS the default path for every host but three
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1006,7 +1043,7 @@ capabilities:
       On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: unmeasured           # payload; the connection is `observed`
-    coverage_split: {connection: observed, payload: unmeasured}
+    coverage_qualifiers: {connection: observed, payload: unmeasured}
     known_bypasses: ["the payload is never inspected"]
     evidence: ["transmission_evidence::forwarded persists 'forwarded, and nothing looked at it — never clean' (mod.rs:1398-1408, AAASM-5358)"]
     evidence_runs_on_main: standing
@@ -1032,7 +1069,12 @@ capabilities:
     default_state: not_applicable
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1066,7 +1108,12 @@ capabilities:
     default_state: on
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1101,7 +1148,12 @@ capabilities:
     default_state: not_applicable
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1136,7 +1188,12 @@ capabilities:
     default_state: not_applicable
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1281,7 +1338,7 @@ capabilities:
       load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: B5
     coverage: unmeasured           # downstream: events are not bridged to audit
-    coverage_in_kernel: observed
+    coverage_qualifiers: {secondary: observed}
     q4_changed_answer: true
     known_bypasses:
       - "Go crypto/tls, rustls, Node BoringSSL, GnuTLS, NSS, BoringSSL, LibreSSL and s2n expose no such symbols — full list at aa-ebpf-probes/src/ssl_probes.rs:22-25"
@@ -1315,7 +1372,12 @@ capabilities:
     default_state: off             # gateway_endpoint defaults to None
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1360,7 +1422,12 @@ capabilities:
     default_state: off             # aa-proxy/src/config.rs:123-130,179
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1395,7 +1462,12 @@ capabilities:
     default_state: on              # when M1's preconditions hold
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1432,7 +1504,12 @@ capabilities:
     default_state: not_applicable
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1531,7 +1608,12 @@ capabilities:
     default_state: not_applicable
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1596,7 +1678,12 @@ capabilities:
     default_state: on
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1875,7 +1962,7 @@ capabilities:
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["this is the bypass, and it is explicitly announced"]
-    evidence: ["Guarded: refused where a managed receipt or managed-settings file says the host runs managed (run.rs:894-903). Ambient HTTPS_PROXY/HTTP_PROXY are REMOVED, not inherited, when proxy is None and no_proxy is false (:329-333)."]
+    evidence: ["Guarded: refused where a managed receipt or managed-settings file says the host runs managed (run.rs:894-903). Ambient HTTPS_PROXY/HTTP_PROXY are REMOVED, not inherited, on this path (:329-333). NOTE: resolve_launch_proxy (run.rs:372-388) returns Ok(None) ONLY on the no_proxy branch, so the 'proxy is None and no_proxy is false' combination an earlier revision described is unreachable."]
     evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
@@ -1902,7 +1989,12 @@ capabilities:
     default_state: open
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1947,7 +2039,12 @@ capabilities:
     default_state: off
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -1956,7 +2053,7 @@ capabilities:
       crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
       On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
-    coverage: denied_before_execution   # for the agent's own credential reaching upstream
+    coverage: redacted                 # the request proceeds with the agent's credential REMOVED and the operator's substituted. Nothing is denied, so denied_before_execution was the wrong ADR 0033 §6 term.
     q3_changed_answer: true
     q4_changed_answer_in_product_favour: true
     known_bypasses:
@@ -2029,7 +2126,12 @@ capabilities:
     default_state: not_applicable
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -2039,7 +2141,7 @@ capabilities:
       On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: unmeasured           # LLM path
-    coverage_mcp_path: redacted
+    coverage_qualifiers: {secondary: redacted}
     known_bypasses: ["asymmetric by path — the LLM path never scans responses"]
     evidence: ["GAP on the LLM path"]
     evidence_runs_on_main: none
@@ -2313,7 +2415,12 @@ capabilities:
     default_state: not_applicable
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -2356,7 +2463,13 @@ capabilities:
     coverage: evaluated
     q3_changed_answer: true
     known_bypasses:
-      - "an unauthenticated caller reaching the agent plane can register and can submit policy queries carrying its own org/team"
+      - >-
+        An unauthenticated caller reaching the agent plane can register and can
+        submit policy queries. CORRECTION: those queries are evaluated with
+        tenancy NEUTRALISED, not with the caller's own — policy_service.rs:433-438
+        clears ctx.team_id and removes org_id/team_id when no authoritative owner
+        resolves (AAASM-3992). The exposure is that the plane accepts the call,
+        not that it honours the caller's tenancy.
       - "apply_authoritative_tenancy (policy_service.rs:398-425) overwrites client-supplied org/team ONLY when a credential token resolves"
     evidence: ["aa-api is uniformly gated by contrast — aa-api/src/routes/mod.rs:281"]
     evidence_runs_on_main: standing
@@ -2433,7 +2546,12 @@ capabilities:
     default_state: closed          # mcp_fail_open defaults false
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -2467,7 +2585,12 @@ capabilities:
     default_state: open
     released_channels: [github_release, homebrew, install_script, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos]
-    reachability: shipped
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
     released_note: >-
       macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
       a Linux-only component (ADR-014); only built/packaged there' — so
@@ -2504,8 +2627,8 @@ capabilities:
     released_channels: [pypi, npm, go_modules, crates_io]
     released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
     reachability: shipped
-    coverage: denied_before_execution
-    coverage_node_default: unmeasured
+    coverage: denied_before_execution   # Python and Go
+    coverage_qualifiers: {node_default_mode: unmeasured}
     decision_timing: pre
     observe_or_enforce: enforce
     sync_or_best_effort: sync
@@ -2867,12 +2990,13 @@ capabilities:
       ['aa-proxy'], no `publish` key), so `cargo install aa-proxy` is the only
       macOS route. E4 does not exist on macOS at all. See AAASM-5653.
     boundary_class: B6             # managed-settings route only
-    coverage: denied_before_execution   # E3
-    coverage_e4: unsupported
+    coverage: unsupported              # THIS ROW IS E4. Unsupported on macOS.
+    coverage_qualifiers: {e3_transport_mediation: denied_before_execution, e4_host_level: unsupported}
     known_bypasses: ["a local administrator", "the tool ignoring the managed keys (AAASM-5298's open half)"]
     evidence: [aa-integration-tests/tests/cli_run_claude_governed_launch.rs, aa-integration-tests/tests/conformance_claude_code.rs]
     evidence_runs_on_main: standing
-    current_level: host_enforced   # the ONLY platform where the rung is reachable
+    current_level: host_enforced
+    current_level_scope: tool_governance_only   # the ADR 0030 rung is reachable here, and ONLY on the tool-governance axis, never as data-path prevention
     target_level: "claim the file, never the enforcement"
     tickets: [AAASM-5298, AAASM-5639]
 

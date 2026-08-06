@@ -156,10 +156,31 @@ public guarantee](#minimum-defensible-public-guarantee-today) is built from it.
 
 ### Scope
 
-This threat model covers **`agent-assembly` as published at v0.0.1-rc.6** (the
-newest version on crates.io at the time of writing; rc.7 is the fix version and
-is unreleased), across every distribution channel — GitHub Release assets, the
-Homebrew tap, `scripts/install-cli.sh` and crates.io and the three language SDKs that pin it, deployed by an operator who
+This threat model covers **`agent-assembly` on `main` at `299de3883`** — the
+tree that becomes v0.0.1-rc.7 — across every distribution channel: GitHub
+Release assets, the Homebrew tap, `scripts/install-cli.sh` and crates.io.
+
+> **Read this before quoting any row against a shipped release.** Every row's
+> evidence is derived at `299de3883`, which is **2788 commits after the
+> `v0.0.1-rc.6` tag**, and rc.6 is the newest version currently on crates.io. Of
+> the 93 cited-and-tracked source files, **51 changed between the two.** An
+> earlier revision of this document scoped itself to "as published at rc.6",
+> which was wrong in the most damaging direction: it inverted three load-bearing
+> findings by asserting, of the published release, fixes that exist only on
+> `main`.
+>
+> Three rows differ materially in the published rc.6, and must be stated as
+> *fixed on `main`, still live in rc.6* wherever they are quoted:
+>
+> | Row | On `main` at `299de3883` | In the published v0.0.1-rc.6 |
+> |---|---|---|
+> | **I1** — agent keypair | Fixed. Random CSPRNG identity key in `aa-sdk-client/src/identity_store.rs`; `enforce_did_key_binding` in `lifecycle_service.rs` | **Still live.** `identity_store.rs` **does not exist**, and `enforce_did_key_binding` has **0** occurrences in `lifecycle_service.rs` — control: `verify_possession_proof` = 7 in the same file at the same tag |
+> | **L1** — `aasm run` registration | Fixed. gRPC `AgentLifecycleService.Register` with a possession proof | **File absent.** `aa-cli/src/commands/run_registration.rs` does not exist at the rc.6 tag, so the reversal cites a file the published release does not contain |
+> | **C6 / D-g** — separator-split scanner residual | Recorded as an accepted residual (AAASM-5368) | **Not yet recorded.** `AAASM-5368` has 0 occurrences in rc.6's `aa-security/src/scanner.rs` |
+>
+> This matters outside the artifact: "the AAASM-5332 keypair defect is fixed" is
+> only true of `main`. The accurate standing statement is **fixed on `main`,
+> still live in the published rc.6**. and the three language SDKs that pin it, deployed by an operator who
 runs the gateway, and optionally the runtime and the proxy, on a developer
 workstation or a single server they control.
 
@@ -182,17 +203,21 @@ In scope:
 These are non-goals **by decision**, not by omission. Each is stated so that no
 downstream page can imply the opposite by silence.
 
+The IDs are **NG**-prefixed deliberately: the network rows in D3 are also
+N1–N13, and an unprefixed collision made two different things quotable under one
+label.
+
 | # | Non-goal | Why, and where it is already recorded |
 |---|---|---|
-| **N1** | **Resisting the developer's own UID on their own machine.** A user who can edit their own environment, replace a binary on their `$PATH`, or unset `HTTPS_PROXY` can remove the product from the path | ADR 0033 threat-model table: *"The developer's own UID is not an adversary here"*; ADR 0030 states host-level tamper prevention against the user's own account as an explicit non-goal. The one partial exception is the macOS root-owned managed-settings file, which a non-admin user cannot rewrite — that is B6, not B5 |
-| **N2** | **Resisting a fully privileged host administrator** | Epic AAASM-5526 non-goals: *"Claiming resistance against a fully privileged host administrator without a separately enforced trust boundary"* |
-| **N3** | **Preventing what is only observed.** Observation is not prevention, and this model never credits a telemetry-only mechanism with a prevention property | Epic AAASM-5526 non-goals: *"Treating observation as prevention"*. ADR 0033 forbidden design 4 |
-| **N4** | **Treating installation as runtime evidence.** A settings file on disk, a binary on `$PATH`, an `AA_LAYERS` value or a capability bitflag is not evidence that anything is governed | Epic AAASM-5526 non-goals; ADR 0033 §7 and forbidden design 6; ADR 0030 §4.2 rule 1 |
-| **N5** | **Treating one SDK hook as universal** across languages, transports or host actions | Epic AAASM-5526 non-goals. This is why the boundary taxonomy above exists |
-| **N6** | **Shipping OS-level enforcement on macOS or Windows.** macOS Endpoint Security and Network Extension are explicit product non-goals; no Windows mediation exists | ADR 0033 §5.3 and `docs/src/devtools/product-brief.md`. **No test pins this** — see the P3 note |
-| **N7** | **Governing opaque SaaS agents' execution.** For an agent whose runtime the operator does not control, the product's reach is what the SaaS surface exposes, and the adapter is hard-capped accordingly | `aa-devtool-saas` ceiling; boundary class B7 |
-| **N8** | **Confidentiality of the audit chain against someone who can rewrite the log.** The chain is unkeyed; it is tamper-*evident* to a reader who holds an out-of-band copy of a prior head, not a signature | Evidence E5; re-verified below |
-| **N9** | **Network-layer transparent capture.** There is no iptables / pfctl / TPROXY / `SO_ORIGINAL_DST` redirect. Traffic reaches the mediator only if the client speaks the HTTP proxy protocol to it | Re-verified below |
+| **NG1** | **Resisting the developer's own UID on their own machine.** A user who can edit their own environment, replace a binary on their `$PATH`, or unset `HTTPS_PROXY` can remove the product from the path | ADR 0033 threat-model table: *"The developer's own UID is not an adversary here"*; ADR 0030 states host-level tamper prevention against the user's own account as an explicit non-goal. The one partial exception is the macOS root-owned managed-settings file, which a non-admin user cannot rewrite — that is B6, not B5 |
+| **NG2** | **Resisting a fully privileged host administrator** | Epic AAASM-5526 non-goals: *"Claiming resistance against a fully privileged host administrator without a separately enforced trust boundary"* |
+| **NG3** | **Preventing what is only observed.** Observation is not prevention, and this model never credits a telemetry-only mechanism with a prevention property | Epic AAASM-5526 non-goals: *"Treating observation as prevention"*. ADR 0033 forbidden design 4 |
+| **NG4** | **Treating installation as runtime evidence.** A settings file on disk, a binary on `$PATH`, an `AA_LAYERS` value or a capability bitflag is not evidence that anything is governed | Epic AAASM-5526 non-goals; ADR 0033 §7 and forbidden design 6; ADR 0030 §4.2 rule 1 |
+| **NG5** | **Treating one SDK hook as universal** across languages, transports or host actions | Epic AAASM-5526 non-goals. This is why the boundary taxonomy above exists |
+| **NG6** | **Shipping OS-level enforcement on macOS or Windows.** macOS Endpoint Security and Network Extension are explicit product non-goals; no Windows mediation exists | ADR 0033 §5.3 and `docs/src/devtools/product-brief.md`. **No test pins this** — see the P3 note |
+| **NG7** | **Governing opaque SaaS agents' execution.** For an agent whose runtime the operator does not control, the product's reach is what the SaaS surface exposes, and the adapter is hard-capped accordingly | `aa-devtool-saas` ceiling; boundary class B7 |
+| **NG8** | **Confidentiality of the audit chain against someone who can rewrite the log.** The chain is unkeyed; it is tamper-*evident* to a reader who holds an out-of-band copy of a prior head, not a signature | Evidence E5; re-verified below |
+| **NG9** | **Network-layer transparent capture.** There is no iptables / pfctl / TPROXY / `SO_ORIGINAL_DST` redirect. Traffic reaches the mediator only if the client speaks the HTTP proxy protocol to it | Re-verified below |
 
 ### Threat actors and capability assumptions
 
@@ -222,6 +247,29 @@ boundary.
 | **T4** | Client ↔ `aa-gateway` control plane | Gateway-side policy, registry, budgets, audit | Every client-supplied identity assertion | `credential_token` validation in `check_action`; server-side lineage resolution | Agent-identity possession proof is weaker than it appears — see the identity rows in the matrix |
 | **T5** | Runtime audit stream ↔ durable audit store | The sanitizer's output | Every field a sender emits | Write-boundary sanitizer strips banned keys recursively | Emission is best-effort; a dropped entry is indistinguishable from tampering |
 | **T6** | Managed-settings file ↔ the dev tool that reads it | The root-owned file's content, read back after write | The user's non-admin account | Filesystem ownership on macOS (B6) | Whether the tool *honours* those keys at runtime is unmeasured — "the open half of AAASM-5298" |
+
+> **The note T3 refers to — "the loader daemon is the only way to load a probe"
+> is not structurally true.** `aa-runtime` still compiles an **in-process**
+> loader: `spawn_ebpf_tls` (`aa-runtime/src/runtime.rs:306-312`) calls
+> `aa_ebpf::EbpfLoader::load()` directly under `#[cfg(target_os = "linux")]`,
+> behind **no cargo feature**. What keeps it dormant is a deliberate refusal of
+> privilege, not an architectural impossibility: `aa-runtime/src/main.rs:99`
+> runs `enforce_least_privilege().expect("least-privilege self-check failed")`,
+> which **panics** if the process holds any of `CAP_SYS_ADMIN` (21), `CAP_BPF`
+> (39) or `CAP_PERFMON` (38) — `aa-runtime/src/privilege.rs:30-44`.
+>
+> T3's conclusion and P1/P2's survive unchanged: a runtime granted BPF
+> capability *crashes at startup* rather than loading probes. But the reason
+> matters for anyone reasoning about the boundary. A misconfigured deployment
+> does not silently acquire an in-process loader — it gets a hard failure — and
+> the dormant path is real code a future change could re-enable without touching
+> the daemon. State it as **"the runtime refuses to hold BPF capability"**, never
+> as "the runtime cannot load probes".
+>
+> This note is also the reason the artifact now asserts on every text insertion:
+> its first version was written and silently dropped, because the insertion
+> matched a `##` heading that had already been demoted to `###`. T3 pointed at
+> a note that did not exist, and no link check could catch it — it is prose.
 
 ### What this threat model does not replace
 
@@ -388,13 +436,22 @@ structurally silent against A3. Three facts govern the whole domain:
 | **S10** · **S11** · **S12** | — | — | This is the residual by construction — B1/B2 do not extend to B3 | **Gap by design.** Recorded so no page can imply otherwise | **Unmeasured** | Never claim beyond B2 for an SDK seam |
 | **S13** | — | — | `resolve_decision` has **zero non-test callers in this repository** — verified with a positive control in the same probe: `query_policy` has real callers (`aa-sdk-client/src/client.rs:247` plus CLI and tests), `resolve_decision` matches only its own definition and its `#[cfg(test)]` module. Refusal lives in the out-of-repo FFI shims | **Gap** — the in-repo artifact that would prove the SDK honours a deny does not exist | **Evaluated** (advisory) | Per ADR 0002 this is correct and should stay advisory; the claim wording must match |
 
-> **Two deny shapes inside one SDK.** Six Python adapters return a `[BLOCKED …]`
-> string and five raise `PolicyViolationError`. Both prevent the tool body from
-> running, so both are *Denied before execution* — but a caller that catches only
-> `PolicyViolationError` will silently treat a blocked call as a successful one
-> whose result happens to be a string. That is a real integration hazard and it is
-> not documented anywhere. Flagged for AAASM-5531 as a manifest field
-> (`deny_signal: raise | sentinel_value`).
+> **Two deny shapes inside one SDK — and the split is not what an earlier
+> revision claimed.** Re-derived: the shared gate at
+> `python-sdk/agent_assembly/adapters/_shared/tool_governance.py:225-228` raises
+> (`_build_pending_rejected_error` / `_build_denied_error`) and is used by
+> **two** adapters, `google_adk` and `pydantic_ai`. **Three** return a
+> `[BLOCKED by governance policy] …` string instead — `llamaindex/patch.py:148`,
+> `crewai/patch.py:187`, `haystack/patch.py:71` — and there are **0**
+> `raise PolicyViolationError` sites anywhere in `agent_assembly/`. The earlier
+> "six sentinel / five raise" split was invented and is withdrawn. The remaining
+> adapters (`agno`, `langchain`, `langgraph`, `mcp`,
+> `microsoft_agent_framework`, `openai_agents`, `smolagents`) have **not** been
+> derived and are recorded as unknown rather than assumed.
+>
+> The hazard stands, and is why it is recorded: a caller catching only an
+> exception treats a sentinel-blocked call as a success whose result is a string.
+> Flagged for AAASM-5531 as `deny_signal: raise | sentinel_value | unknown`.
 
 ### D2 · Host actions: shell, subprocess, filesystem, browser, database
 
@@ -509,15 +566,25 @@ CONNECT proxy.
 | **M9** | — | — | — | **Gap** | **Redacted** only | — |
 | **M10** | tool config scope | server name | Launching the MCP server directly | Read-back of the config write | **Integrated** | Never present config-level MCP disabling as interception |
 
-> **MCP mediation and whole-machine MitM are coupled.** The only supported way to
-> get M1 is `aasm proxy start --gateway <url>` or an `aa-runtime`-spawned proxy,
-> and both set `AA_PROXY_GATEWAY_ENDPOINT` **and force `AA_PROXY_LLM_ONLY=false`**
-> (`aa-cli/src/commands/proxy/start.rs:128-135`; `aa-runtime/src/runtime.rs:246-259`).
-> An operator cannot adopt MCP adjudication without simultaneously bringing every
-> host on the machine under TLS MitM, with the corresponding latency,
-> compatibility and privacy cost. That coupling is a product decision that has
-> never been stated publicly, and AAASM-5609's "Choose Your Enforcement Path"
-> guide cannot be written honestly without it.
+> **MCP mediation is coupled to whole-machine MitM on the convenience path, but
+> not in the mechanism.** Both managed routes — `aasm proxy start --gateway <url>`
+> (`aa-cli/src/commands/proxy/start.rs:129-133`) and an `aa-runtime`-spawned proxy
+> (`aa-runtime/src/runtime.rs:257-258`) — set `AA_PROXY_GATEWAY_ENDPOINT` **and
+> force `AA_PROXY_LLM_ONLY=false`**, bringing every host on the machine under TLS
+> MitM with the corresponding latency, compatibility and privacy cost.
+>
+> **Correction to an earlier revision, which called this "the only supported
+> route".** It is not. `should_mitm` (`aa-proxy/src/proxy/mod.rs:1385-1388`) is
+> `detect_api(host) != Unknown` **or** a `mitm_hosts` match, and the `llm_only`
+> branch at `:1333` consults it — so an operator who sets
+> `AA_PROXY_GATEWAY_ENDPOINT` together with `AA_PROXY_MITM_HOSTS` gets MCP
+> adjudication for exactly those hosts **with `llm_only` left `true`**. The
+> narrow configuration exists; what does not exist is a CLI flag that produces
+> it, or any documentation saying so.
+>
+> Both halves belong in AAASM-5609's "Choose Your Enforcement Path": the default
+> managed route widens the MitM surface to every host, and there is a targeted
+> alternative that no page currently mentions.
 
 ### D5 · Managed dev-tool launch versus unmanaged launch
 
@@ -537,7 +604,7 @@ evidence rules cap them.
 | **L5** | SaaS / opaque agent | Claude.ai and siblings · — | — | `aa-devtool-saas/src/adapter.rs:93-100` also always errors; `supports_managed_settings: false` (`:71`); **not registered in `SUPPORTED_TOOLS` at all** (`aa-devtool/src/registry.rs:39`) | — | observe · best-effort | Hard-capped at `L1Observe`, documented as "L2/L3 unreachable" (`:119-122`). It is an audit-ingest adapter, not a launcher | **Observed** at best | B7 — and it does not attain it |
 | **L6** | Unmanaged launch (the user starts the tool directly) | any · any | all · direct · — | *none* | — | — · — | Not detectable. Stated in-tree as an unobservable bypass (`aa-devtool-claude-code/src/bypass.rs:228-235`) | **Unmeasured** | — |
 | **L7** | Settings-layer governance surviving an unmanaged launch | Claude Code · — | macOS · root-owned `/Library/Application Support/ClaudeCode/managed-settings.json` · — | `managed_settings.rs:1063-1079` — `disableBypassPermissionsMode`, `allowManagedPermissionRulesOnly` | pre (by the tool) | enforce-by-the-tool · sync | Survives an unmanaged launch because the tool reads the file itself. Whether it *honours* the keys is unmeasured | **Unmeasured** (data path); ADR 0030 `HostEnforced` reachable on the *tool-governance* axis | **B6** |
-| **L8** | `aasm run --no-proxy` | any · any | all · explicit flag · — | `resolve_launch_proxy` (`aa-cli/src/commands/run.rs:372-388`) prints a warning and returns `None` | — | — · — | Guarded: refused where a managed receipt or a managed-settings file says the host runs managed (`run.rs:894-903`). Ambient `HTTPS_PROXY`/`HTTP_PROXY` are **removed**, not inherited, when proxy is `None` and `no_proxy` is false (`:329-333`) | **Unmeasured**, and explicitly announced as such | — |
+| **L8** | `aasm run --no-proxy` | any · any | all · explicit flag · — | `resolve_launch_proxy` (`aa-cli/src/commands/run.rs:372-388`) prints a warning and returns `None` | — | — · — | Guarded: refused where a managed receipt or a managed-settings file says the host runs managed (`run.rs:894-903`). **Correction:** an earlier revision described the ambient-proxy strip as applying "on this path". That combination is unreachable — `resolve_launch_proxy` (`run.rs:372-388`) returns `Ok(None)` **only** on the `no_proxy` branch, and otherwise either resolves a trusted endpoint or errors out. The strip therefore applies exactly on the `--no-proxy` path | **Unmeasured**, and explicitly announced as such | — |
 
 > **A measured defect class, fixed for one adapter and still open for two.**
 > `aa-devtool-claude-code/src/lib.rs:337-346` records what AAASM-5276 measured
@@ -559,7 +626,7 @@ evidence rules cap them.
 
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current (ADR 0030) | Target |
 |---|---|---|---|---|---|---|
-| **L1** | `AA_AGENT_ID` + `did:key` registration over gRPC | Full: proxy DLP, MCP adjudication if a gateway is configured, managed settings | The eleven-item Claude Code list in `docs/src/devtools/limitations.md:69-84`; everything in D2, D3, D4 | `aa-integration-tests/tests/cli_run_claude_governed_launch.rs`, `cli_run_claude_launch_env.rs`, `claude_code_integration_lifecycle.rs`, `conformance_claude_code.rs` — run on `main` | **`HostEnforced` reachable** — the only adapter for which it is (`lifecycle.rs:1354`) | Hold; close the AAASM-5298 open half |
+| **L1** | `AA_AGENT_ID` + `did:key` registration over gRPC | Full: proxy DLP, MCP adjudication if a gateway is configured, managed settings | The eleven-item Claude Code list in `docs/src/devtools/limitations.md:69-84`; everything in D2, D3, D4 | `aa-integration-tests/tests/cli_run_claude_governed_launch.rs`, `cli_run_claude_launch_env.rs`, `claude_code_integration_lifecycle.rs`, `conformance_claude_code.rs` — run on `main` | **`HostEnforced` reachable** — the only adapter for which it is (`aa-devtool-claude-code/src/lifecycle.rs:844`, `(true, true) => ProtectionLevel::HostEnforced`; the one admitting observation is at `:525`) | Hold; close the AAASM-5298 open half |
 | **L2** · **L3** | `AA_AGENT_ID` | Whatever the proxy sees — which may be nothing | No CA trust ⇒ possibly no inspection at all, silently; plus all of L1's | **Gap — no launch evidence test for either adapter** | **Hard-capped at `Integrated`** by `LegacyAdapterShim` (`aa-core/src/integration/shim.rs:25-33`) | Do not raise the cap until a protection probe adjudicates a launch |
 | **L4** | — | Settings write only (`github.copilot.enable`, `chat.tools.autoApprove`, `chat.mcp.deny`, `chat.mcp.requireApproval`) | Editing the settings back | Read-back only | **Hard-capped at `Integrated`** | Correct as-is; never describe Copilot as launch-governed |
 | **L5** | — | Whatever the SaaS surface exposes | Everything — the operator does not control execution | Webhook ingest only (`aa-api/src/routes/devtools/mod.rs:57-59`) | **`L1Observe`** | Correct as-is. This is the honest B7 answer |
@@ -605,17 +672,17 @@ required before AAASM-5609 writes anything about secrets.
 | **I4** | Process-tree identity across fork/exec | **No agent id crosses fork/exec.** Verified with positive control: `agent_id` = **0** matches in `aa-ebpf-probes/src/exec_probes.rs` and `aa-ebpf-common/src/exec.rs`, against `pid` = 52 and 10 matches respectively in the same probe. Only pid ancestry propagates (`PARENT_TGID`, `EXEC_PID_FILTER`) | observe · best-effort | Userspace correlation is pid-only (`aa-runtime/src/correlation/pid.rs:28-81`) — and the bridge that feeds it **hardcodes `pid: 0`** (`aa-runtime/src/correlation/mod.rs:47-49`, `TODO(AAASM-150)`), so pid-family correlation is inert on that path | **Unmeasured** ⚠ Q4 | — |
 | **I5** | Tenant / org isolation | Carried consistently on the wire (`ProtoAgentId`, `VerifiedCaller`, `AgentRecord.org_id`, audit lineage). **Enforced per call site, not at the storage layer**: `AgentFilter.org_id` is an `Option` applied only when the caller supplies it (`aa-gateway/src/storage/postgres.rs:240-243`, `sqlite.rs:343-346`), and `get_agent` by id has **no org predicate at all** (`postgres.rs:499-508`). The DB-backstopped path is Postgres RLS, and only for the `_for_tenant` methods (`aa-storage-postgres/src/audit_sink.rs:56-74`). `aa-storage-memory` has **zero** `org_id` references across all nine source files, against 85 in `aa-storage-postgres/src/user_store.rs` as positive control | mixed | `TenancyMode` defaults to `Untenanted` (`aa-gateway/src/server.rs:657-663`) | **Evaluated**, unevenly ⚠ Q3 | B3 |
 | **I6** | Agent attribution of proxy traffic | **None.** `PROXY_AGENT_ID = "aa-proxy"` constant on every MCP `CheckActionRequest` (`aa-proxy/src/mcp_enforce.rs:48,99-102`); `ProxyEvent.agent_id` is hardcoded `None` at the production construction site (`aa-proxy/src/proxy/mod.rs:1081`); no peercred or PID lookup exists | — | Logs render the agent as `<unknown>` | **Unmeasured** ⚠ Q4 | — |
-| **I7** | Gateway agent-plane authentication | **`PolicyService` and `AgentLifecycleService` are mounted behind `enrich_interceptor`, which returns `Ok(req)` unconditionally when no valid token is present** (`aa-gateway/src/iam/grpc_auth.rs:150-161`; wiring `aa-gateway/src/server.rs:719-745` for TCP and `:864-880` for UDS). `AuditService`, `ApprovalService`, `TopologyService`, `SecretsService` and `InvalidationService` use the fail-closed `auth_interceptor` (`:122-141`). `PolicyService` compensates in-body via `apply_authoritative_tenancy` (`policy_service.rs:398-425`) — but **only when a credential token resolves**; a tokenless call keeps the client-supplied org/team | — | By design for bootstrap: `Register` is documented as an unauthenticated bootstrap endpoint (`aa-sdk-client/src/identity_store.rs:5-9`) | **Evaluated**, with a stated bootstrap exposure ⚠ Q3 | B3 |
+| **I7** | Gateway agent-plane authentication | **`PolicyService` and `AgentLifecycleService` are mounted behind `enrich_interceptor`, which returns `Ok(req)` unconditionally when no valid token is present** (`aa-gateway/src/iam/grpc_auth.rs:150-161`; wiring `aa-gateway/src/server.rs:719-745` for TCP and `:864-880` for UDS). `AuditService`, `ApprovalService`, `TopologyService`, `SecretsService` and `InvalidationService` use the fail-closed `auth_interceptor` (`:122-141`). `PolicyService` compensates in-body via `apply_authoritative_tenancy` (`policy_service.rs:398-438`). **Correction to an earlier revision:** a tokenless call does *not* keep its client-supplied tenancy. Where no authoritative owner resolves, `:433-438` sets `ctx.team_id = None` and removes `org_id` and `team_id` from the metadata, commented (AAASM-3992) as neutralising *"the unauthenticated, client-supplied tenancy so it cannot target a victim tenant's budget or audit lineage"*. The exposure is that the plane accepts the call at all — not that it honours the caller's tenancy | — | By design for bootstrap: `Register` is documented as an unauthenticated bootstrap endpoint (`aa-sdk-client/src/identity_store.rs:5-9`) | **Evaluated**, with a stated bootstrap exposure ⚠ Q3 | B3 |
 
 #### D7 · Table 2 — risk and evidence
 
 | ID | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|
-| **I1** · **I2** · **I3** | Registration is reachable by anyone who can reach the agent plane (I7), so identity is *provable* but the plane is *open* | `aa-integration-tests/tests/e2e_a2a_identity.rs`, `native_auth_gating.rs`, `api_auth_matrix.rs`; `aa-gateway/tests/lifecycle_service_test.rs`. **Residual smell:** `aa-cli` registration tests and the gateway lifecycle tests still mint registration keys with `derive_transport_key(agent_id)` (`aa-cli/src/commands/run_registration.rs:583,668`), the exact derivation AAASM-5332 removed from the production path — so the fixtures exercise a derivable key | **Evaluated** | Keep. Advertise I3; it is stronger than anything published about it |
+| **I1** · **I2** · **I3** | Registration is reachable by anyone who can reach the agent plane (I7), so identity is *provable* but the plane is *open* | `aa-integration-tests/tests/e2e_a2a_identity.rs`, `native_auth_gating.rs`, `api_auth_matrix.rs`; `aa-gateway/tests/lifecycle_service_test.rs`. **Withdrawn on re-reading:** `run_registration.rs:583,668` mints a *foreign* key (`"somebody-else"`, `"parity-check"`) — it is the AAASM-5332 **regression test**, asserting a derivable key is refused. Citing it as a residual smell inverted its meaning | **Evaluated** | Keep. Advertise I3; it is stronger than anything published about it |
 | **I4** | Any child process | **Gap** — a hardcoded `pid: 0` cannot be tested into correctness | **Unmeasured** | Wire the pid through or withdraw process-tree attribution claims |
 | **I5** | A caller that omits `org_id` on a filtered read; `get_agent` by id; any memory-backend deployment | `aa-integration-tests/tests/e2e_org_isolation.rs`, `api_iam.rs`; `aa-api/src/ws/tenant.rs:10-25` is fail-closed for untagged events | **Evaluated**, unevenly | Push org scoping into the storage trait rather than the call sites |
 | **I6** | — | **Gap** | **Unmeasured** | [AAASM-5533](https://lightning-dust-mite.atlassian.net/browse/AAASM-5533) owns "real agent identity binding" and this is its concrete requirement |
-| **I7** | An unauthenticated caller reaching the agent plane can register and can submit policy queries carrying its own org/team | `aa-api` is uniformly gated by contrast (`aa-api/src/routes/mod.rs:281`) | **Evaluated** | Document the bootstrap exposure explicitly; it is defensible but must not be described as "authenticated" |
+| **I7** | An unauthenticated caller reaching the agent plane can register, and can submit policy queries — which are then evaluated with tenancy **neutralised**, not with the caller's own | `aa-api` is uniformly gated by contrast (`aa-api/src/routes/mod.rs:281`) | **Evaluated** | Document the bootstrap exposure explicitly; it is defensible but must not be described as "authenticated" |
 
 ### D8 · Degraded and unavailable modes
 
@@ -626,11 +693,11 @@ to make degradation visible is emit-only.
 
 | ID | Scenario | Posture | Evidence | Coverage |
 |---|---|---|---|---|
-| **G1** | `aa-runtime` → gateway unreachable on a policy query | **Fail-closed by default** — `Deny`, reason *"gateway unreachable; denied by fail-closed policy"* (`aa-runtime/src/pipeline/mod.rs:467-486`); timeouts identical (`:648-651`); `AA_GATEWAY_FAIL_CLOSED` unset ⇒ `true` (`aa-runtime/src/config.rs:306-310`). Unknown gateway decision codes collapse to `Deny` (`:657-668`) | Pinned by `aa-integration-tests/tests/e2e_runtime_gateway_deny.rs` | **Denied before execution** ✅ |
+| **G1** | `aa-runtime` → gateway unreachable on a policy query | **Fail-closed by default** — `Deny`, reason *"gateway unreachable; denied by fail-closed policy"* (`aa-runtime/src/pipeline/mod.rs:467-486`); timeouts identical (`:648-651`); `AA_GATEWAY_FAIL_CLOSED` unset ⇒ `true` (`aa-runtime/src/config.rs:306-310`). Unknown gateway decision codes collapse to `Deny` (`:657-668`) | **Partial.** `aa-integration-tests/tests/e2e_runtime_gateway_deny.rs` pins per-tool deny *forwarding*, not the fail-closed-on-unreachable default — it contains no `fail_closed` or `unreachable` case (0 matches each). The default is pinned only by `aa-runtime` unit tests; the end-to-end behaviour is a **Gap** | **Denied before execution** ✅ |
 | **G2** | `aa-runtime` with **no gateway configured**, or `fail_closed=false` | **Fail-open** — falls through to local evaluation whose terminal default is **Allow** (`pipeline/mod.rs:486,536`); `GatewayOutcome::NoClient` takes the same path | — | **Unmeasured** ⚠ Q3 |
 | **G3** | `aa-proxy` → gateway unreachable, MCP | **Fail-closed at both points** — refuses to start (`proxy/mod.rs:270-286`); per-call Deny `-32000` (`:666-688`) | `aa-proxy/src/config.rs:957-966` pins the default | **Denied before execution** ✅ |
 | **G4** | Credential/DLP default | **Fail-open** — `RedactOnly` forwards | `aa-proxy/src/config.rs:888` | **Redacted** ⚠ Q3 |
-| **G5** | SDK cannot reach the runtime UDS | Python **fail-closed** (`_FailClosedInterceptor` denies every call); Node **fail-closed only under an explicit enforce posture**, and defeated by S7 in the default mode; Go **fail-closed** | per-SDK unit tests | mixed |
+| **G5** | SDK cannot reach the runtime UDS | Python **fail-closed** (`_FailClosedInterceptor` denies every call); Node **fail-closed only under an explicit enforce posture**, and defeated by S7 in the default mode; Go **fail-closed** | per-SDK unit tests | **Denied before execution** (Python, Go) · **Unmeasured** (Node, default mode) |
 | **G6** | eBPF load/attach failure | **Fail-open, soft degrade** — warn, emit `LayerDegradation`, continue (`aa-runtime/src/ebpf_control.rs:204-213`, `:378-384`) | — | **Degraded** |
 | **G7** | eBPF policy file unreadable or unparseable | **Silent fail-open to an empty rule set** — no kernel rules at all (`aa-runtime/src/ebpf_control.rs:190-201`), with no `LayerDegradation` raised | **Gap** | **Unmeasured** ⚠ Q3 |
 | **G8** | Gateway policy load or schema failure | **Fail-closed at boot** — server startup aborts (`aa-gateway/src/server.rs:617-619` (`serve_tcp`, `fn` at `:605`), `:777-781`); `aa-runtime` exits `1` on policy parse failure | — | **Denied before execution** ✅ |
@@ -638,7 +705,8 @@ to make degradation visible is emit-only.
 | **G10** | Audit emission failure | **Fail-open** — `try_send` full ⇒ warn + `audit_drops` counter; closed ⇒ error; either way the RPC **returns `event_id` and reports success** (`aa-gateway/src/service/audit_service.rs:175-187`). The hash chain advances *before* the send (`:172`), so a dropped entry leaves a permanent chain gap indistinguishable from tampering | [AAASM-5626](https://lightning-dust-mite.atlassian.net/browse/AAASM-5626) owns this | **Unmeasured** |
 | **G11** | Degradation visibility | **Emit-only.** Three producers (`aa-runtime/src/runtime.rs:280-298`, `:571-583`, plus `ebpf_control.rs:211`), all using `let _ = broadcast_tx.send(...)`; a WS payload type (`aa-api/src/models/ws_payloads.rs:92-100`); and **no renderer**. Verified with positive control: `LayerDegradation` appears in exactly one dashboard file, `dashboard/src/api/events.ts` (a type declaration, 3 mentions), against `policy_violation` = 110 mentions across real dashboard feature code. `degraded_layers` = **0** matches in `aa-cli/src`. The `/health` `degraded_layers` field is a snapshot moved in once at boot (`aa-runtime/src/runtime.rs:1180-1188`) and never updates; `status` is the hardcoded literal `"healthy"` (`aa-runtime/src/health/mod.rs:50`) | **Gap** | **Unmeasured** ⚠ Q4 |
 
-> **G11 fails an Epic exit criterion outright.** AAASM-5526 requires that
+> **G11 fails an Epic *success* criterion outright.** AAASM-5526's success
+> criteria require that
 > *"Runtime / proxy / adapter degradation is visible and cannot be reported as
 > protected without evidence."* The first half does not hold today: a degradation
 > is emitted into a broadcast channel whose result is discarded, typed in the
@@ -649,6 +717,26 @@ to make degradation visible is emit-only.
 
 This table does not extend ADR 0033 §5.3; it re-verifies it and adds the release
 artifact fact, which §5.3 does not state.
+
+> **A citation this artifact inherited, and the note P3 refers to.** Earlier
+> revisions cited `aa-cli/src/commands/integrations/model.rs:1200,1204` as a test
+> pinning the macOS Endpoint Security non-goal. Two things were wrong. The line
+> numbers were inherited from ADR 0033 §5.3 and re-published without
+> re-derivation at this artifact's own base — at `299de3883` they land inside
+> `every_rung_at_or_below_the_achieved_one_is_marked_achieved`, a rung-precedence
+> test that says nothing about Endpoint Security. The string is at `:1212,1216`.
+>
+> And at the correct lines the test is a **pass-through tautology**:
+> `summary_declaring(support, reason)` (`:1109-1123`) stuffs its `reason`
+> argument straight into `CapabilityView.reason` (`:1119`), and the test asserts
+> that same string comes back. Substitute `"banana"` in both places and it still
+> passes. It pins the precedence plumbing, not the Endpoint Security position,
+> which exists only in prose — in `docs/src/devtools/product-brief.md` and
+> ADR 0033 §5.3.
+>
+> Recorded rather than quietly fixed because the artifact's method rests on
+> citation discipline, and this is exactly the defect the method exists to
+> prevent: a citation carried across from another document instead of re-derived.
 
 | ID | Platform | E3 transport mediation | E4 host-level interception | Coverage | Bnd |
 |---|---|---|---|---|---|
@@ -856,15 +944,15 @@ Recorded so they are not re-opened as defects.
 
 | Limitation | Why accepted |
 |---|---|
-| The developer's own UID can remove the product from the path | Non-goal **N1**; ADR 0030 and ADR 0033 both state it |
-| A fully privileged host administrator is out of scope | Non-goal **N2**; Epic AAASM-5526 states it |
+| The developer's own UID can remove the product from the path | Non-goal **NG1**; ADR 0030 and ADR 0033 both state it |
+| A fully privileged host administrator is out of scope | Non-goal **NG2**; Epic AAASM-5526 states it |
 | The SDK is advisory, not a security boundary | ADR 0002; correct by design. The claim wording must match, not the code |
-| The audit chain is unkeyed and therefore tamper-evident, not signed | Non-goal **N8**; re-verified — `sha2` present and `hmac` absent across `aa-core/src`, and `aasm audit verify-chain` genuinely ships (`aa-gateway/src/audit.rs:142`; `aa-cli/src/commands/audit/mod.rs:14,31,44`) |
+| The audit chain is unkeyed and therefore tamper-evident, not signed | Non-goal **NG8**; re-verified — `sha2` present and `hmac` absent across `aa-core/src`, and `aasm audit verify-chain` genuinely ships (`aa-gateway/src/audit.rs:142`; `aa-cli/src/commands/audit/mod.rs:14,31,44`) |
 | The audit chain covers the JSONL sink only; the DB mirror drops `seq` / `previous_hash` / `entry_hash` | Deliberate and documented (`aa-gateway/src/storage/audit_bridge.rs:10-12`) |
-| A secret split by a separator scans clean | AAASM-5368, accepted residual |
-| macOS Endpoint Security / Network Extension | Non-goal **N6**, pinned by a test |
-| No transparent network redirect | Non-goal **N9** |
-| Opaque SaaS agents cap at `L1Observe` | Non-goal **N7**; the honest B7 answer |
+| A secret split by a separator (`中`, emoji, space, tab, newline) scans clean | AAASM-5368, accepted residual. Present on `main`; **not yet recorded in the published rc.6**, where `AAASM-5368` has 0 occurrences in `aa-security/src/scanner.rs` |
+| macOS Endpoint Security / Network Extension | Non-goal **NG6**. Asserted in `docs/src/devtools/product-brief.md` and ADR 0033 §5.3; **no test pins it** — see the P3 note |
+| No transparent network redirect | Non-goal **NG9** |
+| Opaque SaaS agents cap at `L1Observe` | Non-goal **NG7**; the honest B7 answer |
 | The eBPF syscall guard's load-time window and fork fail-open | Documented at `aa-runtime/src/ebpf_control.rs:114-121` and `aa-ebpf-probes/src/syscall_guard.rs:105`; a race-free fix needs a protocol change |
 
 ---
@@ -944,7 +1032,7 @@ edited here.
 | 3 | Budget state load failure silently resets the cap; eBPF policy parse failure silently yields an empty rule set. Neither raises a degradation | `aa-gateway/src/server.rs:155-163`; `aa-runtime/src/ebpf_control.rs:190-201` | **F4 — new ticket** |
 | 4 | `get_agent` by id carries no org predicate; `aa-storage-memory` has no `org_id` concept | `aa-gateway/src/storage/postgres.rs:499-508`; `aa-storage-memory/src/**` | **F5 — new ticket** |
 | 5 | CONNECT emits an **allow** decision for traffic then tunnelled uninspected — re-verified present | `aa-proxy/src/proxy/mod.rs:1325` | AAASM-5637 (open) |
-| 6 | `aa-cli` and gateway lifecycle tests still mint registration keys via `derive_transport_key(agent_id)`, the derivation AAASM-5332 removed from production | `aa-cli/src/commands/run_registration.rs:583,668`; `aa-gateway/tests/lifecycle_service_test.rs:29,658,682,804,830,856` | AAASM-5535 or a test-hygiene follow-up |
+| 6 | ~~Tests mint registration keys via `derive_transport_key`~~ — **withdrawn.** `run_registration.rs:583,668` mints a *foreign* key (`"somebody-else"`, `"parity-check"`): it is the AAASM-5332 regression test asserting a derivable key is refused, not a residual smell. Recorded rather than deleted because the misreading is instructive — a test that *uses* a removed primitive is usually asserting its removal | — | none |
 | 7 | The correlation bridge hardcodes `pid: 0`, making pid-family correlation inert | `aa-runtime/src/correlation/mod.rs:47-49` | pre-existing `TODO(AAASM-150)` |
 
 ### Comments that contradict their own code
@@ -990,7 +1078,7 @@ its absence made a claim ambiguous somewhere above.
 | `decision_timing` | `pre` \| `in-line` \| `post` \| `none` | Separates *Denied before execution* from the eBPF guard's post-hoc kill |
 | `failure_posture` | `fail_closed` \| `fail_open` \| `fail_open_silent` | The third value is the finding: G7 and G9 fail open **without** emitting a degradation, which is materially different from G6 |
 | `evidence_ref` + `evidence_runs_on_main` | test path + `standing` \| `path_gated_with_schedule` \| `path_gated_no_backstop` \| `manual_only` \| `none` | **Not a boolean.** A path-gated test with a cron backstop (the eBPF suite) is weak evidence; one with no backstop is not evidence of a standing property at all. This artifact's own gates are in the latter class — `doc-links.yml` is path-filtered to `README.md` and `docs/**`, and no markdownlint job exists in CI — which is why they are reported as hand-run commands. Must be derived from the workflow's triggers and path filters, never hand-written: a hand-maintained boolean would read `true` for exactly the PR-only gate that never runs on the merge that breaks it. The eBPF `ebpf` filter (`.github/workflows/ci.yml:271-276`) is the worked example — its globs match neither `aa-integration-tests/**`, where `e2e_ebpf.rs` lives, nor `aa-runtime/**` |
-| `deny_signal` | `raise` \| `sentinel_value` \| `none` | Six Python adapters return a `[BLOCKED …]` string and five raise; a caller catching only the exception treats a blocked call as a success |
+| `deny_signal` | `raise` \| `sentinel_value` \| `unknown` \| `none` | Re-derived: **two** Python adapters (`google_adk`, `pydantic_ai`) raise through the shared gate, **three** (`llamaindex`, `crewai`, `haystack`) return a `[BLOCKED …]` string, and **seven are underived** — hence the `unknown` value, which a manifest needs so an unexamined adapter is not silently typed as either. A caller catching only the exception treats a sentinel-blocked call as a success |
 | `redaction_actor` | `proxy_scanner` \| `gateway_instructions` | A gateway `Redact` verdict never replays the gateway's field paths; the proxy's own scanner does the work |
 
 Two further recommendations for 5531, both learned here:
@@ -1024,7 +1112,7 @@ Two further recommendations for 5531, both learned here:
 | Direct and unmanaged paths are represented rather than omitted | **S10**, **S11**, **S12** (direct calls, unadapted frameworks, raw HTTP/subprocess/fs), **L6**, **L8** (unmanaged launch, `--no-proxy`), **N10**–**N12**, **M5**–**M8** |
 | Observe-only, best-effort and pre-execution enforcement are not conflated | The `Mode` column carries enforce-vs-observe **and** sync-vs-best-effort separately, and `Coverage` is a closed ADR 0033 §6 term. H2 is recorded as **Detected**, never *Denied before execution*, precisely because the syscall completes first |
 | Each advertised guarantee maps to at least one evidence row | Table 2 of every domain carries an `Evidence test / gap` cell. Where no test exists the cell says **Gap** rather than being left blank |
-| Each known bypass maps to a mitigation, accepted limitation or follow-up | [Gap-to-ticket mapping](#gap-to-ticket-mapping) — 21 existing issues, 7 new follow-ups, 10 accepted limitations |
+| Each known bypass maps to a mitigation, accepted limitation or follow-up | [Gap-to-ticket mapping](#gap-to-ticket-mapping) — 24 existing issues, 7 new follow-ups, 10 accepted limitations |
 | The matrix is reviewed against source code, not README text alone | [Method](#method). Every row cites `file:line` with the symbol name; every absence carries a positive control; every path was checked with `git ls-files --error-unmatch`. Four comments that contradict their own code are recorded as findings |
 | A final Go / Conditional Go / No-Go per boundary class | [Go / Conditional Go / No-Go](#go--conditional-go--no-go-per-boundary-class) — B1 Go · B2 Conditional · B3 Conditional · B4 No-Go · B5 No-Go · B6 Conditional · B7 No-Go |
 
