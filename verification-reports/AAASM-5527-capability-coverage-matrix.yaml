@@ -49,13 +49,29 @@ schema:
     - target_level
   recommended_additions:
     - default_state
-    - reachable_in_release
+    - released_channels
+    - released_platforms
+    - reachability
     - boundary_class
     - failure_posture           # third enum value fail_open_silent
     - evidence_runs_on_main
     - deny_signal
     - redaction_actor
     - coverage                  # closed enum, ADR 0033 §6
+    - released_note             # channel/platform exceptions in prose
+    - evidence_quality          # unit_only | wire_level
+    - boundary_conditional_on   # what the boundary depends on holding
+    - boundary_attained         # false where the class is named but not reached
+    - coverage_split            # per-aspect coverage, e.g. connection vs payload
+    - coverage_e4               # platform rows: E4's coverage where it differs from E3
+    - coverage_in_kernel        # coverage at the probe, before the missing audit bridge
+    - coverage_mcp_path         # where the MCP path differs from the LLM path
+    - coverage_node_default     # where the Node default mode differs from the others
+    - response_side_posture     # where request and response postures differ
+    - failure_posture_node      # where one SDK diverges from the others
+    - q3_changed_answer
+    - q4_changed_answer
+    - q4_changed_answer_in_product_favour
   enums:
     coverage:                   # ADR 0033 §6 — closed set; anything else is invalid
       [observed, detected, evaluated, denied_before_execution, redacted,
@@ -63,8 +79,31 @@ schema:
     decision_timing: [pre, in_line, post, none]
     observe_or_enforce: [enforce, observe, none]
     sync_or_best_effort: [sync, best_effort, none]
-    failure_posture: [fail_closed, fail_open, fail_open_silent, not_applicable]
-    default_state: [on, off, open, closed, not_applicable]
+    failure_posture:
+      # `fail_open_silent` is a distinct value on purpose: G7 and G9 fail open
+      # WITHOUT emitting a degradation, which is materially different from G6,
+      # which does. `silent_truncation` is M7/N9's posture — the request is not
+      # refused and not forwarded intact; the body is emptied.
+      [fail_closed, fail_open, fail_open_silent, silent_truncation, not_applicable]
+    default_state: [on, off, open, closed, mixed, not_applicable]
+    released_channels:
+      [github_release, homebrew, install_script, crates_io, pypi, npm,
+       go_modules, not_applicable]
+    released_platforms:
+      [linux_x86_64, linux_aarch64, macos, windows, not_applicable]
+    reachability:
+      # WHY the capability is or is not reachable. Split out from the old
+      # boolean `reachable_in_release`, which conflated four different causes
+      # and was wrong in both directions for ~25 of 80 rows.
+      #   shipped                 reachable through the listed channels
+      #   shipped_crates_io_only  the bin publishes to crates.io but is absent
+      #                           from the GitHub Release / Homebrew / installer
+      #                           channels most users actually use
+      #   dead_code               the binary ships; no route reaches the code
+      #   absent_mechanism        no such mechanism exists in the tree
+      #   stubbed_default         the code path exists but the default config
+      #                           routes past it (S7)
+      [shipped, shipped_crates_io_only, dead_code, absent_mechanism, stubbed_default]
     boundary_class:
       B1: universal within one patched function
       B2: universal within one framework
@@ -100,7 +139,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on          # after the explicit init_assembly() call
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B2
     coverage: denied_before_execution
     deny_signal: raise
@@ -131,7 +172,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B2
     coverage: denied_before_execution
     deny_signal: sentinel_value
@@ -158,7 +201,9 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: not_applicable
     default_state: on
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B2
     coverage: observed
     deny_signal: none
@@ -185,7 +230,9 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: not_applicable
     default_state: on
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B2
     coverage: observed
     deny_signal: none
@@ -212,7 +259,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open_silent
     default_state: off
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B1
     coverage: denied_before_execution
     deny_signal: raise
@@ -240,7 +289,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B2
     coverage: denied_before_execution
     deny_signal: [raise, sentinel_value]
@@ -266,7 +317,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open_silent
     default_state: open
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     deny_signal: none
@@ -300,7 +353,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: off        # requires an explicit WrapTools call
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B1
     coverage: denied_before_execution
     deny_signal: raise        # returned error, not a panic
@@ -330,7 +385,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: closed
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: B1
     coverage: denied_before_execution
     deny_signal: raise
@@ -358,7 +415,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["residual by construction — B1/B2 do not extend to B3"]
@@ -383,7 +442,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["choosing an unadapted framework"]
@@ -408,7 +469,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -438,7 +501,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed  # when the caller opts in
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: evaluated
     q4_changed_answer: true
@@ -474,7 +539,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -505,7 +572,24 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: fail_open
     default_state: off
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: B3
     coverage: detected            # explicitly NOT denied_before_execution
     q3_changed_answer: true
@@ -537,7 +621,24 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: fail_open
     default_state: on
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: B5
     coverage: unmeasured
     q4_changed_answer: true
@@ -564,7 +665,24 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: fail_open
     default_state: on
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: B5
     coverage: observed
     q4_changed_answer: true
@@ -594,7 +712,10 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: closed         # preopened_dirs empty => fully sealed
-    reachable_in_release: true    # linked into aasm and aa-api-server
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: "Linked into aasm and aa-api-server; no separate binary."
     boundary_class: B3            # of the WASM guest only
     coverage: denied_before_execution
     known_bypasses: ["not on any agent's normal tool-call path"]
@@ -622,7 +743,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -652,7 +775,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -678,7 +803,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open_silent
     default_state: off
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B6
     coverage: unmeasured
     known_bypasses:
@@ -711,7 +838,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open
     default_state: open            # both lists empty by default
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     boundary_conditional_on: "the process honours the injected proxy environment"
     coverage: denied_before_execution
@@ -739,7 +875,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on              # the one network control that is not default-open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: denied_before_execution
     known_bypasses: [N10, N11, "traffic not routed to the proxy"]
@@ -764,7 +909,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: denied_before_execution
     redaction_actor: proxy_scanner
@@ -791,7 +945,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: off             # llm_only defaults true; mitm_hosts empty
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: denied_before_execution
     q3_changed_answer: true
@@ -817,7 +980,16 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: not_applicable
     default_state: on              # this IS the default path for every host but three
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: unmeasured           # payload; the connection is `observed`
     coverage_split: {connection: observed, payload: unmeasured}
@@ -844,7 +1016,16 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["a credential echoed back by a provider is never detected"]
@@ -869,7 +1050,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: redacted
     redaction_actor: proxy_scanner
@@ -895,7 +1085,16 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unsupported
     known_bypasses: ["the MitM ServerConfig sets no alpn_protocols (mod.rs:1342-1346); the HTTP/2 preface is rejected as a malformed request line"]
@@ -921,7 +1120,16 @@ capabilities:
     failure_posture: fail_closed   # request side
     response_side_posture: silent_truncation
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["a chunked request is dropped with no HTTP response; a chunked response on the MCP path is silently emptied"]
@@ -946,7 +1154,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["no transparent redirect exists"]
@@ -973,7 +1183,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unsupported
     evidence: >-
@@ -1001,7 +1213,16 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["nothing mediates a third-party UDS conversation"]
@@ -1026,7 +1247,24 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: fail_open
     default_state: on
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: B5
     coverage: unmeasured           # downstream: events are not bridged to audit
     coverage_in_kernel: observed
@@ -1061,7 +1299,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: off             # gateway_endpoint defaults to None
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: denied_before_execution
     redaction_actor: proxy_scanner
@@ -1097,7 +1344,16 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: fail_open
     default_state: off             # aa-proxy/src/config.rs:123-130,179
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unmeasured
     q3_changed_answer: true
@@ -1123,7 +1379,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on              # when M1's preconditions hold
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: denied_before_execution
     known_bypasses:
@@ -1151,7 +1416,16 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: fail_open
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -1180,7 +1454,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -1210,7 +1486,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -1237,7 +1515,16 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: silent_truncation
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -1264,7 +1551,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
     boundary_class: null
     coverage: unsupported
     q4_changed_answer: true
@@ -1291,7 +1580,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: redacted             # DLP only; never adjudicated
     redaction_actor: proxy_scanner
@@ -1317,7 +1615,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open_silent
     default_state: off
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B6
     coverage: unmeasured
     known_bypasses: ["any process can launch the MCP server itself; enforcement is the host tool's, not Agent Assembly's"]
@@ -1346,7 +1646,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B3
     boundary_conditional_on: "the tool honours the injected proxy environment"
     coverage: denied_before_execution
@@ -1377,7 +1679,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open_silent
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     q3_changed_answer: true
@@ -1410,7 +1714,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open_silent
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     q3_changed_answer: true
@@ -1438,7 +1744,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unsupported
     q4_changed_answer: true
@@ -1464,7 +1772,9 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: not_applicable
     default_state: off
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B7
     boundary_attained: false
     coverage: observed
@@ -1490,7 +1800,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["this IS the bypass, and it is not detectable"]
@@ -1515,7 +1827,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open_silent
     default_state: off
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B6
     coverage: unmeasured           # data path
     known_bypasses: ["a local administrator", "the tool ignoring the keys"]
@@ -1541,7 +1855,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: off
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["this is the bypass, and it is explicitly announced"]
@@ -1570,7 +1886,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open     # RedactOnly forwards
     default_state: open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: redacted
     redaction_actor: proxy_scanner
@@ -1606,7 +1931,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open     # empty store => no substitution
     default_state: off
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: denied_before_execution   # for the agent's own credential reaching upstream
     q3_changed_answer: true
@@ -1643,7 +1977,13 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: dead_code
+    released_note: >-
+      The binaries ship. The capability is unreachable for a NON-CHANNEL
+      reason: no route populates the secrets store. Channel scoping is
+      irrelevant here — do not read `released_*` as reachability.
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -1673,7 +2013,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed   # MCP path withholds an uninspectable body
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: unmeasured           # LLM path
     coverage_mcp_path: redacted
@@ -1699,7 +2048,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: fail_open
     default_state: open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["the child receives the ENTIRE parent environment, so a shell or file tool in the agent can read any credential the operator exported"]
@@ -1724,7 +2075,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     boundary_class: B3
     coverage: detected
     known_bypasses:
@@ -1763,7 +2123,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B3
     coverage: evaluated
     q4_changed_answer_in_product_favour: true
@@ -1795,7 +2157,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B3
     coverage: evaluated
     known_bypasses: ["the signature proves nothing; the boundary is the socket's 0600 mode plus peercred UID"]
@@ -1820,7 +2184,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed   # invalid parent => Status::invalid_argument
     default_state: on
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B3
     coverage: evaluated
     known_bypasses: ["as I7 — the plane is open"]
@@ -1845,7 +2211,24 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: fail_open
     default_state: on
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -1882,7 +2265,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open
     default_state: off             # TenancyMode defaults to Untenanted
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B3
     coverage: evaluated
     q3_changed_answer: true
@@ -1912,7 +2297,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: null
     coverage: unmeasured
     q4_changed_answer: true
@@ -1948,7 +2335,9 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_open     # on the agent plane
     default_state: open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     boundary_class: B3
     coverage: evaluated
     q3_changed_answer: true
@@ -1973,7 +2362,9 @@ capabilities:
     platform: [linux, macos, windows]
     failure_posture: fail_closed
     default_state: closed          # AA_GATEWAY_FAIL_CLOSED unset => true (aa-runtime/src/config.rs:306-310)
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     coverage: denied_before_execution
     decision_timing: pre
     observe_or_enforce: enforce
@@ -1998,7 +2389,9 @@ capabilities:
     platform: [linux, macos, windows]
     failure_posture: fail_open
     default_state: open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     coverage: unmeasured
     decision_timing: pre
     observe_or_enforce: none
@@ -2024,7 +2417,16 @@ capabilities:
     platform: [linux, macos]
     failure_posture: fail_closed
     default_state: closed          # mcp_fail_open defaults false
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     coverage: denied_before_execution
     decision_timing: pre
     observe_or_enforce: enforce
@@ -2049,7 +2451,16 @@ capabilities:
     platform: [linux, macos]
     failure_posture: fail_open
     default_state: open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
     coverage: redacted
     decision_timing: in_line
     observe_or_enforce: enforce
@@ -2076,7 +2487,9 @@ capabilities:
     failure_posture: fail_closed   # python, go
     failure_posture_node: fail_open_silent
     default_state: mixed
-    reachable_in_release: true
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
     coverage: denied_before_execution
     coverage_node_default: unmeasured
     decision_timing: pre
@@ -2103,7 +2516,24 @@ capabilities:
     platform: [linux]
     failure_posture: fail_open
     default_state: open
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     coverage: degraded
     decision_timing: none
     observe_or_enforce: none
@@ -2128,7 +2558,24 @@ capabilities:
     platform: [linux]
     failure_posture: fail_open_silent
     default_state: open
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     coverage: unmeasured
     decision_timing: none
     observe_or_enforce: none
@@ -2154,7 +2601,9 @@ capabilities:
     platform: [linux, macos, windows]
     failure_posture: fail_closed
     default_state: closed
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     coverage: denied_before_execution
     decision_timing: pre
     observe_or_enforce: enforce
@@ -2183,7 +2632,9 @@ capabilities:
     platform: [linux, macos, windows]
     failure_posture: fail_open_silent
     default_state: open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     coverage: unmeasured
     decision_timing: pre
     observe_or_enforce: none
@@ -2216,7 +2667,9 @@ capabilities:
     platform: [linux, macos, windows]
     failure_posture: fail_open
     default_state: open
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     coverage: unmeasured
     decision_timing: post
     observe_or_enforce: none
@@ -2248,7 +2701,9 @@ capabilities:
     platform: [linux, macos, windows]
     failure_posture: fail_open_silent
     default_state: not_applicable
-    reachable_in_release: true
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
     coverage: unmeasured
     decision_timing: post
     observe_or_enforce: none
@@ -2292,7 +2747,21 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: fail_open
     default_state: off             # syscall guard
-    reachable_in_release: false    # aa-ebpf-loaderd is NOT shipped
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      E3 (`aa-proxy`) on Linux ships through every channel. E4 ships to crates.io
+      ONLY, as `aa-ebpf`'s `aa-ebpf-loaderd` bin (live: 0.0.1-rc.6, yanked false,
+      bin_names ['aa-ebpf-loaderd']; no `publish` key; untouched by
+      `.ci/strip-for-publish.sh`). Absent from GitHub Release assets, the
+      Homebrew tap and `scripts/install-cli.sh` —
+      `scripts/check-release-completeness.sh:58` lists it in UNRELEASED_BINARIES.
+      Two outcomes on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>'; with the toolchain, E4 is genuinely
+      reachable. See AAASM-5640.
     boundary_class: B5
     boundary_attained: false
     coverage: experimental
@@ -2321,7 +2790,24 @@ capabilities:
     sync_or_best_effort: best_effort
     failure_posture: fail_open
     default_state: on
-    reachable_in_release: false
+    released_channels: [crates_io]
+    released_platforms: [linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
     boundary_class: B5
     boundary_attained: false
     coverage: observed
@@ -2356,7 +2842,16 @@ capabilities:
     sync_or_best_effort: sync
     failure_posture: fail_closed   # a refused CA prompt fails startup
     default_state: on
-    reachable_in_release: true     # E3; E4 does not exist here
+    released_channels: [crates_io]
+    released_platforms: [macos]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      E3 on macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy
+      is a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew tap
+      and `scripts/install-cli.sh`. It IS on crates.io (0.0.1-rc.6, bin_names
+      ['aa-proxy'], no `publish` key), so `cargo install aa-proxy` is the only
+      macOS route. E4 does not exist on macOS at all. See AAASM-5653.
     boundary_class: B6             # managed-settings route only
     coverage: denied_before_execution   # E3
     coverage_e4: unsupported
@@ -2383,7 +2878,9 @@ capabilities:
     sync_or_best_effort: none
     failure_posture: not_applicable
     default_state: not_applicable
-    reachable_in_release: false
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
     boundary_class: null
     coverage: unsupported
     known_bypasses: ["everything"]
