@@ -15,6 +15,7 @@
 //! these functions read only from those models. Fingerprints and key *names*
 //! are printed; values never are.
 
+use chrono::{DateTime, Local, Utc};
 use serde::Serialize;
 
 use crate::output::OutputFormat;
@@ -47,6 +48,87 @@ pub fn emit(report: &impl Report, output: OutputFormat) {
             Err(e) => eprintln!("error: could not serialize the report: {e}"),
         },
         OutputFormat::Table => print!("{}", report.render_human()),
+    }
+}
+
+/// The operator-facing name of an integration state.
+///
+/// The DI-API's four tokens are `ladder | drifted | degraded | incompatible`,
+/// and `ladder` means "on the ordinary ladder — nothing anomalous". Printed
+/// verbatim it is decodable only by a reader who already knows the other three
+/// and can infer that this one is the good case (AAASM-5635). The separation
+/// itself is load-bearing and stays: only the word a person reads changes, and
+/// the wire token `--output json` publishes is untouched.
+///
+/// A token this build does not know is named as unrecognized rather than
+/// forwarded. Passing it through is how `ladder` reached a user in the first
+/// place, and this client is not entitled to translate a word it has never
+/// seen — reporting it, unread, is.
+fn human_state(token: &str) -> String {
+    match token {
+        "ladder" => "ok".to_string(),
+        "drifted" | "degraded" | "incompatible" => token.to_string(),
+        other => format!("unrecognized ({other})"),
+    }
+}
+
+/// A moment a person can read, and how old it is.
+///
+/// Every timestamp the DI-API carries is seconds since the epoch, and printing
+/// that integer asks the reader to go and convert it before they can act on it
+/// (AAASM-5636). Both halves are rendered because both are asked: the absolute
+/// local time answers *when*, and the age answers *how stale is this reading* —
+/// which is the operative question here, since `partially_integrated` is the
+/// resting state of a verification that fell outside its window.
+///
+/// `--output json` still publishes the integer, untouched. This is the human
+/// half only.
+fn timestamp(unix_secs: u64) -> String {
+    timestamp_at(unix_secs, Utc::now())
+}
+
+/// The clock-free half, so the wording is testable without one.
+fn timestamp_at(unix_secs: u64, now: DateTime<Utc>) -> String {
+    let Some(at) = i64::try_from(unix_secs)
+        .ok()
+        .and_then(|s| DateTime::from_timestamp(s, 0))
+    else {
+        // No calendar date exists for this value. Reporting the integer and
+        // saying why is the only honest option left; inventing a date is not.
+        return format!("{unix_secs} (unix; outside the representable range)");
+    };
+    format!(
+        "{} ({})",
+        at.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S %:z"),
+        age(now.timestamp() - at.timestamp())
+    )
+}
+
+/// `4 minutes ago`, coarse on purpose: freshness is a judgement about whether a
+/// reading still stands, not a stopwatch value.
+///
+/// A negative delta is rendered as a future time rather than clamped, because a
+/// reading dated ahead of this host's clock is a disagreement worth seeing.
+fn age(delta_secs: i64) -> String {
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+
+    let elapsed = delta_secs.abs();
+    if elapsed < 5 {
+        return "just now".to_string();
+    }
+    let (count, unit) = match elapsed {
+        s if s < MINUTE => (s, "second"),
+        s if s < HOUR => (s / MINUTE, "minute"),
+        s if s < DAY => (s / HOUR, "hour"),
+        s => (s / DAY, "day"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    if delta_secs < 0 {
+        format!("{count} {unit}{plural} from now")
+    } else {
+        format!("{count} {unit}{plural} ago")
     }
 }
 
@@ -93,7 +175,10 @@ fn render_runtime_provenance(out: &mut String, runtime: &RuntimeInfo) {
                 out.push_str(&format!("  built from: {source}\n"));
             }
             if let Some(started) = provenance.started_at_unix_secs {
-                out.push_str(&format!("  started at: {started} (unix)\n"));
+                // Uses the shared human timestamp (AAASM-5636); a provenance
+                // block is no more entitled to print a bare epoch than any
+                // other reading a person has to act on.
+                out.push_str(&format!("  started at: {}\n", timestamp(started)));
             }
         }
         _ => out.push_str(&format!("  build unidentified ({})\n", provenance.verdict)),
@@ -133,7 +218,10 @@ fn render_evidence(out: &mut String, heading: &str, rows: &[EvidenceRow], empty_
     for row in rows {
         out.push_str(&format!(
             "  - {} [{}] at {}: {}\n",
-            row.mechanism, row.outcome, row.observed_at_unix_secs, row.detail
+            row.mechanism,
+            row.outcome,
+            timestamp(row.observed_at_unix_secs),
+            row.detail
         ));
     }
 }
@@ -194,7 +282,12 @@ impl Report for ToolListReport {
                 tool.tool_id,
                 tool.detected_version.as_deref().unwrap_or("-"),
                 tool.compatibility,
-                tool.integration_state.as_deref().unwrap_or("not_integrated"),
+                // `None` is this CLI's own "no status could be read", not one
+                // of the service's state tokens, so it does not go through the
+                // rename.
+                tool.integration_state
+                    .as_deref()
+                    .map_or_else(|| "not_integrated".to_string(), human_state),
                 tool.achieved_level.as_deref().unwrap_or("-"),
             ));
             for warning in &tool.warnings {
@@ -250,7 +343,10 @@ impl Report for InstallReport {
     fn render_human(&self) -> String {
         let mut out = self.plan.render_human();
         out.push_str(&format!("\nApplied as receipt {}\n", self.receipt_id));
-        out.push_str(&format!("  at:              {}\n", self.applied_at_unix_secs));
+        out.push_str(&format!(
+            "  at:              {}\n",
+            timestamp(self.applied_at_unix_secs)
+        ));
         out.push_str(&format!("  planned level:   {}\n", self.planned_level));
         out.push_str(&format!("  achieved level:  {}\n", self.achieved_level));
         out.push_str("\nStep outcomes:\n");
@@ -275,9 +371,12 @@ impl Report for StatusReport {
     fn render_human(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("{} — {}\n", self.tool_id, self.achieved_level));
-        out.push_str(&format!("  observed at:     {} (unix)\n", self.observed_at_unix_secs));
+        out.push_str(&format!(
+            "  observed at:     {}\n",
+            timestamp(self.observed_at_unix_secs)
+        ));
         out.push_str(&format!("  lifecycle phase: {}\n", self.phase));
-        out.push_str(&format!("  state:           {}\n", self.state));
+        out.push_str(&format!("  state:           {}\n", human_state(&self.state)));
         out.push_str(&format!("  planned level:   {}\n", self.planned_level));
         out.push_str(&format!("  compatibility:   {}\n", self.compatibility));
         out.push_str(&format!("  adapter ceiling: {}\n", self.adapter_ceiling));
@@ -291,7 +390,7 @@ impl Report for StatusReport {
         ));
         render_runtime_provenance(&mut out, &self.runtime);
         if let Some(verified) = self.last_verified_at_unix_secs {
-            out.push_str(&format!("  last verification: {verified} (unix)\n"));
+            out.push_str(&format!("  last verification: {}\n", timestamp(verified)));
         } else {
             out.push_str("  last verification: never\n");
         }
@@ -381,8 +480,8 @@ impl Report for VerifyReport {
         let mut out = String::new();
         out.push_str(&format!("{} — verification {}\n", self.tool_id, self.outcome));
         out.push_str(&format!(
-            "  ran at:               {} (unix)\n",
-            self.verified_at_unix_secs
+            "  ran at:               {}\n",
+            timestamp(self.verified_at_unix_secs)
         ));
         out.push_str(&format!(
             "  protected path exercised: {}\n",
@@ -649,5 +748,261 @@ mod tests {
         assert_eq!(json["outcome"], serde_json::json!("passed"));
         assert_eq!(json["assertions"][0]["holds"], serde_json::json!(false));
         assert!(report.render_human().contains("passed"));
+    }
+
+    // ---- AAASM-5635: the integration state is wire vocabulary ----------------
+
+    fn tool_list(state: Option<&str>) -> ToolListReport {
+        use crate::commands::integrations::model::ToolRow;
+
+        ToolListReport {
+            runtime: runtime(),
+            tools: vec![ToolRow {
+                tool_id: "claude-code".to_string(),
+                display_name: "Claude Code".to_string(),
+                detected: true,
+                detected_version: Some("2.1.220".to_string()),
+                compatibility: "compatible".to_string(),
+                adapter_ceiling: "l2_enforce".to_string(),
+                capabilities: Vec::new(),
+                lifecycle_phase: Some("detected_not_integrated".to_string()),
+                integration_state: state.map(str::to_string),
+                achieved_level: Some("detected_not_integrated".to_string()),
+                warnings: Vec::new(),
+            }],
+        }
+    }
+
+    /// The `STATE` cell of the single row `tool_list` builds.
+    fn state_cell(report: &ToolListReport) -> String {
+        let rendered = report.render_human();
+        let row = rendered
+            .lines()
+            .find(|line| line.starts_with("claude-code"))
+            .expect("the listing must carry the row")
+            .to_string();
+        // TOOL(16) VERSION(12) COMPAT(12) then STATE(14), space-separated.
+        row.split_whitespace()
+            .nth(3)
+            .expect("the row must have a STATE cell")
+            .to_string()
+    }
+
+    /// `ladder` is the DI-API's token for "on the normal ladder — nothing
+    /// anomalous". Printing it makes the reader infer the good case from the
+    /// three bad ones they would have to already know (AAASM-5635).
+    #[test]
+    fn the_listing_never_prints_the_ladder_discriminator() {
+        let rendered = tool_list(Some("ladder")).render_human();
+        assert!(
+            !rendered.contains("ladder"),
+            "the internal state token reached the user: {rendered}"
+        );
+    }
+
+    /// The value is correct and the separation is load-bearing: the three
+    /// overriding states must stay distinguishable from the ordinary one and
+    /// from each other after the rename.
+    #[test]
+    fn the_four_integration_states_stay_four_distinct_words() {
+        let marks: Vec<String> = ["ladder", "drifted", "degraded", "incompatible"]
+            .iter()
+            .map(|state| state_cell(&tool_list(Some(state))))
+            .collect();
+        for (i, a) in marks.iter().enumerate() {
+            for b in marks.iter().skip(i + 1) {
+                assert_ne!(a, b, "two states collapsed onto one word: {marks:?}");
+            }
+        }
+    }
+
+    /// A token this build does not know must not be forwarded verbatim — that
+    /// is how `ladder` reached a user in the first place. Naming it as
+    /// unrecognized reports what the runtime said without pretending to read it.
+    #[test]
+    fn an_unknown_state_token_is_not_printed_verbatim() {
+        let cell = state_cell(&tool_list(Some("quantum_entangled")));
+        assert_ne!(cell, "quantum_entangled");
+        let rendered = tool_list(Some("quantum_entangled")).render_human();
+        assert!(rendered.contains("unrecognized"), "{rendered}");
+        assert!(
+            rendered.contains("quantum_entangled"),
+            "the token itself must still be reported: {rendered}"
+        );
+    }
+
+    /// The wire/JSON token is a public contract. Renaming what a person reads
+    /// must not rename what a script branches on.
+    #[test]
+    fn the_listing_json_still_carries_the_wire_state_token() {
+        let json = serde_json::to_value(tool_list(Some("ladder"))).expect("serialize");
+        assert_eq!(json["tools"][0]["integration_state"], serde_json::json!("ladder"));
+    }
+
+    /// `status` prints the same discriminator on its own `state:` line.
+    #[test]
+    fn the_status_rendering_never_prints_the_ladder_discriminator() {
+        let report = status_declaring(Some("supported"));
+        assert_eq!(report.state, "ladder", "the fixture under test changed");
+        let rendered = report.render_human();
+        assert!(!rendered.contains("ladder"), "{rendered}");
+    }
+
+    /// And its JSON keeps the token, for the same reason.
+    #[test]
+    fn the_status_json_still_carries_the_wire_state_token() {
+        let json = serde_json::to_value(status_declaring(Some("supported"))).expect("serialize");
+        assert_eq!(json["state"], serde_json::json!("ladder"));
+    }
+
+    // ---- AAASM-5636: bare unix epochs in the human rendering -----------------
+
+    /// Seconds since the epoch, `age` seconds ago.
+    fn secs_ago(age: u64) -> u64 {
+        u64::try_from(chrono::Utc::now().timestamp()).expect("a clock before 1970") - age
+    }
+
+    /// The text after `label:` on the first line carrying it.
+    fn labelled(rendered: &str, label: &str) -> String {
+        rendered
+            .lines()
+            .find_map(|line| line.trim_start().strip_prefix(label))
+            .unwrap_or_else(|| panic!("no `{label}` line in:\n{rendered}"))
+            .trim()
+            .to_string()
+    }
+
+    /// A rendering a person can date without a converter: absolute local time,
+    /// and how old the reading is.
+    fn assert_reads_as_a_time(value: &str) {
+        assert!(
+            value
+                .split_whitespace()
+                .next()
+                .is_some_and(|first| first.parse::<u64>().is_err()),
+            "a bare epoch integer reached the user: {value}"
+        );
+        assert!(!value.contains("(unix)"), "still labelled as a unix epoch: {value}");
+        assert!(
+            value.contains('-') && value.contains(':'),
+            "no absolute time in: {value}"
+        );
+        assert!(
+            value.contains("ago") || value.contains("just now") || value.contains("from now"),
+            "no relative age in: {value}"
+        );
+    }
+
+    /// A status whose reading and evidence are four minutes old.
+    fn status_observed_at(observed: u64) -> StatusReport {
+        use aa_proto::assembly::devint::v1 as wire;
+
+        let view = wire::StatusView {
+            tool_id: "claude-code".to_string(),
+            phase: "installed".to_string(),
+            state: "ladder".to_string(),
+            achieved_level: "partially_integrated".to_string(),
+            planned_level: "gateway_protected".to_string(),
+            adapter_ceiling: "l2_enforce".to_string(),
+            compatibility: "compatible".to_string(),
+            evidence: vec![wire::EvidenceView {
+                mechanism: "managed_settings".to_string(),
+                kind: "read_back".to_string(),
+                outcome: "matched".to_string(),
+                observed_at_unix_secs: observed,
+                detail: "the managed keys match".to_string(),
+            }],
+            next_level: None,
+            observed_at_unix_secs: observed,
+            drift_mismatched: Vec::new(),
+            state_reason: String::new(),
+            state_remediation: String::new(),
+            policy: None,
+        };
+        StatusReport::from_view(runtime(), &view, None)
+    }
+
+    /// `observed at: 1785983102 (unix)` is a number a person has to go and
+    /// convert. Freshness is the question this command exists to answer, so the
+    /// age must be on the line too (AAASM-5636).
+    #[test]
+    fn the_status_reading_is_dated_in_local_time_with_its_age() {
+        let rendered = status_observed_at(secs_ago(4 * 60)).render_human();
+        let observed = labelled(&rendered, "observed at:");
+        assert_reads_as_a_time(&observed);
+        assert!(observed.contains("4 minutes ago"), "{observed}");
+    }
+
+    /// Every timestamp in the family, not just the one the bug named.
+    #[test]
+    fn the_last_verification_and_the_evidence_rows_are_dated_the_same_way() {
+        let rendered = status_observed_at(secs_ago(90 * 60)).render_human();
+        assert_reads_as_a_time(&labelled(&rendered, "last verification:"));
+
+        let evidence = rendered
+            .lines()
+            .find(|line| line.contains("managed_settings"))
+            .expect("the read-back row must be rendered");
+        assert!(
+            !evidence.contains(" at 1"),
+            "an epoch integer survived on the evidence row: {evidence}"
+        );
+        assert!(
+            evidence.contains("hour"),
+            "no relative age on the evidence row: {evidence}"
+        );
+    }
+
+    /// `verify` dates its run the same way.
+    #[test]
+    fn a_verification_run_is_dated_in_local_time_with_its_age() {
+        let mut report = vacuous();
+        report.verified_at_unix_secs = secs_ago(30);
+        report.evidence[0].observed_at_unix_secs = report.verified_at_unix_secs;
+        let rendered = report.render_human();
+        assert_reads_as_a_time(&labelled(&rendered, "ran at:"));
+    }
+
+    /// The relative half is what a reader acts on, so its wording is asserted
+    /// against a fixed clock rather than the machine's.
+    #[test]
+    fn the_age_is_worded_from_the_distance_to_now() {
+        let now = DateTime::from_timestamp(1_700_000_000, 0).expect("a representable now");
+        for (observed, expected) in [
+            (1_700_000_000_u64, "just now"),
+            (1_699_999_760, "4 minutes ago"),
+            (1_699_996_400, "1 hour ago"),
+            (1_699_913_600, "1 day ago"),
+            (1_700_000_600, "10 minutes from now"),
+        ] {
+            let rendered = timestamp_at(observed, now);
+            assert!(rendered.ends_with(&format!("({expected})")), "{observed}: {rendered}");
+        }
+    }
+
+    /// A value no calendar can name says so rather than being given a date.
+    #[test]
+    fn a_timestamp_with_no_calendar_date_is_reported_not_guessed() {
+        let now = DateTime::from_timestamp(1_700_000_000, 0).expect("a representable now");
+        let rendered = timestamp_at(u64::MAX, now);
+        assert!(rendered.contains("outside the representable range"), "{rendered}");
+    }
+
+    /// The integers are the contract `--output json` publishes. A human-side
+    /// rename must leave every one of them exactly as it was.
+    #[test]
+    fn the_json_timestamps_stay_integers() {
+        let observed = secs_ago(4 * 60);
+        let json = serde_json::to_value(status_observed_at(observed)).expect("serialize");
+        assert_eq!(json["observed_at_unix_secs"], serde_json::json!(observed));
+        assert_eq!(json["last_verified_at_unix_secs"], serde_json::json!(observed));
+        assert_eq!(
+            json["read_back_evidence"][0]["observed_at_unix_secs"],
+            serde_json::json!(observed)
+        );
+
+        let verify = serde_json::to_value(vacuous()).expect("serialize");
+        assert_eq!(verify["verified_at_unix_secs"], serde_json::json!(1));
+        assert_eq!(verify["evidence"][0]["observed_at_unix_secs"], serde_json::json!(1));
     }
 }

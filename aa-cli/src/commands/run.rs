@@ -24,6 +24,10 @@ use aa_policy::resolve as run_policy;
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// The AI development tool to launch (claude, codex, copilot, windsurf).
+    ///
+    /// The longer ids `aasm integrations list` prints — claude-code,
+    /// github-copilot, windsurf-cascade — name the same tools and are accepted
+    /// here too (AAASM-5503).
     pub tool: String,
 
     /// Arguments forwarded verbatim to the launched tool.
@@ -605,6 +609,64 @@ fn format_dry_run_output(
     )
 }
 
+/// The canonical [`aa_devtool::registry`] token for any tool id `aasm run`
+/// accepts, or `None` for an id no built-in tool answers to.
+///
+/// `run` and `aasm integrations` spell the same four tools differently: `run`
+/// is keyed by the short registry tokens (`claude`, `copilot`, `windsurf`)
+/// while the Developer Integration surface is keyed by each tool's wire id
+/// (`claude-code`, `github-copilot`, `windsurf-cascade`) — which is also what
+/// `aasm integrations list` prints in its `TOOL` column. Reading an id off the
+/// discovery surface and typing it into `run` therefore failed for three of the
+/// four tools (AAASM-5503). Both spellings now resolve here; the canonical
+/// token is what the rest of `run` works with, so nothing downstream has to
+/// know an alias was used.
+///
+/// The long ids are **derived**, not tabulated: each comes from projecting the
+/// registry's own [`DevToolKind`] through the same
+/// [`tool_id`](aa_runtime::devint::projection::tool_id) the DI wire uses. A
+/// second copy of that mapping here is precisely the drift this fix closes — a
+/// tool added to the registry picks up its alias with no edit to this function.
+fn canonical_tool_id(id: &str) -> Option<&'static str> {
+    aa_devtool::registry::SUPPORTED_TOOLS.iter().copied().find(|token| {
+        *token == id
+            || aa_devtool::registry::kind_for(token)
+                .is_some_and(|kind| aa_runtime::devint::projection::tool_id(&kind) == id)
+    })
+}
+
+/// Every tool id a launch would accept, canonical token first with its
+/// Developer-Integration alias in parentheses when the two differ.
+///
+/// Built for the refusal below rather than stored, so a refusal can never list
+/// a vocabulary the resolver does not actually implement.
+fn accepted_tool_ids() -> String {
+    aa_devtool::registry::SUPPORTED_TOOLS
+        .iter()
+        .map(|token| match aa_devtool::registry::kind_for(token) {
+            Some(kind) => {
+                let wire = aa_runtime::devint::projection::tool_id(&kind);
+                if wire == *token {
+                    (*token).to_string()
+                } else {
+                    format!("{token} ({wire})")
+                }
+            }
+            None => (*token).to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Refuse an id no tool answers to, naming every id that would have worked.
+///
+/// Both spellings are listed because the user most likely arrived here having
+/// copied one from `aasm integrations list`; a refusal that named only the
+/// short tokens is what made that dead end hard to escape.
+fn unknown_tool_error(tool: &str) -> anyhow::Error {
+    anyhow::anyhow!("unknown tool: {tool}, supported: {}", accepted_tool_ids())
+}
+
 /// Return the adapter for `tool`, or an error for unrecognised tool names.
 ///
 /// Resolution goes through [`aa_devtool::registry`] — the same table
@@ -612,13 +674,12 @@ fn format_dry_run_output(
 /// different adapter than the one discovery advertised (AAASM-5274). There is
 /// no placeholder fallback: an unregistered tool is an error, never a silently
 /// inert adapter.
+///
+/// `tool` may be either spelling; see [`canonical_tool_id`].
 fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
-    aa_devtool::registry::adapter_for(tool).ok_or_else(|| {
-        anyhow::anyhow!(
-            "unknown tool: {tool}, supported: {}",
-            aa_devtool::registry::SUPPORTED_TOOLS.join(", ")
-        )
-    })
+    canonical_tool_id(tool)
+        .and_then(aa_devtool::registry::adapter_for)
+        .ok_or_else(|| unknown_tool_error(tool))
 }
 
 /// Release the registration over the gRPC service that issued it.
@@ -791,13 +852,9 @@ fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs, mode: aa_core::
 /// (AAASM-5323). The gateway gRPC endpoint is resolved by
 /// [`crate::commands::run_registration::gateway_endpoint`].
 pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<dyn DevToolAdapter>>) -> Result<i32> {
-    let adapter = adapters.get(args.tool.as_str()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "unknown tool: {}, supported: {}",
-            args.tool,
-            aa_devtool::registry::SUPPORTED_TOOLS.join(", ")
-        )
-    })?;
+    let adapter = adapters
+        .get(args.tool.as_str())
+        .ok_or_else(|| unknown_tool_error(&args.tool))?;
 
     let mode = args.resolved_enforcement_mode();
 
@@ -916,7 +973,19 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
 }
 
 /// Launch the specified AI dev tool with governance wiring.
-pub async fn execute(args: RunArgs) -> Result<i32> {
+///
+/// The tool id is normalised to its canonical registry token **once**, here,
+/// before anything reads it. `args.tool` is not just a map key: it is also the
+/// fallback executable name in a degraded `--dry-run` preview, the subject of
+/// the launch warnings and the `--no-proxy` refusal, and the name printed in
+/// the session banner. Resolving the alias at the lookup alone would leave all
+/// of those talking about an id the rest of the system does not use
+/// (AAASM-5503).
+pub async fn execute(mut args: RunArgs) -> Result<i32> {
+    args.tool = canonical_tool_id(&args.tool)
+        .ok_or_else(|| unknown_tool_error(&args.tool))?
+        .to_string();
+
     let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
     for tool in aa_devtool::registry::SUPPORTED_TOOLS {
         adapters.insert(tool, resolve_adapter(tool)?);
@@ -1217,6 +1286,130 @@ mod tests {
         for (tool, wire) in expected {
             let kind = aa_devtool::registry::kind_for(tool).expect("registered tool must have a kind");
             assert_eq!(dev_tool_kind_str(&kind), wire, "{tool} maps to the wrong DevToolKind");
+        }
+    }
+
+    // --- tool-id agreement between `aasm integrations` and `aasm run` ---
+
+    /// A policy document is required to build the registrations; its contents
+    /// are irrelevant to the ids they are keyed by.
+    fn empty_policy() -> aa_core::policy::PolicyDocument {
+        aa_core::policy::PolicyDocument {
+            version: 1,
+            name: "tool-id-agreement".to_string(),
+            rules: Vec::new(),
+            enforcement_mode: aa_core::EnforcementMode::Enforce,
+        }
+    }
+
+    /// The ids `aasm integrations list` prints in its `TOOL` column, taken from
+    /// the registration list the runtime actually serves `list_tools` from
+    /// rather than from a copy of it.
+    fn integrations_tool_ids() -> Vec<String> {
+        aa_runtime::devint::adapters::built_in_integrations(empty_policy())
+            .iter()
+            .map(|registration| aa_runtime::devint::projection::tool_id(&registration.tool))
+            .collect()
+    }
+
+    /// AAASM-5503: the discovery surface and the execution surface name the
+    /// same four tools, so an id printed by one must be accepted by the other.
+    ///
+    /// Both vocabularies are *derived* here — `integrations`' from
+    /// [`built_in_integrations`](aa_runtime::devint::adapters::built_in_integrations)
+    /// projected through the same `tool_id` the wire uses, `run`'s from
+    /// [`SUPPORTED_TOOLS`](aa_devtool::registry::SUPPORTED_TOOLS) through the
+    /// same [`resolve_adapter`] a launch calls. Nothing here is a hand-written
+    /// pair list, so a tool added to one surface and not the other fails this
+    /// test rather than slipping through it.
+    ///
+    /// Before the fix `run` accepted only the short tokens, so three of the four
+    /// ids `integrations list` teaches (`claude-code`, `github-copilot`,
+    /// `windsurf-cascade`) were refused by the command a user would copy them
+    /// into.
+    #[test]
+    fn every_id_integrations_prints_is_accepted_by_run() {
+        let integration_ids = integrations_tool_ids();
+        assert_eq!(
+            integration_ids.len(),
+            aa_devtool::registry::SUPPORTED_TOOLS.len(),
+            "the two surfaces know a different number of tools: integrations {integration_ids:?} \
+             vs run {:?}",
+            aa_devtool::registry::SUPPORTED_TOOLS,
+        );
+
+        for id in &integration_ids {
+            assert!(
+                resolve_adapter(id).is_ok(),
+                "`aasm integrations list` prints {id:?} but `aasm run {id}` refuses it: {}",
+                resolve_adapter(id).err().map_or_else(String::new, |e| e.to_string()),
+            );
+        }
+    }
+
+    /// Accepting an id is not enough — it must resolve to the tool it names.
+    /// An alias table that merely resolved would be free to point
+    /// `github-copilot` at Claude Code and still satisfy the test above.
+    #[test]
+    fn an_integrations_id_resolves_to_the_tool_it_names() {
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            let kind = aa_devtool::registry::kind_for(token).expect("registered tool must have a kind");
+            let id = aa_runtime::devint::projection::tool_id(&kind);
+            assert_eq!(
+                canonical_tool_id(&id),
+                Some(token),
+                "`aasm run {id}` resolves to {:?}, not {token}",
+                canonical_tool_id(&id),
+            );
+        }
+    }
+
+    /// The other direction: nothing `aasm run` accepts is a tool the
+    /// integrations surface has never heard of.
+    #[test]
+    fn every_tool_run_accepts_is_known_to_integrations() {
+        let integration_ids = integrations_tool_ids();
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            let kind = aa_devtool::registry::kind_for(token).expect("registered tool must have a kind");
+            let id = aa_runtime::devint::projection::tool_id(&kind);
+            assert!(
+                integration_ids.contains(&id),
+                "`aasm run {token}` is accepted but no integration answers for {id:?}; \
+                 integrations knows {integration_ids:?}"
+            );
+        }
+    }
+
+    /// AC 2: adding the long ids must not cost the short ones. Driven from the
+    /// registry so a renamed token is caught here too.
+    #[test]
+    fn the_short_tool_tokens_keep_working() {
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            assert_eq!(
+                canonical_tool_id(token),
+                Some(token),
+                "`aasm run {token}` no longer resolves to itself"
+            );
+            assert!(resolve_adapter(token).is_ok(), "`aasm run {token}` stopped working");
+        }
+    }
+
+    /// A genuine typo is still refused, and the refusal still names every value
+    /// that would have worked — including the ids the user most likely copied
+    /// from `aasm integrations list`.
+    #[test]
+    fn a_typo_is_still_refused_with_every_accepted_id() {
+        assert_eq!(canonical_tool_id("not-a-tool"), None, "a typo must not resolve");
+        let err = match resolve_adapter("not-a-tool") {
+            Ok(_) => panic!("a typo must not resolve to an adapter"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("not-a-tool"), "{err}");
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            assert!(err.contains(token), "the refusal omits {token}: {err}");
+        }
+        for id in integrations_tool_ids() {
+            assert!(err.contains(&id), "the refusal omits {id}: {err}");
         }
     }
 

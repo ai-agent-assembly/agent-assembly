@@ -12,16 +12,21 @@ controls which boundary.
 The product governs AI agents through **three independently-deployable
 interception layers**, ordered by latency cost (lowest first) and detection
 authority (highest first). All three converge on one central **gateway**, which
-decides, records, and persists every action before serving it back to the
-dashboard via the read API:
+decides, records, and persists every action it receives before serving it back to
+the dashboard via the read API:
 
 1. **L1 — in-process SDK shim** (`aa-sdk-client`, behind the per-language FFI).
    Fastest path; requires SDK adoption. Emits events to `aa-runtime` over a
    Unix domain socket.
-2. **L2 — sidecar proxy** (`aa-proxy`). MitM of outbound HTTPS via a per-host CA;
-   enforces network-egress policy with no code changes.
-3. **L3 — eBPF** (`aa-ebpf`). Kernel uprobes on SSL libraries plus exec/file
-   syscalls; catches everything, including bypass attempts. **Linux-only.**
+2. **L2 — sidecar proxy** (`aa-proxy`). MitM of outbound HTTPS using per-host
+   certificates minted from a local root CA; enforces network-egress policy with
+   no *agent code* change. Requires the process to honour `HTTP_PROXY` /
+   `HTTPS_PROXY` and to trust the CA, and under the default `llm_only` only the
+   built-in LLM hosts are decrypted — everything else is tunnelled uninspected.
+3. **L3 — eBPF** (`aa-ebpf`). Kernel uprobes on OpenSSL plus exec/file syscall
+   hooks; **observe-only** — it reports, it does not block. **Linux only**
+   (file-I/O kprobes are x86_64-only),
+   and it fails open if it cannot attach.
 
 `aa-runtime` is the per-agent chokepoint that re-scans every event (the SDK is
 untrusted) and forwards it to `aa-gateway` over gRPC. The gateway holds the
@@ -57,7 +62,7 @@ flowchart TB
         subgraph LAYERS["Interception layers · independently deployable (AA_LAYERS)"]
             direction LR
             L1["L1 · in-process SDK shim<br/>aa-sdk-client + per-lang FFI<br/><i>lowest latency · needs adoption</i>"]
-            L2["L2 · sidecar proxy<br/>aa-proxy · HTTPS MitM<br/><i>no code changes</i>"]
+            L2["L2 · sidecar proxy<br/>aa-proxy · HTTPS MitM<br/><i>needs proxy routing + CA trust</i>"]
             L3["L3 · eBPF<br/>aa-ebpf · kernel uprobes<br/><i>highest authority · Linux-only</i>"]
         end
         RT["aa-runtime<br/>per-agent chokepoint<br/>re-scan · redact · enforce"]

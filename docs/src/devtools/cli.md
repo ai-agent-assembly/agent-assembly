@@ -263,6 +263,11 @@ neither the proxy nor `NODE_EXTRA_CA_CERTS` and is **not** protected — this is
 measured bypass, not a theoretical one, and `status` says so rather than
 implying otherwise.
 
+`aasm run claude-code` — the id `aasm integrations list` prints — launches the
+same session. Each of the four tools is accepted under both its short `run`
+spelling and the longer integrations id, so an id copied from one command works
+in the other. The short form is used throughout this documentation.
+
 An install is not a policy, and `aasm run` will not launch without one: a
 successful `install` wires up interception, but nothing in the lifecycle decides
 what the agent may do. Write a policy to `~/.aasm/policy.yaml` or pass

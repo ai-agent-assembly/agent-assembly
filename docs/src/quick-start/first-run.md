@@ -122,11 +122,13 @@ the sidecar proxy, and point it at the gateway:
 - **SDK shim (in-process):** install [python-sdk](https://github.com/ai-agent-assembly/python-sdk),
   [node-sdk](https://github.com/ai-agent-assembly/node-sdk), or
   [go-sdk](https://github.com/ai-agent-assembly/go-sdk) and follow that SDK's
-  quickstart. The shim reports every action to the gateway over gRPC.
-- **Sidecar proxy (no code changes):** run `aasm proxy start` to intercept the
-  agent's outbound HTTPS and forward governance decisions to the gateway.
-- **eBPF (Linux only):** kernel hooks catch everything else, including bypass
-  attempts.
+  quickstart. The shim reports the calls it wraps to the gateway over gRPC.
+- **Sidecar proxy (no agent code changes):** run `aasm proxy start` to intercept
+  the agent's outbound HTTPS and forward governance decisions to the gateway. The
+  agent process must route through the proxy and trust its CA.
+- **eBPF (Linux only):** kernel hooks *observe* OpenSSL TLS plaintext and
+  `exec`/file syscalls. They report what the layers above missed; they do not
+  block it.
 
 A quick way to exercise the sidecar path end-to-end is the bundled Docker
 Compose stack, which runs `aa-runtime` as a sidecar against a stub agent:

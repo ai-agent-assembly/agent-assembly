@@ -423,7 +423,7 @@ file-I/O coverage from this mechanism.
 | --- | --- | --- | --- |
 | **Linux x86_64** | `aa-proxy`; CA trust via CLI `update-ca-certificates` (`aa-cli/src/commands/proxy/ca.rs:149,173`) | eBPF observation (TLS/file/exec); syscall guard as opt-in asynchronous kill | **Implemented**, with the §5.1 limits stated |
 | **Linux aarch64** | `aa-proxy` | eBPF TLS/exec only; **no** file-I/O kprobe targets | **Implemented (partial)** — must say which probes are absent |
-| **macOS** | `aa-proxy`; an **opt-in, admin-authorized** System Keychain trust install — `security add-trusted-cert` shelled out from `fn add_trusted_cert` (`aa-proxy/src/tls/keychain.rs:18`; the `Command::new("security")` invocation is `:23-32`), reached via `aa-proxy/src/tls/ca.rs:214-232`. It is not automatic, and the Claude Code integration deliberately does not use it, establishing trust per-launch through `NODE_EXTRA_CA_CERTS` instead (`aa-devtool-claude-code/src/lifecycle.rs:653-659`) | **None.** Endpoint Security / Network Extension is an **explicit non-goal** — asserted in product docs (`docs/src/devtools/product-brief.md:448,655` — *"macOS Endpoint Security and Network Extension remain explicit non-goals"*, and `aa-ebpf` is *"Linux-only and is a **detection** layer that cannot modify traffic in flight"*) and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) | Transport mediation **Implemented**; **E4 host-level interception Unsupported**. **Do not read this as "no host enforcement on macOS"** — see the note below: macOS is the *only* platform on which ADR 0030's `HostEnforced` rung is reachable today. |
+| **macOS** | `aa-proxy`; a System Keychain trust install **attempted automatically at proxy start**, gated only on whether the certificate is already installed — `pub async fn run` (`aa-proxy/src/lib.rs:41`) executes `if !ca.is_installed()? { … ca.install()?; }` unconditionally on macOS (`aa-proxy/src/lib.rs:64-69`). `CaStore::install` (`aa-proxy/src/tls/ca.rs:215`, calling `keychain::add_trusted_cert` at `:219`) shells out to `security add-trusted-cert` (`fn add_trusted_cert`, `aa-proxy/src/tls/keychain.rs:18`; the `Command::new("security")` invocation is `:23-32`), which **requires admin authorization** — macOS prompts for it (`aa-proxy/src/tls/keychain.rs:16`) — and because `ca.install()?` propagates out of `run`, **a refused prompt fails proxy startup**. The Claude Code integration deliberately does **not rely on** this trust store, establishing trust per-launch through `NODE_EXTRA_CA_CERTS` instead (`aa-devtool-claude-code/src/lifecycle.rs:658-659`). **Read that citation with care:** the same comment asserts at `:657-658` that *"the proxy CA is still never added to the macOS system trust store"*, which is true of the integration path but **false at product scope** — the first half of this very cell disproves it. Do not carry that sentence into any page; it is a user-visible CLI reason string and is tracked as [AAASM-5639](https://lightning-dust-mite.atlassian.net/browse/AAASM-5639). An independent in-tree witness that `run` installs unconditionally, which is not the code under discussion, is `aa-integration-tests/examples/proxy_with_mock_upstream.rs:58-61`: *"[`aa_proxy::run`] is deliberately **not** called. It installs the CA into the macOS System Keychain, which every fixture in this crate is forbidden from doing."* | **None.** Endpoint Security / Network Extension is an **explicit non-goal** — asserted in product docs (`docs/src/devtools/product-brief.md:448,655` — *"macOS Endpoint Security and Network Extension remain explicit non-goals"*, and `aa-ebpf` is *"Linux-only and is a **detection** layer that cannot modify traffic in flight"*) and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) | Transport mediation **Implemented**; **E4 host-level interception Unsupported**. **Do not read this as "no host enforcement on macOS"** — see the note below: macOS is the *only* platform on which ADR 0030's `HostEnforced` rung is reachable today. |
 | **Windows** | **None** — `aa-proxy`'s accept loop uses `tokio::signal::unix` unconditionally (`aa-proxy/src/proxy/mod.rs:296,298`), so the crate has no Windows build path. Note the naive grep is misleading: `#[cfg(windows)]` blocks *do* exist (`aa-devtool-copilot/src/lib.rs:260,292`; `aa-cli/src/commands/dashboard/stop.rs:23`, which calls `windows_sys::…::OpenProcess`). The dispositive evidence is that **`windows_sys` is declared in no `Cargo.toml` in the workspace**, so those blocks cannot compile as written | **None.** No ETW, WFP or minifilter code exists | **Unsupported** |
 
 > **The macOS exception — read this before citing the row above.**
@@ -931,7 +931,13 @@ and §6 of this ADR, and the artifacts that encode it are:
 - [ ] `proto/audit.proto:248,251` — `LayerDegradationEvent`, documented as recording
       *"that an interception layer became unavailable"*.
 - [ ] `aa-proto/_embedded/proto/audit.proto:248` — the **published mirror**. This ships
-      to crates.io, so the name is already in consumers' hands.
+      to crates.io, so the name is already in consumers' hands. **This path is a
+      build-time generated artifact and is not in the repository** — `aa-proto/_embedded/`
+      is gitignored (`aa-proto/.gitignore:1`), produced by `aa-proto/build.rs:17-24`
+      mirroring workspace-root `proto/` into it, and shipped because
+      `aa-proto/Cargo.toml:13-17`'s explicit `include` overrides cargo's gitignore-aware
+      file enumeration. It will not resolve in a clean checkout; the committed source of
+      truth is `proto/audit.proto:248` above.
 - [ ] `openapi/v1.yaml:10331,10357` — the REST surface.
 - [ ] `dashboard/src/api/generated/schema.d.ts:6553` — generated; regenerates from the
       OpenAPI change rather than being edited.
@@ -947,8 +953,8 @@ contract's *name* and a vocabulary's *term* are different artifacts with differe
 compatibility costs.** The concept `LayerDegradation` encodes — "a control that was
 expected is not available" — is exactly this ADR's **Degraded** term. The contract is
 therefore *semantically* correct; only its noun comes from the superseded vocabulary.
-Renaming a proto message already shipped to crates.io via
-`aa-proto/_embedded/proto/audit.proto:248` would break consumers to improve a word.
+Renaming a proto message already shipped to crates.io via the published mirror above
+would break consumers to improve a word.
 
 **Consequently, AAASM-5605 must not rename these fields.** What it must do is record
 the mapping (`LayerDegradation` on the wire ⇒ *Degraded* in §6) wherever the event is
@@ -989,6 +995,7 @@ Point-in-time execution records — annotate with a pointer, do **not** rewrite:
 | [AAASM-5527](https://lightning-dust-mite.atlassian.net/browse/AAASM-5527) · [AAASM-5534](https://lightning-dust-mite.atlassian.net/browse/AAASM-5534) | Spikes feeding §5.3's platform matrix |
 | [AAASM-5529](https://lightning-dust-mite.atlassian.net/browse/AAASM-5529) · [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531) · [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532) · [AAASM-5535](https://lightning-dust-mite.atlassian.net/browse/AAASM-5535) · [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) | Own the unautomated Validation requirements (V1, V2, V5, V6) |
 | [AAASM-3872](https://lightning-dust-mite.atlassian.net/browse/AAASM-3872) | Kill-after-syscall race; reconsideration trigger 1 |
+| [AAASM-5638](https://lightning-dust-mite.atlassian.net/browse/AAASM-5638) | Corrects §5.3's macOS CA claim — the System Keychain install is attempted automatically at proxy start, not opt-in |
 | [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298) | macOS managed-settings runtime honouring — the unmeasured half of §5.3's macOS row |
 | [ADR 0002](0002-sdk-security-boundary.md) | Complements — the SDK is not a security boundary |
 | [ADR 0004](0004-governance-enforcement-flow.md) | Complements — single `aa-sdk-client` transport boundary |
