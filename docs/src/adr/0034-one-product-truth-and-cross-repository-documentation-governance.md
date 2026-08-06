@@ -1258,6 +1258,27 @@ None is fixed by this ADR.
       statement in a T4 page, now T6-owned under hand-off 4. Owner:
       [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605).
 
+### A staleness this ADR's own merge creates
+
+Publishing this ADR falsifies three forward-looking sentences in
+[content-ownership.md](../development/content-ownership.md), which was written
+while this decision was still a ticket:
+
+- [ ] `content-ownership.md:24` — *"5621's ADR supersedes it on publication"*, in
+      the future tense. It has now published.
+- [ ] `content-ownership.md:734` — *"Until 5621's ADR is published, these nine are
+      open questions"*. They are settled in Decision 12.
+- [ ] `content-ownership.md:795` — the Related-decisions row pointing at the
+      **ticket**; it should point at this **ADR**, and the two other forward
+      references should link the file rather than the ticket.
+
+None is corrected in this ADR's PR, which deliberately touches only the four
+files it owns. It is recorded here rather than left to be rediscovered, because
+a correction that reaches one document and not its sibling is the defect this
+ADR set exists to catch — and a decision that created one silently would be a
+poor advertisement for its own change-propagation rule (Decision 7, step 4).
+Owner: [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605).
+
 ### An amendment this ADR requires of another ADR
 
 - [ ] **ADR 0033 §6 names `Research` at `0033:551` without defining it.** Either
