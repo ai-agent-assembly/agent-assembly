@@ -953,8 +953,8 @@ contract's *name* and a vocabulary's *term* are different artifacts with differe
 compatibility costs.** The concept `LayerDegradation` encodes — "a control that was
 expected is not available" — is exactly this ADR's **Degraded** term. The contract is
 therefore *semantically* correct; only its noun comes from the superseded vocabulary.
-Renaming a proto message already shipped to crates.io via
-`aa-proto/_embedded/proto/audit.proto:248` would break consumers to improve a word.
+Renaming a proto message already shipped to crates.io via the published mirror above
+would break consumers to improve a word.
 
 **Consequently, AAASM-5605 must not rename these fields.** What it must do is record
 the mapping (`LayerDegradation` on the wire ⇒ *Degraded* in §6) wherever the event is
