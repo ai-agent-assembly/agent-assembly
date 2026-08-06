@@ -17,7 +17,7 @@ highest detection authority first**:
 |---|---|---|---|---|---|
 | **1 — SDK (in-process)** | The agent's own process | `aa-sdk-client` + per-language shims, `aa-wasm` | Lowest | Framework tool calls the SDK is wired into | Fastest path; but requires the agent to adopt the SDK and call its initializer, and an agent could skip it. |
 | **2 — Sidecar proxy** | An adjacent process / sidecar | `aa-proxy` | Medium | Outbound HTTP/1.1 that is *routed to it* and whose host is under MitM | No agent code change, but the process must honour the proxy environment and trust the local CA; sees only what is routed through it. |
-| **3 — eBPF (kernel)** | The Linux kernel | `aa-ebpf` and friends | Highest cost | OpenSSL TLS plaintext, `exec` and file syscalls — **observed, not blocked** | Highest *detection* authority; Linux x86_64 only, needs elevated privileges, and fails open if it cannot attach. |
+| **3 — eBPF (kernel)** | The Linux kernel | `aa-ebpf` and friends | Highest cost | OpenSSL TLS plaintext, `exec` and file syscalls — **observed, not blocked** | Highest *detection* authority; Linux only (file-I/O kprobes x86_64-only), needs a privileged loader daemon, and fails open if it cannot attach. |
 
 The **latency-vs-authority trade-off** is the key idea. The in-process SDK is the
 cheapest place to make a decision, but it is also the easiest for an agent to
@@ -44,7 +44,8 @@ slipped past both.
 Running all three narrows the gap; it does not close it. Coverage is still
 bounded by each layer's own preconditions — an action escapes governance
 entirely if it is not a wrapped tool call, is not routed through the proxy, and
-either does not use OpenSSL or does not run on Linux x86_64. The
+either does not use OpenSSL or does not run on a Linux host with the eBPF
+layer loaded. The
 [known limitations](../devtools/limitations.md) page enumerates the residual
 gaps, split into the ones that have been *demonstrated* and the ones that are
 *inferred*.
@@ -66,7 +67,7 @@ graph TD
     end
 
     GW["Gateway (aa-gateway)<br/>policy · budget · decision"]:::gw
-    Audit[("Immutable audit log")]
+    Audit[("Hash-chained audit log")]
 
     Agent -->|"action"| L1
     Agent -.->|"network egress"| L2

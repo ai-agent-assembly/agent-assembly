@@ -126,7 +126,7 @@ the sidecar proxy, and point it at the gateway:
 - **Sidecar proxy (no agent code changes):** run `aasm proxy start` to intercept
   the agent's outbound HTTPS and forward governance decisions to the gateway. The
   agent process must route through the proxy and trust its CA.
-- **eBPF (Linux x86_64 only):** kernel hooks *observe* OpenSSL TLS plaintext and
+- **eBPF (Linux only):** kernel hooks *observe* OpenSSL TLS plaintext and
   `exec`/file syscalls. They report what the layers above missed; they do not
   block it.
 

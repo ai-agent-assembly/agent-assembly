@@ -13,7 +13,7 @@ Listed lowest-latency-cost first, highest-detection-authority first:
 |---|---|---|---|
 | **1. SDK (in-process)** | A thin Rust shim (`aa-ffi-*` over `aa-sdk-client`) the language SDKs call. Emits events to the gateway and applies pre-execution allow/deny via wrapper functions. | Framework tool calls that are wrapped, after the SDK's initializer is called. Raw HTTP, subprocess spawns and file access are not intercepted. | Lowest latency, but requires the agent to adopt the SDK. |
 | **2. Proxy sidecar (`aa-proxy`)** | Intercepts routed outbound HTTP/1.1 via MitM, using per-host certificates minted from a local root CA. Enforces network-egress policy with no *agent code* change. | Network traffic the SDK misses **that is routed to it** on a host under MitM. | No agent code change, but the process must honour the proxy environment and trust the CA; HTTP/2, gRPC and WebSocket are out of scope. |
-| **3. eBPF (`aa-ebpf*`)** | Kernel hooks: uprobes on OpenSSL, kprobes/tracepoints on `exec`/file syscalls. | OpenSSL TLS plaintext and process/file activity the layers above never saw — **observed, not blocked**. | Highest *detection* authority; **Linux x86_64 only**, and fails open if it cannot attach. |
+| **3. eBPF (`aa-ebpf*`)** | Kernel hooks: uprobes on OpenSSL, kprobes/tracepoints on `exec`/file syscalls. | OpenSSL TLS plaintext and process/file activity the layers above never saw — **observed, not blocked**. | Highest *detection* authority; **Linux only** (file-I/O kprobes x86_64-only), needs the privileged loader daemon, and fails open if it cannot attach. |
 
 The gateway is the common brain for all three — every layer asks the same policy
 engine for its decision and writes to the same audit log.
@@ -38,7 +38,7 @@ engine for its decision and writes to the same audit log.
 The layers are additive, not exclusive. A typical governed deployment runs the
 SDK *and* the proxy: the SDK gives rich, in-process tool-call governance, while
 the proxy backstops the network path for anything the SDK does not see and that
-is routed through it. On Linux x86_64, eBPF sits underneath both as an
+is routed through it. On Linux, eBPF sits underneath both as an
 observation floor — it widens what you can detect, not what you can prevent.
 
 For what remains uncovered even with all three deployed, see [Limitations and
@@ -60,7 +60,7 @@ the Homebrew formula all carry them.)
 ## Layer 2 in practice — the proxy
 
 ```console
-$ aasm proxy install-ca      # trust the per-host CA so TLS interception works
+$ sudo aasm proxy install-ca # trust the local root CA so TLS interception works
 $ aasm proxy start           # background sidecar on 127.0.0.1:8899
 $ aasm proxy status          # confirm it is running
 $ aasm proxy logs            # tail the proxy log
@@ -97,7 +97,7 @@ kprobes, and the `sched_process_exec` tracepoint — run on Linux.
 You can match the interception layer (or stack of layers) to the requirement:
 SDK for precision where you own the code, proxy for egress control without
 touching agent code, eBPF for kernel-level *detection* of what escaped both on
-Linux x86_64 — all feeding one gateway and one audit log.
+Linux — all feeding one gateway and one audit log.
 
 Match the requirement to what the layer can promise, too: the SDK and the proxy
 can deny an action before it runs; eBPF tells you an action happened.

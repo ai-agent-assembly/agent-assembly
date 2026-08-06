@@ -24,7 +24,8 @@ the dashboard via the read API:
    `HTTPS_PROXY` and to trust the CA, and under the default `llm_only` only the
    built-in LLM hosts are decrypted — everything else is tunnelled uninspected.
 3. **L3 — eBPF** (`aa-ebpf`). Kernel uprobes on OpenSSL plus exec/file syscall
-   hooks; **observe-only** — it reports, it does not block. **Linux x86_64 only**,
+   hooks; **observe-only** — it reports, it does not block. **Linux only**
+   (file-I/O kprobes are x86_64-only),
    and it fails open if it cannot attach.
 
 `aa-runtime` is the per-agent chokepoint that re-scans every event (the SDK is
