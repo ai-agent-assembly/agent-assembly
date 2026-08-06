@@ -134,7 +134,7 @@ fn check_btf_available() -> bool {
 fn loader_daemon_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        std::path::Path::new(&loaderd_socket_path()).exists()
+        loaderd_socket_path().exists()
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -144,10 +144,21 @@ fn loader_daemon_available() -> bool {
 
 /// The loader daemon's control-socket path, as this process would look for it.
 ///
-/// Reported in the attestation so an operator can see *which* path was checked
-/// rather than being told a prerequisite is unmet with no way to verify it.
-fn loaderd_socket_path() -> String {
-    std::env::var("AA_EBPF_LOADERD_SOCK").unwrap_or_else(|_| "/run/aa-ebpf-loaderd.sock".to_string())
+/// Delegates to [`crate::ebpf_control::resolve_loaderd_socket`] rather than
+/// re-reading the environment, so the invariant that function's docstring
+/// asserts — *"Matches [`crate::layer`]'s availability probe so the runtime
+/// drives exactly the socket it detected"* — holds by construction instead of
+/// by two call sites agreeing.
+///
+/// That matters concretely: a socket path is an `OsString`, not a `String`. An
+/// earlier version of this helper read the variable with `std::env::var`, which
+/// returns `Err` for a non-UTF-8 value where `var_os` accepts it, so a
+/// non-UTF-8 `AA_EBPF_LOADERD_SOCK` made this probe stat the *default* socket
+/// while `ebpf_control` connected to the configured one — the probe would
+/// report the layer unavailable, and the attestation would name a socket the
+/// runtime never intended to use.
+fn loaderd_socket_path() -> std::path::PathBuf {
+    crate::ebpf_control::resolve_loaderd_socket()
 }
 
 /// Returns `true` if all eBPF prerequisites are met.
@@ -318,7 +329,9 @@ impl LayerDetector {
                 present: true,
                 selected_mode: SelectedMode::Unset,
                 basis: AttestationBasis::ArtifactPresent {
-                    artifact: loaderd_socket_path(),
+                    // Lossy only in the display string; the probe above used
+                    // the real `OsString`-backed path.
+                    artifact: loaderd_socket_path().display().to_string(),
                 },
                 // The probe is a `path.exists()`, not a connect and not an
                 // adjudication, and the programs the daemon loads are
@@ -343,7 +356,10 @@ impl LayerDetector {
         } else if !check_btf_available() {
             "BTF at /sys/kernel/btf/vmlinux".to_string()
         } else {
-            format!("an aa-ebpf-loaderd control socket at {}", loaderd_socket_path())
+            format!(
+                "an aa-ebpf-loaderd control socket at {}",
+                loaderd_socket_path().display()
+            )
         };
         LayerReadout {
             present: false,
@@ -793,5 +809,61 @@ mod tests {
         assert_eq!(term, ClaimTerm::Unmeasured);
         assert!(!layer.basis.is_evidence());
         assert!(!att.any_coverage_verified_at(ATTEST_NOW));
+    }
+
+    /// A socket path is an `OsString`, not a `String`.
+    ///
+    /// `std::env::var` returns `Err` for a non-UTF-8 value where `var_os`
+    /// accepts it, so resolving this path through the former silently
+    /// substituted the *default* socket whenever `AA_EBPF_LOADERD_SOCK` held a
+    /// non-UTF-8 value — while `ebpf_control::resolve_loaderd_socket`, the
+    /// function that actually connects, kept using the configured one. The
+    /// probe would then report the layer unavailable and the attestation would
+    /// name a socket the runtime never intended to use.
+    ///
+    /// Both now go through one resolver, so this pins that they cannot diverge
+    /// again.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_loaderd_socket_path_is_preserved_not_defaulted() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original = std::env::var_os("AA_EBPF_LOADERD_SOCK");
+
+        // 0xFF is not valid UTF-8 in any position.
+        let weird = OsStr::from_bytes(b"/run/aa-\xffloaderd.sock");
+        std::env::set_var("AA_EBPF_LOADERD_SOCK", weird);
+
+        let resolved = loaderd_socket_path();
+        let via_control = crate::ebpf_control::resolve_loaderd_socket();
+
+        match original {
+            Some(v) => std::env::set_var("AA_EBPF_LOADERD_SOCK", v),
+            None => std::env::remove_var("AA_EBPF_LOADERD_SOCK"),
+        }
+
+        // Positive control: the value really is non-UTF-8, so `var` would have
+        // failed on it and this test would otherwise prove nothing.
+        assert!(
+            std::str::from_utf8(weird.as_bytes()).is_err(),
+            "fixture must be non-UTF-8 for this test to mean anything"
+        );
+
+        assert_eq!(
+            resolved.as_os_str(),
+            weird,
+            "the configured path must survive resolution"
+        );
+        assert_eq!(
+            resolved, via_control,
+            "the availability probe and the connecting client must resolve the same socket"
+        );
+        assert_ne!(
+            resolved,
+            std::path::PathBuf::from("/run/aa-ebpf-loaderd.sock"),
+            "must not silently fall back to the default"
+        );
     }
 }
