@@ -35,6 +35,9 @@ use aa_core::types::sensitive_data::ExecutionEvidence;
 use aa_security::{CredentialFinding, CredentialKind};
 
 /// Decision recorded for a single intercepted request.
+///
+/// Every variant states what the proxy **did**, never what it would have done.
+/// That distinction is why [`Self::AnsweredLocally`] exists (AAASM-5449).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyAuditDecision {
@@ -47,6 +50,29 @@ pub enum ProxyAuditDecision {
     /// credential verdict (policy `block`) or by a rule, in which case
     /// [`ProxyAuditEntry::refusal_rule`] names it.
     Blocked,
+    /// The proxy answered the request itself and never relayed it, for a reason
+    /// that is **not** a policy refusal — today only the protection-probe
+    /// protocol ([`crate::probe_adjudication`]).
+    ///
+    /// The probe branch used to record [`Self::Forwarded`] /
+    /// [`Self::ForwardedRedacted`] here for a request that was never dialled.
+    /// Both were counterfactual: the *verdict* would have forwarded, the
+    /// request did not. Keeping a knowingly-false field beside a true one
+    /// ([`ProxyAuditEntry::execution`]) only works for as long as every reader
+    /// knows which is which, and AAASM-5359/5360 are readers that do not exist
+    /// yet — so the false one was removed rather than annotated.
+    ///
+    /// A genuine `Block` during a probe is still [`Self::Blocked`]: there the
+    /// verdict and the outcome agree, and that refusal is real (it is marked
+    /// synthetic by [`ProxyAuditEntry::probe_correlation`], not weakened).
+    ///
+    /// It carries no claim about protection in either direction. The paired
+    /// evidence is
+    /// [`TransmissionEvidence::NotRecorded`](aa_core::types::sensitive_data::TransmissionEvidence::NotRecorded),
+    /// which is defined so that it can never satisfy ADR 0032 §8 — a probe
+    /// under `redact_only` would otherwise manufacture a prevented
+    /// transmission for traffic the policy would have forwarded.
+    AnsweredLocally,
 }
 
 /// Which **rule** refused a request, on a record whose decision is
@@ -850,6 +876,7 @@ mod tests {
             (ProxyAuditDecision::Forwarded, "\"forwarded\""),
             (ProxyAuditDecision::ForwardedRedacted, "\"forwarded_redacted\""),
             (ProxyAuditDecision::Blocked, "\"blocked\""),
+            (ProxyAuditDecision::AnsweredLocally, "\"answered_locally\""),
         ];
         for (decision, expected) in cases {
             assert_eq!(serde_json::to_string(&decision).unwrap(), expected);

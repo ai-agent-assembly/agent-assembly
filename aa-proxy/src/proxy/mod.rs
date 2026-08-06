@@ -1211,17 +1211,25 @@ impl ProxyServer {
         // there is a real refusal of synthetic traffic and a consumer has to be
         // able to exclude it.
         if let Some(correlation) = req.header(PROBE_CORRELATION_HEADER).and_then(ProbeCorrelation::parse) {
+            // AAASM-5449: the audit decision says what happened to *this*
+            // request, which the probe protocol answered here. Only a genuine
+            // `Block` agrees with its verdict; the other branches would have
+            // forwarded and did not, so recording `Forwarded` /
+            // `ForwardedRedacted` put a knowingly-false field beside a true
+            // one. `forwarded_is_clean` still describes the counterfactual
+            // payload, because that is what the *probe* asked and it travels
+            // in the probe's own response, not in the audit trail.
             let (audit_decision, forwarded_is_clean) = match verdict.decision {
                 VerdictDecision::Block => (ProxyAuditDecision::Blocked, None),
                 VerdictDecision::ForwardRedacted => {
                     let bytes = verdict.redacted_body.as_deref().unwrap_or(&req.body);
                     (
-                        ProxyAuditDecision::ForwardedRedacted,
+                        ProxyAuditDecision::AnsweredLocally,
                         self.interceptor.forwarded_payload_is_clean(bytes),
                     )
                 }
                 _ => (
-                    ProxyAuditDecision::Forwarded,
+                    ProxyAuditDecision::AnsweredLocally,
                     self.interceptor.forwarded_payload_is_clean(&req.body),
                 ),
             };
