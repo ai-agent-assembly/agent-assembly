@@ -117,6 +117,41 @@ struct RequestIdentity<'a> {
 /// something this constant achieves.
 const NOT_FORWARDED_BY_RULE: ExecutionEvidence = transmission_evidence::not_forwarded_by_rule();
 
+/// Why the egress policy refused a host.
+///
+/// Was a `&'static str` that existed only to be interpolated into a log line.
+/// It is a type now because the refusal is persisted (AAASM-5449) and the
+/// denylist, the allowlist and the SSRF guard have to stay distinguishable in
+/// the record — a §8 consumer attributing a prevention to "egress" cannot say
+/// which control made it. Recovering that from the log string would have made
+/// the audit record depend on prose no test pins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EgressDenyReason {
+    /// The host matched the operator's denylist.
+    Denylist,
+    /// A non-empty network allowlist did not match the host.
+    NetworkAllowlist,
+    /// The host was an IP literal in a blocked range.
+    SsrfBlockedAddress,
+}
+
+impl EgressDenyReason {
+    /// Human-readable form for the log line.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Denylist => "host policy",
+            Self::NetworkAllowlist => "network allowlist",
+            Self::SsrfBlockedAddress => "ssrf: blocked address range",
+        }
+    }
+}
+
+impl std::fmt::Display for EgressDenyReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Build a JSON-RPC 2.0 error response body carrying the policy reason.
 ///
 /// `id` is fixed at `null` because the proxy denies before parsing the
@@ -934,7 +969,7 @@ impl ProxyServer {
     /// non-empty network allowlist is configured) it matches no allowlist
     /// pattern. Returns `None` when the connection is allowed. An empty
     /// allowlist preserves the pre-AAASM-1943 default-open behaviour.
-    fn connect_deny_reason(&self, host: &str) -> Option<&'static str> {
+    fn connect_deny_reason(&self, host: &str) -> Option<EgressDenyReason> {
         // SSRF guard (AAASM-3130): an IP-literal CONNECT target pointed at
         // loopback / RFC-1918 / link-local / cloud-metadata space must be
         // refused regardless of the allowlist — a hostname allowlist cannot
@@ -945,7 +980,7 @@ impl ProxyServer {
             // like `[::1]:443` still parses as `::1` — otherwise the SSRF guard
             // silently misses it (the bracketed form fails `parse::<IpAddr>()`).
             if let Some(true) = crate::ssrf::blocked_ip_literal(strip_host_port(host)) {
-                return Some("ssrf: blocked address range");
+                return Some(EgressDenyReason::SsrfBlockedAddress);
             }
         }
         // AAASM-3983: canonicalise the host ONCE (lowercase + strip a single
@@ -962,10 +997,10 @@ impl ProxyServer {
             .iter()
             .any(|denied| canonical_host(denied) == host)
         {
-            return Some("host policy");
+            return Some(EgressDenyReason::Denylist);
         }
         if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
-            return Some("network allowlist");
+            return Some(EgressDenyReason::NetworkAllowlist);
         }
         None
     }
@@ -984,7 +1019,7 @@ impl ProxyServer {
     /// When the in-tunnel host is empty (no Host header, origin-form target) the
     /// CONNECT-time check already covered the destination, so this is a no-op.
     /// An empty allowlist keeps the default-open behaviour unchanged.
-    fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<&'static str> {
+    fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<EgressDenyReason> {
         // AAASM-4829: defense-in-depth against in-tunnel header host-splitting.
         // Check BOTH the absolute-form request target host AND the `Host` header
         // and deny if EITHER is disallowed — an agent must not pass the egress
@@ -1973,7 +2008,7 @@ mod tests {
         let server = server_with(vec![], vec![]).await;
         assert_eq!(
             server.connect_deny_reason("169.254.169.254"),
-            Some("ssrf: blocked address range")
+            Some(EgressDenyReason::SsrfBlockedAddress)
         );
     }
 
@@ -1992,7 +2027,7 @@ mod tests {
         let server = server_with(vec![], vec!["169.254.169.254".to_string()]).await;
         assert_eq!(
             server.connect_deny_reason("169.254.169.254"),
-            Some("ssrf: blocked address range")
+            Some(EgressDenyReason::SsrfBlockedAddress)
         );
     }
 
@@ -2058,9 +2093,12 @@ mod tests {
         let server = server_with(vec![], vec![]).await;
         assert_eq!(
             server.connect_deny_reason("[::1]:443"),
-            Some("ssrf: blocked address range")
+            Some(EgressDenyReason::SsrfBlockedAddress)
         );
-        assert_eq!(server.connect_deny_reason("[::1]"), Some("ssrf: blocked address range"));
+        assert_eq!(
+            server.connect_deny_reason("[::1]"),
+            Some(EgressDenyReason::SsrfBlockedAddress)
+        );
     }
 
     #[tokio::test]
@@ -2069,10 +2107,16 @@ mod tests {
         // uppercase and trailing-dot variants, which previously slipped past
         // the byte-exact comparison.
         let server = server_with(vec!["evil.com".to_string()], vec![]).await;
-        assert_eq!(server.connect_deny_reason("evil.com"), Some("host policy"));
-        assert_eq!(server.connect_deny_reason("EVIL.COM"), Some("host policy"));
-        assert_eq!(server.connect_deny_reason("evil.com."), Some("host policy"));
-        assert_eq!(server.connect_deny_reason("Evil.Com.:443"), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("evil.com"), Some(EgressDenyReason::Denylist));
+        assert_eq!(server.connect_deny_reason("EVIL.COM"), Some(EgressDenyReason::Denylist));
+        assert_eq!(
+            server.connect_deny_reason("evil.com."),
+            Some(EgressDenyReason::Denylist)
+        );
+        assert_eq!(
+            server.connect_deny_reason("Evil.Com.:443"),
+            Some(EgressDenyReason::Denylist)
+        );
     }
 
     #[tokio::test]
@@ -2081,7 +2125,10 @@ mod tests {
         // host must still be rejected (it is not a member), and the trailing-dot
         // form of the allowlisted host must be permitted.
         let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
-        assert_eq!(server.connect_deny_reason("evil.com."), Some("network allowlist"));
+        assert_eq!(
+            server.connect_deny_reason("evil.com."),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         assert_eq!(server.connect_deny_reason("api.openai.com."), None);
         assert_eq!(server.connect_deny_reason("API.OPENAI.COM"), None);
     }
@@ -2118,7 +2165,10 @@ mod tests {
         // `Host: evil.attacker.com` must be denied by the re-enforced allowlist.
         let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
         let forged = req_with(vec![("Host", "evil.attacker.com")], "/v1/chat/completions");
-        assert_eq!(server.in_tunnel_deny_reason(&forged), Some("network allowlist"));
+        assert_eq!(
+            server.in_tunnel_deny_reason(&forged),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         // The allowlisted host inside the tunnel is permitted.
         let ok = req_with(vec![("Host", "api.openai.com")], "/v1/chat/completions");
         assert_eq!(server.in_tunnel_deny_reason(&ok), None);
@@ -2135,13 +2185,19 @@ mod tests {
             vec![("Host", "evil.attacker.com")],
             "https://api.openai.com/v1/chat/completions",
         );
-        assert_eq!(server.in_tunnel_deny_reason(&split), Some("network allowlist"));
+        assert_eq!(
+            server.in_tunnel_deny_reason(&split),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         // The symmetric case: allowed header, disallowed absolute target.
         let split2 = req_with(
             vec![("Host", "api.openai.com")],
             "https://evil.attacker.com/v1/chat/completions",
         );
-        assert_eq!(server.in_tunnel_deny_reason(&split2), Some("network allowlist"));
+        assert_eq!(
+            server.in_tunnel_deny_reason(&split2),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         // Both halves allowlisted → permitted.
         let ok = req_with(vec![("Host", "api.openai.com")], "https://api.openai.com/v1/chat");
         assert_eq!(server.in_tunnel_deny_reason(&ok), None);
