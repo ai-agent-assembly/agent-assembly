@@ -11,6 +11,12 @@ adapter code that shipped in
 [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281). A
 claim that traces to neither is not on this page.
 
+For the boundaries of the *product's public claims* — the cross-repository audit
+that checked every documented guarantee against the implementation — see
+`verification-reports/AAASM-5528-public-claim-inventory.md` (AAASM-5528). It is
+the companion artifact to this page: this page states what the integration
+cannot do, that one records where the documentation used to say otherwise.
+
 ## Capability status legend
 
 | Status | Meaning |
