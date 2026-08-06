@@ -730,3 +730,27 @@ Point-in-time execution records — annotate with a pointer, do **not** rewrite:
 [AAASM-1572](https://lightning-dust-mite.atlassian.net/browse/AAASM-1572),
 [AAASM-3252](https://lightning-dust-mite.atlassian.net/browse/AAASM-3252),
 [AAASM-3446](https://lightning-dust-mite.atlassian.net/browse/AAASM-3446).
+
+---
+
+## Traceability
+
+| Reference | Relation |
+| --- | --- |
+| [AAASM-5604](https://lightning-dust-mite.atlassian.net/browse/AAASM-5604) | This ADR |
+| [AAASM-5526](https://lightning-dust-mite.atlassian.net/browse/AAASM-5526) | Parent Epic — host-wide capability mediation and truthful governance guarantees |
+| [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605) · [AAASM-5606](https://lightning-dust-mite.atlassian.net/browse/AAASM-5606) · [AAASM-5607](https://lightning-dust-mite.atlassian.net/browse/AAASM-5607) · [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586) · [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609) | Blocked by this ADR; they perform the migration in the Migration checklist |
+| [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) | Related — owns documentation-governance semantics (source-of-truth, claim precedence, waivers), deliberately out of scope here |
+| [AAASM-5527](https://lightning-dust-mite.atlassian.net/browse/AAASM-5527) · [AAASM-5534](https://lightning-dust-mite.atlassian.net/browse/AAASM-5534) | Spikes feeding §5.3's platform matrix |
+| [AAASM-5529](https://lightning-dust-mite.atlassian.net/browse/AAASM-5529) · [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531) · [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532) · [AAASM-5535](https://lightning-dust-mite.atlassian.net/browse/AAASM-5535) · [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) | Own the unautomated Validation requirements (V1, V2, V5, V6) |
+| [AAASM-3872](https://lightning-dust-mite.atlassian.net/browse/AAASM-3872) | Kill-after-syscall race; reconsideration trigger 1 |
+| [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298) | macOS managed-settings runtime honouring — the unmeasured half of §5.3's macOS row |
+| [ADR 0002](0002-sdk-security-boundary.md) | Complements — the SDK is not a security boundary |
+| [ADR 0004](0004-governance-enforcement-flow.md) | Complements — single `aa-sdk-client` transport boundary |
+| [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | Complements — fail-closed redaction discipline |
+| [ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | Complements — the five-way `RuntimeVerdict`, whose derivation is unimplemented (§6) |
+| [ADR 0029](0029-capability-over-permission-derivation.md) | Complements — declared vs. effective capability |
+| [ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) | Complements — protection-state ladder and evidence rules; this ADR places them as E6 |
+| [ADR 0032](0032-local-first-sensitive-data-provider-architecture.md) | Complements — local-first sensitive-data detection |
+| Superseded material | The `SDK → Proxy → eBPF` three-layer interception model wherever it appears; see the Migration checklist. No prior ADR recorded it. |
+| Implementation PRs | This ADR is documentation-only; the migration PRs are tracked by the tickets in the Migration checklist |
