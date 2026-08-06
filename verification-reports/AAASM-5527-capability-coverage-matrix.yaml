@@ -528,12 +528,15 @@ capabilities:
     known_bypasses:
       - "resolve_decision has ZERO non-test callers in this repository; refusal lives in the out-of-repo FFI shims"
     evidence: >-
-      GAP. Counted per crate: resolve_decision has 24 references in
-      aa-sdk-client/src (definition, docs, #[cfg(test)]) and 0 in BOTH
-      aa-cli/src and aa-runtime/src. An earlier revision claimed CLI coverage as
-      the positive control; that was wrong — query_policy is likewise 0 outside
-      aa-sdk-client, so it never discriminated. Both symbols are confined to
-      their own crate; the consumers are the out-of-repo FFI shims (ADR 0002).
+      GAP, with a control that holds. resolve_decision is defined at
+      aa-sdk-client/src/decision.rs:58; every reference is in that file, all
+      below #[cfg(test)] at :99, and it has 0 hits in aa-cli/src, aa-runtime/src
+      AND all three SDK repos. POSITIVE CONTROL: aa-cli does depend on
+      aa-sdk-client (aa-cli/Cargo.toml:74), so a cross-crate call would be
+      findable — the zero is real, not a mis-scoped probe. WITHDRAWN: "refusal
+      lives in the out-of-repo FFI shims". The Node shim hard-codes fail-OPEN,
+      mapping QueryFailed, ChannelClosed and Shutdown to Decision::Allow
+      (node-sdk/native/aa-ffi-node/src/lib.rs:204-209).
     evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "correct per ADR 0002 — keep advisory, make the claim wording match"
@@ -841,6 +844,7 @@ capabilities:
     evidence: ["read-back of the written file — evidence of the WRITE, never of ENFORCEMENT"]
     evidence_runs_on_main: standing
     current_level: integrated
+    current_level_scope: tool_governance_only   # ADR 0033 §6: aa-devtool-* config writes are "Not a data-path claim at all"
     target_level: "gateway_protected is unreachable by this path — it needs a core-side adjudication"
     tickets: [AAASM-5298]
 
@@ -1725,6 +1729,7 @@ capabilities:
     evidence: ["read-back of the config write"]
     evidence_runs_on_main: standing
     current_level: integrated
+    current_level_scope: tool_governance_only   # ADR 0033 §6: aa-devtool-* config writes are "Not a data-path claim at all"
     target_level: "never present config-level MCP disabling as interception"
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -1753,6 +1758,7 @@ capabilities:
     boundary_class: B3
     boundary_conditional_on: "the tool honours the injected proxy environment"
     coverage: denied_before_execution
+    q4_changed_answer_in_product_favour: true
     known_bypasses: ["the eleven-item list in docs/src/devtools/limitations.md:69-84", "everything in D2, D3, D4"]
     evidence:
       - aa-integration-tests/tests/cli_run_claude_governed_launch.rs
@@ -1936,7 +1942,8 @@ capabilities:
     known_bypasses: ["a local administrator", "the tool ignoring the keys"]
     evidence: ["read-back of the written file, never observed enforcement — 'the open half of AAASM-5298' (managed_settings.rs:50-57)"]
     evidence_runs_on_main: standing
-    current_level: host_enforced   # on the TOOL-GOVERNANCE axis only
+    current_level: host_enforced
+    current_level_scope: tool_governance_only   # ADR 0033 §6: aa-devtool-* config writes are "Not a data-path claim at all"   # on the TOOL-GOVERNANCE axis only
     target_level: "do not let this rung imply data-path prevention"
     tickets: [AAASM-5298]
 
@@ -2205,8 +2212,15 @@ capabilities:
     coverage: detected
     known_bypasses:
       - "no Stripe detector exists; the OpenAI detector keys on 'sk-' while Stripe uses 'sk_'"
-      - "a secret split by a separator (Chinese char, emoji, space, tab, newline) scans clean — accepted residual"
-    evidence: [aa-security/src/scanner.rs:1071-1092, aa-security/src/scanner.rs:3012-3030]
+      - >-
+        NARROWED by AAASM-5368, not open: a base64 run cut by ONE separator is
+        now detected (Pass 5, aa-security/src/scanner.rs:1346, implemented :1395;
+        closure recorded at :1279 and :3849; live test :3858). What remains open
+        is multi-character gaps and many-way splits, pinned as not-detected at
+        :3960-4005, plus ASCII punctuation deliberately not counting as a
+        separator (is_split_separator, :1596-1598). Fully open in rc.6, where
+        AAASM-5368 has 0 occurrences.
+    evidence: [aa-security/src/scanner.rs:1346, aa-security/src/scanner.rs:1395, aa-security/src/scanner.rs:3858, aa-security/src/scanner.rs:3960-4005]
     evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "bounded by the pattern set — say so"
@@ -2970,7 +2984,10 @@ capabilities:
       requiring admin authorization, and a refused prompt FAILS PROXY STARTUP
       (aa-proxy/src/lib.rs:62-69; tls/keychain.rs:16,18,23-32).
       E4: NONE. Endpoint Security and Network Extension are explicit non-goals,
-      pinned by a test asserting the literal limitation string
+      asserted in docs/src/devtools/product-brief.md and ADR 0033 section 5.3.
+      NO TEST PINS IT: model.rs:1212,1216 is a pass-through tautology —
+      summary_declaring stuffs its `reason` argument into the field the test
+      asserts on, so any string would pass.
       (aa-cli/src/commands/integrations/model.rs:1212,1216).
     identity_source: file_ownership
     policy_context: [managed_settings_keys]
