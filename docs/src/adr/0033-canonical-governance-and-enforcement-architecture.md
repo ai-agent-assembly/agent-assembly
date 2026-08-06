@@ -33,10 +33,10 @@ It **amends two ADRs**, and says so rather than quietly diverging:
   describes the *point of derivation* as *"the authoritative enforcement pipeline in
   `aa-runtime` (`RuntimeScanner`), which is where an action's outcome is actually
   decided"*, and `0018:3` records item A as approved for implementation under
-  AAASM-5100 Phase 1. Verified against the code, `RuntimeScanner` runs only on
-  `IpcFrame::EventReport` (`aa-runtime/src/pipeline/mod.rs:127`) — after the action —
+  AAASM-5100 Phase 1. Verified against the code, `RuntimeScanner::enforce` runs only on
+  the `IpcFrame::EventReport` arm (`aa-runtime/src/pipeline/mod.rs:127`) — after the action —
   and its output is *"a counter on this internal outcome, **not** a verdict"*
-  (`aa-runtime/src/pipeline/enforcement.rs:115-127`). Forbidden design 9 withdraws the
+  (`struct EnforcementOutcome`, `aa-runtime/src/pipeline/enforcement.rs:115-127`). Forbidden design 9 withdraws the
   "authoritative enforcement pipeline" characterisation; the pre-execution gate is
   `handle_policy_query`. An `Update — AAASM-5604` note is recorded in 0018 itself.
 - **[ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) §4.1** — 0030's
@@ -71,6 +71,15 @@ treat one as evidence of the other.
 
 ## Context
 
+> **Citation provenance.** Every `file:line` in this ADR was derived against
+> `agent-assembly` at the commit this ADR was published on (branch
+> `v0.0.1-rc.7/AAASM-5604/canonical_enforcement_architecture_adr`, rebased onto
+> `main`; `aa-proxy/src/proxy/mod.rs` blob `e2c79cdf7`, 2918 lines). Line numbers rot;
+> where the argument depends on a citation, the **symbol name is given alongside the
+> line** so a reader who finds the line moved can re-locate the anchor and detect drift
+> instead of dismissing the claim. If a line number does not land, search the symbol
+> before concluding the ADR is wrong.
+
 ### What the superseded model asserts
 
 The current material states the model as a fixed, ordered pipeline. From
@@ -102,7 +111,7 @@ the implementation.
    the runtime emits a `LayerDegradation` (`aa-runtime/src/runtime.rs:393-405`,
    `:492-506`, `:550-563`). Even on Linux the file-I/O kprobes attach exclusively to
    x86_64 syscall entry symbols — all fourteen targets in
-   `aa-ebpf/src/kprobe.rs:145-160` are `__x64_sys_*`, and no `__arm64_sys_*` target
+   `KPROBE_TARGETS` (`aa-ebpf/src/kprobe.rs:145-160`) are `__x64_sys_*`, and no `__arm64_sys_*` target
    exists anywhere in the eBPF crates. A "final layer that catches everything" is in
    fact a mechanism available on one OS and one CPU architecture.
 
@@ -111,7 +120,7 @@ the implementation.
    *bitflag*, and `LayerDetector::detect` (`:164-179`) probes each member
    independently: eBPF requires kernel ≥ 5.8, a BTF blob at `/sys/kernel/btf/vmlinux`,
    and a reachable privileged loader-daemon socket (`:133-135`); the proxy requires
-   Linux-or-macOS and an `aa-proxy` binary on `$PATH` (`:142-145`); SDK is recorded as
+   Linux-or-macOS and an `aa-proxy` binary on `$PATH` (`fn probe_proxy`, `:142-145`); SDK is recorded as
    *"always available"* (`:19`, `:169`). There is no ordering, no fall-through, and no
    guarantee that any given member is present. Absent members are not "covered by the
    layer below" — they are simply absent.
@@ -143,7 +152,7 @@ the implementation.
    decision requests. Interception happens elsewhere and is *routed to* it.
 
 6. **It presents self-reported availability as coverage.** `AA_LAYERS`
-   (`aa-runtime/src/layer.rs:182-197`) replaces the entire probe result with an
+   (`fn from_env_override`, `aa-runtime/src/layer.rs:182-197`) replaces the entire probe result with an
    environment variable. `probe_proxy` is satisfied by a binary being on `$PATH`
    (`:142-145`), which says nothing about whether any traffic is routed through it.
    `SDK` is asserted unconditionally, whether or not any agent adopted it.
@@ -198,7 +207,7 @@ must report it rather than assume it.
 | # | Element | What it is | Implemented today by | Availability |
 | --- | --- | --- | --- | --- |
 | **E1** | **Governance Control Plane** | The authority that holds policy, identity, budgets, approvals and audit, and answers decision requests. Holds no traffic. | `aa-gateway` (gRPC: `PolicyService`, `AgentLifecycleService`, `AuditService`, `ApprovalService`, `SecretsService`, `TopologyService`, `InvalidationService` — `aa-gateway/src/server.rs:22-28`), `aa-api` (HTTP/OpenAPI read surface), `aa-storage*` | Platform-independent |
-| **E2** | **Managed Execution Checkpoints** | Points on a *managed path* where an action is presented for a decision before it runs. | `aa-runtime`'s `handle_policy_query` (`aa-runtime/src/pipeline/mod.rs:159-175`, body `:407-542`); `aa-sdk-client::query_policy` + `resolve_decision` (`aa-sdk-client/src/client.rs:247-279`, `aa-sdk-client/src/decision.rs:58-97`); `aasm run` managed launch (`aa-cli/src/commands/run.rs`); `aa-sandbox` for WASM-marked tools | Checkpoint reachable only if the agent opts in (see §4) |
+| **E2** | **Managed Execution Checkpoints** | Points on a *managed path* where an action is presented for a decision before it runs. | `aa-runtime`'s `handle_policy_query` (`aa-runtime/src/pipeline/mod.rs:159-175`, the `IpcFrame::PolicyQuery` arm); `aa-sdk-client::query_policy` + `resolve_decision` (`aa-sdk-client/src/client.rs:247-279`, `aa-sdk-client/src/decision.rs:58-97`); `aasm run` managed launch (`aa-cli/src/commands/run.rs`); `aa-sandbox` for WASM-marked tools | Checkpoint reachable only if the agent opts in (see §4) |
 | **E3** | **Protocol / Transport Mediation** | A mediator placed on the wire that can refuse, redact or rewrite a request before it leaves the machine. | `aa-proxy` — CONNECT-time egress control, in-tunnel host re-check, credential/DLP scan, MCP `tools/call` adjudication | Unix only; see §5 |
 | **E4** | **Platform-Specific Host-Level Interception Adapters** | The *abstraction* for OS-level mediation of processes, files, syscalls and TLS. Each platform needs its own mechanism, and a platform without one has none. | **Linux:** eBPF via the privileged `aa-ebpf-loaderd` (`aa-ebpf/src/bin/loaderd.rs`). **macOS:** no OS-level mediation; an opt-in, authorized managed-settings write is the route to ADR 0030's `HostEnforced` rung (§5.3). **Windows:** none. | Per-platform; see §5 |
 | **E5** | **Credential / Capability Boundary** | What a component is *allowed to ask for*, and how a credential or capability is bound to an identity. | `aa-security` (scanner, redaction, canonical policy AST — a leaf crate with no inherent authority); `credential_token` validation in `PolicyService::check_action` (`aa-gateway/src/service/policy_service.rs:1623-1625`); `did:key` registration (ADR 0004); DI-API capability tokens and the compile-time `aa-devtool-contract` boundary (ADR 0030) | Platform-independent |
@@ -233,9 +242,10 @@ so is narrower than "the proxy":
 
 | Caller | Blocks on a gateway answer? | Consequence of `Deny` |
 | --- | --- | --- |
-| `aa-proxy`, **MCP `tools/call` on a non-LLM MitM'd host, gateway configured** | Yes, synchronously, before dialling upstream | `evaluate_mcp_request` (`aa-proxy/src/proxy/mod.rs:834`) returns `McpEvalOutcome::Deny`; the handler answers the client and returns **without** reaching `dial_upstream_tls` (`:836-846` vs. the dial at `:910`). This is the only gateway-bound pre-dial block in the system. |
-| `aa-proxy`, **LLM-provider hosts** (the only hosts MitM'd under the `llm_only` default) | **No** | `handle_llm_mitm` (`:1038-1240`) contains no gateway reference at all. Its refusal at `:1153` is the local `Interceptor`'s `VerdictDecision::Block`, not a gateway decision. |
-| `aa-proxy`, **CONNECT-time egress** | **No** | Refusal comes from local configuration — `self.config.network_allowlist` and the denied-host list (`:960-966`) — not from the control plane. |
+| `aa-proxy`, **MCP `tools/call` on a non-LLM MitM'd host, gateway configured** | Yes, synchronously, before dialling upstream | `handle_non_llm_mitm` (`aa-proxy/src/proxy/mod.rs:801`) calls `evaluate_mcp_request` (`:614`, invoked at `:834`) — *"MCP detection — only when a gateway is configured"* (`:832`). On `McpEvalOutcome::Deny` the handler answers the client and returns **without** reaching `dial_upstream_tls` (`:552`, reached at `:910`). This is the only gateway-bound pre-dial block in the system. |
+| `aa-proxy`, **LLM-provider hosts** (the only hosts MitM'd under the `llm_only` default) | **No** | `handle_llm_mitm` (`:1038-1241`) contains **zero** gateway references. It refuses locally at two points, both returning 403 on its own authority: `in_tunnel_deny_reason` (`:984`, called at `:1055`, 403 at `:1066`) and the `Interceptor`'s `VerdictDecision::Block` (`:1153`, 403 at `:1173`). |
+| `aa-proxy`, **CONNECT-time egress** | **No** | Refusal comes from local configuration — the denied-host list and `is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist)` (`:960-966`) — not from the control plane. |
+| **Any host not MitM'd** (the `llm_only` default sends every non-LLM host here) | **No — nothing evaluates it** | `handle_llm_mitm`/`handle_non_llm_mitm` are never entered; the connection is transparently tunnelled (`:1333-1336`). This is *Unmeasured* (§6), not allowed. |
 | `aa-runtime` `handle_policy_query` (`aa-runtime/src/pipeline/mod.rs:159-175`) | Yes | A `Deny` is returned to the SDK — which must then honour it (§4). |
 
 The distinction matters for anyone choosing an enforcement path: a gateway `Deny` stops
@@ -325,7 +335,7 @@ verified ways this happens today:
 | The SDK's answer is not honoured | `resolve_decision` has **no in-tree caller that refuses to execute**; refusal lives in the out-of-repo FFI shims | `aa-sdk-client/src/decision.rs:32-33`: *"The SDK remains advisory: `aa-runtime` / proxy / eBPF are the authoritative enforcement points. This is a defense-in-depth posture, not the primary gate."* |
 | Traffic is not routed to the mediator | `HTTPS_PROXY` is injected only on the managed launch path; an ambient or removed value changes coverage | `aa-cli/src/commands/run.rs:322-326`; adapters at `aa-devtool-codex/src/lib.rs:301`, `aa-devtool-windsurf/src/lib.rs:312`, `aa-devtool-claude-code/src/lib.rs:379` |
 | The tool has no managed launch at all | `aa-devtool-copilot::build_launch_command` returns `AdapterError::LaunchFailed` (`aa-devtool-copilot/src/lib.rs:347-357`); `aa-devtool-saas` is hard-capped at `L1Observe` (`aa-devtool-saas/src/adapter.rs:66,122`) | No proxy env is injected, so no data-path mediation exists for these tools |
-| The host is mediated but the destination is not inspected | `llm_only` defaults to **true**: any host outside the built-in LLM set or operator `mitm_hosts` is **transparently tunnelled, uninspected** | `aa-proxy/src/proxy/mod.rs:1333-1336`; the default is `parse_llm_only` → `Err(_) => true` at `aa-proxy/src/config.rs:434-439` |
+| The host is mediated but the destination is not inspected | `llm_only` defaults to **true**: any host outside the built-in LLM set or operator `mitm_hosts` is **transparently tunnelled, uninspected** | `aa-proxy/src/proxy/mod.rs:1333-1336`; the default is `fn parse_llm_only` → `Err(_) => true` (`aa-proxy/src/config.rs:434-439`) |
 | The TLS stack is not hooked | The uprobes hook only OpenSSL `SSL_read`/`SSL_write`; Go `crypto/tls` and Node's statically linked BoringSSL expose no such symbols | `aa-ebpf-probes/src/ssl_probes.rs:19-27` |
 | The platform has no host adapter | macOS and Windows — §5 | — |
 
@@ -382,7 +392,7 @@ pushing a syscall allowlist into the opt-in guard
 
 Linux eBPF is reachable only when **all** of: kernel ≥ 5.8, BTF at
 `/sys/kernel/btf/vmlinux`, and a reachable `aa-ebpf-loaderd` socket
-(`aa-runtime/src/layer.rs:133-135`); `bpf_send_signal` additionally requires ≥ 5.3.
+(`fn probe_ebpf`, `aa-runtime/src/layer.rs:133-135`); `bpf_send_signal` additionally requires ≥ 5.3.
 `aa-runtime` holds no `CAP_BPF` — the loader daemon is the sole capability holder
 (`aa-ebpf/Cargo.toml:49-50`), which is a deliberate privilege separation, not an
 inconvenience. The file-I/O kprobes are additionally **x86_64-only**: there is no
@@ -395,7 +405,7 @@ file-I/O coverage from this mechanism.
 | --- | --- | --- | --- |
 | **Linux x86_64** | `aa-proxy`; CA trust via CLI `update-ca-certificates` (`aa-cli/src/commands/proxy/ca.rs:149,173`) | eBPF observation (TLS/file/exec); syscall guard as opt-in asynchronous kill | **Implemented**, with the §5.1 limits stated |
 | **Linux aarch64** | `aa-proxy` | eBPF TLS/exec only; **no** file-I/O kprobe targets | **Implemented (partial)** — must say which probes are absent |
-| **macOS** | `aa-proxy`; an **opt-in, admin-authorized** System Keychain trust install — `security add-trusted-cert` shelled out from `add_trusted_cert` (`aa-proxy/src/tls/keychain.rs:11-18`, reached via `aa-proxy/src/tls/ca.rs:214-232`). It is not automatic, and the Claude Code integration deliberately does not use it, establishing trust per-launch through `NODE_EXTRA_CA_CERTS` instead (`aa-devtool-claude-code/src/lifecycle.rs:653-659`) | **None.** Endpoint Security / Network Extension is an **explicit non-goal** — asserted in product docs (`docs/src/devtools/product-brief.md:448,655` — *"macOS Endpoint Security and Network Extension remain explicit non-goals"*, and `aa-ebpf` is *"Linux-only and is a **detection** layer that cannot modify traffic in flight"*) and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) | Transport mediation **Implemented**; **E4 host-level interception Unsupported**. **Do not read this as "no host enforcement on macOS"** — see the note below: macOS is the *only* platform on which ADR 0030's `HostEnforced` rung is reachable today. |
+| **macOS** | `aa-proxy`; an **opt-in, admin-authorized** System Keychain trust install — `security add-trusted-cert` shelled out from `add_trusted_cert` (`fn add_trusted_cert`, `aa-proxy/src/tls/keychain.rs:11-18`, reached via `aa-proxy/src/tls/ca.rs:214-232`). It is not automatic, and the Claude Code integration deliberately does not use it, establishing trust per-launch through `NODE_EXTRA_CA_CERTS` instead (`aa-devtool-claude-code/src/lifecycle.rs:653-659`) | **None.** Endpoint Security / Network Extension is an **explicit non-goal** — asserted in product docs (`docs/src/devtools/product-brief.md:448,655` — *"macOS Endpoint Security and Network Extension remain explicit non-goals"*, and `aa-ebpf` is *"Linux-only and is a **detection** layer that cannot modify traffic in flight"*) and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) | Transport mediation **Implemented**; **E4 host-level interception Unsupported**. **Do not read this as "no host enforcement on macOS"** — see the note below: macOS is the *only* platform on which ADR 0030's `HostEnforced` rung is reachable today. |
 | **Windows** | **None** — `aa-proxy`'s accept loop uses `tokio::signal::unix` unconditionally (`aa-proxy/src/proxy/mod.rs:296,298`), so the crate has no Windows build path. Note the naive grep is misleading: `#[cfg(windows)]` blocks *do* exist (`aa-devtool-copilot/src/lib.rs:260,292`; `aa-cli/src/commands/dashboard/stop.rs:23`, which calls `windows_sys::…::OpenProcess`). The dispositive evidence is that **`windows_sys` is declared in no `Cargo.toml` in the workspace**, so those blocks cannot compile as written | **None.** No ETW, WFP or minifilter code exists | **Unsupported** |
 
 > **The macOS exception — read this before citing the row above.**
@@ -403,7 +413,7 @@ file-I/O coverage from this mechanism.
 > macOS has no E4 adapter, yet it is the **only** platform where ADR 0030's
 > `HostEnforced` protection state is reachable in production. The single production
 > producer of `EvidenceKind::HostAttested` is the macOS managed-settings path
-> (`aa-devtool-claude-code/src/lifecycle.rs:556`), which feeds
+> (`EvidenceKind::HostAttested`, `aa-devtool-claude-code/src/lifecycle.rs:556`), which feeds
 > `is_host_enforcement_grade` → `justifies_host_enforcement`
 > (`aa-core/src/integration/state.rs:291,296`) and the `HostEnforcement` capability
 > (`aa-core/src/integration/capability.rs:116-118`).
@@ -453,7 +463,7 @@ Mapped onto the verified mechanisms:
 | `aa-proxy` CONNECT / in-tunnel / DLP / MCP adjudication | **Denied before execution**, for traffic that traverses it and is MitM'd. Note the decision *source* differs by path (§2): CONNECT, DLP and LLM-host refusals are local policy; only MCP `tools/call` on a non-LLM MitM'd host is a gateway decision |
 | `aa-gateway` `check_action` | **Evaluated**; reaches *Denied before execution* only through a blocking caller, and today that is the MCP path plus an SDK shim that honours the answer |
 | `aa-runtime` `handle_policy_query` | **Evaluated**; *Denied before execution* only if the SDK shim honours the answer |
-| `aa-runtime` `RuntimeScanner` | **Redacted** — it runs on `IpcFrame::EventReport` (`aa-runtime/src/pipeline/mod.rs:127`), i.e. *after* the action, and returns counters, not a verdict (`aa-runtime/src/pipeline/enforcement.rs:115-127` — the outcome is *"a counter on this internal outcome, **not** a verdict"*) |
+| `aa-runtime` `RuntimeScanner` | **Redacted** — it runs on `IpcFrame::EventReport` (`aa-runtime/src/pipeline/mod.rs:127`), i.e. *after* the action, and returns counters, not a verdict (`struct EnforcementOutcome`, `aa-runtime/src/pipeline/enforcement.rs:115-127` — the outcome is *"a counter on this internal outcome, **not** a verdict"*) |
 | `aa-sdk-client` | **Evaluated** (advisory); it is not an enforcement point in this repo |
 | eBPF TLS / file / exec probes | **Observed** / **Detected** |
 | eBPF syscall guard | **Detected**, plus asynchronous process termination — explicitly **not** *Denied before execution* (§5.1) |
