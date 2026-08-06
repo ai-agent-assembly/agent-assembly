@@ -163,11 +163,26 @@ whether to follow one is entitled to know it has not been ratified.
 
 The operative rule is this: **a `Proposed` ADR whose contract is already enforced by
 a CI gate is treated as operative**, because the gate makes it binding in practice
-whatever the header says — ADR 0013's version-drift gate and ADR 0014's
-metadata-drift gate are both running on this repository's pull requests today.
-A `Proposed` ADR with no gate behind it — 0025 is the clear case — is **direction,
-not a constraint**, and a change that departs from it needs the sign-off its own
-status line asks for rather than a citation of this page.
+whatever the header says. A `Proposed` ADR with no gate behind it is **direction, not
+a constraint**, and a change that departs from it needs the sign-off its own status
+line asks for rather than a citation of this page.
+
+Applying that rule honestly gives a **per-ADR** answer, not a blanket one, because a
+gate's scope rarely matches an ADR's scope:
+
+| ADR | Gate | Verdict |
+|---|---|---|
+| **0013** — version metadata | `propagate_versions.py --check`, run on every version-bearing path | **Operative.** Gate scope matches the ADR's scope |
+| **0007** — public domain & URL contract | `.ci/check-metadata-drift.sh` gates the `.dev` installer-host value that 0007 decides | **Operative for the values it gates** — which is narrower than the ADR |
+| **0008** — SaaS host routing | none found | Direction |
+| **0014** — metadata registry | `.ci/check-metadata-drift.sh` exists, but **scopes itself to two literals** and states that the org-wide audit of repo names, display names and Jira IDs is owned by the `.github` registry widen, *"not this repo-local lint"* | **Direction for the scope this page assigns it.** The gate's name suggests more coverage than it has |
+| **0025** — `design/v2/` visual spec | none | Direction; departing from it needs the sign-off its status line asks for |
+
+Two things worth carrying out of that table. First, **0014's row is the trap**: the
+gate is named after the ADR, so "there is a metadata-drift gate" reads as "the
+registry contract is enforced", and it is not — the two literals it checks are ADR
+0007 *values*. Second, a gate makes an ADR operative **only over what the gate
+actually checks**; do not promote the whole ADR on the strength of a partial gate.
 
 ### Known non-conforming instance: two maturity vocabularies
 
@@ -747,8 +762,8 @@ version — and the enforcement that goes with it — is
 | [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) `Accepted` | Canonical architecture source; §6 owns the enforcement/claim vocabulary this page routes to, and §E assigns precedence and waivers to AAASM-5621 |
 | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) `Accepted` | Protection-state ladder and evidence rules, **as amended by ADR 0033 §5.3** (a third `HostEnforced` route `0030:465` does not list) |
 | [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) `Proposed` | Version metadata source of truth — the model this page's *generated* duplication class follows. CI-gated, so operative |
-| [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) `Proposed` | Org-shared metadata registry. CI-gated, so operative |
-| [ADR 0007](../adr/0007-public-domain-and-url-contract.md) `Proposed (amended)` · [ADR 0008](../adr/0008-saas-host-routing-auth-cookie-boundaries.md) `Proposed` | Own the canonical URL *values* that ADR 0014's registry stores |
+| [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) `Proposed` | Org-shared metadata registry. The repo-local drift lint named after it checks two ADR 0007 values, not the registry contract — so direction, not operative, for the scope assigned here |
+| [ADR 0007](../adr/0007-public-domain-and-url-contract.md) `Proposed (amended)` · [ADR 0008](../adr/0008-saas-host-routing-auth-cookie-boundaries.md) `Proposed` | Own the canonical URL *values* that ADR 0014's registry stores. 0007 is **operative for the values the drift lint gates**; 0008 has no gate found, so direction |
 | [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) `Proposed — awaiting sign-off` | `design/v2/` is the intended authoritative visual specification. No gate behind it, so direction rather than constraint |
 | [Shared docs metadata](shared-docs-metadata.md) | How to add or update a generated shared value in this book |
 | [`source-of-truth.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/source-of-truth.md) | Docs Hub — owns the lifecycle maturity labels and the area/owning-repository map |
