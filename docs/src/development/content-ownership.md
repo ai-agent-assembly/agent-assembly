@@ -351,9 +351,15 @@ verified lower-layer fact onto an ADR 0033 §6 term — *decides* → **Evaluate
 no completeness to any of them. It says what the product's job is, not how far along
 that job is on your machine.
 
-Contrast the version that would widen while looking similar: "governs every agent
-action on any platform, and cannot be bypassed" attaches completeness, a platform
-claim and a banned absolute to the same three verbs.
+Contrast a version that would widen while reading almost the same. Three additions
+would each do it, and none of them touches the verbs: a platform (*on any platform*),
+a completeness quantifier over an agent's actions, or one of ADR 0033's banned
+absolutes about evasion. The verbs are fine; what gets attached to them is the risk.
+
+*(This paragraph deliberately describes those three additions instead of quoting one.
+A banned absolute quoted as a counter-example is still a literal match for the
+[planned CI gate](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536), and
+adding tripwires to a page about not tripping them is a poor trade.)*
 
 ### 3. Quotation
 
@@ -463,7 +469,7 @@ under [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md)
 the Docs Hub's `hub-components.toml` generator.
 
 A fourth property — *the consumer carries a marker naming its generator* — is
-**desirable but not universal**: only two of the three dialects have one, and the
+**desirable but not present in every dialect**: two of the three have one, and the
 one without it covers the highest-fan-out content in the repository. It is required
 for **new** generated content and cannot be assumed when reading existing content.
 See [Generation](#4-generation) for the three dialects and how to tell which governs
