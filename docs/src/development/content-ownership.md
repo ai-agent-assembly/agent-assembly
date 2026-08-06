@@ -121,7 +121,7 @@ fact is a *derivative* and is governed by
 | **Integration steps, per language** | That SDK's docs | `python-sdk`, `node-sdk`, `go-sdk` quick-start and guides |
 | **Integration steps, operator / CLI path** | Core | [Quick start](../quick-start/requirements.md), [CLI reference](../cli/overview.md) |
 | **Runnable end-to-end integrations** | L4 examples | `examples` — one directory per framework, plus its choosing guide |
-| **API reference** | Generated from source, per component | Core: rustdoc + `openapi/v1.yaml` (utoipa); `python-sdk` and `arena`: mkdocstrings; `node-sdk`: TypeDoc via `docusaurus-plugin-typedoc`; `go-sdk`: godoc on pkg.go.dev — its in-repo `docs/api-reference.md` is a hand-written **signpost** to that generated reference, not a restatement of it |
+| **API reference** | Generated from source, per component | Core: rustdoc + `openapi/v1.yaml` (utoipa); `python-sdk` and `arena`: mkdocstrings; `node-sdk`: TypeDoc via `docusaurus-plugin-typedoc`; `go-sdk`: godoc on pkg.go.dev — but its in-repo `docs/api-reference.md` **quotes a curated subset of signatures**, which makes that page an [owned copy](#acceptable-with-an-explicit-owner), not a signpost |
 | **Open-source / commercial split** | Docs Hub | [`open-core-boundary.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/open-core-boundary.md) |
 | **What may be claimed about the managed service** | Docs Hub | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) (provisional pending AAASM-5621) |
 | **Commercial conversion path** (early access, contact) | L1 product website | `official-website` — `/early-access` |
@@ -563,6 +563,25 @@ What this page does **not** settle is who owns a translation's accuracy, and whe
 fuzzy entry blocks publication. That is an ownership assignment, so it goes to
 AAASM-5621 with the rest.
 
+#### A second instance of the owned-copy case
+
+`go-sdk`'s `docs/api-reference.md` is the clearest live example of a copy that is
+neither prohibited nor generated. The page states its own nature — *"Signatures here
+are quoted from the `assembly` package … pkg.go.dev has the rest"* — and that is a
+defensible editorial choice: a curated entry-point map is more useful than a link to
+a full package index.
+
+But quoted signatures are a **restatement** under pattern 3, hand-maintained, and
+nothing regenerates them. So the page needs the four owned-copy requirements, and
+today it has only the canonical link. Missing are a named owner, a stated reason
+generation was not used, and a re-verification trigger — and for quoted signatures
+the trigger is obvious and mechanical enough to be worth naming: **any release that
+changes the `assembly` package's public surface**.
+
+Recorded here because it is the failure mode the class exists to catch: not a rival
+document, just a correct copy that nobody is on the hook for re-checking. Fixing it
+belongs to `go-sdk`, not this ticket.
+
 ### Worked example: two hand-written policy references
 
 Both this repository and the Docs Hub publish a page called *Policy reference*, and
@@ -618,7 +637,7 @@ are the ones that stop the same defect coming back.
 | An architecture or enforcement statement that overstates coverage | ADR 0033, then the derivative pages |
 | A protection state reported above its evidence | ADR 0030's ladder rules **as amended by ADR 0033 §5.3** (which adds a third `HostEnforced` route 0030 does not list), then the reporting component |
 | A wrong policy field, default or validation rule | Core [Policy YAML reference](../policy-reference.md), checked against `aa-gateway/src/policy/` |
-| A wrong per-language API signature | That SDK's generated API reference — regenerate; do not hand-edit |
+| A wrong per-language API signature | That SDK's generated API reference — regenerate; do not hand-edit. **Then check for a hand-quoted subset**: `go-sdk`'s `docs/api-reference.md` quotes ~14 signatures from the `assembly` package, and regenerating godoc does not touch them |
 | A wrong maturity label or a wrong owning repository | Docs Hub `source-of-truth.md` — **check [which of its two inputs](#the-status-map-has-two-inputs) owns the row first** |
 | A managed-service claim with no evidence | The Docs Hub SaaS claim publication checklist — remove the claim, register the row |
 | A version literal that has gone stale | Its ADR 0013 anchor, then re-run the propagation script |
