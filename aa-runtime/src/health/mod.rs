@@ -633,4 +633,67 @@ mod tests {
         assert_eq!(stale.attestation.generated_at_unix_secs, TEST_NOW);
         assert_eq!(stale.evaluated_at_unix_secs, later);
     }
+
+    /// `degraded_layers` and `protection` deliberately disagree in one body,
+    /// and 5588/5600 are told to render the latter — so the relationship is
+    /// pinned rather than left to be discovered.
+    ///
+    /// `degraded_layers` lists components that are merely *absent*. ADR 0033 §6
+    /// `Degraded` means a control that was *planned* and is unavailable, and on
+    /// the probed path nothing sets `SelectedMode::Enabled`, so `degraded_at()`
+    /// is empty while `degraded_layers` is not. If a future change wires
+    /// configuration to `selected_mode`, this test is where the two must be
+    /// reconciled.
+    #[tokio::test]
+    async fn legacy_degraded_layers_does_not_mean_adr_0033_degraded() {
+        let (_, ready_rx) = tokio::sync::watch::channel(true);
+        let (inbound_tx, _) = tokio::sync::mpsc::channel(1);
+        let pipeline_metrics = Arc::new(crate::pipeline::PipelineMetrics::default());
+
+        let attestation = crate::layer::LayerDetector::attest(TEST_NOW);
+        // Precondition: the probed path plans nothing, so no component can
+        // reach §6 Degraded. If this ever fails, the contradiction below has
+        // been resolved and this test must be rewritten, not deleted.
+        assert!(
+            attestation.degraded_at(TEST_NOW).is_empty(),
+            "probed path unexpectedly produced a planned component"
+        );
+
+        let state = HealthState {
+            start_time: std::time::Instant::now(),
+            pipeline_metrics,
+            ready_rx,
+            prometheus_handle: make_prometheus_handle(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            inbound_tx,
+            active_layers: crate::layer::LayerSet::SDK,
+            // What `check_layer_availability` produces for an absent layer.
+            degraded_layers: vec!["ebpf".to_string(), "proxy".to_string()],
+            protection: attestation,
+        };
+
+        let app = router(state);
+        let req = Request::builder().uri("/health").body(Body::empty()).unwrap();
+        let body = axum::body::to_bytes(app.oneshot(req).await.unwrap().into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // The legacy field says "degraded" ...
+        assert_eq!(json["degraded_layers"], serde_json::json!(["ebpf", "proxy"]));
+
+        // ... while no component claims the §6 term of that name.
+        let claims = json["protection"]["verified_states"]
+            .as_array()
+            .expect("verified_states");
+        for claim in claims {
+            assert_ne!(
+                claim["verified_state"], "degraded",
+                "{} reported §6 Degraded; the two fields have converged and the \
+                 documented divergence needs updating",
+                claim["component"]
+            );
+        }
+        assert_eq!(json["protection"]["any_coverage_verified"], false);
+    }
 }
