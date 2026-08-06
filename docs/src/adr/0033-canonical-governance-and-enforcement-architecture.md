@@ -931,7 +931,13 @@ and §6 of this ADR, and the artifacts that encode it are:
 - [ ] `proto/audit.proto:248,251` — `LayerDegradationEvent`, documented as recording
       *"that an interception layer became unavailable"*.
 - [ ] `aa-proto/_embedded/proto/audit.proto:248` — the **published mirror**. This ships
-      to crates.io, so the name is already in consumers' hands.
+      to crates.io, so the name is already in consumers' hands. **This path is a
+      build-time generated artifact and is not in the repository** — `aa-proto/_embedded/`
+      is gitignored (`aa-proto/.gitignore:1`), produced by `aa-proto/build.rs:17-24`
+      mirroring workspace-root `proto/` into it, and shipped because
+      `aa-proto/Cargo.toml:13-17`'s explicit `include` overrides cargo's gitignore-aware
+      file enumeration. It will not resolve in a clean checkout; the committed source of
+      truth is `proto/audit.proto:248` above.
 - [ ] `openapi/v1.yaml:10331,10357` — the REST surface.
 - [ ] `dashboard/src/api/generated/schema.d.ts:6553` — generated; regenerates from the
       OpenAPI change rather than being edited.
