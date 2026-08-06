@@ -979,6 +979,8 @@ mod tests {
         );
         assert!(consistent.timestamps_are_consistent());
 
+        // A year ahead of the payload that carries it.
+        let skew = 365 * 24 * 60 * 60;
         let ahead = ProtectionAttestation::new(
             "0.0.1",
             "test",
@@ -988,12 +990,29 @@ mod tests {
                     outcome: AdjudicatedOutcome::Blocked,
                 },
                 SelectedMode::Unset,
-                NOW + 1,
+                NOW + skew,
             )],
         );
         assert!(!ahead.timestamps_are_consistent());
-        // The hazard the check exists for: it is fresh, and stays fresh.
-        assert!(ahead.layers[0].is_fresh(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
-        assert!(ahead.layers[0].is_fresh(NOW + 10_000_000, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+
+        // The hazard the check exists for. `saturating_sub` floors the age at
+        // zero for any reader before the timestamp, so this coverage claim
+        // stays fresh — and keeps being reported as verified — for the whole
+        // year of skew, not for the 300 s the window nominally allows.
+        let layer = &ahead.layers[0];
+        assert_eq!(
+            layer.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            ClaimTerm::DeniedBeforeExecution
+        );
+        assert!(layer.is_fresh(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+        assert!(
+            layer.is_fresh(NOW + skew, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            "still fresh a year later, which is the whole problem"
+        );
+        // Only once the reader passes the future timestamp does it start ageing.
+        assert!(!layer.is_fresh(
+            NOW + skew + DEFAULT_ATTESTATION_FRESHNESS_SECS + 1,
+            DEFAULT_ATTESTATION_FRESHNESS_SECS
+        ));
     }
 }
