@@ -651,8 +651,24 @@ the failure is a worktree deleted *while the runtime keeps serving*.
 **This does not widen §5.5.** Every field is a fact about the runtime's own process, and the
 peer on this socket already shares the runtime's UID (§5.2), so it could read all of it from
 the OS. What the message adds is that the runtime *states* it, in the same breath as the
-answer it is being trusted for. `AA_BUILD_SOURCE_PATH` can be set empty at build time so a
-published binary carries no build-machine path.
+answer it is being trusted for.
+
+**`source_path` is a build-machine path, and nothing suppresses it today.** `build.rs` honours
+an explicitly-empty `AA_BUILD_SOURCE_PATH`, but **no workflow or script in this repository sets
+it** — `grep -rn AA_BUILD_SOURCE_PATH .github .ci scripts Makefile` returns nothing. So every
+shipped `aa-runtime` carries the absolute path of the tree it was compiled from: a CI runner
+path for official release artifacts, and a developer's home directory for a local build. That
+path is reported on every `aasm integrations status` and in `--output json` as
+`runtime.provenance.source_path`, and
+`scripts/measure-claude-code-managed-enforcement.sh` embeds the whole status JSON verbatim into
+the Markdown evidence file it writes for pasting into a ticket — so a locally-built runtime's
+username and directory layout travel with that artifact.
+
+This is stated as an exposure rather than a mitigation because the mitigation does not exist.
+It is bounded: the value is a path string, never a credential, and §5.5 still holds. Closing it
+means either setting `AA_BUILD_SOURCE_PATH=""` in the release workflow or redacting
+`source_path` where evidence artifacts are written; neither is done here, and until one is, do
+not cite the knob as though it were applied.
 
 ##### 5.4a.1 Correction — absence of provenance is not agreement
 

@@ -187,7 +187,7 @@ So the handshake states an identity, before any result is obtained:
 | `pid` | The serving process. The only field that distinguishes two runtimes of the *same* build. |
 | `executable_path` | Absolute path of the running executable, as the OS reports it. |
 | `executable_present` | Whether that path still exists, evaluated **when the frame is written**, not at start. |
-| `source_path` | The checkout it was built from, when known. Empty means the build suppressed it. |
+| `source_path` | The checkout it was built from, when known. Empty means the build suppressed it — **no build in this repository does**, so this is in practice a CI runner path on a release artifact and a developer's home directory on a local build. Treat it as such before pasting a status JSON anywhere public. |
 | `started_at_unix_secs` | When this runtime began serving. |
 
 A v1–v3 peer omits the message entirely, and *message presence* — not an empty
