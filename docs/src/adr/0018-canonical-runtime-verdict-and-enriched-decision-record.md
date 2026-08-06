@@ -221,3 +221,33 @@ conversation — not to instrument the hot path under this ticket.
 - Extends the AAASM-5058 decision-stream endpoint.
 - `scrub` semantics inherit from ADR 0015 (DLP redaction); the Traffic-tab surface
   was ratified in ADR 0017; enforcement flow context is ADR 0004.
+
+---
+
+## Update — AAASM-5604 (ADR 0033 amends §A's "point of derivation")
+
+[ADR 0033](0033-canonical-governance-and-enforcement-architecture.md) amends **§A of
+this ADR**, narrowly. The schema freeze, the five-way `RuntimeVerdict` vocabulary, and
+the decision-capture plan's approval status are **unchanged**.
+
+What is withdrawn is §A's characterisation of *where* the outcome is decided. §A above
+calls `RuntimeScanner` *"the authoritative enforcement pipeline in `aa-runtime` …
+which is where an action's outcome is actually decided"*. Verified against the code:
+
+- `RuntimeScanner::enforce` runs only on the `IpcFrame::EventReport` arm
+  (`aa-runtime/src/pipeline/mod.rs:127`) — that is, **after** the action has happened,
+  not before it.
+- Its return value is an `EnforcementOutcome` of findings and counters with **no
+  decision field** (`aa-runtime/src/pipeline/enforcement.rs:115-132`); the type's own
+  *"a counter on this internal outcome, **not** a verdict"* note (`:124`) is scoped to
+  the `undecodable_fields` counter, but the structural point stands for the whole type.
+- The **pre-execution** gate is `fn handle_policy_query`
+  (`aa-runtime/src/pipeline/mod.rs:407`, dispatched from the `IpcFrame::PolicyQuery` arm
+  at `:159-175`), which is where a decision precedes an effect.
+
+Consequence for AAASM-5100 Phase 1 (item A): a derived `RuntimeVerdict` cannot be
+sourced from `RuntimeScanner` alone, because the scanner never sees the allow / deny /
+approval outcome — it sees a post-action payload. Deriving the five-way verdict
+requires instrumenting the policy-query path as well. ADR 0033's forbidden design 9
+bans describing `RuntimeScanner` as the authoritative enforcement pipeline in any
+future material.
