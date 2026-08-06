@@ -274,6 +274,15 @@ async fn sole_refusal_record(rx: &mut mpsc::Receiver<ProxyAuditEntry>, rule: Ref
         Some(rule),
         "the record must name the control that refused: {first:#?}"
     );
+    // ADR 0032 §9: this sink is not the tamper-evident tier, so no byte offset
+    // may reach it. A refusal carries no findings, but the line is checked
+    // anyway — the guarantee is about the tier, not about which branch wrote
+    // the record.
+    let serialized = serde_json::to_string(&first).unwrap();
+    assert!(
+        !serialized.contains("\"offset\""),
+        "a byte offset reached the untrusted tier: {serialized}"
+    );
     first
 }
 
