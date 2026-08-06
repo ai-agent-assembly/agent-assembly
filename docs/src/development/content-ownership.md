@@ -367,23 +367,29 @@ Requirements:
 #### Worked example: a compliant L0 summary
 
 The outermost layer is the hardest place to summarise without widening, so the
-sanctioned case is worth having in front of you. The company site describes Agent
-Assembly as:
+sanctioned case is worth having in front of you. The company site's product blurb
+reads:
 
-> A governance layer for AI agents. It decides which tools, domains, and budgets an
-> agent may use, holds risky actions for human review, and records what happened.
+> A governance layer for AI agents — permissions, approval checkpoints, and evidence.
 
-This is a capability summary on L0, and it is **compliant**. Each clause narrows a
-verified lower-layer fact onto an ADR 0033 §6 term — *decides* → **Evaluated**,
-*holds … for human review* → **Approval required**, *records what happened* →
-**Observed** — and it drops no bound, because it attaches no status, no platform and
-no completeness to any of them. It says what the product's job is, not how far along
-that job is on your machine.
+This is a capability summary on L0, and it is **compliant**. It names the three
+things the product deals in as **nouns**, which is what makes it safe: a noun
+asserts that a capability exists, where a verb with an object ("decides which tools
+an agent may use") additionally invites the reader to infer *which* tools, *when*,
+and *how completely*. Each noun maps onto an ADR 0033 §6 term without claiming a
+scope for it — *permissions* → **Evaluated**, *approval checkpoints* →
+**Approval required**, *evidence* → **Observed** — and it attaches no status, no
+platform and no completeness to any of them.
 
-Contrast a version that would widen while reading almost the same. Three additions
-would each do it, and none of them touches the verbs: a platform (*on any platform*),
-a completeness quantifier over an agent's actions, or one of ADR 0033's banned
-absolutes about evasion. The verbs are fine; what gets attached to them is the risk.
+The reason to prefer this phrasing at L0 is not that verbs are forbidden. It is that
+the company layer is the furthest from the evidence, so the reader has the least
+context in which to notice an implied scope. Choosing the construction that has no
+completeness surface at all is cheaper than defending one that does.
+
+Three additions would each turn this into a widening, and none of them touches the
+nouns: a platform (*on any platform*), a completeness quantifier over an agent's
+actions, or one of ADR 0033's banned absolutes about evasion. What gets attached is
+the risk, not the vocabulary.
 
 *(This paragraph deliberately describes those three additions instead of quoting one.
 A banned absolute quoted as a counter-example is still a literal match for the
