@@ -167,6 +167,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`aasm run` accepts the tool ids `aasm integrations list` prints**
+  (AAASM-5503) — the two commands named the same four tools with disjoint
+  vocabularies, so copying an id off the discovery surface failed on the
+  execution surface for three of the four (`aasm run claude-code` →
+  `error: unknown tool: claude-code`). Both spellings now resolve to the same
+  tool; the canonical short ids (`claude`, `codex`, `copilot`, `windsurf`) are
+  unchanged, so no working invocation changes. The refusal for a genuine typo
+  now lists both spellings.
 - **Tenant ownership enforced in `register_op`** (`aa-api`) — the op-registration
   path now rejects cross-tenant registration instead of trusting the request's
   tenant, closing a cross-tenant authorization gap (regression test added).
