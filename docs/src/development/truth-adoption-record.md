@@ -201,9 +201,12 @@ constraints are easy to get wrong:
 - Renewal is a **new approval with fresh evidence**, not an edited `expires`.
   Editing the date is forbidden design 9.
 
-Three things may not be waived at all: an ADR 0033 forbidden design, evidence
-freshness or tracked-ness, and the absence of any resolvable row for a governed
-claim.
+Four things may not be waived at all: factual truthfulness; an ADR 0033 forbidden
+design, including forbidden design 7's banned absolutes, which are **unwaivable**
+in the product's own voice and have no approver; evidence freshness or
+tracked-ness; and the absence of any resolvable row for a governed claim. A
+waiver reaches process, timing and review sequencing — never whether a statement
+is true.
 
 ### `local_adrs`
 
