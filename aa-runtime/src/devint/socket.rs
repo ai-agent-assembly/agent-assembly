@@ -42,7 +42,7 @@
 //! by a browser, the kernel supplies no peer identity for it, and it adds
 //! port-scanning, CSRF and DNS-rebinding surface — ADR 0030 forbidden design 7.
 
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use tokio::net::UnixListener;
@@ -55,6 +55,12 @@ const RUN_DIR: &str = ".aa/run";
 
 /// The socket file name inside [`RUN_DIR`].
 const SOCKET_FILE: &str = "devint.sock";
+
+/// What a DI-API socket's file name starts with, for [`reachable_runtimes`].
+const SOCKET_NAME_PREFIX: &str = "devint";
+
+/// What a DI-API socket's file name ends with, for [`reachable_runtimes`].
+const SOCKET_NAME_SUFFIX: &str = ".sock";
 
 /// Required mode for the directory holding the socket.
 pub const REQUIRED_DIR_MODE: u32 = 0o700;
@@ -160,6 +166,59 @@ pub fn discover(path: &Path) -> SocketDiscovery {
     } else {
         SocketDiscovery::RuntimeNotRunning(path.to_path_buf())
     }
+}
+
+/// Every DI-API socket in `dir` a runtime is actually listening on
+/// (AAASM-5628).
+///
+/// # Why connect, rather than trust the inode
+///
+/// [`discover`] answers "is there a socket file", which is the right question
+/// for "should I bootstrap". It is the wrong question for "how many runtimes
+/// are answering": an abandoned socket file is not a runtime, and counting one
+/// would manufacture an ambiguity that does not exist. A completed `connect()`
+/// is the cheapest fact that separates the two, and it is the same fact the
+/// client is about to rely on anyway.
+///
+/// The connection is dropped immediately without a `Hello`, so nothing is
+/// negotiated, no token is presented and the server records only a connection
+/// that went away — the probe cannot be mistaken for a client.
+///
+/// Returns sorted paths so a diagnostic naming several runtimes is stable
+/// between runs. Unreadable directories yield an empty list rather than an
+/// error: not being able to enumerate is not evidence of a second runtime.
+pub fn reachable_runtimes(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| is_devint_socket_name(path))
+        .filter(|path| is_listening(path))
+        .collect();
+    found.sort();
+    found
+}
+
+/// Whether `path` is named like a DI-API socket.
+///
+/// Prefix-matched rather than pinned to [`SOCKET_FILE`] exactly, because two
+/// runtimes can only both be reachable if they bound *different* names — a
+/// second bind on the same path unlinks the first. Restricting the scan to the
+/// exact conventional name would therefore be blind to the only shape the
+/// duplicate case can take.
+fn is_devint_socket_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(SOCKET_NAME_PREFIX) && name.ends_with(SOCKET_NAME_SUFFIX))
+}
+
+/// Whether something accepts a connection at `path` right now.
+fn is_listening(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
+        && std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
 /// Create the socket's parent directory `0700` if it is missing, and re-assert
@@ -300,6 +359,57 @@ mod tests {
             }
             other => panic!("expected a permissions error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_scan_finds_every_listening_runtime_in_the_directory() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("run");
+        let first = dir.join("devint.sock");
+        let second = dir.join("devint-second.sock");
+        let _a = bind(&first).expect("bind first");
+        let _b = bind(&second).expect("bind second");
+
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(reachable_runtimes(&dir), expected);
+    }
+
+    #[tokio::test]
+    async fn a_scan_ignores_an_abandoned_socket_file() {
+        // An inode nobody is listening on is not a runtime. Counting it would
+        // manufacture an ambiguity, which is as wrong as missing a real one.
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("run");
+        let live = dir.join("devint.sock");
+        let _listener = bind(&live).expect("bind");
+
+        let abandoned = dir.join("devint-abandoned.sock");
+        {
+            // Bind, then drop the listener: the file survives, nothing accepts.
+            let _dead = std::os::unix::net::UnixListener::bind(&abandoned).expect("bind abandoned");
+        }
+        assert!(abandoned.exists(), "the socket file must still be there");
+
+        assert_eq!(reachable_runtimes(&dir), vec![live]);
+    }
+
+    #[tokio::test]
+    async fn a_scan_ignores_files_that_are_not_di_api_sockets() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("run");
+        let live = dir.join("devint.sock");
+        let _listener = bind(&live).expect("bind");
+        std::fs::write(dir.join("devint.token"), b"not-a-socket").expect("write");
+        std::fs::write(dir.join("other.sock"), b"not-a-socket").expect("write");
+
+        assert_eq!(reachable_runtimes(&dir), vec![live]);
+    }
+
+    #[test]
+    fn a_scan_of_a_missing_directory_is_empty_rather_than_an_error() {
+        let root = tempfile::tempdir().expect("tempdir");
+        assert!(reachable_runtimes(&root.path().join("never-created")).is_empty());
     }
 
     #[test]

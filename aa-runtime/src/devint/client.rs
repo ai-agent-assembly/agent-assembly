@@ -34,6 +34,7 @@ use aa_proto::assembly::devint::v1 as wire;
 
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
 use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
+use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
 use super::socket::{self, SocketDiscovery};
 use super::verb::DiVerb;
 use aa_core::integration::LIFECYCLE_SCHEMA_VERSION;
@@ -103,15 +104,51 @@ pub struct Negotiated {
     pub degraded_reason: String,
     /// What to do about it.
     pub remediation: String,
+    /// Which build answered, when the peer was new enough to say (AAASM-5628).
+    ///
+    /// `None` means the peer predates
+    /// [`DI_API_PROVENANCE_SINCE`](super::negotiate::DI_API_PROVENANCE_SINCE)
+    /// — *not* that it has no identity. Reading the first as the second is how
+    /// an unattributable answer gets recorded as an attributable one.
+    pub provenance: Option<PeerProvenance>,
 }
 
 impl Negotiated {
+    /// Build a negotiated view from the `HelloAck` the server sent.
+    pub fn from_ack(ack: wire::HelloAck) -> Self {
+        Self {
+            di_api_version: ack.di_api_version,
+            core_version: ack.core_version,
+            degraded: ack.outcome == wire::NegotiationOutcome::Degraded as i32,
+            unavailable_verbs: ack.unavailable_verbs,
+            degraded_reason: ack.degraded_reason,
+            remediation: ack.remediation,
+            provenance: ack.provenance.as_ref().map(PeerProvenance::from_wire),
+        }
+    }
+
     /// Whether `verb` is usable on this connection.
     ///
     /// A client should call this before offering the corresponding UI, instead
     /// of discovering the gap when a user presses the button.
     pub fn supports(&self, verb: DiVerb) -> bool {
         !self.unavailable_verbs.iter().any(|v| v == verb.as_str())
+    }
+
+    /// Whether the runtime that answered is the build this client belongs to.
+    ///
+    /// Compared against [`BuildIdentity::of_this_build`], which both halves read
+    /// from the same compiled `aa-runtime`: equal values mean "compiled
+    /// together", which is the only claim worth making here. Port reachability
+    /// is never sufficient — the socket was reachable in both of AAASM-5628's
+    /// reproductions.
+    pub fn provenance_verdict(&self) -> ProvenanceVerdict {
+        self.verify_against(&BuildIdentity::of_this_build())
+    }
+
+    /// [`Self::provenance_verdict`] against an explicit expected identity.
+    pub fn verify_against(&self, expected: &BuildIdentity) -> ProvenanceVerdict {
+        provenance::verify(self.provenance.as_ref(), expected, self.di_api_version)
     }
 }
 
@@ -143,6 +180,55 @@ impl DevIntClient {
         client_version: &str,
         capability_token: Option<String>,
     ) -> Result<Self, ClientError> {
+        Self::connect_offering(
+            path,
+            client_name,
+            client_version,
+            capability_token,
+            // Offer the whole window this build understands. Offering a
+            // narrower set than the client implements is how a client talks
+            // itself into a degraded connection for no reason.
+            (DI_API_MIN_SUPPORTED..=DI_API_MAX_SUPPORTED).collect(),
+        )
+        .await
+    }
+
+    /// [`Self::connect`] with an explicit offered version window.
+    ///
+    /// A test seam, not a supported configuration: the only reason to offer
+    /// less than this build implements is to *be* an older peer, which is
+    /// exactly what the version-contract suite needs and what no shipped client
+    /// should ever do. Behind `test-fixtures` so it cannot be reached from a
+    /// release build.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub async fn connect_offering(
+        path: &Path,
+        client_name: &str,
+        client_version: &str,
+        capability_token: Option<String>,
+        di_api_versions: Vec<u32>,
+    ) -> Result<Self, ClientError> {
+        Self::connect_inner(path, client_name, client_version, capability_token, di_api_versions).await
+    }
+
+    #[cfg(not(any(test, feature = "test-fixtures")))]
+    async fn connect_offering(
+        path: &Path,
+        client_name: &str,
+        client_version: &str,
+        capability_token: Option<String>,
+        di_api_versions: Vec<u32>,
+    ) -> Result<Self, ClientError> {
+        Self::connect_inner(path, client_name, client_version, capability_token, di_api_versions).await
+    }
+
+    async fn connect_inner(
+        path: &Path,
+        client_name: &str,
+        client_version: &str,
+        capability_token: Option<String>,
+        di_api_versions: Vec<u32>,
+    ) -> Result<Self, ClientError> {
         if !path.exists() {
             return Err(ClientError::RuntimeNotRunning {
                 path: path.to_path_buf(),
@@ -160,24 +246,14 @@ impl DevIntClient {
             DiFrame::Hello(wire::Hello {
                 client_name: client_name.to_string(),
                 client_version: client_version.to_string(),
-                // Offer the whole window this build understands. Offering a
-                // narrower set than the client implements is how a client
-                // talks itself into a degraded connection for no reason.
-                di_api_versions: (DI_API_MIN_SUPPORTED..=DI_API_MAX_SUPPORTED).collect(),
+                di_api_versions,
                 lifecycle_schema_versions: vec![LIFECYCLE_SCHEMA_VERSION],
             }),
         )
         .await?;
 
         let negotiated = match codec::read_response_frame(&mut reader).await? {
-            DiResponseFrame::HelloAck(ack) => Negotiated {
-                di_api_version: ack.di_api_version,
-                core_version: ack.core_version,
-                degraded: ack.outcome == wire::NegotiationOutcome::Degraded as i32,
-                unavailable_verbs: ack.unavailable_verbs,
-                degraded_reason: ack.degraded_reason,
-                remediation: ack.remediation,
-            },
+            DiResponseFrame::HelloAck(ack) => Negotiated::from_ack(ack),
             DiResponseFrame::Incompatible(incompatible) => return Err(ClientError::Incompatible(incompatible)),
             _ => return Err(ClientError::UnexpectedFrame),
         };
@@ -421,14 +497,7 @@ mod tests {
         let DiResponseFrame::HelloAck(ack) = raw.read().await else {
             panic!("expected HelloAck");
         };
-        let negotiated = Negotiated {
-            di_api_version: ack.di_api_version,
-            core_version: ack.core_version,
-            degraded: ack.outcome == wire::NegotiationOutcome::Degraded as i32,
-            unavailable_verbs: ack.unavailable_verbs,
-            degraded_reason: ack.degraded_reason,
-            remediation: ack.remediation,
-        };
+        let negotiated = Negotiated::from_ack(ack);
         assert!(negotiated.degraded);
         assert!(!negotiated.supports(DiVerb::ScopedEvents));
         assert!(negotiated.supports(DiVerb::Status));

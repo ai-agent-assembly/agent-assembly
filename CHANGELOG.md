@@ -18,7 +18,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`aasm integrations` lifecycle** (AAASM-5280) — seven subcommands (`list`,
   `plan`, `install`, `status`, `verify`, `repair`, `remove`) covering the whole
-  journey for an AI dev tool, with a **nine-value exit-code vocabulary** so a
+  journey for an AI dev tool, with an **eleven-value exit-code vocabulary** so a
   wrapper branches on the code rather than on stderr prose (`2` is left to
   `clap`). The CLI is a *client only*: it holds no per-tool knowledge, performs
   no mutation of its own, and never derives a protection state locally.
@@ -83,6 +83,36 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (boundaries and local trust model), the product capability brief, onboarding
   walkthrough, protection-levels reference, the limitations-and-known-bypasses
   page, and the DI-API and CLI references.
+- **Runtime provenance on the DI-API handshake — DI-API v4** (AAASM-5628,
+  ADR 0030 §5.4a) — `HelloAck` now carries a `RuntimeProvenance`
+  (`core_version`, `build_sha`, `build_id_source`, `pid`, `executable_path`,
+  `executable_present`, `source_path`, `started_at_unix_secs`), so a client
+  knows *which build* answered before it records anything. A reachable socket
+  was never evidence that the right thing answered: a runtime from another
+  checkout served an entire QA campaign, and a runtime whose worktree had been
+  deleted reported a healthy Claude Code as `not_installed`.
+
+  The client comparison is **three-state** — `Match`, `Mismatch`,
+  `Unverifiable` — and two `unknown` identities are `Unverifiable`, never a
+  match: absence of provenance on both peers proves only that both are unknown.
+  An identity counts only when `build_id_source` names a real mechanism
+  (`injected`, `checkout`, `packaged`). `pid`, executable name, executable path,
+  DI-API version and package version are **not** proof of identical build
+  content and cannot upgrade a verdict.
+
+  Two new exit codes: **`10` `runtime_unverified`** when the runtime was shown
+  *not* to be this build (a different commit, a deleted executable, or more than
+  one listening) — refused by every command; and **`11`
+  `runtime_unverifiable`** when its identity could be neither confirmed nor
+  refuted — refused by `install`, `verify`, `repair` and `remove`, while `list`,
+  `plan` and `status` answer and report the standing on stderr and in
+  `--output json`. `Unverifiable` is never rendered as verified, on any surface
+  or in JSON. `--allow-unverified-runtime` downgrades the refusal to a warning
+  for a deliberately mixed installation without changing what is reported.
+
+  v4 adds **no verb**, so a v1–v3 peer is `SUPPORTED` rather than `DEGRADED` and
+  keeps every verb it had; a peer too old to state provenance is told which
+  version could not answer, and nothing is invented in the field's place.
 
 ### Changed
 

@@ -34,6 +34,7 @@
 //! is a property of the shape rather than of a redaction pass.
 
 use aa_runtime::devint::negotiate::DI_API_POLICY_POSTURE_SINCE;
+use aa_runtime::devint::provenance::{PeerProvenance, ProvenanceStanding, ProvenanceVerdict, RuntimeMultiplicity};
 use serde::Serialize;
 
 use aa_proto::assembly::devint::v1 as wire;
@@ -55,6 +56,140 @@ pub struct RuntimeInfo {
     pub unavailable_verbs: Vec<String>,
     /// Whether this invocation started the runtime.
     pub started_by_this_command: bool,
+    /// Which build answered, and whether it is this one (AAASM-5628).
+    pub provenance: RuntimeProvenanceInfo,
+}
+
+/// Which build answered, projected for a reader — human or harness.
+///
+/// This block is the whole point of AAASM-5628 reaching `--output json`: a QA
+/// harness records it *beside* the result, so the evidence names the process
+/// that produced it instead of asserting that some runtime was reachable. Two
+/// checkouts at the same `core_version` are indistinguishable without
+/// `build_sha`, and two runtimes of the same build are indistinguishable
+/// without `pid`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeProvenanceInfo {
+    /// The three-state result a harness should branch on: `verified` |
+    /// `unverifiable` | `refuted` (AAASM-5628).
+    ///
+    /// Read this rather than [`Self::verdict`] when the question is "may I
+    /// record a result from this connection", and read **only** this: it is the
+    /// one field that folds in every reason a result may not be attributable.
+    /// `unverifiable` is never to be read as verified — two peers that both
+    /// carry no build identity have proved only that neither knows what it is —
+    /// and it cannot read `verified` while [`Self::reachable_runtimes`] is above
+    /// one, because a result from one of several runtimes is not attributable to
+    /// a process whatever the identity comparison concluded.
+    pub standing: String,
+    /// Which specific fact the **identity comparison** produced: `verified` |
+    /// `unverifiable` | `mismatch` | `executable_missing` | `not_reported`.
+    ///
+    /// Narrower than [`Self::standing`] on purpose. It answers "is the peer this
+    /// build", which is a different question from "may this result be recorded":
+    /// two runtimes compiled from one commit have identical identities, so this
+    /// field reads `verified` for both of them. The population is
+    /// [`Self::reachable_runtimes`], and `standing` is where the two meet.
+    pub verdict: String,
+    /// The sentence behind the verdict, so a log carries the reason.
+    pub detail: String,
+    /// The commit the runtime was built from, when it said.
+    pub build_sha: Option<String>,
+    /// How `build_sha` was obtained — `injected` | `checkout` | `packaged` |
+    /// `absent`. Only the first three can prove a match; `absent` means the SHA
+    /// is a placeholder, not an identity.
+    pub build_id_source: Option<String>,
+    /// What each provenance field did in the comparison, when one ran.
+    ///
+    /// Present so a reader can see *which* fact was absent, matched or
+    /// disagreed, rather than being handed a single opaque verdict.
+    pub fields: Vec<ProvenanceFieldInfo>,
+    /// The process that answered.
+    pub pid: Option<u32>,
+    /// The executable it is serving from.
+    pub executable_path: Option<String>,
+    /// Whether that executable still existed when it answered.
+    pub executable_present: Option<bool>,
+    /// The checkout it was built from, when it said.
+    pub source_path: Option<String>,
+    /// When it started serving.
+    pub started_at_unix_secs: Option<u64>,
+    /// How many runtimes were reachable. Anything above one means this result
+    /// cannot be attributed to a single process, whatever the verdict says.
+    pub reachable_runtimes: usize,
+}
+
+/// One provenance field's contribution to the identity comparison.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProvenanceFieldInfo {
+    /// The field, named as it appears on the wire.
+    pub field: String,
+    /// `matched` | `mismatched` | `absent`.
+    pub status: String,
+    /// What this `aasm` is.
+    pub expected: String,
+    /// What the runtime reported.
+    pub reported: String,
+}
+
+impl RuntimeProvenanceInfo {
+    /// Project a verdict and the runtime population it was reached in.
+    ///
+    /// The standing is **not** `verdict.standing()`. That reports the identity
+    /// comparison alone, and `--allow-unverified-runtime` lets a command past
+    /// `session::guard_provenance`'s multiplicity refusal — so a run against two
+    /// reachable runtimes of one build could publish
+    /// `{"standing": "verified", "reachable_runtimes": 2}`, which the CLI
+    /// reference tells wrappers is enough to record a result on. ADR 0030 §5.4a
+    /// already ratifies "more than one runtime reachable" as a **refuted**
+    /// standing — it is one of the three conditions behind exit 10 — so this
+    /// only stops the JSON from contradicting it.
+    ///
+    /// [`Self::verdict`] is left as the identity comparison found it, because
+    /// that is what it is for: the standing says whether the result may be
+    /// recorded, the verdict says which fact decided, and the multiplicity
+    /// sentence is folded into [`Self::detail`] so the pairing is legible rather
+    /// than something a reader has to infer from `reachable_runtimes`.
+    pub fn new(verdict: &ProvenanceVerdict, multiplicity: &RuntimeMultiplicity, peer: Option<&PeerProvenance>) -> Self {
+        let unambiguous = multiplicity.is_unambiguous();
+        Self {
+            standing: if unambiguous {
+                verdict.standing()
+            } else {
+                ProvenanceStanding::Refuted
+            }
+            .as_str()
+            .to_string(),
+            verdict: verdict.as_str().to_string(),
+            detail: if unambiguous {
+                verdict.detail()
+            } else {
+                format!("{}; {}", multiplicity.detail(), verdict.detail())
+            },
+            build_sha: peer.map(|p| p.identity.build_sha.clone()),
+            build_id_source: peer.map(|p| p.identity.sha_source.as_str().to_string()),
+            fields: verdict
+                .comparison()
+                .map(|c| {
+                    c.fields()
+                        .iter()
+                        .map(|f| ProvenanceFieldInfo {
+                            field: f.field.to_string(),
+                            status: f.status.as_str().to_string(),
+                            expected: f.expected.clone(),
+                            reported: f.reported.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            pid: verdict.pid().or_else(|| peer.map(|p| p.pid)),
+            executable_path: peer.map(|p| p.executable_path.clone()),
+            executable_present: peer.map(|p| p.executable_present),
+            source_path: peer.map(|p| p.source_path.clone()),
+            started_at_unix_secs: peer.map(|p| p.started_at_unix_secs),
+            reachable_runtimes: multiplicity.reachable_count(),
+        }
+    }
 }
 
 impl RuntimeInfo {
@@ -67,6 +202,11 @@ impl RuntimeInfo {
             degraded: negotiated.degraded,
             unavailable_verbs: negotiated.unavailable_verbs.clone(),
             started_by_this_command: session.started_runtime,
+            provenance: RuntimeProvenanceInfo::new(
+                &session.provenance,
+                &session.multiplicity,
+                negotiated.provenance.as_ref(),
+            ),
         }
     }
 }
@@ -1018,6 +1158,20 @@ mod tests {
             degraded: false,
             unavailable_verbs: Vec::new(),
             started_by_this_command: false,
+            provenance: RuntimeProvenanceInfo {
+                standing: "verified".to_string(),
+                verdict: "verified".to_string(),
+                build_id_source: Some("checkout".to_string()),
+                fields: Vec::new(),
+                detail: "the Agent Assembly runtime answering is 0.0.1 (abcdef012345) (pid 4242)".to_string(),
+                build_sha: Some("abcdef0123456789".to_string()),
+                pid: Some(4242),
+                executable_path: Some("/build/target/debug/aa-runtime".to_string()),
+                executable_present: Some(true),
+                source_path: Some("/build".to_string()),
+                started_at_unix_secs: Some(1_700_000_000),
+                reachable_runtimes: 1,
+            },
         }
     }
 
@@ -1352,5 +1506,80 @@ mod tests {
     fn an_empty_proto_string_becomes_null_rather_than_an_empty_string() {
         assert_eq!(non_empty(""), None);
         assert_eq!(non_empty("x"), Some("x".to_string()));
+    }
+
+    // ---- AAASM-5628: the standing folds in the runtime population ------------
+
+    /// A verdict that positively identified the peer as this build.
+    fn verified_verdict() -> ProvenanceVerdict {
+        use aa_runtime::devint::provenance::{BuildIdentity, IdentitySource};
+
+        ProvenanceVerdict::Verified {
+            pid: 4242,
+            identity: BuildIdentity {
+                core_version: "0.0.1".to_string(),
+                build_sha: "a".repeat(40),
+                sha_source: IdentitySource::Checkout,
+            },
+            proved_by: "build_sha",
+        }
+    }
+
+    /// The population `count` reachable sockets in one directory produce.
+    fn reachable(count: usize) -> RuntimeMultiplicity {
+        use std::path::PathBuf;
+
+        let all: Vec<PathBuf> = (0..count)
+            .map(|i| PathBuf::from(format!("/run/devint-{i}.sock")))
+            .collect();
+        aa_runtime::devint::provenance::multiplicity(&all[0], &all)
+    }
+
+    /// `standing` is the field the published wrapper guidance branches on, so
+    /// it must not read `verified` for a result that came from one of several
+    /// runtimes.
+    ///
+    /// Reachable only through `--allow-unverified-runtime`, which bypasses
+    /// `session::guard_provenance`'s multiplicity refusal — and that flag is
+    /// documented as changing whether a command proceeds, never what it
+    /// reports. Two runtimes compiled from one commit have identical
+    /// identities, so no identity comparison can notice there are two: the
+    /// verdict below is `verified` and must stay so.
+    #[test]
+    fn a_result_from_one_of_several_runtimes_is_never_standing_verified() {
+        let single = RuntimeProvenanceInfo::new(&verified_verdict(), &reachable(1), None);
+        assert_eq!(single.standing, "verified");
+        assert_eq!(single.reachable_runtimes, 1);
+
+        let ambiguous = RuntimeProvenanceInfo::new(&verified_verdict(), &reachable(2), None);
+        assert_eq!(ambiguous.reachable_runtimes, 2);
+        assert_ne!(
+            ambiguous.standing, "verified",
+            "a result that cannot be attributed to a process was published as verified"
+        );
+        assert_eq!(
+            ambiguous.standing, "refuted",
+            "ADR 0030 §5.4a ratifies more-than-one-reachable as a positive finding"
+        );
+        assert_eq!(
+            ambiguous.verdict, "verified",
+            "the identity comparison itself is unchanged — it cannot see a duplicate"
+        );
+        assert!(
+            ambiguous.detail.contains("2 Agent Assembly runtimes"),
+            "the standing must carry its reason: {}",
+            ambiguous.detail
+        );
+    }
+
+    /// The JSON a harness records, asserted as a pair: the exact shape the CLI
+    /// reference's `jq -e '.runtime.provenance.standing == "verified"'` snippet
+    /// would otherwise accept from an ambiguous host.
+    #[test]
+    fn the_json_never_pairs_a_verified_standing_with_a_second_runtime() {
+        let info = RuntimeProvenanceInfo::new(&verified_verdict(), &reachable(2), None);
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert_eq!(json["reachable_runtimes"], serde_json::json!(2));
+        assert_ne!(json["standing"], serde_json::json!("verified"));
     }
 }
