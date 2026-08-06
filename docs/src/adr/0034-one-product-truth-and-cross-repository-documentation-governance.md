@@ -793,7 +793,7 @@ Required fields:
 | Field | Meaning |
 | --- | --- |
 | `id` | Stable identifier, referenced from the waived text |
-| `rule` | The rule waived — a D-dimension, a forbidden design, a banned absolute |
+| `rule` | The **waivable** rule — a D-dimension of §2.1's tuple, or another waivable process or governance requirement of this ADR. An ADR 0033 forbidden design, including forbidden design 7's banned absolutes, is **unwaivable** and is never a legal value here |
 | `text` | The exact string permitted. A waiver covers a string, never a page or a topic |
 | `scope` | Repository, path, and the surface(s) it applies to |
 | `justification` | Why the rule cannot be satisfied |
