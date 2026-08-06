@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use aa_runtime::devint::provenance::{self, ProvenanceVerdict, RuntimeMultiplicity};
 use aa_runtime::devint::{self, ClientError, DevIntClient, EnrolmentError};
 
 use super::exit::Outcome;
@@ -133,6 +134,15 @@ pub struct SessionOptions {
     pub no_autostart: bool,
     /// How long to wait for a started runtime to bind.
     pub ready_timeout: Duration,
+    /// Proceed against a runtime whose identity could not be established.
+    ///
+    /// Off by default, and deliberately opt-in per invocation: the failure
+    /// AAASM-5628 records is a *confident wrong answer*, so the default has to
+    /// be refusal. The escape hatch exists for a legitimately mixed
+    /// installation, and it downgrades the refusal to a stderr warning rather
+    /// than suppressing it — the provenance still reaches `--output json`, so
+    /// a result recorded through it is still marked as unverified.
+    pub allow_unverified_runtime: bool,
 }
 
 impl Default for SessionOptions {
@@ -140,6 +150,7 @@ impl Default for SessionOptions {
         Self {
             no_autostart: false,
             ready_timeout: READY_TIMEOUT,
+            allow_unverified_runtime: false,
         }
     }
 }
@@ -154,6 +165,13 @@ pub struct Session {
     pub client: DevIntClient,
     /// Whether the runtime was started by this invocation.
     pub started_runtime: bool,
+    /// Which build answered, and whether it is this one (AAASM-5628).
+    ///
+    /// Carried on the session rather than recomputed by each command, so every
+    /// surface reports the *same* verdict about the *same* connection.
+    pub provenance: ProvenanceVerdict,
+    /// How many runtimes were reachable when this session opened.
+    pub multiplicity: RuntimeMultiplicity,
 }
 
 impl std::fmt::Debug for Session {
@@ -162,6 +180,8 @@ impl std::fmt::Debug for Session {
             .field("di_api_version", &self.client.negotiated().di_api_version)
             .field("core_version", &self.client.negotiated().core_version)
             .field("started_runtime", &self.started_runtime)
+            .field("provenance", &self.provenance.as_str())
+            .field("reachable_runtimes", &self.multiplicity.reachable_count())
             .finish()
     }
 }
@@ -224,10 +244,70 @@ pub async fn connect_with<S: RuntimeSpawner>(
         );
     }
 
+    // Which build answered, before any command gets to record what it said.
+    let verdict = client.negotiated().provenance_verdict();
+    let multiplicity = survey_runtimes(&socket);
+    guard_provenance(&verdict, &multiplicity, options.allow_unverified_runtime, notices)?;
+
     Ok(Session {
         client,
         started_runtime,
+        provenance: verdict,
+        multiplicity,
     })
+}
+
+/// How many DI-API runtimes are reachable beside the one that answered.
+///
+/// Scans the directory the answering socket lives in. A socket reached through
+/// an `AA_DEVINT_SOCKET` override outside that directory is still counted —
+/// [`provenance::multiplicity`] folds it in — so the count is never lower than
+/// what is demonstrably true.
+fn survey_runtimes(socket: &Path) -> RuntimeMultiplicity {
+    let reachable = socket.parent().map(devint::reachable_runtimes).unwrap_or_default();
+    provenance::multiplicity(socket, &reachable)
+}
+
+/// Refuse to hand back a session whose runtime cannot be identified.
+///
+/// # Why this is a refusal and not a warning
+///
+/// Both of AAASM-5628's reproductions produced a *plausible product answer*
+/// from the wrong runtime — `DI-API v2` where the checkout declared v3, and
+/// `not_installed` for a tool that was installed and healthy. A warning on
+/// stderr beside a confident answer on stdout is exactly the shape that got
+/// mistaken for a regression; the answer has to not arrive.
+///
+/// Multiplicity is checked first. With two runtimes answering, "which one did
+/// I just verify?" has no answer, so the identity verdict below it is not yet
+/// a meaningful thing to report.
+fn guard_provenance(
+    verdict: &ProvenanceVerdict,
+    multiplicity: &RuntimeMultiplicity,
+    allow_unverified: bool,
+    notices: &mut impl Write,
+) -> Result<(), Failure> {
+    let problem = if !multiplicity.is_unambiguous() {
+        Some((multiplicity.detail(), multiplicity.remediation()))
+    } else if !verdict.is_trustworthy() {
+        Some((verdict.detail(), verdict.remediation()))
+    } else {
+        None
+    };
+
+    let Some((detail, remediation)) = problem else {
+        return Ok(());
+    };
+
+    if allow_unverified {
+        let _ = writeln!(
+            notices,
+            "warning: proceeding against an unverified Agent Assembly runtime — {detail}"
+        );
+        return Ok(());
+    }
+
+    Err(Failure::new(Outcome::RuntimeUnverified, detail, remediation))
 }
 
 fn start_runtime<S: RuntimeSpawner>(spawner: &S, socket: &Path, timeout: Duration) -> Result<u32, Failure> {
@@ -397,8 +477,8 @@ mod tests {
         let mut notices = Vec::new();
         let error = connect_with(
             SessionOptions {
-                no_autostart: false,
                 ready_timeout: Duration::from_millis(120),
+                ..Default::default()
             },
             &NeverReady,
             &mut notices,
