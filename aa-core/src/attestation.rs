@@ -631,4 +631,25 @@ mod tests {
             assert_eq!(outcome.claim(), expected, "{outcome:?}");
         }
     }
+
+    /// Only one term claims prevention. An asynchronous kill after the syscall
+    /// has run, or an evaluation nothing was obliged to honour, must not read
+    /// as blocking (ADR 0033 §6, §5.1).
+    #[test]
+    fn only_a_block_claims_prevention() {
+        assert!(AdjudicatedOutcome::Blocked.claim().is_prevention());
+        for outcome in [
+            AdjudicatedOutcome::Redacted,
+            AdjudicatedOutcome::HeldForApproval,
+            AdjudicatedOutcome::DecidedAdvisory,
+            AdjudicatedOutcome::Flagged,
+            AdjudicatedOutcome::Recorded,
+            AdjudicatedOutcome::Inconclusive,
+        ] {
+            assert!(
+                !outcome.claim().is_prevention(),
+                "{outcome:?} must not read as prevention"
+            );
+        }
+    }
 }
