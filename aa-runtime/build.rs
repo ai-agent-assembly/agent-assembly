@@ -76,7 +76,14 @@
 //! watched, which covers commit, checkout and branch switch.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+/// The git half of the identity pipeline, kept in its own file so a test target
+/// can `#[path]`-include the same code this script runs — a build script's own
+/// functions are reachable from nothing else.
+#[path = "build_support/git_identity.rs"]
+mod git_identity;
+
+use git_identity::{git_head_sha, watch_git_head};
 
 /// What `build.rs` writes when there was no checkout to read a commit from.
 /// Must stay in step with `provenance::UNKNOWN_SHA`.
@@ -178,20 +185,6 @@ fn is_commit_object_id(value: &str) -> bool {
     value.len() >= 40 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// Ask `git` for the current commit, or `None` outside a checkout.
-fn git_head_sha(root: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!sha.is_empty()).then_some(sha)
-}
-
 /// The commit a `cargo package` tarball records it was published from.
 ///
 /// Hand-parsed rather than pulled through `serde_json`: the file is written by
@@ -226,44 +219,4 @@ fn json_flag_is_true(raw: &str, key: &str) -> bool {
     raw.split_once(&format!("\"{key}\""))
         .and_then(|(_, rest)| rest.split_once(':'))
         .is_some_and(|(_, value)| value.trim_start().starts_with("true"))
-}
-
-/// Emit `rerun-if-changed` for everything that can move `HEAD`.
-///
-/// Resolved through `git rev-parse --git-path` rather than assembled from
-/// `<root>/.git/…`: in a linked worktree `.git` is a *file* pointing elsewhere,
-/// and the naive path would watch a file that never changes.
-fn watch_git_head(root: &Path) {
-    let Some(head) = git_path(root, "HEAD") else {
-        return;
-    };
-    println!("cargo:rerun-if-changed={}", head.display());
-
-    if let Some(packed) = git_path(root, "packed-refs") {
-        println!("cargo:rerun-if-changed={}", packed.display());
-    }
-
-    // A commit on the checked-out branch moves the ref, not `HEAD` itself.
-    if let Some(refname) = git_output(root, &["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(ref_path) = git_path(root, &refname) {
-            println!("cargo:rerun-if-changed={}", ref_path.display());
-        }
-    }
-}
-
-/// Resolve a git-internal path (`HEAD`, `refs/heads/main`, …) to a real one.
-fn git_path(root: &Path, name: &str) -> Option<PathBuf> {
-    let raw = git_output(root, &["rev-parse", "--git-path", name])?;
-    let path = PathBuf::from(&raw);
-    Some(if path.is_absolute() { path } else { root.join(path) })
-}
-
-/// Run `git` in `root` and return trimmed stdout on success.
-fn git_output(root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).current_dir(root).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!value.is_empty()).then_some(value)
 }
