@@ -784,4 +784,26 @@ mod tests {
             ClaimTerm::Degraded
         );
     }
+
+    /// Evidence exactly on the window boundary is still evidence, and evidence
+    /// timestamped in the future is not adjudicated as skew.
+    #[test]
+    fn freshness_boundary_and_future_timestamps() {
+        let basis = AttestationBasis::Adjudicated {
+            outcome: AdjudicatedOutcome::Redacted,
+        };
+        let on_boundary = at(
+            basis.clone(),
+            SelectedMode::Unset,
+            NOW - DEFAULT_ATTESTATION_FRESHNESS_SECS,
+        );
+        assert!(on_boundary.is_fresh(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+        assert_eq!(
+            on_boundary.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            ClaimTerm::Redacted
+        );
+
+        let future = at(basis, SelectedMode::Unset, NOW + 60);
+        assert!(future.is_fresh(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+    }
 }
