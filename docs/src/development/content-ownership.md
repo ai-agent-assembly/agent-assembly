@@ -44,9 +44,9 @@ for values rather than for prose.
 
 ## The content layers
 
-Seven layers. Six of them publish; the seventh is read as evidence and never written
-to for narrative purposes. Each row states the layer's audience, the job it exists to
-do, and — the part that actually prevents drift — what it must **not** author.
+Seven layers. Six of them publish to readers; the seventh is where claims are
+checked. Each row states the layer's audience, the job it exists to do, and — the
+part that actually prevents drift — what it must **not** author.
 
 | # | Layer | Surface / repository | Primary audience | Its job | Must not author |
 |---|---|---|---|---|---|
@@ -56,7 +56,7 @@ do, and — the part that actually prevents drift — what it must **not** autho
 | **L3** | Component docs | `agent-assembly` (Core, this book) · [`python-sdk`](https://github.com/ai-agent-assembly/python-sdk) · [`node-sdk`](https://github.com/ai-agent-assembly/node-sdk) · [`go-sdk`](https://github.com/ai-agent-assembly/go-sdk) · [`arena`](https://github.com/ai-agent-assembly/arena) | Application developers, operators, contributors, security researchers | Deep architecture, ADRs, protocol and policy semantics, per-language API surfaces, measured limitations | A rival product-level narrative, or another component's semantics |
 | **L4** | Examples | [`examples`](https://github.com/ai-agent-assembly/examples) | Developers who want to see it run | Runnable, framework-specific integrations, and the guidance for choosing between them | Policy or protocol semantics; architecture explanations beyond what a reader needs to run the example |
 | **L5** | Repository READMEs | Each repo's `README.md` | A visitor who landed on the repo | What this repository is, how to build and test it, and where its documentation is | A second copy of that documentation |
-| **L6** | Code, generated specs and evidence | Source, tests, `openapi/`, `proto/`, `verification-reports/` | Contributors, auditors | The final evidence a claim is checked against | Nothing — this layer is read, not written to for narrative purposes |
+| **L6** | Code, generated specs and evidence | Source, tests, `openapi/`, `proto/`, `verification-reports/` | Contributors, auditors | The final evidence a claim is checked against. `verification-reports/**` are hand-written, but they are *records of a measurement* and are written once and cited, not maintained as a narrative | A published claim. Nothing here is a reader-facing page; a claim citing this layer lives in an outer layer |
 
 Three properties of this list matter more than the rows themselves.
 
@@ -89,6 +89,14 @@ lands first, and the place every other layer cites. Every other mention of that
 fact is a *derivative* and is governed by
 [Reuse patterns](#reuse-patterns-summary-quotation-generation) below.
 
+> **"Capability status" is two questions, and they have different owners.** The term
+> a contributor is most likely to arrive with does not appear as a row, because
+> answering it needs two: *how finished is this capability?* is a **lifecycle maturity
+> label** (Docs Hub), and *what did it actually do to this action, on what evidence?*
+> is a **claim term** (ADR 0033 §6). Asking which of the two you mean is the first
+> step; the [orthogonality rule](#the-two-vocabularies-do-not-absorb-each-other)
+> below is why it cannot be collapsed into one row.
+
 > **This table is partly prescriptive.** Most rows describe where content already
 > lives. Some **assign** an owner the world has not caught up with yet, and a reader
 > who cannot tell which is which will mistake an aspiration for a fact. Rows marked
@@ -103,7 +111,7 @@ fact is a *derivative* and is governed by
 | **Enforcement / claim vocabulary** — *Observed · Detected · Evaluated · Denied before execution · Redacted · Approval required · Degraded · Unmeasured · Experimental · Planned · Unsupported* | Core | [ADR 0033 §6](../adr/0033-canonical-governance-and-enforcement-architecture.md) |
 | **Lifecycle maturity labels** — `🧪 Release candidate` and `🗺️ Planned` | Docs Hub — **→ move** | [`source-of-truth.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/source-of-truth.md) |
 | **Which area is owned by which repository, and its visibility** | Docs Hub | `source-of-truth.md` — but see [which input to edit](#the-status-map-has-two-inputs) |
-| **Measured protection state for a tool on a host** | Core | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) §4 ladder; [Protection levels](../devtools/protection-levels.md) |
+| **Measured protection state for a tool on a host** | Core | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) §4 ladder **as amended by [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) §5.3**; [Protection levels](../devtools/protection-levels.md) |
 | **Measured limits and known bypasses** | Core | [Limitations and known bypasses](../devtools/limitations.md) |
 | **Security model and threat model (OSS enforcement path)** | Core | [`docs/src/security/`](../security/overview.md) |
 | **Vulnerability reporting process** | The repository, falling back to the org default | that repository's `SECURITY.md` where it has one (`agent-assembly`, `python-sdk`, `node-sdk` today), otherwise the `.github` repository's org-wide `SECURITY.md`. Arena additionally scopes its own trial-ground policy as a docs page |
@@ -113,7 +121,7 @@ fact is a *derivative* and is governed by
 | **Integration steps, per language** | That SDK's docs | `python-sdk`, `node-sdk`, `go-sdk` quick-start and guides |
 | **Integration steps, operator / CLI path** | Core | [Quick start](../quick-start/requirements.md), [CLI reference](../cli/overview.md) |
 | **Runnable end-to-end integrations** | L4 examples | `examples` — one directory per framework, plus its choosing guide |
-| **API reference** | Generated from source, per component | Core: rustdoc + `openapi/v1.yaml`; `python-sdk` and `arena`: mkdocstrings; `node-sdk`: its API-reference section; `go-sdk`: `docs/api-reference.md` |
+| **API reference** | Generated from source, per component | Core: rustdoc + `openapi/v1.yaml` (utoipa); `python-sdk` and `arena`: mkdocstrings; `node-sdk`: TypeDoc via `docusaurus-plugin-typedoc`; `go-sdk`: godoc on pkg.go.dev — its in-repo `docs/api-reference.md` is a hand-written **signpost** to that generated reference, not a restatement of it |
 | **Open-source / commercial split** | Docs Hub | [`open-core-boundary.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/open-core-boundary.md) |
 | **What may be claimed about the managed service** | Docs Hub | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) (provisional pending AAASM-5621) |
 | **Commercial conversion path** (early access, contact) | L1 product website | `official-website` — `/early-access` |
@@ -574,7 +582,7 @@ are the ones that stop the same defect coming back.
 | What you found | Where it goes first |
 |---|---|
 | An architecture or enforcement statement that overstates coverage | ADR 0033, then the derivative pages |
-| A protection state reported above its evidence | ADR 0030's ladder rules, then the reporting component |
+| A protection state reported above its evidence | ADR 0030's ladder rules **as amended by ADR 0033 §5.3** (which adds a third `HostEnforced` route 0030 does not list), then the reporting component |
 | A wrong policy field, default or validation rule | Core [Policy YAML reference](../policy-reference.md), checked against `aa-gateway/src/policy/` |
 | A wrong per-language API signature | That SDK's generated API reference — regenerate; do not hand-edit |
 | A wrong maturity label or a wrong owning repository | Docs Hub `source-of-truth.md` — **check [which of its two inputs](#the-status-map-has-two-inputs) owns the row first** |
@@ -595,7 +603,7 @@ and the rule for those is that **they are decisions, not edits**.
 | A derivative disagrees with its canonical source | The canonical source wins; correct the derivative |
 | Two derivatives of one source disagree | Both are suspect; re-derive both from the source rather than reconciling them with each other |
 | The canonical source disagrees with the code, tests or generated spec | The evidence wins; correct the canonical source, or file the bug if the code is the defect |
-| Two owners both claim a content type | **Stop.** Do not resolve an ownership dispute inside a content PR. Record it and escalate — AAASM-5621's ADR is the venue for assigning ownership |
+| Two owners both claim a content type | **Stop.** Do not resolve an ownership dispute inside a content PR. Record it and escalate to AAASM-5621, which is where unassigned ownership is currently decided. (5621 will also fix the *standing* venue and record format — hand-off 5 — so until it publishes, escalation to the ticket is the interim route, not the permanent one.) |
 | An enforcement term and a maturity label appear to conflict | **Out of scope for this page.** ADR 0033 §E assigns precedence between the two vocabularies, and the waiver mechanism, to AAASM-5621 |
 
 The reason the last two stop rather than resolve is that a content PR is the wrong
