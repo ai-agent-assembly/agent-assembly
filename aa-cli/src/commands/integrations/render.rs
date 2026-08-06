@@ -15,6 +15,7 @@
 //! these functions read only from those models. Fingerprints and key *names*
 //! are printed; values never are.
 
+use chrono::{DateTime, Local, Utc};
 use serde::Serialize;
 
 use crate::output::OutputFormat;
@@ -71,6 +72,66 @@ fn human_state(token: &str) -> String {
     }
 }
 
+/// A moment a person can read, and how old it is.
+///
+/// Every timestamp the DI-API carries is seconds since the epoch, and printing
+/// that integer asks the reader to go and convert it before they can act on it
+/// (AAASM-5636). Both halves are rendered because both are asked: the absolute
+/// local time answers *when*, and the age answers *how stale is this reading* —
+/// which is the operative question here, since `partially_integrated` is the
+/// resting state of a verification that fell outside its window.
+///
+/// `--output json` still publishes the integer, untouched. This is the human
+/// half only.
+fn timestamp(unix_secs: u64) -> String {
+    timestamp_at(unix_secs, Utc::now())
+}
+
+/// The clock-free half, so the wording is testable without one.
+fn timestamp_at(unix_secs: u64, now: DateTime<Utc>) -> String {
+    let Some(at) = i64::try_from(unix_secs)
+        .ok()
+        .and_then(|s| DateTime::from_timestamp(s, 0))
+    else {
+        // No calendar date exists for this value. Reporting the integer and
+        // saying why is the only honest option left; inventing a date is not.
+        return format!("{unix_secs} (unix; outside the representable range)");
+    };
+    format!(
+        "{} ({})",
+        at.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S %:z"),
+        age(now.timestamp() - at.timestamp())
+    )
+}
+
+/// `4 minutes ago`, coarse on purpose: freshness is a judgement about whether a
+/// reading still stands, not a stopwatch value.
+///
+/// A negative delta is rendered as a future time rather than clamped, because a
+/// reading dated ahead of this host's clock is a disagreement worth seeing.
+fn age(delta_secs: i64) -> String {
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+
+    let elapsed = delta_secs.abs();
+    if elapsed < 5 {
+        return "just now".to_string();
+    }
+    let (count, unit) = match elapsed {
+        s if s < MINUTE => (s, "second"),
+        s if s < HOUR => (s / MINUTE, "minute"),
+        s if s < DAY => (s / HOUR, "hour"),
+        s => (s / DAY, "day"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    if delta_secs < 0 {
+        format!("{count} {unit}{plural} from now")
+    } else {
+        format!("{count} {unit}{plural} ago")
+    }
+}
+
 fn tick(value: bool) -> &'static str {
     if value {
         "yes"
@@ -98,7 +159,10 @@ fn render_evidence(out: &mut String, heading: &str, rows: &[EvidenceRow], empty_
     for row in rows {
         out.push_str(&format!(
             "  - {} [{}] at {}: {}\n",
-            row.mechanism, row.outcome, row.observed_at_unix_secs, row.detail
+            row.mechanism,
+            row.outcome,
+            timestamp(row.observed_at_unix_secs),
+            row.detail
         ));
     }
 }
@@ -218,7 +282,10 @@ impl Report for InstallReport {
     fn render_human(&self) -> String {
         let mut out = self.plan.render_human();
         out.push_str(&format!("\nApplied as receipt {}\n", self.receipt_id));
-        out.push_str(&format!("  at:              {}\n", self.applied_at_unix_secs));
+        out.push_str(&format!(
+            "  at:              {}\n",
+            timestamp(self.applied_at_unix_secs)
+        ));
         out.push_str(&format!("  planned level:   {}\n", self.planned_level));
         out.push_str(&format!("  achieved level:  {}\n", self.achieved_level));
         out.push_str("\nStep outcomes:\n");
@@ -243,7 +310,10 @@ impl Report for StatusReport {
     fn render_human(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("{} — {}\n", self.tool_id, self.achieved_level));
-        out.push_str(&format!("  observed at:     {} (unix)\n", self.observed_at_unix_secs));
+        out.push_str(&format!(
+            "  observed at:     {}\n",
+            timestamp(self.observed_at_unix_secs)
+        ));
         out.push_str(&format!("  lifecycle phase: {}\n", self.phase));
         out.push_str(&format!("  state:           {}\n", human_state(&self.state)));
         out.push_str(&format!("  planned level:   {}\n", self.planned_level));
@@ -258,7 +328,7 @@ impl Report for StatusReport {
             if self.runtime.degraded { " (degraded)" } else { "" }
         ));
         if let Some(verified) = self.last_verified_at_unix_secs {
-            out.push_str(&format!("  last verification: {verified} (unix)\n"));
+            out.push_str(&format!("  last verification: {}\n", timestamp(verified)));
         } else {
             out.push_str("  last verification: never\n");
         }
@@ -348,8 +418,8 @@ impl Report for VerifyReport {
         let mut out = String::new();
         out.push_str(&format!("{} — verification {}\n", self.tool_id, self.outcome));
         out.push_str(&format!(
-            "  ran at:               {} (unix)\n",
-            self.verified_at_unix_secs
+            "  ran at:               {}\n",
+            timestamp(self.verified_at_unix_secs)
         ));
         out.push_str(&format!(
             "  protected path exercised: {}\n",
