@@ -105,13 +105,37 @@ impl ProtectionReport {
                 detail: layer.detail.clone(),
             })
             .collect();
+
+        // This router carries no authentication layer and `AA_METRICS_ADDR`
+        // defaults to `0.0.0.0:8080`, which the reference compose file
+        // publishes to the host — so everything below is reachable by anyone
+        // who can reach the port. The exact build (e.g. `0.0.1-rc.7`) is a
+        // fingerprinting aid: it tells an unauthenticated caller precisely
+        // which advisories apply. The release *series* keeps the payload
+        // legible for the public trust surface without naming the build.
+        //
+        // The filesystem paths in `detail` deliberately stay: a well-known
+        // default socket path is not a secret, and the path *is* the evidence
+        // — removing it would cost legibility for no security gain.
+        let mut attestation = attestation.clone();
+        attestation.component_version = version_series(&attestation.component_version);
+
         Self {
-            attestation: attestation.clone(),
             evaluated_at_unix_secs: now_unix_secs,
             verified_states,
             any_coverage_verified: attestation.any_coverage_verified_at(now_unix_secs),
+            attestation,
         }
     }
+}
+
+/// The release series of a version, dropping pre-release and build metadata.
+///
+/// `"0.0.1-rc.7"` becomes `"0.0.1"`. Semver puts pre-release after `-` and
+/// build metadata after `+`, and it is exactly those that distinguish one build
+/// from the next.
+fn version_series(version: &str) -> String {
+    version.split(['-', '+']).next().unwrap_or(version).to_string()
 }
 
 /// Seconds since the Unix epoch, saturating to 0 before it.
