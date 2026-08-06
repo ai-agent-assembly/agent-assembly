@@ -22,6 +22,13 @@
 //! developer's live `~/.claude/settings.json` fails the suite loudly. The guard
 //! fingerprints size+mtime only and never reads the file's contents.
 
+/// The evidence ledger (AAASM-5465), declared once per test binary.
+///
+/// The support modules re-export it rather than declaring their own, because a
+/// binary including two of them would otherwise load the same file twice.
+#[path = "evidence/mod.rs"]
+pub mod evidence;
+
 mod spike_support;
 
 use std::time::Duration;
@@ -35,11 +42,19 @@ use spike_support::proxy_harness::{
     ANTHROPIC_HOST,
 };
 use spike_support::{
-    assert_recorded_and_secret_absent, assert_recorded_and_secret_present, claude_version, find_secret, require_claude,
-    require_macos, sha256_hex, AnthropicMock, Evidence, HostEnforcement, Mechanism, ProtectionLevel, RealHomeGuard,
-    SpikeReceipt, StatusInputs, StatusReport, TempClaudeEnv, TlsCapturingUpstream, AASM_OWNED_SETTINGS_KEYS,
-    SYNTHETIC_SECRET,
+    assert_recorded_and_secret_absent, assert_recorded_and_secret_present, claude_version, find_secret, locate_claude,
+    require_claude, require_macos, sha256_hex, AnthropicMock, Evidence, HostEnforcement, Measurement, Mechanism,
+    ProtectionLevel, RealHomeGuard, SpikeReceipt, StatusInputs, StatusReport, TempClaudeEnv, TlsCapturingUpstream,
+    AASM_OWNED_SETTINGS_KEYS, SYNTHETIC_SECRET,
 };
+
+/// Ledger names for the two scenarios that can decline to measure.
+///
+/// Constants rather than literals at the call site because the same name has to
+/// reach both guards of a scenario and the CI summary that reads the ledger; a
+/// typo would silently split one scenario into two records.
+const SCENARIO_REAL_BINARY_PROXY: &str = "spike-11.3-real-binary-through-proxy";
+const SCENARIO_REAL_BINARY_BASE_URL: &str = "spike-11.3-real-binary-base-url-redirection";
 
 /// Endpoint the managed launcher records as the injected `HTTPS_PROXY` value at
 /// install time. Scenario 11.6 perturbs it to drive the second drift mechanism.
@@ -89,7 +104,12 @@ async fn install(env: &TempClaudeEnv) -> anyhow::Result<(SpikeReceipt, Vec<u8>)>
     let receipt = SpikeReceipt::record_install(
         "spike-claude-code",
         "claude",
-        require_claude().and_then(|b| claude_version(&b)),
+        // The non-declaring lookup: this helper is on the path of every
+        // scenario in the file, including the hermetic ones, and the version is
+        // decoration on a receipt rather than a precondition. Calling the
+        // gating form here made every hermetic scenario print a `SKIP:` line it
+        // had not earned (AAASM-5465).
+        locate_claude().ok().and_then(|b| claude_version(&b)),
         &env.settings_path(),
         pre.as_deref(),
         &post,
@@ -322,8 +342,10 @@ async fn scenario_11_3_and_11_4_secret_redacted_before_reaching_provider() {
 #[tokio::test(flavor = "multi_thread")]
 async fn scenario_11_3_real_claude_binary_through_proxy() {
     let guard = RealHomeGuard::capture();
-    let Some(bin) = require_claude() else { return };
-    if !require_macos() {
+    let Some(bin) = require_claude(SCENARIO_REAL_BINARY_PROXY) else {
+        return;
+    };
+    if !require_macos(SCENARIO_REAL_BINARY_PROXY) {
         return;
     }
     install_crypto_provider();
@@ -378,13 +400,18 @@ async fn scenario_11_3_real_claude_binary_through_proxy() {
     println!("MEASURED real-binary request lines: {:?}", upstream.request_lines());
 
     if observed == 0 {
-        println!(
-            "NOT MEASURED: the real claude binary produced no upstream traffic through the proxy \
-             (exit={:?}, timed_out={}). Mechanism A is unproven against the real binary.",
+        // Both opt-outs are behind us — macOS, and the binary exists — so the
+        // scenario committed to measuring. Zero traffic is a *failed*
+        // measurement, and until AAASM-5465 it returned and was counted as a
+        // pass alongside the scenarios that genuinely measured something.
+        let detail = format!(
+            "the real claude binary produced no upstream traffic through the proxy (exit={:?}, \
+             timed_out={}); mechanism A is unproven against the real binary",
             run.exit_code, run.timed_out,
         );
+        spike_support::outcome::record(SCENARIO_REAL_BINARY_PROXY, Measurement::NotMeasured, &detail);
         guard.assert_unchanged("11.3-real-binary");
-        return;
+        panic!("NOT MEASURED [{SCENARIO_REAL_BINARY_PROXY}]: {detail}. This is a gap in the evidence, not a pass.");
     }
 
     // The load-bearing claim: traffic flowed and no body carried the secret.
@@ -416,6 +443,15 @@ async fn scenario_11_3_real_claude_binary_through_proxy() {
          placeholder — the prompt never crossed the scanned path",
     );
 
+    spike_support::outcome::record(
+        SCENARIO_REAL_BINARY_PROXY,
+        Measurement::Measured,
+        &format!(
+            "{observed} request(s) observed through the proxy, {redacted_bodies} of {} carried the \
+             redaction placeholder",
+            bodies.len()
+        ),
+    );
     guard.assert_unchanged("11.3-real-binary");
 }
 
@@ -454,7 +490,9 @@ async fn scenario_11_3_base_url_redirection_removes_aasm_from_the_path() {
 #[tokio::test(flavor = "multi_thread")]
 async fn scenario_11_3_real_claude_binary_base_url_redirection() {
     let guard = RealHomeGuard::capture();
-    let Some(bin) = require_claude() else { return };
+    let Some(bin) = require_claude(SCENARIO_REAL_BINARY_BASE_URL) else {
+        return;
+    };
     let mock = AnthropicMock::start().await.expect("mock");
     let env = TempClaudeEnv::new().expect("temp env");
 
@@ -484,9 +522,13 @@ async fn scenario_11_3_real_claude_binary_base_url_redirection() {
     println!("MEASURED real-binary request lines: {:?}", mock.request_lines());
     println!("MEASURED real-binary request headers: {:?}", mock.last_header_names());
     if observed == 0 {
-        println!("NOT MEASURED: the real binary produced no traffic; mechanism B unproven on this host");
+        let detail = "the real binary produced no traffic; mechanism B unproven on this host";
+        spike_support::outcome::record(SCENARIO_REAL_BINARY_BASE_URL, Measurement::NotMeasured, detail);
         guard.assert_unchanged("11.3-real-binary-B");
-        return;
+        panic!(
+            "NOT MEASURED [{SCENARIO_REAL_BINARY_BASE_URL}]: {detail}. This is a gap in the \
+             evidence, not a pass."
+        );
     }
     assert_recorded_and_secret_present(
         &mock.bodies(),
@@ -494,6 +536,11 @@ async fn scenario_11_3_real_claude_binary_base_url_redirection() {
         "11.3 real binary via ANTHROPIC_BASE_URL",
     );
 
+    spike_support::outcome::record(
+        SCENARIO_REAL_BINARY_BASE_URL,
+        Measurement::Measured,
+        &format!("{observed} request(s) reached the mock with AASM out of the path, as required"),
+    );
     guard.assert_unchanged("11.3-real-binary-B");
 }
 

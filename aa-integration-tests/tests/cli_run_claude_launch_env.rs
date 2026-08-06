@@ -73,6 +73,13 @@
 
 // `RealHomeGuard` is reused rather than reimplemented: it fingerprints the live
 // settings file on length+mtime and never reads its contents.
+/// The evidence ledger (AAASM-5465), declared once per test binary.
+///
+/// The support modules re-export it rather than declaring their own, because a
+/// binary including two of them would otherwise load the same file twice.
+#[path = "evidence/mod.rs"]
+pub mod evidence;
+
 #[allow(dead_code, unused_imports)]
 mod spike_support;
 
@@ -417,12 +424,22 @@ exit 0
 
 /// A skip must be legible in the output; a test binary that silently contains no
 /// tests is indistinguishable from a passing one.
+///
+/// The `launch_env` module is `#[cfg(unix)]`, so on any other host this is the
+/// binary's only test and a green result establishes nothing. Recorded
+/// (AAASM-5465) so the CI summary can subtract it from the pass count.
 #[cfg(not(unix))]
 #[test]
 fn the_launch_environment_is_not_measured_on_this_host() {
-    println!(
-        "SKIP [AAASM-5327]: measuring the launched process's environment needs a POSIX shell \
-         stand-in for the `claude` binary; this host is {}.",
+    let reason = format!(
+        "measuring the launched process's environment needs a POSIX shell stand-in for the \
+         `claude` binary; this host is {}.",
         std::env::consts::OS
+    );
+    println!("SKIP [AAASM-5327]: {reason}");
+    spike_support::outcome::record(
+        "aaasm-5327-launch-environment",
+        spike_support::Measurement::UnsupportedPlatform,
+        &reason,
     );
 }
