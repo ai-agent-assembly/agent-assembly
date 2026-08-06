@@ -652,4 +652,41 @@ mod tests {
             );
         }
     }
+
+    /// Intent is not evidence. Whatever the basis, enabling a component must
+    /// never turn a non-coverage term into a coverage term.
+    #[test]
+    fn selecting_a_component_never_raises_its_claim() {
+        let bases = vec![
+            AttestationBasis::EnvironmentOverride {
+                variable: "AA_LAYERS".into(),
+            },
+            AttestationBasis::AssumedPresent,
+            AttestationBasis::ArtifactPresent {
+                artifact: "aa-proxy".into(),
+            },
+            AttestationBasis::AbsentFromBuild {
+                component: "aa-ebpf-loaderd".into(),
+            },
+            AttestationBasis::PlatformUnsupported {
+                platform: "x86_64-pc-windows-msvc".into(),
+            },
+            AttestationBasis::PrerequisiteUnmet {
+                requirement: "BTF at /sys/kernel/btf/vmlinux".into(),
+            },
+            AttestationBasis::Adjudicated {
+                outcome: AdjudicatedOutcome::Inconclusive,
+            },
+        ];
+        for basis in bases {
+            for mode in [SelectedMode::Enabled, SelectedMode::Disabled, SelectedMode::Unset] {
+                let a = at(basis.clone(), mode, NOW);
+                let term = a.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS);
+                assert!(
+                    !term.asserts_coverage(),
+                    "{basis:?} + {mode} produced the coverage term {term}"
+                );
+            }
+        }
+    }
 }
