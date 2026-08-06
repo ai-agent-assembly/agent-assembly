@@ -41,7 +41,7 @@ do, and — the part that actually prevents drift — what it must **not** autho
 
 | # | Layer | Surface / repository | Primary audience | Its job | Must not author |
 |---|---|---|---|---|---|
-| **L0** | Company site | `horonomy.dev` — `horonomy/horonomy-official-website` (separate org, proprietary) | Anyone assessing the company | Company vision, the product portfolio, and each portfolio entry's coarse stage | Any per-capability claim about Agent Assembly, or any integration instruction |
+| **L0** | Company site | `horonomy.dev` — `horonomy/horonomy-official-website` (separate org, proprietary) | Anyone assessing the company | Company vision, the product portfolio, each portfolio entry's coarse stage, and a **bounded capability summary** that narrows a verified lower-layer fact | A per-capability *status*, a platform claim, or any statement that widens; integration instructions |
 | **L1** | Product website | `agent-assembly.com` — [`official-website`](https://github.com/ai-agent-assembly/official-website) | Evaluators, buyers, technical leaders | Positioning, the evaluation narrative, trust, early-access and conversion paths | Reference material, policy schemas, threat models, API surfaces |
 | **L2** | Docs Hub | `docs.agent-assembly.com` — [`docs`](https://github.com/ai-agent-assembly/docs) | Teams, security engineers, operators | Task-oriented routing across components; the cross-cutting policy reference; the status map; the managed-service pages | Component-internal design rationale; anything a component's own docs own |
 | **L3** | Component docs | `agent-assembly` (Core, this book) · [`python-sdk`](https://github.com/ai-agent-assembly/python-sdk) · [`node-sdk`](https://github.com/ai-agent-assembly/node-sdk) · [`go-sdk`](https://github.com/ai-agent-assembly/go-sdk) · [`arena`](https://github.com/ai-agent-assembly/arena) | Application developers, operators, contributors, security researchers | Deep architecture, ADRs, protocol and policy semantics, per-language API surfaces, measured limitations | A rival product-level narrative, or another component's semantics |
@@ -211,8 +211,28 @@ Requirements:
 
 - It carries a canonical link in the same section, not merely in a footer or a
   "further reading" list at the end of the page.
-- It survives the widening test above.
+- It survives the [widening review](#an-outer-layer-may-narrow-a-claim-it-may-not-widen-one).
 - It carries the maturity label the canonical source carries, when one applies.
+
+#### Worked example: a compliant L0 summary
+
+The outermost layer is the hardest place to summarise without widening, so the
+sanctioned case is worth having in front of you. The company site describes Agent
+Assembly as:
+
+> A governance layer for AI agents. It decides which tools, domains, and budgets an
+> agent may use, holds risky actions for human review, and records what happened.
+
+This is a capability summary on L0, and it is **compliant**. Each clause narrows a
+verified lower-layer fact onto an ADR 0033 §6 term — *decides* → **Evaluated**,
+*holds … for human review* → **Approval required**, *records what happened* →
+**Observed** — and it drops no bound, because it attaches no status, no platform and
+no completeness to any of them. It says what the product's job is, not how far along
+that job is on your machine.
+
+Contrast the version that would widen while looking similar: "governs every agent
+action on any platform, and cannot be bypassed" attaches completeness, a platform
+claim and a banned absolute to the same three verbs.
 
 ### 3. Quotation
 
