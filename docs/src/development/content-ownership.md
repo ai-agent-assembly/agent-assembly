@@ -126,7 +126,7 @@ fact is a *derivative* and is governed by
 | **Runnable end-to-end integrations** | L4 examples | `examples` — one directory per framework, plus its choosing guide |
 | **API reference** | Generated from source, per component | Core: rustdoc + `openapi/v1.yaml` (utoipa); `python-sdk` and `arena`: mkdocstrings; `node-sdk`: TypeDoc via `docusaurus-plugin-typedoc`; `go-sdk`: godoc on pkg.go.dev — but its in-repo `docs/api-reference.md` **quotes a curated subset of signatures**, which makes that page an [owned copy](#acceptable-with-an-explicit-owner), not a signpost |
 | **Open-source / commercial split** | Docs Hub | [`open-core-boundary.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/open-core-boundary.md) |
-| **What may be claimed about the managed service** | Docs Hub | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) (provisional pending AAASM-5621) |
+| **What may be claimed about the managed service** | Docs Hub | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) — the **interim** approved-claims register for managed-service claims only, superseded when AAASM-5531/5600 publish the registry ([ADR 0034 hand-off 6](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-6--the-docs-hubs-provisional-claims-register)) |
 | **Commercial conversion path** (early access, contact) | L1 product website | `official-website` — `/early-access` |
 | **Version-bearing values** | [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) `Proposed` | `Cargo.toml` `[workspace.package].version` and `metadata/docs.yaml`, propagated by `scripts/propagate_versions.py` |
 | **Org-shared metadata** (repo names, canonical URLs, display names, Jira IDs) | [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) `Proposed` | the `.github` repository's `metadata/org-profile.yaml` |
@@ -212,23 +212,34 @@ Two honest observations before anyone "fixes" this:
 
 So the prescribed move is **not** "delete one". It is: decide whether these are one
 vocabulary or two, and if two, name the axis each one covers so neither reads as the
-other. That decision is an ownership assignment across an org boundary, which makes
-it AAASM-5621's rather than this page's.
+other.
+[ADR 0034 hand-off 7](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-7--the-two-maturity-vocabularies)
+settles it — **three** axes, not two, since ADR 0033 §6's claim terms are a third
+and are not a maturity vocabulary at all. The shared `release_candidate` spelling is
+ratified rather than corrected, and no axis may be applied to another's subject.
 
-### Roadmap has no canonical owner yet
+### Roadmap ownership
 
-**No repository in the org publishes a roadmap page** — there is no file or route by
-that name across the public repositories. What does exist is scattered
-forward-looking prose that no owner governs: this repository alone carries several
-occurrences, including `docs/src/operations/ops-registry-architecture.md`'s "not on
-the roadmap for v0.0.1", which is a forward-looking statement in Core docs in
-**neither** of the bounded forms admitted below.
+**The L1/T6 product website (`official-website`) owns the published roadmap**, in
+the person of `truth-owner-website` —
+[ADR 0034 hand-off 4](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-4--the-roadmap-owner)
+assigns it, on the reasoning that a roadmap is a forward-looking positioning
+statement and positioning is already L1's in the table above.
 
-So the gap is not that nobody has written a roadmap. It is that roadmap *statements*
-are made wherever someone needs one, and nothing governs them.
+**No repository publishes a roadmap page today** — there is no file or route by that
+name across the public repositories, so the owner currently owns an empty surface.
+That does not make the rules below optional: what does exist is scattered
+forward-looking prose, including `docs/src/operations/ops-registry-architecture.md`'s
+"not on the roadmap for v0.0.1", which is a roadmap statement sitting in Core docs
+and in **neither** of the bounded forms admitted below. ADR 0034 records it as a
+named non-conforming instance owned by
+[AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605).
 
-Until a roadmap owner is designated, **no layer may publish a dated commitment**, and
-a forward-looking statement is admissible only in one of these bounded forms:
+So the problem was never that nobody had written a roadmap. It is that roadmap
+*statements* are made wherever someone needs one — and they are now bounded:
+**no layer may publish a dated commitment** unless the date is an already-released
+fix-version, and a forward-looking statement is admissible only in one of these
+forms:
 
 - ADR 0033 §6's **`Planned`** term — decided but not implemented, carrying a ticket
   reference and **no capability claim**;
@@ -247,15 +258,18 @@ a forward-looking statement is admissible only in one of these bounded forms:
 > terms — writing a definition here would be this page breaking its own central rule.
 > The term is therefore listed as admissible **and cited to `0033:551`**, with no
 > definition attached. **→ move:** either §6 gains a `Research` row or `0033:551`
-> stops referring to one. That is an amendment to an Accepted ADR, so it goes to
-> AAASM-5621 with the other hand-offs.
+> stops referring to one. That is an amendment to an Accepted ADR;
+> [ADR 0034 hand-off 4](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-4--the-roadmap-owner)
+> declines to close it here for the same reason this page does — §6 owns that
+> vocabulary — and routes it to
+> [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605) as an
+> amendment to ADR 0033.
 
-> **This page knowingly does not meet its own first acceptance criterion here.**
-> "Every major content type has exactly one canonical owner" is unmet for roadmap:
-> zero owners is not one, and an interim admissibility rule is not an assignment.
-> Designating the owner is an ownership decision, not an editorial choice, so it is
-> deferred to AAASM-5621 rather than settled here — a recorded deferral being worth
-> more than a bare gap. See [What this page hands off](#what-this-page-hands-off).
+> **This page's first acceptance criterion is now met for roadmap.** "Every major
+> content type has exactly one canonical owner" was unmet while zero repositories
+> owned one. [ADR 0034](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-4--the-roadmap-owner)
+> made the assignment — an ownership decision, which is why this page recorded the
+> gap rather than closing it itself.
 
 ### The two vocabularies do not absorb each other
 
@@ -271,8 +285,12 @@ records it:
 
 They are **orthogonal**: a `🧪 Release candidate` feature can be *Unsupported* on a
 platform, and a shipped feature can be *Unmeasured* on a path. Each must
-cross-reference the other; neither may redefine the other's terms. Which one takes
-precedence when they appear to conflict is AAASM-5621's to settle.
+cross-reference the other; neither may redefine the other's terms. Neither takes
+precedence when they appear to conflict, because such a conflict is a category
+error: split the statement in two and check each against its own owner. Where the
+two imply different reader actions, the more restrictive published outcome governs
+the surface —
+[ADR 0034 hand-off 1](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-1--precedence-between-the-two-vocabularies).
 
 ## An outer layer may narrow a claim; it may not widen one
 
@@ -335,8 +353,13 @@ ADR 0033's forbidden-designs list, item 7, bans a specific set of unqualified
 absolutes from architecture and product descriptions. That list is the source for the
 planned CI gate ([AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536)),
 so a phrase absent from it is a phrase the gate will never catch — extend the list
-there rather than policing it by review here. **Who may waive it, and how the ban is
-policed across repositories, is AAASM-5621's**, not this page's.
+there rather than policing it by review here. **Who may waive it** is
+[ADR 0034 Decision 10](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#10-waivers-and-exceptions)
+— an expiring, string-scoped waiver approved by a `waiver-approver` who is not the
+author — and **how the ban is policed across repositories** is
+[Decision 8](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#8-conflict-resolution).
+Note that an ADR 0033 forbidden design is one of the three categories that
+**cannot** be waived.
 
 ## Reuse patterns: summary, quotation, generation
 
@@ -590,9 +613,13 @@ in the worked example below **does** appear in the catalogue, but as an extracte
 English `msgid` with an **empty** `msgstr`. It is not currently a second false claim
 in Chinese — it is the English defect, awaiting extraction-time correction.
 
-What this page does **not** settle is who owns a translation's accuracy, and whether a
-fuzzy entry blocks publication. That is an ownership assignment, so it goes to
-AAASM-5621 with the rest.
+Who owns a translation's accuracy, and whether a fuzzy entry blocks publication, is
+settled by
+[ADR 0034 hand-off 8](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-8--translation-accuracy):
+the owner of the source-language page owns the translation's **bounds**, the
+publishing repository owns its **fluency**, and a fuzzy `msgstr` blocks publication
+of that string **iff** its `msgid` carries a bound — a platform name, an ADR 0033 §6
+term, a number with a unit, a negation, or a precondition keyword.
 
 #### A second instance of the owned-copy case
 
@@ -674,7 +701,7 @@ are the ones that stop the same defect coming back.
 | A version literal that has gone stale | Its ADR 0013 anchor, then re-run the propagation script |
 | A repo name, canonical URL or Jira ID that has drifted | The `.github` metadata registry (ADR 0014, Proposed) |
 | A marketing sentence that reads as a capability guarantee | The product website — but re-derive the bound from ADR 0033 §6 before rewording |
-| Two layers that disagree and you cannot tell which is canonical | Nowhere yet — see [Conflicts](#conflicts) |
+| Two layers that disagree and you cannot tell which is canonical | [ADR 0034 Decision 1](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#1-the-product-truth-hierarchy) — the lower-numbered truth layer wins the fact; then see [Conflicts](#conflicts) |
 
 ## Conflicts
 
@@ -687,8 +714,8 @@ and the rule for those is that **they are decisions, not edits**.
 | A derivative disagrees with its canonical source | The canonical source wins; correct the derivative |
 | Two derivatives of one source disagree | Both are suspect; re-derive both from the source rather than reconciling them with each other |
 | The canonical source disagrees with the code, tests or generated spec | The evidence wins; correct the canonical source, or file the bug if the code is the defect |
-| Two owners both claim a content type | **Stop.** Do not resolve an ownership dispute inside a content PR. Record it and escalate to AAASM-5621, which is where unassigned ownership is currently decided. (5621 will also fix the *standing* venue and record format — hand-off 5 — so until it publishes, escalation to the ticket is the interim route, not the permanent one.) |
-| An enforcement term and a maturity label appear to conflict | **Out of scope for this page.** ADR 0033 §E assigns precedence between the two vocabularies, and the waiver mechanism, to AAASM-5621 |
+| Two owners both claim a content type | **Stop.** Do not resolve an ownership dispute inside a content PR. Record it and open a **Truth Ownership Amendment** against [ADR 0034](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-5--ownership-dispute-arbitration) — a PR appending one row to its arbitration table, reviewed by `truth-owner-core` plus the owning class of every claimant. This is the permanent venue; do not file against the ticket |
+| An enforcement term and a maturity label appear to conflict | **A category error, not a conflict** — they answer different questions, so split the statement in two and check each against its own owner. Where the two imply different reader actions, the more restrictive published outcome governs the surface. See [ADR 0034 hand-off 1](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-1--precedence-between-the-two-vocabularies); waivers are [Decision 10](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#10-waivers-and-exceptions) |
 
 The reason the last two stop rather than resolve is that a content PR is the wrong
 instrument for an ownership decision: it resolves the dispute for one page, invisibly,
@@ -700,9 +727,13 @@ state what is blocking, what was already checked, and the concrete decision need
 
 ## What this page hands off
 
-This page defines ownership and duplication. It deliberately does **not** decide the
-following, each of which belongs to
-[AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621):
+This page defines ownership and duplication. It deliberately did **not** decide the
+following nine; each was handed to
+[AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) and each is
+now **settled** in
+[ADR 0034 Decision 12](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#12-the-nine-hand-offs-from-aaasm-5592-settled),
+in this numbering. The list is kept — rather than deleted — so a reader arriving from
+one of the nine sites above still finds the question and its answer together:
 
 1. **Precedence between the two vocabularies** — enforcement/claim terms (ADR 0033 §6)
    versus lifecycle maturity labels (Docs Hub `source-of-truth.md`) — assigned there
@@ -711,8 +742,8 @@ following, each of which belongs to
    ADR 0033's banned-absolutes list, on what evidence, and for how long.
 3. **Cross-repository enforcement** — how these rules are policed outside this
    repository, and what a violation blocks.
-4. **The roadmap owner** — no repository owns one today; see
-   [Roadmap has no canonical owner yet](#roadmap-has-no-canonical-owner-yet).
+4. **The roadmap owner** — assigned to the L1/T6 product website; see
+   [Roadmap ownership](#roadmap-ownership).
 5. **Ownership-dispute arbitration** — the venue and the record format for the
    fourth row of [Conflicts](#conflicts).
 6. **The status of the Docs Hub's provisional claims register** — whether
@@ -723,7 +754,8 @@ following, each of which belongs to
 7. **Whether the two maturity vocabularies are one axis or two**, and if two, what
    each is called — see
    [the split](#known-non-conforming-instance-two-maturity-vocabularies). This
-   crosses an org boundary, which is why it is not settled here. 5621 decides;
+   crosses an org boundary, which is why it was not settled here. ADR 0034 decides
+   it — three axes, not two;
    [AAASM-5655](https://lightning-dust-mite.atlassian.net/browse/AAASM-5655) carries
    the answer to the company site, so the decision cannot be made and then stranded
    on this side of the boundary.
@@ -786,7 +818,7 @@ version — and the enforcement that goes with it — is
 
 | Reference | Relation |
 |---|---|
-| [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) `Accepted` | Canonical architecture source; §6 owns the enforcement/claim vocabulary this page routes to, and §E assigns precedence and waivers to AAASM-5621 |
+| [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) `Accepted` | Canonical architecture source; §6 owns the enforcement/claim vocabulary this page routes to. §E assigned precedence and waivers to AAASM-5621, **now discharged** by [ADR 0034](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md) |
 | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) `Accepted` | Protection-state ladder and evidence rules, **as amended by ADR 0033 §5.3** (a third `HostEnforced` route `0030:465` does not list) |
 | [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) `Proposed` | Version metadata source of truth — the model this page's *generated* duplication class follows. CI-gated, so operative |
 | [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) `Proposed` | Org-shared metadata registry. The repo-local drift lint named after it checks two ADR 0007 values, not the registry contract — so direction, not operative, for the scope assigned here |
