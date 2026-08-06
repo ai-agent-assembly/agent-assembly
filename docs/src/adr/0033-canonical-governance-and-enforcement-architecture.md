@@ -222,7 +222,7 @@ oracle: `PolicyService::check_action` (`aa-gateway/src/service/policy_service.rs
 traverse it.
 
 `check_action` is a real decision pipeline, not a logger — credential-token validation
-short-circuits to `Deny` (`policy_service.rs:1623-1625`), observe-mode applies a shadow
+short-circuits to `Deny` (`aa-gateway/src/service/policy_service.rs:1623-1625`), observe-mode applies a shadow
 transform (`:1646-1648`), approval submission blocks (`:1652-1657`), anomaly detection
 can be promoted to a hard `Deny` (`:1662-1663`), atomic budget reservation can `Deny`
 (`:1669`), and agent suspension is enforced (`:1700`).
@@ -355,7 +355,7 @@ Linux, and today it is predominantly an observation mechanism.**
 Four properties of that single enforcing program must be stated wherever it is
 mentioned:
 
-1. **It is not a synchronous deny.** `syscall_guard.rs:55-60`: *"the offending syscall
+1. **It is not a synchronous deny.** `aa-ebpf-probes/src/syscall_guard.rs:55-60`: *"the offending syscall
    still executes once before the task dies … A truly synchronous deny (return `-EPERM`
    before the handler runs) needs seccomp-BPF or an LSM `bpf_lsm` hook, which is out of
    scope here."* No `bpf_lsm` program, `SEC("lsm/…")` hook or `bpf_override_return`
@@ -364,11 +364,11 @@ mentioned:
    *and* the lowered policy yields a non-empty allowlist
    (`aa-runtime/src/ebpf_control.rs:137-140`); `confine_pid()` treats `0`/unparseable
    as unset *"so the SIGKILL-capable guard stays off by default"* (`:154-162`).
-3. **It has a documented load-time window.** `ebpf_control.rs:114-121` records a window
+3. **It has a documented load-time window.** `aa-runtime/src/ebpf_control.rs:114-121` records a window
    between guard load and allowlist update in which the confined PID runs with an empty
    allowlist; a race-free fix needs a protocol change.
 4. **The fork tracepoint cannot block a fork** — an acknowledged fail-open
-   (`syscall_guard.rs:105`).
+   (`aa-ebpf-probes/src/syscall_guard.rs:105`).
 
 **No eBPF signal participates in any allow/deny decision.** `aa-gateway` has no *direct* dependency on `aa-ebpf`
 (`aa-gateway/Cargo.toml:46` takes `aa-runtime` unconditionally; `aa-runtime` takes
@@ -409,7 +409,7 @@ file-I/O coverage from this mechanism.
 > (`aa-core/src/integration/capability.rs:116-118`).
 >
 > The code is explicit that unavailability must not be stated as a blanket
-> (`aa-devtool-claude-code/src/lifecycle.rs:653-657`): *"Stated as a reason it is not
+> (`aa-devtool-claude-code/src/lifecycle.rs:653-659`): *"Stated as a reason it is not
 > active here, not as a blanket unavailability: since AAASM-5298 there is a path to it,
 > and it is opt-in, privileged and verified."* That is the AAASM-5454
 > `host_enforced_availability` fix, and this ADR must not re-break it.
