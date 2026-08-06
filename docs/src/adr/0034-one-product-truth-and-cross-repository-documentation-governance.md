@@ -328,13 +328,31 @@ with an adjective* is one of the eight moves §2.6 must account for, and neither
 this rule it would sit outside Decision 2 entirely.
 
 > **Rule M.** A restatement of a measurement carries the number, its unit and its
-> method, or omits the measurement. Replacing it with an adjective is a violation:
+> method — **or carries a claim identifier that supplies the method, per §2.3** — or
+> omits the measurement entirely. Replacing it with an adjective is a violation:
 > **blocking** where the canonical source carries a measurement (the comparison is
 > mechanical — the source has a number, the restatement does not), and a
 > **finding** where no measurement exists to compare against, since the remedy is
 > then to measure rather than to reword.
+>
+> **Rule M applies to any restatement of a measurement, whether or not the sentence
+> is a governed claim under §2.0.** It is the one rule in Decision 2 that §2.0 does
+> not gate — read top-down, §2.0 would exclude an adjective before Rule M could
+> reach it, which is precisely the gap Rule M exists to close.
 
-Rule M is the only rule in Decision 2 that does not read the claim tuple.
+Two consequences worth stating, because they are what stop Rule M from becoming a
+rule contributors route around:
+
+- **Omitting is always allowed.** A page that simply does not discuss overhead is
+  compliant. Rule M constrains how a measurement is *restated*, not whether one must
+  appear.
+- **A short sentence stays short.** *"Adds about 6 µs (`CLAIM-123`)"* carries the
+  number and its unit and points at the method, and is compliant — the same escape
+  §2.3 gives every other dimension. Without it, Rule M would push contributors to
+  drop the number rather than cite it, and that is the understatement failure §2.2
+  grades as a defect.
+
+Rule M is also the only rule in Decision 2 that does not read the claim tuple.
 
 **Both directions are defects.** Understatement is graded lower than broadening
 because it is less dangerous, not because it is acceptable — understatements were
@@ -417,6 +435,12 @@ ADR wrote it as one chain and asserted two links §6 does not entail.
 | *Observed* ≻ *Unmeasured* | **Derived.** *Unmeasured* is §6's state for an action no control inspected, so it is the bottom of every positive branch |
 | *Denied before execution* ≻ *Evaluated* | **Chosen, not derived.** §6's evidence for *Denied* is a refusal by a component before the effect, which does **not** entail a control-plane decision record: §6's own mapping row records that `aa-proxy` CONNECT, DLP and LLM-host refusals are *local policy*, and only MCP `tools/call` on a non-LLM MitM'd host is a gateway decision. The link is chosen because "the action was stopped" is unambiguously the stronger statement to a reader than "the action was assessed" |
 | *Experimental*, *Planned*, *Unsupported* ≺ every positive term above | **Derived.** §6 attaches no capability claim to them |
+
+A **positive term** is one of the six that assert a control acted: *Observed*,
+*Detected*, *Evaluated*, *Redacted*, *Approval required*, *Denied before execution*.
+*Unmeasured* is **not** a positive term — it asserts that no control inspected the
+action, which is why it is the bottom of every positive branch rather than a member
+of one.
 
 Explicitly **incomparable**, so a restatement must match exactly rather than being
 graded:
@@ -1159,8 +1183,18 @@ which continues to bind on architecture and product descriptions.
     supplies the fact, the owner supplies the edit.
 12. **Applying a maturity label as a behaviour claim, a claim term as a
     completeness claim, or a portfolio lifecycle value to either**
-    ([hand-off 7](#hand-off-7--the-two-maturity-vocabularies)); and coining a term
-    ADR 0033 §6 does not define.
+    ([hand-off 7](#hand-off-7--the-two-maturity-vocabularies)); and **coining a term
+    on the claim axis** — one naming a behaviour-on-evidence outcome — that ADR 0033
+    §6 does not define.
+
+    > **This item is scoped to the claim axis, and to it alone.** Hand-off 7 fixes
+    > three axes with three owners, and §6 owns only the first. `🧪 Release candidate`
+    > and `🗺️ Planned` are the Docs Hub's terms; the portfolio lifecycle values are
+    > the company registry's. §6 defines none of them, and reading this item as a
+    > general ban on terms §6 does not define would forbid vocabulary that hand-off 7
+    > ratifies — the claim axis reaching another axis's subject, which is the error
+    > the first half of this same item names. A new term on a non-claim axis is
+    > governed by **that axis's owner**, not by §6.
 
 ## Consequences
 
@@ -1343,25 +1377,48 @@ None is fixed by this ADR.
 
 ### Corrected in this ADR's own PR
 
-Publishing this ADR would have falsified four forward-tense references in
-[content-ownership.md](../development/content-ownership.md), written while this
-decision was still a ticket. **All four are corrected in the same PR**, so no
-window exists in which the two documents disagree:
+Publishing this ADR would have falsified references in
+[content-ownership.md](../development/content-ownership.md) that were written while
+this decision was still a ticket — statements presenting a now-settled question as
+open, or pointing a contributor at the ticket rather than at the section that
+settles it. **Twenty are corrected in the same PR**: four found in a first pass,
+sixteen more in a second sweep after the first was found to have stopped short.
 
-- `:14-30` said this page would be *superseded on publication*. It is
-  **ratified**, not superseded — ADR 0034 §*Context* is explicit that the page
-  stays in force — so leaving it would have been a live contradiction about which
-  document is authoritative, not merely a stale sentence.
-- `:734` instructed a contributor hitting one of the nine hand-offs to escalate.
-  Decision 12 settles all nine; that instruction would have routed work to the
-  wrong place.
-- `:778` and `:795` pointed at the **ticket**. They now point at this **ADR**, so
-  the ratified page has a navigable path to the decision that ratified it.
+The ones that mattered most were not the stale sentences but the **operationally
+live** instructions:
 
-Recorded here rather than done silently, because a correction that reaches one
-document and not its sibling is the defect this ADR set exists to catch, and a
-decision that created one on its own merge would be a poor advertisement for its
-change-propagation rule (Decision 7).
+- `Conflicts` table, *"two owners both claim a content type"* — told a contributor
+  to escalate to the ticket *"until it publishes"*, a condition this PR satisfies.
+  It now routes to the Truth Ownership Amendment that
+  [hand-off 5](#hand-off-5--ownership-dispute-arbitration) creates. Left unfixed,
+  the arbitration table would have stayed empty for exactly the reason that section
+  warns about.
+- `Conflicts` table, next row down — *"out of scope for this page"* for a claim
+  term versus a maturity label. Now states hand-off 1's category-error resolution.
+  This row is the sibling of the one above and was missed by the first sweep *and*
+  by the first review; adjacency is not a substitute for enumeration.
+- Correction routing table, *"two layers disagree and you cannot tell which is
+  canonical"* — read *"Nowhere yet"*. Now points at Decision 1's hierarchy.
+- The heading *"Roadmap has no canonical owner yet"*, and the body rule *"until a
+  roadmap owner is designated"* — [hand-off 4](#hand-off-4--the-roadmap-owner)
+  designates one.
+
+The rest repoint `:129`, `:216`, `:251`, `:275`, `:339`, `:595`, `:705`, `:715`,
+`:726`, `:789` and the four from the first pass at the settling section.
+
+**Do not restate this as "none remain" without re-running the check.** The first
+pass asserted a clean sweep and was wrong by sixteen; that is the same
+one-site-not-its-siblings defect this ADR set exists to catch, committed inside its
+own PR. What can be asserted is a command and its result:
+
+```bash
+grep -nE "until it publishes|provisional pending|is AAASM-5621's|no canonical owner|Nowhere yet|5621 decides|currently decided" \
+  docs/src/development/content-ownership.md
+```
+
+At this ADR's provenance commit that returns nothing, and the surviving mentions of
+AAASM-5621 in the file are historical or attributive — *"was handed to"*, *"was
+assigned by ADR 0033"* — not open assignments.
 
 ### An amendment this ADR requires of another ADR
 
