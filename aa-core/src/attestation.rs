@@ -283,3 +283,156 @@ impl AttestationBasis {
         self.claim_ceiling().asserts_coverage()
     }
 }
+
+/// What configuration asked for — intent, held strictly apart from evidence.
+///
+/// The ticket's requirement is that `selected_mode` and `verified_state` are
+/// separate fields, because conflating them is how "we turned eBPF on" becomes
+/// "eBPF is protecting you". Selection is an input to
+/// [`LayerAttestation::verified_state_at`] only in the lowering direction: it
+/// is what turns an unsubstantiated component from
+/// [`ClaimTerm::Unsupported`]/[`ClaimTerm::Unmeasured`] into
+/// [`ClaimTerm::Degraded`], because §6 reserves *Degraded* for a control that
+/// was planned. It can never raise a term.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum SelectedMode {
+    /// Configuration asks for this component to be active.
+    Enabled,
+    /// Configuration asks for this component to stay off.
+    Disabled,
+    /// Configuration says nothing; the component is whatever the host provides.
+    Unset,
+}
+
+impl SelectedMode {
+    /// The lowercase wire name, matching the `serde` representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::Unset => "unset",
+        }
+    }
+}
+
+impl fmt::Display for SelectedMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Default freshness window for an attestation: 5 minutes.
+///
+/// Deliberately far shorter than the integration ladder's 24 hours
+/// ([`DEFAULT_FRESHNESS_WINDOW_SECS`](crate::integration::DEFAULT_FRESHNESS_WINDOW_SECS)).
+/// That window covers configuration read-back, which changes when a user edits
+/// a file. This one covers whether a *process* is still in the path, which can
+/// stop being true the moment that process exits — the AAASM-5276 spike
+/// measured ~66 µs between a component stopping and its protection ceasing.
+/// "Probed at startup" must not read the same as "true now".
+pub const DEFAULT_ATTESTATION_FRESHNESS_SECS: u64 = 300;
+
+/// What one governance component may claim, and why.
+///
+/// Read the three fields as a sentence: configuration asked for
+/// `selected_mode`, we established the component's state by `basis` at
+/// `observed_at_unix_secs`, and therefore
+/// [`verified_state_at`](Self::verified_state_at) is all we may say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LayerAttestation {
+    /// Stable identifier of the component this attestation is about, e.g.
+    /// `"proxy"`, `"host/ebpf"`, `"sdk"`.
+    pub component: String,
+    /// What configuration asked for. Intent, never evidence.
+    pub selected_mode: SelectedMode,
+    /// How the component's state was established.
+    pub basis: AttestationBasis,
+    /// When the basis was established, as seconds since the Unix epoch.
+    pub observed_at_unix_secs: u64,
+    /// Human-readable detail naming what was actually checked, for status
+    /// output and audit. Says what was verified rather than asserting that
+    /// something was.
+    pub detail: String,
+}
+
+impl LayerAttestation {
+    /// Construct one component attestation.
+    pub fn new(
+        component: impl Into<String>,
+        selected_mode: SelectedMode,
+        basis: AttestationBasis,
+        observed_at_unix_secs: u64,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            component: component.into(),
+            selected_mode,
+            basis,
+            observed_at_unix_secs,
+            detail: detail.into(),
+        }
+    }
+
+    /// Whether the basis was established inside the freshness window ending at
+    /// `now_unix_secs`.
+    ///
+    /// A basis timestamped in the future is treated as fresh; clock skew is not
+    /// something this type can adjudicate.
+    pub fn is_fresh(&self, now_unix_secs: u64, window_secs: u64) -> bool {
+        now_unix_secs.saturating_sub(self.observed_at_unix_secs) <= window_secs
+    }
+
+    /// The term this component may claim as of `now_unix_secs`.
+    ///
+    /// Three rules, applied in order, and every one of them resolves downward:
+    ///
+    /// 1. Start from [`AttestationBasis::claim_ceiling`]. Nothing may exceed it.
+    /// 2. **Stale evidence is not evidence.** A coverage term whose basis has
+    ///    fallen outside the freshness window collapses to
+    ///    [`ClaimTerm::Unmeasured`] — or to [`ClaimTerm::Degraded`] if the
+    ///    component was selected, since a planned control whose evidence has
+    ///    expired is precisely §6's *Degraded*.
+    /// 3. **A control that was planned and is unsubstantiated is *Degraded*,**
+    ///    not *Unsupported* and not *Unmeasured*: §6 scopes *Unsupported* to
+    ///    "with no plan asserted", and asking for a control is asserting a plan.
+    ///
+    /// `selected_mode` appears only in rules 2 and 3, and in both it lowers.
+    /// There is no branch in which it raises the term.
+    pub fn verified_state_at(&self, now_unix_secs: u64, window_secs: u64) -> ClaimTerm {
+        let ceiling = self.basis.claim_ceiling();
+
+        if ceiling.asserts_coverage() && !self.is_fresh(now_unix_secs, window_secs) {
+            return self.unsubstantiated_term();
+        }
+        if !ceiling.asserts_coverage() {
+            return self.unsubstantiated_term_from(ceiling);
+        }
+        ceiling
+    }
+
+    /// The term for a component with no substantiated coverage, when the
+    /// ceiling itself carries no information (the stale-evidence case).
+    fn unsubstantiated_term(&self) -> ClaimTerm {
+        self.unsubstantiated_term_from(ClaimTerm::Unmeasured)
+    }
+
+    /// The term for a component with no substantiated coverage, preserving the
+    /// ceiling's own distinction between *Unsupported* and *Unmeasured* unless
+    /// selection overrides it.
+    fn unsubstantiated_term_from(&self, ceiling: ClaimTerm) -> ClaimTerm {
+        match self.selected_mode {
+            SelectedMode::Enabled => ClaimTerm::Degraded,
+            SelectedMode::Disabled | SelectedMode::Unset => ceiling,
+        }
+    }
+
+    /// Whether this component's claim, as of `now_unix_secs`, asserts that a
+    /// control acted on an action.
+    pub fn asserts_coverage_at(&self, now_unix_secs: u64, window_secs: u64) -> bool {
+        self.verified_state_at(now_unix_secs, window_secs).asserts_coverage()
+    }
+}
