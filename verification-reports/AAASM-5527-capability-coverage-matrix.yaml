@@ -1042,7 +1042,7 @@ capabilities:
     platform: [linux, macos]
     launch_path: routed
     transport: http1_1_cleartext
-    interception_component: "plain-HTTP path aa-proxy/src/proxy/mod.rs:1485-1560 — DLP runs"
+    interception_component: "plain-HTTP path aa-proxy/src/proxy/mod.rs:1425 — DLP runs"
     identity_source: none
     policy_context: [host, request_body]
     decision_timing: in_line
@@ -1607,7 +1607,7 @@ capabilities:
     platform: [macos, linux, windows]
     launch_path: config_write
     transport: not_applicable
-    interception_component: "enabledMcpjsonServers/disabledMcpjsonServers aa-devtool-claude-code/src/lib.rs:385-409; chat.mcp.deny, chat.mcp.requireApproval aa-devtool-copilot/src/lib.rs:308-321"
+    interception_component: "enabledMcpjsonServers/disabledMcpjsonServers aa-devtool-claude-code/src/lib.rs:385-409; chat.mcp.deny, chat.mcp.requireApproval aa-devtool-copilot/src/lib.rs:18-19 (keys), :403 (apply_mcp_governance)"
     identity_source: tool_config_scope
     policy_context: [mcp_server_name]
     decision_timing: pre           # by the tool
@@ -1901,7 +1901,7 @@ capabilities:
     redaction_actor: proxy_scanner
     q3_changed_answer: true
     known_bypasses:
-      - "default is RedactOnly (forward redacted), not Block — aa-proxy/src/config.rs:16-27, #[default] at :23-24"
+      - "default is RedactOnly (forward redacted), not Block — aa-proxy/src/config.rs:16-27, #[default] at :22 on RedactOnly at :23"
       - "AlertOnly forwards the credential UNMODIFIED and raises no alert"
       - "every non-inspected path in D3"
       - "C6 recall bounds"
@@ -2040,7 +2040,7 @@ capabilities:
     platform: [linux, macos, windows]
     launch_path: aasm_run
     transport: process_environment
-    interception_component: "std::env::vars().collect() — aa-cli/src/commands/run.rs:306"
+    interception_component: "std::env::vars().collect() — aa-cli/src/commands/run.rs:310"
     identity_source: not_applicable
     policy_context: []
     decision_timing: none
@@ -2054,7 +2054,7 @@ capabilities:
     boundary_class: null
     coverage: unmeasured
     known_bypasses: ["the child receives the ENTIRE parent environment, so a shell or file tool in the agent can read any credential the operator exported"]
-    evidence: ["the masking helper at :434,:480 is used only for --dry-run preview text"]
+    evidence: ["the masking helper `fn mask_value` at :462 is used only at :578, for --dry-run preview text"]
     evidence_runs_on_main: true
     current_level: not_applicable
     target_level: "warrants a ticket — whole-environment inheritance defeats C2's benefit for any agent with a shell tool"
@@ -2385,7 +2385,7 @@ capabilities:
   - id: G2
     domain: degraded_mode
     capability: aa-runtime with no gateway configured, or fail_closed=false
-    interception_component: "falls through to local evaluation whose terminal default is ALLOW — aa-runtime/src/pipeline/mod.rs:527-536; GatewayOutcome::NoClient takes the same path"
+    interception_component: "falls through to local evaluation whose terminal default is ALLOW — aa-runtime/src/pipeline/mod.rs:486,536; GatewayOutcome::NoClient takes the same path"
     platform: [linux, macos, windows]
     failure_posture: fail_open
     default_state: open
@@ -2597,7 +2597,7 @@ capabilities:
   - id: G8
     domain: degraded_mode
     capability: Gateway policy load or schema failure
-    interception_component: "server startup aborts — aa-gateway/src/server.rs:617-621 (serve_tcp), :777-781 (serve_uds); aa-runtime exits 1 on policy parse failure"
+    interception_component: "server startup aborts — aa-gateway/src/server.rs:617-619 (serve_tcp), :777-781 (serve_uds); aa-runtime exits 1 on policy parse failure"
     platform: [linux, macos, windows]
     failure_posture: fail_closed
     default_state: closed
@@ -2834,7 +2834,7 @@ capabilities:
       (aa-proxy/src/lib.rs:62-69; tls/keychain.rs:16,18,23-32).
       E4: NONE. Endpoint Security and Network Extension are explicit non-goals,
       pinned by a test asserting the literal limitation string
-      (aa-cli/src/commands/integrations/model.rs:1200,1204).
+      (aa-cli/src/commands/integrations/model.rs:1212,1216).
     identity_source: file_ownership
     policy_context: [managed_settings_keys]
     decision_timing: in_line       # E3
