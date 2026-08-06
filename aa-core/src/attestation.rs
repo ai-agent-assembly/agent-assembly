@@ -854,4 +854,40 @@ mod tests {
             ]
         );
     }
+
+    /// Absent components are listed, not omitted: an omitted component is
+    /// indistinguishable from one that was never considered.
+    #[test]
+    fn degraded_components_are_enumerated_not_dropped() {
+        let att = ProtectionAttestation::new(
+            "0.0.1-rc.7",
+            "aarch64-apple-darwin",
+            NOW,
+            vec![
+                LayerAttestation::new(
+                    "host/ebpf",
+                    SelectedMode::Enabled,
+                    AttestationBasis::AbsentFromBuild {
+                        component: "aa-ebpf-loaderd".into(),
+                    },
+                    NOW,
+                    "loader daemon is not in this distribution",
+                ),
+                LayerAttestation::new(
+                    "proxy",
+                    SelectedMode::Unset,
+                    AttestationBasis::Adjudicated {
+                        outcome: AdjudicatedOutcome::Blocked,
+                    },
+                    NOW,
+                    "pre-dial refusal reported by aa-proxy",
+                ),
+            ],
+        );
+        let degraded = att.degraded_at(NOW);
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0].component, "host/ebpf");
+        assert_eq!(degraded[0].detail, "loader daemon is not in this distribution");
+        assert!(att.any_coverage_verified_at(NOW));
+    }
 }
