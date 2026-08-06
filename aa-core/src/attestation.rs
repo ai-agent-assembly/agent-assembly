@@ -580,4 +580,37 @@ mod tests {
         let a = at(basis, SelectedMode::Unset, NOW);
         assert!(!a.asserts_coverage_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
     }
+
+    /// The safety property stated over the whole basis enum rather than one
+    /// variant at a time: adjudication by the deciding component is the *only*
+    /// route to a coverage term. A future variant added without a deliberate
+    /// decision fails here.
+    #[test]
+    fn adjudication_is_the_only_basis_that_can_assert_coverage() {
+        let non_evidence = vec![
+            AttestationBasis::EnvironmentOverride {
+                variable: "AA_LAYERS".into(),
+            },
+            AttestationBasis::AssumedPresent,
+            AttestationBasis::ArtifactPresent {
+                artifact: "aa-proxy".into(),
+            },
+            AttestationBasis::AbsentFromBuild {
+                component: "aa-ebpf-loaderd".into(),
+            },
+            AttestationBasis::PlatformUnsupported {
+                platform: "aarch64-apple-darwin".into(),
+            },
+            AttestationBasis::PrerequisiteUnmet {
+                requirement: "kernel >= 5.8".into(),
+            },
+        ];
+        for basis in &non_evidence {
+            assert!(!basis.is_evidence(), "{basis:?} must not substantiate a coverage claim");
+        }
+        assert!(AttestationBasis::Adjudicated {
+            outcome: AdjudicatedOutcome::Blocked
+        }
+        .is_evidence());
+    }
 }
