@@ -349,11 +349,19 @@ verified ways this happens today:
 | The TLS stack is not hooked | The uprobes hook only OpenSSL `SSL_read`/`SSL_write`; Go `crypto/tls` and Node's statically linked BoringSSL expose no such symbols | `aa-ebpf-probes/src/ssl_probes.rs:19-27` |
 | The platform has no host adapter | macOS and Windows — §5 | — |
 
-**The semantic rule.** For anything outside the boundary the product knows *nothing*.
-It must not report the action as allowed, as clean, or as absent. The only truthful
-report is that the action was **not observed** and its governance state is
-**Unmeasured**. This is ADR 0030 §4.2 rule 2 ("missing evidence lowers the state, never
-raises it") applied to the architecture as a whole.
+**The semantic rule.** For anything outside the boundary the product knows *nothing
+about the action*. It must not report that action as allowed, as clean, or as absent.
+The only truthful report is that **the action or its payload was not inspected**, and
+its governance state is **Unmeasured**. This is ADR 0030 §4.2 rule 2 ("missing evidence
+lowers the state, never raises it") applied to the architecture as a whole.
+
+Scope this rule precisely: it is about the **action**, not necessarily the connection
+carrying it. The two can differ, and §2 row 4 is the case that proves it — a host the
+proxy does not MitM is still adjudicated at CONNECT by local egress policy, and its
+connection *is* recorded as evidence, while its payload is never inspected. So the
+honest report there is **connection Observed, payload Unmeasured** — not "not observed".
+Do not quote this rule as "nothing is observed outside the boundary"; quote it as
+"nothing is known about the *action* outside the boundary".
 
 Correspondingly, an empty audit log is evidence about the *observer*, not about the
 agent.
@@ -461,7 +469,7 @@ an undifferentiated verb like "protects", "enforces" or "catches".
 | **Redacted** | The action proceeded with content removed | A redaction record naming the fields |
 | **Approval required** | The action was held pending a human decision | A pending approval record |
 | **Degraded** | A planned control is configured but unavailable, so the achieved level is below the planned level | A `LayerDegradation` event or an ADR 0030 `Degraded` state, carrying both levels. `LayerDegradation` is a **retained legacy wire name** for exactly this term — kept deliberately for compatibility, see the Migration checklist §F |
-| **Unmeasured** | No control observed this path; nothing is known | The honest state for anything outside the boundary (§4) |
+| **Unmeasured** | No control inspected this **action or payload**; nothing is known about it. Scoped deliberately: a connection-level observation may still exist for the same traffic (§2 row 4), so *Unmeasured* about a payload does not imply *unobserved* about its connection | The honest state for any action outside the boundary (§4) |
 | **Experimental** | Implemented but not validated for production use | Named implementation plus the validation that is missing |
 | **Planned** | Decided but not implemented | A ticket reference; no capability claim |
 | **Unsupported** | Not available on this platform/configuration, with no plan asserted | The platform matrix row (§5.3) |
