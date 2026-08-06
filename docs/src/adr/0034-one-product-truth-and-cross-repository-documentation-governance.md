@@ -42,7 +42,7 @@ This ADR does not fork them. What it adds is the part the page could not decide
 without making an ownership decision of its own — [its nine hand-offs](#12-the-nine-hand-offs-from-aaasm-5592-settled),
 all nine of which are settled below.
 
-### A distinction this ADR must not blur
+## A distinction this ADR must not blur
 
 **Precedence is not ownership.** They are separate questions and this ADR answers
 both, so they are easy to run together — and running them together is the most
