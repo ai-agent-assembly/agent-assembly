@@ -40,6 +40,8 @@ Line numbers are from the base commit of the AAASM-5528 branches.
 | **observe-presented-as-prevent** | A telemetry-only mechanism described as blocking or catching. |
 | **platform-overreach** | Support asserted more broadly than the platform gate in code allows. |
 | **no-code-change** | "No code changes" without naming the launch, env and trust-store prerequisites. |
+| **overstated-crypto-guarantee** | A cryptographic property asserted stronger than the primitive in use (a signature where there is an unkeyed digest; immutability where there is convention). |
+| **feature-not-shipped** | A capability advertised as current that cannot be reached in a released build. |
 
 ### Verdicts
 
@@ -124,6 +126,22 @@ not today keep a credential out of the agent's reach. What it does is **scan
 outbound requests on the inspected hosts and redact recognised credentials
 before forwarding** — with `RedactOnly` as the default, `Block` opt-in, and
 detection bounded to the scanner's pattern set.
+
+### E5 — the audit chain is an unkeyed SHA-256 chain over the JSONL sink, not a signature
+
+| Fact | Evidence |
+|---|---|
+| The chain is an **unkeyed SHA-256** digest chain. `aa-core`'s audit module imports `sha2::{Digest, Sha256}` and there is no `hmac` import anywhere in the crate | `aa-core/src/audit.rs:10,713`; absence of `hmac` verified across `aa-core/src/` |
+| The only HMAC in the repository is unrelated — REST/admin JWT signing and outbound webhook signatures | — |
+| Consequence: it is tamper-**evident**, not a signature. Anyone able to rewrite the log can recompute the chain | property of an unkeyed chain |
+| It **is** genuinely verifiable, and this ships in the OSS build — do not understate it | `AuditWriter::verify_chain` at `aa-gateway/src/audit.rs:142`; CLI `aasm audit verify-chain` wired at `aa-cli/src/commands/audit/mod.rs:14,31,44` |
+| The chain covers the **JSONL sink only** — the DB conversion explicitly drops `seq`, `previous_hash` and `entry_hash` | `aa-gateway/src/storage/audit_bridge.rs:10-12` |
+| "Immutable" is false — retention pruning deletes audit rows | `aa-gateway/src/storage/sqlite.rs:715`, `aa-gateway/src/storage/postgres.rs:854` |
+| Emission is best-effort (`try_send`, drops counted), and `seq`/`last_hash` commit *before* the send, so the chain head advances even when an entry is lost — a dropped entry is indistinguishable from tampering | `audit_service.rs:86,161-179`; filed as AAASM-5626 |
+
+Wording is deliberately aligned with what AAASM-5612 is publishing on
+`docs/src/security-model.md` (PR #134), so the hub does not ship two different
+descriptions of one mechanism.
 
 ---
 
@@ -210,6 +228,10 @@ detection bounded to the scanner's pattern set.
 | D6 | `docs/src/README.md:85` | "kernel-level hooks that watch SSL libraries and process syscalls to catch bypass attempts at the OS level. Linux only." | observe-presented-as-prevent · platform-overreach | qualify | "observe-only … OpenSSL … Linux x86_64" | E1 |
 | D7 | `docs/src/comparison.md:3` | "a security checkpoint in front of every agent action" | absolute | qualify | "in front of each governed agent action" | E3 |
 | D8 | `docs/src/comparison.md:31` | "Network-level interception (no code change)" | no-code-change | qualify | Footnoted with the routing/CA/transport prerequisites. | E2 |
+| D9 | `docs/src/comparison.md:55` | "Immutable audit log with tamper-evident signatures \| ✓ 🚧 (HMAC-SHA256)" | overstated-crypto-guarantee · absolute | qualify | Row renamed to "Hash-chained, verifiable audit log", cell to `partial (unkeyed SHA-256 chain over the JSONL sink)`, with a footnote carrying the full bounds. | E5 |
+| D10 | `docs/src/comparison.md:82` | "AAASM's audit log entries are signed with HMAC-SHA256, making post-hoc alteration detectable" (marked 🚧 Enterprise) | overstated-crypto-guarantee | qualify | Restated as an unkeyed SHA-256 hash chain over the JSONL sink, verifiable with `aasm audit verify-chain`, **shipping in OSS** — the 🚧 Enterprise marker also *understated* it. | E5 |
+| D11 | `docs/src/comparison.md:79` | "No competitor in this matrix offers kernel-level **enforcement**." | observe-presented-as-prevent | qualify | eBPF is a detection layer; restated as "kernel-level visibility". | E1 |
+| D12 | `docs/src/comparison.md:80` | "MitM HTTPS interception via a per-host CA" | unbounded scope | qualify | Corrects the CA model and adds the launch/routing/trust precondition. | E2 |
 
 ### Kept without change (`docs`)
 
