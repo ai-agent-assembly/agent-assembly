@@ -151,8 +151,12 @@ impl Harness {
             ToolPresence::Detected => fixture,
             ToolPresence::Undetected => fixture.undetected(),
         };
+        // The content source is what lets a test actually *install*, which the
+        // forced-verification test needs: a verification has nothing to verify
+        // until a plan has been applied.
+        let content = Arc::new(aa_runtime::devint::fixture::FixtureContent::new(fixture.rendered()));
         let lifecycle = Arc::new(EngineLifecycle::new(
-            vec![RegisteredIntegration::new(DevToolKind::ClaudeCode, Arc::new(fixture))],
+            vec![RegisteredIntegration::new(DevToolKind::ClaudeCode, Arc::new(fixture)).with_content(content)],
             ReceiptStore::at(&store_root),
         ));
 
@@ -645,6 +649,88 @@ fn one_read_only_command_distinguishes_all_three_standings() {
         let report: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json");
         assert_eq!(report["runtime"]["provenance"]["standing"], "verified");
     }
+}
+
+/// `verify` against a **refuted** runtime, forced through with the escape
+/// hatch, may not print its pass without saying which build was measured.
+///
+/// The sharpest form of the defect. `verify` asserts that enforcement is
+/// established, so it refuses a runtime it cannot identify — but
+/// `--allow-unverified-runtime` downgrades that refusal, and the human
+/// rendering then printed `verification passed`, `[ok] protected_path_exercised`
+/// and exit 0 with the contradiction only on stderr. The flag is documented as
+/// changing whether a command proceeds, never what it reports; that was true of
+/// `--output json`, which always carried the standing, and false of the table.
+///
+/// The pass itself is unchanged — this asserts it is still printed — and so is
+/// the exit code. What changes is that stdout alone now names the standing.
+#[test]
+fn a_forced_verification_against_another_build_says_so_on_stdout() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let harness = Harness::start(another_checkout(live_binary(scratch.path(), "aa-runtime")));
+
+    // A verification needs something installed to verify, and reaching this
+    // runtime at all needs the hatch — which is the point: both are forced.
+    let installed = harness.aasm(&["install", "claude-code", "--yes", "--allow-unverified-runtime"]);
+    assert_eq!(code(&installed), 0, "install: {}", stderr(&installed));
+    assert!(
+        stdout(&installed).contains("refuted"),
+        "the installation report must name the standing too: {}",
+        stdout(&installed)
+    );
+
+    let output = harness.aasm(&["verify", "claude-code", "--allow-unverified-runtime"]);
+    let out = stdout(&output);
+    assert_eq!(
+        code(&output),
+        0,
+        "the hatch must still let it proceed: {out}\n{}",
+        stderr(&output)
+    );
+    assert!(
+        out.contains("verification passed"),
+        "the fixture must produce the confident answer, or this test proves nothing: {out}"
+    );
+    assert!(
+        out.contains("refuted"),
+        "stdout carried a pass without naming the standing of the runtime that produced it: {out}"
+    );
+    assert!(
+        out.contains("87718"),
+        "the answering process must be nameable from stdout alone: {out}"
+    );
+    let standing = out
+        .find("refuted")
+        .unwrap_or_else(|| panic!("no standing on stdout: {out}"));
+    let assertion = out
+        .find("protected_path_exercised")
+        .unwrap_or_else(|| panic!("no assertion block: {out}"));
+    assert!(
+        standing < assertion,
+        "the standing must precede the assertion a reader acts on: {out}"
+    );
+}
+
+/// `plan` is read-only and proceeds under an *unverifiable* standing with no
+/// flag at all, so its `planned level:` line is the one a user meets by
+/// accident. It must not stand unqualified on stdout.
+#[test]
+fn a_plan_from_an_unidentifiable_runtime_qualifies_its_planned_level() {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let harness = Harness::start(no_build_identity(live_binary(scratch.path(), "aa-runtime")));
+
+    let output = harness.aasm(&["plan", "claude-code"]);
+    let out = stdout(&output);
+    assert_eq!(code(&output), 0, "plan is read-only: {}", stderr(&output));
+
+    let caveat = out
+        .find("attributable to this build")
+        .unwrap_or_else(|| panic!("the plan must carry its caveat: {out}"));
+    let planned = out
+        .find("planned level:")
+        .unwrap_or_else(|| panic!("no planned level rendered: {out}"));
+    assert!(caveat < planned, "the caveat must precede the level: {out}");
+    assert!(out.contains("unverifiable"), "{out}");
 }
 
 /// A read-only `status` may answer under an unverifiable standing — it may not

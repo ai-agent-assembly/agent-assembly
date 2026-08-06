@@ -221,6 +221,45 @@ fn render_runtime_provenance(out: &mut String, runtime: &RuntimeInfo) {
     }
 }
 
+/// The standing of the runtime that produced a report, stated on **stdout**
+/// above the claims a reader is about to believe (AAASM-5628).
+///
+/// # Why every rendering needs this, not just `status`
+///
+/// `status` carried a caveat from the start and the other four renderings did
+/// not, so `aasm integrations plan` — which is read-only and therefore
+/// *proceeds* under an unverifiable standing — printed `planned level:
+/// host_enforced` with nothing beside it, and the only disagreement was a line
+/// on stderr. That is precisely the shape `session::guard_provenance`'s own doc
+/// comment refuses to ship: "a warning on stderr beside a confident answer on
+/// stdout is exactly the shape that got mistaken for a regression".
+///
+/// `verify` was the sharpest case. Under `--allow-unverified-runtime` a
+/// **refuted** runtime — one shown to be a different build — produced
+/// `verification passed`, `[ok] protected_path_exercised` and exit 0, with
+/// nothing on stdout saying which build had been measured.
+///
+/// It is also what makes the documented promise true. `IntegrationsArgs`'
+/// `--allow-unverified-runtime` help and the CLI reference both say the flag
+/// "changes whether the command proceeds, never what it reports" — true of
+/// `--output json`, which carries the standing on every report, and false of
+/// the table rendering until this function existed.
+///
+/// `subject` names what the caveat is about, so each command says what its own
+/// output is ("this plan", "this verification"). Quiet when the standing is
+/// `verified`, so an ordinary run is not hedged.
+fn render_provenance_caveat(out: &mut String, runtime: &RuntimeInfo, subject: &str) {
+    let provenance = &runtime.provenance;
+    if provenance.standing == "verified" {
+        return;
+    }
+    out.push_str(&format!(
+        "\n! The Agent Assembly runtime that produced {subject} is {} ({}), so none of it is \
+         attributable to this build — read it as reported, not established.\n  {}\n",
+        provenance.standing, provenance.verdict, provenance.detail
+    ));
+}
+
 fn tick(value: bool) -> &'static str {
     if value {
         "yes"
@@ -333,6 +372,14 @@ impl Report for PlanReport {
     fn render_human(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("Plan {} for {}\n", self.plan_id, self.tool_id));
+        // `plan` is read-only, so it proceeds under an unverifiable standing —
+        // which means `planned level:` below is a claim about whatever host the
+        // answering runtime is on. Stated before the block rather than after it.
+        // Skipped when the plan has been applied: `InstallReport` embeds this
+        // rendering and states the caveat once, against the installation.
+        if !self.applied {
+            render_provenance_caveat(&mut out, &self.runtime, "this plan");
+        }
         out.push_str(&format!("  profile:         {}\n", self.profile));
         out.push_str(&format!("  settings scope:  {}\n", self.settings_scope));
         out.push_str(&format!("  planned level:   {}\n", self.planned_level));
@@ -372,6 +419,11 @@ impl Report for PlanReport {
 impl Report for InstallReport {
     fn render_human(&self) -> String {
         let mut out = self.plan.render_human();
+        // `achieved level:` below is the strongest claim this command makes, and
+        // an install only reaches an unidentified runtime through
+        // `--allow-unverified-runtime` — so the standing is stated once here,
+        // against the installation, rather than twice via the embedded plan.
+        render_provenance_caveat(&mut out, &self.plan.runtime, "this installation");
         out.push_str(&format!("\nApplied as receipt {}\n", self.receipt_id));
         out.push_str(&format!(
             "  at:              {}\n",
@@ -451,13 +503,7 @@ impl Report for StatusReport {
         // about this host — every line below describes whatever host that
         // runtime is on. Naming it here, immediately above the ladder, rather
         // than only in the `Runtime:` block a reader may have scrolled past.
-        if self.runtime.provenance.standing != "verified" {
-            out.push_str(&format!(
-                "\n! The runtime that produced the reading below is {}, so none of it is \
-                 attributable to this build — read the levels as reported, not established.\n",
-                self.runtime.provenance.standing
-            ));
-        }
+        render_provenance_caveat(&mut out, &self.runtime, "the reading below");
         out.push_str("\nProtection levels:\n");
         for level in &self.levels {
             // Three marks for three states, and none of them is a sentence
@@ -522,6 +568,12 @@ impl Report for VerifyReport {
     fn render_human(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("{} — verification {}\n", self.tool_id, self.outcome));
+        // Immediately under the outcome word, because `verification passed`
+        // followed by `[ok] protected_path_exercised` is the most confident
+        // thing this family prints — and under `--allow-unverified-runtime` it
+        // was printed for a runtime shown to be a *different build*, with the
+        // only contradiction on stderr.
+        render_provenance_caveat(&mut out, &self.runtime, "this verification");
         out.push_str(&format!(
             "  ran at:               {}\n",
             timestamp(self.verified_at_unix_secs)
@@ -573,6 +625,12 @@ impl Report for RepairReport {
                 ""
             }
         ));
+        // `repair` states what it restored on this host, so the standing rides
+        // above that claim. Stated even when a `StatusReport` is embedded below
+        // — that one is a nested report carrying its own caveat above its own
+        // ladder, and it is not always present (a runtime that answers the
+        // repair verb without a status view leaves it `None`).
+        render_provenance_caveat(&mut out, &self.runtime, "this repair");
         bullets(&mut out, "Drifted", &self.drifted);
         if let Some(reason) = &self.nothing_to_repair {
             // Unconditional for this case, and phrased as a fact about the
@@ -619,6 +677,10 @@ impl Report for RemoveReport {
                 None => "nothing to remove".to_string(),
             }
         ));
+        // The restoration actions below describe the host the answering runtime
+        // is on, and removal reaches an unidentified runtime only through
+        // `--allow-unverified-runtime`.
+        render_provenance_caveat(&mut out, &self.runtime, "this removal plan");
         out.push_str("\nRestoration actions:\n");
         render_steps(&mut out, &self.steps);
         bullets(&mut out, "Left behind", &self.residual);
@@ -700,6 +762,12 @@ mod tests {
     /// A status whose adapter declared `support` about host enforcement, or
     /// declared nothing at all when `support` is `None`.
     fn status_declaring(support: Option<&str>) -> StatusReport {
+        status_declaring_on(runtime(), support)
+    }
+
+    /// [`status_declaring`] against a chosen runtime, so the provenance tests
+    /// can vary the standing without a second fixture.
+    fn status_declaring_on(runtime: RuntimeInfo, support: Option<&str>) -> StatusReport {
         use aa_proto::assembly::devint::v1 as wire;
 
         let view = wire::StatusView {
@@ -731,7 +799,7 @@ mod tests {
             }],
             adapter_ceiling: "l2_enforce".to_string(),
         });
-        StatusReport::from_view(runtime(), &view, summary.as_ref())
+        StatusReport::from_view(runtime, &view, summary.as_ref())
     }
 
     fn host_mark(report: &StatusReport) -> String {
@@ -799,10 +867,15 @@ mod tests {
     // ---- AAASM-5635: the integration state is wire vocabulary ----------------
 
     fn tool_list(state: Option<&str>) -> ToolListReport {
+        tool_list_on(runtime(), state)
+    }
+
+    /// [`tool_list`] against a chosen runtime.
+    fn tool_list_on(runtime: RuntimeInfo, state: Option<&str>) -> ToolListReport {
         use crate::commands::integrations::model::ToolRow;
 
         ToolListReport {
-            runtime: runtime(),
+            runtime,
             tools: vec![ToolRow {
                 tool_id: "claude-code".to_string(),
                 display_name: "Claude Code".to_string(),
@@ -1032,6 +1105,199 @@ mod tests {
         let now = DateTime::from_timestamp(1_700_000_000, 0).expect("a representable now");
         let rendered = timestamp_at(u64::MAX, now);
         assert!(rendered.contains("outside the representable range"), "{rendered}");
+    }
+
+    // ---- AAASM-5628: every rendering states which build produced it ---------
+
+    /// A runtime shown to be a *different* build — the `refuted` standing.
+    fn refuted_runtime() -> RuntimeInfo {
+        RuntimeInfo {
+            provenance: RuntimeProvenanceInfo {
+                standing: "refuted".to_string(),
+                verdict: "mismatch".to_string(),
+                detail: "the Agent Assembly runtime answering (pid 87718) is 0.0.1 (111111111111 via checkout), \
+                         not the 0.0.1 (abcdef012345 via checkout) this aasm was built with"
+                    .to_string(),
+                build_sha: Some("1111111111111111".to_string()),
+                pid: Some(87_718),
+                ..runtime().provenance
+            },
+            ..runtime()
+        }
+    }
+
+    fn plan_report(runtime: RuntimeInfo, applied: bool) -> PlanReport {
+        PlanReport {
+            runtime,
+            schema_version: 1,
+            plan_id: "plan-1".to_string(),
+            tool_id: "claude-code".to_string(),
+            profile: "recommended".to_string(),
+            settings_scope: "managed".to_string(),
+            policy_profile: None,
+            planned_level: "host_enforced".to_string(),
+            adapter_ceiling: "l2_enforce".to_string(),
+            steps: Vec::new(),
+            unsupported: Vec::new(),
+            warnings: Vec::new(),
+            required_permissions: Vec::new(),
+            applied,
+        }
+    }
+
+    fn install_report(runtime: RuntimeInfo) -> InstallReport {
+        InstallReport {
+            plan: plan_report(runtime, true),
+            receipt_id: "receipt-1".to_string(),
+            applied_at_unix_secs: 1,
+            steps: Vec::new(),
+            planned_level: "host_enforced".to_string(),
+            achieved_level: "host_enforced".to_string(),
+        }
+    }
+
+    fn remove_report(runtime: RuntimeInfo) -> RemoveReport {
+        RemoveReport {
+            runtime,
+            tool_id: "claude-code".to_string(),
+            dry_run: false,
+            plan_id: Some("removal-1".to_string()),
+            steps: Vec::new(),
+            residual: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn repair_report(runtime: RuntimeInfo) -> RepairReport {
+        RepairReport {
+            runtime,
+            tool_id: "claude-code".to_string(),
+            dry_run: false,
+            drifted: Vec::new(),
+            repaired: Vec::new(),
+            unresolved: Vec::new(),
+            nothing_to_repair: Some("no receipt accounts for this tool".to_string()),
+            status: None,
+        }
+    }
+
+    /// A verification that passed **and** exercised the protected path — the
+    /// most confident output this family produces.
+    fn confident_pass(runtime: RuntimeInfo) -> VerifyReport {
+        VerifyReport {
+            runtime,
+            protected_path_exercised: true,
+            assertions: vec![Assertion {
+                id: "protected_path_exercised".to_string(),
+                holds: true,
+                detail: "the synthetic secret was redacted".to_string(),
+            }],
+            ..vacuous()
+        }
+    }
+
+    /// Every rendering, on a refuted runtime, keyed by what a user would type.
+    fn every_rendering(runtime: &RuntimeInfo) -> Vec<(&'static str, String)> {
+        vec![
+            ("plan", plan_report(runtime.clone(), false).render_human()),
+            ("install", install_report(runtime.clone()).render_human()),
+            ("verify", confident_pass(runtime.clone()).render_human()),
+            ("repair", repair_report(runtime.clone()).render_human()),
+            ("remove", remove_report(runtime.clone()).render_human()),
+            (
+                "status",
+                status_declaring_on(runtime.clone(), Some("supported")).render_human(),
+            ),
+            ("list", tool_list_on(runtime.clone(), Some("ladder")).render_human()),
+        ]
+    }
+
+    /// The defect: only `list` and `status` said which build had answered, so
+    /// `plan`, `install`, `verify`, `repair` and `remove` printed a confident
+    /// answer on stdout with the contradiction only on stderr.
+    #[test]
+    fn every_human_rendering_names_the_standing_of_the_runtime_that_produced_it() {
+        let runtime = refuted_runtime();
+        for (command, rendered) in every_rendering(&runtime) {
+            assert!(
+                rendered.contains("refuted"),
+                "`{command}` printed a result without saying the runtime was refuted:\n{rendered}"
+            );
+        }
+    }
+
+    /// …and a verified runtime is not hedged, so the caveat stays a signal.
+    #[test]
+    fn a_verified_runtime_adds_no_caveat_to_any_rendering() {
+        for (command, rendered) in every_rendering(&runtime()) {
+            assert!(
+                !rendered.contains("attributable to this build"),
+                "`{command}` hedged a verified result:\n{rendered}"
+            );
+        }
+    }
+
+    /// The index of `needle` in `rendered`, or a panic naming the whole output.
+    fn at(rendered: &str, needle: &str) -> usize {
+        rendered
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} is not in:\n{rendered}"))
+    }
+
+    /// `plan` is read-only, so it *proceeds* under an unverifiable standing and
+    /// prints `planned level: host_enforced` — a claim about whatever host the
+    /// answering runtime is on. The caveat has to come first, or the reader has
+    /// already believed it.
+    #[test]
+    fn a_plan_states_the_standing_above_its_planned_level() {
+        let rendered = plan_report(refuted_runtime(), false).render_human();
+        assert!(
+            at(&rendered, "attributable to this build") < at(&rendered, "planned level:"),
+            "{rendered}"
+        );
+    }
+
+    /// The sharpest case in the ticket: under `--allow-unverified-runtime`,
+    /// `verify` against a runtime shown to be a **different build** printed
+    /// `verification passed`, `[ok] protected_path_exercised` and exit 0, with
+    /// nothing on stdout saying so.
+    ///
+    /// The pass is still reported — the flag is documented as changing whether
+    /// the command proceeds, not what it concludes — but it can no longer be
+    /// read without the standing.
+    #[test]
+    fn a_pass_against_a_refuted_runtime_says_which_build_was_measured() {
+        let rendered = confident_pass(refuted_runtime()).render_human();
+        assert!(rendered.contains("verification passed"), "{rendered}");
+        assert!(
+            rendered.contains("[ok] protected_path_exercised"),
+            "the fixture must be the confident one, or this test proves nothing: {rendered}"
+        );
+        assert!(
+            at(&rendered, "refuted") < at(&rendered, "[ok] protected_path_exercised"),
+            "the standing must precede the assertion a reader acts on: {rendered}"
+        );
+        assert!(
+            rendered.contains("87718"),
+            "the answering process must be nameable from stdout alone: {rendered}"
+        );
+    }
+
+    /// `install` and `remove` change host state; the standing rides above the
+    /// levels and the actions they report.
+    #[test]
+    fn install_and_remove_state_the_standing_above_what_they_claim_to_have_done() {
+        let install = install_report(refuted_runtime()).render_human();
+        assert!(
+            at(&install, "attributable to this build") < at(&install, "achieved level:"),
+            "{install}"
+        );
+
+        let remove = remove_report(refuted_runtime()).render_human();
+        assert!(
+            at(&remove, "attributable to this build") < at(&remove, "Restoration actions:"),
+            "{remove}"
+        );
     }
 
     /// The integers are the contract `--output json` publishes. A human-side
