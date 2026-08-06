@@ -54,18 +54,44 @@ const EXIT_UNSUPPORTED: i32 = 3;
 /// A SHA that is definitely not this build's.
 const OTHER_BUILD_SHA: &str = "1111111111111111111111111111111111111111";
 
+/// What the runtime's adapter says about Claude Code on *its* host.
+#[derive(Debug, Clone, Copy)]
+enum ToolPresence {
+    /// Installed — the truth on the host these tests run on.
+    Detected,
+    /// Absent. A stale runtime describes a host that no longer exists, which is
+    /// how a healthy Claude Code 2.1.220 got reported as `not_installed`.
+    Undetected,
+}
+
 /// A running DI-API server, reporting provenance the test chooses.
 struct Harness {
     dir: tempfile::TempDir,
     socket: PathBuf,
     token_file: PathBuf,
+    /// Shared by every runtime this harness starts, so a second one accepts the
+    /// same enrolled token. Two real runtimes would each have their own book
+    /// and the last to enrol would own the token file — which would make the
+    /// duplicate test fail on authentication instead of on multiplicity, and
+    /// prove the wrong thing.
+    tokens: TokenStore,
     shutdown: CancellationToken,
     servers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Harness {
-    /// Start one server reporting `provenance`, on `devint.sock`.
+    /// Start one server reporting `provenance`, on `devint.sock`, whose
+    /// fixture reports Claude Code as installed.
     fn start(provenance: RuntimeProvenance) -> Self {
+        Self::start_with(provenance, ToolPresence::Detected)
+    }
+
+    /// Start a server whose fixture answers `presence` for Claude Code.
+    ///
+    /// `ToolPresence::Undetected` is the stale runtime's answer: it describes
+    /// *its* host, which no longer exists, so it reports a tool that is
+    /// installed and healthy here as absent.
+    fn start_with(provenance: RuntimeProvenance, presence: ToolPresence) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let run = dir.path().join("run");
         std::fs::create_dir_all(&run).expect("run dir");
@@ -82,10 +108,11 @@ impl Harness {
             dir,
             socket: socket.clone(),
             token_file,
+            tokens: tokens.clone(),
             shutdown: CancellationToken::new(),
             servers: Vec::new(),
         };
-        harness.spawn_server(socket, provenance, tokens);
+        harness.spawn_server(socket, provenance, tokens, presence);
         harness
     }
 
@@ -96,21 +123,28 @@ impl Harness {
     /// names.
     fn add_second_runtime(&mut self, provenance: RuntimeProvenance) {
         let second = self.socket.parent().expect("run dir").join("devint-second.sock");
-        let tokens = TokenStore::new();
-        aa_runtime::devint::enrol_local_client(&tokens, "aasm", aa_core::integration::now_unix_secs()).expect("enrol");
-        self.spawn_server(second, provenance, tokens);
+        let tokens = self.tokens.clone();
+        self.spawn_server(second, provenance, tokens, ToolPresence::Detected);
     }
 
-    fn spawn_server(&mut self, socket: PathBuf, provenance: RuntimeProvenance, tokens: TokenStore) {
+    fn spawn_server(
+        &mut self,
+        socket: PathBuf,
+        provenance: RuntimeProvenance,
+        tokens: TokenStore,
+        presence: ToolPresence,
+    ) {
         let settings = self.dir.path().join(format!(
             "settings-{}.json",
             socket.file_name().and_then(|n| n.to_str()).unwrap_or("x")
         ));
         let store_root = self.dir.path().join("state/integrations");
 
-        // A real, detected Claude Code: every test below must fail on
-        // *provenance*, never because the fixture had nothing to report.
         let fixture = FixtureIntegration::new(DevToolKind::ClaudeCode, &settings);
+        let fixture = match presence {
+            ToolPresence::Detected => fixture,
+            ToolPresence::Undetected => fixture.undetected(),
+        };
         let lifecycle = Arc::new(EngineLifecycle::new(
             vec![RegisteredIntegration::new(DevToolKind::ClaudeCode, Arc::new(fixture))],
             ReceiptStore::at(&store_root),
@@ -249,10 +283,17 @@ fn a_runtime_from_another_build_refuses_instead_of_answering() {
 fn a_deleted_executable_never_produces_the_not_installed_answer() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let exe = live_binary(scratch.path(), "aa-runtime");
-    let harness = Harness::start(RuntimeProvenance {
-        executable_path: exe.clone(),
-        ..RuntimeProvenance::detect()
-    });
+    // The fixture reports Claude Code as absent, exactly as the stale runtime
+    // did. Without the provenance check this command reaches `plan`'s
+    // detection gate and exits 3 with the sentence below — so the assertions
+    // that it does not are load-bearing rather than vacuous.
+    let harness = Harness::start_with(
+        RuntimeProvenance {
+            executable_path: exe.clone(),
+            ..RuntimeProvenance::detect()
+        },
+        ToolPresence::Undetected,
+    );
     // The worktree goes away while the runtime keeps serving.
     std::fs::remove_file(&exe).expect("delete the executable");
 
