@@ -1095,7 +1095,7 @@ a Core PR, which is exactly the queue that produces the copies this ADR bans.
 
 - **This ADR is Accepted before its enforcement exists.** Every check in the
   [Validation requirements](#validation-requirements) table is owned by a
-  downstream ticket and most are not built. Accepted deliberately: the eleven
+  downstream ticket and most are not built. Accepted deliberately: the twelve
   blocked tickets cannot be implemented against a `Proposed` decision without
   re-litigating it, and
   [content-ownership.md](../development/content-ownership.md)'s own rule —
@@ -1174,7 +1174,7 @@ by naming a dimension rather than by argument.
 loses the obligation to have an opinion about global precedence. A repository that
 publishes no claims gains nothing and needs nothing.
 
-**For the eleven blocked tickets.** Each has a defined interface: 5598 takes the
+**For the twelve blocked tickets.** Each has a defined interface: 5598 takes the
 claim tuple and the waiver record; 5599 takes §2's comparison rules, §2.3's
 omission rule, and hand-off 8's bound-token list; 5600 and 5601 take Decision 4's
 front matter and hand-off 6's T3 semantics; 5602 takes Decision 8's enforcement
@@ -1225,6 +1225,7 @@ ADR does not claim coverage it does not have.**
 | W6 | Reviewer classes are bound to `CODEOWNERS` patterns in each repository | **Not yet automated** — owned by [AAASM-5603](https://lightning-dust-mite.atlassian.net/browse/AAASM-5603) |
 | W7 | The capability/evidence manifest is machine-validated and CI-enforced, with per-row evidence trees | **Not yet automated** — owned by [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531). The manifest's own schema comment records that its links, anchors, YAML and Markdown lint are run by hand today (`evidence_runs_on_main: path_gated_no_backstop`) |
 | W8 | ADR 0033's banned-absolutes list is checked in CI across docs | **Not yet automated** — owned by [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536); this ADR adds the waiver mechanism, not the check |
+| W9 | This ADR's `**Revision**` header matches its last `## Update —` heading, and every adoption record's `adr_revision` matches that header | **Not yet automated** — owned by [AAASM-5601](https://lightning-dust-mite.atlassian.net/browse/AAASM-5601); grammar fixed in [Revisions](#revisions-and-supersession) |
 
 Two of these are worth stating plainly rather than leaving to the table: **no
 check in this repository enforces any rule in this ADR today**, and the AAASM-5527
@@ -1376,17 +1377,37 @@ Owner: [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605)
 [the ADR index](README.md)'s and is cited, not re-decided.
 
 **Revisions.** This ADR is amended in place for non-normative changes — a fixed
-link, a clarified sentence, a corrected line number. A **normative** change adds a
+link, a clarified sentence, a corrected line number. A **normative** change adds an
 `## Update — AAASM-NNNN` section, following the house pattern already used by
-[ADR 0011](0011-cross-process-op-control-nats-subject.md),
-[ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) and
-[ADR 0026](0026-open-dashboard-product-semantics.md).
+[ADR 0011](0011-cross-process-op-control-nats-subject.md) (two) and
+[ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) (one).
+
+Because that heading is machine-read, its grammar is fixed rather than left to the
+examples:
+
+```text
+^## Update — (AAASM-\d+)(: .*|  *\(.*\))?$
+```
+
+An H2, one em-dash, **exactly one** ticket, and an optional title after a colon or
+in parentheses. [ADR 0026](0026-open-dashboard-product-semantics.md) is
+deliberately **not** cited as a model here: its update sections are H3 and one of
+them names *two* tickets, so a validator built from it would have no single answer
+to "which revision is this?". 0026 is not wrong — it predates this rule — but new
+`## Update —` sections in this ADR follow the grammar above.
 
 The **revision identifier** is the ticket of the most recent `## Update —` section,
 or `AAASM-5621` when there is none. The `**Revision**` line in this ADR's header
-carries that value and **must** equal the last `## Update — AAASM-` heading in this
-file; a validator checks the two against each other, and an adoption record's
-`adr_revision` against the header.
+carries that value and **must** equal the last matching heading in this file.
+
+Two checks follow from that, and both are owned by
+[AAASM-5601](https://lightning-dust-mite.atlassian.net/browse/AAASM-5601) —
+recorded as **W9** in the [Validation requirements](#validation-requirements) table
+so this deferral names an owner like every other:
+
+1. The header `**Revision**` equals the last `## Update —` heading (or the
+   publishing ticket when there is none).
+2. Each adoption record's `adr_revision` equals the header.
 
 A record naming an older revision is **stale**: a warning from the AAASM-5601
 validator, and blocking at a release gate (AAASM-5602). It does not block unrelated
