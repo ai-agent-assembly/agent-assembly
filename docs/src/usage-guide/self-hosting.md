@@ -21,7 +21,7 @@ The full self-host topology is a short, end-to-end chain. Operators work in the
 **dashboard**; the dashboard reads everything through the **REST API** (`aa-api`);
 the API fronts the **gateway** (the brain), which evaluates policy and saves
 governance records to **persistence**; and your **agents run co-located with an
-`aa-runtime` enforcement sidecar**, which checks every action with the gateway. So
+`aa-runtime` enforcement sidecar**, which checks the actions it receives with the gateway. So
 the very actions your agents take are recorded in persistence and surface back in
 the dashboard:
 
