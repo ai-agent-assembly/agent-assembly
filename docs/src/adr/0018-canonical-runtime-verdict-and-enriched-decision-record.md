@@ -237,12 +237,13 @@ which is where an action's outcome is actually decided"*. Verified against the c
 - `RuntimeScanner::enforce` runs only on the `IpcFrame::EventReport` arm
   (`aa-runtime/src/pipeline/mod.rs:127`) — that is, **after** the action has happened,
   not before it.
-- Its return value is an `EnforcementOutcome` of findings and counters, and the type's
-  own documentation says the count is *"a counter on this internal outcome, **not** a
-  verdict"* (`aa-runtime/src/pipeline/enforcement.rs:115-127`).
-- The **pre-execution** gate is `handle_policy_query`
-  (`aa-runtime/src/pipeline/mod.rs:159-175`), which is where a decision precedes an
-  effect.
+- Its return value is an `EnforcementOutcome` of findings and counters with **no
+  decision field** (`aa-runtime/src/pipeline/enforcement.rs:115-132`); the type's own
+  *"a counter on this internal outcome, **not** a verdict"* note (`:124`) is scoped to
+  the `undecodable_fields` counter, but the structural point stands for the whole type.
+- The **pre-execution** gate is `fn handle_policy_query`
+  (`aa-runtime/src/pipeline/mod.rs:407`, dispatched from the `IpcFrame::PolicyQuery` arm
+  at `:159-175`), which is where a decision precedes an effect.
 
 Consequence for AAASM-5100 Phase 1 (item A): a derived `RuntimeVerdict` cannot be
 sourced from `RuntimeScanner` alone, because the scanner never sees the allow / deny /
