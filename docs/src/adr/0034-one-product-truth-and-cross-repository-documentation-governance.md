@@ -807,15 +807,30 @@ finding it covered becomes blocking again. Renewal is a **new approval** with
 fresh evidence, not an edited `expires` field —
 [forbidden design 9](#explicitly-forbidden-designs).
 
-**Three things may not be waived**, because a waiver over them would remove the
+**Four things may not be waived**, because a waiver over them would remove the
 property the rule exists to establish rather than trade it off:
 
-1. An ADR 0033 **forbidden design**. Those are architectural bans; they are
-   amended in 0033 or they hold.
-2. **Evidence freshness or tracked-ness** (§6.3, §6.4). A waiver here would
+1. **Factual truthfulness.** Truthfulness is not a process control, so it is not
+   a control a bounded exception can trade against. Publishing a statement the
+   evidence does not support is not a deviation from this ADR that a waiver
+   could time-box; it is the outcome this ADR exists to prevent.
+2. An ADR 0033 **forbidden design**, including forbidden design 7's
+   banned absolutes (`0033:607-613`). Those are architectural and wording bans;
+   they are amended in 0033 or they hold. An unqualified absolute is
+   **unwaivable** in the product's own voice, at every layer and on every
+   surface. The single route to publishing one is that the phrase leaves the
+   banned category through a separate, evidence-backed product decision amending
+   0033 — a change to what is true, not a permission to say it anyway.
+3. **Evidence freshness or tracked-ness** (§6.3, §6.4). A waiver here would
    authorise publishing an unverifiable claim, which is the failure mode itself.
-3. The **absence of any resolvable row** for a governed claim (§2.4). Add the
+4. The **absence of any resolvable row** for a governed claim (§2.4). Add the
    row.
+
+Categories 1 and 2 are the ones a reader is most likely to try to bound rather
+than obey, so the rule is stated once more without hedging: **no approver, no
+expiry, no fail-closed renewal and no named owner authorises an unsupported
+absolute product claim.** There is no `waiver-approver` for one, because there
+is no waiver for one to approve.
 
 Waivers live in the repository whose text they cover, are listed in that
 repository's `TRUTH-ADOPTION.md` under `exceptions`, and are read by the
