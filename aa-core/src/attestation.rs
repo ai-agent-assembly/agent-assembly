@@ -529,6 +529,30 @@ impl ProtectionAttestation {
             .any(|l| l.asserts_coverage_at(now_unix_secs, self.freshness_window_secs))
     }
 
+    /// Whether every layer's basis predates the attestation that carries it.
+    ///
+    /// [`LayerAttestation::is_fresh`] treats a future timestamp as fresh — it
+    /// saturates rather than adjudicating clock skew, matching
+    /// [`ProtectionEvidence::is_fresh`](crate::integration::ProtectionEvidence::is_fresh).
+    /// In-process that is harmless because one clock produces both values.
+    ///
+    /// It stops being harmless the moment an attestation is *ingested from
+    /// another process*: a layer timestamped in the future would never age out
+    /// of its window, so a coverage claim made once would be reported forever.
+    /// `freshness_window_secs` is likewise a plain `pub` field on a
+    /// `Deserialize` struct, so a hostile or buggy producer can set it
+    /// arbitrarily high.
+    ///
+    /// **A consumer that did not produce the attestation must call this and
+    /// reject the payload when it returns `false`**, and should bound
+    /// `freshness_window_secs` against its own policy rather than trusting the
+    /// value it was handed.
+    pub fn timestamps_are_consistent(&self) -> bool {
+        self.layers
+            .iter()
+            .all(|l| l.observed_at_unix_secs <= self.generated_at_unix_secs)
+    }
+
     /// Components that were selected but cannot substantiate coverage.
     pub fn degraded_at(&self, now_unix_secs: u64) -> Vec<&LayerAttestation> {
         self.layers
