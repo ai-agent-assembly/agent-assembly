@@ -300,6 +300,12 @@ mdbook serve docs --open
 
 Mermaid diagrams use the `mdbook-mermaid` preprocessor, which is wired in `docs/book.toml`. The `Docs` GitHub Actions workflow runs `mdbook build docs` on every PR that touches `docs/**`, `README.md`, or `CONTRIBUTING.md` and fails the build on errors.
 
+## Where a piece of content belongs
+
+Product content is published across a company site, a product website, the Docs Hub, this book, the SDK and Arena docs, the examples gallery, and a README per repository. Before you add or correct a public statement, check [Content-layer ownership](docs/src/development/content-ownership.md): it records which layer owns each content type, how an outer layer may summarise or quote a source it does not own, when a duplicate is allowed and when it is not, and where a correction lands first. Its pre-PR checklist is the short form.
+
+The two rules it exists to protect: **fix the canonical source before the page you noticed the problem on**, and **an outer layer may drop detail but never a bound** — a platform, a precondition, or an [ADR 0033 §6](docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) claim term.
+
 ## Linking to another repository
 
 Every active repo in the org defaults to `main` (see [ADR 0016](docs/src/adr/0016-default-branch-master-to-main-migration.md)). When you write a link, ref, or automation target pointing at **another `ai-agent-assembly` repository**, use the **default-branch-tracking `HEAD` form** — `…/blob/HEAD/…`, `raw.githubusercontent.com/<org>/<repo>/HEAD/…` — rather than hardcoding a branch name, so the reference survives any future rename. This rule is scoped to repos in this org: a link into a third-party repository is that project's business, and its branch names are not ours to track.
