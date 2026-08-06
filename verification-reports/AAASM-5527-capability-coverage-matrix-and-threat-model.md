@@ -234,6 +234,63 @@ boundary.
 
 # The coverage matrix
 
+## Row counts
+
+Machine-counted from the [YAML source](AAASM-5527-capability-coverage-matrix.yaml)
+(80 rows). Every `coverage` value validates against ADR 0033 §6's closed
+eleven-term enum; a value outside it is a schema error, which is the
+machine-checkable half of AAASM-5536's V1 gate.
+
+| Coverage (ADR 0033 §6) | Rows |
+|---|---|
+| **Unmeasured** | 36 |
+| **Denied before execution** | 20 |
+| **Evaluated** | 6 |
+| **Observed** | 5 |
+| **Unsupported** | 5 |
+| **Redacted** | 4 |
+| **Detected** | 2 |
+| **Degraded** | 1 |
+| **Experimental** | 1 |
+| Approval required · Planned | 0 |
+
+**36 of 80 rows are Unmeasured.** That is the headline number, and it is not a
+failure of the survey — it is the accurate current state, and the reason the
+Epic exists.
+
+| Domain | Rows |
+|---|---|
+| Network transports (D3) | 13 |
+| SDK and framework seams (D1) | 13 |
+| Degraded and unavailable modes (D8) | 11 |
+| MCP (D4) | 10 |
+| Host actions (D2) | 8 |
+| Dev-tool launch (D5) | 8 |
+| Identity propagation (D7) | 7 |
+| Credentials (D6) | 6 |
+| Host-level interception per platform (D9) | 4 |
+
+| Boundary class | Rows |
+|---|---|
+| B3 — one process (all conditional) | 25 |
+| B2 — one framework | 6 |
+| B5 — one host (**none attained in a released build**) | 5 |
+| B6 — one managed device | 4 |
+| B1 — one patched function | 3 |
+| B7 — opaque SaaS (**not attained**) | 1 |
+| B4 — one container | **0** |
+| No boundary — the row is a gap | 36 |
+
+**17 of 80 rows are not reachable in a released build** (`reachable_in_release:
+false`), and every one of them is an eBPF or `DispatchTool` row. **18 rows
+changed on question 3** and **21 on question 4.**
+
+Platform coverage is not a useful count on its own — most rows are
+platform-independent gaps — so it is reported per row rather than aggregated.
+The four D9 rows are the platform statement: Linux x86_64 and aarch64 have E4
+mechanisms that no released binary can load, macOS has E3 plus a managed-settings
+route to `HostEnforced` and no E4, and Windows has neither.
+
 ## How to read it
 
 Each domain carries two tables. **Table 1** answers *what is covered and how
