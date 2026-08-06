@@ -346,3 +346,86 @@ language can express such a rule; nothing in a released build can enforce it.
 > registers one. `WRITABLE_KEYS` (`aa-devtool-claude-code/src/managed_settings.rs:96-105`)
 > contains the boolean `allowManagedHooksOnly` but never a `hooks` array. This is
 > not a limitation of the platform; it is an unimplemented capability.
+
+## D3 · Network egress: HTTP, HTTPS, raw TCP, UDP, QUIC, local IPC
+
+`aa-proxy` is the only element that can refuse traffic on its own authority
+before it leaves the machine. Its reach is bounded by three independent gates,
+each of which must pass: **(a)** the client speaks the HTTP proxy protocol to it,
+**(b)** the host is one it MitMs, **(c)** the tool trusts its CA. Under the
+shipped defaults, gate (b) admits exactly three hosts.
+
+### D3 · Table 1 — coverage
+
+| ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
+|---|---|---|---|---|---|---|---|---|---|
+| **N1** | CONNECT-time egress allow/deny | any · any | Linux + macOS · traffic routed to the proxy · HTTP `CONNECT` | `connect_deny_reason` (`aa-proxy/src/proxy/mod.rs:934`, run at `:1308`) → 403, connection ends | pre | enforce · sync | Both lists are **empty by default** (`AA_PROXY_DENIED_HOSTS`, `AA_PROXY_NETWORK_ALLOWLIST`, `aa-proxy/src/config.rs:75-85`), so the default posture is allow-all **except** the SSRF guard, which denies unconditionally ahead of both | **Denied before execution** ⚠ Q3 | B3 (conditional) |
+| **N2** | SSRF guard | any · any | Linux + macOS · routed · CONNECT | `aa-proxy/src/ssrf.rs`, always on | pre | enforce · sync | Always-on; the one network control that is not default-open | **Denied before execution** | B3 (conditional) |
+| **N3** | HTTPS payload inspection + credential DLP, built-in LLM hosts | any · any | Linux + macOS · routed **and** CA trusted · TLS MitM, HTTP/1.1 | `handle_llm_mitm` (`aa-proxy/src/proxy/mod.rs:1038`) — `in_tunnel_deny_reason` 403 at `:1066`, `Interceptor` `VerdictDecision::Block` 403 at `:1173` | in-line | enforce · sync | Exactly **three** hosts: `api.openai.com`, `api.anthropic.com`, `api.cohere.com` (`aa-proxy/src/intercept/detect.rs:31-34`). Both refusals are **local policy**, not a gateway decision | **Denied before execution** / **Redacted** | B3 (conditional) |
+| **N4** | HTTPS payload inspection, any other host | any · any | as N3 · plus `llm_only=false` **or** an operator `mitm_hosts` entry | `handle_non_llm_mitm` (`:801`) | in-line | enforce · sync | `llm_only` defaults **`true`** (`aa-proxy/src/config.rs:434-439`); `mitm_hosts` is empty by default and matches nothing | **Denied before execution** ⚠ Q3 | B3 (conditional) |
+| **N5** | HTTPS to any host not MitM'd | any · any | Linux + macOS · routed · raw TLS relay | `transparent_tunnel` (`:1397`) | — | observe (connection only) · best-effort | Bytes relayed uninspected. `transmission_evidence::forwarded(…)` records *"forwarded, and nothing looked at it — never clean"* (`:1398-1408`) | **connection Observed · payload Unmeasured** | B3 (conditional) |
+| **N6** | Model **response** bodies on LLM hosts | any · any | as N3 | *none* — relayed with a raw `tokio::io::copy` (`aa-proxy/src/proxy/mod.rs:1233`) | — | — · — | Responses are never scanned on the LLM path | **Unmeasured** | — |
+| **N7** | Plain `http://` request | any · any | Linux + macOS · routed · HTTP/1.1 | plain-HTTP path (`:1485-1560`) — DLP runs | in-line | enforce · sync | **No MCP adjudication on this path** | **Redacted** | B3 (conditional) |
+| **N8** | HTTP/2, gRPC, WebSocket over a MitM'd host | any · any | as N3 | *none* | — | — · — | The MitM `ServerConfig` sets **no `alpn_protocols`** (`:1342-1346`), so `h2` is never negotiated; the HTTP/2 preface is rejected as a malformed request line | **Unsupported** on MitM'd hosts; tunnelled and **Unmeasured** elsewhere | — |
+| **N9** | Chunked transfer encoding | any · any | as N3 | request: hard reject; response: head parsed, **body left empty** | — | fail-closed (request) / **silent truncation** (response) | A chunked *request* is dropped with no HTTP response (`aa-proxy/src/proxy/http.rs:205-210,266-270`). A chunked *response* on the MCP path is re-serialised with `Content-Length: 0` — see the [cross-cutting findings](#cross-cutting-findings-reported-not-fixed) | **Unmeasured** | — |
+| **N10** | Raw TCP that does not speak the proxy protocol | any · any | all · any · TCP | *none* | — | — · — | **No transparent redirect exists** — no iptables, pfctl, TPROXY or `SO_ORIGINAL_DST` (verified with `CONNECT` as positive control: 6 matches, all four redirect terms 0) | **Unmeasured** | — |
+| **N11** | UDP, QUIC, HTTP/3 | any · any | all · any · UDP | *none* | — | — · — | Verified repo-wide with `TcpListener` as positive control: 44 matches across `aa-cli`/`aa-proxy`/`aa-gateway`/`aa-runtime`, and **0** for `UdpSocket`, `quinn`, `quic`, `http3` across those plus `aa-core` and `aa-api` | **Unsupported** | — |
+| **N12** | Local IPC (Unix domain sockets) between processes | any · any | Unix · any · UDS | *none* — the product's own UDS servers are governed surfaces, not mediated ones | — | — · — | Nothing mediates a third-party UDS conversation | **Unmeasured** | — |
+| **N13** | TLS plaintext observation without the proxy | any · any | Linux · any · OpenSSL `SSL_read`/`SSL_write` uprobes | `aa-ebpf-probes/src/ssl_probes.rs:91,123,151` | post | observe · best-effort | Go `crypto/tls`, rustls, statically linked BoringSSL, GnuTLS and NSS expose no such symbols and are not covered (`ssl_probes.rs:17-32`). Events are **not bridged** to the audit pipeline (`aa-runtime/src/runtime.rs:302-305,344-350`) | **Observed** — and, with no bridge, effectively **Unmeasured** downstream ⚠ Q4 | B5 |
+
+### D3 · Table 2 — risk and evidence
+
+| ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
+|---|---|---|---|---|---|---|
+| **N1** · **N2** | **None — the proxy has no agent attribution at all.** No peercred, no PID lookup (verified: 0 matches for `peercred`/`SO_PEERCRED`/`peer_pid` in `aa-proxy/src` against 253 `host` matches in `proxy/mod.rs` in the same probe) | Host name only | Unset `HTTPS_PROXY`; a client that ignores proxy env; N10/N11 | `aa-integration-tests/tests/e2e_policy_proxy.rs`, `cli_proxy_remote_bind_refusal.rs` — run on `main` | **Denied before execution** for routed HTTP(S) | State the default-open posture wherever egress control is claimed |
+| **N3** · **N4** | as N1 | Request body, headers, host | Everything in N5–N13; removing CA trust; `NODE_TLS_REJECT_UNAUTHORIZED` | `aa-integration-tests/tests/e2e_secret_interception.rs`, `e2e_mcp_redact.rs`; unit tests in `aa-proxy` | **Denied before execution** / **Redacted** | Publish the three-host default explicitly next to every "inspects outbound HTTPS" claim |
+| **N5** | as N1 | none for the payload | This is the default path for every host that is not one of three | `transmission_evidence` persists the forwarded-uninspected fact (AAASM-5358) — genuinely good evidence design | **connection Observed · payload Unmeasured** | Keep; this is the model other paths should follow |
+| **N6** | as N1 | — | A credential echoed back by a provider is never detected | **Gap** — no response-scanning test on the LLM path, because there is no response scanning | **Unmeasured** | Decide: scan LLM responses, or state the asymmetry publicly |
+| **N8** · **N9** | as N1 | — | A tool that requires `h2` cannot use a MitM'd host at all; a chunked response is silently emptied | **Gap.** `aa-proxy/src/proxy/http.rs:747-760` pins the chunked-*request* rejection; nothing pins the chunked-*response* behaviour | **Unsupported** / **Unmeasured** | The chunked-response truncation needs a ticket — it is a correctness bug, not only a coverage gap |
+| **N10** · **N11** · **N12** | — | — | These are the transports an adversary A3 picks | **Gap by construction** | **Unsupported** / **Unmeasured** | Never describe the proxy as covering "outbound traffic"; it covers *routed HTTP(S)* |
+| **N13** | PID | — | Non-OpenSSL TLS stacks; non-Linux; loaderd unreleased; no audit bridge | `aa-integration-tests/tests/e2e_ebpf.rs` — path-gated, normally skipped on `main` | **Observed** at best | Bridge the events or stop counting TLS observation as coverage |
+
+## D4 · MCP: transports, methods and adjudication
+
+MCP is the domain where the gap between the *named* capability and the
+*reachable* one is widest. The product adjudicates exactly **one JSON-RPC method,
+on one transport, on one path, only when a gateway endpoint is configured** — and
+the most common MCP transport in practice, stdio, is structurally unreachable by a
+CONNECT proxy.
+
+### D4 · Table 1 — coverage
+
+| ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
+|---|---|---|---|---|---|---|---|---|---|
+| **M1** | MCP `tools/call` adjudication | any MCP client · any | Linux + macOS · routed, CA trusted, **`AA_PROXY_GATEWAY_ENDPOINT` set**, non-LLM MitM'd host · HTTPS POST, HTTP/1.1, explicit `Content-Length` | `evaluate_mcp_request` (`aa-proxy/src/proxy/mod.rs:614`, invoked `:834`) → `aa-gateway` `PolicyService.CheckAction` | pre | enforce · sync | **Fail-closed by default.** `mcp_fail_open` defaults `false` (`aa-proxy/src/config.rs:149,182`). Gateway unreachable at startup ⇒ the proxy **refuses to start** (`proxy/mod.rs:270-286`); per-call failure ⇒ Deny `-32000` (`:666-688`) | **Denied before execution** — the only gateway-bound pre-dial block in the system ⚠ Q3 | B3 (conditional) |
+| **M2** | MCP enforcement with no gateway configured | as M1 | `gateway_endpoint` default **`None`** (`aa-proxy/src/config.rs:123-130,179`) | *none* — `evaluate_mcp_request` is reached only via `Some(gw)` (`:832-834`) | — | — · — | MCP enforcement is **dark on a default `aa-proxy` run** | **Unmeasured** ⚠ Q3 | — |
+| **M3** | JSON-RPC batch array / malformed envelope carrying `tools/call` | any · any | as M1 | `is_unenforceable_tool_call` (`aa-proxy/src/intercept/mcp.rs:115-130`) | pre | enforce · sync | **Fail-closed** — JSON-RPC `-32600`, upstream never dialled (`proxy/mod.rs:620-631`). This is [AAASM-4070](https://lightning-dust-mite.atlassian.net/browse/AAASM-4070)'s fix | **Denied before execution** | B3 (conditional) |
+| **M4** | Every MCP method other than `tools/call` | any · any | as M1 | *none* — the parser returns `None` for any other method (`intercept/mcp.rs:85-87`) | — | — · — | `resources/read`, `prompts/get`, `sampling/createMessage`, `initialize`, all `notifications/*` → `McpEvalOutcome::Skip` → forwarded, subject only to the byte-level credential scanner | **Unmeasured** ⚠ Q4 | — |
+| **M5** | MCP over **stdio** (subprocess pipes) | any · any | all · any · pipes | *none, and structurally impossible for a CONNECT proxy* | — | — · — | Verified with positive control: `stdio` = **0** matches in `aa-proxy/src` against `tools/call` = 49 in the same probe. The product **models** stdio servers — `McpServerInfo { name, command, args }` (`aa-core/src/dev_tool.rs:112-121`) — and cannot mediate them | **Unmeasured** ⚠ Q4 | — |
+| **M6** | MCP over SSE (`text/event-stream`) | any · any | all · any · SSE | *none* | — | — · — | `text/event-stream` = **0** matches repo-wide. The SSE leg is raw-copied unscanned | **Unmeasured** ⚠ Q4 | — |
+| **M7** | MCP over Streamable HTTP | any · any | as M1 | parsed, then **emptied** | — | — · — | A chunked/SSE response is re-serialised with `Content-Length: 0` — the client receives an empty 200. `streamable` = **0** matches repo-wide | **Unmeasured**, and functionally broken ⚠ Q4 | — |
+| **M8** | MCP over WebSocket | any · any | all · any · WS | *none* | — | — · — | `Sec-WebSocket` / `101 Switching` = **0** matches in `aa-proxy/src`; no upgrade handling exists | **Unsupported** ⚠ Q4 | — |
+| **M9** | MCP on a built-in LLM host | any · any | as N3 | *none* | — | — · — | `handle_llm_mitm` contains **zero** MCP code (`proxy/mod.rs:1038-1241`), so an MCP endpoint on `api.anthropic.com` is DLP-scanned but never adjudicated | **Redacted** only | — |
+| **M10** | MCP-server governance by configuration | Claude Code, Copilot, Windsurf · n/a | per-tool · config write · n/a | `enabledMcpjsonServers` / `disabledMcpjsonServers` (`aa-devtool-claude-code/src/lib.rs:385-409`); `chat.mcp.deny`, `chat.mcp.requireApproval` (`aa-devtool-copilot/src/lib.rs:308-321`) | pre (by the tool) | enforce-by-the-tool · sync | Advisory: enforced by the host tool, and any process can launch the server itself | **Unmeasured** — tool-governance, not a data-path claim | B6 (macOS managed only) |
+
+### D4 · Table 2 — risk and evidence
+
+| ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
+|---|---|---|---|---|---|---|
+| **M1** | **A constant.** Every MCP `CheckActionRequest` is stamped `agent_id = "aa-proxy"` (`PROXY_AGENT_ID`, `aa-proxy/src/mcp_enforce.rs:48,99-102`) with empty `org_id` / `team_id` / `credential_token` and `caller_agent_id: None` (`:116`) | `tool_name`, `arguments`, `tool_source: "mcp"`, `target_url` — **never agent, team or org** | M2–M9; also: gateway `Decision::Pending` is downgraded to **Deny** (`mcp_enforce.rs:135-144`), so human approval cannot be reached inside the tunnel | `aa-integration-tests/tests/e2e_mcp_interceptor.rs`, `e2e_mcp_redact.rs` — run on `main` | **Denied before execution** | Per-agent MCP policy and per-agent MCP audit **do not exist today** and must not be claimed |
+| **M1** (redaction nuance) | as above | — | A gateway `Redact` verdict is bucketed with `Allow` as a forward, and the gateway's `RedactInstructions` are **never replayed field-by-field** (`mcp_enforce.rs:62-75`; `proxy/mod.rs:643-652`). The proxy's own DLP scanner does the redacting instead | This is a documented design decision, not a defect — but it means *"the gateway redacted field X"* is never true | **Redacted** by the proxy scanner | Manifest field for 5531: `redaction_actor: proxy_scanner \| gateway_instructions` |
+| **M3** | as M1 | — | A **nested** batch, or a batch whose elements carry `params` without a literal top-level `method`, is not detected — `mentions_tools_call` inspects one level only (`intercept/mcp.rs:128-130`) | **Unit-only.** No wire-level test: `e2e_mcp_interceptor.rs` has no batch case. For a fix to a *bypass* ticket, unit coverage is thin | **Denied before execution** | Add a wire-level negative control under [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532) |
+| **M4** | — | — | `resources/read` is a complete data-exfiltration primitive and is adjudicated nowhere | **Gap** | **Unmeasured** | Highest-value MCP follow-up |
+| **M5**–**M8** | — | — | Choosing any of these transports removes adjudication entirely | **Gap by construction** | **Unmeasured** / **Unsupported** | [AAASM-5533](https://lightning-dust-mite.atlassian.net/browse/AAASM-5533)-class work; must be stated on every MCP page |
+| **M9** | — | — | — | **Gap** | **Redacted** only | — |
+| **M10** | tool config scope | server name | Launching the MCP server directly | Read-back of the config write | **Integrated** | Never present config-level MCP disabling as interception |
+
+> **MCP mediation and whole-machine MitM are coupled.** The only supported way to
+> get M1 is `aasm proxy start --gateway <url>` or an `aa-runtime`-spawned proxy,
+> and both set `AA_PROXY_GATEWAY_ENDPOINT` **and force `AA_PROXY_LLM_ONLY=false`**
+> (`aa-cli/src/commands/proxy/start.rs:128-135`; `aa-runtime/src/runtime.rs:246-259`).
+> An operator cannot adopt MCP adjudication without simultaneously bringing every
+> host on the machine under TLS MitM, with the corresponding latency,
+> compatibility and privacy cost. That coupling is a product decision that has
+> never been stated publicly, and AAASM-5609's "Choose Your Enforcement Path"
+> guide cannot be written honestly without it.
