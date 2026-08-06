@@ -24,6 +24,37 @@ counts. It cannot read prose for meaning: a sentence can be grammatical,
 well-cited and still wrong, and a stranded clause that silently drops a scope
 statement will pass every check here. A PASS is "the two files agree and their
 counts are real", never "the document is correct".
+
+Known ways this guard can PASS while something is wrong
+-------------------------------------------------------
+Found by review after the guard shipped. Recorded so the next person does not
+over-trust an exit code. Routed to AAASM-5531 / AAASM-5536 rather than fixed
+here, because hardening the guard is manifest work, not artifact work.
+
+1. **A deleted Coverage term passes unnoticed.** The Markdown/YAML comparison
+   skips any row whose cell carries no bolded term (`if not want or not seen:
+   continue`), which is why it compares 79 rows and not 80 — `N5` legitimately
+   splits its coverage across a qualifier. Deleting a term outright would look
+   identical to that. Fix: assert presence, with `N5` allowlisted.
+2. **An extra, stronger term alongside the correct one passes.** The check is
+   `want in seen`, so a cell reading `**Denied before execution** / **Redacted**`
+   would have satisfied it — exactly the shape of blocker A. Fix: compare the
+   cell's term set against `{coverage} | set(qualifiers.values())` exactly.
+3. **`RETRACTED` is hand-maintained.** It caught blockers A, C, D and I because
+   someone remembered to add those phrases, and missed the fifth separator-
+   citation site because nobody added `1071-1092` — in the same round the guard
+   was introduced. Fix: generate the list from the "Correction to an earlier
+   revision" blocks the document already contains.
+4. **The section split is heading-level fragile.** `md.split("## Covered by an
+   existing issue")` works only because `##` is a substring of `###` — the same
+   fragility that made two notes silently fail to insert in round 2 — and raises
+   `IndexError` rather than failing cleanly on a miss. Fix: anchor on
+   `^#{2,4} ` and assert the section was found.
+5. **`RETRACTION_CONTEXT` is line-scoped.** A genuinely fresh assertion passes if
+   its line happens to contain the word "correction".
+6. **Nothing runs this.** `verification-reports/**` appears in no workflow's
+   `on.*.paths`, so this is pre-push discipline, not a CI gate. Treat an
+   unexecuted guard as absent.
 """
 
 from __future__ import annotations
@@ -70,6 +101,10 @@ RETRACTED = [
     "as published at v0.0.1-rc.6",
     "Epic exit criterion",
     "14 targets",
+    # Added after it shipped past the guard in the very round the guard was
+    # introduced — the fifth site of the separator-residual citation. This is
+    # the entry that proves limitation 3 below is real, not theoretical.
+    "1071-1092",
 ]
 # Occurrences that are legitimately explaining the retraction rather than
 # repeating the claim. Keyed by substring of the surrounding line.

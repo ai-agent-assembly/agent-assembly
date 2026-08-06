@@ -106,7 +106,8 @@ its own code is a defect in its own right, not merely a stale note.
 ## Claim vocabulary
 
 This artifact does **not** define its own vocabulary. The `Coverage` column takes
-exactly one value from [ADR 0033
+**one primary value, optionally followed by named qualifiers** (see [How to read
+it](#how-to-read-it)), drawn from [ADR 0033
 §6](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md#6-claim-vocabulary--decision-timing-and-failure-posture-are-part-of-every-claim):
 
 > **Observed** · **Detected** · **Evaluated** · **Denied before execution** ·
@@ -666,7 +667,7 @@ required before AAASM-5609 writes anything about secrets.
 | **C1** | none (proxy has no agent attribution) | request body and headers | Every non-inspected path in D3; `AlertOnly`; C6's recall bound | `aa-integration-tests/tests/e2e_secret_interception.rs` — runs on `main` | **Redacted** | State the `RedactOnly` default wherever DLP is claimed |
 | **C2** | none | host → key mapping | Only the three MitM'd LLM hosts (or `mitm_hosts`); the operator must set the env var; the agent can still egress on any path in D3 | **Gap** — unit tests exist in `aa-proxy/src/credentials.rs:307-322`; no end-to-end test proves the substitution reaches upstream | **Denied before execution** (opt-in) | **This capability was under-recorded.** A narrow, true version of "the real key never enters the agent" exists and 5609 may state it *with its four conditions named* |
 | **C3** | — | — | — | `aa-integration-tests/tests/common/mod.rs:246` registers a secret in a **test helper only** | **Unmeasured** | [AAASM-5631](https://lightning-dust-mite.atlassian.net/browse/AAASM-5631) owns the decision |
-| **C4** · **C5** · **C6** | — | — | as stated | `aa-security/src/scanner.rs:1071-1092,3012-3030` pins the separator residual | **Unmeasured** / **Detected** | C5 warrants a ticket: whole-environment inheritance defeats C2's benefit for any agent with a shell tool |
+| **C4** · **C5** · **C6** | — | — | as stated | The **narrowed** separator residual is pinned by `residuals_of_the_split_pass_are_pinned` (`aa-security/src/scanner.rs:3960-4005`) for multi-character gaps and many-way splits, and by `is_split_separator` (`:1596-1598`), which deliberately excludes ASCII punctuation. The single-separator case is **closed** — Pass 5 at `:1346`/`:1395`, live test `:3858`. An earlier revision cited `:1071-1092,3012-3030`, which are Shannon-entropy arithmetic and an email-scan assertion | **Unmeasured** / **Detected** | C5 warrants a ticket: whole-environment inheritance defeats C2's benefit for any agent with a shell tool |
 
 ### D7 · Identity propagation: agent, sub-agent, process tree, tenant
 
