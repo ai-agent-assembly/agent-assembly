@@ -65,8 +65,8 @@ rule, and [forbidden design 11](#explicitly-forbidden-designs) names it.
 ## Context
 
 > **Citation provenance.** Every `file:line`, command result and repository fact
-> in this ADR was derived against `agent-assembly` at `5a17666c3` (the
-> `remote/main` head this ADR's branch was cut from) unless another tree is named
+> in this ADR was derived against `agent-assembly` at `d410fefb7` (the
+> `remote/main` head this ADR's branch was rebased onto) unless another tree is named
 > at the point of citation. Line numbers rot; where the argument depends on a
 > citation the **symbol, path or command is given alongside it** so a reader who
 > finds the line moved can re-locate the anchor and detect drift rather than
@@ -539,8 +539,10 @@ git merge-base --is-ancestor "<evidence_tree>" "<described_ref>"   # exit 0 requ
 Evidence derived on `main` describes `main`. It does not describe `v0.0.1-rc.6`,
 which is **2909 commits** behind `main` at this ADR's provenance commit — a figure
 that moves, which is the point: the check is the command, never a remembered
-number. A row failing the ancestry test is **`Unmeasured` for that ref** until
-re-derived; it is not "probably still true".
+number. It moved during this ADR's own authoring — the figure was 2867 at the
+commit the branch was first cut from, and re-deriving it on rebase is what caught
+the mismatch. A row failing the ancestry test is **`Unmeasured` for that ref**
+until re-derived; it is not "probably still true".
 
 #### 6.4 A cited path must be tracked, not merely present
 
