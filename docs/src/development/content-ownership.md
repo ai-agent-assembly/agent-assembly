@@ -11,14 +11,23 @@ This page fixes **which layer owns which content type**, so that the outer layer
 contributors: it says where a fact belongs, how a lower layer may be quoted by a
 higher one, when a copy is allowed, and where a correction goes first.
 
-> **Status.** This page is the ownership and duplication specification
-> ([AAASM-5592](https://lightning-dust-mite.atlassian.net/browse/AAASM-5592)). The
-> *precedence* rule for resolving a conflict between two governing vocabularies, and
-> the *waiver* mechanism for publishing against it, are deliberately **not** decided
-> here — they belong to
-> [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) and its
-> ADR, which will formalise this page. See
-> [What this page hands off](#what-this-page-hands-off).
+> **Status — this page is an input, not an authority.**
+> [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) assigns
+> documentation **source-of-truth**, claim **precedence** and **waivers** to
+> [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621),
+> warning that defining them elsewhere "would create two competing authorities".
+> Source-of-truth assignment is exactly what this page does — so, to be explicit
+> about which of the three it touches and on what footing:
+>
+> - **Source-of-truth assignment** — supplied here, **as 5621's declared input**
+>   ([AAASM-5592](https://lightning-dust-mite.atlassian.net/browse/AAASM-5592) blocks
+>   5621). This page is normative for contributors in the meantime, and 5621's ADR
+>   supersedes it on publication.
+> - **Precedence** between the two governing vocabularies — **not** decided here.
+> - **Waivers** — **not** decided here.
+>
+> Read this as the draft 5621 ratifies, not as a second authority standing beside it.
+> See [What this page hands off](#what-this-page-hands-off).
 
 ## Why this page lives in the core repository
 
