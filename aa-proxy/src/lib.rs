@@ -24,6 +24,7 @@ pub mod error;
 pub mod hardening;
 pub mod intercept;
 pub mod mcp_enforce;
+pub mod pipeline_log;
 pub mod probe_adjudication;
 pub mod proxy;
 pub mod ssrf;
