@@ -629,4 +629,36 @@ mod tests {
         assert!(!att.any_coverage_verified_at(ATTEST_NOW));
         assert_eq!(att.degraded_at(ATTEST_NOW).len(), 3);
     }
+
+    /// None of the three probes can substantiate a coverage claim, on any
+    /// platform and by either path. This is the property the public trust
+    /// surface renders, so it is asserted over the whole attestation rather
+    /// than component by component.
+    #[test]
+    fn attest_never_claims_coverage_from_a_probe() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::remove_var(AA_LAYERS_ENV);
+        let probed = LayerDetector::attest(ATTEST_NOW);
+
+        std::env::set_var(AA_LAYERS_ENV, "ebpf,proxy,sdk");
+        let overridden = LayerDetector::attest(ATTEST_NOW);
+        std::env::remove_var(AA_LAYERS_ENV);
+
+        for (label, att) in [("probed", &probed), ("overridden", &overridden)] {
+            assert!(
+                !att.any_coverage_verified_at(ATTEST_NOW),
+                "{label} attestation claimed coverage: {:?}",
+                att.verified_states_at(ATTEST_NOW)
+            );
+            for layer in &att.layers {
+                assert!(
+                    !layer.basis.is_evidence(),
+                    "{label}/{} used {:?} as evidence",
+                    layer.component,
+                    layer.basis
+                );
+            }
+        }
+    }
 }
