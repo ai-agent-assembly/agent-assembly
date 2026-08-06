@@ -606,3 +606,127 @@ Re-open this ADR when any of the following occurs:
    E4's per-platform story.
 8. AAASM-5621's documentation-governance ADR is published and requires an interface
    change to this ADR's vocabulary.
+
+---
+
+## Migration checklist
+
+**No prior ADR ever recorded the three-layer model.** It propagated through prose,
+diagrams, crate docs and ticket titles without a decision record — which is why it
+drifted from the implementation unchecked. Consequently this ADR supersedes *material*,
+not another ADR. ADR 0030 §5.1's "Layer 1 / Layer 2" refer to the DI-API's OS +
+capability-token trust stack and are unrelated; they need no change.
+
+This ADR does **not** perform the migration. Each item below is owned by a downstream
+ticket; the checklist is the closure condition for the Epic.
+
+### A. Core docs — `docs/src/**` (owner: [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605), claim removal: [AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528))
+
+Pages whose *structure* encodes the superseded model — these need rewriting, not editing:
+
+- [ ] `docs/src/introduction/three-layer-model.md` — the page *is* the model (title, the
+      "three independent layers" table, the latency-vs-authority framing, "Everything
+      else, including bypass attempts"). Replace with the six-element model; retire the
+      filename.
+- [ ] `docs/src/security/three-layer-defense.md` — highest density of superseded claims
+      in the book. Replace with §5.3's platform matrix and §6's claim vocabulary.
+- [ ] `docs/src/usage-guide/interception-layers.md` — "Choosing interception layers"
+      presumes the pipeline; reframe as choosing a *managed path* and a deployment.
+- [ ] `docs/src/architecture/README.md:32-40` — the `3 interception layers (SDK · proxy
+      · eBPF)` mermaid diagram.
+- [ ] `docs/src/architecture/system-architecture.md` — the system mermaid diagram and
+      the "three interception layers" narration.
+
+Pages that reference the model and need their claims re-termed:
+
+- [ ] `docs/src/README.md`, `docs/src/introduction/README.md`,
+      `docs/src/introduction/overview.md`, `docs/src/introduction/concepts.md`
+- [ ] `docs/src/architecture/components.md`, `docs/src/architecture/workflows.md`,
+      `docs/src/architecture/infra-overview.md`
+- [ ] `docs/src/security/overview.md`, `docs/src/security/protection-model.md`
+      (its opening sentence routes readers to `three-layer-defense.md`),
+      `docs/src/security/threat-model.md`,
+      `docs/src/security/release-threat-model.md`,
+      `docs/src/security/trust-boundaries.md`
+- [ ] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
+- [ ] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
+- [ ] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`
+- [ ] `docs/src/devtools/product-brief.md`,
+      `docs/src/devtools/developer-integration-api.md`
+- [ ] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
+      tier definition asserts "The tool cannot bypass enforcement"**, a banned absolute
+      (the forbidden-designs list, item 7) that the verified bypass surface in §4 contradicts.
+- [ ] `docs/src/SUMMARY.md` — TOC entries for the two retired pages and the
+      "Choosing interception layers" entry.
+
+**Deliberately excluded — historical records, do not rewrite:**
+`docs/release/v0.0.1-beta.4.md`, `verification-reports/AAASM-1066.md`,
+`docs/src/research/AAASM-5269-*.md`, `docs/superpowers/plans/2026-04-28-aaasm-132-*.md`.
+These are point-in-time records of what was true or planned when written; rewriting them
+falsifies the record. Annotate with a pointer to this ADR if anything at all.
+
+### B. Repository and crate documentation (owner: AAASM-5605)
+
+- [ ] `README.md` — the repo's front door carries the model.
+- [ ] `CLAUDE.md` and `.claude/CLAUDE.md` — both contain a "three-layer interception
+      model" section presented as the *"single most important architectural insight"*.
+      `.claude/CLAUDE.md` additionally labels `aa-runtime` the "Authoritative enforcement
+      pipeline (`RuntimeScanner`)", which §6 shows is a post-action redactor, and
+      describes eBPF as catching *"everything, including bypass attempts"*.
+- [ ] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
+      `aa-sandbox`, `aa-sdk-client`.
+- [ ] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three
+      interception layers"; should describe an independently probed availability set.
+- [ ] `aa-proxy/src/lib.rs:3` — "implements the Layer 2 interception model".
+- [ ] `aa-sandbox/src/lib.rs:10-11` — claims it is "consumed by `aa-proxy` via the
+      `ToolRegistry` dispatch surface"; `aa-proxy/Cargo.toml` has no `aa-sandbox`
+      dependency. Stale, independent of this ADR.
+- [ ] `aa-ebpf-common/README.md:11` — describes `aa-ebpf-programs` as the live BPF
+      producer; that crate is a dead stub (every program body returns `0` with a TODO,
+      it is not a workspace member, and `aa-ebpf/build.rs:50,90` builds only
+      `aa-ebpf-probes`). Stale, independent of this ADR.
+
+### C. Dashboard and design assets (owner: AAASM-5605, coordinate with the design-fidelity Epic)
+
+- [ ] `dashboard/src/pages/OverviewPage.tsx`,
+      `dashboard/src/features/capability/api.ts`
+- [ ] `design/v2/hi-fi/overview.jsx`, `design/v2/hi-fi/live-ops.jsx`
+- [ ] `design/v1/**` (`overview.jsx`, `live-ops.jsx`, `hi-fi/`, `wireframes/`) —
+      superseded design generation; annotate rather than redraw.
+
+### D. Tests and fixtures (owner: AAASM-5605 / [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532))
+
+- [ ] `aa-integration-tests/tests/e2e_three_layers_together.rs`,
+      `aa-integration-tests/tests/e2e_ebpf.rs`,
+      `aa-integration-tests/tests/fixtures/e2e/three_layers_driver.py` — the scenarios
+      remain valid as *deployment* coverage; the naming and the narrative comments assert
+      the superseded model.
+
+### E. Product website and Docs Hub (owner: [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586), [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609))
+
+- [ ] Product / "How It Works" pages rewritten around managed enforcement paths (5586).
+- [ ] "What Ships Today" and "Choose Your Enforcement Path" evaluator guides published
+      against §5.3 and §6 (5609).
+- [ ] Host adapter support boundaries documented per
+      [AAASM-5606](https://lightning-dust-mite.atlassian.net/browse/AAASM-5606).
+
+### F. Jira items to annotate as superseded (owner: [AAASM-5607](https://lightning-dust-mite.atlassian.net/browse/AAASM-5607))
+
+Model-defining or still-referenced — these need a superseded-by reference to this ADR,
+and their vocabulary re-framed if they are reopened:
+
+- [ ] [AAASM-4](https://lightning-dust-mite.atlassian.net/browse/AAASM-4) — "Three-Layer Agent Interception" (the originating item)
+- [ ] [AAASM-44](https://lightning-dust-mite.atlassian.net/browse/AAASM-44) — "interception layer auto-detection and graceful fallback (eBPF → proxy → SDK)"; the *fallback* framing is explicitly rejected in Alternatives
+- [ ] [AAASM-3214](https://lightning-dust-mite.atlassian.net/browse/AAASM-3214), [AAASM-3223](https://lightning-dust-mite.atlassian.net/browse/AAASM-3223) — test cases asserting the three-layer model is "described accurately"; their expected result is now this ADR
+- [ ] [AAASM-3249](https://lightning-dust-mite.atlassian.net/browse/AAASM-3249), [AAASM-3264](https://lightning-dust-mite.atlassian.net/browse/AAASM-3264) — QA verification of the model and its "bypass coverage"
+- [ ] [AAASM-4608](https://lightning-dust-mite.atlassian.net/browse/AAASM-4608) — user-journey "Understand & exercise the three-layer interception model"
+- [ ] [AAASM-4644](https://lightning-dust-mite.atlassian.net/browse/AAASM-4644) — already-filed finding about rival mental models across surfaces; this ADR is its resolution
+
+Point-in-time execution records — annotate with a pointer, do **not** rewrite:
+[AAASM-1232](https://lightning-dust-mite.atlassian.net/browse/AAASM-1232),
+[AAASM-1520](https://lightning-dust-mite.atlassian.net/browse/AAASM-1520),
+[AAASM-1523](https://lightning-dust-mite.atlassian.net/browse/AAASM-1523),
+[AAASM-1549](https://lightning-dust-mite.atlassian.net/browse/AAASM-1549),
+[AAASM-1572](https://lightning-dust-mite.atlassian.net/browse/AAASM-1572),
+[AAASM-3252](https://lightning-dust-mite.atlassian.net/browse/AAASM-3252),
+[AAASM-3446](https://lightning-dust-mite.atlassian.net/browse/AAASM-3446).
