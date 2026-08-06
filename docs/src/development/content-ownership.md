@@ -420,3 +420,57 @@ following, each of which belongs to
 
 Until 5621's ADR is published, these six are open questions, and a contributor who
 hits one should escalate rather than settle it in a content PR.
+
+## Applying this to a change
+
+### Before you open a PR that touches public content
+
+- [ ] Each fact the change adds or edits has been classified against the
+      [canonical-source table](#canonical-source-by-content-type).
+- [ ] For each fact this layer does **not** own, the change is a link, a summary, a
+      quotation or a generated region — and carries the canonical link in the same
+      section.
+- [ ] No claim was widened: the [widening test](#an-outer-layer-may-narrow-a-claim-it-may-not-widen-one)
+      was applied to each restatement, and each edited claim still names its platform,
+      its preconditions and its ADR 0033 §6 term.
+- [ ] Any new hand-maintained copy is declared with an owner, a canonical link, a
+      reason generation was not used, and a re-verification trigger.
+- [ ] No `BEGIN GENERATED` region was hand-edited; generators were re-run instead.
+- [ ] Derivatives in other repositories are either corrected in a linked PR or
+      recorded as a follow-up on the ticket.
+- [ ] Nothing from a private repository was reproduced or paraphrased.
+
+### Ticket block for content work
+
+A ticket that changes public content should carry these four lines, so the ownership
+question is answered before the work starts rather than during review. Copy them into
+the ticket description:
+
+```markdown
+**Content layer:** <L0-L6, and the surface>
+**Canonical source(s) touched:** <path or ADR, per the canonical-source table>
+**Derivatives to sweep:** <the summaries / quotations / generated regions to follow up>
+**Widening check:** <what bound each restatement keeps — platform, precondition, claim term>
+```
+
+The blocks above are the contributor-facing form of this specification. The formal
+version — and the enforcement that goes with it — is
+[AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621)'s ADR.
+
+## Related decisions
+
+| Reference | Relation |
+|---|---|
+| [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) | Canonical architecture source; §6 owns the enforcement/claim vocabulary this page routes to, and §E assigns precedence and waivers to AAASM-5621 |
+| [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) | Protection-state ladder and evidence rules |
+| [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) | Version metadata source of truth — the model this page's *generated* duplication class follows |
+| [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) | Org-shared metadata registry. **Proposed**, so cited as direction rather than as a ratified constraint |
+| [ADR 0007](../adr/0007-public-domain-and-url-contract.md) · [ADR 0008](../adr/0008-saas-host-routing-auth-cookie-boundaries.md) | Own the canonical URL *values* that ADR 0014's registry stores |
+| [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) | `design/v2/` is the authoritative visual specification |
+| [Shared docs metadata](shared-docs-metadata.md) | How to add or update a generated shared value in this book |
+| [`source-of-truth.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/source-of-truth.md) | Docs Hub — owns the lifecycle maturity labels and the area/owning-repository map |
+| [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) | Docs Hub — provisional register bounding managed-service claims |
+| [AAASM-5592](https://lightning-dust-mite.atlassian.net/browse/AAASM-5592) | This page |
+| [AAASM-5580](https://lightning-dust-mite.atlassian.net/browse/AAASM-5580) | Parent Epic — audience-based information architecture and progressive disclosure |
+| [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) | Blocked by this page; formalises it as an ADR and settles the six hand-offs above |
+| [AAASM-5594](https://lightning-dust-mite.atlassian.net/browse/AAASM-5594) | Blocked by this page; designs the product-site and Docs Hub sitemaps against these ownership boundaries |
