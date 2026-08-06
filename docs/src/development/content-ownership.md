@@ -246,3 +246,89 @@ Every summary, quotation and generated region carries a link to its canonical so
 - **From a rendered site to another rendered site**, link the published URL under
   `docs.agent-assembly.com`, not the repository, so the reader lands on prose rather
   than on source.
+
+## Duplication rules
+
+Duplication is not banned — the outer layers exist to restate things. What is banned
+is duplication that **nobody owns**, because that is the form that drifts silently.
+Every restatement falls into one of three classes.
+
+### Prohibited
+
+- **Two hand-maintained sources for one content type**, where neither is generated
+  from the other and neither cites the other as canonical. This is the default
+  failure mode and the one worth searching for; see the
+  [worked example](#worked-example-two-hand-written-policy-references) below.
+- **A derivative that restates its source at the same depth.** If the outer page is
+  as detailed as the canonical page, it is not a summary, it is a second reference,
+  and the two will diverge.
+- **A rival model of the same subject.** Publishing a second architecture, layer set,
+  or ladder for something ADR 0033, ADR 0030 or the policy reference already models.
+  This is what
+  [ADR 0033's migration checklist §E](../adr/0033-canonical-governance-and-enforcement-architecture.md)
+  is tracking on the Docs Hub today.
+- **Private-repository content reproduced in a public layer.** The internal design of
+  the private `cloud` and `agent-assembly-enterprise` repositories does not become
+  publishable by being paraphrased. Link the public ticket instead.
+- **Hand-editing inside a `BEGIN GENERATED` / `END GENERATED` region.** The generator
+  is the only sanctioned writer for that region; a hand edit is reverted on the next
+  run and, worse, may pass review in the meantime.
+
+### Generated
+
+Machine-produced duplication is **encouraged**, at any fan-out. It is admissible when
+all four of the following hold:
+
+1. A named source of truth holds the value once.
+2. A checked-in generator writes it into a bounded region of each consumer.
+3. A CI job re-runs the generator and fails on any diff.
+4. The generated region carries a *do not edit* marker naming the generator.
+
+`scripts/generate_docs_metadata.py` writing `docs/src/generated/`, and
+`scripts/propagate_versions.py` under
+[ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md), are the
+worked examples in this repository; the Docs Hub's `hub-components.toml` generator is
+the equivalent there.
+
+### Acceptable with an explicit owner
+
+Some duplication is neither avoidable by linking nor worth automating — most often a
+prerequisite that a reader has to have in front of them to follow a procedure. A
+per-language quick-start that restates the operator prerequisites is the standard
+case: sending the reader to another site mid-procedure costs more than the drift risk.
+
+Such a copy is admissible only when it is **declared**, which means all four of:
+
+1. A **named owner** — a role or a team, not an individual, so the record does not go
+   stale when people change.
+2. A **canonical link** in the same section.
+3. A stated **reason generation was not used**.
+4. A **re-verification trigger** — the event that obliges someone to re-check the
+   copy. "Whenever the canonical page changes" is not a trigger, because nothing
+   raises it; a release, a version bump, or a named CI gate is.
+
+An undeclared copy is not in this class. It is in the prohibited class, and it stays
+there until somebody declares it.
+
+### Worked example: two hand-written policy references
+
+Both this repository and the Docs Hub publish a page called *Policy reference*, and
+they are independent prose: the Core page is grounded in the policy engine's own
+types in `aa-gateway/src/policy/`, the Hub page is a shorter field-by-field
+restatement. Neither is generated from the other, and the Hub page contains no link
+to the Core page.
+
+That is the prohibited class exactly, and it already shows the predicted symptom: the
+Hub page opens by stating that the gateway evaluates policy before each agent action,
+which ADR 0033 §2 and §4 contradict — a gateway decision reaches the traffic only
+through a caller that blocks on it, and an action off the managed path is *Unmeasured*
+rather than evaluated.
+
+The remedy under these rules is one of: generate the Hub page's field tables from the
+Core source; reduce the Hub page to a summary plus a canonical link; or declare it an
+owned copy with the four requirements above. Choosing between them is editorial;
+leaving it undeclared is not an option. Fixing it is **not** in this ticket's scope —
+the Docs Hub is owned by
+[AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586) and
+[AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609) — but it is
+recorded here as the reference instance of the failure this page exists to prevent.
