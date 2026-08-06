@@ -108,10 +108,25 @@ fact is a *derivative* and is governed by
 | **Open-source / commercial split** | Docs Hub | [`open-core-boundary.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/open-core-boundary.md) |
 | **What may be claimed about the managed service** | Docs Hub | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) (provisional pending AAASM-5621) |
 | **Commercial conversion path** (early access, contact) | L1 product website | `official-website` — `/early-access` |
-| **Version-bearing values** | [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) | `Cargo.toml` `[workspace.package].version` and `metadata/docs.yaml`, propagated by `scripts/propagate_versions.py` |
-| **Org-shared metadata** (repo names, canonical URLs, display names, Jira IDs) | [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) — note its status is **Proposed**, so treat it as direction until ratified | the `.github` repository's `metadata/org-profile.yaml` |
-| **Visual specification** | [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) | `design/v2/` |
+| **Version-bearing values** | [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) `Proposed` | `Cargo.toml` `[workspace.package].version` and `metadata/docs.yaml`, propagated by `scripts/propagate_versions.py` |
+| **Org-shared metadata** (repo names, canonical URLs, display names, Jira IDs) | [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) `Proposed` | the `.github` repository's `metadata/org-profile.yaml` |
+| **Visual specification** | [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) `Proposed — awaiting product/design sign-off` | `design/v2/` |
 | **Evidence for any claim above** | L6 | source, tests, `openapi/`, `proto/`, `verification-reports/` |
+
+### A note on `Proposed` ADRs
+
+Five of the ADRs cited above are still `Proposed` — 0007 (amended), 0008, 0013, 0014
+and 0025 (which additionally awaits product/design sign-off). Their status is
+annotated in the table rather than silently dropped, because a reader deciding
+whether to follow one is entitled to know it has not been ratified.
+
+The operative rule is this: **a `Proposed` ADR whose contract is already enforced by
+a CI gate is treated as operative**, because the gate makes it binding in practice
+whatever the header says — ADR 0013's version-drift gate and ADR 0014's
+metadata-drift gate are both running on this repository's pull requests today.
+A `Proposed` ADR with no gate behind it — 0025 is the clear case — is **direction,
+not a constraint**, and a change that departs from it needs the sign-off its own
+status line asks for rather than a citation of this page.
 
 ### Known non-conforming instance: two maturity vocabularies
 
@@ -533,12 +548,12 @@ version — and the enforcement that goes with it — is
 
 | Reference | Relation |
 |---|---|
-| [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) | Canonical architecture source; §6 owns the enforcement/claim vocabulary this page routes to, and §E assigns precedence and waivers to AAASM-5621 |
-| [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) | Protection-state ladder and evidence rules |
-| [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) | Version metadata source of truth — the model this page's *generated* duplication class follows |
-| [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) | Org-shared metadata registry. **Proposed**, so cited as direction rather than as a ratified constraint |
-| [ADR 0007](../adr/0007-public-domain-and-url-contract.md) · [ADR 0008](../adr/0008-saas-host-routing-auth-cookie-boundaries.md) | Own the canonical URL *values* that ADR 0014's registry stores |
-| [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) | `design/v2/` is the authoritative visual specification |
+| [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) `Accepted` | Canonical architecture source; §6 owns the enforcement/claim vocabulary this page routes to, and §E assigns precedence and waivers to AAASM-5621 |
+| [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) `Accepted` | Protection-state ladder and evidence rules, **as amended by ADR 0033 §5.3** (a third `HostEnforced` route `0030:465` does not list) |
+| [ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md) `Proposed` | Version metadata source of truth — the model this page's *generated* duplication class follows. CI-gated, so operative |
+| [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) `Proposed` | Org-shared metadata registry. CI-gated, so operative |
+| [ADR 0007](../adr/0007-public-domain-and-url-contract.md) `Proposed (amended)` · [ADR 0008](../adr/0008-saas-host-routing-auth-cookie-boundaries.md) `Proposed` | Own the canonical URL *values* that ADR 0014's registry stores |
+| [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) `Proposed — awaiting sign-off` | `design/v2/` is the intended authoritative visual specification. No gate behind it, so direction rather than constraint |
 | [Shared docs metadata](shared-docs-metadata.md) | How to add or update a generated shared value in this book |
 | [`source-of-truth.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/source-of-truth.md) | Docs Hub — owns the lifecycle maturity labels and the area/owning-repository map |
 | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) | Docs Hub — provisional register bounding managed-service claims |
