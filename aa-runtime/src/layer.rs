@@ -17,8 +17,17 @@
 //! probes: it returns a
 //! [`ProtectionAttestation`] that
 //! keeps the *basis* of each answer, so none of the three can publish itself as
-//! coverage. Both entry points consume one shared readout — a second copy of
-//! the predicate would be free to drift from the one that gates behaviour.
+//! coverage. Both entry points are built on one shared readout
+//! implementation — a second copy of the predicate would be free to drift from
+//! the one that gates behaviour.
+//!
+//! Note what that does *not* say: startup calls them separately
+//! (`runtime.rs`, `LayerDetector::detect` then `LayerDetector::attest`), so the
+//! probes execute twice, microseconds apart. Same predicate, two executions —
+//! a state change in that window would leave the bitflag and the attestation
+//! disagreeing. It fails safe, because the attestation can only under-claim
+//! relative to the flag, but a single call returning both would remove the
+//! window entirely.
 
 use std::fmt;
 
