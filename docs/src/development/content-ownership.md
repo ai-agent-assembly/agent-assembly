@@ -91,7 +91,7 @@ fact is a *derivative* and is governed by
 | **Measured protection state for a tool on a host** | Core | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) §4 ladder; [Protection levels](../devtools/protection-levels.md) |
 | **Measured limits and known bypasses** | Core | [Limitations and known bypasses](../devtools/limitations.md) |
 | **Security model and threat model (OSS enforcement path)** | Core | [`docs/src/security/`](../security/overview.md) |
-| **Vulnerability reporting process** | Each repository | that repository's `SECURITY.md` (Arena additionally scopes its own trial-ground policy) |
+| **Vulnerability reporting process** | The repository, falling back to the org default | that repository's `SECURITY.md` where it has one (`agent-assembly`, `python-sdk`, `node-sdk` today), otherwise the `.github` repository's org-wide `SECURITY.md`. Arena additionally scopes its own trial-ground policy as a docs page |
 | **System and component architecture** | Core | [`docs/src/architecture/`](../architecture/README.md) |
 | **A component's own internal architecture** | That component | e.g. Arena's orchestration pipeline is Arena's; the managed control plane's internals are the private `cloud` repository's |
 | **Policy and protocol semantics** | Core (project policy: the spec stays in this monorepo) | [Policy YAML reference](../policy-reference.md), [Protocol changelog](../protocol/CHANGELOG.md), `proto/` |
@@ -109,10 +109,11 @@ fact is a *derivative* and is governed by
 
 ### Roadmap has no canonical owner yet
 
-Searching the eight public surfaces for a roadmap document finds none: no repository
-in the org publishes a roadmap page, and the only occurrences of the word are
+Searching the org's public repositories for a roadmap document finds none: no
+repository publishes a roadmap page, and the only occurrences of the word are
 incidental prose on three Docs Hub pages plus the company site's undated visual
-portfolio markers.
+portfolio markers. Forward-looking statements are therefore made today wherever
+someone happens to need one, which is the condition this page exists to end.
 
 Until a roadmap owner is designated, **no layer may publish a dated commitment**, and
 a forward-looking statement is admissible only in one of two bounded forms:
