@@ -212,9 +212,36 @@ enforced by opinion.
 #### 2.0 Is this a claim at all?
 
 Only a **governed claim** is subject to the test. A sentence is a governed claim
-iff it **predicates an outcome of a subject** — that is, it asserts that the
-product did, does, or will do something to some action, artifact, host, or class
-of these. Outcomes are ADR 0033 §6's terms and their natural-language synonyms.
+iff it **predicates an outcome of a subject**, where *subject* means **the thing
+acted upon** — an action, an artifact, a host, or a class of these — and never the
+grammatical subject of the sentence. This is the same referent as D1 below, and
+the two words are used interchangeably from here on.
+
+An **outcome** is either of:
+
+1. an ADR 0033 §6 term, or a natural-language synonym of one; **or**
+2. an assertion of a value for any of **D3–D8** — a platform, a channel, a default
+   state, a decision timing, a failure posture, or a claim term.
+
+Limb 2 is load-bearing rather than tidy. *"Credential scanning is on by default"*
+predicates no §6 term, so limb 1 alone would put it outside Decision 2 entirely —
+and then §2.6's *restating a limit as a default* row would describe a sentence
+this gate excludes. Any sentence that sets a D-value must be inside the test that
+compares D-values, or it can set one freely.
+
+**D1 and D2 are deliberately not outcomes.** Naming a subject or a precondition is
+exactly what a capability mention does; admitting them would make every mention a
+governed claim and collapse the distinction this section exists to draw.
+
+> **The synonym set of limb 1 is bounded by a ticket, not by judgement.** It is
+> owned by [AAASM-5599](https://lightning-dust-mite.atlassian.net/browse/AAASM-5599)
+> and is **the same list** that implements "carries a bound" in
+> [hand-off 8](#hand-off-8--translation-accuracy), so the two share one definition
+> rather than drifting into two. Until it publishes, a verb that is neither a §6
+> term nor on the list produces a **finding**, not a block — an unbounded set that
+> blocks merges would let each implementer's vocabulary decide what ships. Note
+> that a **negation** of a §6 term is not a synonym of it: *"supports macOS"* is
+> not the term `Unsupported`, and until the list rules on it, it is a finding.
 
 A **capability mention** — a bare noun naming a capability, with no outcome
 predicated — is not a governed claim. It must resolve to a manifest row that
@@ -226,9 +253,25 @@ an inference about scope.
 
 Getting this boundary wrong in either direction is costly, so state it as a test:
 
-> **Substitution test.** Replace the sentence's subject with "some action". If the
-> sentence still asserts something, it is a governed claim. If it collapses into
-> "this capability exists", it is a capability mention.
+> **Substitution test.** Replace the sentence's **D1 subject extent** — the thing
+> acted upon — with the maximally general term for its kind: `some action`, `some
+> artifact`, or `some host`. If the sentence still asserts something, it is a
+> governed claim. If it collapses into "this capability exists", it is a
+> capability mention.
+
+Applied to one sentence of each kind, plus the negative case:
+
+| Sentence | D1 subject (kind) | After substitution | Verdict |
+| --- | --- | --- | --- |
+| *"Agent Assembly denies unapproved tool calls"* | unapproved tool calls (action) | *"…denies some action"* | Still asserts → **governed** |
+| *"Agent Assembly redacts credentials in audit logs"* | credentials (artifact) | *"…redacts some artifact in audit logs"* | Still asserts → **governed** |
+| *"Agent Assembly reports protection state for a managed laptop"* | managed laptop (host) | *"…for some host"* | Still asserts → **governed** |
+| *"A governance layer for AI agents — permissions, approval checkpoints, and evidence"* | none predicated | unchanged | Collapses → **capability mention** |
+
+Substituting the *grammatical* subject instead would yield *"some action denies
+unapproved tool calls"* for the first row — unusable — and would classify the
+second row as a mention because *"Agent Assembly redacts some action in audit
+logs"* is incoherent. That is the reading this wording exists to exclude.
 
 #### 2.1 The claim tuple
 
@@ -270,9 +313,32 @@ until then, it does not pass review). *Finding* means it is recorded and must be
 resolved before the surface is published at a release tag
 ([AAASM-5602](https://lightning-dust-mite.atlassian.net/browse/AAASM-5602)).
 
+##### Rule M — measurements, which the eight dimensions do not model
+
+A **measurement** is a number, its unit, and the method that produced it. It is
+not a D-dimension and is deliberately not being made one: the eight dimensions
+describe *what a control did*, and a latency or an overhead figure describes *what
+it cost*. Adding a ninth dimension for it would be an amendment to this ADR, not a
+reading of it.
+
+But the gap has to be closed rather than noted, because *replacing a measurement
+with an adjective* is one of the eight moves §2.6 must account for, and neither
+§2.0's gate nor §2.3's omission rule reaches it — an adjective such as *"fast"* or
+*"negligible overhead"* predicates no §6 term and asserts no D-value, so without
+this rule it would sit outside Decision 2 entirely.
+
+> **Rule M.** A restatement of a measurement carries the number, its unit and its
+> method, or omits the measurement. Replacing it with an adjective is a violation:
+> **blocking** where the canonical source carries a measurement (the comparison is
+> mechanical — the source has a number, the restatement does not), and a
+> **finding** where no measurement exists to compare against, since the remedy is
+> then to measure rather than to reword.
+
+Rule M is the only rule in Decision 2 that does not read the claim tuple.
+
 **Both directions are defects.** Understatement is graded lower than broadening
-because it is less dangerous, not because it is acceptable — six understatements
-were introduced in this programme while correcting overstatements, one of which
+because it is less dangerous, not because it is acceptable — understatements were
+introduced in this programme while correcting overstatements, and at least one
 reached `main`. Removing an unevidenced claim and erasing an evidenced one are
 different acts, and a review that only looks for the first will produce the
 second.
@@ -314,7 +380,11 @@ always fail.
 
 #### 2.5 The strength orderings
 
-These are the only orderings this ADR defines, and each is derived, not invented.
+These are the only orderings this ADR defines. Each link below is labelled
+**derived** — entailed by the owning source's own definitions — or **chosen** —
+a judgement this ADR makes and is accountable for. The distinction matters because
+a reader who re-derives a *chosen* link and finds no entailment should conclude the
+link was chosen, not that the ADR is wrong.
 
 **D6 · `decision_timing`.** `pre` ≻ `in_line` ≻ `post` ≻ `none`. Earlier is
 stronger; the manifest's enum is already declared in this order.
@@ -333,21 +403,33 @@ either direction. `reachability` is ordered by how much stands between a user an
 the capability: `shipped` ≻ `shipped_with_platform_exception` ≻
 `shipped_crates_io_only` ≻ `stubbed_default` ≻ `dead_code` ≻ `absent_mechanism`.
 
-**D8 · claim term.** ADR 0033 §6 owns the eleven terms and their definitions.
-It does not order them, and it must not be read as doing so. This ADR adds a
+**D8 · claim term.** ADR 0033 §6 owns the eleven terms and their definitions. It
+does not order them, and it must not be read as doing so. This ADR adds a
 **partial** order for the sole purpose of telling a broadening from an
-understatement, derived from §6's own *Evidence required* column — a term whose
-required evidence is entailed by another's is the weaker of the two:
+understatement. It is a **branching** order, not a chain — an earlier draft of this
+ADR wrote it as one chain and asserted two links §6 does not entail.
 
-| Chain | Derivation from §6 |
+| Link | Basis |
 | --- | --- |
-| *Denied before execution* ≻ *Evaluated* ≻ *Detected* ≻ *Observed* ≻ *Unmeasured* | A refusal before the effect entails a decision; a decision entails that the action reached the pipeline; a detection entails an observation; *Unmeasured* asserts no inspection at all |
-| *Redacted* ≻ *Unmeasured* · *Approval required* ≻ *Unmeasured* | Both require a durable record of an intervention; neither entails nor is entailed by the authority chain |
-| *Experimental*, *Planned*, *Unsupported* ≺ every term above | §6 attaches no capability claim to them |
-| *Degraded* | **Incomparable by construction.** §6 requires it to carry *both* the planned and the achieved level, so it is a pair, not a point |
+| *Detected* ≻ *Observed* | **Derived.** §6 defines *Detected* as a pattern found *"in observed material"*, so it entails *Observed* by its own wording |
+| *Evaluated* ≻ *Observed* | **Derived.** A decision record for an action is a durable record attributed to that action |
+| *Redacted* ≻ *Observed* · *Approval required* ≻ *Observed* | **Derived.** §6 requires a redaction record and a pending-approval record respectively; each is a durable record attributed to the action |
+| *Observed* ≻ *Unmeasured* | **Derived.** *Unmeasured* is §6's state for an action no control inspected, so it is the bottom of every positive branch |
+| *Denied before execution* ≻ *Evaluated* | **Chosen, not derived.** §6's evidence for *Denied* is a refusal by a component before the effect, which does **not** entail a control-plane decision record: §6's own mapping row records that `aa-proxy` CONNECT, DLP and LLM-host refusals are *local policy*, and only MCP `tools/call` on a non-LLM MitM'd host is a gateway decision. The link is chosen because "the action was stopped" is unambiguously the stronger statement to a reader than "the action was assessed" |
+| *Experimental*, *Planned*, *Unsupported* ≺ every positive term above | **Derived.** §6 attaches no capability claim to them |
 
-Everything not related by the table is **incomparable**, and incomparable values
-must match exactly. **If §6 gains, loses or redefines a term, this ordering
+Explicitly **incomparable**, so a restatement must match exactly rather than being
+graded:
+
+| Pair | Why |
+| --- | --- |
+| *Evaluated* / *Detected* | Neither entails the other. An `allow` decision produces a decision record and no finding; a finding entails no decision. They branch off *Observed* rather than ordering against each other |
+| *Unsupported* / *Unmeasured* | Different questions — availability versus measurement. "Not available here" is not a broader capability claim than "nothing is known here", so grading them would block a correct restatement |
+| *Degraded* / anything | §6 requires it to carry *both* the planned and the achieved level, so it is a pair, not a point |
+| *Experimental* / *Planned* / *Unsupported* | Mutually incomparable; each answers a different question about why no capability is claimed |
+
+Everything not related by the tables above is **incomparable**, and incomparable
+values must match exactly. **If §6 gains, loses or redefines a term, this ordering
 follows §6** — an amendment here, not a divergence. Coining a term §6 does not
 define is [forbidden design 12](#explicitly-forbidden-designs).
 
@@ -364,10 +446,10 @@ checklist, and this ADR supplies the mechanism it is checked by.
 | Dropping a precondition | D2 conjunct removed → extent rule → broadening |
 | Promoting a claim term | D8 above the row in §2.5's order → broadening |
 | Unbounding a scope | D1 superset → broadening |
-| Replacing a measurement with an adjective | The adjective predicates no D-value, so §2.3 reads D5–D8 at the top → broadening. *This is the move the first-pass heuristic cannot see* |
+| Replacing a measurement with an adjective | **[Rule M](#rule-m--measurements-which-the-eight-dimensions-do-not-model)**, not the tuple — an adjective asserts no D-value, so §2.0's gate does not reach it. *This is the move the first-pass heuristic cannot see, and the one the dimensions do not model either* |
 | Dropping the maturity label | Not a D-dimension — the maturity axis, [hand-off 7](#hand-off-7--the-two-maturity-vocabularies). Handled by the axis rule, not by this test |
 | Aggregating partial coverage into a whole | D1 superset over a set-valued subject → broadening |
-| Restating a limit as a default | D5 `default_state` inequality → mismatch. *The heuristic points the wrong way here; the equality rule does not* |
+| Restating a limit as a default | Governed via §2.0 limb 2 (it asserts a `default_state`), then D5 equality → mismatch. *The heuristic points the wrong way here; the equality rule does not* |
 
 ### 3. Canonical placement — one full ADR, many adoption records
 
