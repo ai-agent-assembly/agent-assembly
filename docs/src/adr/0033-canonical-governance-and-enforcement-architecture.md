@@ -867,9 +867,17 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
 
 ### E. Product website and Docs Hub (owner: [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586), [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609))
 
-The Docs Hub is a **separate repository** (`ai-agent-assembly/docs`). Nothing in this
-ADR's PR touches it; these are named so the owning tickets have a concrete list rather
-than a category.
+Two **separate repositories** are in scope here — the Docs Hub
+(`ai-agent-assembly/docs`) and the product website
+(`ai-agent-assembly/official-website`). Nothing in this ADR's PR touches either; they
+are named so the owning tickets have a concrete list rather than a category.
+
+Both already have an AAASM-5528 claim-bounding pass in flight, so the same
+merge-order caution as section A applies: Docs Hub
+[PR #134](https://github.com/ai-agent-assembly/docs/pull/134) and website
+[PR #90](https://github.com/ai-agent-assembly/official-website/pull/90) (8 commits,
+open, branch `v0.0.1-rc.7/AAASM-5528/remove_absolute_claims`). Re-verify the items below
+against those repos' trees rather than against the quotes here.
 
 - [ ] `docs/src/security-model.md` — **highest priority.** It presents a *fourth* rival
       model, an "IronClaw five-layer defense" (Boundary / Identity / Policy / Vault /
@@ -886,7 +894,9 @@ than a category.
 - [ ] `docs/src/saas-claim-publication-checklist.md` — the publication gate must check
       against §6's vocabulary, not an ad-hoc list.
 - [ ] The IronClaw layer table wherever it is reproduced across the Hub.
-- [ ] Product / "How It Works" pages rewritten around managed enforcement paths (5586).
+- [ ] `ai-agent-assembly/official-website` — Product and "How It Works" pages rewritten
+      around managed enforcement paths (5586), against §5.3's platform matrix and §6's
+      claim vocabulary rather than the superseded three-layer framing.
 - [ ] "What Ships Today" and "Choose Your Enforcement Path" evaluator guides published
       against §5.3 and §6 (5609). These guides will quote §2's caller table — which is
       why that table now distinguishes gateway-bound blocking from local proxy policy.
