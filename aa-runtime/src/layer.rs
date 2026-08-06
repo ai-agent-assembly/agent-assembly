@@ -700,4 +700,29 @@ mod tests {
         }
         std::env::remove_var(AA_LAYERS_ENV);
     }
+
+    /// An absent component is listed with the reason it is absent, not omitted.
+    /// Silently reducing to an SDK-only set is what made the degradation
+    /// invisible in the first place.
+    #[test]
+    fn attest_lists_absent_components_with_a_named_reason() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var(AA_LAYERS_ENV);
+
+        let att = LayerDetector::attest(ATTEST_NOW);
+        assert_eq!(att.layers.len(), 3, "every component must be listed");
+
+        let (_, ebpf) = state_of(&att, "ebpf");
+        if !LayerDetector::detect().contains(LayerSet::EBPF) {
+            assert!(
+                matches!(
+                    ebpf.basis,
+                    AttestationBasis::PlatformUnsupported { .. } | AttestationBasis::PrerequisiteUnmet { .. }
+                ),
+                "an absent eBPF layer must name why: {:?}",
+                ebpf.basis
+            );
+            assert!(!ebpf.detail.is_empty());
+        }
+    }
 }
