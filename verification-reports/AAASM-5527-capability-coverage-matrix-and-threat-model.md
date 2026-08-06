@@ -149,9 +149,9 @@ public guarantee](#minimum-defensible-public-guarantee-today) is built from it.
 
 ---
 
-# Threat model
+## Threat model
 
-## Scope
+### Scope
 
 This threat model covers the **shipped `agent-assembly` release artifact set at
 v0.0.1-rc.7** and the three language SDKs that pin it, deployed by an operator who
@@ -172,7 +172,7 @@ In scope:
   its dependency is unavailable is part of its security property, not an
   operational footnote.
 
-## Explicit non-goals
+### Explicit non-goals
 
 These are non-goals **by decision**, not by omission. Each is stated so that no
 downstream page can imply the opposite by silence.
@@ -189,7 +189,7 @@ downstream page can imply the opposite by silence.
 | **N8** | **Confidentiality of the audit chain against someone who can rewrite the log.** The chain is unkeyed; it is tamper-*evident* to a reader who holds an out-of-band copy of a prior head, not a signature | Evidence E5; re-verified below |
 | **N9** | **Network-layer transparent capture.** There is no iptables / pfctl / TPROXY / `SO_ORIGINAL_DST` redirect. Traffic reaches the mediator only if the client speaks the HTTP proxy protocol to it | Re-verified below |
 
-## Threat actors and capability assumptions
+### Threat actors and capability assumptions
 
 Four actors, ordered by the capability they are assumed to hold. The model's
 obligation differs for each, and conflating them is what produces overstated
@@ -207,7 +207,7 @@ A1 and A3 are the two ends of the same axis, and the difference between them is
 the structural fact ADR 0002 records and the reason the SDK is not a security
 boundary.
 
-## Trust boundaries
+### Trust boundaries
 
 | # | Boundary | Trusted side | Untrusted side | Enforced by | Residual |
 |---|---|---|---|---|---|
@@ -218,7 +218,7 @@ boundary.
 | **T5** | Runtime audit stream ↔ durable audit store | The sanitizer's output | Every field a sender emits | Write-boundary sanitizer strips banned keys recursively | Emission is best-effort; a dropped entry is indistinguishable from tampering |
 | **T6** | Managed-settings file ↔ the dev tool that reads it | The root-owned file's content, read back after write | The user's non-admin account | Filesystem ownership on macOS (B6) | Whether the tool *honours* those keys at runtime is unmeasured — "the open half of AAASM-5298" |
 
-## What this threat model does not replace
+### What this threat model does not replace
 
 - It is **not** the per-release operational threat model
   (`docs/src/security/release-threat-model.md`), which asks "what does *this*
@@ -232,9 +232,9 @@ boundary.
 
 ---
 
-# The coverage matrix
+## The coverage matrix
 
-## Row counts
+### Row counts
 
 Machine-counted from the [YAML source](AAASM-5527-capability-coverage-matrix.yaml)
 (80 rows). Every `coverage` value validates against ADR 0033 §6's closed
@@ -291,7 +291,7 @@ The four D9 rows are the platform statement: Linux x86_64 and aarch64 have E4
 mechanisms that no released binary can load, macOS has E3 plus a managed-settings
 route to `HostEnforced` and no E4, and Windows has neither.
 
-## How to read it
+### How to read it
 
 Each domain carries two tables. **Table 1** answers *what is covered and how
 strongly*; **Table 2** answers *what defeats it and what proves it*. Together they
@@ -315,7 +315,7 @@ Column conventions:
 - **Level** columns use ADR 0030's ladder for dev-tool rows and ADR 0033 §6
   elsewhere. "Target" is this spike's *recommendation*, not a commitment.
 
-## D1 · Framework tool calls, SDK adapters and direct function calls
+### D1 · Framework tool calls, SDK adapters and direct function calls
 
 The SDK seam is where the product is strongest against actor A1 and where it is
 structurally silent against A3. Three facts govern the whole domain:
@@ -327,7 +327,7 @@ structurally silent against A3. Three facts govern the whole domain:
    framework — three distinct kinds coexist: a *raising* wrapper, a *string-returning*
    wrapper, and a *lineage-only* observer that cannot block at all.
 
-### D1 · Table 1 — coverage
+#### D1 · Table 1 — coverage
 
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
@@ -345,7 +345,7 @@ structurally silent against A3. Three facts govern the whole domain:
 | **S12** | Raw HTTP, subprocess, filesystem, DB driver, browser automation from inside an SDK-adopting process | any · Python / Node / Go | all · any · — | *none in any SDK* | none | — · — | n/a | **Unmeasured** ⚠ Q4 | — |
 | **S13** | The SDK honouring a `Deny` it received | any · Rust core | all · any · UDS | `aa-sdk-client::resolve_decision` | pre | advisory | — | **Evaluated** only ⚠ Q4 | — |
 
-### D1 · Table 2 — risk and evidence
+#### D1 · Table 2 — risk and evidence
 
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|---|---|
@@ -365,14 +365,14 @@ structurally silent against A3. Three facts govern the whole domain:
 > not documented anywhere. Flagged for AAASM-5531 as a manifest field
 > (`deny_signal: raise | sentinel_value`).
 
-## D2 · Host actions: shell, subprocess, filesystem, browser, database
+### D2 · Host actions: shell, subprocess, filesystem, browser, database
 
 The single most consequential finding in this artifact: **for a native process on
 the normal agent path there is no pre-execution mediation of a shell command, a
 subprocess spawn, or a host file access on any shipped platform.** The policy
 language can express such a rule; nothing in a released build can enforce it.
 
-### D2 · Table 1 — coverage
+#### D2 · Table 1 — coverage
 
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
@@ -385,7 +385,7 @@ language can express such a rule; nothing in a released build can enforce it.
 | **H7** | Database query | any · any | all · any · any | *none* | none | — · — | n/a | **Unmeasured** ⚠ Q4 | — |
 | **H8** | Shell / file rule declared in a tool's own settings file | Claude Code · n/a | macOS · settings write · n/a | `aa-devtool-claude-code` managed settings | pre (by the tool) | enforce-by-the-tool · sync | If the tool ignores the keys, nothing happens and nothing detects it | **Unmeasured** — tool-governance, not a data-path claim | B6 |
 
-### D2 · Table 2 — risk and evidence
+#### D2 · Table 2 — risk and evidence
 
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|---|---|
@@ -404,7 +404,7 @@ language can express such a rule; nothing in a released build can enforce it.
 > contains the boolean `allowManagedHooksOnly` but never a `hooks` array. This is
 > not a limitation of the platform; it is an unimplemented capability.
 
-## D3 · Network egress: HTTP, HTTPS, raw TCP, UDP, QUIC, local IPC
+### D3 · Network egress: HTTP, HTTPS, raw TCP, UDP, QUIC, local IPC
 
 `aa-proxy` is the only element that can refuse traffic on its own authority
 before it leaves the machine. Its reach is bounded by three independent gates,
@@ -412,7 +412,7 @@ each of which must pass: **(a)** the client speaks the HTTP proxy protocol to it
 **(b)** the host is one it MitMs, **(c)** the tool trusts its CA. Under the
 shipped defaults, gate (b) admits exactly three hosts.
 
-### D3 · Table 1 — coverage
+#### D3 · Table 1 — coverage
 
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
@@ -430,7 +430,7 @@ shipped defaults, gate (b) admits exactly three hosts.
 | **N12** | Local IPC (Unix domain sockets) between processes | any · any | Unix · any · UDS | *none* — the product's own UDS servers are governed surfaces, not mediated ones | — | — · — | Nothing mediates a third-party UDS conversation | **Unmeasured** | — |
 | **N13** | TLS plaintext observation without the proxy | any · any | Linux · any · OpenSSL `SSL_read`/`SSL_write` uprobes | `aa-ebpf-probes/src/ssl_probes.rs:91,123,151` | post | observe · best-effort | Go `crypto/tls`, rustls, statically linked BoringSSL, GnuTLS and NSS expose no such symbols and are not covered (`ssl_probes.rs:17-32`). Events are **not bridged** to the audit pipeline (`aa-runtime/src/runtime.rs:302-305,344-350`) | **Observed** — and, with no bridge, effectively **Unmeasured** downstream ⚠ Q4 | B5 |
 
-### D3 · Table 2 — risk and evidence
+#### D3 · Table 2 — risk and evidence
 
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|---|---|
@@ -442,7 +442,7 @@ shipped defaults, gate (b) admits exactly three hosts.
 | **N10** · **N11** · **N12** | — | — | These are the transports an adversary A3 picks | **Gap by construction** | **Unsupported** / **Unmeasured** | Never describe the proxy as covering "outbound traffic"; it covers *routed HTTP(S)* |
 | **N13** | PID | — | Non-OpenSSL TLS stacks; non-Linux; loaderd unreleased; no audit bridge | `aa-integration-tests/tests/e2e_ebpf.rs` — path-gated, normally skipped on `main` | **Observed** at best | Bridge the events or stop counting TLS observation as coverage |
 
-## D4 · MCP: transports, methods and adjudication
+### D4 · MCP: transports, methods and adjudication
 
 MCP is the domain where the gap between the *named* capability and the
 *reachable* one is widest. The product adjudicates exactly **one JSON-RPC method,
@@ -450,7 +450,7 @@ on one transport, on one path, only when a gateway endpoint is configured** — 
 the most common MCP transport in practice, stdio, is structurally unreachable by a
 CONNECT proxy.
 
-### D4 · Table 1 — coverage
+#### D4 · Table 1 — coverage
 
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
@@ -465,7 +465,7 @@ CONNECT proxy.
 | **M9** | MCP on a built-in LLM host | any · any | as N3 | *none* | — | — · — | `handle_llm_mitm` contains **zero** MCP code (`proxy/mod.rs:1038-1241`), so an MCP endpoint on `api.anthropic.com` is DLP-scanned but never adjudicated | **Redacted** only | — |
 | **M10** | MCP-server governance by configuration | Claude Code, Copilot, Windsurf · n/a | per-tool · config write · n/a | `enabledMcpjsonServers` / `disabledMcpjsonServers` (`aa-devtool-claude-code/src/lib.rs:385-409`); `chat.mcp.deny`, `chat.mcp.requireApproval` (`aa-devtool-copilot/src/lib.rs:308-321`) | pre (by the tool) | enforce-by-the-tool · sync | Advisory: enforced by the host tool, and any process can launch the server itself | **Unmeasured** — tool-governance, not a data-path claim | B6 (macOS managed only) |
 
-### D4 · Table 2 — risk and evidence
+#### D4 · Table 2 — risk and evidence
 
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|---|---|
@@ -487,14 +487,14 @@ CONNECT proxy.
 > never been stated publicly, and AAASM-5609's "Choose Your Enforcement Path"
 > guide cannot be written honestly without it.
 
-## D5 · Managed dev-tool launch versus unmanaged launch
+### D5 · Managed dev-tool launch versus unmanaged launch
 
 Five adapters exist; **exactly one can ever be reported above `Integrated`**, and
 **two cannot be launched at all**. The rest sit behind `LegacyAdapterShim`, which
 declares no interception mechanism and authors no protection test, so ADR 0030's
 evidence rules cap them.
 
-### D5 · Table 1 — coverage
+#### D5 · Table 1 — coverage
 
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
@@ -523,7 +523,7 @@ evidence rules cap them.
 > protection probe adjudicates one. **Needs a new ticket** — see [Gap-to-ticket
 > mapping](#gap-to-ticket-mapping).
 
-### D5 · Table 2 — risk and evidence
+#### D5 · Table 2 — risk and evidence
 
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current (ADR 0030) | Target |
 |---|---|---|---|---|---|---|
@@ -534,14 +534,14 @@ evidence rules cap them.
 | **L6** · **L8** | — | — | This is the bypass | `aa-devtool-claude-code/src/bypass.rs` names what is and is not detectable, which is the right design | **Unmeasured** | Keep announcing it |
 | **L7** | file ownership | managed document keys | A local administrator; the tool ignoring the keys | Read-back of the written file, never observed enforcement — "the open half of AAASM-5298" (`managed_settings.rs:50-57`) | **`HostEnforced`** on the tool-governance axis | Do not let this rung imply data-path prevention |
 
-## D6 · Credential and secret boundary
+### D6 · Credential and secret boundary
 
 Two distinct mechanisms are both called "credential injection" in this codebase
 and in public copy. **One is dead; the other ships and works.** Conflating them
 is what produced the AAASM-5528 W16/W17 over-claims, and separating them is
 required before AAASM-5609 writes anything about secrets.
 
-### D6 · Table 1 — coverage
+#### D6 · Table 1 — coverage
 
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
@@ -552,7 +552,7 @@ required before AAASM-5609 writes anything about secrets.
 | **C5** | Environment inheritance by `aasm run` | any · any | all · `aasm run` · — | `std::env::vars().collect()` (`aa-cli/src/commands/run.rs:306`) | — | — · — | The child receives **the entire parent environment**, so a shell or file tool in the agent can read any credential the operator exported. The masking helper is used only for `--dry-run` preview text | **Unmeasured** | — |
 | **C6** | Scanner recall | any · any | all · — · — | `aa-security/src/scanner.rs` | in-line | detect · sync | Bounded to the pattern set: **no Stripe detector** exists; the OpenAI detector keys on `sk-` while Stripe uses `sk_`. A secret split by a separator (`中`, emoji, space, tab, newline) scans clean — accepted residual (AAASM-5368) | **Detected**, bounded | B3 (conditional) |
 
-### D6 · Table 2 — risk and evidence
+#### D6 · Table 2 — risk and evidence
 
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|---|---|
@@ -561,9 +561,9 @@ required before AAASM-5609 writes anything about secrets.
 | **C3** | — | — | — | `aa-integration-tests/tests/common/mod.rs:246` registers a secret in a **test helper only** | **Unmeasured** | [AAASM-5631](https://lightning-dust-mite.atlassian.net/browse/AAASM-5631) owns the decision |
 | **C4** · **C5** · **C6** | — | — | as stated | `aa-security/src/scanner.rs:1071-1092,3012-3030` pins the separator residual | **Unmeasured** / **Detected** | C5 warrants a ticket: whole-environment inheritance defeats C2's benefit for any agent with a shell tool |
 
-## D7 · Identity propagation: agent, sub-agent, process tree, tenant
+### D7 · Identity propagation: agent, sub-agent, process tree, tenant
 
-### D7 · Table 1 — coverage
+#### D7 · Table 1 — coverage
 
 | ID | Capability / action | Component | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|
@@ -575,7 +575,7 @@ required before AAASM-5609 writes anything about secrets.
 | **I6** | Agent attribution of proxy traffic | **None.** `PROXY_AGENT_ID = "aa-proxy"` constant on every MCP `CheckActionRequest` (`aa-proxy/src/mcp_enforce.rs:48,99-102`); `ProxyEvent.agent_id` is hardcoded `None` at the production construction site (`aa-proxy/src/proxy/mod.rs:1081`); no peercred or PID lookup exists | — | Logs render the agent as `<unknown>` | **Unmeasured** ⚠ Q4 | — |
 | **I7** | Gateway agent-plane authentication | **`PolicyService` and `AgentLifecycleService` are mounted behind `enrich_interceptor`, which returns `Ok(req)` unconditionally when no valid token is present** (`aa-gateway/src/iam/grpc_auth.rs:150-161`; wiring `aa-gateway/src/server.rs:719-745` for TCP and `:864-880` for UDS). `AuditService`, `ApprovalService`, `TopologyService`, `SecretsService` and `InvalidationService` use the fail-closed `auth_interceptor` (`:122-141`). `PolicyService` compensates in-body via `apply_authoritative_tenancy` (`policy_service.rs:398-425`) — but **only when a credential token resolves**; a tokenless call keeps the client-supplied org/team | — | By design for bootstrap: `Register` is documented as an unauthenticated bootstrap endpoint (`aa-sdk-client/src/identity_store.rs:5-9`) | **Evaluated**, with a stated bootstrap exposure ⚠ Q3 | B3 |
 
-### D7 · Table 2 — risk and evidence
+#### D7 · Table 2 — risk and evidence
 
 | ID | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|
@@ -585,7 +585,7 @@ required before AAASM-5609 writes anything about secrets.
 | **I6** | — | **Gap** | **Unmeasured** | [AAASM-5533](https://lightning-dust-mite.atlassian.net/browse/AAASM-5533) owns "real agent identity binding" and this is its concrete requirement |
 | **I7** | An unauthenticated caller reaching the agent plane can register and can submit policy queries carrying its own org/team | `aa-api` is uniformly gated by contrast (`aa-api/src/routes/mod.rs:281`) | **Evaluated** | Document the bootstrap exposure explicitly; it is defensible but must not be described as "authenticated" |
 
-## D8 · Degraded and unavailable modes
+### D8 · Degraded and unavailable modes
 
 Failure posture is a security property, not an operational footnote. **The
 product's fail-closed choices are good where they exist and are not uniform**;
@@ -613,7 +613,7 @@ to make degradation visible is emit-only.
 > dashboard's API surface, and rendered nowhere. [AAASM-5535](https://lightning-dust-mite.atlassian.net/browse/AAASM-5535)
 > is already In Progress and owns exactly this.
 
-## D9 · Host-level interception, per platform (E4)
+### D9 · Host-level interception, per platform (E4)
 
 This table does not extend ADR 0033 §5.3; it re-verifies it and adds the release
 artifact fact, which §5.3 does not state.
@@ -644,7 +644,7 @@ artifact fact, which §5.3 does not state.
 
 ---
 
-# Bypass catalogue
+## Bypass catalogue
 
 The demonstrated/inferred split is adopted from
 [`docs/src/devtools/limitations.md:49-84`](../docs/src/devtools/limitations.md),
@@ -655,7 +655,7 @@ the product needs to know which is which.
 
 Neither list is exhaustive. **"No finding" is not "no bypass."**
 
-## Demonstrated — asserted positively by a test or a measurement
+### Demonstrated — asserted positively by a test or a measurement
 
 | # | Bypass | Where it was measured |
 |---|---|---|
@@ -667,7 +667,7 @@ Neither list is exhaustive. **"No finding" is not "no bypass."**
 | **D-f** | A host classified `Unknown` under `llm_only` takes the transparent raw tunnel, reaching the provider with no scan, redact or audit — including case and trailing-dot FQDN variants before AAASM-3983 canonicalised them | `aa-proxy/src/intercept/detect.rs:20-27`; canonicalisation pinned at `aa-proxy/src/proxy/mod.rs:1300-1304` |
 | **D-g** | A secret split by a separator (`中`, emoji, space, tab, newline) scans clean | `aa-security/src/scanner.rs:1071-1092,3012-3030` (AAASM-5368), accepted residual |
 
-## Inferred — documented, not measured
+### Inferred — documented, not measured
 
 Grouped by the boundary each defeats.
 
@@ -680,7 +680,7 @@ Grouped by the boundary each defeats.
 | **Host-level interception (P1–P4)** | Everything, on every platform, in every released build — the loader daemon does not ship |
 | **The evidence pipeline (G1–G11)** | An audit entry dropped under load is indistinguishable from a tampered one · a degradation is emitted and never rendered · budget state corruption silently resets the cap · an unreadable eBPF policy silently yields an empty rule set |
 
-## Which of these the product can see
+### Which of these the product can see
 
 Detection is not prevention, and neither is a bypass a product failure — but a
 bypass the product cannot even *see* is materially worse than one it names.
@@ -695,12 +695,12 @@ There is **no process watcher** for an unmanaged tool invocation on any platform
 
 ---
 
-# Where questions 3 and 4 changed the answer
+## Where questions 3 and 4 changed the answer
 
 This is the section the method exists to produce. Twelve rows changed; three
 changed in the product's favour.
 
-## Question 3 — the capability exists but is off by default
+### Question 3 — the capability exists but is off by default
 
 | Row | Named capability | What actually ships |
 |---|---|---|
@@ -717,7 +717,7 @@ changed in the product's favour.
 | **I5** / **I7** | Tenant isolation; agent-plane auth | `TenancyMode` defaults to `Untenanted`; `PolicyService` and `AgentLifecycleService` sit behind a never-rejecting `enrich` interceptor |
 | **L2** / **L3** | Codex and Windsurf "managed launch" | `HTTPS_PROXY` with no CA trust — the measured D-d failure mode, unfixed |
 
-## Question 4 — the mechanism does not exist, or a released binary cannot reach it
+### Question 4 — the mechanism does not exist, or a released binary cannot reach it
 
 | Row | Named capability | Verified state |
 |---|---|---|
@@ -734,7 +734,7 @@ changed in the product's favour.
 | **S13** | The SDK honouring a deny | `resolve_decision` has no non-test caller in this repository |
 | **C4** | Model response credential scanning | Absent on the LLM path |
 
-## Question 4 answered *in the product's favour* — three corrections upward
+### Question 4 answered *in the product's favour* — three corrections upward
 
 Recording these matters as much as the negatives: an artifact that only ever
 finds things worse than claimed is not being read carefully either.
@@ -747,13 +747,13 @@ finds things worse than claimed is not being read carefully either.
 
 ---
 
-# Gap-to-ticket mapping
+## Gap-to-ticket mapping
 
 Every gap above resolves to exactly one of: an **existing** Jira issue, a
 **new follow-up** this spike recommends, or an **accepted limitation**. Verified
 against the live Epic children on 2026-08-06.
 
-## Covered by an existing issue
+### Covered by an existing issue
 
 | Gap | Rows | Issue | Status |
 |---|---|---|---|
@@ -780,7 +780,7 @@ against the live Epic children on 2026-08-06.
 | Proxy + eBPF backstop for direct-to-gateway bypass | I7 | [AAASM-3422](https://lightning-dust-mite.atlassian.net/browse/AAASM-3422) | To Do |
 | Correlation bridge hardcodes `pid: 0` | I4 | `TODO(AAASM-150)` in `aa-runtime/src/correlation/mod.rs:47-49` | pre-existing |
 
-## New follow-ups this spike recommends
+### New follow-ups this spike recommends
 
 Seven. Each is a defect or a decision this survey surfaced that no open issue covers.
 
@@ -794,7 +794,7 @@ Seven. Each is a defect or a decision this survey surfaced that no open issue co
 | **F6** | **Decide how browser and database actions are modelled.** Neither is expressible in the policy AST. Either add action kinds, or state publicly that they are covered only insofar as they surface as `ToolCall` or `NetworkRequest` | H6 · H7 | A product-scope decision, not a bug | **Medium** — blocks an honest 5609 capability list |
 | **F7** | **MCP adjudication is coupled to whole-machine MitM.** The only supported route to M1 forces `AA_PROXY_LLM_ONLY=false`, so an operator cannot adopt MCP governance without bringing every host under TLS interception. Either decouple them or document the coupling as a deliberate trade-off | M1 | Never stated publicly; 5609 cannot write "Choose Your Enforcement Path" without it | **Medium** |
 
-## Accepted limitations
+### Accepted limitations
 
 Recorded so they are not re-opened as defects.
 
@@ -813,7 +813,7 @@ Recorded so they are not re-opened as defects.
 
 ---
 
-# Minimum defensible public guarantee today
+## Minimum defensible public guarantee today
 
 This is the recommendation AAASM-5609 and AAASM-5588 should build from. It is
 deliberately narrow, and every clause is carried by a row above.
@@ -854,7 +854,7 @@ Three drafting rules for anyone deriving copy from this:
 
 ---
 
-# Go / Conditional Go / No-Go per boundary class
+## Go / Conditional Go / No-Go per boundary class
 
 Acceptance criterion 7 requires a recommendation per boundary class.
 
@@ -870,14 +870,14 @@ Acceptance criterion 7 requires a recommendation per boundary class.
 
 ---
 
-# Cross-cutting findings (reported, not fixed)
+## Cross-cutting findings (reported, not fixed)
 
 This ticket owns `verification-reports/**` only. `docs/src/**` and
 `docs/src/SUMMARY.md` are held by AAASM-5592, and the `aa-*` crates by
 AAASM-5535. Everything below is therefore reported to its owner rather than
 edited here.
 
-## Code defects
+### Code defects
 
 | # | Finding | Location | Owner |
 |---|---|---|---|
@@ -889,7 +889,7 @@ edited here.
 | 6 | `aa-cli` and gateway lifecycle tests still mint registration keys via `derive_transport_key(agent_id)`, the derivation AAASM-5332 removed from production | `aa-cli/src/commands/run_registration.rs:583,668`; `aa-gateway/tests/lifecycle_service_test.rs:29,658,682,804,830,856` | AAASM-5535 or a test-hygiene follow-up |
 | 7 | The correlation bridge hardcodes `pid: 0`, making pid-family correlation inert | `aa-runtime/src/correlation/mod.rs:47-49` | pre-existing `TODO(AAASM-150)` |
 
-## Comments that contradict their own code
+### Comments that contradict their own code
 
 Each of these would mislead a reader who trusts the comment over the code. Two
 are already ticketed; two are not.
@@ -901,12 +901,12 @@ are already ticketed; two are not.
 | 10 | `aa-ebpf-common/README.md:11` — describes `aa-ebpf-programs` as the live BPF producer | It is a dead stub; `aa-ebpf/build.rs` builds only `aa-ebpf-probes` | AAASM-5627 |
 | 11 | `aa-ebpf` uprobe docstring claims `SSL_write_ex` is attached | It never is | AAASM-5634 |
 
-## Book pages still narrating the superseded model
+### Book pages still narrating the superseded model
 
 Reported for AAASM-5592 / AAASM-5605; **not edited here**.
 
-- `docs/src/security/threat-model.md` — routes readers to "the [three interception
-  layers](three-layer-defense.md)" in its opening sentence (`:6`), and its threat
+- `docs/src/security/threat-model.md` — routes readers to *"the three interception
+  layers"*, linked to `three-layer-defense.md`, in its opening sentence (`:6`), and its threat
   scenario 3 asserts the fall-through framing ADR 0033's Alternatives explicitly
   rejects: *"eBPF SSL uprobes observe the plaintext if the agent bypasses both"*
   (`:57`). Scenario 2 states redaction happens *"on every path"* (`:53`), which
@@ -918,7 +918,7 @@ Reported for AAASM-5592 / AAASM-5605; **not edited here**.
 
 ---
 
-# Fields this artifact recommends for the AAASM-5531 manifest
+## Fields this artifact recommends for the AAASM-5531 manifest
 
 The YAML source already carries the seventeen ticket-required fields. This survey
 surfaced eight more that a manifest needs in order to be *checkable*, each because
@@ -946,7 +946,7 @@ Two further recommendations for 5531, both learned here:
 
 ---
 
-# Acceptance-criteria mapping
+## Acceptance-criteria mapping
 
 | Criterion | Where it is satisfied |
 |---|---|
@@ -958,7 +958,7 @@ Two further recommendations for 5531, both learned here:
 | The matrix is reviewed against source code, not README text alone | [Method](#method). Every row cites `file:line` with the symbol name; every absence carries a positive control; every path was checked with `git ls-files --error-unmatch`. Four comments that contradict their own code are recorded as findings |
 | A final Go / Conditional Go / No-Go per boundary class | [Go / Conditional Go / No-Go](#go--conditional-go--no-go-per-boundary-class) — B1 Go · B2 Conditional · B3 Conditional · B4 No-Go · B5 No-Go · B6 Conditional · B7 No-Go |
 
-## Deliverables
+### Deliverables
 
 | # | Deliverable | Status |
 |---|---|---|
@@ -969,7 +969,7 @@ Two further recommendations for 5531, both learned here:
 | 5 | Gap-to-ticket mapping | [Gap-to-ticket mapping](#gap-to-ticket-mapping) |
 | 6 | Minimum defensible public guarantee | [Minimum defensible public guarantee](#minimum-defensible-public-guarantee-today) |
 
-## What this artifact does not claim
+### What this artifact does not claim
 
 - **It is not exhaustive.** "No finding" is not "no bypass", and the absence of a
   row is not evidence that a path is covered.
