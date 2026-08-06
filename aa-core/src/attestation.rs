@@ -689,4 +689,35 @@ mod tests {
             }
         }
     }
+
+    /// ADR 0033 §6 scopes *Unsupported* to "with no plan asserted". Asking for
+    /// a control asserts a plan, so a selected component that cannot run is
+    /// *Degraded* — the state that carries both the planned and the achieved
+    /// level — not *Unsupported* and not *Unmeasured*.
+    #[test]
+    fn a_planned_but_unsubstantiated_component_is_degraded() {
+        let unsupported = at(
+            AttestationBasis::PlatformUnsupported {
+                platform: "aarch64-apple-darwin".into(),
+            },
+            SelectedMode::Enabled,
+            NOW,
+        );
+        assert_eq!(
+            unsupported.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            ClaimTerm::Degraded
+        );
+
+        let unmet = at(
+            AttestationBasis::PrerequisiteUnmet {
+                requirement: "aa-ebpf-loaderd socket".into(),
+            },
+            SelectedMode::Enabled,
+            NOW,
+        );
+        assert_eq!(
+            unmet.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            ClaimTerm::Degraded
+        );
+    }
 }
