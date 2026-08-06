@@ -23,8 +23,8 @@ highest detection authority first**:
 The in-process SDK is the **cheapest** place to make a decision — but also the
 easiest for an agent to avoid, because it lives inside the very process we do
 not fully trust. The eBPF layer is the **most expensive** to run, but it watches
-from the kernel, below anything the agent can reach, so it catches actions the
-higher layers never saw — including deliberate attempts to bypass the SDK.
+from the kernel, below anything the agent can reach, so it can *report* actions
+the higher layers never saw — including deliberate attempts to bypass the SDK.
 Authority is *inverse* to cost: the cheaper a layer is, the less you can trust it
 to be present.
 
