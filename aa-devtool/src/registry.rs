@@ -26,8 +26,16 @@ use aa_devtool_contract::{DevToolAdapter, DevToolKind};
 /// CLI tool tokens for every built-in adapter, in the order
 /// [`built_in_adapters`] returns them.
 ///
-/// These are the exact strings `aasm run <tool>` accepts; changing one is a
-/// user-visible CLI break.
+/// These are the **canonical** tool tokens. Changing one is a user-visible CLI
+/// break: they are what `aasm run <tool>` has always accepted, and what every
+/// per-tool lookup in this module is keyed by.
+///
+/// They are no longer the *only* strings `aasm run` accepts. Since AAASM-5503 it
+/// also accepts each tool's Developer-Integration id — the longer spelling
+/// `aasm integrations list` prints in its `TOOL` column (`claude-code` for
+/// `claude`, and so on) — so an id copied off the discovery surface works on the
+/// execution surface. That alias resolution lives in `aasm run`, which is the
+/// only place that can see both vocabularies; this list stays the canonical one.
 pub const SUPPORTED_TOOLS: [&str; 4] = ["claude", "codex", "copilot", "windsurf"];
 
 /// Construct the authoritative adapter for a CLI tool token.
