@@ -955,8 +955,10 @@ says about completeness — but it does not authorise a behaviour claim, and
 
 Settled in [Decision 10](#10-waivers-and-exceptions): expiring, approved by a
 `waiver-approver` who is not the author, string-scoped, fails closed on expiry,
-renewed by re-approval rather than extension, and with three unwaivable
-categories.
+renewed by re-approval rather than extension, and with four **unwaivable**
+categories — of which the first two, factual truthfulness and ADR 0033's banned
+absolutes, mean the answer to *who may approve an absolute* is nobody
+([Update — AAASM-5671](#update--aaasm-5671)).
 
 #### Hand-off 3 · Cross-repository enforcement
 
@@ -1346,7 +1348,7 @@ ADR does not claim coverage it does not have.**
 | W5 | Release gates block a tagged surface carrying an unresolved finding or an expired waiver | **Not yet automated** — owned by [AAASM-5602](https://lightning-dust-mite.atlassian.net/browse/AAASM-5602) |
 | W6 | Reviewer classes are bound to `CODEOWNERS` patterns in each repository | **Not yet automated** — owned by [AAASM-5603](https://lightning-dust-mite.atlassian.net/browse/AAASM-5603) |
 | W7 | The capability/evidence manifest is machine-validated and CI-enforced, with per-row evidence trees | **Not yet automated** — owned by [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531). The manifest's own schema comment records that its links, anchors, YAML and Markdown lint are run by hand today (`evidence_runs_on_main: path_gated_no_backstop`) |
-| W8 | ADR 0033's banned-absolutes list is checked in CI across docs | **Not yet automated** — owned by [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536); this ADR adds the waiver mechanism, not the check |
+| W8 | ADR 0033's banned-absolutes list is checked in CI across docs | **Not yet automated** — owned by [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536). Banned absolutes are **unwaivable** ([Decision 10](#10-waivers-and-exceptions)), so this ADR supplies no waiver route over that check — only the six non-claim exemption classes the gate must honour |
 | W9 | This ADR's `**Revision**` header matches its last `## Update —` heading, and every adoption record's `adr_revision` matches that header | **Not yet automated** — owned by [AAASM-5601](https://lightning-dust-mite.atlassian.net/browse/AAASM-5601); grammar fixed in [Revisions](#revisions-and-supersession) |
 
 Two of these are worth stating plainly rather than leaving to the table: **no
@@ -1587,6 +1589,6 @@ understand the rules that release was published under.
 | [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605) · [AAASM-5606](https://lightning-dust-mite.atlassian.net/browse/AAASM-5606) · [AAASM-5607](https://lightning-dust-mite.atlassian.net/browse/AAASM-5607) | Blocked — adoption-record rollout, host-adapter boundaries, and superseded-item annotation |
 | [AAASM-5616](https://lightning-dust-mite.atlassian.net/browse/AAASM-5616) · [AAASM-5655](https://lightning-dust-mite.atlassian.net/browse/AAASM-5655) | Blocked — carry the adoption record and hand-off 7's decision across the organisation boundary to Horonomy |
 | [AAASM-5588](https://lightning-dust-mite.atlassian.net/browse/AAASM-5588) | Blocked — migration of existing duplicated and conflicting documents |
-| [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) | Owns the banned-absolutes CI gate (W8). This ADR supplies the waiver mechanism over it, not the check |
+| [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) | Owns the banned-absolutes CI gate (W8), which this ADR does not supply. Banned absolutes are **unwaivable** under [Decision 10](#10-waivers-and-exceptions), so there is no waiver route over that gate — what this ADR supplies is the six non-claim exemption classes it must honour |
 | [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586) · [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609) | Own the Docs Hub and product-website surfaces, including the rival *Policy reference* instance |
 | Implementation PRs | This ADR is documentation-only; the implementations are tracked by the tickets above |
