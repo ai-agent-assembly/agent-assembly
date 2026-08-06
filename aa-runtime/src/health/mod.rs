@@ -1,8 +1,19 @@
 //! Health check and Prometheus metrics HTTP server.
+//!
+//! # `status` is liveness; `protection` is a claim
+//!
+//! `status` answers "is this process up". It is deliberately *not* overloaded
+//! to answer "is anything protected" — conflating the two is how an operator
+//! ends up reading a green health check as evidence of governance. The
+//! `protection` section (AAASM-5535) answers the second question separately,
+//! in the ADR 0033 §6 vocabulary, and is evaluated when the request is served
+//! rather than frozen at startup: a probe result from an hour ago is not
+//! evidence about now.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
+use aa_core::attestation::{ClaimTerm, ProtectionAttestation};
 use axum::Router;
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::mpsc;
@@ -22,16 +33,93 @@ pub struct HealthState {
     pub inbound_tx: mpsc::Sender<(u64, IpcFrame)>,
     pub active_layers: crate::layer::LayerSet,
     pub degraded_layers: Vec<String>,
+    /// What each interception component could claim when the runtime started.
+    ///
+    /// Held rather than recomputed per request because the probes touch the
+    /// filesystem; its `generated_at_unix_secs` is what lets the handler
+    /// downgrade it once it goes stale.
+    pub protection: ProtectionAttestation,
 }
 
 /// Response body for GET /health.
 #[derive(serde::Serialize)]
 pub struct HealthResponse {
+    /// Process liveness only. Never a protection claim — see the module docs.
     pub status: &'static str,
     pub uptime_secs: u64,
     pub events_processed: u64,
+    /// Historic presence bitflag, retained for compatibility. Presence is not
+    /// protection; read `protection` instead (ADR 0033 §7).
     pub active_layers: Vec<&'static str>,
     pub degraded_layers: Vec<String>,
+    /// What may truthfully be claimed about each component, right now.
+    pub protection: ProtectionReport,
+}
+
+/// The protection section of `GET /health`, evaluated at request time.
+#[derive(serde::Serialize)]
+pub struct ProtectionReport {
+    /// The startup attestation, including its schema version, the build and
+    /// platform it was made on, and when it was produced.
+    pub attestation: ProtectionAttestation,
+    /// When the claims below were derived, as seconds since the Unix epoch.
+    pub evaluated_at_unix_secs: u64,
+    /// Each component's ADR 0033 §6 term as of `evaluated_at_unix_secs`.
+    pub verified_states: Vec<ComponentClaim>,
+    /// Whether *any* component substantiates a coverage claim right now.
+    ///
+    /// Allowed to be `false`, and on a default build it is: none of the three
+    /// startup probes is evidence that a control acted on an action. A surface
+    /// that cannot report "nothing is verified" cannot be believed when it
+    /// reports that something is.
+    pub any_coverage_verified: bool,
+}
+
+/// One component's claim.
+#[derive(serde::Serialize)]
+pub struct ComponentClaim {
+    /// The component this claim is about, e.g. `"proxy"`.
+    pub component: String,
+    /// What configuration asked for.
+    pub selected_mode: aa_core::attestation::SelectedMode,
+    /// What the evidence supports — never raised by `selected_mode`.
+    pub verified_state: ClaimTerm,
+    /// What was actually checked.
+    pub detail: String,
+}
+
+impl ProtectionReport {
+    /// Evaluate `attestation` as of `now_unix_secs`.
+    ///
+    /// Re-derived per request rather than cached, for the same reason ADR 0030
+    /// derives protection state on every read: a stored answer keeps displaying
+    /// protection that has already stopped being true.
+    fn evaluate(attestation: &ProtectionAttestation, now_unix_secs: u64) -> Self {
+        let verified_states = attestation
+            .layers
+            .iter()
+            .map(|layer| ComponentClaim {
+                component: layer.component.clone(),
+                selected_mode: layer.selected_mode,
+                verified_state: layer.verified_state_at(now_unix_secs, attestation.freshness_window_secs),
+                detail: layer.detail.clone(),
+            })
+            .collect();
+        Self {
+            attestation: attestation.clone(),
+            evaluated_at_unix_secs: now_unix_secs,
+            verified_states,
+            any_coverage_verified: attestation.any_coverage_verified_at(now_unix_secs),
+        }
+    }
+}
+
+/// Seconds since the Unix epoch, saturating to 0 before it.
+pub(crate) fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Build the axum router with all three routes.
@@ -52,6 +140,7 @@ async fn health_handler(axum::extract::State(state): axum::extract::State<Health
         events_processed: state.pipeline_metrics.processed(),
         active_layers: state.active_layers.names(),
         degraded_layers: state.degraded_layers.clone(),
+        protection: ProtectionReport::evaluate(&state.protection, now_unix_secs()),
     })
 }
 
@@ -90,6 +179,10 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt; // for `oneshot`
 
+    /// A fixed instant, so an attestation's freshness never depends on the
+    /// wall clock.
+    const TEST_NOW: u64 = 1_700_000_000;
+
     fn make_prometheus_handle() -> metrics_exporter_prometheus::PrometheusHandle {
         metrics_exporter_prometheus::PrometheusBuilder::new()
             .build_recorder()
@@ -104,6 +197,7 @@ mod tests {
             events_processed: 100,
             active_layers: vec!["sdk"],
             degraded_layers: vec![],
+            protection: ProtectionReport::evaluate(&crate::layer::LayerDetector::attest(TEST_NOW), TEST_NOW),
         };
         let json = serde_json::to_string(&resp).expect("serialization failed");
         assert!(json.contains("\"status\":\"healthy\""));
@@ -128,6 +222,7 @@ mod tests {
             inbound_tx,
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         let app = router(state);
@@ -158,6 +253,7 @@ mod tests {
             inbound_tx,
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         let app = router(state);
@@ -182,6 +278,7 @@ mod tests {
             inbound_tx,
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         let app = router(state);
@@ -210,6 +307,7 @@ mod tests {
             inbound_tx,
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         let app = router(state);
@@ -249,6 +347,7 @@ mod tests {
             inbound_tx,
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         // We call the handler manually using the recorder.
@@ -286,6 +385,7 @@ mod tests {
             inbound_tx,
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         // First request: not ready (503)
@@ -319,6 +419,7 @@ mod tests {
             inbound_tx,
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         let app = router(state);
@@ -352,6 +453,7 @@ mod tests {
             inbound_tx,
             active_layers: all_layers,
             degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(TEST_NOW),
         };
 
         let app = router(state);
