@@ -725,4 +725,20 @@ mod tests {
             assert!(!ebpf.detail.is_empty());
         }
     }
+
+    /// A claim is only meaningful against the build and platform it was made on
+    /// (ADR 0033 §5.3), so the attestation carries both.
+    #[test]
+    fn attest_carries_the_build_version_and_platform() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var(AA_LAYERS_ENV);
+
+        let att = LayerDetector::attest(ATTEST_NOW);
+        assert_eq!(att.component_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            att.platform,
+            format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+        );
+        assert_eq!(att.generated_at_unix_secs, ATTEST_NOW);
+    }
 }
