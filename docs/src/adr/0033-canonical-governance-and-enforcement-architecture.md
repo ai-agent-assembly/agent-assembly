@@ -488,7 +488,7 @@ ADR 0030's ladder, never from a capability bitflag.
 
 ---
 
-## Alternatives considered
+## Alternatives Considered
 
 ### Keep the three-layer model and add caveats (rejected)
 
@@ -575,10 +575,13 @@ copy or ticket text.
    implementation.
 6. **Treating a capability bitflag, a `$PATH` lookup, an `AA_LAYERS` value, or the
    existence of a settings file as evidence** of coverage (§7; ADR 0030 §4.2 rule 1).
-7. **Unqualified absolutes.** Specifically banned: "catch everything", "cannot be
-   bypassed", "nowhere to hide", "every action", "every tool call", "no code changes",
-   "immutable audit", "full fleet". Each either overstates coverage or asserts a
-   property no component in this repo provides.
+7. **Unqualified absolutes.** Specifically banned: "catch everything", "catch-all",
+   "cannot be bypassed", "unbypassable", "nowhere to hide", "every action",
+   "every tool call", "no code changes", "immutable audit", "full fleet",
+   "whole fleet", "universal", "comprehensive", "complete". Each either overstates
+   coverage or asserts a property no component in this repo provides. **This list is
+   the source for the V1 CI gate** (`AAASM-5536`), so a phrase absent from it is a
+   phrase the gate will never catch — extend the list rather than relying on review.
 8. **Presenting the five-way `RuntimeVerdict` as a live per-action outcome** while its
    derivation is unimplemented (§6).
 9. **Describing `RuntimeScanner` as the authoritative enforcement pipeline.** It is a
@@ -929,4 +932,5 @@ Point-in-time execution records — annotate with a pointer, do **not** rewrite:
 | [ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) | **Amends §4.1** (adds the macOS managed-settings route to `HostEnforced`, which `0030:465` does not list) and otherwise complements — the ladder and evidence rules are adopted wholesale as E6 |
 | [ADR 0032](0032-local-first-sensitive-data-provider-architecture.md) | Complements — local-first sensitive-data detection |
 | Superseded material | The `SDK → Proxy → eBPF` three-layer interception model wherever it appears; see the Migration checklist. No prior ADR recorded it. |
+| [PR #1951](https://github.com/ai-agent-assembly/agent-assembly/pull/1951) | The PR publishing this ADR |
 | Implementation PRs | This ADR is documentation-only; the migration PRs are tracked by the tickets in the Migration checklist |
