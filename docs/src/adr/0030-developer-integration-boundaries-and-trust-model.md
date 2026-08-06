@@ -598,6 +598,158 @@ The first exchange on every connection, before any lifecycle verb is accepted:
   mid-connection renegotiation to downgrade into. Downgrade attempts are a required
   threat-model test.
 
+#### 5.4a Update — AAASM-5628: the handshake states which build is answering
+
+*Added by [AAASM-5628](https://lightning-dust-mite.atlassian.net/browse/AAASM-5628). §5.4
+above is unchanged; this extends the same frame.*
+
+§5.4 gave `HelloAck` a `core_version` so "a client can report what it is talking to without
+inferring it". That turned out to be necessary and not sufficient. During the
+[AAASM-5453](https://lightning-dust-mite.atlassian.net/browse/AAASM-5453) QA campaign, two
+runtimes produced **confident wrong answers** that were indistinguishable from product
+regressions:
+
+1. A runtime built from a **different checkout** answered and reported `DI-API v2` where the
+   checkout under test declared `DI_API_MAX_SUPPORTED = 3`. Every measurement in that
+   campaign was silently against the wrong build. Two checkouts share a `core_version`, so
+   nothing on any surface disagreed.
+2. A runtime whose **worktree had been deleted** kept serving and reported
+   `claude-code … not_installed` while Claude Code 2.1.220 was healthy and on `PATH`.
+   `aasm integrations plan` exited 3 with "Claude Code is not installed on this host" — a
+   sentence a contributor would reasonably file as a regression, or "fix" in a detection path
+   that was never broken.
+
+Later, two runtimes from the **same** build were observed serving simultaneously (pids 35757
+and 87718). Both were correct, and it was still an attribution failure: a client that cannot
+say *which* process answered cannot attribute its result to one.
+
+**Port reachability is never sufficient.** In every case the socket was reachable and the
+runtime was healthy. It simply was not the build under test — or not the only one.
+
+**Decision.** `HelloAck` carries a `RuntimeProvenance` at **DI-API v4**
+(`DI_API_PROVENANCE_SINCE`): `core_version`, `build_sha`, `build_id_source`, `pid`,
+`executable_path`, `executable_present`, `source_path`, `started_at_unix_secs`. Like v3 it
+adds **no verb**, so a v2/v3 peer is not `Degraded`. The client compares it against the
+identity compiled into its own `aa-runtime` — `aa-cli` depends on `aa-runtime`, so equal
+constants mean "compiled together" — and refuses rather than report what an unidentified
+runtime said. The comparison is three-state and the refusal splits by caller; see
+[§5.4a.1](#54a1-correction--absence-of-provenance-is-not-agreement).
+
+Three conditions are kept as *separate* answers, because a fix for one does not cover the
+others:
+
+| Condition | Why it is not folded into the others |
+| --- | --- |
+| **Mismatch** — a different `build_sha` or `core_version` | The case a version string cannot see |
+| **Executable missing** — the binary it serves from is gone | Its identity can no longer be re-derived *even though the SHA matches* |
+| **Ambiguous** — more than one runtime reachable | Two runtimes from one commit have **identical** identities; no identity comparison can notice there are two |
+| **Unverifiable** — neither side carries an authoritative identity | Nothing was established *either way*, which is not the same as a finding and does not get a finding's answer (§5.4a.1) |
+
+`executable_present` is evaluated when the frame is written, never when the runtime started:
+the failure is a worktree deleted *while the runtime keeps serving*.
+
+**This does not widen §5.5.** Every field is a fact about the runtime's own process, and the
+peer on this socket already shares the runtime's UID (§5.2), so it could read all of it from
+the OS. What the message adds is that the runtime *states* it, in the same breath as the
+answer it is being trusted for. `AA_BUILD_SOURCE_PATH` can be set empty at build time so a
+published binary carries no build-machine path.
+
+##### 5.4a.1 Correction — absence of provenance is not agreement
+
+*This supersedes the accepted risk originally recorded in §5.4a. The risk is **rejected**, not
+mitigated.*
+
+The first revision of §5.4a accepted that a build made outside a checkout reports
+`build_sha = "unknown"`, that two `unknown`s compare equal, and that this was tolerable
+because "two binaries from the same published tarball genuinely are one build". **That
+reasoning is invalid.** It concludes *identity* from *shared ignorance*, and the same argument
+holds word for word for two binaries from two entirely unrelated tarballs. Two peers that both
+answer "I do not know what I am" have established nothing about each other.
+
+**Decision.** The comparison is **three-state**, and `unknown` on both sides is never a match:
+
+| Case | Result |
+| --- | --- |
+| two equal **authoritative** identities | `Match` |
+| two different **authoritative** identities | `Mismatch` |
+| `unknown` vs `unknown` | **`Unverifiable`** — never `Match` |
+| known vs `unknown` | **`Unverifiable`** |
+
+An identity is *authoritative* only when a recorded mechanism produced it. `build.rs` emits
+`AA_BUILD_IDENTITY_SOURCE` beside the SHA — `injected` (`AA_BUILD_SHA` at build time),
+`checkout` (`git rev-parse HEAD`), `packaged` (`.cargo_vcs_info.json`), or `absent` — and only
+the first three can raise a comparison to `Match`. Recording the mechanism rather than
+inferring it from the shape of the string is what stops a plausible-looking placeholder from
+reading as an identity.
+
+**`pid`, executable name, executable path, DI-API version and package version are not proof of
+identical build content** — individually or in combination — and none of them may upgrade a
+verdict. `core_version` is compared because it can *falsify* (two different versions cannot be
+one build) but never *verify*: two checkouts sat at the same `core_version` in reproduction 1.
+
+**A real shared identity for packaged installations.** The guarantee is not weakened for
+users who install a release:
+
+- **Official release artifacts** (GitHub Release tarballs, Homebrew, the curl installer) are
+  built by `release.yml` from an `actions/checkout` working tree, in a *single*
+  `cargo build --release -p aa-cli -p aa-gateway -p aa-runtime -p aa-api`. Both halves
+  therefore carry the same `checkout` identity and pair as `Match` with **no release-process
+  change**.
+- **`cargo package` / crates.io tarballs** carry `.cargo_vcs_info.json`, which cargo writes
+  into every `.crate` recording the commit the crate was published from. `build.rs` reads it
+  as the `packaged` source. That is a *real artifact-level identity* — every crate published
+  from one commit carries the same `sha1` — as opposed to version-string equality, which
+  proves nothing about build content. A tarball packaged from a dirty tree carries
+  `"dirty": true` and is refused, because the commit it names is not an identity for its
+  contents.
+- Note that the crates.io pairing is in any case unreachable today: `.ci/strip-for-publish.sh`
+  removes the DI-API bring-up from the published `aa-runtime` and `aasm integrations` from the
+  published `aa-cli` (AAASM-5309), so a `cargo install aasm` has neither the client nor the
+  socket. The `packaged` source is there so the mechanism is honest wherever a packaged build
+  *is* reachable, not to rescue a pairing that exists.
+
+**Operational rule.** `Unverifiable` is never rendered as verified or matching, on any surface
+or in JSON, and it splits by what the caller is about to do:
+
+| Caller | Behaviour under `Unverifiable` |
+| --- | --- |
+| Read-only surfaces (`list`, `plan`, `status`) | **Proceed**, reporting provenance as `unverifiable` on stderr and in `--output json` |
+| Privileged writes and mutating operations (`install`, `repair`, `remove`) | **Refuse** — `aasm` exit 11, `runtime_unverifiable` |
+| `Host Enforced` claims and enforcement adjudication (`verify`) | **Refuse** — exit 11 |
+| Manual enforcement evidence (`scripts/measure-claude-code-managed-enforcement.sh`) | **Refuse** — script exit 11 |
+
+Read-only surfaces proceed because refusing them makes the situation undiagnosable: they are
+exactly the commands an operator uses to see *which* runtime answered and stop the wrong one.
+A `Refuted` standing — a different build, a deleted executable, or more than one runtime
+reachable — is a positive finding rather than an absence, and refuses **everywhere**, exit 10.
+
+Diagnostics name **which provenance fields were absent, matched or mismatched**, rather than
+collapsing to a single "provenance check failed" — that generic sentence is the same failure
+mode one level up.
+
+**What a `Match` does and does not establish.** Two limits, stated so neither is read as
+more than it is:
+
+- **The peer is self-reporting.** Every provenance field is a claim the runtime makes about
+  itself. A process that can bind `~/.aa/run/devint.sock` can claim any `build_sha` and any
+  `build_id_source` and be reported `Verified`. This is an **attribution** control — it
+  catches a stale, duplicated or wrong-checkout runtime — **not an authentication** control,
+  and it is not weaker than what precedes it: a peer that can bind that socket already shares
+  the runtime's UID (§5.2) and can therefore replace the `aa-runtime` binary outright. Nothing
+  here should be cited as defence against a hostile local process.
+- **`checkout` names `HEAD`, not the working tree.** A build from a *dirty* checkout reports
+  its `HEAD` commit, so two dirty worktrees at the same `HEAD` with different uncommitted
+  changes compare as `Match`. Marking a dirty build `absent` was considered and rejected:
+  almost every development build is dirty, so it would make `Unverifiable` — and therefore a
+  refusal on every privileged command — the normal state during development, which is a worse
+  failure than the one it removes. `packaged` has no such gap, because a tarball packaged from
+  a dirty tree is refused outright.
+
+*Reconsideration trigger:* if release artifacts ever ship without a resolvable commit, released
+users degrade to `Unverifiable` — read-only commands keep working and say so, and privileged
+ones refuse. That is a loud degradation rather than a silent one, but it is still a
+degradation, and the release build must be fixed rather than the rule relaxed.
+
 #### 5.5 Data minimisation — the response types cannot carry what must not leave
 
 Minimisation is enforced by the *shape of the response types*, not by a redaction pass
@@ -944,6 +1096,8 @@ implementing tickets must carry:
 | V11 | A capability absent from `declared`, and a `RequiresVersion` with `detected: None`, both resolve to **absent** — never `Supported`, never `Unsupported` | §3.4, ADR 0029 fail-absent |
 | V12 | `examples/aa-devtool-sample-myeditor` compiles unchanged against `LegacyAdapterShim` and produces a valid one-step plan; its existing `tests/contract.rs` stays green | §7 |
 | V13 | Replaying a captured, still-valid request produces no state the legitimate client could not have produced (idempotence), and a revoked token's replay is denied | §5.6 |
+| V14 | A runtime reporting a different `build_sha` is refused by the client; a runtime whose `executable_path` no longer exists is reported unidentifiable **even when its build matches**; two reachable runtimes are reported rather than resolved **even when they are the same build**; and a test asserting only that some runtime is reachable passes while identity mismatches. Each proved by mutation. | §5.4a |
+| V15 | `unknown` vs `unknown` and known vs `unknown` both resolve to `Unverifiable`, never `Match`; two matching packaged build ids resolve to `Match` and two differing ones to `Mismatch`; a privileged or enforcement-claiming command refuses an `Unverifiable` runtime while a read-only one answers and reports it as `unverifiable`; and no surface or JSON field renders `Unverifiable` as verified or matching. Each proved by mutation. | §5.4a.1 |
 
 Until [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279) lands
 there is no DI-API to test, so V2/V3/V6–V9/V13 are stated here as the acceptance bar for
@@ -987,6 +1141,8 @@ that ticket rather than as checks present in this documentation-only change.
 | [AAASM-5278](https://lightning-dust-mite.atlassian.net/browse/AAASM-5278) | Implements the plan / receipt / drift / rollback machinery Decisions 2 and 4 depend on |
 | [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279) | Implements Decision 5 (transport, tokens, version negotiation, data minimisation) |
 | [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281) | First productized integration (Claude Code) exercising the whole model end to end |
+| [AAASM-5453](https://lightning-dust-mite.atlassian.net/browse/AAASM-5453) | QA campaign that found the provenance gap — recorded as AAASM-5480, Executed Fail |
+| [AAASM-5628](https://lightning-dust-mite.atlassian.net/browse/AAASM-5628) | Adds §5.4a: DI-API v4 runtime provenance, and the client-side refusal. Blocks a trustworthy [AAASM-5308](https://lightning-dust-mite.atlassian.net/browse/AAASM-5308) privileged run |
 | [ADR 0002](0002-sdk-security-boundary.md) | Complements — "position, not code, confers authority"; the untrusted client / trusted runtime split this ADR extends to Developer Integrations |
 | [ADR 0004](0004-governance-enforcement-flow.md) | Complements — the DI-API sits in the same non-SDK carve-out as REST and carries no policy decisions (§1.2). **Not superseded.** |
 | [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | Complements — fail-closed and audit-visible resolution failures, transferred to capability-token resolution (§5.3) and protection-state reporting (§4.2) |
