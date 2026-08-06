@@ -364,7 +364,7 @@ fn the_command_family_drives_the_native_claude_code_integration() {
 /// tool installed, where the adapter genuinely answers unsupported.
 #[test]
 fn status_and_plan_agree_with_the_real_adapter_about_host_enforcement() {
-    if !require_claude() {
+    if !require_claude("status_and_plan_agree_with_the_real_adapter_about_host_enforcement") {
         return;
     }
     let h = Harness::start();
