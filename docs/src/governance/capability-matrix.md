@@ -34,19 +34,25 @@ action proceeds:
 | Mechanism | What it mediates | Platform | Decision timing |
 |---|---|---|---|
 | SDK / wrapper seam | Framework tool calls the SDK wraps, after its initializer runs | Wherever the SDK runs (macOS, Linux) | Synchronous — the deny raises before the wrapped body executes |
-| `aa-proxy` | Outbound HTTP/1.1 **routed to the proxy**, on a host under MitM | Interception on macOS and Linux; CA trust-store installation is implemented for **macOS only** | Synchronous — a denial returns 403 (or a JSON-RPC error for MCP `tools/call`) without dialling upstream |
+| `aa-proxy` | Outbound HTTP/1.1 **routed to the proxy**, on a host under MitM | macOS and Linux. CA trust-store install is automatic at proxy start on macOS; on Linux run `sudo aasm proxy install-ca`. Windows is unsupported | Synchronous — a denial returns 403 (or a JSON-RPC error for MCP `tools/call`) without dialling upstream |
 
 **What is outside the boundary.** These are not enforced at any tier on this
 page, and each needs a separate control:
 
-- **Unmanaged launch.** A tool started directly rather than through `aasm run`
-  inherits neither the proxy environment nor the CA trust. This is *demonstrated*,
-  not inferred — see [Limitations and known bypasses](../devtools/limitations.md).
+- **Unmanaged launch with no integration installed.** A tool started directly
+  rather than through `aasm run`, and with no developer integration installed for
+  it, inherits neither the proxy environment nor the CA trust. This is
+  *demonstrated*, not inferred — see [Limitations and known
+  bypasses](../devtools/limitations.md). An installed integration writes those
+  variables into the tool's own configuration, so it does persist across launches.
 - **Direct calls.** Raw HTTP from the agent process, `subprocess` spawns, and
   filesystem access are not intercepted by the SDK seam.
-- **Unsupported transports.** Interception is HTTP/1.1 with `Content-Length`.
-  HTTP/2, gRPC, WebSocket and chunked requests are out of scope, and MCP over
-  stdio never reaches the proxy at all.
+- **Unsupported transports.** On a MitM'd host, interception is HTTP/1.1 with
+  `Content-Length`; a chunked request is dropped without an HTTP response rather
+  than refused with a status code. On hosts that are *not* under MitM the traffic
+  is tunnelled uninspected, so HTTP/2, gRPC and WebSocket all work — they are
+  simply invisible (there is no WebSocket handling in `aa-proxy` at all). MCP over
+  stdio never reaches the proxy.
 - **Hosts not under MitM.** `llm_only` defaults to `true`, so only the built-in
   LLM provider hosts are decrypted unless an operator extends `mitm_hosts`;
   everything else is tunnelled uninspected.
@@ -257,8 +263,10 @@ unmeasured even though the file itself can now be installed (see below).
 
 † These capabilities require `aa-proxy` (Layer 2) running alongside the tool for enforcement.
 Without the proxy, the declared tier drops to L0 (discovery/inventory only). For Claude Code they
-additionally require the **managed launch** (`aasm run claude`), which is what injects the proxy
-environment and the CA trust the interception depends on. `aasm run` is stripped from the
+additionally require the proxy environment and CA trust that interception depends on — supplied
+either by the **managed launch** (`aasm run claude`) for that process, or by an installed
+integration, which writes the same variables into the tool's own configuration so they persist
+across launches. `aasm run` is stripped from the
 **crates.io** publish, so a `cargo install aasm` cannot take this path; a source build, the GitHub
 Release tarballs, the `curl` installer and the Homebrew formula all can — see
 [CLI overview → developer-only commands](../cli/overview.md#command-groups).
