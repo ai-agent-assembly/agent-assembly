@@ -92,6 +92,11 @@ message HelloAck {
   string degraded_reason = 8;
   // What to do about it.
   string remediation = 9;
+  // Which build is answering (AAASM-5628). Present from DI-API v4; a v1–v3
+  // peer omits the message entirely, and *message presence* — not an empty
+  // string — is what tells a client "this peer cannot say" apart from "this
+  // peer has no identity".
+  RuntimeProvenance provenance = 10;
 }
 
 // RuntimeProvenance — which build answered, and which process (AAASM-5628).

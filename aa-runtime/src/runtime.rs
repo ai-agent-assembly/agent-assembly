@@ -73,14 +73,14 @@ fn spawn_devint(tracker: &TaskTracker, token: &CancellationToken, config: &Runti
         enforcement_mode: aa_core::policy::EnforcementMode::Enforce,
     };
 
-    let services = crate::devint::DevIntServices {
-        lifecycle: Arc::new(crate::devint::EngineLifecycle::new(
+    let services = crate::devint::DevIntServices::new(
+        Arc::new(crate::devint::EngineLifecycle::new(
             crate::devint::adapters::built_in_integrations(policy),
             store,
         )),
         tokens,
-        audit: Arc::new(crate::devint::audit::TracingAuditSink),
-    };
+        Arc::new(crate::devint::audit::TracingAuditSink),
+    );
 
     match crate::devint::DevIntServer::bind(server_config) {
         Ok(server) => {

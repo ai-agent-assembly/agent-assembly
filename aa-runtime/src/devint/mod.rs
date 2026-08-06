@@ -86,7 +86,9 @@ pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 pub use client::{ClientError, DevIntClient, Negotiated};
 pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
 pub use lifecycle::{IntegrationLifecycle, LifecycleError};
-pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
+pub use negotiate::{
+    Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROVENANCE_SINCE,
+};
 pub use provenance::{
     BuildIdentity, PeerProvenance, ProvenanceVerdict, RuntimeMultiplicity, RuntimeProvenance, BUILD_SHA,
 };

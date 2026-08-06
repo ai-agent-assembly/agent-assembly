@@ -386,11 +386,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .0;
 
-    let services = DevIntServices {
-        lifecycle: Arc::new(FakeLifecycle) as Arc<dyn IntegrationLifecycle>,
+    let services = DevIntServices::new(
+        Arc::new(FakeLifecycle) as Arc<dyn IntegrationLifecycle>,
         tokens,
-        audit: Arc::new(TracingAuditSink),
-    };
+        Arc::new(TracingAuditSink),
+    );
 
     let cancel = CancellationToken::new();
     let tracker = TaskTracker::new();
