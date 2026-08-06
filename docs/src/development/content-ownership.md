@@ -642,8 +642,14 @@ following, each of which belongs to
    into the capability/evidence manifest
    ([AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531)); that
    page already records that the ADR wins where the two disagree.
+7. **Whether the two maturity vocabularies are one axis or two**, and if two, what
+   each is called — see
+   [the split](#known-non-conforming-instance-two-maturity-vocabularies). This
+   crosses an org boundary, which is why it is not settled here.
+8. **Who owns a translation's accuracy**, and whether a fuzzy entry blocks
+   publication — see [Translations](#translations-are-a-fourth-case-and-they-have-their-own-trigger).
 
-Until 5621's ADR is published, these six are open questions, and a contributor who
+Until 5621's ADR is published, these eight are open questions, and a contributor who
 hits one should escalate rather than settle it in a content PR.
 
 ## Applying this to a change
