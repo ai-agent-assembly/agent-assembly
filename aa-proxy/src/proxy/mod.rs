@@ -19,7 +19,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use aa_runtime::gateway_client::GatewayClient;
 use aa_runtime::pipeline::PipelineEvent;
 
-use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry};
+use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry, RefusalRule};
 use crate::config::ProxyConfig;
 use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
@@ -108,13 +108,14 @@ struct RequestIdentity<'a> {
 /// LLM host, a gateway `tools/call` deny — because the 403 or JSON-RPC error is
 /// written in place of a dial that has no code path after it.
 ///
-/// It is **logged and not persisted**. These branches refuse before
-/// `intercept_request` runs, so there is no sensitive-data decision event to
-/// attach evidence to, and synthesising one would invent events the audit trail
-/// has never counted. The consequence is real and should be stated rather than
-/// glossed: until a producer exists for them, the §8 prevention metric cannot
-/// see the proxy's strongest refusals. Persisting them is follow-up work, not
-/// something this constant achieves.
+/// AAASM-5358 left it **logged and not persisted**, on the reasoning that these
+/// branches refuse before `intercept_request` runs and so have no
+/// sensitive-data decision event to attach evidence to. AAASM-5449 reverses
+/// that: the absence of a verdict is not the absence of a decision, and a
+/// record with an empty finding list is exactly the right shape for a refusal
+/// taken before anything was scanned. Every branch below now writes one through
+/// [`ProxyServer::emit_rule_refusal`], so §8 can see the refusals there is no
+/// ambiguity about — not only the redaction that forwards.
 const NOT_FORWARDED_BY_RULE: ExecutionEvidence = transmission_evidence::not_forwarded_by_rule();
 
 /// Why the egress policy refused a host.
@@ -142,6 +143,15 @@ impl EgressDenyReason {
             Self::Denylist => "host policy",
             Self::NetworkAllowlist => "network allowlist",
             Self::SsrfBlockedAddress => "ssrf: blocked address range",
+        }
+    }
+
+    /// The rule as it is persisted on the decision record.
+    const fn rule(self) -> RefusalRule {
+        match self {
+            Self::Denylist => RefusalRule::EgressDenylist,
+            Self::NetworkAllowlist => RefusalRule::EgressAllowlist,
+            Self::SsrfBlockedAddress => RefusalRule::SsrfBlockedAddress,
         }
     }
 }
@@ -379,6 +389,37 @@ impl ProxyServer {
     ) {
         self.decision_record(id, verdict, decision, execution, probe_correlation)
             .send(self.audit_jsonl_tx.as_ref(), execution);
+    }
+
+    /// Persist a refusal taken by a **rule**, before any credential verdict
+    /// exists (AAASM-5449).
+    ///
+    /// The counterpart to [`Self::emit_audit_entry`] for the branches that have
+    /// no [`InterceptVerdict`] to describe: the egress denylist, the network
+    /// allowlist, the SSRF guard, an in-tunnel forged `Host`, a plaintext
+    /// downgrade to an LLM host, and a gateway `tools/call` deny. Each writes a
+    /// 403 (or a JSON-RPC error envelope) in place of a dial, and no dial
+    /// follows on the code path — which is why [`NOT_FORWARDED_BY_RULE`] is the
+    /// whole of what was observed and is not a parameter.
+    ///
+    /// There is no body and no finding to persist, and that is not a
+    /// degradation: the refusal happened before anything was scanned, so an
+    /// empty `credential_findings` is the truthful projection rather than a
+    /// missing one. [`RefusalRule`] is what makes the record attributable —
+    /// without it a denylist refusal and a fail-closed credential block are the
+    /// same line.
+    fn emit_rule_refusal(&self, id: RequestIdentity<'_>, rule: RefusalRule, probe_correlation: Option<String>) {
+        DecisionRecord {
+            host: id.host.to_owned(),
+            method: id.method.to_owned(),
+            path: self.interceptor.redact_target(id.target),
+            decision: ProxyAuditDecision::Blocked,
+            refusal_rule: Some(rule),
+            findings: Vec::new(),
+            redacted_body: None,
+            probe_correlation,
+        }
+        .send(self.audit_jsonl_tx.as_ref(), NOT_FORWARDED_BY_RULE);
     }
 
     /// Assemble the identifying half of a decision record.
@@ -859,6 +900,15 @@ impl ProxyServer {
                 "in-tunnel egress denied: {reason}",
             );
             self.interceptor.emit_policy_decision(in_host, true).await;
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: in_host,
+                    method: &req.method,
+                    target: &req.target,
+                },
+                reason.rule(),
+                Self::probe_correlation(&req),
+            );
             let mut client_tls = client_reader.into_inner();
             client_tls
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
@@ -876,6 +926,15 @@ impl ProxyServer {
                         %host,
                         transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                         "MCP call refused; answering the client instead of dialling upstream",
+                    );
+                    self.emit_rule_refusal(
+                        RequestIdentity {
+                            host,
+                            method: &req.method,
+                            target: &req.target,
+                        },
+                        RefusalRule::McpToolCall,
+                        Self::probe_correlation(&req),
                     );
                     let mut client_tls = client_reader.into_inner();
                     client_tls.write_all(resp.as_bytes()).await?;
@@ -1099,6 +1158,15 @@ impl ProxyServer {
                 "in-tunnel egress denied: {reason}",
             );
             self.interceptor.emit_policy_decision(in_host, true).await;
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: in_host,
+                    method: &req.method,
+                    target: &req.target,
+                },
+                reason.rule(),
+                Self::probe_correlation(&req),
+            );
             let mut client_tls = client_reader.into_inner();
             client_tls
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
@@ -1316,12 +1384,21 @@ impl ProxyServer {
         let mut head_budget = MAX_HEADER_BYTES;
         let mut header_count = 0usize;
         let mut header_line = String::new();
+        // AAASM-5449: the CONNECT head is drained and discarded, but a refusal
+        // here is now persisted — and a probe whose CONNECT is refused would
+        // otherwise contribute an *unmarked* prevention, which is the gap
+        // AAASM-5358 closed everywhere the head was already parsed. Keep only
+        // the correlation id; the rest of the head is still dropped.
+        let mut probe_correlation: Option<String> = None;
         loop {
             header_line.clear();
             let n = read_line_capped(&mut reader, &mut header_line, MAX_HEADER_LINE_LEN, head_budget).await?;
             head_budget -= n;
             if header_line.trim().is_empty() {
                 break;
+            }
+            if probe_correlation.is_none() {
+                probe_correlation = Self::probe_correlation_plain(std::slice::from_ref(&header_line));
             }
             header_count += 1;
             if header_count > MAX_HEADER_COUNT {
@@ -1344,7 +1421,23 @@ impl ProxyServer {
         // Egress policy: deny-list, then AAASM-1943 network allowlist.
         // Both return 403 + emit a deny decision and end the connection.
         if let Some(reason) = self.connect_deny_reason(host) {
-            tracing::info!(%host, "CONNECT denied: {reason}");
+            tracing::info!(
+                %host,
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "CONNECT denied: {reason}",
+            );
+            // The tunnel is refused before it is opened, so there is no request
+            // line to name: the CONNECT authority is the whole of what the
+            // client asked for.
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host,
+                    method: "CONNECT",
+                    target,
+                },
+                reason.rule(),
+                probe_correlation,
+            );
             let mut stream = reader.into_inner();
             stream
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
@@ -1498,6 +1591,15 @@ impl ProxyServer {
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress denied: {reason}",
             );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: deny_host,
+                    method,
+                    target,
+                },
+                reason.rule(),
+                Self::probe_correlation_plain(&headers),
+            );
             return self.refuse_plain_http_403(reader, deny_host).await;
         }
 
@@ -1517,6 +1619,15 @@ impl ProxyServer {
                 host = %deny_host,
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress to LLM host refused: cleartext downgrade bypasses DLP",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: deny_host,
+                    method,
+                    target,
+                },
+                RefusalRule::PlaintextLlmDowngrade,
+                Self::probe_correlation_plain(&headers),
             );
             return self.refuse_plain_http_403(reader, deny_host).await;
         }
