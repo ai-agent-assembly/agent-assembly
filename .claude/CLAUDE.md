@@ -26,11 +26,15 @@ latency cost (lowest first) and detection authority (highest first):
 2. **Sidecar proxy (`aa-proxy`)** — MitM of outbound HTTPS using per-host certificates
    minted from a local root CA; enforces network-egress policy with no *agent code*
    change. Requires the process to honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
-   (trust-store install is macOS-only). HTTP/1.1 only, and `llm_only` defaults to
-   `true`, so only the built-in LLM hosts are decrypted.
+   (automatic at proxy start on macOS; `sudo aasm proxy install-ca` on Linux —
+   `aa-cli/src/commands/proxy/ca.rs:150-188`; Windows unsupported). HTTP/1.1 only on
+   MitM'd hosts, and `llm_only` defaults to `true`, so only the built-in LLM hosts
+   are decrypted.
 3. **eBPF (`aa-ebpf*`)** — kernel uprobes on OpenSSL + exec/file syscall hooks.
    **Observe-only**: the probes emit telemetry and return no verdict, so this layer
-   detects, it does not block. **Linux x86_64 only**, and it fails open if it cannot
+   detects, it does not block. **Linux only**; there is no `cfg(target_arch)` gate —
+   TLS uprobes and exec tracepoints work on x86_64 and aarch64, but the file-I/O
+   kprobes are x86_64-only (hardcoded `__x64_sys_*`). It fails open if it cannot
    attach. It is one possible host mechanism, not a general enforcement layer.
 
 > **Do not restate these as absolutes.** Public copy derived from this file was the

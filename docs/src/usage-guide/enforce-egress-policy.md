@@ -134,7 +134,7 @@ $ aasm policy simulate --policy egress-policy.yaml --live --duration 60s
 Bring up the sidecar and trust its CA so TLS interception works:
 
 ```console
-$ aasm proxy install-ca          # add the per-host CA to the OS trust store
+$ sudo aasm proxy install-ca     # add the local root CA to the OS trust store
 $ aasm proxy start               # listens on 127.0.0.1:8899 by default
 $ aasm proxy status
 ```

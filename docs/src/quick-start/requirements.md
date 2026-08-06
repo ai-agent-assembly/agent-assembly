@@ -76,8 +76,8 @@ and install only their requirements.
 | Layer | What it does | Requirements |
 |---|---|---|
 | **SDK shim** (in-process) | Fastest path; the agent adopts a language SDK that reports to the gateway | The relevant SDK: [python-sdk](https://github.com/ai-agent-assembly/python-sdk), [node-sdk](https://github.com/ai-agent-assembly/node-sdk), or [go-sdk](https://github.com/ai-agent-assembly/go-sdk). Runs on macOS or Linux. |
-| **Sidecar proxy** (`aa-proxy`) | Intercepts routed outbound HTTP/1.1 via MitM, using per-host certificates minted from a local root CA. No *agent code* change, but the process must honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA (trust-store install is macOS-only) | macOS or Linux. On Linux, `pkg-config` + `libssl-dev`/`openssl-devel`. |
-| **eBPF** (kernel) | Observes OpenSSL TLS plaintext plus `exec`/file syscalls — reports, does not block. **x86_64 only** | **Linux only.** A recent kernel with BTF enabled and a nightly Rust toolchain to build the BPF-target crates. Not available on macOS. |
+| **Sidecar proxy** (`aa-proxy`) | Intercepts routed outbound HTTP/1.1 via MitM, using per-host certificates minted from a local root CA. No *agent code* change, but the process must honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA | macOS or Linux; Windows unsupported. On Linux, `pkg-config` + `libssl-dev`/`openssl-devel`, and CA trust is an explicit `sudo aasm proxy install-ca` (automatic at proxy start on macOS). |
+| **eBPF** (kernel) | Observes OpenSSL TLS plaintext plus `exec`/file syscalls — reports, does not block. TLS uprobes and exec tracepoints work on x86_64 and aarch64; the **file-I/O kprobes are x86_64-only** (hardcoded `__x64_sys_*`) | **Linux only.** A recent kernel with BTF enabled and a nightly Rust toolchain to build the BPF-target crates. Not available on macOS. |
 
 > **The eBPF caveat.** The `aa-ebpf-probes` and `aa-ebpf-programs` crates compile
 > for the `bpfel-unknown-none` target and are intentionally outside the host
