@@ -701,6 +701,24 @@ capability-token trust stack and are unrelated; they need no change.
 This ADR does **not** perform the migration. Each item below is owned by a downstream
 ticket; the checklist is the closure condition for the Epic.
 
+> **Concurrent edit in this repository — read before ticking anything in sections A–C.**
+> [PR #1952](https://github.com/ai-agent-assembly/agent-assembly/pull/1952)
+> (AAASM-5528, branch `v0.0.1-rc.7/AAASM-5528/remove_absolute_claims`) is open against
+> the same base and edits `.claude/CLAUDE.md`, `capability-matrix.md`,
+> `three-layer-model.md`, `security/three-layer-defense.md`,
+> `usage-guide/interception-layers.md`, `architecture/README.md`,
+> `introduction/*` and `quick-start/*`. There is no substantive conflict — #1952 already
+> adopts this ADR's `E1·E2·E3` vocabulary — but it **deletes or requalifies three
+> strings this ADR quotes as currently present**: `.claude/CLAUDE.md`'s *"catches
+> everything, including bypass attempts"*, `capability-matrix.md`'s *"The tool cannot
+> bypass enforcement"* (deleted outright), and `three-layer-model.md`'s *"Everything
+> else, including bypass attempts"*.
+>
+> Whichever PR merges second leaves this checklist describing text that no longer
+> exists, with items already closed. The second merger should re-verify sections A–C
+> against the tree rather than trusting the quotes — the quotes are evidence of the
+> state at this ADR's authoring revision, not a live inventory.
+
 ### A. Core docs — `docs/src/**` (owner: [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605), claim removal: [AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528))
 
 Pages whose *structure* encodes the superseded model — these need rewriting, not editing:
@@ -732,8 +750,7 @@ Pages that reference the model and need their claims re-termed:
 - [ ] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
 - [ ] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
 - [ ] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`
-- [ ] `docs/src/devtools/product-brief.md`,
-      `docs/src/devtools/developer-integration-api.md`
+- [ ] `docs/src/devtools/product-brief.md`
 - [ ] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
       tier definition asserts "The tool cannot bypass enforcement"**, a banned absolute
       (the forbidden-designs list, item 7) that the verified bypass surface in §4 contradicts.
