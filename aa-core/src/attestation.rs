@@ -742,4 +742,29 @@ mod tests {
             );
         }
     }
+
+    /// "Verified at startup" must not read the same as "true now". A coverage
+    /// claim whose basis has fallen outside the freshness window is no longer a
+    /// coverage claim.
+    #[test]
+    fn stale_evidence_stops_being_evidence() {
+        let blocked = AttestationBasis::Adjudicated {
+            outcome: AdjudicatedOutcome::Blocked,
+        };
+        let fresh = at(blocked.clone(), SelectedMode::Unset, NOW);
+        assert_eq!(
+            fresh.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            ClaimTerm::DeniedBeforeExecution
+        );
+
+        let stale = at(
+            blocked,
+            SelectedMode::Unset,
+            NOW - DEFAULT_ATTESTATION_FRESHNESS_SECS - 1,
+        );
+        assert_eq!(
+            stale.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            ClaimTerm::Unmeasured
+        );
+    }
 }
