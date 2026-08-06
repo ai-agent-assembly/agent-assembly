@@ -167,7 +167,32 @@
                 "not_applicable"
               ]
             },
-            "component": { "type": "string", "minLength": 1 }
+            "component": {
+              "description": "The crate, module or adapter that does the work. `none` where the row's finding is that no component intercepts this action at all — said rather than left blank.",
+              "type": "string",
+              "minLength": 1
+            },
+            "also_repositories": {
+              "description": "Further repositories a behaviour change to this row must land in. G5's posture spans all three SDKs, and a singular owner would silently hide two of them.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "agent-assembly",
+                  "python-sdk",
+                  "node-sdk",
+                  "go-sdk",
+                  "cloud",
+                  "agent-assembly-enterprise",
+                  "docs",
+                  "examples",
+                  "e2e-public",
+                  "e2e-private",
+                  "internal-docs"
+                ]
+              }
+            }
           }
         },
         "framework_or_tool": { "$ref": "#/definitions/stringlist" },
@@ -210,7 +235,10 @@
         "policy_context": {
           "description": "Either the flat list of context fields the decision sees, or the split form where the survey found expressible and enforceable context to differ (H1, H6, H7).",
           "oneOf": [
-            { "$ref": "#/definitions/stringlist" },
+            {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
             {
               "type": "object",
               "additionalProperties": false,
@@ -354,9 +382,10 @@
         },
 
         "deny_signal": {
-          "description": "How a denial reaches the caller. The hazard this field exists to expose: a caller catching only an exception treats a sentinel-blocked call as a success whose result is a string.",
-          "type": "string",
-          "enum": ["raise", "sentinel_value", "unknown", "none"]
+          "description": "How a denial reaches the caller. A list, because S6 carries two: the hazard this field exists to expose is that a caller catching only an exception treats a sentinel-blocked call as a success whose result is a string, and a scalar cannot say that a row does both.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "enum": ["raise", "sentinel_value", "unknown", "none"] }
         },
         "redaction_actor": {
           "description": "A gateway Redact verdict never replays the gateway's field paths; the proxy's own scanner does the work.",
@@ -407,6 +436,11 @@
           "minLength": 1
         },
         "tickets": { "type": "array", "items": { "$ref": "#/definitions/ticket" } },
+        "findings": {
+          "description": "Finding ids from the AAASM-5527 companion report (F1, F7, ...). A different namespace from Jira refs, resolving through a different document, so it gets its own key rather than being mixed into `tickets` as the seed did.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^F[0-9]+$" }
+        },
         "notes": { "type": "string", "minLength": 1 },
 
         "q3_changed_answer": {
