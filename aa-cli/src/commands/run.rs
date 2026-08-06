@@ -1289,6 +1289,130 @@ mod tests {
         }
     }
 
+    // --- tool-id agreement between `aasm integrations` and `aasm run` ---
+
+    /// A policy document is required to build the registrations; its contents
+    /// are irrelevant to the ids they are keyed by.
+    fn empty_policy() -> aa_core::policy::PolicyDocument {
+        aa_core::policy::PolicyDocument {
+            version: 1,
+            name: "tool-id-agreement".to_string(),
+            rules: Vec::new(),
+            enforcement_mode: aa_core::EnforcementMode::Enforce,
+        }
+    }
+
+    /// The ids `aasm integrations list` prints in its `TOOL` column, taken from
+    /// the registration list the runtime actually serves `list_tools` from
+    /// rather than from a copy of it.
+    fn integrations_tool_ids() -> Vec<String> {
+        aa_runtime::devint::adapters::built_in_integrations(empty_policy())
+            .iter()
+            .map(|registration| aa_runtime::devint::projection::tool_id(&registration.tool))
+            .collect()
+    }
+
+    /// AAASM-5503: the discovery surface and the execution surface name the
+    /// same four tools, so an id printed by one must be accepted by the other.
+    ///
+    /// Both vocabularies are *derived* here — `integrations`' from
+    /// [`built_in_integrations`](aa_runtime::devint::adapters::built_in_integrations)
+    /// projected through the same `tool_id` the wire uses, `run`'s from
+    /// [`SUPPORTED_TOOLS`](aa_devtool::registry::SUPPORTED_TOOLS) through the
+    /// same [`resolve_adapter`] a launch calls. Nothing here is a hand-written
+    /// pair list, so a tool added to one surface and not the other fails this
+    /// test rather than slipping through it.
+    ///
+    /// Before the fix `run` accepted only the short tokens, so three of the four
+    /// ids `integrations list` teaches (`claude-code`, `github-copilot`,
+    /// `windsurf-cascade`) were refused by the command a user would copy them
+    /// into.
+    #[test]
+    fn every_id_integrations_prints_is_accepted_by_run() {
+        let integration_ids = integrations_tool_ids();
+        assert_eq!(
+            integration_ids.len(),
+            aa_devtool::registry::SUPPORTED_TOOLS.len(),
+            "the two surfaces know a different number of tools: integrations {integration_ids:?} \
+             vs run {:?}",
+            aa_devtool::registry::SUPPORTED_TOOLS,
+        );
+
+        for id in &integration_ids {
+            assert!(
+                resolve_adapter(id).is_ok(),
+                "`aasm integrations list` prints {id:?} but `aasm run {id}` refuses it: {}",
+                resolve_adapter(id).err().map_or_else(String::new, |e| e.to_string()),
+            );
+        }
+    }
+
+    /// Accepting an id is not enough — it must resolve to the tool it names.
+    /// An alias table that merely resolved would be free to point
+    /// `github-copilot` at Claude Code and still satisfy the test above.
+    #[test]
+    fn an_integrations_id_resolves_to_the_tool_it_names() {
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            let kind = aa_devtool::registry::kind_for(token).expect("registered tool must have a kind");
+            let id = aa_runtime::devint::projection::tool_id(&kind);
+            assert_eq!(
+                canonical_tool_id(&id),
+                Some(token),
+                "`aasm run {id}` resolves to {:?}, not {token}",
+                canonical_tool_id(&id),
+            );
+        }
+    }
+
+    /// The other direction: nothing `aasm run` accepts is a tool the
+    /// integrations surface has never heard of.
+    #[test]
+    fn every_tool_run_accepts_is_known_to_integrations() {
+        let integration_ids = integrations_tool_ids();
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            let kind = aa_devtool::registry::kind_for(token).expect("registered tool must have a kind");
+            let id = aa_runtime::devint::projection::tool_id(&kind);
+            assert!(
+                integration_ids.contains(&id),
+                "`aasm run {token}` is accepted but no integration answers for {id:?}; \
+                 integrations knows {integration_ids:?}"
+            );
+        }
+    }
+
+    /// AC 2: adding the long ids must not cost the short ones. Driven from the
+    /// registry so a renamed token is caught here too.
+    #[test]
+    fn the_short_tool_tokens_keep_working() {
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            assert_eq!(
+                canonical_tool_id(token),
+                Some(token),
+                "`aasm run {token}` no longer resolves to itself"
+            );
+            assert!(resolve_adapter(token).is_ok(), "`aasm run {token}` stopped working");
+        }
+    }
+
+    /// A genuine typo is still refused, and the refusal still names every value
+    /// that would have worked — including the ids the user most likely copied
+    /// from `aasm integrations list`.
+    #[test]
+    fn a_typo_is_still_refused_with_every_accepted_id() {
+        assert_eq!(canonical_tool_id("not-a-tool"), None, "a typo must not resolve");
+        let err = match resolve_adapter("not-a-tool") {
+            Ok(_) => panic!("a typo must not resolve to an adapter"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("not-a-tool"), "{err}");
+        for token in aa_devtool::registry::SUPPORTED_TOOLS {
+            assert!(err.contains(token), "the refusal omits {token}: {err}");
+        }
+        for id in integrations_tool_ids() {
+            assert!(err.contains(&id), "the refusal omits {id}: {err}");
+        }
+    }
+
     // --- build_child_env tests ---
 
     fn stub_handle(team_id: Option<&str>) -> RegistrationHandle {
