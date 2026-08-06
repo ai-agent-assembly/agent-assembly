@@ -133,3 +133,116 @@ They are **orthogonal**: a `🧪 Release candidate` feature can be *Unsupported*
 platform, and a shipped feature can be *Unmeasured* on a path. Each must
 cross-reference the other; neither may redefine the other's terms. Which one takes
 precedence when they appear to conflict is AAASM-5621's to settle.
+
+## An outer layer may narrow a claim; it may not widen one
+
+Simplification is the whole purpose of the outer layers, so the rule cannot be "say
+the same thing". It is directional:
+
+> A derivative may **drop detail**. It may not drop a **bound**.
+
+Detail is a fact a reader does not need in order to act correctly. A bound is a fact
+that, if removed, lets a reader act correctly on a case the canonical source excludes.
+
+The test is a single question, and it is answerable without judgement about tone:
+
+> **Is there a situation in which a reader who read only the derivative would act,
+> and a reader who read the canonical source would not?**
+
+If yes, the derivative widened the claim, however carefully it is worded.
+
+### Moves that widen a claim
+
+Each of these is a widening even when every individual word is accurate. They are
+listed because they are the ones that recur.
+
+| Move | Example of the widening |
+|---|---|
+| Dropping the platform | A Linux-only mechanism described without naming Linux |
+| Dropping a precondition | Describing an effect without the launch, routing, trust-store or opt-in step it depends on |
+| Promoting a claim term | Writing *prevents* where ADR 0033 §6 supports only *Observed*, *Detected* or *Evaluated* |
+| Unbounding a scope | Turning "the JSONL sink is hash-chained" into "the audit log is hash-chained" |
+| Replacing a measurement with an adjective | "Fast", "negligible overhead" in place of a measured number and its method |
+| Dropping the maturity label | Publishing a `🗺️ Planned` area's behaviour in the present tense |
+| Aggregating partial coverage into a whole | Listing categories or components in a way that reads as the full set |
+| Restating a limit as a default | "Only LLM hosts are inspected" written as though no other configuration exists |
+
+Note that the reverse error is also an error: **understating is inaccurate too.**
+Removing an unevidenced claim and erasing a real one are different acts. A derivative
+that says less than the canonical source *supports* is as much a correction target as
+one that says more — it is simply the less dangerous of the two, so it is not the
+default-safe direction it looks like.
+
+### Absolutes
+
+ADR 0033's forbidden-designs list, item 7, bans a specific set of unqualified
+absolutes from architecture and product descriptions. That list is the source for the
+planned CI gate ([AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536)),
+so a phrase absent from it is a phrase the gate will never catch — extend the list
+there rather than policing it by review here. **Who may waive it, and how the ban is
+policed across repositories, is AAASM-5621's**, not this page's.
+
+## Reuse patterns: summary, quotation, generation
+
+There are four sanctioned ways for a layer to carry a fact it does not own. Anything
+that is not one of these four is a **copy**, and copies are governed by
+[Duplication rules](#duplication-rules) below.
+
+### 1. Link
+
+The derivative names the fact and links out without restating it. Always permitted,
+at any layer, for any content type. This is the default and needs no justification.
+
+### 2. Summary
+
+A short restatement in the derivative layer's own register — normally a sentence or a
+short paragraph — that introduces **no fact the canonical source does not state**.
+
+Requirements:
+
+- It carries a canonical link in the same section, not merely in a footer or a
+  "further reading" list at the end of the page.
+- It survives the widening test above.
+- It carries the maturity label the canonical source carries, when one applies.
+
+### 3. Quotation
+
+Verbatim text from the canonical source, marked as a quotation, attributed, and
+linked. Preferred over a summary whenever the exact wording is doing the work — a
+claim term from ADR 0033 §6, a bound, a measured number, a legal or licensing
+statement.
+
+A quotation may be **abridged** with an ellipsis, but abridging must not remove a
+bound; that is a widening, not a quotation.
+
+### 4. Generation
+
+The text is produced from the canonical source by a script, into a **bounded region**
+of the derivative file, with a drift check in CI. This repository and the Docs Hub
+already use the pattern:
+
+```markdown
+<!-- BEGIN GENERATED:<generator>:<region> -->
+...machine-written content, never hand-edited...
+<!-- END GENERATED:<generator>:<region> -->
+```
+
+Generation is the only reuse pattern that is *safe against drift* rather than merely
+*checkable for it*, so it is the required pattern for any high-fan-out value — see
+[Shared docs metadata](shared-docs-metadata.md) and
+[ADR 0013](../adr/0013-version-metadata-source-of-truth-and-drift-gate.md).
+
+### The canonical link is mandatory, and it has a form
+
+Every summary, quotation and generated region carries a link to its canonical source.
+
+- **Within a repository**, use a repo-relative Markdown link so
+  `scripts/check-doc-links.sh` can verify it.
+- **Across repositories in this org**, link the default-branch-tracking `HEAD` form
+  (`https://github.com/<org>/<repo>/blob/HEAD/<path>`) rather than a branch name, per
+  the *Linking to another repository* rule in
+  [`CONTRIBUTING.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/CONTRIBUTING.md).
+  A rename's redirect does not cover every link form, so `HEAD` is the durable one.
+- **From a rendered site to another rendered site**, link the published URL under
+  `docs.agent-assembly.com`, not the repository, so the reader lands on prose rather
+  than on source.
