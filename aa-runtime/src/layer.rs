@@ -661,4 +661,43 @@ mod tests {
             }
         }
     }
+
+    /// `detect()` and `attest()` must read one readout. If they ever ran
+    /// separate probes, the attestation could describe a system the bitflag
+    /// does not gate — and the bitflag is what actually spawns the proxy
+    /// subsystem and brings up the eBPF layer.
+    #[test]
+    fn attest_and_detect_agree_on_presence() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        for value in [None, Some("sdk"), Some("ebpf,proxy,sdk"), Some("proxy")] {
+            match value {
+                Some(v) => std::env::set_var(AA_LAYERS_ENV, v),
+                None => std::env::remove_var(AA_LAYERS_ENV),
+            }
+            let set = LayerDetector::detect();
+            let att = LayerDetector::attest(ATTEST_NOW);
+
+            for (component, flag) in [
+                ("ebpf", LayerSet::EBPF),
+                ("proxy", LayerSet::PROXY),
+                ("sdk", LayerSet::SDK),
+            ] {
+                let (_, layer) = state_of(&att, component);
+                // Presence shows up in the attestation as "selected and asked
+                // for" (override path) or as an `ArtifactPresent` basis
+                // (probed path); absence never does.
+                let attested_present = matches!(layer.basis, AttestationBasis::ArtifactPresent { .. })
+                    || layer.selected_mode == SelectedMode::Enabled
+                    || matches!(layer.basis, AttestationBasis::AssumedPresent);
+                assert_eq!(
+                    set.contains(flag),
+                    attested_present,
+                    "{component} disagreed for AA_LAYERS={value:?}: set={set}, basis={:?}",
+                    layer.basis
+                );
+            }
+        }
+        std::env::remove_var(AA_LAYERS_ENV);
+    }
 }
