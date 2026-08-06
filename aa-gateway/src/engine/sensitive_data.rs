@@ -85,7 +85,7 @@ use aa_core::types::sensitive_data::{
 };
 use aa_core::types::AgentId as WireAgentId;
 
-use crate::storage::sensitive_data::{SensitiveDataProjection, SensitiveDataProjectionWriter};
+use crate::storage::sensitive_data::{SensitiveDataProjection, SensitiveDataProjectionWriter, WriteOutcome};
 
 use super::EvaluationResult;
 
@@ -328,9 +328,16 @@ impl<S: SensitiveDataProjection> SensitiveDataProjectionDrain<S> {
             .write(&decision.event, &decision.findings, ingested_at)
             .await
         {
-            Ok(_) => {
+            // `Disabled` is a write that did not happen, so it must not
+            // increment a counter a reader uses to judge the tier's
+            // completeness. The composition root only ever builds an enabled
+            // writer, but a counter that would over-report under a
+            // configuration nobody has yet chosen is a wrong number waiting for
+            // one.
+            Ok(WriteOutcome::Written) => {
                 self.written.fetch_add(1, Ordering::Relaxed);
             }
+            Ok(WriteOutcome::Disabled) => {}
             Err(err) => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
                 // The event id, not the event: a failed write must not spill the

@@ -852,3 +852,29 @@ fn the_channel_carries_only_the_span_free_record_shape() {
     assert_eq!(decision.event.total_finding_count(), 1);
     assert_eq!(decision.findings.len(), 1);
 }
+
+/// A disabled writer is not a write, and must not be counted as one.
+///
+/// The composition root only builds enabled writers, so this configuration is
+/// unreachable in production today — which is exactly why the counter would
+/// have over-reported for as long as it took someone to reach it. `written` is
+/// what a reader consults to decide whether the tier is complete.
+#[tokio::test]
+async fn a_disabled_writer_records_neither_a_row_nor_a_write() {
+    let (_dir, store) = store().await;
+    let service = SensitiveDataProjectionService::spawn(
+        SensitiveDataProjectionWriter::new(Arc::clone(&store), SensitiveDataProjectionConfig::disabled()),
+        64,
+    );
+    let engine = primary_engine().with_sensitive_data_sink(service.sink().clone());
+
+    engine.evaluate(&ctx(), &leaky_call(SYNTHETIC_AWS_KEY));
+
+    let outcome = service.shutdown().await;
+    assert_eq!(
+        outcome.written, 0,
+        "a disabled write was counted as a write: {outcome:?}"
+    );
+    assert_eq!(outcome.write_failures, 0, "a disabled write is not a failure either");
+    assert!(events(&store).await.is_empty());
+}
