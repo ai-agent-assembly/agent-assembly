@@ -775,9 +775,18 @@ The minimum rule, which a repository may tighten and may not loosen:
 ### 10. Waivers and exceptions
 
 A waiver is a **recorded, approved, expiring** permission to publish against a
-rule in this ADR or against ADR 0033's banned-absolutes list. It is not a
-suppression: the finding stays visible and the waiver is what makes it
-non-blocking, for a stated period.
+**waivable** rule in this ADR. It is not a suppression: the finding stays
+visible and the waiver is what makes it non-blocking, for a stated period.
+
+**A waiver reaches process, never truth.** It may waive process, timing, review
+sequencing, or a temporary governance requirement — controls whose cost is
+*delay*, so bounding the delay is a real trade. It may never waive whether a
+statement is true. A time limit, a named owner, an approver, or a fail-closed
+expiry bounds an exception's exposure; none of them makes an unsupported claim
+true, so over an untrue sentence there is nothing for the bound to bound. ADR
+0033's banned absolutes are therefore **unwaivable** here — the waiver route
+over them was removed rather than narrowed, for the reason recorded in
+[Update — AAASM-5671](#update--aaasm-5671).
 
 Required fields:
 
