@@ -604,4 +604,109 @@ mod tests {
         assert_eq!(json["assertions"][0]["holds"], serde_json::json!(false));
         assert!(report.render_human().contains("passed"));
     }
+
+    // ---- AAASM-5635: the integration state is wire vocabulary ----------------
+
+    fn tool_list(state: Option<&str>) -> ToolListReport {
+        use crate::commands::integrations::model::ToolRow;
+
+        ToolListReport {
+            runtime: runtime(),
+            tools: vec![ToolRow {
+                tool_id: "claude-code".to_string(),
+                display_name: "Claude Code".to_string(),
+                detected: true,
+                detected_version: Some("2.1.220".to_string()),
+                compatibility: "compatible".to_string(),
+                adapter_ceiling: "l2_enforce".to_string(),
+                capabilities: Vec::new(),
+                lifecycle_phase: Some("detected_not_integrated".to_string()),
+                integration_state: state.map(str::to_string),
+                achieved_level: Some("detected_not_integrated".to_string()),
+                warnings: Vec::new(),
+            }],
+        }
+    }
+
+    /// The `STATE` cell of the single row `tool_list` builds.
+    fn state_cell(report: &ToolListReport) -> String {
+        let rendered = report.render_human();
+        let row = rendered
+            .lines()
+            .find(|line| line.starts_with("claude-code"))
+            .expect("the listing must carry the row")
+            .to_string();
+        // TOOL(16) VERSION(12) COMPAT(12) then STATE(14), space-separated.
+        row.split_whitespace()
+            .nth(3)
+            .expect("the row must have a STATE cell")
+            .to_string()
+    }
+
+    /// `ladder` is the DI-API's token for "on the normal ladder — nothing
+    /// anomalous". Printing it makes the reader infer the good case from the
+    /// three bad ones they would have to already know (AAASM-5635).
+    #[test]
+    fn the_listing_never_prints_the_ladder_discriminator() {
+        let rendered = tool_list(Some("ladder")).render_human();
+        assert!(
+            !rendered.contains("ladder"),
+            "the internal state token reached the user: {rendered}"
+        );
+    }
+
+    /// The value is correct and the separation is load-bearing: the three
+    /// overriding states must stay distinguishable from the ordinary one and
+    /// from each other after the rename.
+    #[test]
+    fn the_four_integration_states_stay_four_distinct_words() {
+        let marks: Vec<String> = ["ladder", "drifted", "degraded", "incompatible"]
+            .iter()
+            .map(|state| state_cell(&tool_list(Some(state))))
+            .collect();
+        for (i, a) in marks.iter().enumerate() {
+            for b in marks.iter().skip(i + 1) {
+                assert_ne!(a, b, "two states collapsed onto one word: {marks:?}");
+            }
+        }
+    }
+
+    /// A token this build does not know must not be forwarded verbatim — that
+    /// is how `ladder` reached a user in the first place. Naming it as
+    /// unrecognized reports what the runtime said without pretending to read it.
+    #[test]
+    fn an_unknown_state_token_is_not_printed_verbatim() {
+        let cell = state_cell(&tool_list(Some("quantum_entangled")));
+        assert_ne!(cell, "quantum_entangled");
+        let rendered = tool_list(Some("quantum_entangled")).render_human();
+        assert!(rendered.contains("unrecognized"), "{rendered}");
+        assert!(
+            rendered.contains("quantum_entangled"),
+            "the token itself must still be reported: {rendered}"
+        );
+    }
+
+    /// The wire/JSON token is a public contract. Renaming what a person reads
+    /// must not rename what a script branches on.
+    #[test]
+    fn the_listing_json_still_carries_the_wire_state_token() {
+        let json = serde_json::to_value(tool_list(Some("ladder"))).expect("serialize");
+        assert_eq!(json["tools"][0]["integration_state"], serde_json::json!("ladder"));
+    }
+
+    /// `status` prints the same discriminator on its own `state:` line.
+    #[test]
+    fn the_status_rendering_never_prints_the_ladder_discriminator() {
+        let report = status_declaring(Some("supported"));
+        assert_eq!(report.state, "ladder", "the fixture under test changed");
+        let rendered = report.render_human();
+        assert!(!rendered.contains("ladder"), "{rendered}");
+    }
+
+    /// And its JSON keeps the token, for the same reason.
+    #[test]
+    fn the_status_json_still_carries_the_wire_state_token() {
+        let json = serde_json::to_value(status_declaring(Some("supported"))).expect("serialize");
+        assert_eq!(json["state"], serde_json::json!("ladder"));
+    }
 }
