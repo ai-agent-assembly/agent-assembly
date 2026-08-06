@@ -753,8 +753,11 @@ one of the nine sites above still finds the question and its answer together:
 1. **Precedence between the two vocabularies** — enforcement/claim terms (ADR 0033 §6)
    versus lifecycle maturity labels (Docs Hub `source-of-truth.md`) — assigned there
    by ADR 0033 §E.
-2. **Waiver semantics** — who may approve publishing against a rule here or against
-   ADR 0033's banned-absolutes list, on what evidence, and for how long.
+2. **Waiver semantics** — who may approve publishing against a **waivable** rule
+   here, on what evidence, and for how long. The question as originally posed also
+   covered ADR 0033's banned-absolutes list, and the settled answer there is that
+   they are **unwaivable**: nobody approves one, for any period, on any evidence
+   short of the phrase leaving the banned category in 0033 itself.
 3. **Cross-repository enforcement** — how these rules are policed outside this
    repository, and what a violation blocks.
 4. **The roadmap owner** — assigned to the L1/T6 product website; see
