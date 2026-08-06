@@ -86,7 +86,9 @@ is governed by that axis's owner and is not this page's to grant or refuse.
 
 ### 3.1 Spelling: prose form and manifest token
 
-Each term has exactly two admissible spellings, and a checker must accept both.
+Each term has exactly two **canonical** spellings — a prose form and a manifest
+token — and a checker must accept both, plus the normalised variants defined
+beneath the table.
 
 | Prose form (surfaces) | Manifest / machine token (`coverage:`) |
 | --- | --- |
@@ -148,9 +150,27 @@ column is the **weakest admissible** form, because L1/T6 is furthest from the
 evidence; the technical column is the fullest. Every website and Docs Hub form
 below assumes a claim identifier in the same block, per [§3.2](#32-the-layer-rule-and-the-two-ways-to-stay-short).
 
-`⟨id⟩` stands for the claim or manifest-row identifier, `⟨platform⟩` for a
-platform from the row's `released_platforms`, and `⟨path⟩` for the launch or
-routing precondition from `launch_path`.
+Every placeholder in the table is defined here, and each names the manifest
+field it is filled from where one exists. Leaving a placeholder undefined would
+defeat the point of the table, which is that the wording is fixed.
+
+| Placeholder | Fill from | Manifest field |
+| --- | --- | --- |
+| `⟨id⟩` | The claim identifier; pre-T3, the manifest row id (`S1`, `H4`, …) | `id` |
+| `⟨platform⟩` | A platform the capability is released on | `released_platforms`, `released_matrix` |
+| `⟨path⟩` | The launch or routing precondition | `launch_path`, `transport` |
+| `⟨component⟩` | The component that performed the action | `interception_component` |
+| `⟨detector⟩` | The named detector that produced the finding | `interception_component` |
+| `⟨event kind⟩` | The durable event type attributed to the action | `evidence` |
+| `⟨planned⟩` | The level the control was configured to achieve | `target_level` |
+| `⟨achieved⟩` | The level actually reached | `current_level` |
+| `⟨value⟩` | The row's value for the dimension named in the same sentence | `decision_timing`, `failure_posture` |
+| `⟨subject⟩` | The D1 subject extent the claim ranges over | `capability`, `boundary_class` |
+| `⟨named implementation⟩` | The implementation that exists but is unvalidated | `interception_component` |
+| `⟨validation⟩` | The validation that has not been performed | *(none — state it in prose)* |
+| `⟨what⟩` | Same as `⟨validation⟩`, in the technical column | *(none — state it in prose)* |
+| `⟨ticket⟩` | The Jira reference for a `Planned` item | *(none — the ticket id)* |
+| `⟨check_action / handle_policy_query⟩` | Whichever entry point produced the decision | `interception_component` |
 
 | Term | It licenses | Product website (T6/L1) | Docs Hub (T5/L2) | Technical docs (T4/L3) | Must not become |
 | --- | --- | --- | --- | --- | --- |
@@ -424,8 +444,11 @@ Owner: an amendment to ADR 0033, tracked with the banned-absolutes CI gate
 
 ADR 0033 §6 requires downstream material to pick one of the eleven terms *"rather
 than an undifferentiated verb"*, naming three: `protects`, `enforces`, `catches`.
-`CLAIM-VERB-01` implements that, with two design choices that are worth stating
-because getting either wrong makes the rule useless.
+`CLAIM-VERB-01` covers those three and adds four — `prevents`, `guarantees`,
+`blocks`, `stops` — for the reasons in
+[§5.5.1](#551-relationship-to-the-docs-hubs-rule-13). It carries two design
+choices that are worth stating, because getting either wrong makes the rule
+useless.
 
 **Third-person forms only, never the stem.** A verb list that also matches a
 common noun gets switched off in practice. Measured in this tree: the bare token
@@ -447,12 +470,40 @@ posture on every agent-to-agent transaction…` must. The trailing
 removing it makes the rule fire on
 [content-ownership.md](content-ownership.md)'s own first paragraph.
 
+#### 5.5.1 Relationship to the Docs Hub's rule 13
+
+The Docs Hub's
+[`page-standards.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/page-standards.md)
+carries a rule 13 enforcing the **same** ADR 0033 §6 requirement over the `docs`
+repository. Two enforcement points, one requirement — not two requirements — and
+the verb lists differ, so the difference is recorded here rather than left for
+someone to discover as a contradiction.
+
+| Verb | Rule 13 | `CLAIM-VERB-01` | Why |
+| --- | --- | --- | --- |
+| `protects` `enforces` `catches` | ✅ | ✅ | ADR 0033 §6 names these three |
+| `prevents` | ✅ | ✅ | Agreed addition; the strongest undifferentiated verb of the set |
+| `guarantees` | ✅ | ✅ | **Added here in response to review.** Rule 13 treats it as one of five, and omitting it let *"Agent Assembly guarantees …"* pass this check while failing the sibling's |
+| `blocks` `stops` | ❌ | ✅ | Rule 13 tested and rejected them as noun-colliding. This page keeps them because the `SUBJ` gate removes the collision — measured 0 false positives against 49 raw hits. The gate is the difference, not a disagreement about the verbs |
+
+Neither list is the canonical one; ADR 0033 §6 is, and it names three. A repo may
+enforce more than §6 names and may not enforce fewer. Where a contributor writes
+for both surfaces, satisfying the union satisfies both.
+
+The same relationship holds for quote scoping: rule 13 pairs quotes
+**document-wide** and rejects a page on an odd count, where
+[§6.3](#63-exemptions) pairs **per logical line** and lets an unbalanced quote
+exempt nothing. Both close the stray-quote hole; they choose different routes,
+and a page moving between repositories should expect the stricter of the two to
+apply in the repository it lands in.
+
 ### 5.6 Guards
 
 A guard suppresses a match. All guards operate on the normalised text.
 `NEG` is evaluated against the text **preceding** a match; `CFG-NOUN` against the
-text **immediately following** it; `DOC-NOUN`, `GOV-NOUN` and `SUBJ` are macros
-expanded inside a pattern.
+text **immediately following** it; `SEP`, `DOC-NOUN`, `GOV-NOUN` and `SUBJ` are
+macros expanded inside a pattern. **Every macro's `pattern` already carries its
+own non-capturing group**, so textual substitution is safe.
 
 ```yaml
 guards:
@@ -671,7 +722,12 @@ block-level element after step 2's soft-wrap join. Never per physical line, and
 never per document.
 
 - **Never per document**, because a single stray quote character then swallows
-  the remainder of the file and silences every subsequent rule.
+  the remainder of the file and silences every subsequent rule. The Docs Hub's
+  [`page-standards.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/page-standards.md)
+  rule set makes the opposite choice — document-wide pairing, with an odd count
+  raising an error that rejects the page — which closes the same hole by a
+  different route. Both are sound; they are separate rule sets over separate
+  repositories, and neither is a jurisdictional conflict with the other.
 - **Never per physical line**, because hard-wrapped prose splits quotations
   across lines constantly. ADR 0033's own text does it twice while enumerating
   the banned phrases, and per-physical-line pairing reports the document that
