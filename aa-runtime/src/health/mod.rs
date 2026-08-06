@@ -6,9 +6,13 @@
 //! to answer "is anything protected" — conflating the two is how an operator
 //! ends up reading a green health check as evidence of governance. The
 //! `protection` section (AAASM-5535) answers the second question separately,
-//! in the ADR 0033 §6 vocabulary, and is evaluated when the request is served
-//! rather than frozen at startup: a probe result from an hour ago is not
-//! evidence about now.
+//! in the ADR 0033 §6 vocabulary.
+//!
+//! Be precise about what is fresh in it: the *claim term* is derived when the
+//! request is served, but the *basis* it derives from is the startup probe.
+//! See [`HealthState::protection`] for what that costs and when it must change.
+//!
+//! This endpoint has no authentication layer, so treat the body as public.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -35,9 +39,24 @@ pub struct HealthState {
     pub degraded_layers: Vec<String>,
     /// What each interception component could claim when the runtime started.
     ///
-    /// Held rather than recomputed per request because the probes touch the
-    /// filesystem; its `generated_at_unix_secs` is what lets the handler
-    /// downgrade it once it goes stale.
+    /// **Frozen at startup.** The probes touch the filesystem, so the *basis*
+    /// of every claim — and `generated_at_unix_secs` with it — is the process
+    /// start, not the moment of the request. Only the derived
+    /// [`ClaimTerm`] is recomputed per request
+    /// ([`ProtectionReport::evaluate`]).
+    ///
+    /// Two consequences a consumer must know. The freshness window is inert
+    /// today: it is consulted only when a basis asserts coverage, and no
+    /// startup probe can (ADR 0033 §7), so nothing ever ages out. And
+    /// `generated_at_unix_secs` is process start — on a pod that has been up
+    /// for thirty days it reads as a thirty-day-old verification, which is
+    /// what it is.
+    ///
+    /// The moment any component gains an
+    /// [`Adjudicated`](aa_core::attestation::AttestationBasis::Adjudicated)
+    /// basis, this must be re-probed on a schedule rather than held; a frozen
+    /// coverage claim is exactly the stale-protection failure the attestation
+    /// exists to prevent.
     pub protection: ProtectionAttestation,
 }
 
@@ -51,6 +70,19 @@ pub struct HealthResponse {
     /// Historic presence bitflag, retained for compatibility. Presence is not
     /// protection; read `protection` instead (ADR 0033 §7).
     pub active_layers: Vec<&'static str>,
+    /// Historic list of components that are **not present**, retained for
+    /// compatibility.
+    ///
+    /// **This is not ADR 0033 §6 `Degraded`, and the two deliberately disagree
+    /// in the same payload.** This field lists any component absent from
+    /// `active_layers`, whether or not anything asked for it. §6 reserves
+    /// *Degraded* for a control that was *planned* and is unavailable, so on a
+    /// default host with no eBPF and no proxy this field says
+    /// `["ebpf", "proxy"]` while `protection.verified_states` reports
+    /// `unsupported`/`unmeasured` and `degraded_at()` is empty — because
+    /// nothing was planned.
+    ///
+    /// A renderer must read `protection.verified_states`, never this field.
     pub degraded_layers: Vec<String>,
     /// What may truthfully be claimed about each component, right now.
     pub protection: ProtectionReport,
@@ -59,8 +91,13 @@ pub struct HealthResponse {
 /// The protection section of `GET /health`, evaluated at request time.
 #[derive(serde::Serialize)]
 pub struct ProtectionReport {
-    /// The startup attestation, including its schema version, the build and
-    /// platform it was made on, and when it was produced.
+    /// The startup attestation: schema version, release series, platform, and
+    /// when it was produced.
+    ///
+    /// `component_version` here is the release **series**, not the exact build
+    /// — this endpoint is unauthenticated, and the precise build is a
+    /// fingerprinting aid. Trusted consumers that need the exact build must
+    /// read it from a source that authenticates them.
     pub attestation: ProtectionAttestation,
     /// When the claims below were derived, as seconds since the Unix epoch.
     pub evaluated_at_unix_secs: u64,
@@ -91,9 +128,12 @@ pub struct ComponentClaim {
 impl ProtectionReport {
     /// Evaluate `attestation` as of `now_unix_secs`.
     ///
-    /// Re-derived per request rather than cached, for the same reason ADR 0030
-    /// derives protection state on every read: a stored answer keeps displaying
-    /// protection that has already stopped being true.
+    /// Only the *term* is re-derived here; the *basis* it is derived from is
+    /// the startup probe (see [`HealthState::protection`]). Deriving rather
+    /// than storing the term follows ADR 0030's reason for deriving protection
+    /// state on every read — a stored answer keeps displaying protection that
+    /// has already stopped being true — but note the limit: re-deriving a term
+    /// from a frozen basis cannot notice that the basis stopped holding.
     fn evaluate(attestation: &ProtectionAttestation, now_unix_secs: u64) -> Self {
         let verified_states = attestation
             .layers
