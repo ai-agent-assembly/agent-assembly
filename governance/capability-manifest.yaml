@@ -2788,6 +2788,10 @@ capabilities:
   - kind: env
     name: AA_AGENT_ID
     required_value: <set>
+  - kind: env
+    name: AA_TEAM_ID
+    required_value: <set>
+    note: injected into the launched tool's environment alongside AA_AGENT_ID
   transport: injects AA_AGENT_ID, AA_TEAM_ID, the installed launch-env store INCLUDING NODE_EXTRA_CA_CERTS,
     HTTPS_PROXY, HTTP_PROXY
   interception_component: aa-devtool-claude-code/src/lib.rs:356-383
@@ -2853,6 +2857,10 @@ capabilities:
   - kind: env
     name: AA_AGENT_ID
     required_value: <set>
+  - kind: env
+    name: AA_TEAM_ID
+    required_value: <set>
+    note: injected into the launched tool's environment alongside AA_AGENT_ID
   transport: injects AA_AGENT_ID, AA_TEAM_ID, HTTPS_PROXY ONLY — no CA trust
   interception_component: aa-devtool-codex/src/lib.rs:281-303
   identity_source: AA_AGENT_ID
@@ -2911,6 +2919,10 @@ capabilities:
   - kind: env
     name: AA_AGENT_ID
     required_value: <set>
+  - kind: env
+    name: AA_TEAM_ID
+    required_value: <set>
+    note: injected into the launched tool's environment alongside AA_AGENT_ID
   transport: injects AA_AGENT_ID, AA_TEAM_ID, HTTPS_PROXY ONLY — no CA trust
   interception_component: aa-devtool-windsurf/src/lib.rs:295-315
   identity_source: AA_AGENT_ID
