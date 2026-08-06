@@ -36,6 +36,28 @@
 //! | `packaged` | `.cargo_vcs_info.json` in a `cargo package` tarball | yes |
 //! | `absent` | nothing could be resolved — the SHA is `unknown` | **no** |
 //!
+//! # `AA_BUILD_SHA` is trusted build-time input, and who may set it
+//!
+//! `injected` exists for a build that has no checkout to read and is not a
+//! `cargo package` tarball — a container build from an exported source tree, or
+//! a release job that already knows the commit it checked out. Whoever sets it
+//! is *asserting* the identity the resulting binary will claim for the rest of
+//! its life, and nothing downstream can re-derive it. So:
+//!
+//! - It may be set by **the release workflow or an equivalent first-party build
+//!   system**, to the commit that produced the source tree being compiled.
+//! - It must **not** be set by a developer to work around a missing checkout,
+//!   and must not be plumbed through from anything a third party controls: an
+//!   injected value is indistinguishable, downstream, from one `git` produced.
+//!
+//! This is not an authentication boundary and is not claimed as one — anyone
+//! able to set a build variable can also edit the source. It is an honesty
+//! control for first-party builds, and the validation below is what keeps an
+//! accidental value (`AA_BUILD_SHA=deadbeef`, a tag name, a branch) from
+//! becoming an *authoritative* identity: anything that is not a commit object
+//! id is refused and the build falls through to the next source, exactly as a
+//! malformed `.cargo_vcs_info.json` does.
+//!
 //! `packaged` is what makes an installed-from-a-tarball pairing verifiable
 //! rather than merely unrefuted. `cargo package` (and therefore `cargo publish`)
 //! writes `.cargo_vcs_info.json` into the `.crate` tarball, recording the commit
@@ -83,7 +105,7 @@ fn main() {
         println!("cargo:rerun-if-changed={}", dir.join(VCS_INFO_FILE).display());
     }
 
-    let (sha, identity_source) = env_override("AA_BUILD_SHA")
+    let (sha, identity_source) = injected_sha()
         .map(|sha| (sha, "injected"))
         .or_else(|| {
             source_root
@@ -122,6 +144,40 @@ fn env_override(key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// The commit an `AA_BUILD_SHA` injection names, when it names one at all.
+///
+/// Validated exactly as [`packaged_vcs_sha`] validates cargo's own field, and
+/// for the same reason: an injected value becomes an **authoritative** identity,
+/// so `AA_BUILD_SHA=deadbeef`, a tag name or a branch would put a fabricated
+/// identity on the wire and let it compare `Match` against another binary
+/// carrying the same mistake. Anything that is not a commit object id is
+/// refused, and the build falls through to `checkout` / `packaged` / `absent` —
+/// the safe direction, since `absent` can only ever produce `Unverifiable`.
+///
+/// A refusal is announced with `cargo:warning=` rather than swallowed: a build
+/// system that meant to inject an identity and mistyped it would otherwise ship
+/// a binary whose provenance silently came from somewhere else.
+fn injected_sha() -> Option<String> {
+    let raw = env_override("AA_BUILD_SHA")?;
+    if is_commit_object_id(&raw) {
+        return Some(raw);
+    }
+    println!(
+        "cargo:warning=AA_BUILD_SHA is set to {raw:?}, which is not a commit object id \
+         (40+ hex digits); ignoring it and resolving the build identity from the checkout instead"
+    );
+    None
+}
+
+/// Whether `value` is a git commit object id — 40 hex digits for SHA-1, more
+/// for SHA-256, and nothing else.
+///
+/// Guessing would put a fabricated identity on the wire; see [`injected_sha`]
+/// and [`packaged_vcs_sha`], which are the only two callers and must agree.
+fn is_commit_object_id(value: &str) -> bool {
+    value.len() >= 40 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Ask `git` for the current commit, or `None` outside a checkout.
 fn git_head_sha(root: &Path) -> Option<String> {
     let output = Command::new("git")
@@ -154,7 +210,7 @@ fn packaged_vcs_sha(manifest_dir: &Path) -> Option<String> {
     let sha = json_string_field(&raw, "sha1")?;
     // Cargo writes a full hex object id; anything else is not one, and guessing
     // would put a fabricated identity on the wire.
-    (sha.len() >= 40 && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
+    is_commit_object_id(&sha).then_some(sha)
 }
 
 /// The value of `"<key>": "<value>"`, for cargo's generated vcs-info file.

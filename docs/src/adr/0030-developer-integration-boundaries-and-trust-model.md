@@ -682,6 +682,22 @@ the first three can raise a comparison to `Match`. Recording the mechanism rathe
 inferring it from the shape of the string is what stops a plausible-looking placeholder from
 reading as an identity.
 
+**`AA_BUILD_SHA` is trusted build-time input.** `injected` exists for a build with no checkout
+to read that is also not a `cargo package` tarball — a container build from an exported source
+tree, or a release job that already knows the commit it checked out. Whoever sets the variable
+is *asserting* the identity the resulting binary will claim for the rest of its life, and
+nothing downstream can re-derive it. It may be set by **the release workflow or an equivalent
+first-party build system**, to the commit that produced the source tree being compiled; it must
+**not** be set by a developer to paper over a missing checkout, and must not be plumbed through
+from anything a third party controls, because an injected value is indistinguishable downstream
+from one `git` produced. This is not an authentication boundary and is not claimed as one —
+anyone able to set a build variable can also edit the source. `build.rs` validates the value as
+a commit object id (40+ hex digits) exactly as it validates cargo's `.cargo_vcs_info.json`
+`sha1`, and refuses anything else with a `cargo:warning`, falling through to `checkout` /
+`packaged` / `absent`. Without that check `AA_BUILD_SHA=deadbeef` would be reported as an
+*authoritative* identity and would compare `Match` against any other binary carrying the same
+mistake.
+
 **`pid`, executable name, executable path, DI-API version and package version are not proof of
 identical build content** — individually or in combination — and none of them may upgrade a
 verdict. `core_version` is compared because it can *falsify* (two different versions cannot be
