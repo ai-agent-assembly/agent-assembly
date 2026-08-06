@@ -583,7 +583,7 @@ claim coverage it does not have.
 | V4 | Adjudication is reported by the deciding component, not the probe | **Existing** — `aa-proxy/src/probe_adjudication.rs` |
 | V5 | An adversarial conformance harness exercises bypass paths across SDK, proxy, MCP and host mechanisms | **Not yet built** — owned by [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532) |
 | V6 | Every SDK quick-start carries an enforcement-truth negative control | **Not yet built** — owned by [AAASM-5529](https://lightning-dust-mite.atlassian.net/browse/AAASM-5529) |
-| V7 | The eBPF suite's CI status is stated wherever eBPF coverage is claimed | **Manual today.** `aa-ebpf` is excluded from mainline build, clippy, nextest and doc jobs (`ci.yml:319,360,499,627`; `docs.yml:350,353`), and the eBPF/three-layer e2e jobs are path-gated so they are *normally skipped* on ordinary PRs (`ci.yml:117-122`), with a weekly schedule as the standing coverage |
+| V7 | The eBPF suite's CI status is stated wherever eBPF coverage is claimed | **Manual today.** `aa-ebpf` is excluded from mainline build, clippy, nextest and doc jobs (`ci.yml:319,360,499,627`; `docs.yml:350,353`), and the eBPF/three-layer e2e jobs are path-gated to `aa-ebpf*/**` changes, so per `ci.yml:117-122` the suite is *"normally SKIPPED on main"*, with a weekly schedule plus on-demand dispatch as the standing coverage |
 
 ## Reconsideration triggers
 
