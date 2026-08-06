@@ -245,8 +245,18 @@ so is narrower than "the proxy":
 | `aa-proxy`, **MCP `tools/call` on a non-LLM MitM'd host, gateway configured** | Yes, synchronously, before dialling upstream | `handle_non_llm_mitm` (`aa-proxy/src/proxy/mod.rs:801`) calls `evaluate_mcp_request` (`:614`, invoked at `:834`) — *"MCP detection — only when a gateway is configured"* (`:832`). On `McpEvalOutcome::Deny` the handler answers the client and returns **without** reaching `dial_upstream_tls` (`:552`, reached at `:910`). This is the only gateway-bound pre-dial block in the system. |
 | `aa-proxy`, **LLM-provider hosts** (the only hosts MitM'd under the `llm_only` default) | **No** | `handle_llm_mitm` (`:1038-1241`) contains **zero** gateway references. It refuses locally at two points, both returning 403 on its own authority: `in_tunnel_deny_reason` (`:984`, called at `:1055`, 403 at `:1066`) and the `Interceptor`'s `VerdictDecision::Block` (`:1153`, 403 at `:1173`). |
 | `aa-proxy`, **CONNECT-time egress** | **No** | Refusal comes from local configuration — the denied-host list and `is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist)` (`:960-966`) — not from the control plane. |
-| **Any host not MitM'd** (the `llm_only` default sends every non-LLM host here) | **No — nothing evaluates it** | `handle_llm_mitm`/`handle_non_llm_mitm` are never entered; the connection is transparently tunnelled (`:1333-1336`). This is *Unmeasured* (§6), not allowed. |
+| **Any host not MitM'd** (the `llm_only` default sends every non-LLM host here) | **No** | Still evaluated at CONNECT by the same local egress policy as the row above — `connect_deny_reason` (`:934`) runs at `:1308`, *before* the `llm_only` branch at `:1333`. What is skipped is **payload** inspection: `handle_llm_mitm`/`handle_non_llm_mitm` are never entered and the bytes are relayed by `transparent_tunnel` (`:1397`). Per §6 the **connection is Observed** — `transmission_evidence::forwarded(…).persist(…)` (`:1402-1408`) — while the **payload is Unmeasured**. |
 | `aa-runtime` `handle_policy_query` (`fn handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) | Yes | A `Deny` is returned to the SDK — which must then honour it (§4). |
+
+> **A truthfulness defect this table exposes.** At `aa-proxy/src/proxy/mod.rs:1325` the
+> proxy calls `emit_policy_decision(host, false)` — an **allow** decision
+> (`aa-proxy/src/intercept/mod.rs:303`, where the parameter is `denied: bool`) — for a
+> connection it is about to tunnel without inspecting. That is precisely what §4's
+> semantic rule forbids: an uninspected path must not be reported as allowed. The
+> adjacent `transparent_tunnel` code gets this right, persisting *"forwarded, and
+> nothing looked at it — never clean"* (`:1398-1408`, AAASM-5358); the CONNECT-level
+> decision event does not. Logged in the migration checklist, section B, as a code fix
+> rather than a documentation one.
 
 The distinction matters for anyone choosing an enforcement path: a gateway `Deny` stops
 bytes **only** for MCP tool-call envelopes on non-LLM MitM'd hosts with a gateway
@@ -780,6 +790,13 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       producer; that crate is a dead stub (every program body returns `0` with a TODO,
       it is not a workspace member, and `aa-ebpf/build.rs:50,90` builds only
       `aa-ebpf-probes`). Stale, independent of this ADR.
+- [ ] **`aa-proxy/src/proxy/mod.rs:1325` — a code fix, not a wording fix.**
+      `emit_policy_decision(host, false)` records an **allow** decision
+      (`aa-proxy/src/intercept/mod.rs:303`) for a connection that is then tunnelled
+      uninspected. §4's rule is that an uninspected path is *Unmeasured*, never
+      *allowed*; `transparent_tunnel` already models this correctly at `:1398-1408`.
+      Either suppress the allow event on the not-MitM'd path or mark it as
+      inspection-free so the audit trail cannot be read as "this traffic was cleared".
 - [ ] In-code absolutes and model references, each a banned phrase or the superseded
       framing in a doc comment: `aa-ebpf-probes/src/ssl_probes.rs:28` (*"the proxy …
       and the syscall/socket layer remain the catch-all"* — directly disproved by §4 and
