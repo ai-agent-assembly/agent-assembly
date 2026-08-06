@@ -93,7 +93,7 @@ fact is a *derivative* and is governed by
 | **Governance & enforcement architecture** | Core | [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) |
 | **Enforcement / claim vocabulary** — *Observed · Detected · Evaluated · Denied before execution · Redacted · Approval required · Degraded · Unmeasured · Experimental · Planned · Unsupported* | Core | [ADR 0033 §6](../adr/0033-canonical-governance-and-enforcement-architecture.md) |
 | **Lifecycle maturity labels** — `🧪 Release candidate` and `🗺️ Planned` | Docs Hub — **→ move** | [`source-of-truth.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/source-of-truth.md) |
-| **Which area is owned by which repository, and its visibility** | Docs Hub | `source-of-truth.md` — generated from the Hub's `hub-components.toml` |
+| **Which area is owned by which repository, and its visibility** | Docs Hub | `source-of-truth.md` — but see [which input to edit](#the-status-map-has-two-inputs) |
 | **Measured protection state for a tool on a host** | Core | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) §4 ladder; [Protection levels](../devtools/protection-levels.md) |
 | **Measured limits and known bypasses** | Core | [Limitations and known bypasses](../devtools/limitations.md) |
 | **Security model and threat model (OSS enforcement path)** | Core | [`docs/src/security/`](../security/overview.md) |
@@ -112,6 +112,30 @@ fact is a *derivative* and is governed by
 | **Org-shared metadata** (repo names, canonical URLs, display names, Jira IDs) | [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) `Proposed` | the `.github` repository's `metadata/org-profile.yaml` |
 | **Visual specification** | [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) `Proposed — awaiting product/design sign-off` | `design/v2/` |
 | **Evidence for any claim above** | L6 | source, tests, `openapi/`, `proto/`, `verification-reports/` |
+
+### The status map has two inputs
+
+`source-of-truth.md`'s area table sits inside a `BEGIN GENERATED` region, which makes
+it look like a single-input generated artifact. It is not, and the difference will
+cost a contributor an afternoon if they do not know it.
+
+The generator, `generate_hub_components.py`, reads **component** rows from the
+`hub-components.toml` manifest but carries the **non-component** rows — Specs,
+Releases, Cloud, Enterprise, Operations — as literal strings in its own source. That
+is 5 of the 12 rows, and it includes **all three `🗺️ Planned` rows**, which are
+precisely the ones most likely to need correcting as the managed service progresses.
+
+So: a contributor who finds a wrong `🗺️ Planned` on Cloud, edits
+`hub-components.toml`, re-runs the generator and sees no change will reasonably
+conclude the label was already correct. It was not; they edited the wrong input.
+
+| Row class | Edit this |
+|---|---|
+| Component rows (Core, the three SDKs, Arena, examples, Homebrew tap) | `hub-components.toml` |
+| Specs · Releases · Cloud · Enterprise · Operations | the literal strings in `generate_hub_components.py` |
+
+This split is the Docs Hub's to keep or remove; it is recorded here so the routing
+table above sends people to the right place while it exists.
 
 ### A note on `Proposed` ADRs
 
@@ -453,7 +477,7 @@ are the ones that stop the same defect coming back.
 | A protection state reported above its evidence | ADR 0030's ladder rules, then the reporting component |
 | A wrong policy field, default or validation rule | Core [Policy YAML reference](../policy-reference.md), checked against `aa-gateway/src/policy/` |
 | A wrong per-language API signature | That SDK's generated API reference — regenerate; do not hand-edit |
-| A wrong maturity label or a wrong owning repository | Docs Hub `source-of-truth.md`, via its generator input |
+| A wrong maturity label or a wrong owning repository | Docs Hub `source-of-truth.md` — **check [which of its two inputs](#the-status-map-has-two-inputs) owns the row first** |
 | A managed-service claim with no evidence | The Docs Hub SaaS claim publication checklist — remove the claim, register the row |
 | A version literal that has gone stale | Its ADR 0013 anchor, then re-run the propagation script |
 | A repo name, canonical URL or Jira ID that has drifted | The `.github` metadata registry (ADR 0014, Proposed) |
