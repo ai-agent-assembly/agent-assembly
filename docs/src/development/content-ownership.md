@@ -291,9 +291,15 @@ policed across repositories, is AAASM-5621's**, not this page's.
 
 ## Reuse patterns: summary, quotation, generation
 
-There are four sanctioned ways for a layer to carry a fact it does not own. Anything
-that is not one of these four is a **copy**, and copies are governed by
-[Duplication rules](#duplication-rules) below.
+There are four sanctioned ways for a layer to carry a fact it does not own.
+
+A word on terms, because two of them are easy to blur. A **restatement** is any text
+in a derivative that carries a fact from a canonical source — all four patterns below
+are restatements. A **copy** is the narrower thing: a restatement that is *neither*
+one of these four patterns *nor* declared. Copies are governed by
+[Duplication rules](#duplication-rules) below; a compliant summary or quotation is a
+restatement and is **not** a copy, so the three duplication classes do not apply
+to it.
 
 ### 1. Link
 
@@ -405,9 +411,12 @@ Every restatement falls into one of three classes.
   from the other and neither cites the other as canonical. This is the default
   failure mode and the one worth searching for; see the
   [worked example](#worked-example-two-hand-written-policy-references) below.
-- **A derivative that restates its source at the same depth.** If the outer page is
-  as detailed as the canonical page, it is not a summary, it is a second reference,
-  and the two will diverge.
+- **A derivative that reproduces its source at the same depth as original prose.**
+  If the outer page is as detailed as the canonical page and reads as its own text,
+  it is not a summary, it is a second reference, and the two will diverge. An
+  attributed [quotation](#3-quotation) is exempt however long it is: it is marked as
+  someone else's words and linked, so a reader knows where it came from and it cannot
+  silently become a rival source.
 - **A rival model of the same subject.** Publishing a second architecture, layer set,
   or ladder for something ADR 0033, ADR 0030 or the policy reference already models.
   This is what
