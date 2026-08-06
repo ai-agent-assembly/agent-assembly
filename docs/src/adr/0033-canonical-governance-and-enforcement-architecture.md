@@ -428,3 +428,181 @@ component that actually decided (`aa-proxy/src/probe_adjudication.rs:1-14`: *"A
 protection probe sits on the **near** side of the MitM. It can observe that its request
 went out and that nothing obviously failed, and neither fact is evidence"*) — and from
 ADR 0030's ladder, never from a capability bitflag.
+
+---
+
+## Alternatives considered
+
+### Keep the three-layer model and add caveats (rejected)
+
+The cheapest option: leave `SDK → Proxy → eBPF` in place and attach platform footnotes.
+Rejected because the defect is in the *structure*, not the wording. An ordered pipeline
+whose members "catch what the layer above missed" has no way to express an absent
+member — a caveat cannot repair a model whose shape asserts completeness. It also
+leaves the gateway unplaced, which is what produces the recurring "fourth layer"
+reading.
+
+### Rename the third layer to "kernel layer" (rejected)
+
+Slightly better than "eBPF", but still wrong in the same way: it promises a kernel
+mechanism on platforms that have none, and it implies the mechanism's authority is
+uniform when the verified authority is "observe, plus one opt-in asynchronous kill".
+E4 names the *role* and forces the per-platform matrix (§5.3) to be published
+alongside it.
+
+### Model layers as an ordered fallback chain (rejected)
+
+A tempting refinement: keep the ordering but state that a missing layer falls through
+to the next. Rejected because it is false. `LayerSet` members are probed independently
+(`aa-runtime/src/layer.rs:164-179`); nothing hands an un-intercepted action to another
+mechanism. Worse, the fallback framing would license exactly the inference this Epic
+exists to stop — that an action not seen by the SDK was therefore seen by eBPF.
+
+### Define the model from the roadmap rather than from the implementation (rejected)
+
+Describing the intended end state (synchronous LSM-based deny, macOS Endpoint Security,
+a Windows adapter) would make a tidier architecture. Rejected: this ADR is cited as the
+canonical source by the website, Docs Hub and Core, so it must describe what is
+verified. Roadmap items are admissible only under the **Planned** or **Research** terms
+of §6, with no capability claim attached.
+
+### Fold documentation-governance rules into this ADR (rejected — different owner)
+
+Claim precedence, source-of-truth ordering and waiver handling are genuinely needed,
+but they belong to
+[AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621). Defining them
+here would create two competing authorities. This ADR supplies vocabulary; 5621 supplies
+the governance process that enforces its use.
+
+## Accepted risks
+
+- **The model is more complex than the thing it replaces.** Six elements and three views
+  cost more to teach than one three-box diagram. Accepted: the simpler model was
+  producing false claims, and the complexity is inherent to a product whose coverage is
+  a per-host, per-platform, per-launch fact.
+- **The verified-state tables will age.** §5.3 and §6 are snapshots of the
+  implementation at v0.0.1-rc.7. Accepted, with the mitigation that
+  [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531) is chartered
+  to make the capability/evidence manifest machine-readable and
+  [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) to gate stale
+  evidence in CI. Until those land, the tables are maintained by review.
+- **Honest limits are competitively unflattering.** Publishing "macOS host enforcement:
+  Unsupported" and "the syscall guard does not prevent the offending syscall" weakens
+  marketing copy. Accepted deliberately: an evaluator who discovers an overstated claim
+  after provisioning is a worse outcome than one who reads an accurate limitation
+  up front.
+- **This ADR does not fix the affected pages.** It supersedes the model and lists the
+  migration surface; the rewrites are owned by
+  [AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528),
+  [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605),
+  [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586) and
+  [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609). Between
+  this ADR merging and those completing, the repository contains material that
+  contradicts its own canonical architecture source. Accepted as a short, tracked
+  window; the Migration checklist below is the closure condition.
+
+## Explicitly forbidden designs
+
+These must not be reintroduced, in code comments, documentation, diagrams, marketing
+copy or ticket text.
+
+1. **The fixed `SDK → Proxy → eBPF` pipeline** as the architecture, in prose or as a
+   three-box diagram.
+2. **eBPF (or "the kernel layer") as a cross-platform or universal final layer**, or as
+   a mechanism that "catches everything, including bypass attempts".
+3. **The gateway as a fourth interception layer.** It is E1 and holds no traffic.
+4. **Inferring prevention from an audit event.** An event proves *Observed*; it never
+   proves the action was stopped.
+5. **Inferring platform support** from JavaScript or platform-neutral tests, from
+   platform-neutral bindings, from an OS API *proposal*, or from a Linux-only
+   implementation.
+6. **Treating a capability bitflag, a `$PATH` lookup, an `AA_LAYERS` value, or the
+   existence of a settings file as evidence** of coverage (§7; ADR 0030 §4.2 rule 1).
+7. **Unqualified absolutes.** Specifically banned: "catch everything", "cannot be
+   bypassed", "nowhere to hide", "every action", "every tool call", "no code changes",
+   "immutable audit", "full fleet". Each either overstates coverage or asserts a
+   property no component in this repo provides.
+8. **Presenting the five-way `RuntimeVerdict` as a live per-action outcome** while its
+   derivation is unimplemented (§6).
+9. **Describing `RuntimeScanner` as the authoritative enforcement pipeline.** It is a
+   post-action redactor; the pre-execution gate is `handle_policy_query`.
+
+## Consequences
+
+**For the product website, Docs Hub and Core docs.** There is now one citable source
+for the architecture, and the six element names are the shared vocabulary. Pages must
+state platform, decision timing and failure posture using §6's terms. The three views
+(§3) must not be merged into a single diagram.
+
+**For evaluators.** Coverage becomes legible: what is governed depends on the managed
+path (§4) and the platform matrix (§5.3), both of which are now published rather than
+implied.
+
+**For contributors.** A new interception or mediation mechanism must declare which
+element it implements, which platforms it covers, and the highest §6 term it can reach.
+Adding a mechanism does not extend a claim on a platform where it does not run.
+
+**For the SDKs.** ADR 0002's position — the SDK is not a security boundary — is now
+visible in the architecture rather than only in a security ADR: E2 checkpoints are
+reachable only when the agent opts in, and honouring a `Deny` is out-of-repo shim
+behaviour.
+
+**Costs.** Every diagram in the migration checklist must be redrawn; the repository's
+own `CLAUDE.md` files describe a model this ADR supersedes; and some published claims
+must be narrowed, which is a visible change in tone.
+
+## Operational guidance
+
+- **Deploying the proxy does not by itself govern a tool.** The tool must be launched so
+  that `HTTPS_PROXY` points at it and the CA is trusted (`NODE_EXTRA_CA_CERTS` for
+  Node-based tools). A tool started outside `aasm run` is outside the boundary.
+- **`llm_only` defaults to true.** Hosts outside the built-in LLM set are transparently
+  tunnelled and never DLP-scanned. Operators who need broader coverage must configure
+  `mitm_hosts` or disable `llm_only`, and should expect the corresponding latency and
+  compatibility cost.
+- **`aasm proxy start` refuses a non-loopback listener** even with
+  `--allow-remote-clients` (`aa-cli/src/commands/proxy/start.rs:43-70`), because the
+  proxy has no listener TLS and no client authentication. Do not work around this.
+- **The eBPF syscall guard is off unless `AA_EBPF_CONFINE_PID` is set** and the policy
+  lowers to a non-empty allowlist. Enabling it accepts the §5.1 window and the
+  kill-after-syscall race.
+- **On macOS and Windows, plan for transport mediation only** (macOS) or for no local
+  mediation at all (Windows).
+
+## Validation requirements
+
+The following must exist for this ADR to be considered enforced. Items not yet backed
+by an automated check are marked, with the ticket that owns them — this ADR does not
+claim coverage it does not have.
+
+| # | Requirement | Status |
+| --- | --- | --- |
+| V1 | The banned-absolutes list (the forbidden-designs list, item 7) is checked in CI across docs | **Not yet automated** — owned by [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) |
+| V2 | Platform/capability claims are generated from a machine-readable manifest rather than hand-written | **Not yet automated** — owned by [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531) |
+| V3 | Protection state is never reported above its evidence | **Existing** — ADR 0030 §4 rules; `aa-devtool-claude-code/src/probe.rs` returns `Inconclusive` for an unadjudicated probe |
+| V4 | Adjudication is reported by the deciding component, not the probe | **Existing** — `aa-proxy/src/probe_adjudication.rs` |
+| V5 | An adversarial conformance harness exercises bypass paths across SDK, proxy, MCP and host mechanisms | **Not yet built** — owned by [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532) |
+| V6 | Every SDK quick-start carries an enforcement-truth negative control | **Not yet built** — owned by [AAASM-5529](https://lightning-dust-mite.atlassian.net/browse/AAASM-5529) |
+| V7 | The eBPF suite's CI status is stated wherever eBPF coverage is claimed | **Manual today.** `aa-ebpf` is excluded from mainline build, clippy, nextest and doc jobs (`ci.yml:319,360,499,627`; `docs.yml:350,353`), and the eBPF/three-layer e2e jobs are path-gated so they are *normally skipped* on ordinary PRs (`ci.yml:117-122`), with a weekly schedule as the standing coverage |
+
+## Reconsideration triggers
+
+Re-open this ADR when any of the following occurs:
+
+1. A **synchronous** deny becomes available on Linux (seccomp-BPF or a `bpf_lsm` hook —
+   [AAASM-3872](https://lightning-dust-mite.atlassian.net/browse/AAASM-3872)). §5.1 and
+   §6's mapping change materially.
+2. A macOS host enforcement mechanism (Endpoint Security / Network Extension) is
+   implemented rather than declared a non-goal.
+3. Any Windows mediation ships — a proxy build path, a named-pipe DI-API, or a host
+   adapter.
+4. `RuntimeVerdict` derivation at decision time is implemented, making the five-way
+   verdict a live outcome.
+5. `aa-ebpf` file-I/O coverage is extended to aarch64, or the probe set changes such
+   that §5.1's table is no longer accurate.
+6. The `llm_only` default changes, or transport mediation gains a non-Unix build path.
+7. [AAASM-5534](https://lightning-dust-mite.atlassian.net/browse/AAASM-5534)'s
+   host-wide mediation feasibility spike concludes with a recommendation that changes
+   E4's per-platform story.
+8. AAASM-5621's documentation-governance ADR is published and requires an interface
+   change to this ADR's vocabulary.
