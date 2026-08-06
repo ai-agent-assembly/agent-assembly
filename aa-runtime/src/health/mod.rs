@@ -528,4 +528,45 @@ mod tests {
             );
         }
     }
+
+    /// A startup probe is a claim about the moment it ran. Once it falls
+    /// outside the freshness window, the surface must stop reporting it — a
+    /// stored answer would keep displaying protection that had already ceased.
+    #[tokio::test]
+    async fn a_stale_startup_attestation_downgrades_by_request_time() {
+        use aa_core::attestation::{
+            AdjudicatedOutcome, AttestationBasis, ClaimTerm, LayerAttestation, ProtectionAttestation, SelectedMode,
+        };
+
+        // A component that genuinely had evidence when the runtime started.
+        let attestation = ProtectionAttestation::new(
+            env!("CARGO_PKG_VERSION"),
+            "test-platform",
+            TEST_NOW,
+            vec![LayerAttestation::new(
+                "proxy",
+                SelectedMode::Enabled,
+                AttestationBasis::Adjudicated {
+                    outcome: AdjudicatedOutcome::Blocked,
+                },
+                TEST_NOW,
+                "pre-dial refusal reported by aa-proxy",
+            )],
+        );
+
+        let fresh = ProtectionReport::evaluate(&attestation, TEST_NOW);
+        assert_eq!(
+            fresh.verified_states[0].verified_state,
+            ClaimTerm::DeniedBeforeExecution
+        );
+        assert!(fresh.any_coverage_verified);
+
+        let later = TEST_NOW + attestation.freshness_window_secs + 1;
+        let stale = ProtectionReport::evaluate(&attestation, later);
+        assert_eq!(stale.verified_states[0].verified_state, ClaimTerm::Degraded);
+        assert!(!stale.any_coverage_verified);
+        // The underlying attestation is unchanged; only the reading of it moved.
+        assert_eq!(stale.attestation.generated_at_unix_secs, TEST_NOW);
+        assert_eq!(stale.evaluated_at_unix_secs, later);
+    }
 }
