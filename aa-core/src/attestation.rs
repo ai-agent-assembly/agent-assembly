@@ -566,4 +566,18 @@ mod tests {
         let a = at(basis, SelectedMode::Unset, NOW);
         assert!(!a.asserts_coverage_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
     }
+
+    /// §7 defect 2: `probe_proxy` is satisfied by a binary existing on `$PATH`
+    /// and does not establish that any process routes traffic through it.
+    #[test]
+    fn artifact_present_basis_cannot_claim_coverage() {
+        let basis = AttestationBasis::ArtifactPresent {
+            artifact: "aa-proxy".into(),
+        };
+        assert_eq!(basis.claim_ceiling(), ClaimTerm::Unmeasured);
+        assert!(!basis.is_evidence());
+
+        let a = at(basis, SelectedMode::Unset, NOW);
+        assert!(!a.asserts_coverage_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+    }
 }
