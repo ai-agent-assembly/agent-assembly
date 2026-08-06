@@ -94,6 +94,54 @@ message HelloAck {
   string remediation = 9;
 }
 
+// RuntimeProvenance — which build answered, and which process (AAASM-5628).
+//
+// `core_version` alone cannot distinguish two checkouts sitting at the same
+// version. That is not hypothetical: a runtime built from a different checkout
+// served an entire QA campaign while every measurement was being recorded
+// against the build under test, and a runtime whose worktree had been deleted
+// kept serving and reported a healthy tool as `not_installed`. Both produced
+// confident wrong answers that were indistinguishable from product
+// regressions.
+//
+// Port reachability is never sufficient — in both cases the socket was
+// reachable and the runtime was healthy; it simply was not the build under
+// test. So the handshake carries an identity, and the client checks it.
+//
+// Nothing here widens §5.5 data minimisation: every field is a fact about the
+// runtime's *own* process, and the peer on this socket already shares the
+// runtime's UID (§5.2), so it could read all of it from the OS. What the
+// message adds is that the runtime *states* it, in the same breath as the
+// answer it is being trusted for.
+message RuntimeProvenance {
+  // The running core version. Repeated from `HelloAck.core_version` so this
+  // block is a complete identity on its own — a harness records one field
+  // group rather than stitching two together.
+  string core_version = 1;
+  // The commit the runtime binary was compiled from, or `unknown` when it was
+  // built outside a checkout (a crates.io tarball carries no `.git`). Never
+  // fabricated: `unknown` is an honest answer and a guess would not be.
+  string build_sha = 2;
+  // The runtime's process id. Required provenance in its own right: when two
+  // runtimes of the *same* build are reachable, this is the only field that
+  // says which process performed the operation.
+  uint32 pid = 3;
+  // Absolute path of the running executable, as the OS reports it.
+  string executable_path = 4;
+  // Whether `executable_path` still exists, evaluated when this frame is
+  // written rather than when the runtime started. A runtime whose binary was
+  // deleted keeps serving, and nothing it says can be re-derived or
+  // re-inspected afterwards, so it is reported as unidentifiable rather than
+  // silently trusted.
+  bool executable_present = 5;
+  // The checkout the binary was built from, when known. Empty means the build
+  // suppressed it, which is not the same as a build that never had one.
+  string source_path = 6;
+  // When this runtime began serving. Distinguishes two runtimes of the same
+  // build in a log by more than their pid.
+  uint64 started_at_unix_secs = 7;
+}
+
 // Incompatible — server → client, sent instead of `HelloAck` when no version
 // is shared. The connection is closed immediately afterwards: there is no
 // degraded-into-nothing state and no silent downgrade.
