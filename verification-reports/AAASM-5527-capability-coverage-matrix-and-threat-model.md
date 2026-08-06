@@ -584,3 +584,106 @@ artifact fact, which §5.3 does not state.
 > it is the single most consequential Q4 result in this survey: it means that
 > **for a user of any released build, Agent Assembly has no host-level
 > interception on any platform.**
+
+---
+
+# Bypass catalogue
+
+The demonstrated/inferred split is adopted from
+[`docs/src/devtools/limitations.md:49-84`](../docs/src/devtools/limitations.md),
+which established it for Claude Code. It is generalised here to the whole
+product. The split matters because **a demonstrated bypass is a measurement and
+an inferred one is a documented belief**, and a reader deciding how much to trust
+the product needs to know which is which.
+
+Neither list is exhaustive. **"No finding" is not "no bypass."**
+
+## Demonstrated — asserted positively by a test or a measurement
+
+| # | Bypass | Where it was measured |
+|---|---|---|
+| **D-a** | `ANTHROPIC_BASE_URL` pointed at any endpoint removes the product from the path and the raw secret arrives | AAASM-5276 harness, against the real `claude 2.1.220` binary and an emulated client |
+| **D-b** | Launching the tool outside the managed path (no `HTTPS_PROXY`) is unprotected | AAASM-5276 harness |
+| **D-c** | `Observe` / `AlertOnly` forwards the secret unchanged | AAASM-5276 harness. Correct behaviour, and the reason observe-only must never render as protection |
+| **D-d** | Injecting `HTTPS_PROXY` without CA trust leaves traffic uninspected — **silently**, because a proxy that cannot terminate TLS still lets the connection through | Measured for Claude Code and fixed there; recorded verbatim at `aa-devtool-claude-code/src/lib.rs:337-346`. **Still the live behaviour of `aa-devtool-codex` and `aa-devtool-windsurf`** |
+| **D-e** | A JSON-RPC batch array carrying `tools/call` evades single-envelope MCP adjudication | AAASM-4070; now fail-closed and pinned by unit tests at `aa-proxy/src/intercept/mcp.rs:222-272` |
+| **D-f** | A host classified `Unknown` under `llm_only` takes the transparent raw tunnel, reaching the provider with no scan, redact or audit — including case and trailing-dot FQDN variants before AAASM-3983 canonicalised them | `aa-proxy/src/intercept/detect.rs:20-27`; canonicalisation pinned at `aa-proxy/src/proxy/mod.rs:1300-1304` |
+| **D-g** | A secret split by a separator (`中`, emoji, space, tab, newline) scans clean | `aa-security/src/scanner.rs:1071-1092,3012-3030` (AAASM-5368), accepted residual |
+
+## Inferred — documented, not measured
+
+Grouped by the boundary each defeats.
+
+| Boundary defeated | Inferred bypasses |
+|---|---|
+| **The managed launch (L1–L8)** | `--dangerously-skip-permissions` · `defaultMode: bypassPermissions` · `--bare` · unsetting the proxy env in the shell · repointing `CLAUDE_CONFIG_DIR` · symlinking `.claude` · replacing the binary · calling the provider API directly with the user's own key · switching provider (`CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`) · running a pre-managed-settings release · a hook exiting `1` instead of `2` |
+| **The SDK seam (S1–S13)** | Never calling `init_assembly()` / `initAssembly()` / `assembly.Init()` · not calling `WrapTools` in Go · using an unadapted framework · calling the underlying function directly rather than through the framework's dispatch · relying on the Node default mode, which routes through the allow-all no-op (S7) · a frozen `invoke` that the Node wrapper skips with a stderr warning |
+| **The transport mediator (N1–N13)** | Raw TCP that does not speak the proxy protocol · UDP / QUIC / HTTP-3 · WebSocket · HTTP/2 to a MitM'd host · a chunked request (dropped, not inspected) · local IPC · any host outside the three MitM'd by default · a TLS stack the uprobes do not hook |
+| **MCP adjudication (M1–M10)** | stdio · SSE · Streamable HTTP · WebSocket · any method other than `tools/call` — `resources/read` most sharply, since it is a complete data-exfiltration primitive · a **nested** batch, or a batch whose elements carry `params` without a literal top-level `method` (`mentions_tools_call` inspects one level only) · running the MCP server yourself rather than via the tool's config · an MCP endpoint on a built-in LLM host, which `handle_llm_mitm` never adjudicates |
+| **Host-level interception (P1–P4)** | Everything, on every platform, in every released build — the loader daemon does not ship |
+| **The evidence pipeline (G1–G11)** | An audit entry dropped under load is indistinguishable from a tampered one · a degradation is emitted and never rendered · budget state corruption silently resets the cap · an unreadable eBPF policy silently yields an empty rule set |
+
+## Which of these the product can see
+
+Detection is not prevention, and neither is a bypass a product failure — but a
+bypass the product cannot even *see* is materially worse than one it names.
+
+| Class | Detected? | Where |
+|---|---|---|
+| Claude Code settings / env / launch-flag bypasses (`bypassPermissions`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`, `NODE_TLS_REJECT_UNAUTHORIZED`, `--dangerously-skip-permissions`, `--bare`) | **Yes** | `aa-devtool-claude-code/src/bypass.rs` — a `status`-time configuration read, reported and level-lowering |
+| Unmanaged launch of any tool | **No** | Nothing is injected, so there is nothing to observe. Named in-tree as unobservable (`bypass.rs:228-235`) |
+| Every bypass in the SDK, transport, MCP, host-level and evidence rows above | **No** | No detector exists for any of them |
+
+There is **no process watcher** for an unmanaged tool invocation on any platform.
+
+---
+
+# Where questions 3 and 4 changed the answer
+
+This is the section the method exists to produce. Twelve rows changed; three
+changed in the product's favour.
+
+## Question 3 — the capability exists but is off by default
+
+| Row | Named capability | What actually ships |
+|---|---|---|
+| **N1** | Network egress allow/deny | Both `AA_PROXY_DENIED_HOSTS` and `AA_PROXY_NETWORK_ALLOWLIST` are **empty**: default-open, with only the always-on SSRF guard |
+| **N4** | HTTPS payload inspection | `llm_only=true` and empty `mitm_hosts`: **three hosts**, everything else transparently tunnelled |
+| **M2** | MCP adjudication | `gateway_endpoint` defaults to `None`: **entirely dark** on a default `aa-proxy` run |
+| **H2** / **P1** | eBPF syscall guard | Off unless `AA_EBPF_CONFINE_PID` names a PID **and** policy lowers a non-empty allowlist |
+| **C1** | Credential DLP | `RedactOnly` (forward redacted), not `Block` |
+| **C2** | Credential substitution at egress | Empty unless the operator sets `AA_PROXY_PROVIDER_KEYS` |
+| **S7** | Node pre-execution denial | `mode: "auto"` routes every check through the allow-all no-op; only `napi-inprocess` is check-capable |
+| **S9** | Go enforcement | The default build without `-tags aa_ffi_go` + CGO denies **everything** — fail-closed, but not the advertised behaviour either |
+| **G2** | Runtime policy gate | With no gateway configured, local evaluation's terminal default is **Allow** |
+| **G7** / **G9** | eBPF rules; budget caps | An unreadable file silently yields an empty rule set / a zero-spend reset, with no degradation signal |
+| **I5** / **I7** | Tenant isolation; agent-plane auth | `TenancyMode` defaults to `Untenanted`; `PolicyService` and `AgentLifecycleService` sit behind a never-rejecting `enrich` interceptor |
+| **L2** / **L3** | Codex and Windsurf "managed launch" | `HTTPS_PROXY` with no CA trust — the measured D-d failure mode, unfixed |
+
+## Question 4 — the mechanism does not exist, or a released binary cannot reach it
+
+| Row | Named capability | Verified state |
+|---|---|---|
+| **P1**–**P4** | Host-level interception on any platform | **`aa-ebpf-loaderd` is not in the release artifact set.** E4 is unreachable in every released build, on every platform ([AAASM-5640](https://lightning-dust-mite.atlassian.net/browse/AAASM-5640)) |
+| **C3** | Credential injection via `DispatchTool` | Nothing can populate the secrets store; no registration route; no CLI command ([AAASM-5631](https://lightning-dust-mite.atlassian.net/browse/AAASM-5631)) |
+| **M5**–**M8** | MCP over stdio / SSE / Streamable HTTP / WebSocket | No code path exists; stdio is structurally unreachable by a CONNECT proxy |
+| **M4** | MCP methods other than `tools/call` | Not adjudicated anywhere |
+| **H3** | eBPF exec observation | No ring-buffer reader is wired (`aa-runtime/src/runtime.rs:510-512`) — the events never leave the kernel |
+| **N13** | eBPF TLS observation | Events are not bridged to the audit pipeline (`aa-runtime/src/runtime.rs:302-305,344-350`) |
+| **H6** / **H7** | Browser and database governance | Not expressible in the policy AST at all — no `Browser`, no `Database` action kind |
+| **H8** | Pre-execution mediation of a Claude Code `Bash` call | **No `PreToolUse` hook is ever registered.** The platform offers the mechanism; the product does not use it |
+| **I4** / **I6** | Process-tree and proxy agent attribution | No agent id crosses fork/exec; the correlation bridge hardcodes `pid: 0`; the proxy stamps a constant `"aa-proxy"` |
+| **G11** | Degraded-state visibility | Emitted, typed, and rendered nowhere |
+| **S13** | The SDK honouring a deny | `resolve_decision` has no non-test caller in this repository |
+| **C4** | Model response credential scanning | Absent on the LLM path |
+
+## Question 4 answered *in the product's favour* — three corrections upward
+
+Recording these matters as much as the negatives: an artifact that only ever
+finds things worse than claimed is not being read carefully either.
+
+| Row | Prior belief | Verified state today |
+|---|---|---|
+| **I1** | The agent Ed25519 seed is `SHA-256(public agent id)`, so anyone knowing the id can register as that agent | **Fixed (AAASM-5332).** The identity key is random CSPRNG, persisted owner-only with `O_EXCL`/`0600` and symlink/uid/mode validation, and registration requires a possession proof over a server-issued single-use nonce. The `SHA-256(agent_id)` derivation survives only as the *transport* key, where it is deliberately non-secret and the boundary is the socket's mode plus peercred |
+| **L1** | `aasm run` registration has no REST contract — `POST /api/v1/agents` returns 405 — and `proxy_addr: null` launches unproxied, bypassing the possession proof | **Fixed.** Registration is gRPC `AgentLifecycleService.Register` with the Ed25519/`did:key` possession proof (`aa-cli/src/commands/run_registration.rs:1-35` documents the prior defect and its fix). `proxy_addr: None` on the live path is now reachable only via an explicit `--no-proxy`, which is itself refused where managed evidence exists, and ambient proxy env is stripped rather than inherited |
+| **C2** | "Credentials are injected at execution time and never enter the model context" is a wholly unshipped claim | **Partly true, in a narrow form that does ship.** `AA_PROXY_PROVIDER_KEYS` populates a per-host store; on a MitM'd LLM host the proxy strips the agent's own `Authorization` / `x-api-key` and substitutes the operator's real key. The agent never needs to hold the provider credential. AAASM-5528 was right to remove the *unbounded* claim, but a bounded version is defensible — **provided all four conditions are named**: opt-in env var, MitM'd host only, proxy on the path, and `aasm run` still hands the child the whole parent environment (**C5**), which gives a shell tool everything the operator exported |
