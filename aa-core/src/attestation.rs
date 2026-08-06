@@ -767,4 +767,21 @@ mod tests {
             ClaimTerm::Unmeasured
         );
     }
+
+    /// Expiry of a *planned* control's evidence is a degradation, not merely an
+    /// absence: the plan is still asserted, so both levels stay legible.
+    #[test]
+    fn stale_evidence_for_a_selected_component_is_degraded() {
+        let stale = at(
+            AttestationBasis::Adjudicated {
+                outcome: AdjudicatedOutcome::Blocked,
+            },
+            SelectedMode::Enabled,
+            NOW - DEFAULT_ATTESTATION_FRESHNESS_SECS - 1,
+        );
+        assert_eq!(
+            stale.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+            ClaimTerm::Degraded
+        );
+    }
 }
