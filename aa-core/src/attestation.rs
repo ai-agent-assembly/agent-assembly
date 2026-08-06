@@ -902,4 +902,31 @@ mod tests {
         assert_eq!(att.generated_at_unix_secs, NOW);
         assert_eq!(att.freshness_window_secs, DEFAULT_ATTESTATION_FRESHNESS_SECS);
     }
+
+    /// The wire names are the ADR 0033 §6 terms in snake_case; downstream
+    /// renderers key off these strings, so they are part of the contract.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn claim_terms_serialize_to_their_adr_0033_wire_names() {
+        let table = [
+            (ClaimTerm::Observed, "observed"),
+            (ClaimTerm::Detected, "detected"),
+            (ClaimTerm::Evaluated, "evaluated"),
+            (ClaimTerm::DeniedBeforeExecution, "denied_before_execution"),
+            (ClaimTerm::Redacted, "redacted"),
+            (ClaimTerm::ApprovalRequired, "approval_required"),
+            (ClaimTerm::Degraded, "degraded"),
+            (ClaimTerm::Unmeasured, "unmeasured"),
+            (ClaimTerm::Experimental, "experimental"),
+            (ClaimTerm::Planned, "planned"),
+            (ClaimTerm::Unsupported, "unsupported"),
+        ];
+        for (term, wire) in table {
+            assert_eq!(term.as_str(), wire);
+            assert_eq!(
+                serde_json::to_string(&term).expect("serialize"),
+                alloc::format!("\"{wire}\"")
+            );
+        }
+    }
 }
