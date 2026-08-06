@@ -68,6 +68,7 @@ pub struct FixtureIntegration {
     detected_version: Option<ToolVersion>,
     verification: FixtureVerification,
     privileged: bool,
+    host_enforcement_supported: bool,
 }
 
 impl FixtureIntegration {
@@ -82,6 +83,11 @@ impl FixtureIntegration {
             detected_version: Some(ToolVersion::new(2, 1, 220)),
             verification: FixtureVerification::Exercised,
             privileged: false,
+            // The default mirrors a host that cannot offer the mechanism at
+            // all, which is what most of this suite is about. The supported
+            // shape is opt-in because it is the rarer one to reason about, not
+            // because it is exotic — it is what macOS reports.
+            host_enforcement_supported: false,
         }
     }
 
@@ -111,6 +117,19 @@ impl FixtureIntegration {
     #[must_use]
     pub fn at_version(mut self, version: ToolVersion) -> Self {
         self.detected_version = Some(version);
+        self
+    }
+
+    /// Declare host enforcement **supported**, as an adapter on a host with a
+    /// managed-settings authority does.
+    ///
+    /// Supported is not achieved: this fixture still produces no
+    /// host-attested evidence, so the rung stays out of reach. That pairing —
+    /// reachable, not reached — is the one AAASM-5454 rendered as "unavailable
+    /// on this platform", and it needs a fixture that can express it.
+    #[must_use]
+    pub fn supporting_host_enforcement(mut self) -> Self {
+        self.host_enforcement_supported = true;
         self
     }
 
@@ -158,6 +177,18 @@ impl FixtureIntegration {
         }
     }
 
+    /// The one declaration every surface reads, so the plan and the status
+    /// cannot disagree about whether the mechanism exists here.
+    fn host_enforcement_support(&self) -> CapabilitySupport {
+        if self.host_enforcement_supported {
+            CapabilitySupport::Supported
+        } else {
+            CapabilitySupport::Unsupported {
+                reason: "host enforcement is not available on this platform".into(),
+            }
+        }
+    }
+
     fn evidence(&self, now: u64) -> Vec<ProtectionEvidence> {
         let kind = match self.verification {
             FixtureVerification::Exercised => EvidenceKind::Exercised {
@@ -195,12 +226,7 @@ impl DevToolIntegration for FixtureIntegration {
         DevToolCapabilities::new()
             .supported(IntegrationCapability::Discovery)
             .supported(IntegrationCapability::ManagedSettings)
-            .declare(
-                IntegrationCapability::HostEnforcement,
-                CapabilitySupport::Unsupported {
-                    reason: "host enforcement is not available on this platform".into(),
-                },
-            )
+            .declare(IntegrationCapability::HostEnforcement, self.host_enforcement_support())
     }
 
     fn detect(&self) -> Option<DevToolInfo> {
@@ -224,17 +250,17 @@ impl DevToolIntegration for FixtureIntegration {
     }
 
     async fn plan_integration(&self, request: &IntegrationRequest) -> Result<IntegrationPlan, AdapterError> {
-        Ok(IntegrationPlan::new(
+        let mut plan = IntegrationPlan::new(
             "plan-fixture-1",
             request,
             ProtectionLevel::Integrated,
             GovernanceLevel::L2Enforce,
         )
-        .with_step(self.step())
-        .declaring_unsupported(
-            IntegrationCapability::HostEnforcement,
-            "host enforcement is not available on this platform",
-        ))
+        .with_step(self.step());
+        if let CapabilitySupport::Unsupported { reason } = self.host_enforcement_support() {
+            plan = plan.declaring_unsupported(IntegrationCapability::HostEnforcement, reason);
+        }
+        Ok(plan)
     }
 
     async fn integration_status(
@@ -280,6 +306,11 @@ impl DevToolIntegration for FixtureIntegration {
             next_level: achieved.next_up().map(|level| NextLevel {
                 level,
                 blocked_because: match level {
+                    ProtectionLevel::HostEnforced if self.host_enforcement_supported => {
+                        "host enforcement is not active: no endpoint-managed policy has been installed \
+                         and attested on this host"
+                            .to_string()
+                    }
                     ProtectionLevel::HostEnforced => "host enforcement is unavailable on this platform".to_string(),
                     _ => "no protection test has established it yet".to_string(),
                 },
