@@ -332,3 +332,91 @@ the Docs Hub is owned by
 [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586) and
 [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609) — but it is
 recorded here as the reference instance of the failure this page exists to prevent.
+
+## Where a correction goes first
+
+You found a statement that is wrong. Work these five steps in order; the first two
+are the ones that stop the same defect coming back.
+
+1. **Classify the content type** against the
+   [canonical-source table](#canonical-source-by-content-type). Classify the *fact*,
+   not the page you happen to be reading — a wrong architecture sentence on the
+   product website is an architecture correction, not a website correction.
+2. **Fix the canonical source first.** A change applied only to the page where you
+   noticed the problem leaves the source able to regenerate it. If the canonical
+   source turns out to be right and only the derivative is wrong, this step is a
+   read, not an edit — but it is not a step you may skip, because it is what tells
+   you which of the two you are dealing with.
+3. **Check the fact against L6.** If the canonical source and the code, tests or
+   generated spec disagree, the evidence wins and the canonical source is the thing
+   that changes. If the *code* is the defect, that is a bug ticket, and the
+   documentation says what is true today until it merges.
+4. **Sweep the derivatives.** Search for the summaries, quotations and generated
+   regions that cite the source you just changed. A generated region needs its
+   generator re-run, not an edit.
+5. **Carry what you cannot reach.** A derivative in another repository is a
+   follow-up, linked from the same ticket, not an untracked leftover. Say in the PR
+   which derivatives you corrected and which you handed on.
+
+### Routing table
+
+| What you found | Where it goes first |
+|---|---|
+| An architecture or enforcement statement that overstates coverage | ADR 0033, then the derivative pages |
+| A protection state reported above its evidence | ADR 0030's ladder rules, then the reporting component |
+| A wrong policy field, default or validation rule | Core [Policy YAML reference](../policy-reference.md), checked against `aa-gateway/src/policy/` |
+| A wrong per-language API signature | That SDK's generated API reference — regenerate; do not hand-edit |
+| A wrong maturity label or a wrong owning repository | Docs Hub `source-of-truth.md`, via its generator input |
+| A managed-service claim with no evidence | The Docs Hub SaaS claim publication checklist — remove the claim, register the row |
+| A version literal that has gone stale | Its ADR 0013 anchor, then re-run the propagation script |
+| A repo name, canonical URL or Jira ID that has drifted | The `.github` metadata registry (ADR 0014, Proposed) |
+| A marketing sentence that reads as a capability guarantee | The product website — but re-derive the bound from ADR 0033 §6 before rewording |
+| Two layers that disagree and you cannot tell which is canonical | Nowhere yet — see [Conflicts](#conflicts) |
+
+## Conflicts
+
+Most disagreements are not conflicts; they are a derivative that drifted. Resolve
+those with the routing table. A genuine conflict is one of the last two rows here,
+and the rule for those is that **they are decisions, not edits**.
+
+| Situation | Resolution |
+|---|---|
+| A derivative disagrees with its canonical source | The canonical source wins; correct the derivative |
+| Two derivatives of one source disagree | Both are suspect; re-derive both from the source rather than reconciling them with each other |
+| The canonical source disagrees with the code, tests or generated spec | The evidence wins; correct the canonical source, or file the bug if the code is the defect |
+| Two owners both claim a content type | **Stop.** Do not resolve an ownership dispute inside a content PR. Record it and escalate — AAASM-5621's ADR is the venue for assigning ownership |
+| An enforcement term and a maturity label appear to conflict | **Out of scope for this page.** ADR 0033 §E assigns precedence between the two vocabularies, and the waiver mechanism, to AAASM-5621 |
+
+The reason the last two stop rather than resolve is that a content PR is the wrong
+instrument for an ownership decision: it resolves the dispute for one page, invisibly,
+and the next contributor rediscovers it.
+
+Escalation follows the org's
+[agent-escalation guidance](https://github.com/ai-agent-assembly/.github/blob/HEAD/.claude/rules/04-agent-escalation.md):
+state what is blocking, what was already checked, and the concrete decision needed.
+
+## What this page hands off
+
+This page defines ownership and duplication. It deliberately does **not** decide the
+following, each of which belongs to
+[AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621):
+
+1. **Precedence between the two vocabularies** — enforcement/claim terms (ADR 0033 §6)
+   versus lifecycle maturity labels (Docs Hub `source-of-truth.md`) — assigned there
+   by ADR 0033 §E.
+2. **Waiver semantics** — who may approve publishing against a rule here or against
+   ADR 0033's banned-absolutes list, on what evidence, and for how long.
+3. **Cross-repository enforcement** — how these rules are policed outside this
+   repository, and what a violation blocks.
+4. **The roadmap owner** — no repository owns one today; see
+   [Roadmap has no canonical owner yet](#roadmap-has-no-canonical-owner-yet).
+5. **Ownership-dispute arbitration** — the venue and the record format for the
+   fourth row of [Conflicts](#conflicts).
+6. **The status of the Docs Hub's provisional claims register** — whether
+   `saas-claim-publication-checklist.md` becomes a standing register or is folded
+   into the capability/evidence manifest
+   ([AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531)); that
+   page already records that the ADR wins where the two disagree.
+
+Until 5621's ADR is published, these six are open questions, and a contributor who
+hits one should escalate rather than settle it in a content PR.
