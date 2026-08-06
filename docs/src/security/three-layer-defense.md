@@ -48,17 +48,29 @@ decrypted request, and enforces network-egress and data policy at the wire — w
 preconditions decide whether it sees anything at all:
 
 - **Routing.** There is no transparent redirect; the process must speak the HTTP
-  proxy protocol to the listener. `aasm run` is what injects `HTTP_PROXY` /
-  `HTTPS_PROXY`, so a tool started outside it is not intercepted.
-- **CA trust.** The client must trust the local root CA. Trust-store
-  installation is implemented for macOS only; Node-based tools additionally need
-  `NODE_EXTRA_CA_CERTS`. An untrusted CA makes the connection *fail* rather than
-  silently bypass.
+  proxy protocol to the listener. Two things inject `HTTP_PROXY`/`HTTPS_PROXY`:
+  the managed launch (`aasm run`), which sets them for that child process only,
+  and an installed developer integration, which writes them into the tool's own
+  configuration so they persist across launches independently of `aasm run`
+  (`aa-devtool-claude-code/src/lifecycle.rs:929-930`, and the equivalents for
+  Codex and Windsurf). A tool started outside `aasm run` is therefore
+  intercepted **if** an integration is installed for it, and not otherwise.
+- **CA trust.** The client must trust the local root CA. On macOS the proxy
+  installs it into the system trust store at start; on Linux it is a deliberate
+  operator step, `sudo aasm proxy install-ca`
+  (`aa-cli/src/commands/proxy/ca.rs:150-188`, which copies to
+  `/usr/local/share/ca-certificates/` and runs `update-ca-certificates`).
+  Windows is unsupported. Node-based tools additionally need
+  `NODE_EXTRA_CA_CERTS`. Note the failure mode differs from the routing case
+  above: an untrusted CA makes an intercepted connection *fail loudly*, whereas
+  traffic that never reaches the proxy bypasses it silently.
 - **Host selection and transport.** `llm_only` defaults to `true`, so only the
   built-in LLM hosts (and any operator-listed `mitm_hosts`) are decrypted;
   everything else is transparently tunnelled uninspected. Interception is
   HTTP/1.1 with `Content-Length` — no ALPN is negotiated, so HTTP/2, gRPC and
-  WebSocket are out of scope, and chunked requests are refused.
+  WebSocket cannot be inspected on those hosts, and a chunked request is dropped
+  without an HTTP response. On hosts that are not under MitM those protocols still
+  work — tunnelled and uninspected.
 
 The interceptor returns a `VerdictDecision` of
 `Forward`, `ForwardRedacted`, `Block`, or `AlertAndForward`
@@ -96,12 +108,23 @@ the code rather than inferred:
   for `libssl.so` (`aa-ebpf/src/uprobe.rs`). A process using Go's `crypto/tls`,
   rustls, BoringSSL, GnuTLS or NSS — or a statically linked TLS stack — is
   invisible here and needs the proxy layer instead (AAASM-3872).
-- **Linux x86_64, and it fails open.** The file syscall kprobes target hardcoded
-  `__x64_sys_*` symbols, and the runtime gate requires kernel ≥ 5.8 with BTF. If
-  the layer cannot load or attach, it degrades with a warning and the agent
-  keeps running — the failure is recorded on the health endpoint, not enforced.
+- **Linux, and it fails open.** There is no `cfg(target_arch)` gate in the eBPF
+  crates: the TLS uprobes attach by symbol resolved from `/proc/<pid>/maps` and
+  the exec tracepoints resolve offsets from live BTF, so both work on aarch64.
+  It is the **file-I/O kprobes** that are x86_64-only — they target 14 hardcoded
+  `__x64_sys_*` symbols (`aa-ebpf/src/kprobe.rs:145-160`). The runtime gate is
+  three conditions, not two — kernel ≥ 5.8, BTF present, **and** a reachable
+  loader-daemon socket at `/run/aa-ebpf-loaderd.sock`
+  (`aa-runtime/src/layer.rs:119-135`) — and `AA_LAYERS` bypasses the probe
+  entirely. If the layer cannot load or attach it degrades with a warning and
+  the agent keeps running; the failure is recorded on the health endpoint, not
+  enforced.
 
-It needs elevated privileges.
+Privilege is **separated, not held by the runtime**. `aa-runtime` deliberately
+carries no `CAP_BPF`/`CAP_PERFMON`: the privileged loader daemon owns every BPF
+operation and the runtime delegates to it (AAASM-3605). That replaced an earlier
+"runtime must be root" check precisely because a privileged runtime was the
+detach-and-replace-the-probe attack surface.
 
 ## How the layers compose
 
@@ -121,13 +144,20 @@ union of three conditional layers is still conditional. An action escapes
 governance entirely when *all* of the following hold: it is not a wrapped
 framework tool call; it is not routed through the proxy (or its host is not
 under MitM — under the default `llm_only` only the built-in LLM hosts are); and
-either the process does not link OpenSSL or the host is not Linux x86_64 with a
-loadable eBPF layer.
+either the process does not link OpenSSL or the host is not Linux with a
+loadable eBPF layer (and, for file-I/O events specifically, x86_64).
 
-That conjunction is not exotic. A tool launched outside `aasm run` inherits
-neither the proxy environment nor the CA trust, which is a *measured* bypass —
-see [Limitations and known bypasses](../devtools/limitations.md), which splits
-demonstrated bypasses from inferred ones.
+That conjunction is not exotic. A tool launched outside `aasm run`, with no
+integration installed, inherits neither the proxy environment nor the CA trust —
+a *measured* bypass, not an inferred one. See [Limitations and known
+bypasses](../devtools/limitations.md), which splits demonstrated bypasses from
+inferred ones.
+
+Note the surface can also widen without an operator touching an environment
+variable: `mitm_hosts` is the union of `AA_PROXY_MITM_HOSTS` and the host lists
+installed integrations drop into `~/.aasm/integrations/mitm-hosts.d/`
+(`aa-proxy/src/config.rs:173`), so installing an integration can bring more hosts
+under MitM than the operator's own configuration names.
 
 ```mermaid
 graph TD
@@ -170,7 +200,7 @@ flowchart LR
     Q1 -->|"no / skipped"| Q2{"Routed<br/>through proxy?"}
     Q2 -->|yes| C2["Caught at Layer 2<br/>(proxy egress)"]:::catch
     Q2 -->|"no / direct socket"| Q3{"Linux + eBPF<br/>deployed?"}
-    Q3 -->|yes| Q4{"OpenSSL-linked<br/>on Linux x86_64?"}
+    Q3 -->|yes| Q4{"OpenSSL-linked<br/>probes attached?"}
     Q4 -->|yes| C3["Detected at Layer 3<br/>(eBPF — reported, not blocked)"]:::catch
     Q4 -->|"no / probe degraded"| U["Uncovered"]:::miss
     Q3 -->|no| U
@@ -178,7 +208,7 @@ flowchart LR
 
 The second diagram makes the composition explicit — and makes the residual gap
 explicit too. An action escapes only if it evades every deployed layer, but
-Layer 3's own precondition (OpenSSL, Linux x86_64, probes attached) is part of
+Layer 3's own precondition (OpenSSL, Linux, loader daemon reachable) is part of
 that test, so "deploy eBPF" does not by itself collapse the bypass path. Note
 also that reaching Layer 3 changes the outcome from *unseen* to *detected*, not
 to *prevented*.
