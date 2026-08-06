@@ -53,6 +53,11 @@ aasm integrations [OPTIONS] <COMMAND> [ARGS]
 `<TOOL>` is the tool id as `aasm integrations list` reports it —
 `claude-code`, `codex`, `github-copilot`, `windsurf-cascade`.
 
+These same ids are accepted by [`aasm run`](overview.md#command-groups), which
+has its own shorter canonical spellings (`claude`, `codex`, `copilot`,
+`windsurf`). An id copied out of `aasm integrations list` launches the tool it
+names; the two commands do not have separate vocabularies.
+
 > **Only `claude-code` has a lifecycle today.** The other three are carried by
 > `LegacyAdapterShim`: they detect and report, but `install` and `repair` are
 > **refused with exit `3`** because their plan steps name no destination file.
