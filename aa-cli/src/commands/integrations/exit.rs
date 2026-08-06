@@ -49,6 +49,18 @@ pub enum Outcome {
     /// not obtain (no terminal and no `--yes`). Nothing was changed. Distinct
     /// from every failure above because there is nothing to fix.
     Aborted,
+    /// A runtime answered, and it could not be shown to be the build this
+    /// `aasm` belongs to — a different checkout, a deleted executable, a
+    /// runtime too old to say, or more than one of them listening at once
+    /// (AAASM-5628).
+    ///
+    /// Distinct from [`Outcome::Incompatible`] because nothing needs
+    /// upgrading, and from [`Outcome::RuntimeUnavailable`] because a runtime
+    /// *is* listening. The next step is neither: stop the wrong process. It is
+    /// also the code a QA harness must refuse to record a result under —
+    /// evidence gathered from an unverified runtime proves nothing about the
+    /// build it was attributed to.
+    RuntimeUnverified,
     /// Anything else — a transport fault, a lifecycle failure, a bug.
     InternalError,
 }
@@ -68,6 +80,7 @@ impl Outcome {
             Outcome::RuntimeUnavailable => 7,
             Outcome::Denied => 8,
             Outcome::Aborted => 9,
+            Outcome::RuntimeUnverified => 10,
         }
     }
 
@@ -82,12 +95,13 @@ impl Outcome {
             Outcome::RuntimeUnavailable => "runtime_unavailable",
             Outcome::Denied => "denied",
             Outcome::Aborted => "aborted",
+            Outcome::RuntimeUnverified => "runtime_unverified",
             Outcome::InternalError => "internal_error",
         }
     }
 
     /// Every outcome, for the help text and for the tests that pin them.
-    pub const ALL: [Outcome; 9] = [
+    pub const ALL: [Outcome; 10] = [
         Outcome::Success,
         Outcome::InternalError,
         Outcome::Unsupported,
@@ -97,6 +111,7 @@ impl Outcome {
         Outcome::RuntimeUnavailable,
         Outcome::Denied,
         Outcome::Aborted,
+        Outcome::RuntimeUnverified,
     ];
 }
 
@@ -134,6 +149,7 @@ const fn describe(outcome: Outcome) -> &'static str {
         Outcome::RuntimeUnavailable => "no runtime is listening and none could be started",
         Outcome::Denied => "the runtime refused this client — re-enrol or fix permissions",
         Outcome::Aborted => "nothing was changed — declined, or no confirmation was possible",
+        Outcome::RuntimeUnverified => "the runtime that answered is not verifiably this build — stop it and re-run",
     }
 }
 
@@ -164,6 +180,7 @@ mod tests {
             "incompatible",
             "drifted",
             "verification_failed",
+            "runtime_unverified",
             "internal_error",
         ] {
             assert!(names.contains(&required), "{required} is missing from the vocabulary");
