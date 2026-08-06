@@ -153,6 +153,7 @@
 - [Consuming the Shared Crates](development/consuming-shared-crates.md)
 - [Shared Docs Metadata](development/shared-docs-metadata.md)
 - [Content-Layer Ownership](development/content-ownership.md)
+- [Truth Adoption Record](development/truth-adoption-record.md)
 
 # Architecture Decision Records
 
