@@ -8,13 +8,24 @@
 //! Layer naming note: unlike `aa-gateway::audit::AuditWriter` (which persists
 //! a hash-chained `AuditEntry`), this module is the proxy's purpose-built
 //! sink. The two records have different shapes because the proxy and the
-//! gateway observe different things; see the JSONL writer added in a later
-//! commit for how this struct reaches disk.
+//! gateway observe different things; see [`JsonlWriter`] for how this struct
+//! reaches disk.
+//!
+//! # What this sink does not promise
+//!
+//! It is not the tamper-evident tier (ADR 0032 §9), which is why
+//! [`PersistedFinding`] drops byte offsets. It is also **not complete**: the
+//! data path drops rather than stalls when the channel is full, and
+//! [`RotationPolicy`] discards the oldest segment to hold the file inside a
+//! size bound. Both losses are counted and republished as
+//! [`SinkCompleteness`], so a count taken from this file is a lower bound that
+//! says so rather than a number that looks exact.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -198,7 +209,8 @@ impl PersistedFinding {
 /// `redacted_body` alone does not bound a line: a 64 MiB body densely packed
 /// with detectable patterns yields on the order of a million findings at ~50-80
 /// serialized bytes each, so an uncapped vector turns one request into a line of
-/// hundreds of megabytes on a sink with no rotation.
+/// hundreds of megabytes. [`RotationPolicy`] bounds the *file*; this bounds the
+/// line, and a single line larger than a segment would defeat both.
 pub const MAX_PERSISTED_FINDINGS: usize = 256;
 
 /// Project and cap a finding list, returning the retained rows and how many
@@ -215,11 +227,11 @@ pub fn bound_persisted_findings(findings: &[CredentialFinding]) -> (Vec<Persiste
 
 /// Longest post-scan body persisted on a single record.
 ///
-/// The MitM path accepts bodies up to `MAX_BODY_LEN` (64 MiB), and the JSONL
-/// sink has no rotation or retention, so an unbounded body turns one oversized
-/// request into an unbounded line and an unbounded file. Truncation is on a
-/// character boundary and marked, so a reader can tell a short body from a cut
-/// one.
+/// The MitM path accepts bodies up to `MAX_BODY_LEN` (64 MiB), so an unbounded
+/// body turns one oversized request into a line larger than a whole rotation
+/// segment — which would make the file bound meaningless by forcing a rotation
+/// per request. Truncation is on a character boundary and marked, so a reader
+/// can tell a short body from a cut one.
 pub const MAX_PERSISTED_BODY_BYTES: usize = 8 * 1024;
 
 /// Marker appended to a body that was cut at [`MAX_PERSISTED_BODY_BYTES`].
@@ -249,12 +261,10 @@ pub fn bound_persisted_body(body: String) -> String {
 /// must not stall an intercepted request — so the loss is *counted* rather than
 /// prevented.
 ///
-/// Scope, stated because the obvious reading overstates it: today the only
-/// surfacing is the running total on the `warn!` each drop emits. Nothing in
-/// this repo reads [`dropped_entries`] outside its own tests, so a consumer
-/// cannot yet gate a published rate on it. Putting it on the proxy's metrics
-/// output is follow-up work; the counter exists so that work has something to
-/// read, not because the plumbing is finished.
+/// AAASM-5358 left this in-process only, which meant a consumer reading the
+/// JSONL had no way to gate a published rate on it. It is now republished into
+/// [`SinkCompleteness`] beside the sink, so an out-of-process reader — which is
+/// what AAASM-5359/5360 are — sees the loss without linking this crate.
 static DROPPED_ENTRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Record one dropped entry, returning the new running total.
@@ -267,14 +277,136 @@ pub fn dropped_entries() -> u64 {
     DROPPED_ENTRIES.load(Ordering::Relaxed)
 }
 
+/// Count of rotated segments discarded because they fell past
+/// [`RotationPolicy::retained_segments`].
+///
+/// Rotation is what keeps the sink from filling the disk, and it does that by
+/// throwing records away. A prevention rate computed over a window that was
+/// rotated out from under the reader is an under-count, so the discard is
+/// counted and published exactly like a channel drop.
+static DISCARDED_SEGMENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Segments discarded since process start.
+pub fn discarded_segments() -> u64 {
+    DISCARDED_SEGMENTS.load(Ordering::Relaxed)
+}
+
+/// How large the sink is allowed to get, and how much history survives.
+///
+/// # Why the proxy rotates rather than leaving it to the operator
+///
+/// The obvious alternative — "operators own retention, point `logrotate` at
+/// it" — does not work with this writer and would have been a claim rather
+/// than a design. [`JsonlWriter`] holds the file descriptor for the lifetime
+/// of the process and never reopens, so an external rotation that renames or
+/// unlinks the file leaves the proxy appending to an unlinked inode: records
+/// keep being written and nothing can read them again. An operator who
+/// configured rotation would end up with *less* audit trail than one who
+/// configured none, and would have no way to notice.
+///
+/// # Growth rate
+///
+/// One record is roughly 250 bytes with no body and no findings; the two
+/// unbounded parts are already capped at [`MAX_PERSISTED_BODY_BYTES`] (8 KiB)
+/// and [`MAX_PERSISTED_FINDINGS`] (256 rows, ~60 bytes each), so ~24 KiB is
+/// the worst case for a single line. The defaults below therefore hold on the
+/// order of 500k typical records, and bound the sink at
+/// `(retained_segments + 1) * max_segment_bytes` = 128 MiB whatever the
+/// traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RotationPolicy {
+    /// Bytes a live segment may reach before it is rotated. Checked *after*
+    /// each append, so a segment may exceed this by at most one line.
+    pub max_segment_bytes: u64,
+    /// Rotated segments kept beside the live file (`<path>.1` … `<path>.N`).
+    pub retained_segments: usize,
+}
+
+impl Default for RotationPolicy {
+    fn default() -> Self {
+        Self {
+            max_segment_bytes: 32 * 1024 * 1024,
+            retained_segments: 3,
+        }
+    }
+}
+
+/// Path of rotated segment `n` (1 = most recent).
+fn segment_path(path: &Path, n: usize) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{n}"));
+    PathBuf::from(name)
+}
+
+/// Path of the completeness file published beside `path`.
+fn completeness_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".completeness.json");
+    PathBuf::from(name)
+}
+
+/// What a consumer has to know before turning a count from this sink into a
+/// rate (AAASM-5449).
+///
+/// The counters were in-process only, so an out-of-process reader — which is
+/// what AAASM-5359/5360 are — could not tell a complete window from a lossy
+/// one. They are published beside the file the consumer already opens.
+///
+/// Both figures describe **this file**, not this process: the baseline is read
+/// back at open, so a restart does not erase an earlier window's loss. They are
+/// reset only when the sink is deleted.
+///
+/// A non-zero figure does not say *which* records went — that is not
+/// recoverable — so the honest use is as a gate: a rate computed over a window
+/// with loss is a lower bound, and a consumer that cannot accept a lower bound
+/// should refuse to publish rather than round it away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SinkCompleteness {
+    /// When this snapshot was written, ms since the Unix epoch.
+    pub updated_ms: i64,
+    /// Records the data path produced that never reached the file, because the
+    /// channel was full and the proxy chose to drop rather than stall a
+    /// request.
+    pub dropped_entries: u64,
+    /// Rotated segments discarded to hold the sink inside its size bound.
+    pub discarded_segments: u64,
+}
+
+/// Read the completeness published beside `path`, if any.
+///
+/// `None` when the sink has never been opened or the file is unreadable — a
+/// consumer must treat that as "unknown", not as "complete".
+pub async fn read_completeness(path: &Path) -> Option<SinkCompleteness> {
+    let raw = tokio::fs::read_to_string(completeness_path(path)).await.ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 /// Append-only JSONL writer.
 ///
 /// Construct with [`JsonlWriter::new`], drive with `tokio::spawn(writer.run())`.
 /// The task terminates when all senders drop and the channel closes.
+///
+/// "Append-only" is bounded by [`RotationPolicy`]: the live file is rotated at
+/// a size threshold and the oldest segment is discarded, because the proxy
+/// holds this descriptor open for its whole life and no external tool can
+/// manage the file underneath it.
 pub struct JsonlWriter {
     receiver: mpsc::Receiver<ProxyAuditEntry>,
     file: tokio::io::BufWriter<tokio::fs::File>,
     path: PathBuf,
+    rotation: RotationPolicy,
+    /// Bytes in the live segment, seeded from its length at open so an
+    /// appended-to file is not treated as empty.
+    segment_bytes: u64,
+    /// Loss recorded against this file before this process opened it.
+    baseline: SinkCompleteness,
+    /// Process-wide counter readings at open, so only this process's own
+    /// increments are added to the baseline.
+    dropped_at_open: u64,
+    discarded_at_open: u64,
+    /// Last snapshot written, so an unchanged sidecar is not rewritten on
+    /// every line.
+    published: SinkCompleteness,
 }
 
 impl JsonlWriter {
@@ -296,24 +428,56 @@ impl JsonlWriter {
     /// Permissions are access control; §9 is about what may exist in the record
     /// at all, and the two are not substitutes for one another.
     pub async fn new(path: &Path, receiver: mpsc::Receiver<ProxyAuditEntry>) -> io::Result<Self> {
+        Self::with_rotation(path, receiver, RotationPolicy::default()).await
+    }
+
+    /// [`Self::new`] with an explicit [`RotationPolicy`].
+    pub async fn with_rotation(
+        path: &Path,
+        receiver: mpsc::Receiver<ProxyAuditEntry>,
+        rotation: RotationPolicy,
+    ) -> io::Result<Self> {
+        let file = Self::open_segment(path).await?;
+        let segment_bytes = file.metadata().await?.len();
+        // Loss recorded against this file by an earlier run. Without carrying
+        // it forward a restart would publish a clean window over a file whose
+        // earlier half is missing lines.
+        let baseline = read_completeness(path).await.unwrap_or(SinkCompleteness {
+            updated_ms: 0,
+            dropped_entries: 0,
+            discarded_segments: 0,
+        });
+        Ok(Self {
+            receiver,
+            file: tokio::io::BufWriter::new(file),
+            path: path.to_path_buf(),
+            rotation,
+            segment_bytes,
+            baseline,
+            dropped_at_open: dropped_entries(),
+            discarded_at_open: discarded_segments(),
+            published: baseline,
+        })
+    }
+
+    /// Open a segment in append mode at `0600`.
+    ///
+    /// The mode is re-asserted rather than trusted: `mode()` applies only at
+    /// creation, so a file left over from an earlier, looser build would keep
+    /// whatever it had.
+    async fn open_segment(path: &Path) -> io::Result<tokio::fs::File> {
         let file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(path)
             .await?;
-        // `mode()` applies only at creation, so an already-existing file keeps
-        // whatever it had. Re-assert rather than trust.
         let mut perms = file.metadata().await?.permissions();
         if perms.mode() & 0o777 != 0o600 {
             perms.set_mode(0o600);
             file.set_permissions(perms).await?;
         }
-        Ok(Self {
-            receiver,
-            file: tokio::io::BufWriter::new(file),
-            path: path.to_path_buf(),
-        })
+        Ok(file)
     }
 
     /// Path the writer is appending to (useful for tests).
@@ -329,14 +493,20 @@ impl JsonlWriter {
     /// is preferable to silently halting subsequent requests.
     pub async fn run(mut self) {
         tracing::info!(path = %self.path.display(), "proxy audit jsonl writer started");
+        self.publish_completeness(true).await;
         while let Some(entry) = self.receiver.recv().await {
             if let Err(e) = self.append(&entry).await {
                 tracing::error!(error = %e, "proxy audit jsonl write failed");
             }
+            // After the append, not before: a drop recorded by the data path
+            // while this line was in flight belongs to the window a reader is
+            // about to see.
+            self.publish_completeness(false).await;
         }
         if let Err(e) = self.file.flush().await {
             tracing::error!(error = %e, "proxy audit jsonl final flush failed");
         }
+        self.publish_completeness(true).await;
         tracing::info!(path = %self.path.display(), "proxy audit jsonl writer stopped");
     }
 
@@ -345,8 +515,117 @@ impl JsonlWriter {
         self.file.write_all(json.as_bytes()).await?;
         self.file.write_all(b"\n").await?;
         self.file.flush().await?;
+        self.segment_bytes += json.len() as u64 + 1;
+        // Rotate *after* the write so a line is never split across segments —
+        // a consumer parses this file line by line and half a record is worse
+        // than a segment that overshoots by one line.
+        if self.segment_bytes >= self.rotation.max_segment_bytes {
+            self.rotate().await?;
+        }
         Ok(())
     }
+
+    /// Shift the segment chain along by one and start a fresh live file.
+    ///
+    /// The oldest segment is removed, which is the whole point — and is why
+    /// [`DISCARDED_SEGMENTS`] exists: a bound that quietly discards audit
+    /// records would turn every long-running proxy into a silent under-count.
+    async fn rotate(&mut self) -> io::Result<()> {
+        self.file.flush().await?;
+        let oldest = segment_path(&self.path, self.rotation.retained_segments);
+        if tokio::fs::metadata(&oldest).await.is_ok() {
+            tokio::fs::remove_file(&oldest).await?;
+            let total = DISCARDED_SEGMENTS.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(
+                path = %oldest.display(),
+                discarded_total = total,
+                "proxy audit jsonl segment discarded to stay inside the size bound",
+            );
+        }
+        for n in (1..self.rotation.retained_segments).rev() {
+            let from = segment_path(&self.path, n);
+            if tokio::fs::metadata(&from).await.is_ok() {
+                tokio::fs::rename(&from, segment_path(&self.path, n + 1)).await?;
+            }
+        }
+        // `retained_segments == 0` means "keep nothing": the live file is
+        // simply discarded rather than renamed onto itself.
+        if self.rotation.retained_segments == 0 {
+            tokio::fs::remove_file(&self.path).await?;
+            let total = DISCARDED_SEGMENTS.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::warn!(discarded_total = total, "proxy audit jsonl segment discarded");
+        } else {
+            tokio::fs::rename(&self.path, segment_path(&self.path, 1)).await?;
+        }
+        self.file = tokio::io::BufWriter::new(Self::open_segment(&self.path).await?);
+        self.segment_bytes = 0;
+        Ok(())
+    }
+
+    /// Current completeness of this file: the baseline it was opened with plus
+    /// what this process has lost since.
+    fn completeness(&self) -> SinkCompleteness {
+        SinkCompleteness {
+            updated_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
+            dropped_entries: self.baseline.dropped_entries + dropped_entries().saturating_sub(self.dropped_at_open),
+            discarded_segments: self.baseline.discarded_segments
+                + discarded_segments().saturating_sub(self.discarded_at_open),
+        }
+    }
+
+    /// Write the completeness snapshot beside the sink.
+    ///
+    /// Skipped when the figures have not moved, unless `force` — the sidecar
+    /// must exist from the moment the sink does, so a consumer that finds no
+    /// file knows the sink was never opened rather than guessing.
+    async fn publish_completeness(&mut self, force: bool) {
+        let current = self.completeness();
+        if !force
+            && current.dropped_entries == self.published.dropped_entries
+            && current.discarded_segments == self.published.discarded_segments
+        {
+            return;
+        }
+        if let Err(e) = write_completeness(&self.path, current).await {
+            tracing::error!(error = %e, "proxy audit jsonl completeness write failed");
+            return;
+        }
+        self.published = current;
+    }
+}
+
+/// Write `completeness` beside `path`, replacing any previous snapshot.
+///
+/// Written to a temporary and renamed so a consumer never reads a half-written
+/// snapshot and concludes the window was clean.
+async fn write_completeness(path: &Path, completeness: SinkCompleteness) -> io::Result<()> {
+    let target = completeness_path(path);
+    let mut tmp = target.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let json = serde_json::to_vec(&completeness).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    {
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&tmp)
+            .await?;
+        file.write_all(&json).await?;
+        file.flush().await?;
+        // Same reasoning as the sink itself: a leftover file keeps its old
+        // mode, and this one names the hosts an agent was refused for.
+        let mut perms = file.metadata().await?.permissions();
+        if perms.mode() & 0o777 != 0o600 {
+            perms.set_mode(0o600);
+            file.set_permissions(perms).await?;
+        }
+    }
+    tokio::fs::rename(&tmp, &target).await
 }
 
 /// Bounded capacity of the audit channel.
@@ -894,5 +1173,247 @@ mod tests {
             back.execution.establishes_non_transmission(),
             "the persisted record lost the only observation that can support a prevention claim"
         );
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    use crate::transmission_evidence::DecisionRecord;
+    use aa_core::policy::EnforcementMode;
+
+    fn entry(host: &str) -> ProxyAuditEntry {
+        ProxyAuditEntry {
+            ts_ms: 1_700_000_000_000,
+            agent_id: None,
+            host: host.into(),
+            method: "POST".into(),
+            path: "/v1/do".into(),
+            decision: ProxyAuditDecision::Blocked,
+            refusal_rule: Some(RefusalRule::EgressDenylist),
+            execution: ExecutionEvidence::unrecorded(EnforcementMode::Enforce),
+            probe_correlation: None,
+            credential_findings: vec![],
+            findings_omitted: 0,
+            redacted_body: None,
+        }
+    }
+
+    /// A tiny policy so the test rotates in milliseconds rather than gigabytes.
+    fn tiny() -> RotationPolicy {
+        RotationPolicy {
+            max_segment_bytes: 1024,
+            retained_segments: 2,
+        }
+    }
+
+    async fn drain(path: &Path, policy: RotationPolicy, count: usize) {
+        let (tx, rx) = mpsc::channel(8);
+        let writer = JsonlWriter::with_rotation(path, rx, policy).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+        for i in 0..count {
+            tx.send(entry(&format!("h{i}.example"))).await.unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap();
+    }
+
+    /// The sink is a file the proxy creates and never stops appending to.
+    /// External `logrotate` cannot manage it — the writer holds the descriptor
+    /// for the process lifetime and would keep writing to an unlinked inode —
+    /// so the bound has to live here.
+    #[tokio::test]
+    async fn an_oversized_sink_rotates_and_keeps_a_bounded_number_of_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = tiny();
+
+        drain(&path, policy, 200).await;
+
+        // Non-vacuity: the run really did produce far more than the ceiling, so
+        // "bounded" is not trivially true of a run that never filled a segment.
+        let line = serde_json::to_string(&entry("h0.example")).unwrap().len() as u64 + 1;
+        let produced = line * 200;
+        let ceiling = (policy.retained_segments as u64 + 1) * (policy.max_segment_bytes + line);
+        assert!(
+            produced > ceiling * 2,
+            "the fixture wrote {produced} bytes against a {ceiling}-byte ceiling; it cannot show a bound"
+        );
+
+        let mut total = tokio::fs::metadata(&path).await.unwrap().len();
+        for n in 1..=policy.retained_segments {
+            let seg = segment_path(&path, n);
+            total += tokio::fs::metadata(&seg)
+                .await
+                .unwrap_or_else(|e| panic!("segment {} missing: {e}", seg.display()))
+                .len();
+        }
+        assert!(
+            tokio::fs::metadata(segment_path(&path, policy.retained_segments + 1))
+                .await
+                .is_err(),
+            "a segment beyond the retention limit was kept"
+        );
+        assert!(
+            total <= ceiling,
+            "the sink held {total} bytes against a {ceiling} ceiling"
+        );
+    }
+
+    /// Rotation discards data. A consumer computing a rate over a window that
+    /// was rotated away must be able to see that it happened, or the rate is a
+    /// silent under-count.
+    #[tokio::test]
+    async fn a_discarded_segment_is_counted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let before = discarded_segments();
+
+        // Enough to rotate at least once but not to push a segment past the
+        // retention limit, so the counter must still be where it was.
+        drain(&path, tiny(), 5).await;
+        assert!(
+            tokio::fs::metadata(segment_path(&path, 1)).await.is_ok(),
+            "the fixture must actually have rotated, or the assertion below is vacuous"
+        );
+        assert_eq!(
+            discarded_segments(),
+            before,
+            "a rotation that discarded nothing must not be counted as loss"
+        );
+
+        // Enough to push a segment past the retention limit.
+        drain(&path, tiny(), 200).await;
+        assert!(
+            discarded_segments() > before,
+            "a segment fell off the end and nothing counted it"
+        );
+    }
+
+    /// A rotated segment holds the same per-agent behavioural trail as the live
+    /// file, so it must not become world-readable by being renamed.
+    #[tokio::test]
+    async fn a_rotated_segment_keeps_its_restricted_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        drain(&path, tiny(), 60).await;
+
+        let seg = segment_path(&path, 1);
+        let mode = tokio::fs::metadata(&seg).await.unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "rotated segment mode was {mode:o}");
+    }
+
+    // ── completeness ───────────────────────────────────────────────────────
+
+    fn dropped_record(host: &str) -> DecisionRecord {
+        DecisionRecord {
+            host: host.into(),
+            method: "POST".into(),
+            path: "/v1/do".into(),
+            decision: ProxyAuditDecision::Blocked,
+            refusal_rule: Some(RefusalRule::EgressDenylist),
+            findings: Vec::new(),
+            redacted_body: None,
+            probe_correlation: None,
+        }
+    }
+
+    /// AC4: the counter existed but nothing outside this crate could read it,
+    /// so a consumer reading the JSONL had no way to tell a complete window
+    /// from a lossy one. It is published beside the file the consumer already
+    /// opens.
+    #[tokio::test]
+    async fn a_lossy_window_is_published_beside_the_sink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+
+        let (tx, rx) = mpsc::channel(1);
+        let writer = JsonlWriter::new(&path, rx).await.unwrap();
+
+        // The writer is not draining yet, so the channel fills and the
+        // production path's own `try_send` drops — a real drop, not a call to
+        // the counter.
+        let before = dropped_entries();
+        for host in ["a.example", "b.example", "c.example"] {
+            dropped_record(host).send(Some(&tx), ExecutionEvidence::unrecorded(EnforcementMode::Enforce));
+        }
+        let dropped_now = dropped_entries() - before;
+        assert_eq!(dropped_now, 2, "capacity 1 must swallow one and drop two");
+
+        let handle = tokio::spawn(writer.run());
+        drop(tx);
+        handle.await.unwrap();
+
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert_eq!(
+            published.dropped_entries, dropped_now,
+            "the published loss must match what actually happened: {published:?}"
+        );
+        assert!(published.updated_ms > 0);
+    }
+
+    /// The positive control: a run that lost nothing must publish zero, or
+    /// "loss was reported" would be true of every window.
+    #[tokio::test]
+    async fn a_complete_window_publishes_no_loss() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        drain(&path, RotationPolicy::default(), 3).await;
+
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert_eq!(published.dropped_entries, 0);
+        assert_eq!(published.discarded_segments, 0);
+        // Non-vacuity: the run really did write the lines it was given.
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(on_disk.lines().count(), 3);
+    }
+
+    /// The JSONL survives a restart, so the completeness that describes it has
+    /// to as well: a per-process counter would report a clean window over a
+    /// file whose earlier half is missing lines.
+    #[tokio::test]
+    async fn published_loss_carries_across_a_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+
+        // Run 1: force one drop.
+        {
+            let (tx, rx) = mpsc::channel(1);
+            let writer = JsonlWriter::new(&path, rx).await.unwrap();
+            let before = dropped_entries();
+            dropped_record("a.example").send(Some(&tx), ExecutionEvidence::unrecorded(EnforcementMode::Enforce));
+            dropped_record("b.example").send(Some(&tx), ExecutionEvidence::unrecorded(EnforcementMode::Enforce));
+            assert_eq!(dropped_entries() - before, 1, "fixture must produce exactly one drop");
+            let handle = tokio::spawn(writer.run());
+            drop(tx);
+            handle.await.unwrap();
+        }
+        assert_eq!(read_completeness(&path).await.unwrap().dropped_entries, 1);
+
+        // Run 2: loses nothing, and must not erase run 1's loss.
+        drain(&path, RotationPolicy::default(), 2).await;
+        assert_eq!(
+            read_completeness(&path).await.unwrap().dropped_entries,
+            1,
+            "a clean restart erased the earlier window's loss"
+        );
+    }
+
+    /// The sidecar describes the same behavioural trail as the sink, and is
+    /// written by the same writer, so it gets the same mode.
+    #[tokio::test]
+    async fn the_completeness_file_is_not_world_readable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        drain(&path, RotationPolicy::default(), 1).await;
+
+        let mode = tokio::fs::metadata(completeness_path(&path))
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "completeness file mode was {mode:o}");
     }
 }
