@@ -295,19 +295,19 @@ rules:
   - id: CLAIM-ABS-01
     source: "ADR 0033 fd-7: catch everything"
     severity: blocking
-    pattern: 'catch(?:es|ing)?\s+everything'
+    pattern: 'catch(?:es|ing)?<SEP>everything'
     guards: [NEG]
 
   - id: CLAIM-ABS-02
     source: "ADR 0033 fd-7: catch-all"
     severity: finding
-    pattern: 'catch[-‑\s]?all'
+    pattern: 'catch[-‑_\s]?all'
     guards: [NEG, CFG-NOUN]
 
   - id: CLAIM-ABS-03
     source: "ADR 0033 fd-7: cannot be bypassed"
     severity: blocking
-    pattern: '(?:can\s?not|cannot|can''t|could\s+not)\s+(?:be\s+)?bypass(?:ed)?'
+    pattern: '(?:can\s?not|cannot|can''t|could<SEP>not)<SEP>(?:be<SEP>)?bypass(?:ed)?'
     guards: []
 
   - id: CLAIM-ABS-04
@@ -319,37 +319,37 @@ rules:
   - id: CLAIM-ABS-05
     source: "ADR 0033 fd-7: nowhere to hide"
     severity: blocking
-    pattern: 'nowhere\s+to\s+hide'
+    pattern: 'nowhere<SEP>to<SEP>hide'
     guards: []
 
   - id: CLAIM-ABS-06
     source: "ADR 0033 fd-7: every action"
     severity: finding
-    pattern: 'every\s+action'
+    pattern: 'every<SEP>action'
     guards: [NEG]
 
   - id: CLAIM-ABS-07
     source: "ADR 0033 fd-7: every tool call"
     severity: blocking
-    pattern: 'every\s+tool\s+calls?'
+    pattern: 'every<SEP>tool<SEP>calls?'
     guards: [NEG]
 
   - id: CLAIM-ABS-08
     source: "ADR 0033 fd-7: no code changes"
     severity: blocking
-    pattern: 'no\s+code\s+changes?'
+    pattern: 'no<SEP>code<SEP>changes?'
     guards: []
 
   - id: CLAIM-ABS-09
     source: "ADR 0033 fd-7: immutable audit"
     severity: blocking
-    pattern: 'immutable\s+audit'
+    pattern: 'immutable<SEP>audit'
     guards: []
 
   - id: CLAIM-ABS-10
     source: "ADR 0033 fd-7: full fleet, whole fleet"
     severity: blocking
-    pattern: '(?:full|whole)\s+fleet'
+    pattern: '(?:full|whole)<SEP>fleet'
     guards: []
 
   - id: CLAIM-ABS-11
@@ -367,7 +367,7 @@ rules:
   - id: CLAIM-VERB-01
     source: "ADR 0033 §6: undifferentiated verbs"
     severity: finding
-    pattern: '\b<SUBJ>\b[^.;:!?]{0,30}?\b(?:protects|enforces|catches|prevents|blocks|stops)\s+(?:the|a|an|all|every|any|its|their|each)?\s*[a-z][a-z-]{2,}'
+    pattern: '\b<SUBJ>\b[^.;:!?]{0,30}?\b(?:protects|enforces|catches|prevents|guarantees|blocks|stops)\s+(?:the|a|an|all|every|any|its|their|each)?\s*[a-z][a-z-]{2,}'
     guards: [NEG]
 
   - id: CLAIM-QUOTE-01
@@ -379,7 +379,21 @@ rules:
 ```
 
 `<NAME>` is a macro expanded from [§5.6](#56-guards) before compilation, not a
-PCRE construct.
+PCRE construct. **It expands wrapped in a non-capturing group**: `<GOV-NOUN>`
+becomes `(?:coverage|protection|…)`, never the bare alternation. Substituting the
+bare form changes what the rule means — `\b<GOV-NOUN>\b` becomes a top-level
+alternation, the collocation requirement disappears, and the rule degenerates
+into a bare-token match. Measured over the corpus in
+[§8](#8-self-test-and-the-current-baseline), the three macro-bearing rules go
+from `0`/`0`/`12` to **1312**, **1344** and **900** hits. That is the same
+failure the guards exist to prevent, arriving as a flood instead of a silence.
+The `pattern` values in [§5.6](#56-guards) carry the group explicitly so an
+implementer who substitutes textually still gets the right semantics.
+
+`CLAIM-QUOTE-01` is the one entry an implementer must special-case: it carries
+`pattern: null` because it is not matched independently. It is emitted when any
+other rule matches inside an E6 quoted span, *in place of* that rule's own
+diagnostic — see [§6.3](#63-exemptions).
 
 Rules `CLAIM-ABS-01` … `CLAIM-ABS-12` cover **all fourteen** phrases ADR 0033
 forbidden design 7 lists. The three that are single polysemous words are handled
@@ -445,29 +459,63 @@ guards:
   NEG:
     kind: lookbehind_window
     window_chars: 70
+    clamp_to_clause: true     # see the note below — this is not optional
     pattern: '(?:\bno\b|\bnot\b|\bnever\b|\bneither\b|\bnor\b|\bwithout\b|\bnothing\b|\bcannot\b|\bcan''t\b|\bisn''t\b|\baren''t\b|\bdoesn''t\b|\bdon''t\b|\brather\s+than\b|\binstead\s+of\b|\bnon-|\bunder-|\bincomplete\b)'
     note: >
       A negated absolute is a correct sentence. Suppressing it is what keeps the
-      polysemous rules usable.
+      polysemous rules usable. The window is bounded twice — at most 70
+      characters, and never back past a clause boundary.
 
   CFG-NOUN:
     kind: immediately_following
     pattern: '\s*(?:entry|entries|rule|rules|pattern|handler|route|case|branch|glob|selector|wildcard|for\b)'
     note: The configuration sense of the phrase, not a coverage claim.
 
+  SEP:
+    kind: macro
+    pattern: '(?:[-‑_\s]+)'
+    note: >
+      Internal separator, per 5.2. Hyphen (ASCII and U+2011), underscore and
+      whitespace are one separator class, so a hyphenated variant of a listed
+      phrase is the same list member and matches the same rule.
+
   DOC-NOUN:
     kind: macro
-    pattern: 'reference|guide|list|example|walkthrough|inventory|history|re-audit|rewrite|set\b'
+    pattern: '(?:reference|guide|list|example|walkthrough|inventory|history|re-audit|rewrite|set\b)'
     note: Completeness of a document, not of a control.
 
   GOV-NOUN:
     kind: macro
-    pattern: 'coverage|protection|mediation|interception|enforcement|visibility|observability|monitoring|detection|inspection|audit(?:ing|s)?|governance|security|telemetry'
+    pattern: '(?:coverage|protection|mediation|interception|enforcement|visibility|observability|monitoring|detection|inspection|audit(?:ing|s)?|governance|security|telemetry)'
 
   SUBJ:
     kind: macro
-    pattern: 'Agent\s+Assembly|Assembly|the\s+(?:gateway|proxy|runtime|SDK|sandbox|platform|product|CLI|dashboard|policy\s+engine)|aa-[a-z-]+'
+    pattern: '(?:Agent\s+Assembly|Assembly|the\s+(?:gateway|proxy|runtime|SDK|sandbox|platform|product|CLI|dashboard|policy\s+engine)|aa-[a-z-]+)'
 ```
+
+**`clamp_to_clause` is load-bearing, and omitting it silently deletes true
+positives.** The window is the shorter of 70 characters and the text back to the
+nearest clause boundary — a newline or one of `.` `;` `!` `?`. A colon is
+deliberately **not** a boundary, because a list-introducing colon
+(*"This does not guarantee: that …"*) carries its negation forward.
+
+The reason is a measured miss on the repository's front page. An unclamped
+70-character window at `README.md:135` reaches back across a newline into the
+*previous list item* —
+
+```text
+134| - **Sidecar proxy** (`aa-proxy`) — intercepts outbound HTTPS without code changes.
+135| - **eBPF** (Linux kernel) — catches everything else, including bypass attempts.
+```
+
+— where `without` fires `NEG` and suppresses `CLAIM-ABS-01` on a live violation
+of **both** ADR 0033 forbidden design 7 and forbidden design 2. Clamped to the
+clause, the window stops at the newline and contains only line 135's own opening
+text, `NEG` does not fire, and the violation is reported. Two further true findings in `docs/src/**` are
+recovered the same way. A guard that reaches into a neighbouring block is not a
+guard; it is a second silent-failure mode of exactly the kind
+[§6.1](#61-engine-requirement--e-cannot-express-a-word-boundary) and
+[§6.4](#64-the-soft-wrap-trap) describe.
 
 `NEG` and `DOC-NOUN` are what make the polysemous rules usable, and the margin is
 not small. Measured in `docs/src/**`: `CLAIM-ABS-11` without its guards produces
@@ -559,15 +607,45 @@ a match can be reported at its original line number.
    a filler character that no pattern matches. Regions are listed in
    [§6.3](#63-exemptions).
 2. **Join soft wraps.** Replace the newline between two physical lines with a
-   single space when both are non-blank and neither begins a new block-level
-   element. **Block structure is read from the *original* Markdown, not from the
-   masked text** — a line that begins with an inline code span becomes a run of
-   filler characters after step 1, and a checker that tests the masked line for
-   a block marker will wrongly treat it as a block start and skip the join. This
-   is not hypothetical; it is the bug that made the reference implementation
-   report a false positive on ADR 0033's own definition of the ban.
+   single space when both are non-blank, they sit at the same blockquote depth,
+   and **the second** does not begin a new block-level element.
 3. **Pair quotes**, per [§6.3](#63-exemptions), on the text produced by step 2.
 4. **Match** the patterns and evaluate the guards.
+
+Step 2 carries three conditions that each cost a real defect when got wrong, so
+each is stated separately.
+
+**Only the second line is tested.** The first line's own block role is
+irrelevant — a hard-wrapped list item, table cell or blockquote paragraph is
+still one logical line, and its continuation belongs to it. Testing both lines
+loses this page's own flagship example: `docs/src/protocol/CHANGELOG.md:25`
+begins with a list marker, so a "neither line begins a block" reading forbids
+the join, `immutable audit` is never reassembled, and the corpus reports **2**
+blocking hits where [§8](#8-self-test-and-the-current-baseline) records 3.
+
+**A block start, for this test, is:** an ATX heading (`#` … `######` followed by
+a space), a bullet marker (`-`, `*`, `+` followed by a space), an ordered-list
+marker (digits then `.` or `)` then a space), a table row (a leading `|`), a code
+fence (three or more backticks or tildes), a thematic break, an HTML block (a
+leading `<` followed by a letter, `/` or `!`), or an indented code block. Nothing
+else is. A line beginning with bold text, a link, or an inline code span is a
+continuation.
+
+**Blockquote markers are stripped before the test, not treated as a block
+start.** Every physical line of a blockquote begins with `>`, so treating that
+marker as a block start means a blockquote is *never* joined — and the exemption
+in [§6.3](#63-exemptions) that depends on the join then fails on precisely the
+text it exists to protect. Strip the leading `>` (with its optional space,
+repeated for nesting) from both lines, compare blockquote depth, and join only
+when the depth is equal. A change in depth, or a genuine block element inside
+the quote, breaks the join.
+
+**Block structure is read from the *original* Markdown, not from the masked
+text.** A line that begins with an inline code span becomes a run of filler
+characters after step 1, and a checker that tests the *masked* line for a block
+marker will wrongly treat it as a block start and skip the join. This is not
+hypothetical; it is the bug that made the reference implementation report a
+false positive on ADR 0033's own definition of the ban.
 
 Steps 2 and 3 must run in that order and on the same text. Pairing quotes on
 physical lines, before the join, is what produces the false positive described in
@@ -584,7 +662,7 @@ make either one alone.
 | E2 | Indented code block | A line beginning with four spaces or a tab followed by a non-space | Exempt, **no diagnostic** |
 | E3 | Inline code span | A run of one or more backticks to the next run of the same length | Exempt, **no diagnostic** |
 | E4 | HTML comment | `<!--` to `-->`, spanning lines | Exempt, **no diagnostic** |
-| E5 | Link destination and bare URL | `](…)`, `<https://…>`, and a bare `https://…` run not already inside E5 | Exempt, **no diagnostic** |
+| E5 | Link destination and bare URL | A Markdown link's `]` immediately followed by `(…)`, plus `<https://…>` and a bare `https://…` run not already inside E5 | Exempt, **no diagnostic** |
 | E6 | Quoted span | Straight `"` … `"`, or typographic `“` … `”` | Exempt from the rule's own severity; emits `CLAIM-QUOTE-01` at `info` |
 
 **E6 is the one with a semantics question, and the answer is: per logical
@@ -598,6 +676,23 @@ never per document.
   across lines constantly. ADR 0033's own text does it twice while enumerating
   the banned phrases, and per-physical-line pairing reports the document that
   *defines* the ban as violating it.
+
+**Worked example, in the enforced scope.** `.claude/CLAUDE.md:42-44` is a
+blockquote whose whole purpose is to forbid the phrase:
+
+```text
+42| > **Do not restate these as absolutes.** Public copy derived from this file was the
+43| > source of the AAASM-5528 truthfulness bug ("catches everything, including bypass
+44| > attempts"). Every layer claim must name its boundary; see
+```
+
+The quotation opens on line 43 and closes on line 44, and every line carries a
+`>`. A checker that treats the blockquote marker as a block start never joins
+43 to 44, never pairs the quotes, and reports `CLAIM-ABS-01` at **`blocking`** on
+a passage that exists to prohibit the phrase. With step 2's blockquote handling
+the two lines are one logical line, E6 pairs the quotes, and the passage is
+correctly exempt. This file is inside [§6.5](#65-file-scope)'s declared scope, so
+it is a live case, not an illustration.
 
 Pairing is positional and left to right: within a logical line, the first `"` is
 paired with the second, the third with the fourth, and so on. Typographic quotes
@@ -787,37 +882,87 @@ correction to whichever of the two other pages ends up wrong.
 Two things had to be true before this page could be published, and both were
 measured rather than assumed.
 
-**This page does not violate its own rules.** Every prohibited phrase named
-above appears inside an inline code span (E3) or a quoted span (E6). Running the
-rule set over this file produces **0 blocking, 0 finding**. That property is
-maintained by convention, and the convention is simple: *a banned phrase named
-in a specification is a literal, so it goes in backticks.*
+**This page does not violate its own rules.** Running the rule set over this file
+produces **0 blocking, 0 finding, 6 info**. Every prohibited phrase it *names*
+sits in an inline code span (E3) and is silent; the six `info` diagnostics are
+the six real violations quoted verbatim in
+[§8.1](#81-two-corpora-and-why-the-baseline-must-cover-the-larger-one)'s table,
+each attributed to a file and line. That is `CLAIM-QUOTE-01` behaving exactly as
+designed — a class **N4** negative example, visible in the checker's output and
+gating nothing. The convention that keeps the first number at zero is simple: *a
+banned phrase named in a specification is a literal, so it goes in backticks; a
+banned phrase being reported as a violation is a quotation, so it goes in quotes
+with its location.*
 
-**The rules do not fail the reference instance.** Running them over
-[content-ownership.md](content-ownership.md) — the page this one is a sibling of
-— produces **0 blocking, 0 finding, 0 info**. ADR 0034, which quotes the ban
-repeatedly, produces **0**. ADR 0033, which enumerates all fourteen phrases,
-produces **0 blocking** and **1 finding** (`CLAIM-VERB-01`, on its own opening
-sentence).
+The first draft of this page failed that test at **17** hits, because the phrases
+in the rule set's `source` column were *italicised* rather than code-spanned.
+Italics are not an exempt region and E3 is — the same page, the same phrases,
+one character of markup apart. It is recorded here rather than only in the pull
+request, because a normative page's self-test result should not depend on someone
+finding the discussion that produced it.
 
-The baseline over all tracked Markdown in `docs/src/**` at this branch's base
-commit:
+**The rules do not fail the reference instance.**
+
+| Page | Blocking | Finding | Info |
+| --- | --- | --- | --- |
+| [content-ownership.md](content-ownership.md) — the sibling this page was checked against | **0** | **0** | **0** |
+| [truth-adoption-record.md](truth-adoption-record.md) | **0** | **0** | **0** |
+| ADR 0034 | **0** | **0** | **0** |
+| ADR 0033 — which enumerates all fourteen banned phrases | **0** | 2 | 17 |
+| `.claude/CLAUDE.md` — the [§6.3](#63-exemptions) blockquote worked example | **0** | 1 | 1 |
+
+ADR 0033's seventeen `info` diagnostics are the right answer for a document whose
+job is to list the banned phrases, and its two findings are `CLAIM-VERB-01`, one
+of them on its own opening sentence. `.claude/CLAUDE.md`'s single `info` is the
+`:42-44` blockquote: **`info`, not `blocking`** — the one-line difference that
+[B3's blockquote handling](#62-the-normalisation-pipeline) makes, on a passage
+whose purpose is to forbid the phrase.
+
+### 8.1 Two corpora, and why the baseline must cover the larger one
+
+[§6.5](#65-file-scope) declares an enforced scope wider than `docs/src/**`, so a
+baseline drawn only over `docs/src/**` under-reports the debt an implementer will
+actually meet. Both are given.
+
+| Corpus | Files | Blocking | Findings |
+| --- | --- | --- | --- |
+| `docs/src/**` only | 143 | 3 | 10 |
+| **Full [§6.5](#65-file-scope) scope** (adds `README.md`, `*/README.md`, `CONTRIBUTING.md`, `.claude/**.md`) | **198** | **6** | **13** |
+
+Per rule, over the full scope:
 
 | Rule | Severity | Hits |
 | --- | --- | --- |
-| `CLAIM-ABS-08` | `blocking` | 1 |
-| `CLAIM-ABS-09` | `blocking` | 2 |
+| `CLAIM-ABS-01` | `blocking` | 1 |
+| `CLAIM-ABS-08` | `blocking` | 2 |
+| `CLAIM-ABS-09` | `blocking` | 3 |
 | `CLAIM-ABS-06` | `finding` | 1 |
-| `CLAIM-VERB-01` | `finding` | 7 |
+| `CLAIM-VERB-01` | `finding` | 12 |
 | all other rules | — | 0 |
 
-Three blocking hits across 203 files, all of them genuine and none of them this
-page's to fix — they belong to the sweep in
-[AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528). One
-of the two `CLAIM-ABS-09` hits is the soft-wrapped instance from
-[§6.4](#64-the-soft-wrap-trap), which is the argument for the pipeline in one
-data point: the same corpus, scanned per line, reports two violations instead of
-three and reports the tree as more compliant than it is.
+The six blocking hits are all genuine and none is this page's to fix — they
+belong to the sweep in
+[AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528):
+
+| Location | Rule | Text |
+| --- | --- | --- |
+| `README.md:129` | `CLAIM-ABS-09` | *"records the outcome in an immutable audit trail"* |
+| `README.md:135` | `CLAIM-ABS-01` | *"eBPF (Linux kernel) — catches everything else, including bypass attempts"* — a violation of **both** ADR 0033 forbidden design 7 and forbidden design 2, on the repository's front page, and verbatim the string `.claude/CLAUDE.md:42-44` identifies as the AAASM-5528 truthfulness bug |
+| `aa-proxy/README.md:11-12` | `CLAIM-ABS-08` | *"with no code changes to the agent"* |
+| `docs/src/usage-guide/enforce-egress-policy.md:13` | `CLAIM-ABS-08` | *"no code change in the agent required"* |
+| `docs/src/protocol/CHANGELOG.md:25-26` | `CLAIM-ABS-09` | *"immutable audit log ingestion"* — soft-wrapped |
+| `docs/src/protocol/CHANGELOG.md:75` | `CLAIM-ABS-09` | *"immutable audit record"* |
+
+Three of these sit outside `docs/src/**`. Had the baseline stopped there,
+[§6.6](#66-reporting-and-adoption-sequence)'s adoption sequence would have cleared
+three hits, flipped to full-tree, and immediately met three more — including the
+front-page one — which is the failure mode the sequence exists to avoid.
+
+One of the `CLAIM-ABS-09` hits is the soft-wrapped instance from
+[§6.4](#64-the-soft-wrap-trap), and `README.md:135` is the one recovered by
+`NEG`'s clause clamp in [§5.6](#56-guards). Together they are the argument for
+the pipeline in two data points: the same corpus scanned per physical line, or
+with an unclamped guard window, reports the tree as more compliant than it is.
 
 ## 9. What this page hands off
 
