@@ -247,6 +247,15 @@ for the trust model this sits inside.
 `aasm` implements this with exit codes `11` and `10` respectively; see the
 [CLI reference](../cli/integrations.md#exit-codes).
 
+**"More than one runtime reachable" is one-directional evidence.** A count above
+one proves ambiguity — each of those sockets was connected to. A count of one
+proves only that nothing else was *found*: `aasm`'s scan probes files named
+`devint*.sock`, in the answering socket's own directory, once as the session
+opens. A runtime under another name, in another directory (which
+`AA_DEVINT_SOCKET` makes trivial), or started a moment later is not counted.
+Read `reachable_runtimes == 1` as "no duplicate was observed", never as "this is
+the only runtime".
+
 ## The verb space
 
 The verb space is a **closed enum**. There is no "call core", no method or path

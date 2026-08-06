@@ -317,6 +317,23 @@ pub async fn connect_with<S: RuntimeSpawner>(
 /// an `AA_DEVINT_SOCKET` override outside that directory is still counted —
 /// [`provenance::multiplicity`] folds it in — so the count is never lower than
 /// what is demonstrably true.
+///
+/// # The evidence is one-directional
+///
+/// A count above one **proves** ambiguity: those sockets were connected to, so
+/// those runtimes exist. A count of one proves nothing in the other direction,
+/// because the scan has three limits and each of them can hide a runtime:
+///
+/// 1. **Name-filtered.** Only files matching `devint*.sock` are probed, so a
+///    runtime bound to any other name is invisible.
+/// 2. **One directory.** Only the answering socket's own directory is read, so
+///    a runtime bound elsewhere — which is exactly what `AA_DEVINT_SOCKET`
+///    makes easy — is not seen unless it is the one that answered.
+/// 3. **Point in time.** The scan runs once, as the session opens. A runtime
+///    that binds a moment later is not counted.
+///
+/// So `reachable_runtimes == 1` means "nothing else was found", never "nothing
+/// else is listening", and no surface may present it as a uniqueness guarantee.
 fn survey_runtimes(socket: &Path) -> RuntimeMultiplicity {
     let reachable = socket.parent().map(devint::reachable_runtimes).unwrap_or_default();
     provenance::multiplicity(socket, &reachable)

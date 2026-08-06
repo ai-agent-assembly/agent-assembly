@@ -303,6 +303,15 @@ marked:
 **`unverifiable` is never reported as verified**, on any surface or in JSON.
 Branch on `standing`, not on the presence of a `build_sha`.
 
+**`reachable_runtimes` is one-directional evidence.** Above one it *proves*
+ambiguity — each of those sockets was connected to, so each of those runtimes
+exists, and the result cannot be attributed to one of them. Equal to one it
+proves only that nothing else was **found**: the scan probes files named
+`devint*.sock`, in the answering socket's own directory, once as the session
+opens. A runtime under another name, in another directory (which
+`AA_DEVINT_SOCKET` makes trivial), or started a moment later is not counted.
+Read `1` as "no duplicate was observed", never as "this is the only runtime".
+
 `standing` is the one field that folds in *every* reason a result may not be
 attributable, which is why it is the only one a wrapper needs to read.
 `verdict` is narrower — it reports the **identity comparison** alone, and two

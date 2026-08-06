@@ -755,6 +755,20 @@ exactly the commands an operator uses to see *which* runtime answered and stop t
 A `Refuted` standing — a different build, a deleted executable, or more than one runtime
 reachable — is a positive finding rather than an absence, and refuses **everywhere**, exit 10.
 
+**The multiplicity check is one-directional evidence, and must never be read as a uniqueness
+guarantee.** `reachable_runtimes > 1` *proves* ambiguity: each of those sockets was connected
+to, so each of those runtimes exists. `reachable_runtimes == 1` proves only that nothing else
+was **found**, because the scan has three limits and any of them can hide a runtime:
+
+- it probes only files named `devint*.sock`, so a runtime bound to another name is invisible;
+- it reads only the directory the *answering* socket lives in, so a runtime bound elsewhere —
+  which `AA_DEVINT_SOCKET` makes trivial — is not seen unless it is the one that answered;
+- it runs once, as the session opens, so a runtime that binds a moment later is not counted.
+
+The asymmetry is deliberate and cheap to state, and it is the reason a `verified` standing is
+an *attribution* claim about the connection this client made, never a claim that no other
+runtime is serving.
+
 Diagnostics name **which provenance fields were absent, matched or mismatched**, rather than
 collapsing to a single "provenance check failed" — that generic sentence is the same failure
 mode one level up.
