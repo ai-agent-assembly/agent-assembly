@@ -125,6 +125,25 @@ async fn setup_audit(
 /// is a second writer with a different retention story and a documented rollback
 /// of "drop the tables"; giving it its own file keeps that rollback to deleting
 /// one file, and keeps its write traffic off the pool the audit path shares.
+///
+/// # Not a stable configuration surface
+///
+/// `aa-gateway` is in the crates.io publish set, so a `pub` item here would
+/// otherwise read as public API carrying the usual compatibility promise. This
+/// one does not: the variable is an **internal deployment setting** for a tier
+/// that is off by default and has no documented operator-facing contract — it
+/// appears nowhere in `docs/`, unlike `AA_POLICY` and friends, which do.
+///
+/// It is `pub` only because the integration tests that boot a real `serve_tcp`
+/// live outside the crate and must name the same variable the production path
+/// reads, rather than re-spelling the literal and passing while the real key
+/// drifts. `#[doc(hidden)]` keeps it out of the published documentation so the
+/// visibility does not become an advertisement.
+///
+/// Promoting this to a supported configuration surface means naming it in the
+/// operator docs, fixing its precedence against any future config file, and
+/// committing to its failure behaviour — none of which this ticket did.
+#[doc(hidden)]
 pub const SENSITIVE_DATA_PROJECTION_DB_ENV: &str = "AA_SENSITIVE_DATA_PROJECTION_DB";
 
 /// How many projected decisions may await persistence — see
