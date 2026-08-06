@@ -66,8 +66,11 @@ Questions 3 and 4 are the ones that changed answers.
 3. **Is it on by default**, and if not, what fires instead? A capability that
    exists but is off ships as its default, not as itself.
 4. **Does the named mechanism exist at all, and can a released binary reach it?**
-   A mechanism present in the source tree but absent from the release artifact set
-   is not a shipped capability.
+   Reachability is **per channel and per platform**, never a single boolean. A
+   binary absent from the GitHub Release assets may still publish to crates.io,
+   and a component packaged on Linux may be absent on macOS. Ask *which channel,
+   on which platform* — and answer against the **published artifact**, not
+   against the packaging config.
 
 Rows where question 3 or 4 changed the answer are marked **`⚠ Q3`** / **`⚠ Q4`**
 in the matrix and collected in [Where questions 3 and 4 changed the
@@ -153,8 +156,10 @@ public guarantee](#minimum-defensible-public-guarantee-today) is built from it.
 
 ### Scope
 
-This threat model covers the **shipped `agent-assembly` release artifact set at
-v0.0.1-rc.7** and the three language SDKs that pin it, deployed by an operator who
+This threat model covers **`agent-assembly` as published at v0.0.1-rc.6** (the
+newest version on crates.io at the time of writing; rc.7 is the fix version and
+is unreleased), across every distribution channel — GitHub Release assets, the
+Homebrew tap, `scripts/install-cli.sh` and crates.io and the three language SDKs that pin it, deployed by an operator who
 runs the gateway, and optionally the runtime and the proxy, on a developer
 workstation or a single server they control.
 
@@ -213,7 +218,7 @@ boundary.
 |---|---|---|---|---|---|
 | **T1** | Agent process ↔ `aa-runtime` UDS | `aa-runtime` and everything behind it | The agent process, its SDK, and every field it sends | `aa-runtime` re-scans unconditionally; no "already clean" trust marker exists on the wire, pinned by `aa-runtime/tests/aaasm_2568_gate_verification.rs` | The agent can simply not make the call. Non-participation is not detectable at this boundary |
 | **T2** | Agent process ↔ `aa-proxy` | The proxy, out of process | The agent's HTTP request bytes | Out-of-process refusal before dialling upstream | Only for traffic routed to the proxy and only for MitM'd hosts |
-| **T3** | `aa-runtime` ↔ `aa-ebpf-loaderd` | The loader daemon, sole `CAP_BPF` holder | `aa-runtime`, which holds no BPF capability | Deliberate privilege separation (AAASM-3603/3604) | The daemon is **not in the release artifact set**, so this boundary does not exist in a released deployment |
+| **T3** | `aa-runtime` ↔ `aa-ebpf-loaderd` | The loader daemon, the intended sole holder of BPF-class capability | `aa-runtime`, which asserts it holds none | Deliberate privilege separation (AAASM-3603/3604), enforced at startup rather than structurally — see the note below | The daemon reaches crates.io only, so for anyone installing through the GitHub Release, Homebrew or the installer this boundary has nothing on the far side of it |
 | **T4** | Client ↔ `aa-gateway` control plane | Gateway-side policy, registry, budgets, audit | Every client-supplied identity assertion | `credential_token` validation in `check_action`; server-side lineage resolution | Agent-identity possession proof is weaker than it appears — see the identity rows in the matrix |
 | **T5** | Runtime audit stream ↔ durable audit store | The sanitizer's output | Every field a sender emits | Write-boundary sanitizer strips banned keys recursively | Emission is best-effort; a dropped entry is indistinguishable from tampering |
 | **T6** | Managed-settings file ↔ the dev tool that reads it | The root-owned file's content, read back after write | The user's non-admin account | Filesystem ownership on macOS (B6) | Whether the tool *honours* those keys at runtime is unmeasured — "the open half of AAASM-5298" |
@@ -234,7 +239,31 @@ boundary.
 
 ## The coverage matrix
 
-### Row counts
+### Reachability is per channel and per platform
+
+A capability's reachability is **not** a boolean, and "in the GitHub Release
+artifact set" is not a universal test for it. This repository ships through four
+channels — GitHub Release assets, the Homebrew tap, `scripts/install-cli.sh`, and
+crates.io — and two components reach a strict subset of them:
+
+| Component | GitHub Release · Homebrew · installer | crates.io | Consequence |
+|---|---|---|---|
+| `aa-ebpf-loaderd` | **absent** (`scripts/check-release-completeness.sh:45,58`) | **present** — `aa-ebpf 0.0.1-rc.6`, `bin_names: ["aa-ebpf-loaderd"]`, no `publish` key | E4 is reachable on Linux via `cargo install aa-ebpf`, and only with a nightly toolchain |
+| `aa-proxy` | Linux **yes**, macOS **no** — `.github/workflows/release.yml:274`: *"proxy is a Linux-only component (ADR-014); only built/packaged there"* | **present** — `bin_names: ["aa-proxy"]`, no `publish` key | On macOS, E3 is reachable only via `cargo install aa-proxy` ([AAASM-5653](https://lightning-dust-mite.atlassian.net/browse/AAASM-5653)) |
+
+Two consequences for how this matrix must be read, and for AAASM-5531:
+
+1. **`reachability` records the cause, not just the fact.** `shipped`,
+   `shipped_crates_io_only`, `dead_code`, `absent_mechanism` and
+   `stubbed_default` are different states with different remedies. C3 is
+   `dead_code` — its binaries ship and no route populates the secrets store —
+   so channel scoping tells you nothing about it. Rows like H1, H6, H7, M5, M6,
+   M8 and P4 are `absent_mechanism`, where the field is simply not the question.
+2. **Verify against the published artifact, not the config.** The
+   crates.io facts above were read from the registry. The packaging config alone
+   would have produced the wrong answer in both directions.
+
+## Row counts
 
 Machine-counted from the [YAML source](AAASM-5527-capability-coverage-matrix.yaml)
 (80 rows). Every `coverage` value validates against ADR 0033 §6's closed
@@ -274,16 +303,18 @@ Epic exists.
 |---|---|
 | B3 — one process (all conditional) | 25 |
 | B2 — one framework | 6 |
-| B5 — one host (**none attained in a released build**) | 5 |
+| B5 — one host (**crates.io-only, and only on Linux with a nightly toolchain**) | 5 |
 | B6 — one managed device | 4 |
 | B1 — one patched function | 3 |
 | B7 — opaque SaaS (**not attained**) | 1 |
 | B4 — one container | **0** |
 | No boundary — the row is a gap | 36 |
 
-**17 of 80 rows are not reachable in a released build** (`reachable_in_release:
-false`), and every one of them is an eBPF or `DispatchTool` row. **18 rows
-changed on question 3** and **21 on question 4.**
+Reachability is recorded as `released_channels` + `released_platforms` + a
+`reachability` enum, never a boolean — see [the channel-scoping
+note](#reachability-is-per-channel-and-per-platform). By `reachability`:
+**62 shipped · 10 shipped_crates_io_only · 7 absent_mechanism · 1 dead_code**.
+**18 rows changed on question 3** and **21 on question 4.**
 
 Platform coverage is not a useful count on its own — most rows are
 platform-independent gaps — so it is reported per row rather than aggregated.
@@ -370,7 +401,8 @@ structurally silent against A3. Three facts govern the whole domain:
 The single most consequential finding in this artifact: **for a native process on
 the normal agent path there is no pre-execution mediation of a shell command, a
 subprocess spawn, or a host file access on any shipped platform.** The policy
-language can express such a rule; nothing in a released build can enforce it.
+language can express such a rule; the only mechanism that comes close is
+crates.io-only, Linux-only and needs a nightly toolchain (see H2).
 
 #### D2 · Table 1 — coverage
 
@@ -379,7 +411,7 @@ language can express such a rule; nothing in a released build can enforce it.
 | **H1** | Shell command / `ProcessExec` by a native agent process | any · any | all · any · n/a | *none on the shipped path* | none | — · — | n/a — nothing runs | **Unmeasured** ⚠ Q4 | — |
 | **H2** | Shell command, Linux, eBPF syscall guard armed | any · any | Linux (x86_64 + aarch64) · `AA_EBPF_CONFINE_PID` set **and** policy lowers a non-empty allowlist · syscall | `aa-ebpf-probes` syscall guard via `aa-ebpf-loaderd` | post | enforce-by-kill · async | **fails open** — load/attach failure degrades and the agent proceeds | **Detected** + async process kill — explicitly *not* Denied before execution ⚠ Q3 ⚠ Q4 | B3 |
 | **H3** | Process exec observation | any · any | Linux · any · `sched_process_{fork,exec,exit}` tracepoints | `aa-ebpf-probes/src/exec_probes.rs` | post | observe · best-effort | fails open; **no ring-buffer reader is wired** (`aa-runtime/src/runtime.rs:510-512`) | **Unmeasured** ⚠ Q4 | B5 |
-| **H4** | File read / write / unlink by a native process | any · any | **Linux x86_64 only** · any · `__x64_sys_*` kprobes | `aa-ebpf/src/kprobe.rs:145-160` (14 targets) | post | observe · best-effort | fails open. The path "blocklist" sets `event.flags = 1` and the syscall proceeds | **Observed** / **Detected** ⚠ Q4 | B5 |
+| **H4** | File read / write / unlink by a native process | any · any | **Linux x86_64 only** · any · `__x64_sys_*` kprobes | `aa-ebpf/src/kprobe.rs:145-160` (14 programs over **7 syscalls** — an entry kprobe and a kretprobe each) | post | observe · best-effort | fails open. The path "blocklist" sets `event.flags = 1` and the syscall proceeds | **Observed** / **Detected** ⚠ Q4 | B5 |
 | **H5** | File access by a WASM-marked tool | n/a · WASM guest | all · `aasm sandbox run` or `POST /dispatch_tool` with `ToolKind::Wasm` · in-process | `aa-sandbox` WASI preopen allowlist | pre | enforce · sync | sealed by default (`preopened_dirs` empty) — fail-closed | **Denied before execution** | B3 (of the guest) |
 | **H6** | Browser action (Playwright / Selenium / Puppeteer) | any · any | all · any · any | *none* | none | — · — | n/a | **Unmeasured** ⚠ Q4 | — |
 | **H7** | Database query | any · any | all · any · any | *none* | none | — · — | n/a | **Unmeasured** ⚠ Q4 | — |
@@ -390,9 +422,9 @@ language can express such a rule; nothing in a released build can enforce it.
 | ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
 |---|---|---|---|---|---|---|
 | **H1** | none | `GovernanceAction::ProcessExec { command }` (`aa-core/src/policy.rs:229-233`) and `Capability::TerminalExec` (`aa-security/src/policy/capability.rs:42`) are both expressible, evaluated by the engine (`aa-gateway/src/engine/mod.rs:2420-2437`) and carried on the wire (`proto/policy.proto:69,138-139`) — **but only for an action a caller volunteers** | Everything. There is no interception at all | **Gap.** No test can exist for a mechanism that does not exist. Probed with positive control: `McpToolCall` 20 hits vs `PreToolUse`/`pre_tool_use`/`seccomp_filter`/`LD_PRELOAD`/`intercept_exec` **0 hits each** across `aa-proxy/src aa-runtime/src aa-gateway/src aa-cli/src` | **Unmeasured** | Needs a decision, not a ticket — see [Go/No-Go](#go--conditional-go--no-go-per-boundary-class) |
-| **H2** | PID in `PID_FILTER`, seeded from `AA_EBPF_CONFINE_PID` | Syscall allowlist lowered from the policy AST (`aa-security/src/policy/ebpf.rs:161,173` → `aa-runtime/src/ebpf_control.rs:36,190`) | Off by default; **`aa-ebpf-loaderd` is not in the release artifact set**; the offending syscall completes before the SIGKILL lands; fork propagation fails open past 1024 PIDs; load-time window runs the confined PID with an empty allowlist | `aa-integration-tests/tests/e2e_ebpf.rs` — **path-gated to `aa-ebpf*/**` changes, so normally SKIPPED on `main`** (`.github/workflows/ci.yml:131-133`); weekly schedule is the standing coverage | **Experimental** | Keep Experimental until AAASM-3872 lands a synchronous deny |
+| **H2** | PID in `PID_FILTER`, seeded from `AA_EBPF_CONFINE_PID` | Syscall allowlist lowered from the policy AST (`aa-security/src/policy/ebpf.rs:161,173` → `aa-runtime/src/ebpf_control.rs:36,190`) | Off by default; **reachable only via `cargo install aa-ebpf` on Linux with a nightly toolchain** (see the D9 box); the offending syscall completes before the SIGKILL lands; fork propagation fails open past 1024 PIDs; load-time window runs the confined PID with an empty allowlist. **One path fails CLOSED and is easy to miss:** if `Load(SyscallGuard)` succeeds and `UpdateSyscallAllowlist` then fails, `aa-runtime/src/ebpf_control.rs:342-352` degrades and returns **without detaching**, leaving the confined PID in `PID_FILTER` with an empty allowlist — default-deny SIGKILL on the next syscall | `aa-integration-tests/tests/e2e_ebpf.rs` — path-gated and **normally SKIPPED on `main`**. The real gate is the `ebpf` filter at `.github/workflows/ci.yml:271-276` plus the job's `if:` at `:1064`; note the filter globs (`aa-ebpf*/**`) match **neither** `aa-integration-tests/**`, where this test lives, **nor** `aa-runtime/**`. Weekly schedule and manual dispatch are the standing coverage | **Experimental** | Keep Experimental until AAASM-3872 lands a synchronous deny |
 | **H3** | PID / process tree | none consulted | No reader is wired, so events never leave the kernel ring buffer | **Gap** — no evidence test, because nothing consumes the events | **Unmeasured** | Wire the reader or withdraw the capability |
-| **H4** | PID | Path blocklist map | x86_64 only — no `__arm64_sys_*` target exists (verified: 16 `__x64_sys_` matches, 0 `__arm64_sys_` in `aa-ebpf/src/kprobe.rs`); observe-only; loaderd unreleased | `aa-integration-tests/tests/e2e_file_monitoring.rs`, same CI gating as H2 | **Observed** (Linux x86_64 only) | State the arch bound wherever file coverage is claimed |
+| **H4** | PID | Path blocklist map | x86_64 only — no `__arm64_sys_*` target exists (verified: **14 target entries** at `aa-ebpf/src/kprobe.rs:145-160`, covering 7 syscalls; the raw grep count of 16 includes 2 assertion strings in the unit test at `:243-244`; 0 `__arm64_sys_`); observe-only; loaderd is crates.io-only | `aa-integration-tests/tests/e2e_file_monitoring.rs`, same CI gating as H2 | **Observed** (Linux x86_64 only) | State the arch bound wherever file coverage is claimed |
 | **H5** | n/a — the guest has no identity | Preopen list, fuel, memory pages, wall clock (`aa-sandbox/src/policy.rs:21-90`) | Not on any agent's normal tool-call path. `aa-proxy` has **no** `aa-sandbox` dependency, contradicting `aa-sandbox/src/lib.rs:10-11` | `aa-integration-tests/tests/e2e_tool_sandbox.rs`, `e2e_tool_sandbox_fs.rs`, `e2e_dispatch_tool_wasm.rs` — these **do** run on `main` | **Denied before execution**, for WASM only | Do not cite as agent-action mediation |
 | **H6** · **H7** | — | **Not expressible at all.** There is no `Browser` and no `Database` action kind — verified with positive control: 68 matches for `FileRead\|FileWrite\|Network\|TerminalExec` across `aa-security/src/policy/`, **0** for `Browser`, **0** for `Database` | — | **Gap** | **Unmeasured** | Decide whether to model them as `ToolCall`/`NetworkRequest` or add kinds |
 | **H8** | Tool config scope (User / Project / Managed) | `permissions.deny` etc. in the managed document | Whether the tool honours the keys is **unmeasured** — "the open half of AAASM-5298". No `PreToolUse` hook is ever installed (verified: `"permissions"` 15 hits vs `PreToolUse` **0** across `aa-devtool-claude-code/src`) | Read-back of the written file only — evidence of the *write*, never of *enforcement* | **Integrated** (ADR 0030) | `GatewayProtected` requires a core-side adjudication, which this path cannot supply |
@@ -440,7 +472,7 @@ shipped defaults, gate (b) admits exactly three hosts.
 | **N6** | as N1 | — | A credential echoed back by a provider is never detected | **Gap** — no response-scanning test on the LLM path, because there is no response scanning | **Unmeasured** | Decide: scan LLM responses, or state the asymmetry publicly |
 | **N8** · **N9** | as N1 | — | A tool that requires `h2` cannot use a MitM'd host at all; a chunked response is silently emptied | **Gap.** `aa-proxy/src/proxy/http.rs:747-760` pins the chunked-*request* rejection; nothing pins the chunked-*response* behaviour | **Unsupported** / **Unmeasured** | The chunked-response truncation needs a ticket — it is a correctness bug, not only a coverage gap |
 | **N10** · **N11** · **N12** | — | — | These are the transports an adversary A3 picks | **Gap by construction** | **Unsupported** / **Unmeasured** | Never describe the proxy as covering "outbound traffic"; it covers *routed HTTP(S)* |
-| **N13** | PID | — | Non-OpenSSL TLS stacks; non-Linux; loaderd unreleased; no audit bridge | `aa-integration-tests/tests/e2e_ebpf.rs` — path-gated, normally skipped on `main` | **Observed** at best | Bridge the events or stop counting TLS observation as coverage |
+| **N13** | PID | — | Non-OpenSSL TLS stacks; non-Linux; loaderd is crates.io-only; no audit bridge | `aa-integration-tests/tests/e2e_ebpf.rs` — path-gated by `.github/workflows/ci.yml:271-276` + `:1064`, normally skipped on `main` | **Observed** at best | Bridge the events or stop counting TLS observation as coverage |
 
 ### D4 · MCP: transports, methods and adjudication
 
@@ -620,27 +652,49 @@ artifact fact, which §5.3 does not state.
 
 | ID | Platform | E3 transport mediation | E4 host-level interception | Coverage | Bnd |
 |---|---|---|---|---|---|
-| **P1** | **Linux x86_64** | `aa-proxy`; CA via `sudo aasm proxy install-ca` (`aa-cli/src/commands/proxy/ca.rs:150-188`) | eBPF TLS uprobes, file-I/O kprobes (14 `__x64_sys_*` targets), exec tracepoints — all observe-only; syscall guard as an opt-in **asynchronous kill** | **Observed** / **Detected**; the guard is **Experimental** ⚠ Q3 ⚠ Q4 | B5 in principle, **unattainable in a released build** |
+| **P1** | **Linux x86_64** | `aa-proxy`; CA via `sudo aasm proxy install-ca` (`aa-cli/src/commands/proxy/ca.rs:150-188`) | eBPF TLS uprobes, file-I/O kprobes (14 programs over 7 syscalls), exec tracepoints — all observe-only; syscall guard as an opt-in **asynchronous kill** | **Observed** / **Detected**; the guard is **Experimental** ⚠ Q3 ⚠ Q4 | B5 **only via `cargo install aa-ebpf` with a nightly toolchain** |
 | **P2** | **Linux aarch64** | `aa-proxy` | eBPF TLS + exec only. **No file-I/O coverage** — 0 `__arm64_sys_*` targets against 16 `__x64_sys_` in `aa-ebpf/src/kprobe.rs` | **Observed** (partial) | as P1 |
 | **P3** | **macOS** | `aa-proxy`; System Keychain trust **attempted automatically at proxy start**, gated only on whether the certificate is already installed, requiring admin authorization, and **a refused prompt fails proxy startup** (`aa-proxy/src/lib.rs:62-69`; `tls/keychain.rs:16,18,23-32`) | **None.** Endpoint Security and Network Extension are explicit non-goals, pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) | E3 **Denied before execution**; E4 **Unsupported** — but macOS is the **only** platform where ADR 0030's `HostEnforced` rung is reachable, via the root-owned managed-settings route | **B6** (managed-settings route only) |
 | **P4** | **Windows** | **None** — `aa-proxy`'s accept loop uses `tokio::signal::unix` unconditionally, so the crate has no Windows build path | **None** — no ETW, WFP or minifilter code | **Unsupported** | — |
 
-> **The finding ADR 0033 §5.3 does not carry: E4 is unreachable in a released
-> build on every platform.** `aa-ebpf-loaderd` is the sole `CAP_BPF` holder and
-> the only way to load any probe, and it is **explicitly excluded from the release
-> artifact set** — `scripts/check-release-completeness.sh:45` names it in a
-> comment as *"eBPF loader daemon: not part of the release"* and `:58` lists it in
-> `UNRELEASED_BINARIES`. Verified with a positive control in the same probe:
-> `aa-ebpf-loaderd` returns zero matches in `.github/workflows/release.yml` while
-> `aasm` returns dozens. `RELEASE_BINARIES` is `aasm aa-gateway aa-runtime
+> **The finding ADR 0033 §5.3 does not carry: E4 reaches exactly one
+> distribution channel, and is inert there without a nightly toolchain.**
+>
+> **Channel.** `aa-ebpf` publishes its `aa-ebpf-loaderd` binary to crates.io.
+> Verified against the **published artifact**, not the packaging config: the
+> registry reports `aa-ebpf` newest `0.0.1-rc.6`, `yanked: false`,
+> `bin_names: ["aa-ebpf-loaderd"]`. `aa-ebpf/Cargo.toml:51-53` declares the bin
+> and sets **no `publish` key** — the control is `aa-api/Cargo.toml:4`, which
+> does set `publish = false` — and `.ci/strip-for-publish.sh` never touches it
+> (0 matches for `aa-ebpf`, `loaderd`, `[[bin]]` and `src/bin`, against controls
+> `aa-cli` 19 and `aa-runtime` 5 in the same probe). `release.yml:708-714`
+> publishes with `cargo workspaces publish`, so the crate list at `:537-538` is
+> only a comment. **The general rule: a crate publishes its bins to crates.io
+> unless it sets `publish = false`.**
+>
+> It reaches **no other channel**. `scripts/check-release-completeness.sh:58`
+> lists `aa-ebpf-loaderd` in `UNRELEASED_BINARIES`, with `:45` recording the
+> reason, so it is absent from the GitHub Release assets, the Homebrew tap and
+> `scripts/install-cli.sh`. `RELEASE_BINARIES` is `aasm aa-gateway aa-runtime
 > aa-proxy aa-api-server` (`:25`).
 >
-> Therefore **a released deployment silently degrades to E2 + E3 only**, and every
-> row in P1 and P2 is *source-tree capability*, not *shipped capability*. This is
-> [AAASM-5640](https://lightning-dust-mite.atlassian.net/browse/AAASM-5640), and
-> it is the single most consequential Q4 result in this survey: it means that
-> **for a user of any released build, Agent Assembly has no host-level
-> interception on any platform.**
+> **Toolchain — two outcomes, and this belongs in the finding, not a footnote.**
+> `cargo install aa-ebpf` without nightly + `rust-src` + `bpf-linker` takes the
+> failure branch at `aa-ebpf/build.rs:120-131`, which writes **empty stub
+> objects**; `aa-ebpf/src/integrity.rs:57-64` then rejects the empty digest as
+> `"<unset: no signed digest baked in>"` — *"we never load bytecode we cannot
+> pin"*. The result is a loaderd that starts and can load nothing. **With** the
+> toolchain, E4 is genuinely reachable.
+>
+> **What to publish.** Not "eBPF does not ship". The truthful statement is:
+> *host-level interception is available on Linux only, through crates.io only,
+> and only when built with a nightly toolchain; it is absent from every channel
+> most users install through, and absent entirely on macOS and Windows.* This is
+> [AAASM-5640](https://lightning-dust-mite.atlassian.net/browse/AAASM-5640),
+> corrected and retitled. The symmetric packaging gap for `aa-proxy` on macOS is
+> [AAASM-5653](https://lightning-dust-mite.atlassian.net/browse/AAASM-5653), and
+> the published docs that now *understate* the product as a result are
+> [AAASM-5652](https://lightning-dust-mite.atlassian.net/browse/AAASM-5652).
 
 ---
 
@@ -677,7 +731,7 @@ Grouped by the boundary each defeats.
 | **The SDK seam (S1–S13)** | Never calling `init_assembly()` / `initAssembly()` / `assembly.Init()` · not calling `WrapTools` in Go · using an unadapted framework · calling the underlying function directly rather than through the framework's dispatch · relying on the Node default mode, which routes through the allow-all no-op (S7) · a frozen `invoke` that the Node wrapper skips with a stderr warning |
 | **The transport mediator (N1–N13)** | Raw TCP that does not speak the proxy protocol · UDP / QUIC / HTTP-3 · WebSocket · HTTP/2 to a MitM'd host · a chunked request (dropped, not inspected) · local IPC · any host outside the three MitM'd by default · a TLS stack the uprobes do not hook |
 | **MCP adjudication (M1–M10)** | stdio · SSE · Streamable HTTP · WebSocket · any method other than `tools/call` — `resources/read` most sharply, since it is a complete data-exfiltration primitive · a **nested** batch, or a batch whose elements carry `params` without a literal top-level `method` (`mentions_tools_call` inspects one level only) · running the MCP server yourself rather than via the tool's config · an MCP endpoint on a built-in LLM host, which `handle_llm_mitm` never adjudicates |
-| **Host-level interception (P1–P4)** | Everything, on every platform, in every released build — the loader daemon does not ship |
+| **Host-level interception (P1–P4)** | Everything on macOS and Windows. On Linux, everything for any user who installed through the GitHub Release, the Homebrew tap or `scripts/install-cli.sh`, because the loader daemon reaches none of those channels |
 | **The evidence pipeline (G1–G11)** | An audit entry dropped under load is indistinguishable from a tampered one · a degradation is emitted and never rendered · budget state corruption silently resets the cap · an unreadable eBPF policy silently yields an empty rule set |
 
 ### Which of these the product can see
@@ -721,7 +775,7 @@ changed in the product's favour.
 
 | Row | Named capability | Verified state |
 |---|---|---|
-| **P1**–**P4** | Host-level interception on any platform | **`aa-ebpf-loaderd` is not in the release artifact set.** E4 is unreachable in every released build, on every platform ([AAASM-5640](https://lightning-dust-mite.atlassian.net/browse/AAASM-5640)) |
+| **P1**–**P4** | Host-level interception, per channel | **`aa-ebpf-loaderd` reaches crates.io and no other channel.** Unreachable for anyone who installed via GitHub Release, Homebrew or `scripts/install-cli.sh`; reachable via `cargo install aa-ebpf` on Linux **with a nightly toolchain**, and inert without one ([AAASM-5640](https://lightning-dust-mite.atlassian.net/browse/AAASM-5640)) |
 | **C3** | Credential injection via `DispatchTool` | Nothing can populate the secrets store; no registration route; no CLI command ([AAASM-5631](https://lightning-dust-mite.atlassian.net/browse/AAASM-5631)) |
 | **M5**–**M8** | MCP over stdio / SSE / Streamable HTTP / WebSocket | No code path exists; stdio is structurally unreachable by a CONNECT proxy |
 | **M4** | MCP methods other than `tools/call` | Not adjudicated anywhere |
@@ -757,7 +811,9 @@ against the live Epic children on 2026-08-06.
 
 | Gap | Rows | Issue | Status |
 |---|---|---|---|
-| eBPF unreachable in a released build — `aa-ebpf-loaderd` not shipped | H2 · H3 · H4 · N13 · P1 · P2 | [AAASM-5640](https://lightning-dust-mite.atlassian.net/browse/AAASM-5640) | To Do |
+| eBPF absent from every channel except crates.io | H2 · H3 · H4 · N13 · I4 · G6 · G7 · P1 · P2 | [AAASM-5640](https://lightning-dust-mite.atlassian.net/browse/AAASM-5640) — corrected and retitled | To Do |
+| `aa-proxy` absent from the macOS release channels, and a completeness gate that cannot detect it | P3 · the macOS cells of N1–N9, C1, C2, M1, L1 | [AAASM-5653](https://lightning-dust-mite.atlassian.net/browse/AAASM-5653) | To Do |
+| Published docs now understate the product as a result of the above | — | [AAASM-5652](https://lightning-dust-mite.atlassian.net/browse/AAASM-5652) | To Do |
 | Unreachable credential-injection surface (`DispatchTool`) | C3 | [AAASM-5631](https://lightning-dust-mite.atlassian.net/browse/AAASM-5631) | To Do |
 | Proxy JSONL audit sink hardcoded to `None` | evidence pipeline | [AAASM-5641](https://lightning-dust-mite.atlassian.net/browse/AAASM-5641) | To Do |
 | CONNECT tunnel emits an **allow** decision for payload it never inspects | N5 | [AAASM-5637](https://lightning-dust-mite.atlassian.net/browse/AAASM-5637) | To Do — re-verified still present at `aa-proxy/src/proxy/mod.rs:1325` |
@@ -839,7 +895,9 @@ deliberately narrow, and every clause is carried by a row above.
 > **Outside those paths Agent Assembly does not know what happened, and says so.**
 > It does not mediate shell commands, subprocesses, file access, browser or
 > database activity. It does not see raw TCP, UDP, QUIC, WebSocket, or MCP over
-> stdio. It has no host-level interception on any platform in a released build. A
+> stdio. It has no host-level interception on macOS or Windows at all, and on
+> Linux only for a user who installs `aa-ebpf` from crates.io with a nightly
+> toolchain — it is in no GitHub Release, Homebrew or installer channel. A
 > tool started outside the managed path is not governed, and for most tools that
 > is not detectable.
 
@@ -864,7 +922,7 @@ Acceptance criterion 7 requires a recommendation per boundary class.
 | **B2 — one framework** | **Conditional Go** | Holds for Python's twelve adapters. Conditional on: (a) closing **S7** so the Node default enforces or fails loudly; (b) stating that LangGraph and Mastra are lineage-only; (c) documenting the two Python deny shapes |
 | **B3 — one process** | **Conditional Go**, and only for *routed HTTP(S) egress* | The proxy genuinely refuses out of process and before dialling. Conditional on publishing the three-host `llm_only` default, the empty egress lists, the absence of ALPN, and the transports in N10–N12. **Never** state B3 for host actions — D2 has no mechanism |
 | **B4 — one container** | **No-Go** | Nothing is container-aware. No mechanism enumerates or scopes to a container boundary. Do not claim it |
-| **B5 — one host** | **No-Go** | E4 is the only element that could reach B5 and it is unreachable in every released build (AAASM-5640). Even in a source build it is observe-only except for one opt-in asynchronous kill. **This is the clearest No-Go in the matrix and the one most at risk of being claimed anyway** |
+| **B5 — one host** | **No-Go** | E4 is the only element that could reach B5. It publishes to crates.io alone (AAASM-5640), so it is absent for every user of the GitHub Release, Homebrew and installer channels; on macOS and Windows it does not exist at all; and where it *is* installed it is observe-only except for one opt-in asynchronous kill, and inert unless built with a nightly toolchain. **This is the clearest No-Go in the matrix and the one most at risk of being claimed anyway** |
 | **B6 — one managed device** | **Conditional Go, narrowly** | macOS root-owned managed settings is a real boundary a non-admin user cannot rewrite, and it is the only route to ADR 0030's `HostEnforced`. Conditional on: it is *tool-governance*, not data-path mediation, and whether the tool honours the keys is unmeasured (AAASM-5298's open half). Claim the file, never the enforcement |
 | **B7 — opaque SaaS agents** | **No-Go** | `aa-devtool-saas` is hard-capped at `L1Observe`, is not registered in `SUPPORTED_TOOLS`, cannot launch, and cannot write settings. It is an audit-ingest adapter. Do not describe SaaS agents as governed |
 
