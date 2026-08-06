@@ -214,9 +214,23 @@ a forward-looking statement is admissible only in one of these bounded forms:
 
 - ADR 0033 §6's **`Planned`** term — decided but not implemented, carrying a ticket
   reference and **no capability claim**;
-- ADR 0033's **`Research`** term, for a direction with no implementation and no
-  commitment that it will get one; or
+- ADR 0033's **`Research`** label — **→ move**, see the caveat below; or
 - the Docs Hub's **`🗺️ Planned`** maturity label on an area in `source-of-truth.md`.
+
+> **`Research` is used by ADR 0033 but not defined by it — do not read this page as
+> the definition.** The word appears **once** in ADR 0033, at `0033:551`, inside a
+> *rejected alternative*: *"Roadmap items are admissible only under the **Planned** or
+> **Research** terms of §6."* But §6's vocabulary table does **not** contain a
+> `Research` row — zero occurrences in §6's range, against four for `Planned`
+> ADR-wide. So §6 names a term it does not define.
+>
+> This page must not fill that gap, because `:111` names §6 as the owner of the claim
+> vocabulary and the orthogonality rule below forbids one owner redefining another's
+> terms — writing a definition here would be this page breaking its own central rule.
+> The term is therefore listed as admissible **and cited to `0033:551`**, with no
+> definition attached. **→ move:** either §6 gains a `Research` row or `0033:551`
+> stops referring to one. That is an amendment to an Accepted ADR, so it goes to
+> AAASM-5621 with the other hand-offs.
 
 > **This page knowingly does not meet its own first acceptance criterion here.**
 > "Every major content type has exactly one canonical owner" is unmet for roadmap:
