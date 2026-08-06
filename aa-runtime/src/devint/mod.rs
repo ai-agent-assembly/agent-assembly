@@ -95,6 +95,6 @@ pub use server::{DevIntServer, DevIntServerConfig, DevIntServices};
 pub use service::{
     EngineLifecycle, FilesystemSteps, NoContent, RegisteredIntegration, StepContentSource, StepExecutorFactory,
 };
-pub use socket::{devint_socket_path, SocketDiscovery, SocketError};
+pub use socket::{devint_socket_path, reachable_runtimes, SocketDiscovery, SocketError};
 pub use token::{CapabilityToken, TokenDenial, TokenId, TokenRecord, TokenStore};
 pub use verb::DiVerb;
