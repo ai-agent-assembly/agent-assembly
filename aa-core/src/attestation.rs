@@ -37,6 +37,7 @@
 //! the proxy, the host-level mechanism, the in-process SDK path. The two meet
 //! only in discipline: missing evidence resolves downward in both.
 
+use alloc::string::String;
 use core::fmt;
 
 #[cfg(feature = "serde")]
@@ -142,5 +143,143 @@ impl ClaimTerm {
 impl fmt::Display for ClaimTerm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// What the component that actually decided reported it did.
+///
+/// The name is deliberate: an adjudication is a report *by the deciding
+/// component*, not an inference by an observer. A probe on the near side of a
+/// MitM can see that its request went out and that nothing obviously failed,
+/// and neither fact is evidence (ADR 0033 §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[non_exhaustive]
+pub enum AdjudicatedOutcome {
+    /// The deciding component refused the action before it took effect.
+    Blocked,
+    /// The action proceeded with content removed.
+    Redacted,
+    /// The action was held for a human decision.
+    HeldForApproval,
+    /// A decision was produced, but nothing in the path was obliged to honour
+    /// it. The advisory case: an answer was computed and returned to a caller
+    /// that may or may not act on it.
+    DecidedAdvisory,
+    /// A pattern of interest was reported, with no decision attached.
+    Flagged,
+    /// An event was recorded, with no pattern and no decision attached.
+    Recorded,
+    /// The probe ran but its result could not be attributed to any component.
+    Inconclusive,
+}
+
+impl AdjudicatedOutcome {
+    /// The ADR 0033 §6 term this outcome supports.
+    pub fn claim(self) -> ClaimTerm {
+        match self {
+            Self::Blocked => ClaimTerm::DeniedBeforeExecution,
+            Self::Redacted => ClaimTerm::Redacted,
+            Self::HeldForApproval => ClaimTerm::ApprovalRequired,
+            Self::DecidedAdvisory => ClaimTerm::Evaluated,
+            Self::Flagged => ClaimTerm::Detected,
+            Self::Recorded => ClaimTerm::Observed,
+            // An unattributable probe result is the absence of evidence, not
+            // weak evidence. It must not decay into a coverage term.
+            Self::Inconclusive => ClaimTerm::Unmeasured,
+        }
+    }
+}
+
+/// How a component's reported state was established.
+///
+/// Recording the basis is the whole mechanism. ADR 0033 §7 names three signals
+/// that reach a wire surface looking like coverage —
+/// [`EnvironmentOverride`](Self::EnvironmentOverride),
+/// [`AssumedPresent`](Self::AssumedPresent) and
+/// [`ArtifactPresent`](Self::ArtifactPresent) — and each of them has a
+/// [`claim_ceiling`](Self::claim_ceiling) that asserts no coverage at all. A
+/// caller cannot construct a coverage claim out of them by accident, because
+/// there is no code path from those variants to a coverage term.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case", tag = "basis"))]
+#[non_exhaustive]
+pub enum AttestationBasis {
+    /// An operator-supplied environment variable replaced the probe result
+    /// (ADR 0033 §7, `AA_LAYERS`). No probe ran. Never evidence: the whole
+    /// point of the override is to state an answer rather than measure one.
+    EnvironmentOverride {
+        /// The variable that supplied the answer.
+        variable: String,
+    },
+    /// The component is asserted by construction, with nothing probed (ADR 0033
+    /// §7, `LayerSet::SDK`). Never evidence: an in-process hook that exists in
+    /// the build says nothing about whether any agent adopted it.
+    AssumedPresent,
+    /// A binary, socket or file was found to exist. Presence is not routing:
+    /// ADR 0033 §7 records that `probe_proxy` is satisfied by a binary on
+    /// `$PATH` without establishing that any process routes traffic through it.
+    ArtifactPresent {
+        /// What was found.
+        artifact: String,
+    },
+    /// The mechanism cannot be activated because its component is not present
+    /// in this build or distribution.
+    AbsentFromBuild {
+        /// The component that is missing.
+        component: String,
+    },
+    /// The platform has no implementation of this mechanism.
+    PlatformUnsupported {
+        /// The platform, as the build reports it.
+        platform: String,
+    },
+    /// A named prerequisite of the mechanism was checked and was not met.
+    PrerequisiteUnmet {
+        /// What was required.
+        requirement: String,
+    },
+    /// The component that decides reported what it did with a real or synthetic
+    /// action. The only basis that can carry a coverage term.
+    Adjudicated {
+        /// What that component reported.
+        outcome: AdjudicatedOutcome,
+    },
+}
+
+impl AttestationBasis {
+    /// The strongest [`ClaimTerm`] this basis can justify, ignoring intent and
+    /// freshness.
+    ///
+    /// This is the safety property of the module, stated as a total function:
+    /// every variant except [`Adjudicated`](Self::Adjudicated) maps to a term
+    /// for which [`ClaimTerm::asserts_coverage`] is `false`. Adding a variant
+    /// therefore forces an author to decide, explicitly, whether it is
+    /// evidence — there is no default that quietly grants coverage.
+    pub fn claim_ceiling(&self) -> ClaimTerm {
+        match self {
+            // Stating an answer is not measuring one.
+            Self::EnvironmentOverride { .. } => ClaimTerm::Unmeasured,
+            // Shipping a hook is not adopting it.
+            Self::AssumedPresent => ClaimTerm::Unmeasured,
+            // Being installed is not being in the path.
+            Self::ArtifactPresent { .. } => ClaimTerm::Unmeasured,
+            // No plan is asserted by absence alone, so §6 `Unsupported` is the
+            // honest term; `Degraded` is reserved for a control that *was*
+            // planned, and that is decided in `LayerAttestation`.
+            Self::AbsentFromBuild { .. } => ClaimTerm::Unsupported,
+            Self::PlatformUnsupported { .. } => ClaimTerm::Unsupported,
+            // A failed prerequisite leaves the action uninspected, which is
+            // exactly §6 `Unmeasured`.
+            Self::PrerequisiteUnmet { .. } => ClaimTerm::Unmeasured,
+            Self::Adjudicated { outcome } => outcome.claim(),
+        }
+    }
+
+    /// Whether this basis is capable of substantiating a coverage claim.
+    pub fn is_evidence(&self) -> bool {
+        self.claim_ceiling().asserts_coverage()
     }
 }
