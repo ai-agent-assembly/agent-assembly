@@ -11,9 +11,9 @@ Listed lowest-latency-cost first, highest-detection-authority first:
 
 | Layer | What it is | Catches | Cost / requirement |
 |---|---|---|---|
-| **1. SDK (in-process)** | A thin Rust shim (`aa-ffi-*` over `aa-sdk-client`) the language SDKs call. Emits events to the gateway and applies pre-execution allow/deny via wrapper functions. | Anything the instrumented code path does. | Lowest latency, but requires the agent to adopt the SDK. |
-| **2. Proxy sidecar (`aa-proxy`)** | Intercepts outbound HTTPS via MitM with a per-host CA. Enforces network-egress policy with no code change. | Anything the SDK misses that goes over the network. | No code change; requires trusting the proxy CA. |
-| **3. eBPF (`aa-ebpf*`)** | Kernel hooks: uprobes on SSL libraries, kprobes/tracepoints on `exec`/file syscalls. | Everything else, including deliberate bypass attempts. | Highest authority; **Linux-only**. |
+| **1. SDK (in-process)** | A thin Rust shim (`aa-ffi-*` over `aa-sdk-client`) the language SDKs call. Emits events to the gateway and applies pre-execution allow/deny via wrapper functions. | Framework tool calls that are wrapped, after the SDK's initializer is called. Raw HTTP, subprocess spawns and file access are not intercepted. | Lowest latency, but requires the agent to adopt the SDK. |
+| **2. Proxy sidecar (`aa-proxy`)** | Intercepts routed outbound HTTP/1.1 via MitM, using per-host certificates minted from a local root CA. Enforces network-egress policy with no *agent code* change. | Network traffic the SDK misses **that is routed to it** on a host under MitM. | No agent code change, but the process must honour the proxy environment and trust the CA; HTTP/2, gRPC and WebSocket are out of scope. |
+| **3. eBPF (`aa-ebpf*`)** | Kernel hooks: uprobes on OpenSSL, kprobes/tracepoints on `exec`/file syscalls. | OpenSSL TLS plaintext and process/file activity the layers above never saw — **observed, not blocked**. | Highest *detection* authority; **Linux x86_64 only**, and fails open if it cannot attach. |
 
 The gateway is the common brain for all three — every layer asks the same policy
 engine for its decision and writes to the same audit log.
@@ -27,16 +27,22 @@ engine for its decision and writes to the same audit log.
   risk you care about is network egress / data exfiltration. It is the most
   practical way to govern a third-party or closed-source tool. See
   [Enforce an egress policy](enforce-egress-policy.md).
-- **Add eBPF** when you need defense-in-depth that an agent cannot bypass — e.g.
-  it shells out, writes files, or makes raw connections that skip both the SDK
-  and the proxy. This is the catch-all backstop.
+- **Add eBPF** when you need visibility into what an agent does outside the paths
+  the other layers cover — e.g. it shells out, writes files, or makes raw
+  connections that skip both the SDK and the proxy. It raises the chance of
+  *detecting* such a bypass; it is a detection backstop, not a catch-all, and it
+  does not block.
 
 ## Combining layers
 
 The layers are additive, not exclusive. A typical governed deployment runs the
 SDK *and* the proxy: the SDK gives rich, in-process tool-call governance, while
-the proxy backstops the network path for anything the SDK does not see. On Linux,
-eBPF sits underneath both as the bypass-proof floor.
+the proxy backstops the network path for anything the SDK does not see and that
+is routed through it. On Linux x86_64, eBPF sits underneath both as an
+observation floor — it widens what you can detect, not what you can prevent.
+
+For what remains uncovered even with all three deployed, see [Limitations and
+known bypasses](../devtools/limitations.md).
 
 `aasm run` reports a **governance level** per tool (see
 [Govern an agent end-to-end](govern-an-agent.md)), but read it for what it is: a
