@@ -472,6 +472,46 @@ Such a copy is admissible only when it is **declared**, which means all four of:
 An undeclared copy is not in this class. It is in the prohibited class, and it stays
 there until somebody declares it.
 
+### Translations are a fourth case, and they have their own trigger
+
+A translated page is a full-depth reproduction of its source in another language, so
+on the face of it the prohibited class swallows it. That would be the wrong call, and
+the Docs Hub's Traditional Chinese catalogue (`docs/po/zh-Hant.po`, ~228 KB, 1527
+extracted strings) shows why: it is not a hand-written second page at all.
+
+It is a gettext catalogue with two halves, and they belong to different classes:
+
+| Half | What it is | Class |
+|---|---|---|
+| `msgid` — the English source string, carrying a `#: <file>:<line>` back-reference | **Extracted** from the English page by a tool | Generated |
+| `msgstr` — the translation | Hand-maintained | Owned copy |
+
+This structure already supplies the re-verification trigger that the owned-copy class
+requires, which most hand copies lack: when an English string changes, its `msgid`
+changes, and gettext marks the entry **fuzzy** — a mechanical signal, raised at the
+source of the change, that the translation is now suspect. The catalogue carries 5
+fuzzy entries today.
+
+So the answer to *"I fixed an English bound — what about the translation?"* is:
+
+1. Re-extract, so the changed `msgid` lands and its entry goes fuzzy.
+2. Treat the fuzzy flag as blocking for that string: a bound that exists in English
+   and not in the translation is a widening in the translated page, and the
+   [eight-move walk](#moves-that-widen-a-claim) applies to a `msgstr` exactly as it
+   does to English prose.
+3. If you cannot translate it, leave the `msgstr` **empty** rather than stale. An
+   empty entry falls back to the English source, which is accurate; a stale one is a
+   published claim nobody checked.
+
+Worth stating precisely, since this page preaches it: the false policy sentence named
+in the worked example below **does** appear in the catalogue, but as an extracted
+English `msgid` with an **empty** `msgstr`. It is not currently a second false claim
+in Chinese — it is the English defect, awaiting extraction-time correction.
+
+What this page does **not** settle is who owns a translation's accuracy, and whether a
+fuzzy entry blocks publication. That is an ownership assignment, so it goes to
+AAASM-5621 with the rest.
+
 ### Worked example: two hand-written policy references
 
 Both this repository and the Docs Hub publish a page called *Policy reference*, and
