@@ -19,7 +19,7 @@ reference this document rather than defining tiers ad hoc.
 |---|---|---|
 | **L0** | **Discover** | Auto-inventory the tool: name, version, config file paths. No runtime hooks. AAASM knows the tool is present but cannot observe or affect its actions. |
 | **L1** | **Observe** | Tool actions appear in the AAASM audit log. Policy rules are evaluated and results are visible to operators, but the tool is not blocked — it runs uninhibited. Provides real-time observability without enforcement. |
-| **L2** | **Enforce** | Policy overlay is active. AAASM evaluates rules and blocks, redirects, or redacts violating actions while AAASM is running. The tool cannot bypass enforcement, but may operate without constraint if AAASM is offline. |
+| **L2** | **Enforce** | Policy overlay is active. AAASM evaluates rules and blocks, redirects, or redacts violating actions while AAASM is running. The tool cannot bypass enforcement **on the managed path**, but an action taken off that path — for example a session launched outside `aasm run` — is not enforced, and the tool may operate without constraint if AAASM is offline. |
 | **L3** | **Native Governed** | AAASM writes the tool's own native configuration (settings files, sandbox config, MCP registry). Governance is baked into the tool's startup state — even if AAASM goes offline, the last-written settings cap what the tool can do. Strongest enforcement tier. |
 
 ---
@@ -31,7 +31,7 @@ A cell answers: *"At this tier, is this capability available?"*
 
 | Capability | L0 Discover | L1 Observe | L2 Enforce | L3 Native Governed |
 |---|---|---|---|---|
-| **Audit log capture** | No | Yes — every action emits an audit event with agent attribution, timestamp, and tool context | Yes | Yes |
+| **Audit log capture** | No | Yes — every observed action emits an audit event with agent attribution, timestamp, and tool context | Yes | Yes |
 | **Policy decision visibility** | No | Yes — policy rules evaluated per action; results visible in dashboard and `aasm policy check` | Yes | Yes |
 | **MCP server allowlist enforcement** | No | No — MCP server list is observed but not restricted | Yes — deny list enforced at proxy layer | Yes — allowed MCP server list written to tool's native config; tool cannot load unlisted servers at startup |
 | **Terminal-exec block** | No | No | Yes — exec calls intercepted at proxy or SDK layer; blocked when policy says deny | Partial — depends on tool-native sandbox support; see per-tool declarations below |
@@ -243,7 +243,7 @@ active; the adapter tiers describe what each specific tool's native API exposes:
 | Layer | What it governs | Interaction with adapter tiers |
 |---|---|---|
 | **Layer 1 — SDK shim** (`aa-ffi-*`) | Agents that use the AAASM SDK explicitly | Provides L2 enforcement for SDK-aware tools independent of adapter tier |
-| **Layer 2 — `aa-proxy`** | All outbound HTTPS from the machine | Provides L2 network/exec enforcement for any tool; fills gaps where adapter tier is L0 for exec/file/net |
+| **Layer 2 — `aa-proxy`** | Outbound HTTPS **routed through it**; under the default `llm_only` only the built-in LLM hosts are decrypted, and HTTP/2 / gRPC / WebSocket are out of scope | Provides L2 network/exec enforcement for any tool; fills gaps where adapter tier is L0 for exec/file/net |
 | **Layer 3 — `aa-ebpf`** (Linux only) | SSL uprobes + exec/file syscalls at kernel level | Provides L1 detection + alerting for any tool; cannot modify traffic in flight (no redaction at this layer) |
 
 In practice, for tools where the adapter tier is L0 or L1 for exec/file/network enforcement, deploying
