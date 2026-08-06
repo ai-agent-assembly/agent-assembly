@@ -604,7 +604,7 @@ capabilities:
     q3_changed_answer: true
     q4_changed_answer: true
     known_bypasses:
-      - "aa-ebpf-loaderd is not in the release artifact set"
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
       - "the offending syscall completes before the SIGKILL lands"
       - "fork propagation fails open past 1024 PIDs"
       - "load-time window runs the confined PID with an empty allowlist"
@@ -671,7 +671,7 @@ capabilities:
     platform: [linux_x86_64]      # x86_64 ONLY
     launch_path: any
     transport: "__x64_sys_* kprobes"
-    interception_component: "aa-ebpf/src/kprobe.rs:145-160 — 14 targets"
+    interception_component: "aa-ebpf/src/kprobe.rs:145-160 — 14 BPF programs over 7 syscalls (an entry kprobe and a kretprobe each): openat, read, write, unlinkat, unlink, renameat2, rename"
     identity_source: pid
     policy_context: [path_blocklist]
     decision_timing: post
