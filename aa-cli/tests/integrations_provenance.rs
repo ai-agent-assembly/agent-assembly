@@ -369,6 +369,46 @@ fn two_runtimes_of_one_build_are_reported_rather_than_silently_resolved() {
     );
 }
 
+/// …and the escape hatch does not turn a duplicate into a verified result.
+///
+/// `--allow-unverified-runtime` bypasses the multiplicity refusal, so the
+/// command answers. What it must not do is publish
+/// `{"standing": "verified", "reachable_runtimes": 2}` — the CLI reference tells
+/// a wrapper to branch on `standing` alone, and two runtimes compiled from one
+/// commit have identical identities, so the identity `verdict` genuinely is
+/// `verified` and cannot be what a harness reads.
+#[test]
+fn the_escape_hatch_does_not_make_one_of_two_runtimes_verified() {
+    let mut harness = Harness::start(RuntimeProvenance::detect());
+    harness.add_second_runtime(RuntimeProvenance::detect());
+
+    let output = harness.aasm(&["list", "--output", "json", "--allow-unverified-runtime"]);
+    assert_eq!(code(&output), 0, "stderr: {}", stderr(&output));
+
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("json");
+    let provenance = &report["runtime"]["provenance"];
+    assert_eq!(provenance["reachable_runtimes"], 2, "{provenance}");
+    if BuildIdentity::of_this_build().is_authoritative() {
+        // Without this the assertion below could pass for the wrong reason —
+        // an unidentifiable build is not `verified` whatever the population is.
+        assert_eq!(
+            provenance["verdict"], "verified",
+            "the identity comparison must have succeeded, or the next assertion proves nothing: {provenance}"
+        );
+    }
+    assert_ne!(
+        provenance["standing"], "verified",
+        "a result from one of two runtimes was recorded as verified: {provenance}"
+    );
+    assert!(
+        provenance["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("2 Agent Assembly runtimes"),
+        "the standing must carry its reason: {provenance}"
+    );
+}
+
 /// The QA-harness requirement: a recorded result names the process that
 /// produced it.
 ///

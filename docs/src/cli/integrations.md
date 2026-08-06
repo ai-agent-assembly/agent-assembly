@@ -303,6 +303,13 @@ marked:
 **`unverifiable` is never reported as verified**, on any surface or in JSON.
 Branch on `standing`, not on the presence of a `build_sha`.
 
+`standing` is the one field that folds in *every* reason a result may not be
+attributable, which is why it is the only one a wrapper needs to read.
+`verdict` is narrower — it reports the **identity comparison** alone, and two
+runtimes compiled from one commit have identical identities, so `verdict` reads
+`verified` for both of them. `standing` cannot read `verified` while
+`reachable_runtimes` is above one.
+
 A wrapper that records evidence should refuse anything but `verified`:
 
 ```bash
