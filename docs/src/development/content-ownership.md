@@ -353,13 +353,28 @@ ADR 0033's forbidden-designs list, item 7, bans a specific set of unqualified
 absolutes from architecture and product descriptions. That list is the source for the
 planned CI gate ([AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536)),
 so a phrase absent from it is a phrase the gate will never catch — extend the list
-there rather than policing it by review here. **Who may waive it** is
-[ADR 0034 Decision 10](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#10-waivers-and-exceptions)
-— an expiring, string-scoped waiver approved by a `waiver-approver` who is not the
-author — and **how the ban is policed across repositories** is
+there rather than policing it by review here. **How the ban is policed across
+repositories** is
 [Decision 8](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#8-conflict-resolution).
-Note that an ADR 0033 forbidden design is one of the three categories that
-**cannot** be waived.
+
+**The ban is unwaivable, so nobody may waive it.** A banned absolute is one of the
+four categories
+[ADR 0034 Decision 10](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#10-waivers-and-exceptions)
+places outside the waiver mechanism: a waiver may reach process, timing or review
+sequencing, and may never waive whether a statement is true. No time limit, named
+owner, approver or fail-closed expiry makes an unsupported claim true, so there is
+no `waiver-approver` to ask — the single route to publishing one of these phrases
+in the product's own voice is that it leaves the banned category through an
+evidence-backed amendment to ADR 0033.
+
+**What the ban does not reach** is the literal text in a non-product assertion: an
+attributed quotation, a legal or contractual literal, a fixed external term, a
+negative example, a historical claim marked as withdrawn, or a test fixture. Each
+must carry Decision 10's `truth-exempt` marker naming its class, must not be
+adopted by the surrounding text, and must not appear in a heading, a summary, page
+metadata, SEO text, marketing copy or a user-facing conclusion — positions the
+label does not travel to, where the text becomes a product claim again. Decision
+10 carries the classes and the worked examples.
 
 ## Reuse patterns: summary, quotation, generation
 
