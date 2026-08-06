@@ -806,4 +806,52 @@ mod tests {
         let future = at(basis, SelectedMode::Unset, NOW + 60);
         assert!(future.is_fresh(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
     }
+
+    /// A system that cannot say "nothing here is verified" cannot be trusted
+    /// when it says something is. An attestation built entirely from the three
+    /// §7 non-signals reports no coverage at all.
+    #[test]
+    fn an_attestation_of_only_non_signals_verifies_no_coverage() {
+        let att = ProtectionAttestation::new(
+            "0.0.1-rc.7",
+            "aarch64-apple-darwin",
+            NOW,
+            vec![
+                LayerAttestation::new(
+                    "host/ebpf",
+                    SelectedMode::Unset,
+                    AttestationBasis::PlatformUnsupported {
+                        platform: "aarch64-apple-darwin".into(),
+                    },
+                    NOW,
+                    "no host mechanism on this platform",
+                ),
+                LayerAttestation::new(
+                    "proxy",
+                    SelectedMode::Unset,
+                    AttestationBasis::ArtifactPresent {
+                        artifact: "aa-proxy".into(),
+                    },
+                    NOW,
+                    "binary found on PATH",
+                ),
+                LayerAttestation::new(
+                    "sdk",
+                    SelectedMode::Unset,
+                    AttestationBasis::AssumedPresent,
+                    NOW,
+                    "compiled in",
+                ),
+            ],
+        );
+        assert!(!att.any_coverage_verified_at(NOW));
+        assert_eq!(
+            att.verified_states_at(NOW),
+            vec![
+                ("host/ebpf", ClaimTerm::Unsupported),
+                ("proxy", ClaimTerm::Unmeasured),
+                ("sdk", ClaimTerm::Unmeasured),
+            ]
+        );
+    }
 }
