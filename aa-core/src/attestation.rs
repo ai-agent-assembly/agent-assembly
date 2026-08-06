@@ -890,4 +890,16 @@ mod tests {
         assert_eq!(degraded[0].detail, "loader daemon is not in this distribution");
         assert!(att.any_coverage_verified_at(NOW));
     }
+
+    /// A consumer must be able to refuse a payload it does not understand, and
+    /// to tell which build and platform the claim was made on.
+    #[test]
+    fn attestation_carries_its_schema_build_and_platform() {
+        let att = ProtectionAttestation::new("0.0.1-rc.7", "x86_64-unknown-linux-gnu", NOW, vec![]);
+        assert_eq!(att.schema_version, ATTESTATION_SCHEMA_VERSION);
+        assert_eq!(att.component_version, "0.0.1-rc.7");
+        assert_eq!(att.platform, "x86_64-unknown-linux-gnu");
+        assert_eq!(att.generated_at_unix_secs, NOW);
+        assert_eq!(att.freshness_window_secs, DEFAULT_ATTESTATION_FRESHNESS_SECS);
+    }
 }
