@@ -19,7 +19,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use aa_runtime::gateway_client::GatewayClient;
 use aa_runtime::pipeline::PipelineEvent;
 
-use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry};
+use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry, RefusalRule};
 use crate::config::ProxyConfig;
 use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
@@ -108,14 +108,59 @@ struct RequestIdentity<'a> {
 /// LLM host, a gateway `tools/call` deny — because the 403 or JSON-RPC error is
 /// written in place of a dial that has no code path after it.
 ///
-/// It is **logged and not persisted**. These branches refuse before
-/// `intercept_request` runs, so there is no sensitive-data decision event to
-/// attach evidence to, and synthesising one would invent events the audit trail
-/// has never counted. The consequence is real and should be stated rather than
-/// glossed: until a producer exists for them, the §8 prevention metric cannot
-/// see the proxy's strongest refusals. Persisting them is follow-up work, not
-/// something this constant achieves.
+/// AAASM-5358 left it **logged and not persisted**, on the reasoning that these
+/// branches refuse before `intercept_request` runs and so have no
+/// sensitive-data decision event to attach evidence to. AAASM-5449 reverses
+/// that: the absence of a verdict is not the absence of a decision, and a
+/// record with an empty finding list is exactly the right shape for a refusal
+/// taken before anything was scanned. Every branch below now writes one through
+/// [`ProxyServer::emit_rule_refusal`], so §8 can see the refusals there is no
+/// ambiguity about — not only the redaction that forwards.
 const NOT_FORWARDED_BY_RULE: ExecutionEvidence = transmission_evidence::not_forwarded_by_rule();
+
+/// Why the egress policy refused a host.
+///
+/// Was a `&'static str` that existed only to be interpolated into a log line.
+/// It is a type now because the refusal is persisted (AAASM-5449) and the
+/// denylist, the allowlist and the SSRF guard have to stay distinguishable in
+/// the record — a §8 consumer attributing a prevention to "egress" cannot say
+/// which control made it. Recovering that from the log string would have made
+/// the audit record depend on prose no test pins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EgressDenyReason {
+    /// The host matched the operator's denylist.
+    Denylist,
+    /// A non-empty network allowlist did not match the host.
+    NetworkAllowlist,
+    /// The host was an IP literal in a blocked range.
+    SsrfBlockedAddress,
+}
+
+impl EgressDenyReason {
+    /// Human-readable form for the log line.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Denylist => "host policy",
+            Self::NetworkAllowlist => "network allowlist",
+            Self::SsrfBlockedAddress => "ssrf: blocked address range",
+        }
+    }
+
+    /// The rule as it is persisted on the decision record.
+    const fn rule(self) -> RefusalRule {
+        match self {
+            Self::Denylist => RefusalRule::EgressDenylist,
+            Self::NetworkAllowlist => RefusalRule::EgressAllowlist,
+            Self::SsrfBlockedAddress => RefusalRule::SsrfBlockedAddress,
+        }
+    }
+}
+
+impl std::fmt::Display for EgressDenyReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// Build a JSON-RPC 2.0 error response body carrying the policy reason.
 ///
@@ -346,6 +391,37 @@ impl ProxyServer {
             .send(self.audit_jsonl_tx.as_ref(), execution);
     }
 
+    /// Persist a refusal taken by a **rule**, before any credential verdict
+    /// exists (AAASM-5449).
+    ///
+    /// The counterpart to [`Self::emit_audit_entry`] for the branches that have
+    /// no [`InterceptVerdict`] to describe: the egress denylist, the network
+    /// allowlist, the SSRF guard, an in-tunnel forged `Host`, a plaintext
+    /// downgrade to an LLM host, and a gateway `tools/call` deny. Each writes a
+    /// 403 (or a JSON-RPC error envelope) in place of a dial, and no dial
+    /// follows on the code path — which is why [`NOT_FORWARDED_BY_RULE`] is the
+    /// whole of what was observed and is not a parameter.
+    ///
+    /// There is no body and no finding to persist, and that is not a
+    /// degradation: the refusal happened before anything was scanned, so an
+    /// empty `credential_findings` is the truthful projection rather than a
+    /// missing one. [`RefusalRule`] is what makes the record attributable —
+    /// without it a denylist refusal and a fail-closed credential block are the
+    /// same line.
+    fn emit_rule_refusal(&self, id: RequestIdentity<'_>, rule: RefusalRule, probe_correlation: Option<String>) {
+        DecisionRecord {
+            host: id.host.to_owned(),
+            method: id.method.to_owned(),
+            path: self.interceptor.redact_target(id.target),
+            decision: ProxyAuditDecision::Blocked,
+            refusal_rule: Some(rule),
+            findings: Vec::new(),
+            redacted_body: None,
+            probe_correlation,
+        }
+        .send(self.audit_jsonl_tx.as_ref(), NOT_FORWARDED_BY_RULE);
+    }
+
     /// Assemble the identifying half of a decision record.
     ///
     /// `execution` is consulted, not stored: a body the proxy has just reported
@@ -378,6 +454,9 @@ impl ProxyServer {
             // body-only redaction left target secrets in cleartext (AAASM-4738).
             path: self.interceptor.redact_target(id.target),
             decision,
+            // A verdict-driven record: what refused it, if anything did, is the
+            // credential scan, which the findings already say (AAASM-5449).
+            refusal_rule: None,
             findings: verdict.findings.clone(),
             redacted_body,
             probe_correlation,
@@ -821,6 +900,15 @@ impl ProxyServer {
                 "in-tunnel egress denied: {reason}",
             );
             self.interceptor.emit_policy_decision(in_host, true).await;
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: in_host,
+                    method: &req.method,
+                    target: &req.target,
+                },
+                reason.rule(),
+                Self::probe_correlation(&req),
+            );
             let mut client_tls = client_reader.into_inner();
             client_tls
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
@@ -838,6 +926,15 @@ impl ProxyServer {
                         %host,
                         transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                         "MCP call refused; answering the client instead of dialling upstream",
+                    );
+                    self.emit_rule_refusal(
+                        RequestIdentity {
+                            host,
+                            method: &req.method,
+                            target: &req.target,
+                        },
+                        RefusalRule::McpToolCall,
+                        Self::probe_correlation(&req),
                     );
                     let mut client_tls = client_reader.into_inner();
                     client_tls.write_all(resp.as_bytes()).await?;
@@ -931,7 +1028,7 @@ impl ProxyServer {
     /// non-empty network allowlist is configured) it matches no allowlist
     /// pattern. Returns `None` when the connection is allowed. An empty
     /// allowlist preserves the pre-AAASM-1943 default-open behaviour.
-    fn connect_deny_reason(&self, host: &str) -> Option<&'static str> {
+    fn connect_deny_reason(&self, host: &str) -> Option<EgressDenyReason> {
         // SSRF guard (AAASM-3130): an IP-literal CONNECT target pointed at
         // loopback / RFC-1918 / link-local / cloud-metadata space must be
         // refused regardless of the allowlist — a hostname allowlist cannot
@@ -942,7 +1039,7 @@ impl ProxyServer {
             // like `[::1]:443` still parses as `::1` — otherwise the SSRF guard
             // silently misses it (the bracketed form fails `parse::<IpAddr>()`).
             if let Some(true) = crate::ssrf::blocked_ip_literal(strip_host_port(host)) {
-                return Some("ssrf: blocked address range");
+                return Some(EgressDenyReason::SsrfBlockedAddress);
             }
         }
         // AAASM-3983: canonicalise the host ONCE (lowercase + strip a single
@@ -959,10 +1056,10 @@ impl ProxyServer {
             .iter()
             .any(|denied| canonical_host(denied) == host)
         {
-            return Some("host policy");
+            return Some(EgressDenyReason::Denylist);
         }
         if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
-            return Some("network allowlist");
+            return Some(EgressDenyReason::NetworkAllowlist);
         }
         None
     }
@@ -981,7 +1078,7 @@ impl ProxyServer {
     /// When the in-tunnel host is empty (no Host header, origin-form target) the
     /// CONNECT-time check already covered the destination, so this is a no-op.
     /// An empty allowlist keeps the default-open behaviour unchanged.
-    fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<&'static str> {
+    fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<EgressDenyReason> {
         // AAASM-4829: defense-in-depth against in-tunnel header host-splitting.
         // Check BOTH the absolute-form request target host AND the `Host` header
         // and deny if EITHER is disallowed — an agent must not pass the egress
@@ -1061,6 +1158,15 @@ impl ProxyServer {
                 "in-tunnel egress denied: {reason}",
             );
             self.interceptor.emit_policy_decision(in_host, true).await;
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: in_host,
+                    method: &req.method,
+                    target: &req.target,
+                },
+                reason.rule(),
+                Self::probe_correlation(&req),
+            );
             let mut client_tls = client_reader.into_inner();
             client_tls
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
@@ -1105,17 +1211,25 @@ impl ProxyServer {
         // there is a real refusal of synthetic traffic and a consumer has to be
         // able to exclude it.
         if let Some(correlation) = req.header(PROBE_CORRELATION_HEADER).and_then(ProbeCorrelation::parse) {
+            // AAASM-5449: the audit decision says what happened to *this*
+            // request, which the probe protocol answered here. Only a genuine
+            // `Block` agrees with its verdict; the other branches would have
+            // forwarded and did not, so recording `Forwarded` /
+            // `ForwardedRedacted` put a knowingly-false field beside a true
+            // one. `forwarded_is_clean` still describes the counterfactual
+            // payload, because that is what the *probe* asked and it travels
+            // in the probe's own response, not in the audit trail.
             let (audit_decision, forwarded_is_clean) = match verdict.decision {
                 VerdictDecision::Block => (ProxyAuditDecision::Blocked, None),
                 VerdictDecision::ForwardRedacted => {
                     let bytes = verdict.redacted_body.as_deref().unwrap_or(&req.body);
                     (
-                        ProxyAuditDecision::ForwardedRedacted,
+                        ProxyAuditDecision::AnsweredLocally,
                         self.interceptor.forwarded_payload_is_clean(bytes),
                     )
                 }
                 _ => (
-                    ProxyAuditDecision::Forwarded,
+                    ProxyAuditDecision::AnsweredLocally,
                     self.interceptor.forwarded_payload_is_clean(&req.body),
                 ),
             };
@@ -1278,12 +1392,21 @@ impl ProxyServer {
         let mut head_budget = MAX_HEADER_BYTES;
         let mut header_count = 0usize;
         let mut header_line = String::new();
+        // AAASM-5449: the CONNECT head is drained and discarded, but a refusal
+        // here is now persisted — and a probe whose CONNECT is refused would
+        // otherwise contribute an *unmarked* prevention, which is the gap
+        // AAASM-5358 closed everywhere the head was already parsed. Keep only
+        // the correlation id; the rest of the head is still dropped.
+        let mut probe_correlation: Option<String> = None;
         loop {
             header_line.clear();
             let n = read_line_capped(&mut reader, &mut header_line, MAX_HEADER_LINE_LEN, head_budget).await?;
             head_budget -= n;
             if header_line.trim().is_empty() {
                 break;
+            }
+            if probe_correlation.is_none() {
+                probe_correlation = Self::probe_correlation_plain(std::slice::from_ref(&header_line));
             }
             header_count += 1;
             if header_count > MAX_HEADER_COUNT {
@@ -1306,7 +1429,23 @@ impl ProxyServer {
         // Egress policy: deny-list, then AAASM-1943 network allowlist.
         // Both return 403 + emit a deny decision and end the connection.
         if let Some(reason) = self.connect_deny_reason(host) {
-            tracing::info!(%host, "CONNECT denied: {reason}");
+            tracing::info!(
+                %host,
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "CONNECT denied: {reason}",
+            );
+            // The tunnel is refused before it is opened, so there is no request
+            // line to name: the CONNECT authority is the whole of what the
+            // client asked for.
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host,
+                    method: "CONNECT",
+                    target,
+                },
+                reason.rule(),
+                probe_correlation,
+            );
             let mut stream = reader.into_inner();
             stream
                 .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
@@ -1460,6 +1599,15 @@ impl ProxyServer {
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress denied: {reason}",
             );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: deny_host,
+                    method,
+                    target,
+                },
+                reason.rule(),
+                Self::probe_correlation_plain(&headers),
+            );
             return self.refuse_plain_http_403(reader, deny_host).await;
         }
 
@@ -1479,6 +1627,15 @@ impl ProxyServer {
                 host = %deny_host,
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress to LLM host refused: cleartext downgrade bypasses DLP",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: deny_host,
+                    method,
+                    target,
+                },
+                RefusalRule::PlaintextLlmDowngrade,
+                Self::probe_correlation_plain(&headers),
             );
             return self.refuse_plain_http_403(reader, deny_host).await;
         }
@@ -1970,7 +2127,7 @@ mod tests {
         let server = server_with(vec![], vec![]).await;
         assert_eq!(
             server.connect_deny_reason("169.254.169.254"),
-            Some("ssrf: blocked address range")
+            Some(EgressDenyReason::SsrfBlockedAddress)
         );
     }
 
@@ -1989,7 +2146,7 @@ mod tests {
         let server = server_with(vec![], vec!["169.254.169.254".to_string()]).await;
         assert_eq!(
             server.connect_deny_reason("169.254.169.254"),
-            Some("ssrf: blocked address range")
+            Some(EgressDenyReason::SsrfBlockedAddress)
         );
     }
 
@@ -2055,9 +2212,12 @@ mod tests {
         let server = server_with(vec![], vec![]).await;
         assert_eq!(
             server.connect_deny_reason("[::1]:443"),
-            Some("ssrf: blocked address range")
+            Some(EgressDenyReason::SsrfBlockedAddress)
         );
-        assert_eq!(server.connect_deny_reason("[::1]"), Some("ssrf: blocked address range"));
+        assert_eq!(
+            server.connect_deny_reason("[::1]"),
+            Some(EgressDenyReason::SsrfBlockedAddress)
+        );
     }
 
     #[tokio::test]
@@ -2066,10 +2226,16 @@ mod tests {
         // uppercase and trailing-dot variants, which previously slipped past
         // the byte-exact comparison.
         let server = server_with(vec!["evil.com".to_string()], vec![]).await;
-        assert_eq!(server.connect_deny_reason("evil.com"), Some("host policy"));
-        assert_eq!(server.connect_deny_reason("EVIL.COM"), Some("host policy"));
-        assert_eq!(server.connect_deny_reason("evil.com."), Some("host policy"));
-        assert_eq!(server.connect_deny_reason("Evil.Com.:443"), Some("host policy"));
+        assert_eq!(server.connect_deny_reason("evil.com"), Some(EgressDenyReason::Denylist));
+        assert_eq!(server.connect_deny_reason("EVIL.COM"), Some(EgressDenyReason::Denylist));
+        assert_eq!(
+            server.connect_deny_reason("evil.com."),
+            Some(EgressDenyReason::Denylist)
+        );
+        assert_eq!(
+            server.connect_deny_reason("Evil.Com.:443"),
+            Some(EgressDenyReason::Denylist)
+        );
     }
 
     #[tokio::test]
@@ -2078,7 +2244,10 @@ mod tests {
         // host must still be rejected (it is not a member), and the trailing-dot
         // form of the allowlisted host must be permitted.
         let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
-        assert_eq!(server.connect_deny_reason("evil.com."), Some("network allowlist"));
+        assert_eq!(
+            server.connect_deny_reason("evil.com."),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         assert_eq!(server.connect_deny_reason("api.openai.com."), None);
         assert_eq!(server.connect_deny_reason("API.OPENAI.COM"), None);
     }
@@ -2115,7 +2284,10 @@ mod tests {
         // `Host: evil.attacker.com` must be denied by the re-enforced allowlist.
         let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
         let forged = req_with(vec![("Host", "evil.attacker.com")], "/v1/chat/completions");
-        assert_eq!(server.in_tunnel_deny_reason(&forged), Some("network allowlist"));
+        assert_eq!(
+            server.in_tunnel_deny_reason(&forged),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         // The allowlisted host inside the tunnel is permitted.
         let ok = req_with(vec![("Host", "api.openai.com")], "/v1/chat/completions");
         assert_eq!(server.in_tunnel_deny_reason(&ok), None);
@@ -2132,13 +2304,19 @@ mod tests {
             vec![("Host", "evil.attacker.com")],
             "https://api.openai.com/v1/chat/completions",
         );
-        assert_eq!(server.in_tunnel_deny_reason(&split), Some("network allowlist"));
+        assert_eq!(
+            server.in_tunnel_deny_reason(&split),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         // The symmetric case: allowed header, disallowed absolute target.
         let split2 = req_with(
             vec![("Host", "api.openai.com")],
             "https://evil.attacker.com/v1/chat/completions",
         );
-        assert_eq!(server.in_tunnel_deny_reason(&split2), Some("network allowlist"));
+        assert_eq!(
+            server.in_tunnel_deny_reason(&split2),
+            Some(EgressDenyReason::NetworkAllowlist)
+        );
         // Both halves allowlisted → permitted.
         let ok = req_with(vec![("Host", "api.openai.com")], "https://api.openai.com/v1/chat");
         assert_eq!(server.in_tunnel_deny_reason(&ok), None);

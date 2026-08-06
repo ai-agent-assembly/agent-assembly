@@ -434,6 +434,60 @@ async fn a_probe_under_redact_only_claims_no_prevention() {
         "a probe under redact_only must not manufacture a prevented transmission"
     );
     assert_eq!(entry.probe_correlation.as_deref(), Some(correlation));
+
+    // AAASM-5449: this branch used to record `ForwardedRedacted` for a request
+    // that was never dialled — the verdict's counterfactual, sitting beside
+    // the true `execution`. The decision now says what happened.
+    assert_eq!(
+        entry.decision,
+        ProxyAuditDecision::AnsweredLocally,
+        "a request the proxy answered itself is not a forward: {entry:#?}"
+    );
+}
+
+/// The counterfactual under `alert_only`, which is the other branch that used
+/// to claim a forward. Pinned separately from the `redact_only` case so the
+/// two cannot drift, and paired with the record's own evidence so the
+/// assertion is about a *consistent* record rather than one field.
+#[tokio::test]
+async fn a_probe_the_proxy_answered_is_never_recorded_as_forwarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proxy, mut audit) = start_proxy(CredentialAction::AlertOnly, None, Vec::new(), dir.path()).await;
+
+    let body = scrubbable_body();
+    let correlation = "fedcba9876543210fedcba9876543210";
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {LLM_HOST}\r\n\
+         x-agent-assembly-probe: {correlation}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    let response = mitm_roundtrip(proxy, LLM_HOST, &request).await;
+    // Non-vacuity: the probe really was adjudicated and answered here — the
+    // proxy replied rather than relaying, and the scanner really did find the
+    // synthetic credential.
+    assert!(
+        !response.is_empty(),
+        "the probe must have been answered by the proxy: {response:?}"
+    );
+
+    let entry = next_entry(&mut audit).await;
+    assert_eq!(entry.probe_correlation.as_deref(), Some(correlation));
+    assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
+    assert_eq!(entry.decision, ProxyAuditDecision::AnsweredLocally);
+    assert!(
+        !matches!(
+            entry.decision,
+            ProxyAuditDecision::Forwarded | ProxyAuditDecision::ForwardedRedacted
+        ),
+        "no bytes were relayed, so no forwarded variant may appear: {entry:#?}"
+    );
+    // And the decision agrees with the evidence rather than contradicting it.
+    assert!(
+        !entry.execution.transmission.proves_transmission(),
+        "the record claims a transmission it also says never happened: {entry:#?}"
+    );
+    assert!(!entry.execution.establishes_non_transmission());
 }
 
 // ── handle_non_llm_mitm — operator-MitM'd hosts ────────────────────────────

@@ -56,6 +56,13 @@ bytes = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+# AAASM-5449: the MCP `tools/call` refusal is only reachable through a real
+# gateway — `GatewayClient::connect` performs the h2 handshake eagerly and
+# `mcp_fail_open = false` makes the proxy refuse to start otherwise — so the
+# refusal test stands up a stub `PolicyService` that denies. Server-side tonic
+# is needed for that and for nothing else; it is already resolved in the
+# workspace lock via `aa-proto`, so this adds no crate to the tree.
+tonic = { workspace = true }
 
 [[bench]]
 name    = "intercept_bench"

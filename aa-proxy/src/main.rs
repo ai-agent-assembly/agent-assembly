@@ -49,6 +49,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = aa_proxy::ProxyConfig::from_env()?;
-    let (event_tx, _rx) = tokio::sync::broadcast::channel(256);
+
+    // AAASM-5449: this used to drop the receiver on the spot. Every
+    // `emit_policy_decision` / `emit_mcp_decision` / `intercept` call publishes
+    // here and discards the send error, so in the standalone binary the whole
+    // governance event stream went nowhere while reading, at every call site,
+    // exactly like a working one. The channel itself is not removable — it is
+    // how an embedder receives these events — so what was missing is a
+    // subscriber for the case where there is no embedder.
+    let (event_tx, event_rx) = tokio::sync::broadcast::channel(256);
+    tokio::spawn(aa_proxy::pipeline_log::drain_pipeline_events(event_rx));
+
     aa_proxy::run(config, event_tx).await
 }

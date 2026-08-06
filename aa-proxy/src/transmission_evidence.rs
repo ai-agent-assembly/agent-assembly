@@ -65,7 +65,9 @@ use aa_core::policy::EnforcementMode;
 use aa_core::types::sensitive_data::{EnforcementPoint, ExecutionEvidence, TransmissionEvidence};
 use aa_security::CredentialFinding;
 
-use crate::audit_jsonl::{bound_persisted_findings, record_dropped_entry, ProxyAuditDecision, ProxyAuditEntry};
+use crate::audit_jsonl::{
+    bound_persisted_findings, record_dropped_entry, ProxyAuditDecision, ProxyAuditEntry, RefusalRule,
+};
 use crate::config::CredentialAction;
 use crate::intercept::VerdictDecision;
 
@@ -97,6 +99,8 @@ pub struct DecisionRecord {
     pub path: String,
     /// What the proxy resolved to do.
     pub decision: ProxyAuditDecision,
+    /// Which rule refused the request, when a rule did (AAASM-5449).
+    pub refusal_rule: Option<RefusalRule>,
     /// Per-match scanner output.
     pub findings: Vec<CredentialFinding>,
     /// Post-scan body, when the caller has one it is willing to persist.
@@ -133,6 +137,7 @@ impl DecisionRecord {
             method: self.method,
             path: self.path,
             decision: self.decision,
+            refusal_rule: self.refusal_rule,
             execution,
             probe_correlation: self.probe_correlation,
             credential_findings,
@@ -323,6 +328,7 @@ mod tests {
             method: "POST".to_owned(),
             path: "/v1/do".to_owned(),
             decision: ProxyAuditDecision::ForwardedRedacted,
+            refusal_rule: None,
             findings: Vec::new(),
             redacted_body: None,
             probe_correlation: None,
