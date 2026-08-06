@@ -299,3 +299,132 @@ raises it") applied to the architecture as a whole.
 Correspondingly, an empty audit log is evidence about the *observer*, not about the
 agent.
 
+### 5. Host enforcement is platform-specific and optional; eBPF is one Linux mechanism
+
+**eBPF is not an architectural layer. It is one implementation of E4, available on
+Linux, and today it is predominantly an observation mechanism.**
+
+#### 5.1 What the Linux eBPF implementation actually does
+
+| Program | Attach | Behaviour |
+| --- | --- | --- |
+| `ssl_write`, `ssl_read_entry`, `ssl_read_exit` | uprobes/uretprobe on OpenSSL `SSL_write` / `SSL_read` (`aa-ebpf-probes/src/ssl_probes.rs:91,123,151`) | Observe only. Events are logged but **not bridged** to the audit pipeline (`aa-runtime/src/runtime.rs:302-305`, `:344-350`) |
+| File-I/O kprobes | 14 targets, all `__x64_sys_*` (`aa-ebpf/src/kprobe.rs:145-160`) | Observe only. The path blocklist sets an alert bit; the syscall proceeds (`aa-ebpf-probes/src/main.rs:119-121`) |
+| Exec tracepoints | `sched_process_{fork,exec,exit}` (`aa-ebpf-probes/src/exec_probes.rs:182,292,356`) | Observe only; no ring-buffer reader is wired yet (`aa-runtime/src/runtime.rs:510-512`) |
+| **Syscall guard** | `raw_syscalls/sys_enter` + fork/exit (`aa-ebpf-probes/src/syscall_guard.rs`) | The **only** enforcing program. Default-denies syscalls outside the allowlist by `bpf_send_signal(SIGKILL)` (`:174-176`, `:193-195`) |
+
+Four properties of that single enforcing program must be stated wherever it is
+mentioned:
+
+1. **It is not a synchronous deny.** `syscall_guard.rs:55-60`: *"the offending syscall
+   still executes once before the task dies … A truly synchronous deny (return `-EPERM`
+   before the handler runs) needs seccomp-BPF or an LSM `bpf_lsm` hook, which is out of
+   scope here."* No `bpf_lsm` program, `SEC("lsm/…")` hook or `bpf_override_return`
+   call exists in the tree.
+2. **It is off by default.** It is planned only when `AA_EBPF_CONFINE_PID` names a PID
+   *and* the lowered policy yields a non-empty allowlist
+   (`aa-runtime/src/ebpf_control.rs:137-140`); `confine_pid()` treats `0`/unparseable
+   as unset *"so the SIGKILL-capable guard stays off by default"* (`:154-162`).
+3. **It has a documented load-time window.** `ebpf_control.rs:114-121` records a window
+   between guard load and allowlist update in which the confined PID runs with an empty
+   allowlist; a race-free fix needs a protocol change.
+4. **The fork tracepoint cannot block a fork** — an acknowledged fail-open
+   (`syscall_guard.rs:105`).
+
+**No eBPF signal participates in any allow/deny decision.** `aa-gateway` has no
+dependency on `aa-ebpf`; events terminate in the audit publisher
+(`aa-runtime/src/runtime.rs:689-722`) and the correlation engine
+(`aa-runtime/src/correlation/mod.rs:64-66`). The only reverse link is policy lowering
+pushing a syscall allowlist into the opt-in guard
+(`aa-security/src/policy/ebpf.rs:161,173` → `aa-runtime/src/ebpf_control.rs:36,190`).
+
+#### 5.2 Prerequisites, and what they mean for a claim
+
+Linux eBPF is reachable only when **all** of: kernel ≥ 5.8, BTF at
+`/sys/kernel/btf/vmlinux`, and a reachable `aa-ebpf-loaderd` socket
+(`aa-runtime/src/layer.rs:133-135`); `bpf_send_signal` additionally requires ≥ 5.3.
+`aa-runtime` holds no `CAP_BPF` — the loader daemon is the sole capability holder
+(`aa-ebpf/Cargo.toml:49-50`), which is a deliberate privilege separation, not an
+inconvenience. The file-I/O kprobes are additionally **x86_64-only**: there is no
+`__arm64_sys_*` attach target anywhere in the eBPF crates, so aarch64 Linux gets no
+file-I/O coverage from this mechanism.
+
+#### 5.3 The verified platform matrix
+
+| Platform | E3 Transport Mediation | E4 Host Enforcement | Status to publish |
+| --- | --- | --- | --- |
+| **Linux x86_64** | `aa-proxy`; CA trust via CLI `update-ca-certificates` (`aa-cli/src/commands/proxy/ca.rs:149-188`) | eBPF observation (TLS/file/exec); syscall guard as opt-in asynchronous kill | **Implemented**, with the §5.1 limits stated |
+| **Linux aarch64** | `aa-proxy` | eBPF TLS/exec only; **no** file-I/O kprobe targets | **Implemented (partial)** — must say which probes are absent |
+| **macOS** | `aa-proxy`; CA auto-install into the System Keychain (`aa-proxy/src/tls/keychain.rs:19-42`) | **None.** Endpoint Security / Network Extension is an **explicit non-goal** — asserted in product docs (`docs/src/devtools/product-brief.md:648`) and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:987,993`) | Transport mediation **Implemented**; host enforcement **Unsupported** |
+| **Windows** | **None** — `aa-proxy`'s accept loop uses `tokio::signal::unix` unconditionally (`aa-proxy/src/proxy/mod.rs:257-260`); there is no Windows build path. Zero `target_os = "windows"` sites exist in any `aa-*` crate | **None.** No ETW, WFP or minifilter code exists | **Unsupported** |
+
+The macOS "Host Enforced" protection state is reached, where it is reached at all, by
+an opt-in root-owned managed-settings **file write** — a tool-governance control, not
+host-level interception — and the adapter's own docs record that whether the tool
+honours those keys at runtime is unmeasured and *"remains the open half of AAASM-5298"*
+(`aa-devtool-claude-code/src/managed_settings.rs:50-57`).
+
+DTrace was considered and rejected for macOS in the original design discussion as
+observability-only, not enforcement; no DTrace code exists. Any future macOS or Windows
+host adapter is **research** until an implementation exists, and must be labelled as
+such (§6).
+
+### 6. Claim vocabulary — decision timing and failure posture are part of every claim
+
+A governance claim is incomplete without its timing and its posture. The following is
+the canonical vocabulary; downstream material must pick one of these terms rather than
+an undifferentiated verb like "protects", "enforces" or "catches".
+
+| Term | Means | Evidence required |
+| --- | --- | --- |
+| **Observed** | An event reached the evidence pipeline | A durable event attributed to the action |
+| **Detected** | A pattern of interest was found in observed material | A finding, with the detector named |
+| **Evaluated** | The control plane produced a decision for this action | A decision record from `check_action` / `handle_policy_query` |
+| **Denied before execution** | The action did not take effect, and the decision preceded the effect | A refusal by a component that sits *before* the effect (today: `aa-proxy` pre-dial, or an SDK shim that honoured a `Deny`) |
+| **Redacted** | The action proceeded with content removed | A redaction record naming the fields |
+| **Approval required** | The action was held pending a human decision | A pending approval record |
+| **Degraded** | A planned control is configured but unavailable, so the achieved level is below the planned level | A `LayerDegradation` or ADR 0030 `Degraded` state carrying both levels |
+| **Unmeasured** | No control observed this path; nothing is known | The honest state for anything outside the boundary (§4) |
+| **Experimental** | Implemented but not validated for production use | Named implementation plus the validation that is missing |
+| **Planned** | Decided but not implemented | A ticket reference; no capability claim |
+| **Unsupported** | Not available on this platform/configuration, with no plan asserted | The platform matrix row (§5.3) |
+
+Mapped onto the verified mechanisms:
+
+| Mechanism | Highest term it can legitimately reach today |
+| --- | --- |
+| `aa-proxy` CONNECT / in-tunnel / DLP / MCP adjudication | **Denied before execution** (for traffic that traverses it and is MitM'd) |
+| `aa-gateway` `check_action` | **Evaluated**; reaches *Denied before execution* only through a blocking caller |
+| `aa-runtime` `handle_policy_query` | **Evaluated**; *Denied before execution* only if the SDK shim honours the answer |
+| `aa-runtime` `RuntimeScanner` | **Redacted** — it runs on `IpcFrame::EventReport` (`aa-runtime/src/pipeline/mod.rs:127`), i.e. *after* the action, and returns counters, not a verdict (`aa-runtime/src/pipeline/enforcement.rs:113-143`, `:221-231`) |
+| `aa-sdk-client` | **Evaluated** (advisory); it is not an enforcement point in this repo |
+| eBPF TLS / file / exec probes | **Observed** / **Detected** |
+| eBPF syscall guard | **Detected**, plus asynchronous process termination — explicitly **not** *Denied before execution* (§5.1) |
+| `aa-devtool-*` config writes | **Configured** tool-governance; not a data-path term at all |
+| `aa-sandbox` | **Denied before execution**, for WASM-marked tools handed to it; it is not in any agent's normal tool-call path |
+
+Note one consequence for the read surface: ADR 0018's five-way `RuntimeVerdict`
+(`allow`/`narrow`/`scrub`/`pending`/`deny`) is a **frozen API vocabulary**, and
+`aa-api/src/models/verdict.rs:21-24` states that deriving it at decision time *"is not
+implemented here … until then the field is surfaced as `null`"*. The enforced wire
+enum remains the coarser audit `Decision`. Material must not present the five-way
+verdict as a live per-action outcome.
+
+### 7. Self-reported availability is not evidence of coverage
+
+Three signals in the current implementation look like coverage and are not. None may be
+used to substantiate a protection claim:
+
+- **`AA_LAYERS`** replaces the entire probe result with an environment variable
+  (`aa-runtime/src/layer.rs:182-197`).
+- **`probe_proxy`** is satisfied by a binary existing on `$PATH`
+  (`aa-runtime/src/layer.rs:142-145`) — it does not establish that any process routes
+  traffic through it.
+- **`LayerSet::SDK`** is asserted unconditionally (`aa-runtime/src/layer.rs:19`,
+  `:169`), independent of whether any agent adopted the SDK.
+
+Coverage claims come from the E6 evidence pipeline — an adjudication reported by the
+component that actually decided (`aa-proxy/src/probe_adjudication.rs:1-14`: *"A
+protection probe sits on the **near** side of the MitM. It can observe that its request
+went out and that nothing obviously failed, and neither fact is evidence"*) — and from
+ADR 0030's ladder, never from a capability bitflag.
