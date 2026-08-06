@@ -146,3 +146,86 @@ outbound HTTPS from processes launched onto the managed path — a *conditional*
 that holds only while the process honours the injected proxy environment. That is
 the single most important sentence in this artifact and the [minimum defensible
 public guarantee](#minimum-defensible-public-guarantee-today) is built from it.
+
+---
+
+# Threat model
+
+## Scope
+
+This threat model covers the **shipped `agent-assembly` release artifact set at
+v0.0.1-rc.7** and the three language SDKs that pin it, deployed by an operator who
+runs the gateway, and optionally the runtime and the proxy, on a developer
+workstation or a single server they control.
+
+It answers one question: *for an action an agent takes, what does Agent Assembly
+know about it, when does it know, and can it stop it?*
+
+In scope:
+
+- The six architectural elements E1–E6 of ADR 0033.
+- Every execution path enumerated in the [coverage matrix](#the-coverage-matrix):
+  framework tool calls, direct calls, shell/subprocess/filesystem/browser/database
+  actions, network egress across all transports, MCP across all its transports,
+  managed and unmanaged dev-tool launch, and identity propagation.
+- Failure and degraded modes of each of those, because a control's behaviour when
+  its dependency is unavailable is part of its security property, not an
+  operational footnote.
+
+## Explicit non-goals
+
+These are non-goals **by decision**, not by omission. Each is stated so that no
+downstream page can imply the opposite by silence.
+
+| # | Non-goal | Why, and where it is already recorded |
+|---|---|---|
+| **N1** | **Resisting the developer's own UID on their own machine.** A user who can edit their own environment, replace a binary on their `$PATH`, or unset `HTTPS_PROXY` can remove the product from the path | ADR 0033 threat-model table: *"The developer's own UID is not an adversary here"*; ADR 0030 states host-level tamper prevention against the user's own account as an explicit non-goal. The one partial exception is the macOS root-owned managed-settings file, which a non-admin user cannot rewrite — that is B6, not B5 |
+| **N2** | **Resisting a fully privileged host administrator** | Epic AAASM-5526 non-goals: *"Claiming resistance against a fully privileged host administrator without a separately enforced trust boundary"* |
+| **N3** | **Preventing what is only observed.** Observation is not prevention, and this model never credits a telemetry-only mechanism with a prevention property | Epic AAASM-5526 non-goals: *"Treating observation as prevention"*. ADR 0033 forbidden design 4 |
+| **N4** | **Treating installation as runtime evidence.** A settings file on disk, a binary on `$PATH`, an `AA_LAYERS` value or a capability bitflag is not evidence that anything is governed | Epic AAASM-5526 non-goals; ADR 0033 §7 and forbidden design 6; ADR 0030 §4.2 rule 1 |
+| **N5** | **Treating one SDK hook as universal** across languages, transports or host actions | Epic AAASM-5526 non-goals. This is why the boundary taxonomy above exists |
+| **N6** | **Shipping OS-level enforcement on macOS or Windows.** macOS Endpoint Security and Network Extension are explicit product non-goals; no Windows mediation exists | ADR 0033 §5.3, pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) |
+| **N7** | **Governing opaque SaaS agents' execution.** For an agent whose runtime the operator does not control, the product's reach is what the SaaS surface exposes, and the adapter is hard-capped accordingly | `aa-devtool-saas` ceiling; boundary class B7 |
+| **N8** | **Confidentiality of the audit chain against someone who can rewrite the log.** The chain is unkeyed; it is tamper-*evident* to a reader who holds an out-of-band copy of a prior head, not a signature | Evidence E5; re-verified below |
+| **N9** | **Network-layer transparent capture.** There is no iptables / pfctl / TPROXY / `SO_ORIGINAL_DST` redirect. Traffic reaches the mediator only if the client speaks the HTTP proxy protocol to it | Re-verified below |
+
+## Threat actors and capability assumptions
+
+Four actors, ordered by the capability they are assumed to hold. The model's
+obligation differs for each, and conflating them is what produces overstated
+claims.
+
+| Actor | Assumed capabilities | What the product must still deliver | Where it holds today |
+|---|---|---|---|
+| **A1 · The steered agent** — a cooperating, SDK-adopting, managed-launched agent whose *model* has been prompt-injected | Controls tool-call arguments and payload content. Does **not** modify its own binary, environment or launch | Every action on the managed path is Evaluated; a policy `Deny` on a wrapped tool call refuses before the body runs; credentials in inspected outbound requests are Redacted; the reported protection state never exceeds the evidence | **Largely holds.** This is the actor the product is strongest against, and the only one for whom "governed" is close to complete. Residual: raw HTTP, subprocess, and filesystem access from inside the same process are not on any SDK seam |
+| **A2 · The careless integrator** — not malicious | Ships secrets in tool arguments or prompts; grants an over-broad capability set; launches a tool outside the managed path by habit | Detect and redact recognised credentials on inspected paths; report the unmanaged launch as *unmeasured*, never as clean | **Partially holds.** Redaction is bounded to the scanner's pattern set and to MitM'd hosts; an unmanaged launch is reported as a bypass for Claude Code, and is invisible for tools with no lifecycle |
+| **A3 · The bypassing agent** — deliberately avoids the fastest interception point | Never links the SDK, or links it and does not honour the answer; unsets `HTTPS_PROXY`; uses a TLS stack the uprobes do not hook (Go `crypto/tls`, statically linked BoringSSL); speaks a transport the mediator does not parse (raw TCP, UDP, QUIC, WebSocket, MCP stdio); spawns a child process | The product must **report this as outside the governed path**, never as governed and never as absence of activity | **Holds only as reporting, not as prevention.** There is no mechanism that prevents A3 on any platform. On Linux with the full stack deployed, some of A3's activity is *Observed*; on macOS and Windows, none of it is |
+| **A4 · The misled evaluator** — reads the website, Docs Hub or README and provisions on that basis | Reads only published material; cannot read the source | Every published claim names its platform, its decision timing and its failure posture. A reader must not be able to conclude "eBPF catches bypass attempts on my Mac" or "this cannot be bypassed" from any published sentence | **This artifact exists for A4.** AAASM-5528 removed 69 claims that failed this test; this matrix is the substrate the replacement copy must be written from |
+
+A1 and A3 are the two ends of the same axis, and the difference between them is
+**not** the product's controls — it is whether the process cooperates. That is
+the structural fact ADR 0002 records and the reason the SDK is not a security
+boundary.
+
+## Trust boundaries
+
+| # | Boundary | Trusted side | Untrusted side | Enforced by | Residual |
+|---|---|---|---|---|---|
+| **T1** | Agent process ↔ `aa-runtime` UDS | `aa-runtime` and everything behind it | The agent process, its SDK, and every field it sends | `aa-runtime` re-scans unconditionally; no "already clean" trust marker exists on the wire, pinned by `aa-runtime/tests/aaasm_2568_gate_verification.rs` | The agent can simply not make the call. Non-participation is not detectable at this boundary |
+| **T2** | Agent process ↔ `aa-proxy` | The proxy, out of process | The agent's HTTP request bytes | Out-of-process refusal before dialling upstream | Only for traffic routed to the proxy and only for MitM'd hosts |
+| **T3** | `aa-runtime` ↔ `aa-ebpf-loaderd` | The loader daemon, sole `CAP_BPF` holder | `aa-runtime`, which holds no BPF capability | Deliberate privilege separation (AAASM-3603/3604) | The daemon is **not in the release artifact set**, so this boundary does not exist in a released deployment |
+| **T4** | Client ↔ `aa-gateway` control plane | Gateway-side policy, registry, budgets, audit | Every client-supplied identity assertion | `credential_token` validation in `check_action`; server-side lineage resolution | Agent-identity possession proof is weaker than it appears — see the identity rows in the matrix |
+| **T5** | Runtime audit stream ↔ durable audit store | The sanitizer's output | Every field a sender emits | Write-boundary sanitizer strips banned keys recursively | Emission is best-effort; a dropped entry is indistinguishable from tampering |
+| **T6** | Managed-settings file ↔ the dev tool that reads it | The root-owned file's content, read back after write | The user's non-admin account | Filesystem ownership on macOS (B6) | Whether the tool *honours* those keys at runtime is unmeasured — "the open half of AAASM-5298" |
+
+## What this threat model does not replace
+
+- It is **not** the per-release operational threat model
+  (`docs/src/security/release-threat-model.md`), which asks "what does *this*
+  release change about our exposure?".
+- It is **not** the STRIDE catalogue on `docs/src/security/threat-model.md`. That
+  page is owned by AAASM-5592/5605 and currently still narrates the superseded
+  three-layer model — see [Cross-cutting
+  findings](#cross-cutting-findings-reported-not-fixed).
+- It **is** the current-state substrate both of those should be reconciled
+  against.
