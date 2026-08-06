@@ -720,4 +720,26 @@ mod tests {
             ClaimTerm::Degraded
         );
     }
+
+    /// The converse of the rule above: with no plan asserted, an absent
+    /// mechanism keeps the ceiling's own distinction. A build that simply has
+    /// no host mechanism reports *Unsupported*, not a degradation of something
+    /// nobody asked for.
+    #[test]
+    fn an_unrequested_absent_component_stays_unsupported() {
+        for mode in [SelectedMode::Disabled, SelectedMode::Unset] {
+            let a = at(
+                AttestationBasis::AbsentFromBuild {
+                    component: "aa-ebpf-loaderd".into(),
+                },
+                mode,
+                NOW,
+            );
+            assert_eq!(
+                a.verified_state_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS),
+                ClaimTerm::Unsupported,
+                "{mode}"
+            );
+        }
+    }
 }
