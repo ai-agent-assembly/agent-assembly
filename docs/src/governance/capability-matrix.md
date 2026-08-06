@@ -19,8 +19,45 @@ reference this document rather than defining tiers ad hoc.
 |---|---|---|
 | **L0** | **Discover** | Auto-inventory the tool: name, version, config file paths. No runtime hooks. AAASM knows the tool is present but cannot observe or affect its actions. |
 | **L1** | **Observe** | Tool actions appear in the AAASM audit log. Policy rules are evaluated and results are visible to operators, but the tool is not blocked — it runs uninhibited. Provides real-time observability without enforcement. |
-| **L2** | **Enforce** | Policy overlay is active. AAASM evaluates rules and blocks, redirects, or redacts violating actions while AAASM is running. The tool cannot bypass enforcement **on the managed path**, but an action taken off that path — for example a session launched outside `aasm run` — is not enforced, and the tool may operate without constraint if AAASM is offline. |
+| **L2** | **Enforce** | Policy overlay is active on the **managed path**. AAASM evaluates rules and blocks, redirects, or redacts violating actions synchronously — the decision returns before the action proceeds — while AAASM is running. See the boundary note below for what "managed path" means and what sits outside it. |
 | **L3** | **Native Governed** | AAASM writes the tool's own native configuration (settings files, sandbox config, MCP registry). Governance is baked into the tool's startup state — even if AAASM goes offline, the last-written settings cap what the tool can do. Strongest enforcement tier. |
+
+### What "managed path" means at L2 — and what is outside it
+
+The tiers describe mediation, not universal coverage. An earlier revision of this
+page said an L2 tool "cannot bypass enforcement", which is not true of any tier
+here and is contradicted by measured bypasses. The accurate statement:
+
+**What mediates at L2, and when.** Two mechanisms, both deciding *before* the
+action proceeds:
+
+| Mechanism | What it mediates | Platform | Decision timing |
+|---|---|---|---|
+| SDK / wrapper seam | Framework tool calls the SDK wraps, after its initializer runs | Wherever the SDK runs (macOS, Linux) | Synchronous — the deny raises before the wrapped body executes |
+| `aa-proxy` | Outbound HTTP/1.1 **routed to the proxy**, on a host under MitM | Interception on macOS and Linux; CA trust-store installation is implemented for **macOS only** | Synchronous — a denial returns 403 (or a JSON-RPC error for MCP `tools/call`) without dialling upstream |
+
+**What is outside the boundary.** These are not enforced at any tier on this
+page, and each needs a separate control:
+
+- **Unmanaged launch.** A tool started directly rather than through `aasm run`
+  inherits neither the proxy environment nor the CA trust. This is *demonstrated*,
+  not inferred — see [Limitations and known bypasses](../devtools/limitations.md).
+- **Direct calls.** Raw HTTP from the agent process, `subprocess` spawns, and
+  filesystem access are not intercepted by the SDK seam.
+- **Unsupported transports.** Interception is HTTP/1.1 with `Content-Length`.
+  HTTP/2, gRPC, WebSocket and chunked requests are out of scope, and MCP over
+  stdio never reaches the proxy at all.
+- **Hosts not under MitM.** `llm_only` defaults to `true`, so only the built-in
+  LLM provider hosts are decrypted unless an operator extends `mitm_hosts`;
+  everything else is tunnelled uninspected.
+- **Opaque SaaS hosts.** A tool whose backend AAASM cannot route through or
+  inspect is outside the measured boundary regardless of the tier declared here.
+- **AAASM offline.** With the runtime down, the tool operates without constraint
+  at L2. Only L3's written-through native configuration survives that.
+
+For the *derived, evidence-backed* state of a specific tool right now — as
+opposed to the declared ceiling this page records — use `aasm integrations
+status <tool>` and the [protection ladder](../devtools/protection-levels.md).
 
 ---
 
