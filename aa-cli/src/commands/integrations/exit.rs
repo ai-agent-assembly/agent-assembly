@@ -49,6 +49,31 @@ pub enum Outcome {
     /// not obtain (no terminal and no `--yes`). Nothing was changed. Distinct
     /// from every failure above because there is nothing to fix.
     Aborted,
+    /// A runtime answered and was shown **not** to be usable as the build this
+    /// `aasm` belongs to — a different checkout, a deleted executable, or more
+    /// than one of them listening at once (AAASM-5628).
+    ///
+    /// A *positive finding* about the peer, which is what separates it from
+    /// [`Outcome::RuntimeUnverifiable`]: something is demonstrably wrong, and
+    /// every command refuses, read-only included. Distinct from
+    /// [`Outcome::Incompatible`] because nothing needs upgrading, and from
+    /// [`Outcome::RuntimeUnavailable`] because a runtime *is* listening. The
+    /// next step is neither: stop the wrong process. It is also a code a QA
+    /// harness must refuse to record a result under — evidence gathered from a
+    /// refuted runtime proves nothing about the build it was attributed to.
+    RuntimeUnverified,
+    /// A runtime answered and its identity could be neither confirmed nor
+    /// refuted — one or both sides carry no authoritative build identity, or
+    /// the peer is too old to state one (AAASM-5628).
+    ///
+    /// An *absence*, not a finding. Absence of provenance on both peers proves
+    /// only that both are unknown, never that they are the same build, so this
+    /// can never be reported as verified. Read-only surfaces still answer and
+    /// label the result `unverifiable`; privileged writes, mutating operations,
+    /// `Host Enforced` claims and manual enforcement evidence refuse with this
+    /// code, because each of those asserts something about *this* build that an
+    /// unidentified runtime cannot support.
+    RuntimeUnverifiable,
     /// Anything else — a transport fault, a lifecycle failure, a bug.
     InternalError,
 }
@@ -68,6 +93,8 @@ impl Outcome {
             Outcome::RuntimeUnavailable => 7,
             Outcome::Denied => 8,
             Outcome::Aborted => 9,
+            Outcome::RuntimeUnverified => 10,
+            Outcome::RuntimeUnverifiable => 11,
         }
     }
 
@@ -82,12 +109,14 @@ impl Outcome {
             Outcome::RuntimeUnavailable => "runtime_unavailable",
             Outcome::Denied => "denied",
             Outcome::Aborted => "aborted",
+            Outcome::RuntimeUnverified => "runtime_unverified",
+            Outcome::RuntimeUnverifiable => "runtime_unverifiable",
             Outcome::InternalError => "internal_error",
         }
     }
 
     /// Every outcome, for the help text and for the tests that pin them.
-    pub const ALL: [Outcome; 9] = [
+    pub const ALL: [Outcome; 11] = [
         Outcome::Success,
         Outcome::InternalError,
         Outcome::Unsupported,
@@ -97,6 +126,8 @@ impl Outcome {
         Outcome::RuntimeUnavailable,
         Outcome::Denied,
         Outcome::Aborted,
+        Outcome::RuntimeUnverified,
+        Outcome::RuntimeUnverifiable,
     ];
 }
 
@@ -134,6 +165,10 @@ const fn describe(outcome: Outcome) -> &'static str {
         Outcome::RuntimeUnavailable => "no runtime is listening and none could be started",
         Outcome::Denied => "the runtime refused this client — re-enrol or fix permissions",
         Outcome::Aborted => "nothing was changed — declined, or no confirmation was possible",
+        Outcome::RuntimeUnverified => "the runtime that answered is not this build — stop it and re-run",
+        Outcome::RuntimeUnverifiable => {
+            "the runtime that answered carries no build identity — read-only commands still work and say so"
+        }
     }
 }
 
@@ -164,6 +199,8 @@ mod tests {
             "incompatible",
             "drifted",
             "verification_failed",
+            "runtime_unverified",
+            "runtime_unverifiable",
             "internal_error",
         ] {
             assert!(names.contains(&required), "{required} is missing from the vocabulary");

@@ -29,6 +29,7 @@
 use aa_core::integration::{core_version, LIFECYCLE_SCHEMA_VERSION};
 use aa_proto::assembly::devint::v1 as wire;
 
+use super::provenance::RuntimeProvenance;
 use super::verb::DiVerb;
 
 /// The oldest DI-API version this runtime will serve.
@@ -40,18 +41,22 @@ pub const DI_API_MIN_SUPPORTED: u32 = 1;
 
 /// The newest DI-API version this runtime speaks.
 ///
-/// **v3 adds no verbs.** It records that `status` and `verify` carry a
-/// [`PolicyView`](aa_proto::assembly::devint::v1::PolicyView) — which policy a
-/// governed launch would run under (AAASM-5349). A v2 peer is therefore *not*
+/// **Neither v3 nor v4 adds a verb.** v3 records that `status` and `verify`
+/// carry a [`PolicyView`](aa_proto::assembly::devint::v1::PolicyView) — which
+/// policy a governed launch would run under (AAASM-5349). v4 records that the
+/// `HelloAck` carries a
+/// [`RuntimeProvenance`](aa_proto::assembly::devint::v1::RuntimeProvenance) —
+/// which build is answering (AAASM-5628). A v2 or v3 peer is therefore *not*
 /// [`Negotiation::Degraded`]: it has every verb, and `unavailable_verbs` stays
 /// empty, because nothing became unavailable.
 ///
-/// The version exists for what a client can *say* rather than what it can call.
-/// Protobuf message presence already makes the field's absence unambiguous, so
-/// behaviour is correct without consulting the version at all; knowing the peer
-/// speaks 2 lets the client name the reason — "this runtime speaks DI-API 2;
-/// policy posture arrived in 3" — instead of the vaguer "the field is missing".
-pub const DI_API_MAX_SUPPORTED: u32 = 3;
+/// These versions exist for what a client can *say* rather than what it can
+/// call. Protobuf message presence already makes a field's absence
+/// unambiguous, so behaviour is correct without consulting the version at all;
+/// knowing the peer speaks 3 lets the client name the reason — "this runtime
+/// speaks DI-API 3; build provenance arrived in 4" — instead of the vaguer
+/// "the field is missing".
+pub const DI_API_MAX_SUPPORTED: u32 = 4;
 
 /// The first DI-API version whose `status` and `verify` carry a policy posture.
 ///
@@ -59,6 +64,13 @@ pub const DI_API_MAX_SUPPORTED: u32 = 3;
 /// the policy is unconfigured. `unconfigured` is itself a refusal, so reading
 /// one as the other would turn a version mismatch into a governance finding.
 pub const DI_API_POLICY_POSTURE_SINCE: u32 = 3;
+
+/// The first DI-API version whose `HelloAck` states which build is answering.
+///
+/// Below this, a runtime cannot say what it is. That is not the same as having
+/// no identity, and a client must not read it as one: an unattributable answer
+/// is unattributable whether the peer is old or lying (AAASM-5628).
+pub const DI_API_PROVENANCE_SINCE: u32 = 4;
 
 /// Verbs that did not exist at DI-API v1.
 ///
@@ -266,7 +278,18 @@ pub fn negotiate(hello: &wire::Hello) -> Negotiation {
 /// `Ok` carries a `HelloAck` (supported or degraded); `Err` carries an
 /// `Incompatible` whose reason and remediation are both populated — an
 /// incompatible answer without remediation is a dead end, not an outcome.
-pub fn to_wire(negotiation: &Negotiation) -> Result<wire::HelloAck, wire::Incompatible> {
+///
+/// `provenance` states which build is answering. It rides on the *handshake*
+/// rather than on a verb because it has to be knowable before any result is
+/// obtained: a client that discovers it was talking to the wrong build after
+/// recording a measurement has already recorded the wrong measurement
+/// (AAASM-5628). It is attached at [`DI_API_PROVENANCE_SINCE`] and above only,
+/// so a v1–v3 client sees the frame it was promised.
+pub fn to_wire(
+    negotiation: &Negotiation,
+    provenance: &RuntimeProvenance,
+) -> Result<wire::HelloAck, wire::Incompatible> {
+    let provenance_at = |version: u32| (version >= DI_API_PROVENANCE_SINCE).then(|| provenance.to_wire());
     match negotiation {
         Negotiation::Supported { version } => Ok(wire::HelloAck {
             outcome: wire::NegotiationOutcome::Supported as i32,
@@ -278,6 +301,7 @@ pub fn to_wire(negotiation: &Negotiation) -> Result<wire::HelloAck, wire::Incomp
             unavailable_verbs: Vec::new(),
             degraded_reason: String::new(),
             remediation: String::new(),
+            provenance: provenance_at(*version),
         }),
         Negotiation::Degraded {
             version,
@@ -294,6 +318,7 @@ pub fn to_wire(negotiation: &Negotiation) -> Result<wire::HelloAck, wire::Incomp
             unavailable_verbs: unavailable.iter().map(|v| v.as_str().to_string()).collect(),
             degraded_reason: reason.clone(),
             remediation: remediation.clone(),
+            provenance: provenance_at(*version),
         }),
         Negotiation::Incompatible(error) => Err(wire::Incompatible {
             reason: error.reason(),
@@ -324,8 +349,9 @@ mod tests {
         // silently asserted the wrong thing: a client offering only [1, 2] must
         // negotiate 2, or it would be told it speaks a version it does not.
         assert_eq!(negotiate(&hello(&[1, 2])), Negotiation::Supported { version: 2 });
+        assert_eq!(negotiate(&hello(&[1, 2, 3])), Negotiation::Supported { version: 3 });
         assert_eq!(
-            negotiate(&hello(&[1, 2, 3])),
+            negotiate(&hello(&[1, 2, 3, 4])),
             Negotiation::Supported {
                 version: DI_API_MAX_SUPPORTED
             }
@@ -363,7 +389,7 @@ mod tests {
         };
         assert_eq!(*error, NegotiationError::BelowFloor { client_best: 0 });
         assert!(!outcome.is_usable());
-        let incompatible = to_wire(&outcome).expect_err("must not produce a HelloAck");
+        let incompatible = to_wire(&outcome, &RuntimeProvenance::detect()).expect_err("must not produce a HelloAck");
         assert!(!incompatible.reason.is_empty());
         assert!(incompatible.remediation.contains("update the client"));
     }
@@ -375,7 +401,7 @@ mod tests {
             panic!("expected Incompatible, got {outcome:?}");
         };
         assert_eq!(*error, NegotiationError::AboveCeiling { client_lowest: 7 });
-        let incompatible = to_wire(&outcome).expect_err("incompatible");
+        let incompatible = to_wire(&outcome, &RuntimeProvenance::detect()).expect_err("incompatible");
         assert!(incompatible.remediation.contains("runtime"));
     }
 
@@ -414,7 +440,7 @@ mod tests {
 
     #[test]
     fn the_supported_ack_names_the_core_and_the_window() {
-        let ack = to_wire(&negotiate(&hello(&[2]))).expect("supported");
+        let ack = to_wire(&negotiate(&hello(&[2])), &RuntimeProvenance::detect()).expect("supported");
         assert_eq!(ack.outcome, wire::NegotiationOutcome::Supported as i32);
         // The negotiated version is what the client can actually speak; the
         // window it is told about is this runtime's. Conflating them hid the
@@ -442,4 +468,64 @@ mod tests {
             assert!(verb_available_at(verb, DI_API_MAX_SUPPORTED), "{verb} missing at max");
         }
     }
+
+    /// Provenance rides on the handshake, so a client knows which build is
+    /// answering *before* it obtains any result to record.
+    #[test]
+    fn the_ack_states_which_build_answered() {
+        let provenance = RuntimeProvenance::detect();
+        let ack = to_wire(&negotiate(&hello(&[DI_API_PROVENANCE_SINCE])), &provenance).expect("supported");
+        let reported = ack.provenance.expect("v4 must carry provenance");
+        assert_eq!(reported.pid, std::process::id());
+        assert_eq!(reported.build_sha, super::super::provenance::BUILD_SHA);
+        assert_eq!(reported.core_version, core_version().to_string());
+        assert!(reported.executable_present, "the test binary exists");
+        assert!(reported.started_at_unix_secs > 0);
+    }
+
+    /// A pre-v4 client gets exactly the frame its version promised. Sending a
+    /// field it does not know about is how a peer starts misparsing.
+    #[test]
+    fn a_peer_below_the_provenance_version_is_not_sent_one() {
+        let provenance = RuntimeProvenance::detect();
+        for version in DI_API_MIN_SUPPORTED..DI_API_PROVENANCE_SINCE {
+            let ack = to_wire(&negotiate(&hello(&[version])), &provenance).expect("usable");
+            assert_eq!(ack.di_api_version, version);
+            assert!(
+                ack.provenance.is_none(),
+                "v{version} must not carry a v{DI_API_PROVENANCE_SINCE} field"
+            );
+        }
+    }
+
+    /// A degraded connection is still a connection whose answers get recorded,
+    /// so it carries provenance too.
+    #[test]
+    fn provenance_is_not_dropped_when_the_negotiation_is_degraded() {
+        // Degraded is only reachable below v2, which is below the provenance
+        // floor — so this asserts the *shape* of the rule rather than a
+        // currently reachable pairing: whatever version is negotiated, the
+        // provenance decision is made from that version alone.
+        let provenance = RuntimeProvenance::detect();
+        let degraded = Negotiation::Degraded {
+            version: DI_API_PROVENANCE_SINCE,
+            unavailable: vec![DiVerb::ScopedEvents],
+            reason: "synthetic".to_string(),
+            remediation: "synthetic".to_string(),
+        };
+        let ack = to_wire(&degraded, &provenance).expect("degraded is usable");
+        assert_eq!(ack.outcome, wire::NegotiationOutcome::Degraded as i32);
+        assert!(ack.provenance.is_some(), "a degraded answer is still attributable");
+    }
+
+    /// The provenance floor must be inside the served window, or it names a
+    /// version no connection can ever negotiate.
+    ///
+    /// A compile-time assertion: the values are constants, so a violation
+    /// should stop the build rather than wait for a test run.
+    const _: () = {
+        assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
+        assert!(DI_API_PROVENANCE_SINCE <= DI_API_MAX_SUPPORTED);
+        assert!(DI_API_PROVENANCE_SINCE > DI_API_POLICY_POSTURE_SINCE);
+    };
 }

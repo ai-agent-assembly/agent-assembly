@@ -34,6 +34,7 @@
 //! is a property of the shape rather than of a redaction pass.
 
 use aa_runtime::devint::negotiate::DI_API_POLICY_POSTURE_SINCE;
+use aa_runtime::devint::provenance::{PeerProvenance, ProvenanceVerdict, RuntimeMultiplicity};
 use serde::Serialize;
 
 use aa_proto::assembly::devint::v1 as wire;
@@ -55,6 +56,103 @@ pub struct RuntimeInfo {
     pub unavailable_verbs: Vec<String>,
     /// Whether this invocation started the runtime.
     pub started_by_this_command: bool,
+    /// Which build answered, and whether it is this one (AAASM-5628).
+    pub provenance: RuntimeProvenanceInfo,
+}
+
+/// Which build answered, projected for a reader — human or harness.
+///
+/// This block is the whole point of AAASM-5628 reaching `--output json`: a QA
+/// harness records it *beside* the result, so the evidence names the process
+/// that produced it instead of asserting that some runtime was reachable. Two
+/// checkouts at the same `core_version` are indistinguishable without
+/// `build_sha`, and two runtimes of the same build are indistinguishable
+/// without `pid`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeProvenanceInfo {
+    /// The three-state result a harness should branch on: `verified` |
+    /// `unverifiable` | `refuted` (AAASM-5628).
+    ///
+    /// Read this rather than [`Self::verdict`] when the question is "may I
+    /// record a result from this connection". `unverifiable` is **never** to be
+    /// read as verified: two peers that both carry no build identity have
+    /// proved only that neither knows what it is.
+    pub standing: String,
+    /// Which specific fact produced the standing: `verified` | `unverifiable` |
+    /// `mismatch` | `executable_missing` | `not_reported`.
+    pub verdict: String,
+    /// The sentence behind the verdict, so a log carries the reason.
+    pub detail: String,
+    /// The commit the runtime was built from, when it said.
+    pub build_sha: Option<String>,
+    /// How `build_sha` was obtained — `injected` | `checkout` | `packaged` |
+    /// `absent`. Only the first three can prove a match; `absent` means the SHA
+    /// is a placeholder, not an identity.
+    pub build_id_source: Option<String>,
+    /// What each provenance field did in the comparison, when one ran.
+    ///
+    /// Present so a reader can see *which* fact was absent, matched or
+    /// disagreed, rather than being handed a single opaque verdict.
+    pub fields: Vec<ProvenanceFieldInfo>,
+    /// The process that answered.
+    pub pid: Option<u32>,
+    /// The executable it is serving from.
+    pub executable_path: Option<String>,
+    /// Whether that executable still existed when it answered.
+    pub executable_present: Option<bool>,
+    /// The checkout it was built from, when it said.
+    pub source_path: Option<String>,
+    /// When it started serving.
+    pub started_at_unix_secs: Option<u64>,
+    /// How many runtimes were reachable. Anything above one means this result
+    /// cannot be attributed to a single process, whatever the verdict says.
+    pub reachable_runtimes: usize,
+}
+
+/// One provenance field's contribution to the identity comparison.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProvenanceFieldInfo {
+    /// The field, named as it appears on the wire.
+    pub field: String,
+    /// `matched` | `mismatched` | `absent`.
+    pub status: String,
+    /// What this `aasm` is.
+    pub expected: String,
+    /// What the runtime reported.
+    pub reported: String,
+}
+
+impl RuntimeProvenanceInfo {
+    /// Project a verdict and the runtime population it was reached in.
+    pub fn new(verdict: &ProvenanceVerdict, multiplicity: &RuntimeMultiplicity, peer: Option<&PeerProvenance>) -> Self {
+        Self {
+            standing: verdict.standing().as_str().to_string(),
+            verdict: verdict.as_str().to_string(),
+            detail: verdict.detail(),
+            build_sha: peer.map(|p| p.identity.build_sha.clone()),
+            build_id_source: peer.map(|p| p.identity.sha_source.as_str().to_string()),
+            fields: verdict
+                .comparison()
+                .map(|c| {
+                    c.fields()
+                        .iter()
+                        .map(|f| ProvenanceFieldInfo {
+                            field: f.field.to_string(),
+                            status: f.status.as_str().to_string(),
+                            expected: f.expected.clone(),
+                            reported: f.reported.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            pid: verdict.pid().or_else(|| peer.map(|p| p.pid)),
+            executable_path: peer.map(|p| p.executable_path.clone()),
+            executable_present: peer.map(|p| p.executable_present),
+            source_path: peer.map(|p| p.source_path.clone()),
+            started_at_unix_secs: peer.map(|p| p.started_at_unix_secs),
+            reachable_runtimes: multiplicity.reachable_count(),
+        }
+    }
 }
 
 impl RuntimeInfo {
@@ -67,6 +165,11 @@ impl RuntimeInfo {
             degraded: negotiated.degraded,
             unavailable_verbs: negotiated.unavailable_verbs.clone(),
             started_by_this_command: session.started_runtime,
+            provenance: RuntimeProvenanceInfo::new(
+                &session.provenance,
+                &session.multiplicity,
+                negotiated.provenance.as_ref(),
+            ),
         }
     }
 }
@@ -1018,6 +1121,20 @@ mod tests {
             degraded: false,
             unavailable_verbs: Vec::new(),
             started_by_this_command: false,
+            provenance: RuntimeProvenanceInfo {
+                standing: "verified".to_string(),
+                verdict: "verified".to_string(),
+                build_id_source: Some("checkout".to_string()),
+                fields: Vec::new(),
+                detail: "the Agent Assembly runtime answering is 0.0.1 (abcdef012345) (pid 4242)".to_string(),
+                build_sha: Some("abcdef0123456789".to_string()),
+                pid: Some(4242),
+                executable_path: Some("/build/target/debug/aa-runtime".to_string()),
+                executable_present: Some(true),
+                source_path: Some("/build".to_string()),
+                started_at_unix_secs: Some(1_700_000_000),
+                reachable_runtimes: 1,
+            },
         }
     }
 

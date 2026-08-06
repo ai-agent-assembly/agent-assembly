@@ -78,11 +78,7 @@ impl Harness {
         let tokens = TokenStore::new();
         aa_runtime::devint::enrol_local_client(&tokens, "aasm", aa_core::integration::now_unix_secs()).expect("enrol");
 
-        let services = DevIntServices {
-            lifecycle,
-            tokens,
-            audit: Arc::new(aa_runtime::devint::audit::TracingAuditSink),
-        };
+        let services = DevIntServices::new(lifecycle, tokens, Arc::new(aa_runtime::devint::audit::TracingAuditSink));
         let shutdown = CancellationToken::new();
         let server_token = shutdown.clone();
         let server_config = DevIntServerConfig {

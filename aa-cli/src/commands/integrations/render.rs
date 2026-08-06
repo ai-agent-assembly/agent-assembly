@@ -21,8 +21,8 @@ use serde::Serialize;
 use crate::output::OutputFormat;
 
 use super::model::{
-    EvidenceRow, InstallReport, LevelAvailability, PlanReport, RemoveReport, RepairReport, StatusReport, StepRow,
-    ToolListReport, VerifyReport,
+    EvidenceRow, InstallReport, LevelAvailability, PlanReport, RemoveReport, RepairReport, RuntimeInfo, StatusReport,
+    StepRow, ToolListReport, VerifyReport,
 };
 
 /// A command result that can be rendered for a person and for a script, from
@@ -132,6 +132,95 @@ fn age(delta_secs: i64) -> String {
     }
 }
 
+/// The one-line build identity under `list`'s banner (AAASM-5628).
+///
+/// The banner said only `core <version> (DI-API vN)`, which two checkouts share
+/// — so a whole campaign was measured against the wrong build without anything
+/// on screen disagreeing. The commit and the pid are what tell them apart.
+fn runtime_identity_line(runtime: &RuntimeInfo) -> String {
+    let provenance = &runtime.provenance;
+    match (&provenance.build_sha, provenance.pid) {
+        (Some(sha), Some(pid)) => format!(
+            "  build {} · pid {pid} · {}{}",
+            aa_runtime::devint::provenance::short_sha(sha),
+            // The standing rides on the same line as the identity, so a reader
+            // cannot take in the commit without taking in what it proves. A
+            // build with no identity prints `unknown · unverifiable`, which is
+            // the honest reading; printing only `unknown` would look like a
+            // cosmetic gap rather than the absence of a guarantee.
+            provenance.standing,
+            if provenance.reachable_runtimes > 1 {
+                format!(" · {} runtimes reachable", provenance.reachable_runtimes)
+            } else {
+                String::new()
+            }
+        ),
+        // A runtime too old to say is named as such, never left blank: a blank
+        // line reads as "nothing to report" rather than "it cannot tell you".
+        _ => format!("  build unidentified ({})", provenance.verdict),
+    }
+}
+
+/// The provenance block under `status`'s `Runtime:` heading.
+fn render_runtime_provenance(out: &mut String, runtime: &RuntimeInfo) {
+    let provenance = &runtime.provenance;
+    match (&provenance.build_sha, provenance.pid) {
+        (Some(sha), Some(pid)) => {
+            out.push_str(&format!(
+                "  build {sha}{}\n",
+                match &provenance.build_id_source {
+                    Some(source) => format!(" (via {source})"),
+                    None => String::new(),
+                }
+            ));
+            // Labelled `provenance:`, never `verified:`. The label used to be
+            // the latter, which put the word "verified" beside every verdict
+            // including the ones that are not — the exact shape AAASM-5628
+            // forbids, since `verified: unverifiable` is read by eye as
+            // "verified".
+            out.push_str(&format!(
+                "  pid {pid}, provenance: {} ({})\n",
+                provenance.standing, provenance.verdict
+            ));
+            // Which facts were absent, matched or disagreed. Printed only when
+            // there is something to explain, so a clean run stays quiet.
+            if provenance.standing != "verified" {
+                for field in &provenance.fields {
+                    out.push_str(&format!(
+                        "    {}: {} (this aasm {:?}, runtime {:?})\n",
+                        field.field, field.status, field.expected, field.reported
+                    ));
+                }
+            }
+            if let Some(path) = &provenance.executable_path {
+                out.push_str(&format!(
+                    "  executable: {path}{}\n",
+                    match provenance.executable_present {
+                        Some(false) => " (DELETED)",
+                        _ => "",
+                    }
+                ));
+            }
+            if let Some(source) = provenance.source_path.as_ref().filter(|s| !s.is_empty()) {
+                out.push_str(&format!("  built from: {source}\n"));
+            }
+            if let Some(started) = provenance.started_at_unix_secs {
+                // Uses the shared human timestamp (AAASM-5636); a provenance
+                // block is no more entitled to print a bare epoch than any
+                // other reading a person has to act on.
+                out.push_str(&format!("  started at: {}\n", timestamp(started)));
+            }
+        }
+        _ => out.push_str(&format!("  build unidentified ({})\n", provenance.verdict)),
+    }
+    if provenance.reachable_runtimes > 1 {
+        out.push_str(&format!(
+            "  ! {} runtimes are reachable — this result names the one above, not the others\n",
+            provenance.reachable_runtimes
+        ));
+    }
+}
+
 fn tick(value: bool) -> &'static str {
     if value {
         "yes"
@@ -208,8 +297,10 @@ impl Report for ToolListReport {
     fn render_human(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!(
-            "Agent Assembly core {} (DI-API v{})\n\n",
-            self.runtime.core_version, self.runtime.di_api_version
+            "Agent Assembly core {} (DI-API v{})\n{}\n\n",
+            self.runtime.core_version,
+            self.runtime.di_api_version,
+            runtime_identity_line(&self.runtime)
         ));
         out.push_str(&format!(
             "{:<16} {:<12} {:<12} {:<14} {}\n",
@@ -327,6 +418,7 @@ impl Report for StatusReport {
             self.runtime.di_api_version,
             if self.runtime.degraded { " (degraded)" } else { "" }
         ));
+        render_runtime_provenance(&mut out, &self.runtime);
         if let Some(verified) = self.last_verified_at_unix_secs {
             out.push_str(&format!("  last verification: {}\n", timestamp(verified)));
         } else {
@@ -353,6 +445,19 @@ impl Report for StatusReport {
         }
         out.push_str(&format!("  detail: {}\n", self.policy.detail));
 
+        // AAASM-5628: `status` is read-only, so it answers even when the runtime
+        // that produced these levels could not be identified. What it must not
+        // do is let `host_enforced  active` stand as an *established* claim
+        // about this host — every line below describes whatever host that
+        // runtime is on. Naming it here, immediately above the ladder, rather
+        // than only in the `Runtime:` block a reader may have scrolled past.
+        if self.runtime.provenance.standing != "verified" {
+            out.push_str(&format!(
+                "\n! The runtime that produced the reading below is {}, so none of it is \
+                 attributable to this build — read the levels as reported, not established.\n",
+                self.runtime.provenance.standing
+            ));
+        }
         out.push_str("\nProtection levels:\n");
         for level in &self.levels {
             // Three marks for three states, and none of them is a sentence
@@ -530,7 +635,9 @@ impl Report for RemoveReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::integrations::model::{Assertion, EvidenceRow, RuntimeInfo, VerifyReport};
+    use crate::commands::integrations::model::{
+        Assertion, EvidenceRow, RuntimeInfo, RuntimeProvenanceInfo, VerifyReport,
+    };
 
     fn runtime() -> RuntimeInfo {
         RuntimeInfo {
@@ -539,6 +646,20 @@ mod tests {
             degraded: false,
             unavailable_verbs: Vec::new(),
             started_by_this_command: false,
+            provenance: RuntimeProvenanceInfo {
+                standing: "verified".to_string(),
+                verdict: "verified".to_string(),
+                build_id_source: Some("checkout".to_string()),
+                fields: Vec::new(),
+                detail: "the Agent Assembly runtime answering is 0.0.1 (abcdef012345) (pid 4242)".to_string(),
+                build_sha: Some("abcdef0123456789".to_string()),
+                pid: Some(4242),
+                executable_path: Some("/build/target/debug/aa-runtime".to_string()),
+                executable_present: Some(true),
+                source_path: Some("/build".to_string()),
+                started_at_unix_secs: Some(1_700_000_000),
+                reachable_runtimes: 1,
+            },
         }
     }
 

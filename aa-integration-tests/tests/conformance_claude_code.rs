@@ -1116,11 +1116,11 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
         3600,
     );
 
-    let services = DevIntServices {
-        lifecycle: std::sync::Arc::new(h.service_reporting_version(conformance_support::MEASURED_TOOL_VERSION)),
+    let services = DevIntServices::new(
+        std::sync::Arc::new(h.service_reporting_version(conformance_support::MEASURED_TOOL_VERSION)),
         tokens,
-        audit: std::sync::Arc::new(aa_runtime::devint::audit::TracingAuditSink),
-    };
+        std::sync::Arc::new(aa_runtime::devint::audit::TracingAuditSink),
+    );
     let shutdown = tokio_util::sync::CancellationToken::new();
     let server_token = shutdown.clone();
     let config = DevIntServerConfig {

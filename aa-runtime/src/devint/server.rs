@@ -52,6 +52,7 @@ use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
 use super::lifecycle::{ApprovalInput, IntegrationLifecycle, LifecycleError};
 use super::negotiate::{self, verb_available_at};
 use super::projection as project;
+use super::provenance::RuntimeProvenance;
 use super::socket;
 use super::token::{CapabilityToken, TokenDenial, TokenStore};
 use super::verb::DiVerb;
@@ -97,6 +98,25 @@ pub struct DevIntServices {
     pub tokens: TokenStore,
     /// Where auth failures and lifecycle mutations are recorded.
     pub audit: Arc<dyn DevIntAuditSink>,
+    /// Which build is answering (AAASM-5628).
+    ///
+    /// Captured once, at construction, and shared by every connection. A field
+    /// rather than a call inside the handshake so a test can serve a *different*
+    /// build's identity over a real socket — the mismatch this exists to catch
+    /// cannot otherwise be reproduced without two compilations.
+    pub provenance: Arc<RuntimeProvenance>,
+}
+
+impl DevIntServices {
+    /// Services that report the running process as their provenance.
+    pub fn new(lifecycle: Arc<dyn IntegrationLifecycle>, tokens: TokenStore, audit: Arc<dyn DevIntAuditSink>) -> Self {
+        Self {
+            lifecycle,
+            tokens,
+            audit,
+            provenance: Arc::new(RuntimeProvenance::detect()),
+        }
+    }
 }
 
 /// The bound DI-API server.
@@ -275,7 +295,7 @@ async fn serve_connection(
         .with_client(client_name.clone()),
     );
 
-    let version = match negotiate::to_wire(&negotiation) {
+    let version = match negotiate::to_wire(&negotiation, &services.provenance) {
         Ok(ack) => {
             let version = ack.di_api_version;
             codec::write_frame(&mut writer, DiResponseFrame::HelloAck(ack)).await?;
