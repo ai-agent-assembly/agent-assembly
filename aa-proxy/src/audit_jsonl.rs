@@ -38,8 +38,28 @@ use aa_security::{CredentialFinding, CredentialKind};
 ///
 /// Every variant states what the proxy **did**, never what it would have done.
 /// That distinction is why [`Self::AnsweredLocally`] exists (AAASM-5449).
+///
+/// # Why this is `#[non_exhaustive]`
+///
+/// `aa-proxy` is in the crates.io publish set and this enum is publicly
+/// reachable as `aa_proxy::audit_jsonl::ProxyAuditDecision`, so every variant
+/// added here is a source-breaking change for any downstream `match` that
+/// enumerates the variants. The set is *expected* to grow: each variant records
+/// one way the proxy can dispose of a request, and new dispositions arrive with
+/// new interception paths — `AnsweredLocally` is the second such addition.
+///
+/// `#[non_exhaustive]` moves that break to a single point in time. Downstream
+/// matches must carry a wildcard arm from now on, and in exchange no later
+/// variant breaks them again. Adopted with the variant rather than after it, so
+/// the cost is paid once (AAASM-5449).
+///
+/// Readers deserializing this type should expect values they do not know:
+/// `serde` will reject an unrecognised discriminant, so a consumer pinned to an
+/// older `aa-proxy` must tolerate a decode failure rather than assume the sink
+/// is corrupt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ProxyAuditDecision {
     /// Request forwarded unmodified (no findings, or policy `alert_only`).
     Forwarded,
