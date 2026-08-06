@@ -80,13 +80,19 @@ lands first, and the place every other layer cites. Every other mention of that
 fact is a *derivative* and is governed by
 [Reuse patterns](#reuse-patterns-summary-quotation-generation) below.
 
+> **This table is partly prescriptive.** Most rows describe where content already
+> lives. Some **assign** an owner the world has not caught up with yet, and a reader
+> who cannot tell which is which will mistake an aspiration for a fact. Rows marked
+> **→ move** are assignments with a known non-conforming instance, named underneath.
+> Everything unmarked is descriptive: that is where the content is today.
+
 | Content type | Canonical owner | Exactly where |
 |---|---|---|
 | **Product promise / positioning** | L1 product website | `official-website` — homepage and `/product` |
 | **Company and portfolio positioning** | L0 company site | `horonomy.dev` — the products section |
 | **Governance & enforcement architecture** | Core | [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) |
 | **Enforcement / claim vocabulary** — *Observed · Detected · Evaluated · Denied before execution · Redacted · Approval required · Degraded · Unmeasured · Experimental · Planned · Unsupported* | Core | [ADR 0033 §6](../adr/0033-canonical-governance-and-enforcement-architecture.md) |
-| **Lifecycle maturity labels** — `🧪 Release candidate`, `🗺️ Planned`, and their siblings | Docs Hub | [`source-of-truth.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/source-of-truth.md) |
+| **Lifecycle maturity labels** — `🧪 Release candidate` and `🗺️ Planned` | Docs Hub — **→ move** | [`source-of-truth.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/source-of-truth.md) |
 | **Which area is owned by which repository, and its visibility** | Docs Hub | `source-of-truth.md` — generated from the Hub's `hub-components.toml` |
 | **Measured protection state for a tool on a host** | Core | [ADR 0030](../adr/0030-developer-integration-boundaries-and-trust-model.md) §4 ladder; [Protection levels](../devtools/protection-levels.md) |
 | **Measured limits and known bypasses** | Core | [Limitations and known bypasses](../devtools/limitations.md) |
@@ -106,6 +112,34 @@ fact is a *derivative* and is governed by
 | **Org-shared metadata** (repo names, canonical URLs, display names, Jira IDs) | [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) — note its status is **Proposed**, so treat it as direction until ratified | the `.github` repository's `metadata/org-profile.yaml` |
 | **Visual specification** | [ADR 0025](../adr/0025-design-v2-authoritative-visual-spec.md) | `design/v2/` |
 | **Evidence for any claim above** | L6 | source, tests, `openapi/`, `proto/`, `verification-reports/` |
+
+### Known non-conforming instance: two maturity vocabularies
+
+The maturity-label row is an assignment, not a description. `source-of-truth.md`
+defines **two** labels — `🧪 Release candidate` and `🗺️ Planned` — on a maturity
+axis, alongside a separate two-value *visibility* axis (`🟢 Public`,
+`🔒 Private / internal`) which is a different thing and not a sibling label.
+
+The company site independently carries a **four**-member product-lifecycle
+vocabulary — `available`, `beta`, `release_candidate`, `coming_soon` — in
+`src/data/productLifecycle.ts`, three of whose members the named owner does not
+define. Its `release_candidate` label deliberately reuses the Hub's exact wording,
+and its source values come from the pinned company registry rather than from
+`source-of-truth.md`.
+
+Two honest observations before anyone "fixes" this:
+
+- The two vocabularies are **not obviously the same axis**. "How mature is a product
+  in the company portfolio" and "how mature is an area of the Agent Assembly
+  documentation" can legitimately differ in granularity.
+- The company-site file is already doing the careful thing — it derives from a
+  registry rather than hand-writing per card, and it refuses to coin a third
+  spelling for a state the Hub already names.
+
+So the prescribed move is **not** "delete one". It is: decide whether these are one
+vocabulary or two, and if two, name the axis each one covers so neither reads as the
+other. That decision is an ownership assignment across an org boundary, which makes
+it AAASM-5621's rather than this page's.
 
 ### Roadmap has no canonical owner yet
 
