@@ -143,22 +143,31 @@ it AAASM-5621's rather than this page's.
 
 ### Roadmap has no canonical owner yet
 
-Searching the org's public repositories for a roadmap document finds none: no
-repository publishes a roadmap page, and the only occurrences of the word are
-incidental prose on three Docs Hub pages plus the company site's undated visual
-portfolio markers. Forward-looking statements are therefore made today wherever
-someone happens to need one, which is the condition this page exists to end.
+**No repository in the org publishes a roadmap page** — there is no file or route by
+that name across the public repositories. What does exist is scattered
+forward-looking prose that no owner governs: this repository alone carries several
+occurrences, including `docs/src/operations/ops-registry-architecture.md`'s "not on
+the roadmap for v0.0.1", which is a forward-looking statement in Core docs in
+**neither** of the bounded forms admitted below.
+
+So the gap is not that nobody has written a roadmap. It is that roadmap *statements*
+are made wherever someone needs one, and nothing governs them.
 
 Until a roadmap owner is designated, **no layer may publish a dated commitment**, and
-a forward-looking statement is admissible only in one of two bounded forms:
+a forward-looking statement is admissible only in one of these bounded forms:
 
 - ADR 0033 §6's **`Planned`** term — decided but not implemented, carrying a ticket
-  reference and **no capability claim**; or
+  reference and **no capability claim**;
+- ADR 0033's **`Research`** term, for a direction with no implementation and no
+  commitment that it will get one; or
 - the Docs Hub's **`🗺️ Planned`** maturity label on an area in `source-of-truth.md`.
 
-Designating the owner is a decision, not an editorial choice, and is handed to
-AAASM-5621 along with the other items in
-[What this page hands off](#what-this-page-hands-off).
+> **This page knowingly does not meet its own first acceptance criterion here.**
+> "Every major content type has exactly one canonical owner" is unmet for roadmap:
+> zero owners is not one, and an interim admissibility rule is not an assignment.
+> Designating the owner is an ownership decision, not an editorial choice, so it is
+> deferred to AAASM-5621 rather than settled here — a recorded deferral being worth
+> more than a bare gap. See [What this page hands off](#what-this-page-hands-off).
 
 ### The two vocabularies do not absorb each other
 
