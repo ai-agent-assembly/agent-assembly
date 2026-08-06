@@ -55,6 +55,6 @@ export](../operations/compliance-export.md).
 ---
 
 With these four in hand — **agents** perform actions, **policy** decides
-allow/deny, **budget** caps spend, and **audit** records everything — the [three-
+allow/deny, **budget** caps spend, and **audit** records each evaluated action — the [three-
 layer interception model](three-layer-model.md) explains *how* the runtime
 actually sees an agent's actions in order to govern them.
