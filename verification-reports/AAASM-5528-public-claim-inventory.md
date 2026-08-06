@@ -145,6 +145,23 @@ Wording is deliberately aligned with what AAASM-5612 is publishing on
 `docs/src/security-model.md` (PR #134), so the hub does not ship two different
 descriptions of one mechanism.
 
+### E7 — the SDK layer is advisory; the proxy is the enforcement point
+
+Reconciles with E3 rather than contradicting it. E3 established that the
+*language wrapper* raises before the wrapped body. This block records what that
+does and does not amount to.
+
+| Fact | Evidence |
+|---|---|
+| `resolve_decision` has **no in-tree caller that refuses to execute** — refusal lives in the out-of-repo FFI shims | `aa-sdk-client/src/decision.rs:32-33`: *"The SDK remains advisory: `aa-runtime` / proxy / eBPF are the authoritative enforcement points. This is a defense-in-depth posture, not the primary gate."* |
+| `query_policy` is a **voluntary** call over UDS; a non-cooperating process simply does not make it | `aa-sdk-client/src/client.rs:247-279` |
+| `aa-runtime`'s `handle_policy_query` is *Denied before execution* **only if the shim honours the answer** | ADR 0033 §"canonical verb" table |
+| `RuntimeScanner` runs on `IpcFrame::EventReport` — *after* the action — and returns counters, not a verdict | `aa-runtime/src/pipeline/mod.rs:127`; `enforcement.rs:115-127` |
+| The proxy, by contrast, denies **out of process** and before dialling upstream | `aa-proxy/src/proxy/mod.rs:1033-1040,822-833,895-908,627-633` |
+
+Correct public register: the **proxy** *denies before execution*; the **SDK**
+*evaluates* and is **advisory**; **eBPF** *observes* / *detects*.
+
 ---
 
 ## Inventory — `ai-agent-assembly/official-website`
@@ -166,6 +183,7 @@ descriptions of one mechanism.
 | W13 | `blog/2026-06-25-…/index.md:20-22` | "the proxy and eBPF layers are where the boundary becomes hard to cross" | absolute | qualify | eBPF raises detection, not the boundary. | E1 |
 | W14 | `i18n/zh-Hant/code.json` | zh-Hant mirrors of W1–W7 | (inherits) | qualify | Translated in lockstep. | — |
 | W15 | `src/components/home/index.tsx:131-135` | Hero terminal mock: "secret STRIPE_KEY injected at runtime — never in context" | absolute · feature-not-shipped | qualify | Advertises an unreachable capability using a credential type with no detector. Replaced with an `AKIA…` key ID, which the scanner matches **by prefix** (`aa-security/src/scanner.rs:17`), being redacted. First replacement attempt named `AWS_SECRET_ACCESS_KEY`, which the scanner does **not** match — it detects AWS by key-ID prefix (`AKIA`/`ASIA`), never by env-var name, and no `AwsSecretAccessKey` variant exists. Corrected. | E4 · E6 |
+| W18 | `src/components/home/index.tsx` hero, `src/pages/index.tsx` meta, `src/pages/product.tsx` layers, `i18n/zh-Hant/code.json` `product.layers.body` | "The SDK and proxy can deny an action before it runs" / zh-Hant "SDK 與 proxy 可以在行為執行前予以拒絕" | observe-presented-as-prevent | qualify | Proxy denies; SDK evaluates and is advisory. The zh-Hant string was the sharpest form of the claim and had **no English counterpart carrying it** after the surrounding English was bounded — it was consistent with the *old* English and became stronger than the new. | E7 |
 | W16 | `src/components/home/index.tsx:257` | "Real credentials are injected at execution time and never enter the model context the agent can see." | absolute · feature-not-shipped | remove | "Agent Assembly scans your agents' outbound traffic and redacts credentials before they reach a model or an API." | E4 |
 | W17 | `src/pages/product.tsx:109-116` | "Credentials injected at execution time" / "Secrets never enter the model context" | absolute · feature-not-shipped | remove | Replaced with the redact-before-forward description and its default. | E4 |
 
@@ -193,6 +211,7 @@ descriptions of one mechanism.
 | A18 | `architecture/infra-overview.md:60` | Mermaid node label "*no code changes*" | no-code-change | qualify | "requires proxy routing" | E2 |
 | A19 | `architecture/README.md:5` | "routing every action through one central **gateway**" | absolute | qualify | "routing governed actions through one central gateway" | E3 |
 | A20 | `governance/capability-matrix.md:22` | "The tool cannot bypass enforcement, but may operate without constraint if AAASM is offline." | absolute | remove | Absolute deleted, not softened. The tier now names what mediates (SDK/wrapper seam, `aa-proxy`), the platform (macOS and Linux, with the CA install differing per platform), and the decision timing (both synchronous), followed by a boundary note enumerating unmanaged launch, direct calls, unsupported transports, hosts not under MitM, opaque SaaS hosts, and AAASM-offline. | E1 · E2 · E3 |
+| A35 | `introduction/three-layer-model.md:30`, `governance/capability-matrix.md:31,36`, `usage-guide/interception-layers.md:103` | "layers 1 and 2 can **deny an action before it runs**" / "Two mechanisms, both deciding *before* the action proceeds" | observe-presented-as-prevent | qualify | Splits the enforcing layer (proxy) from the advisory one (SDK), citing `decision.rs:32-33` and ADR 0002. | E7 |
 | A33 | `.claude/CLAUDE.md` (three-layer section) | "kernel uprobes on SSL libs + exec/file syscalls; catches **everything**, including bypass attempts. **Linux-only.**" | absolute · observe-presented-as-prevent · platform-overreach | qualify | Observe-only, OpenSSL, Linux (file-I/O kprobes x86_64-only), fails open; described as one possible host mechanism. | E1 |
 | A34 | `.claude/CLAUDE.md` (crate map + prose) | "`aa-runtime` — Authoritative enforcement pipeline (`RuntimeScanner`)" | mislabelled-mechanism | qualify | Splits the allow/deny/pending gate (`handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) from the scan/redact stage (`RuntimeScanner`, `aa-runtime/src/pipeline/enforcement.rs:182`), which is authoritative *versus the SDK's own scan*, not the policy gate. | verified directly |
 | A21 | `governance/capability-matrix.md:34` | "every action emits an audit event" | absolute | qualify | "every observed action emits an audit event" | E3 |
@@ -232,6 +251,7 @@ descriptions of one mechanism.
 | D6 | `docs/src/README.md:85` | "kernel-level hooks that watch SSL libraries and process syscalls to catch bypass attempts at the OS level. Linux only." | observe-presented-as-prevent · platform-overreach | qualify | "observe-only … OpenSSL … Linux" (file-I/O kprobes x86_64-only) | E1 |
 | D7 | `docs/src/comparison.md:3` | "a security checkpoint in front of every agent action" | absolute | qualify | "in front of each governed agent action" | E3 |
 | D8 | `docs/src/comparison.md:31` | "Network-level interception (no code change)" | no-code-change | qualify | Footnoted with the routing/CA/transport prerequisites. | E2 |
+| D13 | `docs/src/README.md:24,83` | "blocks risky calls at the SDK and proxy layers"; SDK "applies an allow/deny decision before the wrapped call runs" | observe-presented-as-prevent | qualify | Proxy blocks; SDK advises. | E7 |
 | D9 | `docs/src/comparison.md:55` | "Immutable audit log with tamper-evident signatures — ✓ 🚧 (HMAC-SHA256)" | overstated-crypto-guarantee · absolute | qualify | Row renamed to "Hash-chained, verifiable audit log", cell to `partial (unkeyed SHA-256 chain over the JSONL sink)`, with a footnote carrying the full bounds. | E5 |
 | D10 | `docs/src/comparison.md:82` | "AAASM's audit log entries are signed with HMAC-SHA256, making post-hoc alteration detectable" (marked 🚧 Enterprise) | overstated-crypto-guarantee | qualify | Restated as an unkeyed SHA-256 hash chain over the JSONL sink, verifiable with `aasm audit verify-chain`, **shipping in OSS** — the 🚧 Enterprise marker also *understated* it. | E5 |
 | D11 | `docs/src/comparison.md:79` | "No competitor in this matrix offers kernel-level **enforcement**." | observe-presented-as-prevent | qualify | eBPF is a detection layer; restated as "kernel-level visibility". | E1 |
@@ -262,14 +282,14 @@ they are third-party or generated text, not authored product claims.
 
 ## Summary by claim class
 
-Machine-counted from the rows above (63 rows). A row carrying two classes is
+Machine-counted from the rows above (66 rows). A row carrying two classes is
 counted under each, so the class table sums higher than the row count.
 
 | Class | official-website | agent-assembly | docs | Total |
 |---|---|---|---|---|
 | absolute | 8 | 24 | 4 | **36** |
 | no-code-change | 3 | 7 | 3 | **13** |
-| observe-presented-as-prevent | 3 | 4 | 3 | **10** |
+| observe-presented-as-prevent | 4 | 5 | 4 | **13** |
 | unbounded scope | 5 | 2 | 3 | **10** |
 | platform-overreach | 1 | 3 | 1 | **5** |
 | feature-not-shipped | 3 | 0 | 0 | **3** |
@@ -279,12 +299,26 @@ counted under each, so the class table sums higher than the row count.
 | Verdict | official-website | agent-assembly | docs | Total |
 |---|---|---|---|---|
 | remove | 2 | 5 | 1 | **8** |
-| qualify | 15 | 29 | 11 | **55** |
-| **Rows** | **17** | **34** | **12** | **63** |
+| qualify | 16 | 30 | 12 | **58** |
+| **Rows** | **18** | **35** | **13** | **66** |
 
 `keep-with-boundary` entries are listed separately per repo below the tables
 they belong to and are not numbered rows, so they are excluded from these
 counts: 7 in `agent-assembly`, 2 in `docs`.
+
+### Method note added during review
+
+Two defects in this artifact's own process are worth recording, because both are
+generalisable:
+
+1. **Scan by claim class, not by vocabulary.** The first built-output re-grep
+   reported clean because `immutable` was not in the banned-word list, while five
+   rewritten sentences still carried it. A token list only finds the tokens you
+   already thought of.
+2. **Re-read the whole translation file, not the changed strings.** The zh-Hant
+   `product.layers.body` asserted SDK pre-execution refusal. It was *pre-existing*
+   and consistent with the old English, so it never appeared in a changed-strings
+   diff — it became an over-claim only once the English around it was bounded.
 
 ## Deferred
 
