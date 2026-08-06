@@ -779,4 +779,155 @@ mod tests {
         let json = serde_json::to_value(status_declaring(Some("supported"))).expect("serialize");
         assert_eq!(json["state"], serde_json::json!("ladder"));
     }
+
+    // ---- AAASM-5636: bare unix epochs in the human rendering -----------------
+
+    /// Seconds since the epoch, `age` seconds ago.
+    fn secs_ago(age: u64) -> u64 {
+        u64::try_from(chrono::Utc::now().timestamp()).expect("a clock before 1970") - age
+    }
+
+    /// The text after `label:` on the first line carrying it.
+    fn labelled(rendered: &str, label: &str) -> String {
+        rendered
+            .lines()
+            .find_map(|line| line.trim_start().strip_prefix(label))
+            .unwrap_or_else(|| panic!("no `{label}` line in:\n{rendered}"))
+            .trim()
+            .to_string()
+    }
+
+    /// A rendering a person can date without a converter: absolute local time,
+    /// and how old the reading is.
+    fn assert_reads_as_a_time(value: &str) {
+        assert!(
+            value
+                .split_whitespace()
+                .next()
+                .is_some_and(|first| first.parse::<u64>().is_err()),
+            "a bare epoch integer reached the user: {value}"
+        );
+        assert!(!value.contains("(unix)"), "still labelled as a unix epoch: {value}");
+        assert!(
+            value.contains('-') && value.contains(':'),
+            "no absolute time in: {value}"
+        );
+        assert!(
+            value.contains("ago") || value.contains("just now") || value.contains("from now"),
+            "no relative age in: {value}"
+        );
+    }
+
+    /// A status whose reading and evidence are four minutes old.
+    fn status_observed_at(observed: u64) -> StatusReport {
+        use aa_proto::assembly::devint::v1 as wire;
+
+        let view = wire::StatusView {
+            tool_id: "claude-code".to_string(),
+            phase: "installed".to_string(),
+            state: "ladder".to_string(),
+            achieved_level: "partially_integrated".to_string(),
+            planned_level: "gateway_protected".to_string(),
+            adapter_ceiling: "l2_enforce".to_string(),
+            compatibility: "compatible".to_string(),
+            evidence: vec![wire::EvidenceView {
+                mechanism: "managed_settings".to_string(),
+                kind: "read_back".to_string(),
+                outcome: "matched".to_string(),
+                observed_at_unix_secs: observed,
+                detail: "the managed keys match".to_string(),
+            }],
+            next_level: None,
+            observed_at_unix_secs: observed,
+            drift_mismatched: Vec::new(),
+            state_reason: String::new(),
+            state_remediation: String::new(),
+            policy: None,
+        };
+        StatusReport::from_view(runtime(), &view, None)
+    }
+
+    /// `observed at: 1785983102 (unix)` is a number a person has to go and
+    /// convert. Freshness is the question this command exists to answer, so the
+    /// age must be on the line too (AAASM-5636).
+    #[test]
+    fn the_status_reading_is_dated_in_local_time_with_its_age() {
+        let rendered = status_observed_at(secs_ago(4 * 60)).render_human();
+        let observed = labelled(&rendered, "observed at:");
+        assert_reads_as_a_time(&observed);
+        assert!(observed.contains("4 minutes ago"), "{observed}");
+    }
+
+    /// Every timestamp in the family, not just the one the bug named.
+    #[test]
+    fn the_last_verification_and_the_evidence_rows_are_dated_the_same_way() {
+        let rendered = status_observed_at(secs_ago(90 * 60)).render_human();
+        assert_reads_as_a_time(&labelled(&rendered, "last verification:"));
+
+        let evidence = rendered
+            .lines()
+            .find(|line| line.contains("managed_settings"))
+            .expect("the read-back row must be rendered");
+        assert!(
+            !evidence.contains(" at 1"),
+            "an epoch integer survived on the evidence row: {evidence}"
+        );
+        assert!(
+            evidence.contains("hour"),
+            "no relative age on the evidence row: {evidence}"
+        );
+    }
+
+    /// `verify` dates its run the same way.
+    #[test]
+    fn a_verification_run_is_dated_in_local_time_with_its_age() {
+        let mut report = vacuous();
+        report.verified_at_unix_secs = secs_ago(30);
+        report.evidence[0].observed_at_unix_secs = report.verified_at_unix_secs;
+        let rendered = report.render_human();
+        assert_reads_as_a_time(&labelled(&rendered, "ran at:"));
+    }
+
+    /// The relative half is what a reader acts on, so its wording is asserted
+    /// against a fixed clock rather than the machine's.
+    #[test]
+    fn the_age_is_worded_from_the_distance_to_now() {
+        let now = DateTime::from_timestamp(1_700_000_000, 0).expect("a representable now");
+        for (observed, expected) in [
+            (1_700_000_000_u64, "just now"),
+            (1_699_999_760, "4 minutes ago"),
+            (1_699_996_400, "1 hour ago"),
+            (1_699_913_600, "1 day ago"),
+            (1_700_000_600, "10 minutes from now"),
+        ] {
+            let rendered = timestamp_at(observed, now);
+            assert!(rendered.ends_with(&format!("({expected})")), "{observed}: {rendered}");
+        }
+    }
+
+    /// A value no calendar can name says so rather than being given a date.
+    #[test]
+    fn a_timestamp_with_no_calendar_date_is_reported_not_guessed() {
+        let now = DateTime::from_timestamp(1_700_000_000, 0).expect("a representable now");
+        let rendered = timestamp_at(u64::MAX, now);
+        assert!(rendered.contains("outside the representable range"), "{rendered}");
+    }
+
+    /// The integers are the contract `--output json` publishes. A human-side
+    /// rename must leave every one of them exactly as it was.
+    #[test]
+    fn the_json_timestamps_stay_integers() {
+        let observed = secs_ago(4 * 60);
+        let json = serde_json::to_value(status_observed_at(observed)).expect("serialize");
+        assert_eq!(json["observed_at_unix_secs"], serde_json::json!(observed));
+        assert_eq!(json["last_verified_at_unix_secs"], serde_json::json!(observed));
+        assert_eq!(
+            json["read_back_evidence"][0]["observed_at_unix_secs"],
+            serde_json::json!(observed)
+        );
+
+        let verify = serde_json::to_value(vacuous()).expect("serialize");
+        assert_eq!(verify["verified_at_unix_secs"], serde_json::json!(1));
+        assert_eq!(verify["evidence"][0]["observed_at_unix_secs"], serde_json::json!(1));
+    }
 }
