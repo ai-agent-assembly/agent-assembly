@@ -424,6 +424,7 @@ impl LayerDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aa_core::attestation::ClaimTerm;
 
     #[test]
     fn individual_flags_have_correct_bits() {
@@ -577,5 +578,55 @@ mod tests {
         assert_eq!(set, LayerSet::EBPF | LayerSet::PROXY | LayerSet::SDK);
 
         std::env::remove_var("AA_LAYERS");
+    }
+
+    // ── AAASM-5535: attestation ──────────────────────────────────────────────
+
+    /// A fixed instant for attestation tests, so freshness never depends on the
+    /// wall clock.
+    const ATTEST_NOW: u64 = 1_700_000_000;
+
+    fn state_of<'a>(att: &'a ProtectionAttestation, component: &str) -> (ClaimTerm, &'a LayerAttestation) {
+        let layer = att
+            .layers
+            .iter()
+            .find(|l| l.component == component)
+            .unwrap_or_else(|| panic!("{component} must be present in the attestation"));
+        (layer.verified_state_at(ATTEST_NOW, att.freshness_window_secs), layer)
+    }
+
+    /// The defect this Story exists to close. `AA_LAYERS=ebpf,proxy,sdk` makes
+    /// `detect()` report all three layers as active on a host whose own probes
+    /// say otherwise, and the bitflag gives no caller any way to tell.
+    ///
+    /// `detect()` keeps that behaviour — it is an existing contract — but the
+    /// attestation of the *same* readout reports every component as `Degraded`:
+    /// asked for, and substantiated by nothing.
+    #[test]
+    fn attest_reports_env_override_layers_as_degraded_not_active() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var(AA_LAYERS_ENV, "ebpf,proxy,sdk");
+
+        let claimed = LayerDetector::detect();
+        let att = LayerDetector::attest(ATTEST_NOW);
+
+        std::env::remove_var(AA_LAYERS_ENV);
+
+        // The legacy view still says "all three active".
+        assert_eq!(claimed, LayerSet::EBPF | LayerSet::PROXY | LayerSet::SDK);
+
+        // The attestation of the same readout refuses to.
+        for component in ["ebpf", "proxy", "sdk"] {
+            let (term, layer) = state_of(&att, component);
+            assert_eq!(term, ClaimTerm::Degraded, "{component}");
+            assert_eq!(layer.selected_mode, SelectedMode::Enabled, "{component}");
+            assert!(
+                matches!(layer.basis, AttestationBasis::EnvironmentOverride { .. }),
+                "{component} basis was {:?}",
+                layer.basis
+            );
+        }
+        assert!(!att.any_coverage_verified_at(ATTEST_NOW));
+        assert_eq!(att.degraded_at(ATTEST_NOW).len(), 3);
     }
 }
