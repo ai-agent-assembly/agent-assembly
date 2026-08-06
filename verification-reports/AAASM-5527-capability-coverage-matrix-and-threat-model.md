@@ -229,3 +229,74 @@ boundary.
   findings](#cross-cutting-findings-reported-not-fixed).
 - It **is** the current-state substrate both of those should be reconciled
   against.
+
+---
+
+# The coverage matrix
+
+## How to read it
+
+Each domain carries two tables. **Table 1** answers *what is covered and how
+strongly*; **Table 2** answers *what defeats it and what proves it*. Together they
+carry all seventeen fields the ticket requires; the
+[YAML source](AAASM-5527-capability-coverage-matrix.yaml) carries the same
+fields individually split for machine consumption (AAASM-5531).
+
+Column conventions:
+
+- **Coverage** is exactly one [ADR 0033 §6](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) term.
+- **Timing** is relative to the action taking effect: `pre` (decision precedes the
+  effect), `in-line` (decision precedes egress but the caller has already
+  committed), `post` (after the effect), `none`.
+- **Mode** carries two facts separated by `·` — enforce-vs-observe, and
+  synchronous-vs-best-effort. "Observe · best-effort" is the weakest cell in the
+  matrix and appears often; that is the finding, not a formatting artefact.
+- **Bnd** is the [boundary class](#boundary-taxonomy) B1–B7.
+- **⚠ Q3** — the capability exists but is **off by default**, so what ships is the
+  default, not the capability. **⚠ Q4** — the named mechanism does not exist, or
+  cannot be reached by a released binary.
+- **Level** columns use ADR 0030's ladder for dev-tool rows and ADR 0033 §6
+  elsewhere. "Target" is this spike's *recommendation*, not a commitment.
+
+## D1 · Framework tool calls and direct function calls
+
+*(SDK seam rows — see below.)*
+
+## D2 · Host actions: shell, subprocess, filesystem, browser, database
+
+The single most consequential finding in this artifact: **for a native process on
+the normal agent path there is no pre-execution mediation of a shell command, a
+subprocess spawn, or a host file access on any shipped platform.** The policy
+language can express such a rule; nothing in a released build can enforce it.
+
+### D2 · Table 1 — coverage
+
+| ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
+|---|---|---|---|---|---|---|---|---|---|
+| **H1** | Shell command / `ProcessExec` by a native agent process | any · any | all · any · n/a | *none on the shipped path* | none | — · — | n/a — nothing runs | **Unmeasured** ⚠ Q4 | — |
+| **H2** | Shell command, Linux, eBPF syscall guard armed | any · any | Linux (x86_64 + aarch64) · `AA_EBPF_CONFINE_PID` set **and** policy lowers a non-empty allowlist · syscall | `aa-ebpf-probes` syscall guard via `aa-ebpf-loaderd` | post | enforce-by-kill · async | **fails open** — load/attach failure degrades and the agent proceeds | **Detected** + async process kill — explicitly *not* Denied before execution ⚠ Q3 ⚠ Q4 | B3 |
+| **H3** | Process exec observation | any · any | Linux · any · `sched_process_{fork,exec,exit}` tracepoints | `aa-ebpf-probes/src/exec_probes.rs` | post | observe · best-effort | fails open; **no ring-buffer reader is wired** (`aa-runtime/src/runtime.rs:510-512`) | **Unmeasured** ⚠ Q4 | B5 |
+| **H4** | File read / write / unlink by a native process | any · any | **Linux x86_64 only** · any · `__x64_sys_*` kprobes | `aa-ebpf/src/kprobe.rs:145-160` (14 targets) | post | observe · best-effort | fails open. The path "blocklist" sets `event.flags = 1` and the syscall proceeds | **Observed** / **Detected** ⚠ Q4 | B5 |
+| **H5** | File access by a WASM-marked tool | n/a · WASM guest | all · `aasm sandbox run` or `POST /dispatch_tool` with `ToolKind::Wasm` · in-process | `aa-sandbox` WASI preopen allowlist | pre | enforce · sync | sealed by default (`preopened_dirs` empty) — fail-closed | **Denied before execution** | B3 (of the guest) |
+| **H6** | Browser action (Playwright / Selenium / Puppeteer) | any · any | all · any · any | *none* | none | — · — | n/a | **Unmeasured** ⚠ Q4 | — |
+| **H7** | Database query | any · any | all · any · any | *none* | none | — · — | n/a | **Unmeasured** ⚠ Q4 | — |
+| **H8** | Shell / file rule declared in a tool's own settings file | Claude Code · n/a | macOS · settings write · n/a | `aa-devtool-claude-code` managed settings | pre (by the tool) | enforce-by-the-tool · sync | If the tool ignores the keys, nothing happens and nothing detects it | **Unmeasured** — tool-governance, not a data-path claim | B6 |
+
+### D2 · Table 2 — risk and evidence
+
+| ID | Identity source | Policy context available | Known bypasses | Evidence test / gap | Current | Target |
+|---|---|---|---|---|---|---|
+| **H1** | none | `GovernanceAction::ProcessExec { command }` (`aa-core/src/policy.rs:229-233`) and `Capability::TerminalExec` (`aa-security/src/policy/capability.rs:42`) are both expressible, evaluated by the engine (`aa-gateway/src/engine/mod.rs:2420-2437`) and carried on the wire (`proto/policy.proto:69,138-139`) — **but only for an action a caller volunteers** | Everything. There is no interception at all | **Gap.** No test can exist for a mechanism that does not exist. Probed with positive control: `McpToolCall` 20 hits vs `PreToolUse`/`pre_tool_use`/`seccomp_filter`/`LD_PRELOAD`/`intercept_exec` **0 hits each** across `aa-proxy/src aa-runtime/src aa-gateway/src aa-cli/src` | **Unmeasured** | Needs a decision, not a ticket — see [Go/No-Go](#go--conditional-go--no-go-per-boundary-class) |
+| **H2** | PID in `PID_FILTER`, seeded from `AA_EBPF_CONFINE_PID` | Syscall allowlist lowered from the policy AST (`aa-security/src/policy/ebpf.rs:161,173` → `aa-runtime/src/ebpf_control.rs:36,190`) | Off by default; **`aa-ebpf-loaderd` is not in the release artifact set**; the offending syscall completes before the SIGKILL lands; fork propagation fails open past 1024 PIDs; load-time window runs the confined PID with an empty allowlist | `aa-integration-tests/tests/e2e_ebpf.rs` — **path-gated to `aa-ebpf*/**` changes, so normally SKIPPED on `main`** (`.github/workflows/ci.yml:131-133`); weekly schedule is the standing coverage | **Experimental** | Keep Experimental until AAASM-3872 lands a synchronous deny |
+| **H3** | PID / process tree | none consulted | No reader is wired, so events never leave the kernel ring buffer | **Gap** — no evidence test, because nothing consumes the events | **Unmeasured** | Wire the reader or withdraw the capability |
+| **H4** | PID | Path blocklist map | x86_64 only — no `__arm64_sys_*` target exists (verified: 16 `__x64_sys_` matches, 0 `__arm64_sys_` in `aa-ebpf/src/kprobe.rs`); observe-only; loaderd unreleased | `aa-integration-tests/tests/e2e_file_monitoring.rs`, same CI gating as H2 | **Observed** (Linux x86_64 only) | State the arch bound wherever file coverage is claimed |
+| **H5** | n/a — the guest has no identity | Preopen list, fuel, memory pages, wall clock (`aa-sandbox/src/policy.rs:21-90`) | Not on any agent's normal tool-call path. `aa-proxy` has **no** `aa-sandbox` dependency, contradicting `aa-sandbox/src/lib.rs:10-11` | `aa-integration-tests/tests/e2e_tool_sandbox.rs`, `e2e_tool_sandbox_fs.rs`, `e2e_dispatch_tool_wasm.rs` — these **do** run on `main` | **Denied before execution**, for WASM only | Do not cite as agent-action mediation |
+| **H6** · **H7** | — | **Not expressible at all.** There is no `Browser` and no `Database` action kind — verified with positive control: 68 matches for `FileRead\|FileWrite\|Network\|TerminalExec` across `aa-security/src/policy/`, **0** for `Browser`, **0** for `Database` | — | **Gap** | **Unmeasured** | Decide whether to model them as `ToolCall`/`NetworkRequest` or add kinds |
+| **H8** | Tool config scope (User / Project / Managed) | `permissions.deny` etc. in the managed document | Whether the tool honours the keys is **unmeasured** — "the open half of AAASM-5298". No `PreToolUse` hook is ever installed (verified: `"permissions"` 15 hits vs `PreToolUse` **0** across `aa-devtool-claude-code/src`) | Read-back of the written file only — evidence of the *write*, never of *enforcement* | **Integrated** (ADR 0030) | `GatewayProtected` requires a core-side adjudication, which this path cannot supply |
+
+> **The `PreToolUse` finding deserves its own sentence.** Claude Code exposes a
+> hook that can mediate a `Bash` tool call before it runs — the one mechanism that
+> could close H1 for the product's flagship integration — and Agent Assembly never
+> registers one. `WRITABLE_KEYS` (`aa-devtool-claude-code/src/managed_settings.rs:96-105`)
+> contains the boolean `allowManagedHooksOnly` but never a `hooks` array. This is
+> not a limitation of the platform; it is an unimplemented capability.
