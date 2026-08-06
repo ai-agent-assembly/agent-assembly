@@ -598,6 +598,67 @@ The first exchange on every connection, before any lifecycle verb is accepted:
   mid-connection renegotiation to downgrade into. Downgrade attempts are a required
   threat-model test.
 
+#### 5.4a Update — AAASM-5628: the handshake states which build is answering
+
+*Added by [AAASM-5628](https://lightning-dust-mite.atlassian.net/browse/AAASM-5628). §5.4
+above is unchanged; this extends the same frame.*
+
+§5.4 gave `HelloAck` a `core_version` so "a client can report what it is talking to without
+inferring it". That turned out to be necessary and not sufficient. During the
+[AAASM-5453](https://lightning-dust-mite.atlassian.net/browse/AAASM-5453) QA campaign, two
+runtimes produced **confident wrong answers** that were indistinguishable from product
+regressions:
+
+1. A runtime built from a **different checkout** answered and reported `DI-API v2` where the
+   checkout under test declared `DI_API_MAX_SUPPORTED = 3`. Every measurement in that
+   campaign was silently against the wrong build. Two checkouts share a `core_version`, so
+   nothing on any surface disagreed.
+2. A runtime whose **worktree had been deleted** kept serving and reported
+   `claude-code … not_installed` while Claude Code 2.1.220 was healthy and on `PATH`.
+   `aasm integrations plan` exited 3 with "Claude Code is not installed on this host" — a
+   sentence a contributor would reasonably file as a regression, or "fix" in a detection path
+   that was never broken.
+
+Later, two runtimes from the **same** build were observed serving simultaneously (pids 35757
+and 87718). Both were correct, and it was still an attribution failure: a client that cannot
+say *which* process answered cannot attribute its result to one.
+
+**Port reachability is never sufficient.** In every case the socket was reachable and the
+runtime was healthy. It simply was not the build under test — or not the only one.
+
+**Decision.** `HelloAck` carries a `RuntimeProvenance` at **DI-API v4**
+(`DI_API_PROVENANCE_SINCE`): `core_version`, `build_sha`, `pid`, `executable_path`,
+`executable_present`, `source_path`, `started_at_unix_secs`. Like v3 it adds **no verb**, so
+a v2/v3 peer is not `Degraded`. The client compares it against the identity compiled into its
+own `aa-runtime` — `aa-cli` depends on `aa-runtime`, so equal constants mean "compiled
+together" — and **refuses** (`aasm` exit 10, `runtime_unverified`) rather than report what an
+unidentified runtime said.
+
+Three conditions are kept as *separate* answers, because a fix for one does not cover the
+others:
+
+| Condition | Why it is not folded into the others |
+| --- | --- |
+| **Mismatch** — a different `build_sha` or `core_version` | The case a version string cannot see |
+| **Executable missing** — the binary it serves from is gone | Its identity can no longer be re-derived *even though the SHA matches* |
+| **Ambiguous** — more than one runtime reachable | Two runtimes from one commit have **identical** identities; no identity comparison can notice there are two |
+
+`executable_present` is evaluated when the frame is written, never when the runtime started:
+the failure is a worktree deleted *while the runtime keeps serving*.
+
+**This does not widen §5.5.** Every field is a fact about the runtime's own process, and the
+peer on this socket already shares the runtime's UID (§5.2), so it could read all of it from
+the OS. What the message adds is that the runtime *states* it, in the same breath as the
+answer it is being trusted for. `AA_BUILD_SOURCE_PATH` can be set empty at build time so a
+published binary carries no build-machine path.
+
+**Accepted risk.** A build made outside a checkout reports `build_sha = "unknown"`, and two
+`unknown`s compare equal. Two binaries from the same published tarball genuinely are one
+build, and refusing them would break every installed-from-crates.io pairing to catch nothing;
+one `unknown` against a real SHA — a release binary against a local build — is still a
+mismatch. *Reconsideration trigger:* if release artifacts ever ship without their SHA
+injected, this degrades to version-only comparison for released users and must be revisited.
+
 #### 5.5 Data minimisation — the response types cannot carry what must not leave
 
 Minimisation is enforced by the *shape of the response types*, not by a redaction pass
@@ -944,6 +1005,7 @@ implementing tickets must carry:
 | V11 | A capability absent from `declared`, and a `RequiresVersion` with `detected: None`, both resolve to **absent** — never `Supported`, never `Unsupported` | §3.4, ADR 0029 fail-absent |
 | V12 | `examples/aa-devtool-sample-myeditor` compiles unchanged against `LegacyAdapterShim` and produces a valid one-step plan; its existing `tests/contract.rs` stays green | §7 |
 | V13 | Replaying a captured, still-valid request produces no state the legitimate client could not have produced (idempotence), and a revoked token's replay is denied | §5.6 |
+| V14 | A runtime reporting a different `build_sha` is refused by the client; a runtime whose `executable_path` no longer exists is reported unidentifiable **even when its build matches**; two reachable runtimes are reported rather than resolved **even when they are the same build**; and a test asserting only that some runtime is reachable passes while identity mismatches. Each proved by mutation. | §5.4a |
 
 Until [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279) lands
 there is no DI-API to test, so V2/V3/V6–V9/V13 are stated here as the acceptance bar for
@@ -987,6 +1049,8 @@ that ticket rather than as checks present in this documentation-only change.
 | [AAASM-5278](https://lightning-dust-mite.atlassian.net/browse/AAASM-5278) | Implements the plan / receipt / drift / rollback machinery Decisions 2 and 4 depend on |
 | [AAASM-5279](https://lightning-dust-mite.atlassian.net/browse/AAASM-5279) | Implements Decision 5 (transport, tokens, version negotiation, data minimisation) |
 | [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281) | First productized integration (Claude Code) exercising the whole model end to end |
+| [AAASM-5453](https://lightning-dust-mite.atlassian.net/browse/AAASM-5453) | QA campaign that found the provenance gap — recorded as AAASM-5480, Executed Fail |
+| [AAASM-5628](https://lightning-dust-mite.atlassian.net/browse/AAASM-5628) | Adds §5.4a: DI-API v4 runtime provenance, and the client-side refusal. Blocks a trustworthy [AAASM-5308](https://lightning-dust-mite.atlassian.net/browse/AAASM-5308) privileged run |
 | [ADR 0002](0002-sdk-security-boundary.md) | Complements — "position, not code, confers authority"; the untrusted client / trusted runtime split this ADR extends to Developer Integrations |
 | [ADR 0004](0004-governance-enforcement-flow.md) | Complements — the DI-API sits in the same non-SDK carve-out as REST and carries no policy decisions (§1.2). **Not superseded.** |
 | [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | Complements — fail-closed and audit-visible resolution failures, transferred to capability-token resolution (§5.3) and protection-state reporting (§4.2) |
