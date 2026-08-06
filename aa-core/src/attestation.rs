@@ -525,3 +525,33 @@ impl ProtectionAttestation {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fixed instant, so freshness is a property of the test rather than of
+    /// the wall clock.
+    const NOW: u64 = 1_700_000_000;
+
+    /// One attestation with everything but the axis under test held constant.
+    fn at(basis: AttestationBasis, selected: SelectedMode, observed_at: u64) -> LayerAttestation {
+        LayerAttestation::new("test/component", selected, basis, observed_at, "fixture")
+    }
+
+    // ── ADR 0033 §7: the three signals that look like coverage ───────────────
+
+    /// §7 defect 1: `AA_LAYERS` replaces the entire probe result with an
+    /// environment variable. Stating an answer must not produce a claim.
+    #[test]
+    fn env_override_basis_cannot_claim_coverage() {
+        let basis = AttestationBasis::EnvironmentOverride {
+            variable: "AA_LAYERS".into(),
+        };
+        assert_eq!(basis.claim_ceiling(), ClaimTerm::Unmeasured);
+        assert!(!basis.is_evidence());
+
+        let a = at(basis, SelectedMode::Unset, NOW);
+        assert!(!a.asserts_coverage_at(NOW, DEFAULT_ATTESTATION_FRESHNESS_SECS));
+    }
+}
