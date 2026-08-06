@@ -471,4 +471,61 @@ mod tests {
         assert_eq!(layers[1], "proxy");
         assert_eq!(layers[2], "sdk");
     }
+
+    /// The end-to-end shape the public trust surface will render, taken from
+    /// the real router rather than from a hand-built response: a default build
+    /// serves `status: "healthy"` and, in the same body, states that nothing is
+    /// verified. Those two facts must be able to coexist.
+    #[tokio::test]
+    async fn health_publishes_an_attestation_that_denies_unevidenced_coverage() {
+        let (_, ready_rx) = tokio::sync::watch::channel(true);
+        let (inbound_tx, _) = tokio::sync::mpsc::channel(1);
+        let pipeline_metrics = Arc::new(crate::pipeline::PipelineMetrics::default());
+
+        let state = HealthState {
+            start_time: std::time::Instant::now(),
+            pipeline_metrics,
+            ready_rx,
+            prometheus_handle: make_prometheus_handle(),
+            active_connections: Arc::new(AtomicI64::new(0)),
+            inbound_tx,
+            active_layers: crate::layer::LayerSet::SDK,
+            degraded_layers: vec![],
+            protection: crate::layer::LayerDetector::attest(now_unix_secs()),
+        };
+
+        let app = router(state);
+        let req = Request::builder().uri("/health").body(Body::empty()).unwrap();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Liveness is unchanged and says nothing about protection.
+        assert_eq!(json["status"], "healthy");
+
+        let protection = &json["protection"];
+        assert_eq!(protection["any_coverage_verified"], false);
+        assert_eq!(
+            protection["attestation"]["schema_version"],
+            aa_core::attestation::ATTESTATION_SCHEMA_VERSION
+        );
+
+        let claims = protection["verified_states"].as_array().expect("verified_states");
+        assert_eq!(claims.len(), 3, "every component must be listed: {claims:?}");
+        for claim in claims {
+            let state = claim["verified_state"].as_str().expect("verified_state");
+            assert!(
+                matches!(state, "unmeasured" | "unsupported" | "degraded"),
+                "{} published the coverage term {state}",
+                claim["component"]
+            );
+            assert!(
+                !claim["detail"].as_str().unwrap_or_default().is_empty(),
+                "{} must say what was checked",
+                claim["component"]
+            );
+        }
+    }
 }
