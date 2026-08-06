@@ -114,6 +114,92 @@ async fn setup_audit(
     Ok((audit_tx, audit_drops, initial_hash, initial_seq))
 }
 
+/// Path of the SQLite file the durable sensitive-data projection is written to
+/// (AAASM-5440).
+///
+/// Unset means the tier is off, which is the default ADR 0032 §8 requires: the
+/// projection must be switchable without touching existing audit behaviour, and
+/// defaulting it on would make the safe state the one an operator opts into.
+///
+/// A path rather than a boolean over the gateway's own database. The projection
+/// is a second writer with a different retention story and a documented rollback
+/// of "drop the tables"; giving it its own file keeps that rollback to deleting
+/// one file, and keeps its write traffic off the pool the audit path shares.
+pub const SENSITIVE_DATA_PROJECTION_DB_ENV: &str = "AA_SENSITIVE_DATA_PROJECTION_DB";
+
+/// How many projected decisions may await persistence — see
+/// [`SensitiveDataProjectionSink::channel`](crate::engine::sensitive_data::SensitiveDataProjectionSink::channel).
+const SENSITIVE_DATA_PROJECTION_CAPACITY: usize = crate::engine::sensitive_data::DEFAULT_PROJECTION_CAPACITY;
+
+/// Wire the durable sensitive-data projection onto `engine` (AAASM-5440).
+///
+/// Both serve paths call this and nothing else does, so the sink's construction,
+/// the drain's spawn and the engine's attachment are one decision made in one
+/// place — the arrangement that makes "is the projection actually wired?" a
+/// question a single test can answer.
+///
+/// Returns the engine unchanged and `None` when
+/// [`SENSITIVE_DATA_PROJECTION_DB_ENV`] is unset.
+///
+/// # Ownership
+///
+/// The returned [`SensitiveDataProjectionService`](crate::engine::sensitive_data::SensitiveDataProjectionService)
+/// owns the spawned drain. A caller must hold it for as long as it serves and
+/// call `shutdown().await` afterwards; dropping it instead leaks a task that
+/// keeps a database handle open, and — because the engine holds a live sender —
+/// would never end on its own.
+///
+/// # Errors
+///
+/// Fails the boot when the configured database cannot be opened or migrated. A
+/// warning-and-continue would leave a governance surface empty for as long as
+/// nobody read the log, and an empty table is indistinguishable from a quiet
+/// period.
+pub async fn attach_sensitive_data_projection(
+    engine: PolicyEngine,
+) -> Result<
+    (
+        PolicyEngine,
+        Option<crate::engine::sensitive_data::SensitiveDataProjectionService>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let Some(path) = std::env::var_os(SENSITIVE_DATA_PROJECTION_DB_ENV).filter(|p| !p.is_empty()) else {
+        return Ok((engine, None));
+    };
+    let path = PathBuf::from(path);
+
+    let store = crate::storage::SqliteBackend::open(&crate::storage::SqliteConfig { path: path.clone() })
+        .await
+        .map_err(|e| {
+            format!(
+                "sensitive-data projection database {} could not be opened: {e}",
+                path.display()
+            )
+        })?;
+    let writer = crate::storage::sensitive_data::SensitiveDataProjectionWriter::new(
+        Arc::new(store),
+        crate::storage::sensitive_data::SensitiveDataProjectionConfig::enabled(),
+    );
+    writer.migrate().await.map_err(|e| {
+        format!(
+            "sensitive-data projection schema could not be applied to {}: {e}",
+            path.display()
+        )
+    })?;
+
+    let service = crate::engine::sensitive_data::SensitiveDataProjectionService::spawn(
+        writer,
+        SENSITIVE_DATA_PROJECTION_CAPACITY,
+    );
+    tracing::info!(
+        database = %path.display(),
+        "durable sensitive-data projection enabled"
+    );
+    let engine = engine.with_sensitive_data_sink(service.sink().clone());
+    Ok((engine, Some(service)))
+}
+
 /// Return the YAML of the first Global-scoped `*.yaml` document in a cascade
 /// directory (alphabetical order), or empty string if none parses as Global.
 ///
@@ -614,11 +700,15 @@ pub async fn serve_tcp(
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
-    let engine = Arc::new(
+    // AAASM-5440 — the projection is attached before the engine is shared, so
+    // every service that later evaluates through this engine writes the tier.
+    let (engine, projection) = attach_sensitive_data_projection(
         load_policy_engine(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
-    );
+    )
+    .await?;
+    let engine = Arc::new(engine);
     // Reuse the push channel for approval notifications: a dashboard verdict
     // (POST /approvals/{id}/approve|reject → ApprovalQueue::decide) fans out as
     // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
@@ -753,8 +843,38 @@ pub async fn serve_tcp(
 
     // Final flush so the last ≤60 s of spend is not lost.
     final_budget_save(&tracker, &budget_path);
+    drain_sensitive_data_projection(projection).await;
 
     Ok(())
+}
+
+/// Stop the projection drain and report what the tier managed to record
+/// (AAASM-5440).
+///
+/// Called after the server has stopped accepting requests, so the queue is
+/// already at its final contents. Cancelling before the last decisions were
+/// written would discard rows the producer had already accepted — the same
+/// silent loss the counters exist to make visible, arriving at shutdown instead
+/// of at runtime.
+async fn drain_sensitive_data_projection(
+    projection: Option<crate::engine::sensitive_data::SensitiveDataProjectionService>,
+) {
+    let Some(projection) = projection else {
+        return;
+    };
+    let outcome = projection.shutdown().await;
+    if outcome.write_failures > 0 || outcome.dropped > 0 || outcome.refused > 0 || outcome.drain_panicked {
+        tracing::warn!(
+            written = outcome.written,
+            write_failures = outcome.write_failures,
+            dropped = outcome.dropped,
+            refused = outcome.refused,
+            drain_panicked = outcome.drain_panicked,
+            "the sensitive-data projection is incomplete for this run"
+        );
+    } else {
+        tracing::info!(written = outcome.written, "sensitive-data projection drained");
+    }
 }
 
 /// Start the gRPC server on a Unix domain socket.
@@ -774,11 +894,15 @@ pub async fn serve_uds(
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
-    let engine = Arc::new(
+    // AAASM-5440 — the same wiring `serve_tcp` performs; see
+    // `attach_sensitive_data_projection` for why it is one function.
+    let (engine, projection) = attach_sensitive_data_projection(
         load_policy_engine(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
-    );
+    )
+    .await?;
+    let engine = Arc::new(engine);
     // Reuse the push channel for approval notifications: a dashboard verdict
     // (POST /approvals/{id}/approve|reject → ApprovalQueue::decide) fans out as
     // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
@@ -898,6 +1022,7 @@ pub async fn serve_uds(
 
     // Final flush so the last ≤60 s of spend is not lost.
     final_budget_save(&tracker, &budget_path);
+    drain_sensitive_data_projection(projection).await;
 
     Ok(())
 }
