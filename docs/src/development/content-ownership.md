@@ -11,7 +11,7 @@ This page fixes **which layer owns which content type**, so that the outer layer
 contributors: it says where a fact belongs, how a lower layer may be quoted by a
 higher one, when a copy is allowed, and where a correction goes first.
 
-> **Status — this page is an input, not an authority.**
+> **Status — ratified, and still the contributor-facing form.**
 > [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) assigns
 > documentation **source-of-truth**, claim **precedence** and **waivers** to
 > [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621),
@@ -19,15 +19,18 @@ higher one, when a copy is allowed, and where a correction goes first.
 > Source-of-truth assignment is exactly what this page does — so, to be explicit
 > about which of the three it touches and on what footing:
 >
-> - **Source-of-truth assignment** — supplied here, **as 5621's declared input**
->   ([AAASM-5592](https://lightning-dust-mite.atlassian.net/browse/AAASM-5592) blocks
->   5621). This page is normative for contributors in the meantime, and 5621's ADR
->   supersedes it on publication.
-> - **Precedence** between the two governing vocabularies — **not** decided here.
-> - **Waivers** — **not** decided here.
+> - **Source-of-truth assignment** — supplied here.
+>   [ADR 0034](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md)
+>   **ratifies this page in force**; it does not replace it. This page remains
+>   normative for contributors and is the day-to-day instrument.
+> - **Precedence** between the two governing vocabularies — decided in
+>   [ADR 0034 Decision 12, hand-off 1](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#hand-off-1--precedence-between-the-two-vocabularies).
+> - **Waivers** — decided in
+>   [ADR 0034 Decision 10](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#10-waivers-and-exceptions).
 >
-> Read this as the draft 5621 ratifies, not as a second authority standing beside it.
-> See [What this page hands off](#what-this-page-hands-off).
+> Read this as the ratified specification, not as a second authority standing
+> beside ADR 0034: the ADR supplies the mechanism, this page is how a contributor
+> applies it. See [What this page hands off](#what-this-page-hands-off).
 
 ## Why this page lives in the core repository
 
@@ -731,10 +734,12 @@ following, each of which belongs to
    `BEGIN GENERATED` are in use across two repositories, so this is a cross-repo
    convention decision rather than a local cleanup.
 
-Until 5621's ADR is published, these nine are open questions, and a contributor who
-hits one should escalate rather than settle it in a content PR. Items 1-3 are
-assigned to 5621 by ADR 0033; items 4-9 are gaps this page found and could not close
-without making an ownership decision of its own.
+**All nine are settled** in
+[ADR 0034 Decision 12](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#12-the-nine-hand-offs-from-aaasm-5592-settled),
+in this numbering — follow the link rather than escalating. Items 1-3 were assigned
+to AAASM-5621 by ADR 0033; items 4-9 are gaps this page found and could not close
+without making an ownership decision of its own. A question ADR 0034 does *not*
+settle is still escalated rather than resolved in a content PR.
 
 ## Applying this to a change
 
@@ -775,7 +780,7 @@ the ticket description:
 
 The blocks above are the contributor-facing form of this specification. The formal
 version — and the enforcement that goes with it — is
-[AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621)'s ADR.
+[ADR 0034](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md).
 
 ## Related decisions
 
@@ -792,6 +797,6 @@ version — and the enforcement that goes with it — is
 | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) | Docs Hub — provisional register bounding managed-service claims |
 | [AAASM-5592](https://lightning-dust-mite.atlassian.net/browse/AAASM-5592) | This page |
 | [AAASM-5580](https://lightning-dust-mite.atlassian.net/browse/AAASM-5580) | Parent Epic — audience-based information architecture and progressive disclosure |
-| [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) | Blocked by this page; formalises it as an ADR and settles the [hand-offs](#what-this-page-hands-off) above |
+| [ADR 0034](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md) `Accepted` | **Ratifies this page** and settles the nine [hand-offs](#what-this-page-hands-off) above. Owns cross-repository precedence, the claim tuple, adoption records, waivers and conflict resolution; this page stays the contributor-facing form ([AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621)) |
 | [AAASM-5594](https://lightning-dust-mite.atlassian.net/browse/AAASM-5594) | Blocked by this page; designs the product-site and Docs Hub sitemaps against these ownership boundaries |
 | [AAASM-5655](https://lightning-dust-mite.atlassian.net/browse/AAASM-5655) | Carries 5621's maturity-vocabulary decision across the org boundary to the company site — hand-off 7's downstream |

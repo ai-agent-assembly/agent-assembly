@@ -1341,26 +1341,27 @@ None is fixed by this ADR.
       statement in a T4 page, now T6-owned under hand-off 4. Owner:
       [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605).
 
-### A staleness this ADR's own merge creates
+### Corrected in this ADR's own PR
 
-Publishing this ADR falsifies three forward-looking sentences in
-[content-ownership.md](../development/content-ownership.md), which was written
-while this decision was still a ticket:
+Publishing this ADR would have falsified four forward-tense references in
+[content-ownership.md](../development/content-ownership.md), written while this
+decision was still a ticket. **All four are corrected in the same PR**, so no
+window exists in which the two documents disagree:
 
-- [ ] `content-ownership.md:24` — *"5621's ADR supersedes it on publication"*, in
-      the future tense. It has now published.
-- [ ] `content-ownership.md:734` — *"Until 5621's ADR is published, these nine are
-      open questions"*. They are settled in Decision 12.
-- [ ] `content-ownership.md:795` — the Related-decisions row pointing at the
-      **ticket**; it should point at this **ADR**, and the two other forward
-      references should link the file rather than the ticket.
+- `:14-30` said this page would be *superseded on publication*. It is
+  **ratified**, not superseded — ADR 0034 §*Context* is explicit that the page
+  stays in force — so leaving it would have been a live contradiction about which
+  document is authoritative, not merely a stale sentence.
+- `:734` instructed a contributor hitting one of the nine hand-offs to escalate.
+  Decision 12 settles all nine; that instruction would have routed work to the
+  wrong place.
+- `:778` and `:795` pointed at the **ticket**. They now point at this **ADR**, so
+  the ratified page has a navigable path to the decision that ratified it.
 
-None is corrected in this ADR's PR, which deliberately touches only the four
-files it owns. It is recorded here rather than left to be rediscovered, because
-a correction that reaches one document and not its sibling is the defect this
-ADR set exists to catch — and a decision that created one silently would be a
-poor advertisement for its own change-propagation rule (Decision 7, step 4).
-Owner: [AAASM-5605](https://lightning-dust-mite.atlassian.net/browse/AAASM-5605).
+Recorded here rather than done silently, because a correction that reaches one
+document and not its sibling is the defect this ADR set exists to catch, and a
+decision that created one on its own merge would be a poor advertisement for its
+change-propagation rule (Decision 7).
 
 ### An amendment this ADR requires of another ADR
 
