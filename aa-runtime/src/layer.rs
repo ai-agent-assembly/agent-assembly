@@ -1,11 +1,31 @@
-//! Interception layer detection and graceful fallback.
+//! Interception layer detection, and what may truthfully be claimed about it.
 //!
-//! The runtime supports three interception layers — eBPF, proxy, and SDK —
-//! each detected at startup. [`LayerDetector::detect`] probes system
-//! capabilities and returns a [`LayerSet`] bitflag indicating which layers
-//! are available.
+//! The runtime supports three interception components — eBPF, proxy, and SDK —
+//! each probed at startup. [`LayerDetector::detect`] returns the historic
+//! [`LayerSet`] bitflag of which are *present*.
+//!
+//! # Presence is not protection
+//!
+//! A bitflag has nowhere to record how a bit came to be set, so every consumer
+//! of [`LayerSet`] is forced to read "present" as "protecting". ADR 0033 §7
+//! records why that is wrong for all three bits: `AA_LAYERS` replaces the probe
+//! result outright, the proxy probe is satisfied by a binary existing on
+//! `$PATH` without establishing that anything routes through it, and the SDK
+//! bit is asserted unconditionally.
+//!
+//! [`LayerDetector::attest`] (AAASM-5535) is the honest reading of the same
+//! probes: it returns a
+//! [`ProtectionAttestation`](aa_core::attestation::ProtectionAttestation) that
+//! keeps the *basis* of each answer, so none of the three can publish itself as
+//! coverage. Both entry points consume one shared readout — a second copy of
+//! the predicate would be free to drift from the one that gates behaviour.
 
 use std::fmt;
+
+use aa_core::attestation::{AttestationBasis, LayerAttestation, ProtectionAttestation, SelectedMode};
+
+/// The environment variable that replaces the probe result wholesale.
+const AA_LAYERS_ENV: &str = "AA_LAYERS";
 
 bitflags::bitflags! {
     /// Bitflag set of active interception layers.
@@ -114,15 +134,20 @@ fn check_btf_available() -> bool {
 fn loader_daemon_available() -> bool {
     #[cfg(target_os = "linux")]
     {
-        let path = std::env::var_os("AA_EBPF_LOADERD_SOCK")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("/run/aa-ebpf-loaderd.sock"));
-        path.exists()
+        std::path::Path::new(&loaderd_socket_path()).exists()
     }
     #[cfg(not(target_os = "linux"))]
     {
         false
     }
+}
+
+/// The loader daemon's control-socket path, as this process would look for it.
+///
+/// Reported in the attestation so an operator can see *which* path was checked
+/// rather than being told a prerequisite is unmet with no way to verify it.
+fn loaderd_socket_path() -> String {
+    std::env::var("AA_EBPF_LOADERD_SOCK").unwrap_or_else(|_| "/run/aa-ebpf-loaderd.sock".to_string())
 }
 
 /// Returns `true` if all eBPF prerequisites are met.
@@ -146,10 +171,222 @@ fn probe_proxy() -> bool {
 
 // ── Layer detector ───────────────────────────────────────────────────────────
 
-/// Probes system capabilities and returns the set of available interception layers.
+/// Wire identifiers for the three components, shared by [`LayerSet::names`] and
+/// the attestation so a reader never has to reconcile two vocabularies.
+const EBPF_COMPONENT: &str = "ebpf";
+const PROXY_COMPONENT: &str = "proxy";
+const SDK_COMPONENT: &str = "sdk";
+
+/// What one probe found, before any interpretation.
+///
+/// Split out so [`LayerDetector::detect`] and [`LayerDetector::attest`] read the
+/// *same* readout rather than each running its own copy of the probes. A second
+/// implementation of the predicate would be free to drift from the one that
+/// actually gates behaviour, and then the attestation would describe a system
+/// that does not exist.
+struct LayerReadout {
+    /// Whether the component is claimed present — exactly the bit
+    /// [`LayerSet`] has always carried.
+    present: bool,
+    /// Whether configuration asked for this component.
+    selected_mode: SelectedMode,
+    /// How `present` was arrived at.
+    basis: AttestationBasis,
+    /// What was actually checked, in words.
+    detail: String,
+}
+
+/// The readout for all three components.
+struct Readout {
+    ebpf: LayerReadout,
+    proxy: LayerReadout,
+    sdk: LayerReadout,
+}
+
+impl Readout {
+    /// The bitflag view. This is the sole producer of [`LayerSet`], so the
+    /// legacy flag and the attestation can never disagree about presence.
+    fn layer_set(&self) -> LayerSet {
+        let mut set = LayerSet::empty();
+        if self.ebpf.present {
+            set |= LayerSet::EBPF;
+        }
+        if self.proxy.present {
+            set |= LayerSet::PROXY;
+        }
+        if self.sdk.present {
+            set |= LayerSet::SDK;
+        }
+        set
+    }
+
+    /// The attestation view: presence *plus* the basis that produced it.
+    fn attestation(self, now_unix_secs: u64) -> ProtectionAttestation {
+        let layers = [
+            (EBPF_COMPONENT, self.ebpf),
+            (PROXY_COMPONENT, self.proxy),
+            (SDK_COMPONENT, self.sdk),
+        ]
+        .into_iter()
+        .map(|(component, r)| LayerAttestation::new(component, r.selected_mode, r.basis, now_unix_secs, r.detail))
+        .collect();
+
+        ProtectionAttestation::new(
+            env!("CARGO_PKG_VERSION"),
+            format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+            now_unix_secs,
+            layers,
+        )
+    }
+}
+
+/// Probes system capabilities and reports what each interception component can
+/// truthfully claim.
 pub struct LayerDetector;
 
 impl LayerDetector {
+    /// Produce a [`ProtectionAttestation`] for the three interception
+    /// components (AAASM-5535).
+    ///
+    /// This runs the same probes as [`detect`](Self::detect) — they share one
+    /// readout — but keeps the *basis* of each answer instead of discarding it
+    /// into a bit. None of the three probes can substantiate a coverage claim,
+    /// and the attestation says so rather than publishing presence as
+    /// protection (ADR 0033 §7).
+    ///
+    /// Components that cannot run on this platform or in this build are
+    /// included, carrying the reason. Silently reducing to an SDK-only set is
+    /// the defect this replaces.
+    pub fn attest(now_unix_secs: u64) -> ProtectionAttestation {
+        Self::readout().attestation(now_unix_secs)
+    }
+
+    /// One readout, consumed by both public entry points.
+    fn readout() -> Readout {
+        match Self::from_env_override() {
+            Some(set) => Self::env_override_readout(set),
+            None => Self::probed_readout(),
+        }
+    }
+
+    /// The `AA_LAYERS` path: no probe ran, so nothing here is evidence about
+    /// anything (ADR 0033 §7). Every component records the override as its
+    /// basis, and the named ones additionally record that they were *asked
+    /// for*, which is what makes an unsubstantiated one report `Degraded`.
+    fn env_override_readout(set: LayerSet) -> Readout {
+        let entry = |present: bool| LayerReadout {
+            present,
+            selected_mode: if present {
+                SelectedMode::Enabled
+            } else {
+                SelectedMode::Disabled
+            },
+            basis: AttestationBasis::EnvironmentOverride {
+                variable: AA_LAYERS_ENV.to_string(),
+            },
+            detail: format!("{AA_LAYERS_ENV} was set, so no probe was run for this component"),
+        };
+        Readout {
+            ebpf: entry(set.contains(LayerSet::EBPF)),
+            proxy: entry(set.contains(LayerSet::PROXY)),
+            sdk: entry(set.contains(LayerSet::SDK)),
+        }
+    }
+
+    /// The probed path. Each component records which check decided it.
+    fn probed_readout() -> Readout {
+        Readout {
+            ebpf: Self::ebpf_readout(),
+            proxy: Self::proxy_readout(),
+            sdk: LayerReadout {
+                // Unconditionally present, exactly as before — and
+                // unconditionally *unevidenced*, which is the new part.
+                present: true,
+                selected_mode: SelectedMode::Unset,
+                basis: AttestationBasis::AssumedPresent,
+                detail: "the in-process SDK path is compiled in; no agent adoption was observed".to_string(),
+            },
+        }
+    }
+
+    /// `present` still comes from [`probe_ebpf`] itself, so the bit
+    /// [`detect`](Self::detect) publishes cannot drift from the attestation;
+    /// only the *reason* is newly recorded.
+    fn ebpf_readout() -> LayerReadout {
+        if probe_ebpf() {
+            return LayerReadout {
+                present: true,
+                selected_mode: SelectedMode::Unset,
+                basis: AttestationBasis::ArtifactPresent {
+                    artifact: loaderd_socket_path(),
+                },
+                // The probe is a `path.exists()`, not a connect and not an
+                // adjudication, and the programs the daemon loads are
+                // observe-only (ADR 0033 §5.1). Neither fact is coverage.
+                detail: "the loader daemon's control socket exists; no probe traffic was adjudicated".to_string(),
+            };
+        }
+        if !cfg!(target_os = "linux") {
+            return LayerReadout {
+                present: false,
+                selected_mode: SelectedMode::Unset,
+                basis: AttestationBasis::PlatformUnsupported {
+                    platform: std::env::consts::OS.to_string(),
+                },
+                detail: "eBPF is a Linux mechanism; this platform has no host-level adapter".to_string(),
+            };
+        }
+        // Name the *first* unmet prerequisite rather than reporting a bare
+        // false, so an operator can act on it. Order matches `probe_ebpf`.
+        let requirement = if !check_kernel_version() {
+            "a Linux kernel >= 5.8".to_string()
+        } else if !check_btf_available() {
+            "BTF at /sys/kernel/btf/vmlinux".to_string()
+        } else {
+            format!("an aa-ebpf-loaderd control socket at {}", loaderd_socket_path())
+        };
+        LayerReadout {
+            present: false,
+            selected_mode: SelectedMode::Unset,
+            detail: format!("unmet prerequisite: {requirement}"),
+            basis: AttestationBasis::PrerequisiteUnmet { requirement },
+        }
+    }
+
+    /// `present` still comes from [`probe_proxy`] itself; see
+    /// [`ebpf_readout`](Self::ebpf_readout).
+    fn proxy_readout() -> LayerReadout {
+        if probe_proxy() {
+            return LayerReadout {
+                present: true,
+                selected_mode: SelectedMode::Unset,
+                basis: AttestationBasis::ArtifactPresent {
+                    artifact: "aa-proxy".to_string(),
+                },
+                // ADR 0033 §7: finding the binary does not establish that any
+                // process routes traffic through it.
+                detail: "the aa-proxy binary was found on $PATH; no traffic was observed routed through it".to_string(),
+            };
+        }
+        if !(cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
+            return LayerReadout {
+                present: false,
+                selected_mode: SelectedMode::Unset,
+                basis: AttestationBasis::PlatformUnsupported {
+                    platform: std::env::consts::OS.to_string(),
+                },
+                detail: "aa-proxy has no build path on this platform".to_string(),
+            };
+        }
+        LayerReadout {
+            present: false,
+            selected_mode: SelectedMode::Unset,
+            basis: AttestationBasis::PrerequisiteUnmet {
+                requirement: "the aa-proxy binary on $PATH".to_string(),
+            },
+            detail: "aa-proxy was not found on $PATH".to_string(),
+        }
+    }
     /// Detect available interception layers.
     ///
     /// If the `AA_LAYERS` environment variable is set to a non-empty,
@@ -162,25 +399,12 @@ impl LayerDetector {
     /// - **Proxy**: supported platform + `aa-proxy` in `$PATH`
     /// - **SDK**: always available
     pub fn detect() -> LayerSet {
-        if let Some(layers) = Self::from_env_override() {
-            return layers;
-        }
-
-        let mut set = LayerSet::SDK;
-
-        if probe_ebpf() {
-            set |= LayerSet::EBPF;
-        }
-        if probe_proxy() {
-            set |= LayerSet::PROXY;
-        }
-
-        set
+        Self::readout().layer_set()
     }
 
     /// Parse the `AA_LAYERS` env var if set and non-empty.
     fn from_env_override() -> Option<LayerSet> {
-        let val = std::env::var("AA_LAYERS").ok()?;
+        let val = std::env::var(AA_LAYERS_ENV).ok()?;
         if val.trim().is_empty() {
             return None;
         }
