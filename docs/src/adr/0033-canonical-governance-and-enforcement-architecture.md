@@ -280,7 +280,7 @@ flowchart TB
     subgraph MP["Managed path"]
         E2["E2 · Managed Execution Checkpoints<br/>decide BEFORE the action"]
         E3["E3 · Protocol / Transport Mediation<br/>decide BEFORE egress"]
-        E4["E4 · Platform-Specific Host<br/>Enforcement Adapters<br/>platform-dependent, may be absent"]
+        E4["E4 · Platform-Specific Host-Level<br/>Interception Adapters<br/>platform-dependent, may be absent"]
     end
     E1["E1 · Governance Control Plane<br/>policy · identity · budget · approval · audit<br/>holds NO traffic"]
     E5["E5 · Credential / Capability Boundary"]
@@ -411,7 +411,7 @@ file-I/O coverage from this mechanism.
 
 #### 5.3 The verified platform matrix
 
-| Platform | E3 Transport Mediation | E4 Host Enforcement | Status to publish |
+| Platform | E3 Transport Mediation | E4 Host-Level Interception | Status to publish |
 | --- | --- | --- | --- |
 | **Linux x86_64** | `aa-proxy`; CA trust via CLI `update-ca-certificates` (`aa-cli/src/commands/proxy/ca.rs:149,173`) | eBPF observation (TLS/file/exec); syscall guard as opt-in asynchronous kill | **Implemented**, with the §5.1 limits stated |
 | **Linux aarch64** | `aa-proxy` | eBPF TLS/exec only; **no** file-I/O kprobe targets | **Implemented (partial)** — must say which probes are absent |
@@ -563,9 +563,10 @@ the governance process that enforces its use.
   to make the capability/evidence manifest machine-readable and
   [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) to gate stale
   evidence in CI. Until those land, the tables are maintained by review.
-- **Honest limits are competitively unflattering.** Publishing "macOS host enforcement:
-  Unsupported" and "the syscall guard does not prevent the offending syscall" weakens
-  marketing copy. Accepted deliberately: an evaluator who discovers an overstated claim
+- **Honest limits are competitively unflattering.** Publishing "macOS: no E4 host-level
+  interception adapter" and "the syscall guard does not prevent the offending syscall"
+  weakens marketing copy. (Note the first must be stated that precisely — macOS *is* the
+  one platform where ADR 0030's `HostEnforced` rung is reachable, §5.3.) Accepted deliberately: an evaluator who discovers an overstated claim
   after provisioning is a worse outcome than one who reads an accurate limitation
   up front.
 - **This ADR does not fix the affected pages.** It supersedes the model and lists the
@@ -672,7 +673,7 @@ Re-open this ADR when any of the following occurs:
 1. A **synchronous** deny becomes available on Linux (seccomp-BPF or a `bpf_lsm` hook —
    [AAASM-3872](https://lightning-dust-mite.atlassian.net/browse/AAASM-3872)). §5.1 and
    §6's mapping change materially.
-2. A macOS host enforcement mechanism (Endpoint Security / Network Extension) is
+2. A macOS host-level interception mechanism (Endpoint Security / Network Extension) is
    implemented rather than declared a non-goal.
 3. Any Windows mediation ships — a proxy build path, a named-pipe DI-API, or a host
    adapter.
