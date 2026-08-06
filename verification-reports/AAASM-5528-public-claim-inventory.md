@@ -51,7 +51,7 @@ is used in a non-claim sense.
 
 ## Evidence base
 
-The three findings that drive most replacements. Each was read in the
+The five findings that drive the replacements. Each was read in the
 implementation and independently re-checked before being used in public copy.
 
 ### E1 — the eBPF layer is observe-only, OpenSSL-only, x86_64-only, and fails open
