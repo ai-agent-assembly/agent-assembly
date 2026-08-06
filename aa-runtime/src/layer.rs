@@ -15,7 +15,7 @@
 //!
 //! [`LayerDetector::attest`] (AAASM-5535) is the honest reading of the same
 //! probes: it returns a
-//! [`ProtectionAttestation`](aa_core::attestation::ProtectionAttestation) that
+//! [`ProtectionAttestation`] that
 //! keeps the *basis* of each answer, so none of the three can publish itself as
 //! coverage. Both entry points consume one shared readout — a second copy of
 //! the predicate would be free to drift from the one that gates behaviour.
