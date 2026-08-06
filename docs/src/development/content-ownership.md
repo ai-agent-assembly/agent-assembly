@@ -3,8 +3,8 @@
 Agent Assembly's public content is spread over a company site, a product website,
 an aggregating documentation hub, five component documentation sets, a runnable
 example gallery and a repository README per repo. The same concept — what the
-product promises, what it enforces, what ships today — is therefore explainable in
-eight places at once.
+product promises, what it enforces, what ships today — can therefore be stated in a
+dozen different places, by a dozen different authors, on a dozen different days.
 
 This page fixes **which layer owns which content type**, so that the outer layers
 *simplify one truth* instead of authoring competing ones. It is a specification for
@@ -35,9 +35,9 @@ for values rather than for prose.
 
 ## The content layers
 
-Eight surfaces publish product content. Each row states the surface's audience, the
-job it exists to do, and — the part that actually prevents drift — what it must
-**not** author.
+Seven layers. Six of them publish; the seventh is read as evidence and never written
+to for narrative purposes. Each row states the layer's audience, the job it exists to
+do, and — the part that actually prevents drift — what it must **not** author.
 
 | # | Layer | Surface / repository | Primary audience | Its job | Must not author |
 |---|---|---|---|---|---|
@@ -49,11 +49,19 @@ job it exists to do, and — the part that actually prevents drift — what it m
 | **L5** | Repository READMEs | Each repo's `README.md` | A visitor who landed on the repo | What this repository is, how to build and test it, and where its documentation is | A second copy of that documentation |
 | **L6** | Code, generated specs and evidence | Source, tests, `openapi/`, `proto/`, `verification-reports/` | Contributors, auditors | The final evidence a claim is checked against | Nothing — this layer is read, not written to for narrative purposes |
 
-Two properties of this list matter more than the rows themselves.
+Three properties of this list matter more than the rows themselves.
 
 **The layers are audiences, not a hierarchy of importance.** L3's depth is not a
 failure of L1's brevity. A correction that makes L1 read like L3 has moved content
 to the wrong layer, not improved it.
+
+**Depth is not duplication, and L3 keeps it.** Nothing in this page licenses
+thinning a component's documentation because an outer layer now summarises it.
+Design rationale, ADRs, protocol and policy semantics, implementation detail,
+measured limitations and the reasoning behind a rejected alternative stay in the
+component that owns them, at full depth. The failure this page addresses is *rival
+truths*, not *long pages*: a summary that replaces its source has removed the thing
+it was supposed to point at.
 
 **Managed-service (SaaS) content is not a ninth layer.** It is currently published
 as L2 pages — `quickstart-saas.md` and `cloud-deployment.md` on the Docs Hub — while
