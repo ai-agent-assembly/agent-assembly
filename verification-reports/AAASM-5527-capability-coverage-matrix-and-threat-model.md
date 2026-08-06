@@ -460,7 +460,7 @@ shipped defaults, gate (b) admits exactly three hosts.
 | **N10** | Raw TCP that does not speak the proxy protocol | any · any | all · any · TCP | *none* | — | — · — | **No transparent redirect exists** — no iptables, pfctl, TPROXY or `SO_ORIGINAL_DST` (verified with `CONNECT` as positive control: 6 matches, all four redirect terms 0) | **Unmeasured** | — |
 | **N11** | UDP, QUIC, HTTP/3 | any · any | all · any · UDP | *none* | — | — · — | Verified repo-wide with `TcpListener` as positive control: 44 matches across `aa-cli`/`aa-proxy`/`aa-gateway`/`aa-runtime`, and **0** for `UdpSocket`, `quinn`, `quic`, `http3` across those plus `aa-core` and `aa-api` | **Unsupported** | — |
 | **N12** | Local IPC (Unix domain sockets) between processes | any · any | Unix · any · UDS | *none* — the product's own UDS servers are governed surfaces, not mediated ones | — | — · — | Nothing mediates a third-party UDS conversation | **Unmeasured** | — |
-| **N13** | TLS plaintext observation without the proxy | any · any | Linux · any · OpenSSL `SSL_read`/`SSL_write` uprobes | `aa-ebpf-probes/src/ssl_probes.rs:91,123,151` | post | observe · best-effort | Go `crypto/tls`, rustls, statically linked BoringSSL, GnuTLS and NSS expose no such symbols and are not covered (`ssl_probes.rs:17-32`). Events are **not bridged** to the audit pipeline (`aa-runtime/src/runtime.rs:302-305,344-350`) | **Observed** — and, with no bridge, effectively **Unmeasured** downstream ⚠ Q4 | B5 |
+| **N13** | TLS plaintext observation without the proxy | any · any | Linux · any · OpenSSL `SSL_read`/`SSL_write` uprobes | `aa-ebpf-probes/src/ssl_probes.rs:91,123,151` | post | observe · best-effort | Go `crypto/tls`, rustls, Node's statically linked BoringSSL, **GnuTLS, NSS, BoringSSL, LibreSSL and s2n** expose no such symbols and are not covered — the full in-probe list is `aa-ebpf-probes/src/ssl_probes.rs:22-25`, and it is longer than earlier revisions of this row reproduced. Events are **not bridged** to the audit pipeline (`aa-runtime/src/runtime.rs:302-305,344-350`) | **Observed** — and, with no bridge, effectively **Unmeasured** downstream ⚠ Q4 | B5 |
 
 #### D3 · Table 2 — risk and evidence
 
@@ -985,19 +985,31 @@ its absence made a claim ambiguous somewhere above.
 | Field | Values | Why the survey needs it |
 |---|---|---|
 | `default_state` | `on` \| `off` \| `open` \| `closed` | Question 3. Six capabilities ship as their default, not as themselves (N1, N4, M2, C1, C2, H2) |
-| `reachable_in_release` | `true` \| `false` | Question 4. The single field that would have made AAASM-5640 impossible to miss. Should be derived from `scripts/check-release-completeness.sh`, not hand-written |
+| `released_channels` · `released_platforms` · `reachability` | channel and platform lists, plus `shipped` \| `shipped_crates_io_only` \| `dead_code` \| `absent_mechanism` \| `stubbed_default` | Question 4. **Replaces a boolean `reachable_in_release`, which was wrong in both directions on roughly a quarter of the rows** because it treated the GitHub Release artifact set as a universal reachability test. It is channel-specific — `aa-ebpf-loaderd` and `aa-proxy` both publish to crates.io while being absent from the release assets — and platform-specific, since `aa-proxy` is packaged on Linux only |
 | `boundary_class` | `B1`…`B7` | Makes "universal" unwritable without a boundary, which is the Epic's security principle |
 | `decision_timing` | `pre` \| `in-line` \| `post` \| `none` | Separates *Denied before execution* from the eBPF guard's post-hoc kill |
 | `failure_posture` | `fail_closed` \| `fail_open` \| `fail_open_silent` | The third value is the finding: G7 and G9 fail open **without** emitting a degradation, which is materially different from G6 |
-| `evidence_ref` + `evidence_runs_on_main` | test path + boolean | An evidence test that is path-gated off `main` (the whole eBPF suite) is weaker evidence than one in the standing suite, and today nothing records the difference |
+| `evidence_ref` + `evidence_runs_on_main` | test path + `standing` \| `path_gated_with_schedule` \| `path_gated_no_backstop` \| `manual_only` \| `none` | **Not a boolean.** A path-gated test with a cron backstop (the eBPF suite) is weak evidence; one with no backstop is not evidence of a standing property at all. This artifact's own gates are in the latter class — `doc-links.yml` is path-filtered to `README.md` and `docs/**`, and no markdownlint job exists in CI — which is why they are reported as hand-run commands. Must be derived from the workflow's triggers and path filters, never hand-written: a hand-maintained boolean would read `true` for exactly the PR-only gate that never runs on the merge that breaks it. The eBPF `ebpf` filter (`.github/workflows/ci.yml:271-276`) is the worked example — its globs match neither `aa-integration-tests/**`, where `e2e_ebpf.rs` lives, nor `aa-runtime/**` |
 | `deny_signal` | `raise` \| `sentinel_value` \| `none` | Six Python adapters return a `[BLOCKED …]` string and five raise; a caller catching only the exception treats a blocked call as a success |
 | `redaction_actor` | `proxy_scanner` \| `gateway_instructions` | A gateway `Redact` verdict never replays the gateway's field paths; the proxy's own scanner does the work |
 
 Two further recommendations for 5531, both learned here:
 
-- **Derive `reachable_in_release` from the release script rather than restating
-  it.** A manifest that hand-copies the binary list will drift exactly the way the
-  eBPF claim did.
+- **Do not derive these fields from `scripts/check-release-completeness.sh`.**
+  An earlier revision of this artifact recommended exactly that, and it is wrong.
+  The script's `-p $pkg` presence test (`:89-96`) substring-matches against the
+  whole workflow text, so a conditional line such as `if [ "$RUNNER_OS" = "Linux"
+  ]; then PKGS+=(-p aa-proxy); fi` satisfies it. Derived from that script the
+  manifest would report `aa-proxy` released on macOS (wrong) and the eBPF rows
+  unreachable on Linux (also wrong) — it is a *classification completeness* gate,
+  not a channel or platform oracle. Its own blind spot to the macOS `aa-proxy`
+  gap is [AAASM-5653](https://lightning-dust-mite.atlassian.net/browse/AAASM-5653).
+- **Derive channel membership from the published artifact.** crates.io exposes
+  `bin_names` per version; the GitHub Release exposes its asset list. Both are
+  queryable, and both are the *result* rather than the intent. The general rule
+  for crates.io is that **a crate publishes its bins unless it sets `publish =
+  false`** — so absence from a hand-maintained release list says nothing about
+  whether the binary is on the registry.
 - **Make `coverage` a closed enum of ADR 0033 §6's eleven terms**, so a value
   outside the vocabulary fails validation. That is the machine-checkable half of
   AAASM-5536's V1 gate.

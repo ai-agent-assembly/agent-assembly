@@ -72,6 +72,7 @@ schema:
     - q3_changed_answer
     - q4_changed_answer
     - q4_changed_answer_in_product_favour
+    - evidence_gate_note        # why a path-filtered gate does not cover its test
   enums:
     coverage:                   # ADR 0033 §6 — closed set; anything else is invalid
       [observed, detected, evaluated, denied_before_execution, redacted,
@@ -91,6 +92,14 @@ schema:
        go_modules, not_applicable]
     released_platforms:
       [linux_x86_64, linux_aarch64, macos, windows, not_applicable]
+    evidence_runs_on_main:
+      # NOT a boolean. A path-filtered gate with a cron backstop is weak
+      # evidence; one with no backstop is not evidence of a standing property at
+      # all. `path_gated_no_backstop` is this artifact's OWN situation: the link,
+      # anchor, YAML and markdownlint checks are run by hand because
+      # doc-links.yml is path-filtered to README.md and docs/**, and no
+      # markdownlint job exists in CI at all.
+      [standing, path_gated_with_schedule, path_gated_no_backstop, manual_only, none]
     reachability:
       # WHY the capability is or is not reachable. Split out from the old
       # boolean `reachable_in_release`, which conflated four different causes
@@ -151,7 +160,7 @@ capabilities:
       - direct call bypassing framework dispatch
       - raw HTTP / subprocess / filesystem (see S12)
     evidence: [aa-integration-tests/tests/e2e_sdk_python.rs, aa-integration-tests/tests/e2e_policy_sdk.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
     notes: "Unreachable runtime yields _FailClosedInterceptor which denies every call (core/runtime_interceptor.py:375-376,521-540)."
@@ -180,7 +189,7 @@ capabilities:
     deny_signal: sentinel_value
     known_bypasses: [same as S1]
     evidence: [aa-integration-tests/tests/e2e_sdk_python.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
     notes: "Integration hazard: a caller catching only PolicyViolationError treats a blocked call as a success whose result is a string."
@@ -209,7 +218,7 @@ capabilities:
     deny_signal: none
     known_bypasses: ["the mechanism cannot block; there is nothing to bypass"]
     evidence: ["lineage tests only — cannot evidence prevention"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "add a blocking seam, or stop listing these frameworks as governed"
     notes: "node-sdk/src/hooks/langgraph.ts:99-108 states in-tree: performs NO in-process tool-governance check, so a policy DENY will NOT block."
@@ -238,7 +247,7 @@ capabilities:
     deny_signal: none
     known_bypasses: ["cannot block by construction"]
     evidence: [node-sdk unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "must not be described as enforcement"
     notes: "Class doc at :13-21 — @langchain/core discards the return value, so it can only observe, never preempt. Records a pendingDenials entry and never throws."
@@ -269,7 +278,7 @@ capabilities:
       - "S7 defeats it in the default mode"
       - "a frozen invoke is skipped with a stderr warning and the tool runs ungoverned (:50-58)"
     evidence: [node-sdk unit tests, aa-integration-tests/tests/e2e_sdk_node.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "conditional on closing S7"
 
@@ -297,7 +306,7 @@ capabilities:
     deny_signal: [raise, sentinel_value]
     known_bypasses: ["S7 defeats it in the default mode"]
     evidence: [node-sdk unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "conditional on closing S7"
 
@@ -326,7 +335,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: ["this IS the bypass, and it is the default"]
     evidence: ["GAP — no test asserts the default path enforces, because it does not"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "must be closed before any page claims Node pre-execution denial"
     tickets: [AAASM-4991]
@@ -364,7 +373,7 @@ capabilities:
       - "S12 classes"
       - "internal/ffi/query_policy.go:55-59 returns DecisionAllow for a binding without policyQuerier — test bindings only; both production bridges implement it"
     evidence: [aa-integration-tests/tests/e2e_sdk_go.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "hold — Go is the reference posture the other two SDKs should match"
     notes: "failClosed defaults true (defaults.go:14); REDACT, UNSPECIFIED and unknown decision codes all become errors, none silently allows (ffi_governance_client.go:110,117,127)."
@@ -394,7 +403,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: []
     evidence: [go-sdk unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "document that the default build denies everything"
     notes: "Fail-closed, but not the advertised behaviour either — every wrapped tool call denies."
@@ -422,7 +431,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["residual by construction — B1/B2 do not extend to B3"]
     evidence: ["GAP by design"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "never claim beyond B2 for an SDK seam"
 
@@ -449,7 +458,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["choosing an unadapted framework"]
     evidence: ["GAP by design"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "publish the adapter list as the boundary"
 
@@ -481,7 +490,7 @@ capabilities:
       every match for requests/httpx/urllib/fetch/axios/child_process/os-exec/
       fs/database drivers/playwright/selenium is the SDK's OWN plumbing —
       health probe, sidecar spawn, audit POST — never interception.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state explicitly on every SDK page"
 
@@ -513,7 +522,7 @@ capabilities:
       GAP. Positive control in the same probe: query_policy has real callers
       (aa-sdk-client/src/client.rs:247 plus CLI and tests); resolve_decision
       matches only its own definition and its #[cfg(test)] module.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "correct per ADR 0002 — keep advisory, make the claim wording match"
 
@@ -551,7 +560,7 @@ capabilities:
       aa-gateway/src aa-cli/src: McpToolCall 20 hits; PreToolUse, pre_tool_use,
       seccomp_filter, LD_PRELOAD, command_wrapper, shell_hook, intercept_exec
       all 0 hits.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "needs a product decision, not a ticket"
     notes: "The policy language can express the rule; nothing in a released build can enforce it. This is the single largest coverage gap."
@@ -599,8 +608,13 @@ capabilities:
       - "the offending syscall completes before the SIGKILL lands"
       - "fork propagation fails open past 1024 PIDs"
       - "load-time window runs the confined PID with an empty allowlist"
+      - >-
+        NOT fail-open: if Load(SyscallGuard) succeeds and UpdateSyscallAllowlist
+        then fails, aa-runtime/src/ebpf_control.rs:342-352 degrades and returns
+        WITHOUT detaching. The confined PID stays in PID_FILTER with an empty
+        allowlist, so the guard default-denies by SIGKILL on the next syscall.
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
-    evidence_runs_on_main: false  # path-gated to aa-ebpf*/** — .github/workflows/ci.yml:131-133
+    evidence_runs_on_main: path_gated_with_schedule  # path-gated to aa-ebpf*/** — .github/workflows/ci.yml:131-133
     current_level: not_applicable
     target_level: "keep Experimental until AAASM-3872 lands a synchronous deny"
     tickets: [AAASM-5640, AAASM-3872]
@@ -644,7 +658,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["no ring-buffer reader is wired — aa-runtime/src/runtime.rs:510-512; events never leave the kernel"]
     evidence: ["GAP — nothing consumes the events"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "wire the reader or withdraw the capability"
     tickets: [AAASM-5640]
@@ -691,7 +705,7 @@ capabilities:
       - "observe-only: the path blocklist sets event.flags=1 and the syscall proceeds"
       - "aa-ebpf-loaderd unreleased"
     evidence: [aa-integration-tests/tests/e2e_file_monitoring.rs]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
     target_level: "state the arch bound wherever file coverage is claimed"
     tickets: [AAASM-5640]
@@ -720,7 +734,7 @@ capabilities:
     coverage: denied_before_execution
     known_bypasses: ["not on any agent's normal tool-call path"]
     evidence: [aa-integration-tests/tests/e2e_tool_sandbox.rs, aa-integration-tests/tests/e2e_tool_sandbox_fs.rs, aa-integration-tests/tests/e2e_dispatch_tool_wasm.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "do not cite as agent-action mediation"
     notes: "aa-proxy has NO aa-sandbox dependency, contradicting aa-sandbox/src/lib.rs:10-11 (AAASM-5627)."
@@ -753,7 +767,7 @@ capabilities:
     evidence: >-
       GAP. Positive control in the same probe over aa-security/src/policy/:
       68 matches for FileRead|FileWrite|Network|TerminalExec, 0 for Browser.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "decide: model as ToolCall/NetworkRequest, or add an action kind (F6)"
 
@@ -783,7 +797,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["not expressible and not enforceable"]
     evidence: ["GAP — 0 matches for Database in aa-security/src/policy/, same probe as H6"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "same decision as H6 (F6)"
 
@@ -813,7 +827,7 @@ capabilities:
       - "no PreToolUse hook is ever registered: positive control 'permissions' 15 hits vs PreToolUse 0 across aa-devtool-claude-code/src"
       - "a local administrator can rewrite the root-owned file"
     evidence: ["read-back of the written file — evidence of the WRITE, never of ENFORCEMENT"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: integrated
     target_level: "gateway_protected is unreachable by this path — it needs a core-side adjudication"
     tickets: [AAASM-5298]
@@ -854,7 +868,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: [unset HTTPS_PROXY, "a client that ignores proxy env", N10, N11]
     evidence: [aa-integration-tests/tests/e2e_policy_proxy.rs, aa-integration-tests/tests/cli_proxy_remote_bind_refusal.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "state the default-open posture wherever egress control is claimed"
     notes: "AA_PROXY_DENIED_HOSTS and AA_PROXY_NETWORK_ALLOWLIST are both empty by default (aa-proxy/src/config.rs:75-85)."
@@ -889,7 +903,7 @@ capabilities:
     coverage: denied_before_execution
     known_bypasses: [N10, N11, "traffic not routed to the proxy"]
     evidence: [aa-proxy unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
 
@@ -924,7 +938,7 @@ capabilities:
     redaction_actor: proxy_scanner
     known_bypasses: ["only 3 hosts: api.openai.com, api.anthropic.com, api.cohere.com (aa-proxy/src/intercept/detect.rs:31-34)", N5, N8, N9, N10, N11]
     evidence: [aa-integration-tests/tests/e2e_secret_interception.rs, aa-integration-tests/tests/e2e_mcp_redact.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "publish the three-host default next to every 'inspects outbound HTTPS' claim"
     notes: "Both refusals are LOCAL policy, not a gateway decision."
@@ -960,7 +974,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: ["off by default — aa-proxy/src/config.rs:434-439"]
     evidence: [aa-proxy unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "publish the default"
 
@@ -995,7 +1009,7 @@ capabilities:
     coverage_split: {connection: observed, payload: unmeasured}
     known_bypasses: ["the payload is never inspected"]
     evidence: ["transmission_evidence::forwarded persists 'forwarded, and nothing looked at it — never clean' (mod.rs:1398-1408, AAASM-5358)"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "keep — this is the evidence model other paths should follow"
     notes: "AAASM-5637: the adjacent CONNECT-level emit_policy_decision(host,false) at :1325 records an ALLOW for this same traffic, which contradicts the split above."
@@ -1030,7 +1044,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["a credential echoed back by a provider is never detected"]
     evidence: ["GAP — no response-scanning test on the LLM path, because there is no response scanning"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "scan LLM responses, or state the asymmetry publicly"
 
@@ -1065,7 +1079,7 @@ capabilities:
     redaction_actor: proxy_scanner
     known_bypasses: ["no MCP adjudication on this path"]
     evidence: [aa-proxy unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
 
@@ -1099,7 +1113,7 @@ capabilities:
     coverage: unsupported
     known_bypasses: ["the MitM ServerConfig sets no alpn_protocols (mod.rs:1342-1346); the HTTP/2 preface is rejected as a malformed request line"]
     evidence: ["GAP — 0 matches for alpn repo-wide"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state that MitM'd hosts are HTTP/1.1 only"
 
@@ -1134,7 +1148,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["a chunked request is dropped with no HTTP response; a chunked response on the MCP path is silently emptied"]
     evidence: ["aa-proxy/src/proxy/http.rs:747-760 pins the REQUEST rejection; nothing pins the RESPONSE behaviour"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "F2 — correctness bug, needs a new ticket"
 
@@ -1163,7 +1177,7 @@ capabilities:
     evidence: >-
       GAP. Positive control in the same probe over aa-proxy/src: CONNECT 6
       matches; iptables, pfctl, TPROXY and SO_ORIGINAL_DST all 0.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "never describe the proxy as covering 'outbound traffic'; it covers routed HTTP(S)"
 
@@ -1192,7 +1206,7 @@ capabilities:
       GAP. Positive control in the same probe: TcpListener 44 matches across
       aa-cli/aa-proxy/aa-gateway/aa-runtime; UdpSocket, quinn, quic and http3
       all 0 across those plus aa-core and aa-api.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     known_bypasses: ["the whole transport class"]
     current_level: not_applicable
     target_level: "state as Unsupported"
@@ -1227,7 +1241,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["nothing mediates a third-party UDS conversation"]
     evidence: ["GAP by construction"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state as out of scope"
 
@@ -1270,11 +1284,11 @@ capabilities:
     coverage_in_kernel: observed
     q4_changed_answer: true
     known_bypasses:
-      - "Go crypto/tls, rustls, statically linked BoringSSL, GnuTLS and NSS expose no such symbols (ssl_probes.rs:17-32)"
+      - "Go crypto/tls, rustls, Node BoringSSL, GnuTLS, NSS, BoringSSL, LibreSSL and s2n expose no such symbols — full list at aa-ebpf-probes/src/ssl_probes.rs:22-25"
       - "events are NOT bridged to the audit pipeline (aa-runtime/src/runtime.rs:302-305,344-350)"
       - "aa-ebpf-loaderd unreleased"
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
     target_level: "bridge the events or stop counting TLS observation as coverage"
     tickets: [AAASM-5640, AAASM-5634]
@@ -1318,7 +1332,7 @@ capabilities:
       - "gateway Decision::Pending is downgraded to Deny (mcp_enforce.rs:135-144), so human approval cannot be reached inside the tunnel"
       - "gateway RedactInstructions are never replayed field-by-field (mcp_enforce.rs:62-75; proxy/mod.rs:643-652)"
     evidence: [aa-integration-tests/tests/e2e_mcp_interceptor.rs, aa-integration-tests/tests/e2e_mcp_redact.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "per-agent MCP policy and per-agent MCP audit do not exist and must not be claimed"
     tickets: [AAASM-5533]
@@ -1359,7 +1373,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: ["MCP enforcement is dark on a default aa-proxy run"]
     evidence: ["GAP"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state the default"
 
@@ -1394,7 +1408,7 @@ capabilities:
     known_bypasses:
       - "a NESTED batch, or a batch whose elements carry params without a literal top-level method — mentions_tools_call inspects one level only (intercept/mcp.rs:128-130)"
     evidence: [aa-proxy/src/intercept/mcp.rs:222-272]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     evidence_quality: unit_only    # e2e_mcp_interceptor.rs has no batch case
     current_level: not_applicable
     target_level: "add a wire-level negative control"
@@ -1433,7 +1447,7 @@ capabilities:
       - "resources/read — a complete data-exfiltration primitive, adjudicated nowhere"
       - "prompts/get, sampling/createMessage, initialize, all notifications/*"
     evidence: ["GAP — forwarded as McpEvalOutcome::Skip, subject only to the byte-level credential scanner"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "highest-value MCP follow-up"
     tickets: [AAASM-5533]
@@ -1464,7 +1478,7 @@ capabilities:
     evidence: >-
       GAP. Positive control in the same probe over aa-proxy/src: stdio 0
       matches, tools/call 49 matches.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state explicitly on every MCP page"
     tickets: [AAASM-5533]
@@ -1494,7 +1508,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["the SSE leg is raw-copied unscanned"]
     evidence: ["GAP — text/event-stream 0 matches repo-wide"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state explicitly"
     tickets: [AAASM-5533]
@@ -1530,7 +1544,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["functionally broken, not merely uncovered — the client receives an empty 200"]
     evidence: ["GAP — streamable 0 matches repo-wide; nothing pins the response behaviour"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "F2 — new ticket"
     notes: "aa-proxy/src/proxy/http.rs:13 claims 'the MCP path falls back to a transparent relay'. It does not."
@@ -1559,7 +1573,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["no upgrade handling exists"]
     evidence: ["GAP — Sec-WebSocket and '101 Switching' 0 matches in aa-proxy/src"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state as Unsupported"
     tickets: [AAASM-5533]
@@ -1595,7 +1609,7 @@ capabilities:
     redaction_actor: proxy_scanner
     known_bypasses: ["an MCP endpoint on api.anthropic.com is DLP-scanned but never adjudicated"]
     evidence: ["GAP"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "route LLM-host MCP through the adjudication path, or state the exclusion"
 
@@ -1622,7 +1636,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["any process can launch the MCP server itself; enforcement is the host tool's, not Agent Assembly's"]
     evidence: ["read-back of the config write"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: integrated
     target_level: "never present config-level MCP disabling as interception"
 
@@ -1658,7 +1672,7 @@ capabilities:
       - aa-integration-tests/tests/cli_run_claude_launch_env.rs
       - aa-integration-tests/tests/claude_code_integration_lifecycle.rs
       - aa-integration-tests/tests/conformance_claude_code.rs
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: host_enforced   # reachable — the only adapter for which it is
     target_level: "hold; close the AAASM-5298 open half"
     tickets: [AAASM-5298]
@@ -1689,7 +1703,7 @@ capabilities:
       - "no CA trust is established for the launch: NODE_EXTRA_CA_CERTS count 0 vs HTTPS_PROXY 1 in the same probe"
       - "all of L1's bypasses"
     evidence: ["GAP — no launch evidence test for this adapter"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: integrated      # HARD-CAPPED by LegacyAdapterShim
     target_level: "do not raise the cap until a protection probe adjudicates a launch"
     tickets: [F1]
@@ -1722,7 +1736,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: ["NODE_EXTRA_CA_CERTS 0 vs HTTPS_PROXY 3 in the same probe", "all of L1's bypasses"]
     evidence: ["GAP — no launch evidence test for this adapter"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: integrated      # HARD-CAPPED by LegacyAdapterShim
     target_level: "as L2"
     tickets: [F1]
@@ -1752,7 +1766,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["editing the settings back"]
     evidence: ["read-back only"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: integrated      # HARD-CAPPED by LegacyAdapterShim
     target_level: "correct as-is; never describe Copilot as launch-governed"
 
@@ -1780,7 +1794,7 @@ capabilities:
     coverage: observed
     known_bypasses: ["everything — the operator does not control execution"]
     evidence: [aa-api/src/routes/devtools/mod.rs:57-59]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: l1_observe      # hard-capped, documented at adapter.rs:119-122
     target_level: "correct as-is — this is the honest B7 answer"
 
@@ -1807,7 +1821,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["this IS the bypass, and it is not detectable"]
     evidence: ["aa-devtool-claude-code/src/bypass.rs:228-235 names it as an unobservable bypass. There is NO process watcher on any platform."]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "keep announcing it"
 
@@ -1834,7 +1848,7 @@ capabilities:
     coverage: unmeasured           # data path
     known_bypasses: ["a local administrator", "the tool ignoring the keys"]
     evidence: ["read-back of the written file, never observed enforcement — 'the open half of AAASM-5298' (managed_settings.rs:50-57)"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: host_enforced   # on the TOOL-GOVERNANCE axis only
     target_level: "do not let this rung imply data-path prevention"
     tickets: [AAASM-5298]
@@ -1862,7 +1876,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["this is the bypass, and it is explicitly announced"]
     evidence: ["Guarded: refused where a managed receipt or managed-settings file says the host runs managed (run.rs:894-903). Ambient HTTPS_PROXY/HTTP_PROXY are REMOVED, not inherited, when proxy is None and no_proxy is false (:329-333)."]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
 
@@ -1906,7 +1920,7 @@ capabilities:
       - "every non-inspected path in D3"
       - "C6 recall bounds"
     evidence: [aa-integration-tests/tests/e2e_secret_interception.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "state the RedactOnly default wherever DLP is claimed"
 
@@ -1951,7 +1965,7 @@ capabilities:
       - "aasm run still hands the child the whole parent environment (C5)"
       - "the agent can egress on any path in D3"
     evidence: ["aa-proxy/src/credentials.rs:307-322 unit tests; GAP — no end-to-end test proves the substitution reaches upstream"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     evidence_quality: unit_only
     current_level: not_applicable
     target_level: "a bounded version of the 'never enters the agent' claim IS defensible, with all four conditions named"
@@ -1992,7 +2006,7 @@ capabilities:
       - "no registration route; no aasm secrets command"
       - "every ${NAME} resolves to UnknownPlaceholder"
     evidence: ["aa-integration-tests/tests/common/mod.rs:246 registers a secret in a TEST HELPER only"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "decide its fate"
     tickets: [AAASM-5631]
@@ -2028,7 +2042,7 @@ capabilities:
     coverage_mcp_path: redacted
     known_bypasses: ["asymmetric by path — the LLM path never scans responses"]
     evidence: ["GAP on the LLM path"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "scan LLM responses, or state the asymmetry"
 
@@ -2055,7 +2069,7 @@ capabilities:
     coverage: unmeasured
     known_bypasses: ["the child receives the ENTIRE parent environment, so a shell or file tool in the agent can read any credential the operator exported"]
     evidence: ["the masking helper `fn mask_value` at :462 is used only at :578, for --dry-run preview text"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "warrants a ticket — whole-environment inheritance defeats C2's benefit for any agent with a shell tool"
 
@@ -2091,7 +2105,7 @@ capabilities:
       - "no Stripe detector exists; the OpenAI detector keys on 'sk-' while Stripe uses 'sk_'"
       - "a secret split by a separator (Chinese char, emoji, space, tab, newline) scans clean — accepted residual"
     evidence: [aa-security/src/scanner.rs:1071-1092, aa-security/src/scanner.rs:3012-3030]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "bounded by the pattern set — say so"
     tickets: [AAASM-5368]
@@ -2131,7 +2145,7 @@ capabilities:
     q4_changed_answer_in_product_favour: true
     known_bypasses: ["registration is reachable by anyone who can reach the agent plane — see I7"]
     evidence: [aa-integration-tests/tests/e2e_a2a_identity.rs, aa-integration-tests/tests/native_auth_gating.rs, aa-gateway/tests/lifecycle_service_test.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: keep
     tickets: [AAASM-5332]
@@ -2164,7 +2178,7 @@ capabilities:
     coverage: evaluated
     known_bypasses: ["the signature proves nothing; the boundary is the socket's 0600 mode plus peercred UID"]
     evidence: [aa-runtime unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "correct by design, provided no page calls it an authentication key"
 
@@ -2191,7 +2205,7 @@ capabilities:
     coverage: evaluated
     known_bypasses: ["as I7 — the plane is open"]
     evidence: [aa-integration-tests/tests/e2e_a2a_identity.rs, aa-integration-tests/tests/api_topology.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "advertise it — this is stronger than anything published about it"
 
@@ -2239,7 +2253,7 @@ capabilities:
       GAP. Positive control in the same probe: agent_id 0 matches in
       aa-ebpf-probes/src/exec_probes.rs and aa-ebpf-common/src/exec.rs, against
       pid 52 and 10 matches respectively.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "wire the pid through, or withdraw process-tree attribution claims"
 
@@ -2277,7 +2291,7 @@ capabilities:
       - "aa-storage-memory has ZERO org_id references across all nine source files, against 85 in aa-storage-postgres/src/user_store.rs as positive control"
       - "TenancyMode defaults to Untenanted (aa-gateway/src/server.rs:657-663)"
     evidence: [aa-integration-tests/tests/e2e_org_isolation.rs, aa-integration-tests/tests/api_iam.rs, aa-api/src/ws/tenant.rs:10-25]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "push org scoping into the storage trait so a forgetful call site cannot leak across tenants (F5)"
 
@@ -2308,7 +2322,7 @@ capabilities:
       GAP. Positive control in the same probe over aa-proxy/src: peercred,
       SO_PEERCRED and peer_pid all 0 matches; host 253 matches in
       aa-proxy/src/proxy/mod.rs. Logs render the agent as '<unknown>'.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "AAASM-5533's 'real agent identity binding' — this is its concrete requirement"
     tickets: [AAASM-5533]
@@ -2345,7 +2359,7 @@ capabilities:
       - "an unauthenticated caller reaching the agent plane can register and can submit policy queries carrying its own org/team"
       - "apply_authoritative_tenancy (policy_service.rs:398-425) overwrites client-supplied org/team ONLY when a credential token resolves"
     evidence: ["aa-api is uniformly gated by contrast — aa-api/src/routes/mod.rs:281"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "document the bootstrap exposure explicitly; defensible, but must not be described as 'authenticated'"
     tickets: [AAASM-3422]
@@ -2378,7 +2392,7 @@ capabilities:
     transport: uds
     known_bypasses: []
     evidence: [aa-integration-tests/tests/e2e_runtime_gateway_deny.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
 
@@ -2406,7 +2420,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: ["running the runtime without a gateway silently yields allow-by-default"]
     evidence: ["GAP"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "state the no-gateway default"
 
@@ -2440,7 +2454,7 @@ capabilities:
     transport: https
     known_bypasses: ["AA_PROXY_MCP_FAIL_OPEN=1 degrades both points to forward-without-enforcement"]
     evidence: [aa-proxy/src/config.rs:957-966]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
 
@@ -2475,7 +2489,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: ["Block is opt-in; AlertOnly forwards unmodified"]
     evidence: [aa-proxy/src/config.rs:888]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "state the default"
 
@@ -2504,7 +2518,7 @@ capabilities:
     transport: uds
     known_bypasses: [S7]
     evidence: ["per-SDK unit tests"]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: "bring Node to parity with Python and Go"
     tickets: [AAASM-4991]
@@ -2547,7 +2561,7 @@ capabilities:
     transport: bpf
     known_bypasses: ["the agent proceeds unconfined"]
     evidence: ["a LayerDegradation IS emitted here — but see G11, nothing renders it"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "correct posture; the reporting half is G11"
 
@@ -2590,7 +2604,7 @@ capabilities:
     q3_changed_answer: true
     known_bypasses: ["no kernel rules at all, and no signal that this happened"]
     evidence: ["GAP"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "F4 — new ticket"
 
@@ -2617,7 +2631,7 @@ capabilities:
     transport: not_applicable
     known_bypasses: []
     evidence: [aa-gateway unit tests]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: not_applicable
     target_level: hold
 
@@ -2652,7 +2666,7 @@ capabilities:
       GAP. Budget never queries the control-plane DB — positive control in the
       same probe over aa-gateway/src/storage/*.rs: 'budget' 1 unrelated hit
       ('latency budget', postgres.rs:896), 'audit' 57 hits in the same file.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "F4 — new ticket"
 
@@ -2683,7 +2697,7 @@ capabilities:
     transport: internal_channel
     known_bypasses: ["a dropped entry is indistinguishable from tampering"]
     evidence: ["GAP"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "owned by AAASM-5626"
     tickets: [AAASM-5626]
@@ -2722,7 +2736,7 @@ capabilities:
       exactly one dashboard file, dashboard/src/api/events.ts (a type
       declaration, 3 mentions), against policy_violation 110 mentions across
       real dashboard feature code. degraded_layers 0 matches in aa-cli/src.
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_applicable
     target_level: "AAASM-5535 — In Progress; this FAILS an Epic AAASM-5526 exit criterion outright"
     tickets: [AAASM-5535]
@@ -2769,7 +2783,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["everything — the loader daemon does not ship"]
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs, aa-integration-tests/tests/e2e_three_layers_together.rs]
-    evidence_runs_on_main: false   # path-gated to aa-ebpf*/** — ci.yml:131-133
+    evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
     target_level: "No-Go for B5 until the daemon ships AND a synchronous deny exists"
     tickets: [AAASM-5640, AAASM-3872]
@@ -2814,7 +2828,7 @@ capabilities:
     q4_changed_answer: true
     known_bypasses: ["0 __arm64_sys_* targets against 16 __x64_sys_ in aa-ebpf/src/kprobe.rs", "loader daemon unshipped"]
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
     target_level: "must say which probes are absent"
     tickets: [AAASM-5640]
@@ -2857,7 +2871,7 @@ capabilities:
     coverage_e4: unsupported
     known_bypasses: ["a local administrator", "the tool ignoring the managed keys (AAASM-5298's open half)"]
     evidence: [aa-integration-tests/tests/cli_run_claude_governed_launch.rs, aa-integration-tests/tests/conformance_claude_code.rs]
-    evidence_runs_on_main: true
+    evidence_runs_on_main: standing
     current_level: host_enforced   # the ONLY platform where the rung is reachable
     target_level: "claim the file, never the enforcement"
     tickets: [AAASM-5298, AAASM-5639]
@@ -2885,6 +2899,6 @@ capabilities:
     coverage: unsupported
     known_bypasses: ["everything"]
     evidence: ["windows_sys is declared in no Cargo.toml in the workspace, so the #[cfg(windows)] blocks that do exist cannot compile as written"]
-    evidence_runs_on_main: false
+    evidence_runs_on_main: none
     current_level: not_installed
     target_level: "state as Unsupported"
