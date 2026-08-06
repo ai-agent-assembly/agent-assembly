@@ -447,10 +447,11 @@ So the rule for this class is stated by *source*, not by marker:
 > [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md), edit the
 > anchor and re-run the generator — **whether or not the consumer carries a marker**.
 
-The bounded-region form in the first row is the one to reach for when adding a *new*
-generated region, because it is the only dialect that warns the next editor in place.
-Normalising the existing three onto it is a follow-up, not a rule this page can
-retroactively impose on already-shipped consumers.
+The bounded-region form is the one to reach for when adding a *new* generated region,
+because it is the only dialect that warns the next editor in place. Normalising the
+existing dialects onto one spelling is **hand-off 9** — this page cannot retroactively
+impose a marker convention on already-shipped consumers, and picking the surviving
+spelling is a decision, not an edit.
 
 ### The canonical link is mandatory, and it has a form
 
@@ -716,9 +717,15 @@ following, each of which belongs to
    crosses an org boundary, which is why it is not settled here.
 8. **Who owns a translation's accuracy**, and whether a fuzzy entry blocks
    publication — see [Translations](#translations-are-a-fourth-case-and-they-have-their-own-trigger).
+9. **Whether the generation marker dialects are normalised onto one spelling**, and
+   which one survives — see [Generation](#4-generation). Three spellings of
+   `BEGIN GENERATED` are in use across two repositories, so this is a cross-repo
+   convention decision rather than a local cleanup.
 
-Until 5621's ADR is published, these eight are open questions, and a contributor who
-hits one should escalate rather than settle it in a content PR.
+Until 5621's ADR is published, these nine are open questions, and a contributor who
+hits one should escalate rather than settle it in a content PR. Items 1-3 are
+assigned to 5621 by ADR 0033; items 4-9 are gaps this page found and could not close
+without making an ownership decision of its own.
 
 ## Applying this to a change
 
@@ -776,5 +783,5 @@ version — and the enforcement that goes with it — is
 | [`saas-claim-publication-checklist.md`](https://github.com/ai-agent-assembly/docs/blob/HEAD/docs/src/saas-claim-publication-checklist.md) | Docs Hub — provisional register bounding managed-service claims |
 | [AAASM-5592](https://lightning-dust-mite.atlassian.net/browse/AAASM-5592) | This page |
 | [AAASM-5580](https://lightning-dust-mite.atlassian.net/browse/AAASM-5580) | Parent Epic — audience-based information architecture and progressive disclosure |
-| [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) | Blocked by this page; formalises it as an ADR and settles the six hand-offs above |
+| [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) | Blocked by this page; formalises it as an ADR and settles the [hand-offs](#what-this-page-hands-off) above |
 | [AAASM-5594](https://lightning-dust-mite.atlassian.net/browse/AAASM-5594) | Blocked by this page; designs the product-site and Docs Hub sitemaps against these ownership boundaries |
