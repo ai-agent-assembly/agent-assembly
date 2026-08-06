@@ -62,12 +62,12 @@ implementation and independently re-checked before being used in public copy.
 | TLS uprobes/uretprobes attach to `SSL_write` / `SSL_read` **only** | `aa-ebpf/src/uprobe.rs:68,80,92` |
 | Library resolved by scanning `/proc/<pid>/maps` for the substring `libssl.so`, fallback list is `libssl.so.3` / `libssl.so.1.1` only | `aa-ebpf/src/uprobe.rs:149-164,199` |
 | Go `crypto/tls`, rustls, BoringSSL, GnuTLS, NSS are **not** covered | stated in-probe at `aa-ebpf-probes/src/ssl_probes.rs:17-32` (AAASM-3872) |
-| File-I/O kprobes target hardcoded `__x64_sys_*` symbols — **x86_64 only** | `aa-ebpf/src/kprobe.rs:145-160`, test asserts the prefix at `:240-247` |
+| **Only the file-I/O kprobes** are x86_64 — 14 hardcoded `__x64_sys_*` symbols. There is no `cfg(target_arch)` or runtime arch check anywhere in the eBPF crates: TLS uprobes attach by symbol from `/proc/<pid>/maps` and exec tracepoints resolve offsets from live BTF, so both work on aarch64 | `aa-ebpf/src/kprobe.rs:145-160`, test at `:240-247`; `aa-ebpf/src/uprobe.rs:199`; absence of `target_arch` verified across `aa-ebpf*/src/` |
 | TLS, file-I/O and exec probes are **observe-only**; the path "blocklist" only sets `event.flags = 1` | `aa-ebpf-probes/src/main.rs:119-122`; `aa-ebpf/src/maps.rs:31`; `aa-runtime/src/ebpf_control.rs:24-29` |
 | No LSM, no seccomp-BPF anywhere — **no code path returns a denial** | absence verified across all `.rs` |
 | The only enforcing path is the opt-in syscall guard, via **asynchronous** `bpf_send_signal(SIGKILL)` — the offending syscall still completes | `aa-ebpf-probes/src/syscall_guard.rs:55-60,189-195` |
 | Guard is off unless `AA_EBPF_CONFINE_PID` is set **and** policy lowers a non-empty allowlist | `aa-runtime/src/ebpf_control.rs:137-140,157-162` |
-| Platform gate: Linux, kernel ≥ 5.8, BTF at `/sys/kernel/btf/vmlinux` | `aa-runtime/src/layer.rs:52-67,97,133-135` |
+| Platform gate is **three** conditions — kernel ≥ 5.8, BTF, **and** a reachable loader-daemon socket (`/run/aa-ebpf-loaderd.sock`) — and `AA_LAYERS` bypasses the probe entirely. `aa-runtime` deliberately holds **no** `CAP_BPF`/`CAP_PERFMON`; the privileged loader daemon owns every BPF operation (AAASM-3605), so "the runtime needs elevated privileges" is inverted | `aa-runtime/src/layer.rs:114-135,165-167` |
 | Load/attach failure **fails open** — degrade, warn, agent proceeds | `aa-runtime/src/ebpf_control.rs:204-213,320-352,378-385` |
 | Fork propagation fails open at 1024 PIDs; confined child runs unconfined | `aa-ebpf-probes/src/syscall_guard.rs:94,235-241` |
 
@@ -79,15 +79,16 @@ implementation and independently re-checked before being used in public copy.
 | Under it, only `api.openai.com`, `api.anthropic.com`, `api.cohere.com` are TLS-intercepted | `aa-proxy/src/intercept/detect.rs:27-35` |
 | Every other host takes a raw bidirectional tunnel with **no inspection** | `aa-proxy/src/proxy/mod.rs:1058-1060,1129-1137` |
 | **No** transparent redirect exists (no iptables/pfctl/TPROXY/`SO_ORIGINAL_DST`) — traffic arrives only if the client speaks the HTTP proxy protocol | absence verified repo-wide |
-| `HTTP_PROXY`/`HTTPS_PROXY` are injected **only** by `aasm run` | `aa-cli/src/commands/run.rs:321-324` |
+| `HTTP_PROXY`/`HTTPS_PROXY` are injected by `aasm run` **and** by installed developer integrations, which write them into the tool's own configuration so they persist independently of `aasm run` | `aa-cli/src/commands/run.rs:322-323`; `aa-devtool-claude-code/src/lib.rs:379-380` and `lifecycle.rs:929-930`; `aa-devtool-codex/src/lib.rs:301`; `aa-devtool-windsurf/src/lib.rs:312` |
 | A tool launched outside `aasm run` inherits neither the proxy nor `NODE_EXTRA_CA_CERTS` and is not protected | `aa-devtool-claude-code/src/lifecycle.rs:1010-1013`; measured, `docs/src/devtools/limitations.md` |
 | One local **root** CA, CN `Agent Assembly CA`, at `~/.aa/ca/` — per-domain **leaf** certs are minted from it. "Per-host CA" is the wrong description | `aa-proxy/src/tls/ca.rs:28-34,78-84,184-210` |
-| Trust-store installation is **macOS-only** | `aa-proxy/src/tls/ca.rs:214,223,229`; `aa-proxy/src/lib.rs:63-68` |
-| HTTP/1.1 with `Content-Length` only. No ALPN is configured, so no HTTP/2, gRPC or WebSocket; `Transfer-Encoding: chunked` is rejected | `aa-proxy/src/proxy/http.rs:266-270`; ALPN absent from `aa-proxy/src` |
-| Egress allow/deny comes from `AA_PROXY_DENIED_HOSTS` / `AA_PROXY_NETWORK_ALLOWLIST`, **empty by default** — out of the box the proxy denies nothing | `aa-proxy/src/config.rs:75-85,168-170` |
+| **Automatic** trust-store install at proxy start is macOS-only (`aa-proxy/src/lib.rs:64-69`). CA install itself is **also implemented on Linux** — `sudo aasm proxy install-ca` copies to `/usr/local/share/ca-certificates/aa-proxy.crt` and runs `update-ca-certificates`. Windows is unsupported | `aa-cli/src/commands/proxy/ca.rs:79-82,150-188`; `uninstall_linux` at `:191`; wired at `proxy/mod.rs:26,45`; Windows arm at `ca.rs:87` |
+| **On MitM'd hosts**, HTTP/1.1 with `Content-Length` only; no ALPN is configured, so HTTP/2, gRPC and WebSocket cannot be inspected there, and a chunked request is dropped with no HTTP response rather than a 403. On hosts not under MitM those protocols work, tunnelled and uninspected — there is no WebSocket handling in `aa-proxy/src` at all | `aa-proxy/src/proxy/http.rs:266-270`; ALPN absent from `aa-proxy/src` |
+| Egress allow/deny comes from `AA_PROXY_DENIED_HOSTS` / `AA_PROXY_NETWORK_ALLOWLIST`, both **empty by default**. That is *not* "denies nothing": an SSRF guard denies unconditionally ahead of both lists | lists at `aa-proxy/src/config.rs:75-85`; SSRF guard at `aa-proxy/src/proxy/mod.rs:940-947`, pinned by the test at `:1967` |
 | The `--policy` document does not configure the running proxy | `aa-policy/src/resolve.rs:234-244` |
 | Credential DLP default is `RedactOnly` (forward), not `Block` | `aa-proxy/src/config.rs:20-23` |
 | Gateway is consulted at exactly one call site — the MCP path | `aa-proxy/src/proxy/mod.rs:1098` |
+| `mitm_hosts` is the **union** of `AA_PROXY_MITM_HOSTS` and host lists installed integrations drop into `~/.aasm/integrations/mitm-hosts.d/`, so the MitM surface can widen with no operator env var | `aa-proxy/src/config.rs:173` |
 | Synchronous pre-execution denial **does** exist: CONNECT-time 403, in-tunnel host re-check, credential `Block`, and MCP `tools/call` — each returns before dialling upstream | `aa-proxy/src/proxy/mod.rs:1033-1040,822-833,895-908,627-633` |
 
 ### E3 — SDK denial is real but bounded to patched framework tool seams
@@ -150,8 +151,8 @@ descriptions of one mechanism.
 
 | # | File:line | Exact quoted claim | Class | Verdict | Replacement | Evidence |
 |---|---|---|---|---|---|---|
-| W1 | `src/components/home/index.tsx:319` | "Kernel uprobes on SSL libraries plus exec/file syscall hooks catch everything, including bypass attempts (Linux)." | absolute · observe-presented-as-prevent · platform-overreach | qualify | "Observe-only kernel probes — OpenSSL uprobes plus exec/file syscall hooks — surface activity the layers above never saw. Linux x86_64 only; it reports, it does not block." | E1 |
-| W2 | `src/components/home/index.tsx:311` | "A sidecar MitM proxy enforces network-egress policy with no code changes — catches what the SDK misses." | no-code-change · unbounded scope | qualify | Names `aasm run`, proxy-env routing and CA trust as the prerequisites. | E2 |
+| W1 | `src/components/home/index.tsx:319` | "Kernel uprobes on SSL libraries plus exec/file syscall hooks catch everything, including bypass attempts (Linux)." | absolute · observe-presented-as-prevent · platform-overreach | qualify | "Observe-only kernel probes — OpenSSL uprobes plus exec/file syscall hooks — surface activity the layers above never saw. Linux only; it reports, it does not block." | E1 |
+| W2 | `src/components/home/index.tsx:311` | "A sidecar MitM proxy enforces network-egress policy with no code changes — catches what the SDK misses." | no-code-change · unbounded scope | qualify | Names proxy-env routing and CA trust as prerequisites, supplied by `aasm run` or an installed integration. | E2 |
 | W3 | `src/components/home/index.tsx:303` | "In-process hooks (Python, Node.js, Go) emit events and apply pre-execution allow/deny." | unbounded scope | qualify | Bounds to wrapped framework tool calls after explicit init. | E3 |
 | W4 | `src/components/home/index.tsx:48-53` | "sits between your agents and the outside world and enforces policy, tracks cost, and intercepts unsafe actions — at the SDK, the network proxy, and the kernel." | unbounded scope | qualify | Bounds mediation to the paths it is wired into. | E1 · E2 · E3 |
 | W5 | `src/components/home/index.tsx:275` | "Three boundaries for every agent" | absolute | qualify | "Three boundaries for a governed agent" | E3 |
@@ -164,7 +165,7 @@ descriptions of one mechanism.
 | W12 | `blog/2026-06-25-…/index.md:16` | "enforces network egress with no code changes; catches what the SDK misses." | no-code-change | qualify | Names routing + CA trust. | E2 |
 | W13 | `blog/2026-06-25-…/index.md:20-22` | "the proxy and eBPF layers are where the boundary becomes hard to cross" | absolute | qualify | eBPF raises detection, not the boundary. | E1 |
 | W14 | `i18n/zh-Hant/code.json` | zh-Hant mirrors of W1–W7 | (inherits) | qualify | Translated in lockstep. | — |
-| W15 | `src/components/home/index.tsx:131-135` | Hero terminal mock: "secret STRIPE_KEY injected at runtime — never in context" | absolute · feature-not-shipped | qualify | Advertises an unreachable capability using the one credential type with no detector. Replaced with a redaction line naming a credential a shipped detector matches. | E4 |
+| W15 | `src/components/home/index.tsx:131-135` | Hero terminal mock: "secret STRIPE_KEY injected at runtime — never in context" | absolute · feature-not-shipped | qualify | Advertises an unreachable capability using a credential type with no detector. Replaced with an `AKIA…` key ID, which the scanner matches **by prefix** (`aa-security/src/scanner.rs:17`), being redacted. First replacement attempt named `AWS_SECRET_ACCESS_KEY`, which the scanner does **not** match — it detects AWS by key-ID prefix (`AKIA`/`ASIA`), never by env-var name, and no `AwsSecretAccessKey` variant exists. Corrected. | E4 · E6 |
 | W16 | `src/components/home/index.tsx:257` | "Real credentials are injected at execution time and never enter the model context the agent can see." | absolute · feature-not-shipped | remove | "Agent Assembly scans your agents' outbound traffic and redacts credentials before they reach a model or an API." | E4 |
 | W17 | `src/pages/product.tsx:109-116` | "Credentials injected at execution time" / "Secrets never enter the model context" | absolute · feature-not-shipped | remove | Replaced with the redact-before-forward description and its default. | E4 |
 
@@ -183,17 +184,17 @@ descriptions of one mechanism.
 | A9 | `introduction/concepts.md:58` | "**audit** records everything" | absolute | qualify | "records each evaluated action" | E3 |
 | A10 | `security/three-layer-defense.md:20` | "Outbound HTTPS, no code change" | no-code-change | qualify | As A6. | E2 |
 | A11 | `security/three-layer-defense.md:21` | "Everything else, including bypass attempts" | absolute · observe-presented-as-prevent | qualify | As A7, plus "Detection authority" recast as detection, not enforcement. | E1 |
-| A12 | `security/three-layer-defense.md:56-63` | "it sees TLS plaintext and process activity **even when the agent never adopted the SDK and never routed through the proxy**. It is the floor." | unbounded scope · platform-overreach | qualify | Bounds to OpenSSL-linked processes on Linux x86_64, observe-only. | E1 |
+| A12 | `security/three-layer-defense.md:56-63` | "it sees TLS plaintext and process activity **even when the agent never adopted the SDK and never routed through the proxy**. It is the floor." | unbounded scope · platform-overreach | qualify | Bounds to OpenSSL-linked processes on Linux, observe-only; notes the loader-daemon requirement and that the runtime itself holds no BPF capability. | E1 |
 | A13 | `security/three-layer-defense.md:77-78` | "Run all three and an action has nowhere to hide — an attempt to evade a higher layer simply surfaces at a lower one." | absolute | remove | Replaced with the enumerated residual-gap list. | E1 |
 | A14 | `security/three-layer-defense.md:125-127` | "an action only escapes governance if it evades *every deployed* layer. With eBPF present, the bypass path collapses to 'caught at Layer 3.'" | absolute | qualify | Names the four ways an action still escapes with eBPF deployed. | E1 |
 | A15 | `architecture/infra-overview.md:15` | "decides, records, and persists every action" | absolute | qualify | "every action it receives" | E3 |
 | A16 | `architecture/infra-overview.md:22` | "enforces network-egress policy with no code changes." | no-code-change | qualify | As A6. | E2 |
-| A17 | `architecture/infra-overview.md:24` | "catches everything, including bypass attempts. **Linux-only.**" | absolute · platform-overreach | qualify | As A7 + x86_64. | E1 |
+| A17 | `architecture/infra-overview.md:24` | "catches everything, including bypass attempts. **Linux-only.**" | absolute · platform-overreach | qualify | As A7; Linux, with the file-I/O kprobes noted as x86_64-only. | E1 |
 | A18 | `architecture/infra-overview.md:60` | Mermaid node label "*no code changes*" | no-code-change | qualify | "requires proxy routing" | E2 |
 | A19 | `architecture/README.md:5` | "routing every action through one central **gateway**" | absolute | qualify | "routing governed actions through one central gateway" | E3 |
-| A20 | `governance/capability-matrix.md:22` | "The tool cannot bypass enforcement, but may operate without constraint if AAASM is offline." | absolute | remove | Absolute deleted, not softened. The tier now names what mediates (SDK/wrapper seam, `aa-proxy`), the platform (CA trust-store install macOS-only), and the decision timing (both synchronous), followed by a boundary note enumerating unmanaged launch, direct calls, unsupported transports, hosts not under MitM, opaque SaaS hosts, and AAASM-offline. | E1 · E2 · E3 |
-| A33 | `.claude/CLAUDE.md` (three-layer section) | "kernel uprobes on SSL libs + exec/file syscalls; catches **everything**, including bypass attempts. **Linux-only.**" | absolute · observe-presented-as-prevent · platform-overreach | qualify | Observe-only, OpenSSL, Linux x86_64, fails open; described as one possible host mechanism. | E1 |
-| A34 | `.claude/CLAUDE.md` (crate map + prose) | "`aa-runtime` \| Authoritative enforcement pipeline (`RuntimeScanner`)" | mislabelled-mechanism | qualify | Splits the allow/deny/pending gate (`handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) from the scan/redact stage (`RuntimeScanner`, `aa-runtime/src/pipeline/enforcement.rs:182`), which is authoritative *versus the SDK's own scan*, not the policy gate. | verified directly |
+| A20 | `governance/capability-matrix.md:22` | "The tool cannot bypass enforcement, but may operate without constraint if AAASM is offline." | absolute | remove | Absolute deleted, not softened. The tier now names what mediates (SDK/wrapper seam, `aa-proxy`), the platform (macOS and Linux, with the CA install differing per platform), and the decision timing (both synchronous), followed by a boundary note enumerating unmanaged launch, direct calls, unsupported transports, hosts not under MitM, opaque SaaS hosts, and AAASM-offline. | E1 · E2 · E3 |
+| A33 | `.claude/CLAUDE.md` (three-layer section) | "kernel uprobes on SSL libs + exec/file syscalls; catches **everything**, including bypass attempts. **Linux-only.**" | absolute · observe-presented-as-prevent · platform-overreach | qualify | Observe-only, OpenSSL, Linux (file-I/O kprobes x86_64-only), fails open; described as one possible host mechanism. | E1 |
+| A34 | `.claude/CLAUDE.md` (crate map + prose) | "`aa-runtime` — Authoritative enforcement pipeline (`RuntimeScanner`)" | mislabelled-mechanism | qualify | Splits the allow/deny/pending gate (`handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) from the scan/redact stage (`RuntimeScanner`, `aa-runtime/src/pipeline/enforcement.rs:182`), which is authoritative *versus the SDK's own scan*, not the policy gate. | verified directly |
 | A21 | `governance/capability-matrix.md:34` | "every action emits an audit event" | absolute | qualify | "every observed action emits an audit event" | E3 |
 | A22 | `governance/capability-matrix.md:246` | "All outbound HTTPS from the machine" | unbounded scope | qualify | "Outbound HTTPS **routed through it**; under the default `llm_only` only the three built-in LLM hosts are inspected" | E2 |
 | A23 | `quick-start/requirements.md:79` | "Intercepts outbound HTTPS via MitM with a per-host CA — no code changes" | no-code-change | qualify | Corrects the CA model and names the prerequisites. | E2 |
@@ -227,11 +228,11 @@ descriptions of one mechanism.
 | D2 | `docs/src/README.md:22` | "decides, before each action runs, whether an agent is allowed…" | unbounded scope | qualify | "before each **governed** action runs" | E3 |
 | D3 | `docs/src/README.md:24` | "catches risky calls (and bypass attempts) at the SDK, network, and kernel levels." | unbounded scope · observe-presented-as-prevent | qualify | Splits enforcement (SDK, proxy) from detection (kernel). | E1 |
 | D4 | `docs/src/README.md:83` | "applies allow/deny decisions before any network request leaves the process" | absolute | qualify | Bounds to wrapped tool calls; notes raw HTTP is not intercepted. | E3 |
-| D5 | `docs/src/README.md:84` | "intercepts outbound HTTPS using a per-host CA … No code changes required." | no-code-change | qualify | Corrects the CA model, names routing and macOS-only trust install. | E2 |
-| D6 | `docs/src/README.md:85` | "kernel-level hooks that watch SSL libraries and process syscalls to catch bypass attempts at the OS level. Linux only." | observe-presented-as-prevent · platform-overreach | qualify | "observe-only … OpenSSL … Linux x86_64" | E1 |
+| D5 | `docs/src/README.md:84` | "intercepts outbound HTTPS using a per-host CA … No code changes required." | no-code-change | qualify | Corrects the CA model; names routing and the per-platform CA install (automatic on macOS, `sudo aasm proxy install-ca` on Linux, Windows unsupported). | E2 |
+| D6 | `docs/src/README.md:85` | "kernel-level hooks that watch SSL libraries and process syscalls to catch bypass attempts at the OS level. Linux only." | observe-presented-as-prevent · platform-overreach | qualify | "observe-only … OpenSSL … Linux" (file-I/O kprobes x86_64-only) | E1 |
 | D7 | `docs/src/comparison.md:3` | "a security checkpoint in front of every agent action" | absolute | qualify | "in front of each governed agent action" | E3 |
 | D8 | `docs/src/comparison.md:31` | "Network-level interception (no code change)" | no-code-change | qualify | Footnoted with the routing/CA/transport prerequisites. | E2 |
-| D9 | `docs/src/comparison.md:55` | "Immutable audit log with tamper-evident signatures \| ✓ 🚧 (HMAC-SHA256)" | overstated-crypto-guarantee · absolute | qualify | Row renamed to "Hash-chained, verifiable audit log", cell to `partial (unkeyed SHA-256 chain over the JSONL sink)`, with a footnote carrying the full bounds. | E5 |
+| D9 | `docs/src/comparison.md:55` | "Immutable audit log with tamper-evident signatures — ✓ 🚧 (HMAC-SHA256)" | overstated-crypto-guarantee · absolute | qualify | Row renamed to "Hash-chained, verifiable audit log", cell to `partial (unkeyed SHA-256 chain over the JSONL sink)`, with a footnote carrying the full bounds. | E5 |
 | D10 | `docs/src/comparison.md:82` | "AAASM's audit log entries are signed with HMAC-SHA256, making post-hoc alteration detectable" (marked 🚧 Enterprise) | overstated-crypto-guarantee | qualify | Restated as an unkeyed SHA-256 hash chain over the JSONL sink, verifiable with `aasm audit verify-chain`, **shipping in OSS** — the 🚧 Enterprise marker also *understated* it. | E5 |
 | D11 | `docs/src/comparison.md:79` | "No competitor in this matrix offers kernel-level **enforcement**." | observe-presented-as-prevent | qualify | eBPF is a detection layer; restated as "kernel-level visibility". | E1 |
 | D12 | `docs/src/comparison.md:80` | "MitM HTTPS interception via a per-host CA" | unbounded scope | qualify | Corrects the CA model and adds the launch/routing/trust precondition. | E2 |
@@ -253,7 +254,7 @@ Reported, not edited.
 | `examples` | `README.md:7` | "intercepts, inspects, and enforces policies on tool calls made by AI agents — without requiring you to rewrite your agent code" | no-code-change | Follow-up ticket. |
 | `agent-assembly` | `.claude/CLAUDE.md` | *Fixed in this ticket* — see rows A33/A34. It is the propagation root: every coding agent reads it before writing public copy. |
 | workspace root | `CLAUDE.md` (architecture section) | "Catches everything else, including bypass attempts." | absolute | Same as above. |
-| `cloud` | — | No public over-claim found. `cannot bypass` hits are about SSO/DB enum enforcement and are accurate; `three-layer` hits describe the FastAPI layering, an unrelated sense. | — | none |
+| `cloud` | — | No public over-claim found. | — | none |
 | `horonomy-official-website` | `design/v1/homepage-directions/…dc.html:678` | "with every action inside an explicit boundary" | absolute | Different product (Horonomy), and a design artifact rather than shipped copy. Flagged only. |
 
 Vendored `.venv` / `node_modules` / generated OpenAPI-schema matches were excluded —
@@ -261,24 +262,29 @@ they are third-party or generated text, not authored product claims.
 
 ## Summary by claim class
 
-Counts are per claim row; a row with two classes is counted under each.
+Machine-counted from the rows above (63 rows). A row carrying two classes is
+counted under each, so the class table sums higher than the row count.
 
 | Class | official-website | agent-assembly | docs | Total |
 |---|---|---|---|---|
-| absolute | 5 | 20 | 3 | **28** |
-| unbounded scope | 4 | 3 | 4 | **11** |
-| observe-presented-as-prevent | 3 | 7 | 2 | **12** |
+| absolute | 8 | 24 | 4 | **36** |
+| no-code-change | 3 | 7 | 3 | **13** |
+| observe-presented-as-prevent | 3 | 4 | 3 | **10** |
+| unbounded scope | 5 | 2 | 3 | **10** |
 | platform-overreach | 1 | 3 | 1 | **5** |
-| no-code-change | 3 | 9 | 2 | **14** |
+| feature-not-shipped | 3 | 0 | 0 | **3** |
+| overstated-crypto-guarantee | 0 | 0 | 2 | **2** |
+| mislabelled-mechanism | 0 | 1 | 0 | **1** |
 
 | Verdict | official-website | agent-assembly | docs | Total |
 |---|---|---|---|---|
-| remove | 0 | 4 | 1 | **5** |
-| qualify | 13 | 28 | 7 | **48** |
-| keep-with-boundary | 0 | 7 | 2 | **9** |
+| remove | 2 | 5 | 1 | **8** |
+| qualify | 15 | 29 | 11 | **55** |
+| **Rows** | **17** | **34** | **12** | **63** |
 
-Actionable rows: **15** (official-website, one deferred) · **32** (agent-assembly) ·
-**8** (docs).
+`keep-with-boundary` entries are listed separately per repo below the tables
+they belong to and are not numbered rows, so they are excluded from these
+counts: 7 in `agent-assembly`, 2 in `docs`.
 
 ## Deferred
 
