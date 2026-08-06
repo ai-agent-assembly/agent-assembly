@@ -513,6 +513,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "zeroize",
