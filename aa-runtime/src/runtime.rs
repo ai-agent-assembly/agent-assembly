@@ -1022,6 +1022,15 @@ pub async fn run(config: RuntimeConfig) {
     let mut degraded_layers: Vec<String> = Vec::new();
     check_layer_availability(active_layers, &mut degraded_layers);
 
+    // AAASM-5535: the honest reading of the same probes. `active_layers` says
+    // which components are *present*; this says what each may claim, and is
+    // what `GET /health` publishes as `protection`.
+    let protection = crate::layer::LayerDetector::attest(crate::health::now_unix_secs());
+    tracing::info!(
+        claims = ?protection.verified_states_at(protection.generated_at_unix_secs),
+        "protection attestation"
+    );
+
     // Build pipeline config and create the inbound channel at the configured depth.
     let pipeline_config = crate::pipeline::PipelineConfig::from_runtime_config(&config);
     let (inbound_tx, inbound_rx) =
@@ -1186,6 +1195,7 @@ pub async fn run(config: RuntimeConfig) {
         inbound_tx: inbound_tx_health,
         active_layers,
         degraded_layers,
+        protection,
     };
     spawn_health_server(&tracker, &config, token.clone(), health_state);
 

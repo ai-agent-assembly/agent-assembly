@@ -26,6 +26,8 @@ pub mod agent;
 #[cfg(feature = "alloc")]
 pub mod approval;
 #[cfg(feature = "alloc")]
+pub mod attestation;
+#[cfg(feature = "alloc")]
 pub mod audit;
 #[cfg(feature = "alloc")]
 pub mod capability;
