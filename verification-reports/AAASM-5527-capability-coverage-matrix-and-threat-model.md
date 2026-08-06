@@ -810,3 +810,113 @@ Acceptance criterion 7 requires a recommendation per boundary class.
 | **B5 — one host** | **No-Go** | E4 is the only element that could reach B5 and it is unreachable in every released build (AAASM-5640). Even in a source build it is observe-only except for one opt-in asynchronous kill. **This is the clearest No-Go in the matrix and the one most at risk of being claimed anyway** |
 | **B6 — one managed device** | **Conditional Go, narrowly** | macOS root-owned managed settings is a real boundary a non-admin user cannot rewrite, and it is the only route to ADR 0030's `HostEnforced`. Conditional on: it is *tool-governance*, not data-path mediation, and whether the tool honours the keys is unmeasured (AAASM-5298's open half). Claim the file, never the enforcement |
 | **B7 — opaque SaaS agents** | **No-Go** | `aa-devtool-saas` is hard-capped at `L1Observe`, is not registered in `SUPPORTED_TOOLS`, cannot launch, and cannot write settings. It is an audit-ingest adapter. Do not describe SaaS agents as governed |
+
+---
+
+# Cross-cutting findings (reported, not fixed)
+
+This ticket owns `verification-reports/**` only. `docs/src/**` and
+`docs/src/SUMMARY.md` are held by AAASM-5592, and the `aa-*` crates by
+AAASM-5535. Everything below is therefore reported to its owner rather than
+edited here.
+
+## Code defects
+
+| # | Finding | Location | Owner |
+|---|---|---|---|
+| 1 | Codex and Windsurf managed launches inject `HTTPS_PROXY` with no CA trust — the measured D-d silent-failure configuration | `aa-devtool-codex/src/lib.rs:281-303`; `aa-devtool-windsurf/src/lib.rs:295-315` | **F1 — new ticket** |
+| 2 | Chunked/SSE upstream responses on the MCP path are re-serialised with `Content-Length: 0` | `aa-proxy/src/proxy/mod.rs` `handle_mcp_response_body`; `aa-proxy/src/proxy/http.rs:466-484,502-527` | **F2 — new ticket** |
+| 3 | Budget state load failure silently resets the cap; eBPF policy parse failure silently yields an empty rule set. Neither raises a degradation | `aa-gateway/src/server.rs:155-163`; `aa-runtime/src/ebpf_control.rs:190-201` | **F4 — new ticket** |
+| 4 | `get_agent` by id carries no org predicate; `aa-storage-memory` has no `org_id` concept | `aa-gateway/src/storage/postgres.rs:499-508`; `aa-storage-memory/src/**` | **F5 — new ticket** |
+| 5 | CONNECT emits an **allow** decision for traffic then tunnelled uninspected — re-verified present | `aa-proxy/src/proxy/mod.rs:1325` | AAASM-5637 (open) |
+| 6 | `aa-cli` and gateway lifecycle tests still mint registration keys via `derive_transport_key(agent_id)`, the derivation AAASM-5332 removed from production | `aa-cli/src/commands/run_registration.rs:583,668`; `aa-gateway/tests/lifecycle_service_test.rs:29,658,682,804,830,856` | AAASM-5535 or a test-hygiene follow-up |
+| 7 | The correlation bridge hardcodes `pid: 0`, making pid-family correlation inert | `aa-runtime/src/correlation/mod.rs:47-49` | pre-existing `TODO(AAASM-150)` |
+
+## Comments that contradict their own code
+
+Each of these would mislead a reader who trusts the comment over the code. Two
+are already ticketed; two are not.
+
+| # | Comment | Code | Owner |
+|---|---|---|---|
+| 8 | `aa-proxy/src/proxy/http.rs:13` — *"the MCP path falls back to a transparent relay"* | It does not; `handle_mcp_response_body` always re-serialises | **F2** |
+| 9 | `aa-sandbox/src/lib.rs:10-11` — *"consumed by `aa-proxy` via the `ToolRegistry` dispatch surface"* | `aa-proxy/Cargo.toml` has no `aa-sandbox` dependency (positive control: `aa-core` at `:17`) | AAASM-5627 |
+| 10 | `aa-ebpf-common/README.md:11` — describes `aa-ebpf-programs` as the live BPF producer | It is a dead stub; `aa-ebpf/build.rs` builds only `aa-ebpf-probes` | AAASM-5627 |
+| 11 | `aa-ebpf` uprobe docstring claims `SSL_write_ex` is attached | It never is | AAASM-5634 |
+
+## Book pages still narrating the superseded model
+
+Reported for AAASM-5592 / AAASM-5605; **not edited here**.
+
+- `docs/src/security/threat-model.md` — routes readers to "the [three interception
+  layers](three-layer-defense.md)" in its opening sentence (`:6`), and its threat
+  scenario 3 asserts the fall-through framing ADR 0033's Alternatives explicitly
+  rejects: *"eBPF SSL uprobes observe the plaintext if the agent bypasses both"*
+  (`:57`). Scenario 2 states redaction happens *"on every path"* (`:53`), which
+  D3 and D6 disprove. Its Assets table attributes network-egress protection to
+  *"eBPF SSL uprobes"* (`:15`).
+- The reconciliation this artifact recommends: `threat-model.md` should become the
+  durable STRIDE catalogue keyed to the six elements, and cite this matrix for
+  current-state coverage rather than restating it.
+
+---
+
+# Fields this artifact recommends for the AAASM-5531 manifest
+
+The YAML source already carries the seventeen ticket-required fields. This survey
+surfaced eight more that a manifest needs in order to be *checkable*, each because
+its absence made a claim ambiguous somewhere above.
+
+| Field | Values | Why the survey needs it |
+|---|---|---|
+| `default_state` | `on` \| `off` \| `open` \| `closed` | Question 3. Six capabilities ship as their default, not as themselves (N1, N4, M2, C1, C2, H2) |
+| `reachable_in_release` | `true` \| `false` | Question 4. The single field that would have made AAASM-5640 impossible to miss. Should be derived from `scripts/check-release-completeness.sh`, not hand-written |
+| `boundary_class` | `B1`…`B7` | Makes "universal" unwritable without a boundary, which is the Epic's security principle |
+| `decision_timing` | `pre` \| `in-line` \| `post` \| `none` | Separates *Denied before execution* from the eBPF guard's post-hoc kill |
+| `failure_posture` | `fail_closed` \| `fail_open` \| `fail_open_silent` | The third value is the finding: G7 and G9 fail open **without** emitting a degradation, which is materially different from G6 |
+| `evidence_ref` + `evidence_runs_on_main` | test path + boolean | An evidence test that is path-gated off `main` (the whole eBPF suite) is weaker evidence than one in the standing suite, and today nothing records the difference |
+| `deny_signal` | `raise` \| `sentinel_value` \| `none` | Six Python adapters return a `[BLOCKED …]` string and five raise; a caller catching only the exception treats a blocked call as a success |
+| `redaction_actor` | `proxy_scanner` \| `gateway_instructions` | A gateway `Redact` verdict never replays the gateway's field paths; the proxy's own scanner does the work |
+
+Two further recommendations for 5531, both learned here:
+
+- **Derive `reachable_in_release` from the release script rather than restating
+  it.** A manifest that hand-copies the binary list will drift exactly the way the
+  eBPF claim did.
+- **Make `coverage` a closed enum of ADR 0033 §6's eleven terms**, so a value
+  outside the vocabulary fails validation. That is the machine-checkable half of
+  AAASM-5536's V1 gate.
+
+---
+
+# Acceptance-criteria mapping
+
+| Criterion | Where it is satisfied |
+|---|---|
+| Every currently supported SDK/framework/dev-tool/MCP path is represented | **D1** (12 Python adapters, 5 Node hook targets + 2 wrappers, Go), **D4** (10 MCP rows across every transport), **D5** (all 5 dev-tool adapters) |
+| Direct and unmanaged paths are represented rather than omitted | **S10**, **S11**, **S12** (direct calls, unadapted frameworks, raw HTTP/subprocess/fs), **L6**, **L8** (unmanaged launch, `--no-proxy`), **N10**–**N12**, **M5**–**M8** |
+| Observe-only, best-effort and pre-execution enforcement are not conflated | The `Mode` column carries enforce-vs-observe **and** sync-vs-best-effort separately, and `Coverage` is a closed ADR 0033 §6 term. H2 is recorded as **Detected**, never *Denied before execution*, precisely because the syscall completes first |
+| Each advertised guarantee maps to at least one evidence row | Table 2 of every domain carries an `Evidence test / gap` cell. Where no test exists the cell says **Gap** rather than being left blank |
+| Each known bypass maps to a mitigation, accepted limitation or follow-up | [Gap-to-ticket mapping](#gap-to-ticket-mapping) — 21 existing issues, 7 new follow-ups, 10 accepted limitations |
+| The matrix is reviewed against source code, not README text alone | [Method](#method). Every row cites `file:line` with the symbol name; every absence carries a positive control; every path was checked with `git ls-files --error-unmatch`. Four comments that contradict their own code are recorded as findings |
+| A final Go / Conditional Go / No-Go per boundary class | [Go / Conditional Go / No-Go](#go--conditional-go--no-go-per-boundary-class) — B1 Go · B2 Conditional · B3 Conditional · B4 No-Go · B5 No-Go · B6 Conditional · B7 No-Go |
+
+## Deliverables
+
+| # | Deliverable | Status |
+|---|---|---|
+| 1 | Machine-readable matrix source | [`AAASM-5527-capability-coverage-matrix.yaml`](AAASM-5527-capability-coverage-matrix.yaml), in `verification-reports/` for the path-ownership reason in ["Why this file lives here"](#why-this-file-lives-here). AAASM-5531 owns promoting it to a canonical, CI-validated location |
+| 2 | Human-readable architecture and trust-boundary diagrams | **Deliberately not duplicated.** ADR 0033 §3 publishes the three views and is the canonical source; redrawing them here would create a second authority. [Trust boundaries](#trust-boundaries) T1–T6 is the tabular complement this artifact adds |
+| 3 | Threat actors and attacker capability assumptions | [Threat actors](#threat-actors-and-capability-assumptions) A1–A4 |
+| 4 | Bypass catalogue, demonstrated versus inferred | [Bypass catalogue](#bypass-catalogue) — 7 demonstrated, 6 groups inferred, plus what the product can detect |
+| 5 | Gap-to-ticket mapping | [Gap-to-ticket mapping](#gap-to-ticket-mapping) |
+| 6 | Minimum defensible public guarantee | [Minimum defensible public guarantee](#minimum-defensible-public-guarantee-today) |
+
+## What this artifact does not claim
+
+- **It is not exhaustive.** "No finding" is not "no bypass", and the absence of a
+  row is not evidence that a path is covered.
+- **It is a snapshot** of `remote/main` at `299de3883`. Line numbers rot; symbol
+  names are given so drift is detectable. AAASM-5531 and AAASM-5536 exist to
+  replace review-maintained tables with generated, gated ones.
+- **It does not fix anything.** Every defect is reported to its owner above.
