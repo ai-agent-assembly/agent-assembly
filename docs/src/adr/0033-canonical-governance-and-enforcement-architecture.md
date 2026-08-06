@@ -11,7 +11,7 @@ elements, and it separates the **logical** architecture from the **deployment**
 topology and from **platform-specific** implementation mechanisms. It fixes the
 placement of the gateway as a control-plane/runtime service rather than a fourth
 interception layer, and it re-describes Linux eBPF as *one possible implementation
-mechanism* behind a Platform-Specific Host Enforcement Adapter rather than as the
+mechanism* behind a Platform-Specific Host-Level Interception Adapter rather than as the
 abstraction itself.
 
 It **complements and does not supersede**
@@ -20,21 +20,52 @@ It **complements and does not supersede**
 crosses the single `aa-sdk-client` transport boundary),
 [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) (fail-closed
 redaction),
-[ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) (the
-five-way `RuntimeVerdict`),
 [ADR 0029](0029-capability-over-permission-derivation.md) (declared vs. effective
-capability — note 0029 is itself still `Proposed`),
-[ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) (developer
-integration boundaries, the protection-state ladder and its evidence rules) and
+capability — note 0029 is itself still `Proposed`) and
 [ADR 0032](0032-local-first-sensitive-data-provider-architecture.md) (local-first
 sensitive-data detection). Where any of those ADRs states a mechanism, this ADR
 places that mechanism in the canonical model; it does not restate or relax it.
+
+It **amends two ADRs**, and says so rather than quietly diverging:
+
+- **[ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) §A** —
+  0018's schema freeze and its five-way `RuntimeVerdict` stand. But `0018:134`
+  describes the *point of derivation* as *"the authoritative enforcement pipeline in
+  `aa-runtime` (`RuntimeScanner`), which is where an action's outcome is actually
+  decided"*, and `0018:3` records item A as approved for implementation under
+  AAASM-5100 Phase 1. Verified against the code, `RuntimeScanner` runs only on
+  `IpcFrame::EventReport` (`aa-runtime/src/pipeline/mod.rs:127`) — after the action —
+  and its output is *"a counter on this internal outcome, **not** a verdict"*
+  (`aa-runtime/src/pipeline/enforcement.rs:115-127`). Forbidden design 9 withdraws the
+  "authoritative enforcement pipeline" characterisation; the pre-execution gate is
+  `handle_policy_query`. An `Update — AAASM-5604` note is recorded in 0018 itself.
+- **[ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) §4.1** — 0030's
+  protection-state ladder and evidence rules stand, and this ADR adopts them wholesale
+  as element E6. The amendment is narrow: `0030:465` admits `HostEnforced` through two
+  routes only — *"the proxy CA is present in the trust store and in use, or the eBPF
+  probes are attached (Linux)"*. The route actually shipped on macOS is neither; it is
+  an opt-in, authorized, read-back-verified managed-settings write (AAASM-5298). §5.3
+  records the third route.
 
 It deliberately does **not** define documentation source-of-truth, claim-precedence
 or waiver rules. Those are owned by
 [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) and its ADR.
 This ADR supplies the *architecture vocabulary* that the documentation-governance
 model will police; it does not police documentation itself.
+
+### A naming collision this ADR must not create
+
+Element **E4** was originally drafted as "Host **Enforcement** Adapters", which collides
+with ADR 0030's ladder rung **`HostEnforced`** — same words, different referents, inside
+the document whose purpose is fixing vocabulary. They are now deliberately distinct:
+
+| Term | Owner | Refers to |
+| --- | --- | --- |
+| **E4 · Host-Level Interception Adapters** | this ADR | An *architectural role* — OS-level mediation of processes, files, syscalls and TLS. Linux eBPF is one implementation; macOS and Windows have none. |
+| **`HostEnforced`** | ADR 0030 §4.1 | A *measured protection state* for one tool on one host, entered only on evidence. Reachable on macOS **without** any E4 adapter, via the managed-settings route. |
+
+An E4 adapter is neither necessary nor sufficient for the `HostEnforced` rung. Do not
+treat one as evidence of the other.
 
 ---
 
@@ -169,7 +200,7 @@ must report it rather than assume it.
 | **E1** | **Governance Control Plane** | The authority that holds policy, identity, budgets, approvals and audit, and answers decision requests. Holds no traffic. | `aa-gateway` (gRPC: `PolicyService`, `AgentLifecycleService`, `AuditService`, `ApprovalService`, `SecretsService`, `TopologyService`, `InvalidationService` — `aa-gateway/src/server.rs:22-28`), `aa-api` (HTTP/OpenAPI read surface), `aa-storage*` | Platform-independent |
 | **E2** | **Managed Execution Checkpoints** | Points on a *managed path* where an action is presented for a decision before it runs. | `aa-runtime`'s `handle_policy_query` (`aa-runtime/src/pipeline/mod.rs:159-175`, body `:407-542`); `aa-sdk-client::query_policy` + `resolve_decision` (`aa-sdk-client/src/client.rs:247-279`, `aa-sdk-client/src/decision.rs:58-97`); `aasm run` managed launch (`aa-cli/src/commands/run.rs`); `aa-sandbox` for WASM-marked tools | Checkpoint reachable only if the agent opts in (see §4) |
 | **E3** | **Protocol / Transport Mediation** | A mediator placed on the wire that can refuse, redact or rewrite a request before it leaves the machine. | `aa-proxy` — CONNECT-time egress control, in-tunnel host re-check, credential/DLP scan, MCP `tools/call` adjudication | Unix only; see §5 |
-| **E4** | **Platform-Specific Host Enforcement Adapters** | The *abstraction* for OS-level mediation of processes, files, syscalls and TLS. Each platform needs its own mechanism, and a platform without one has none. | **Linux:** eBPF via the privileged `aa-ebpf-loaderd` (`aa-ebpf/src/bin/loaderd.rs`). **macOS:** CA-trust-store integration only (`aa-proxy/src/tls/keychain.rs`), plus an opt-in root-owned managed-settings write. **Windows:** none. | Per-platform; see §5 |
+| **E4** | **Platform-Specific Host-Level Interception Adapters** | The *abstraction* for OS-level mediation of processes, files, syscalls and TLS. Each platform needs its own mechanism, and a platform without one has none. | **Linux:** eBPF via the privileged `aa-ebpf-loaderd` (`aa-ebpf/src/bin/loaderd.rs`). **macOS:** no OS-level mediation; an opt-in, authorized managed-settings write is the route to ADR 0030's `HostEnforced` rung (§5.3). **Windows:** none. | Per-platform; see §5 |
 | **E5** | **Credential / Capability Boundary** | What a component is *allowed to ask for*, and how a credential or capability is bound to an identity. | `aa-security` (scanner, redaction, canonical policy AST — a leaf crate with no inherent authority); `credential_token` validation in `PolicyService::check_action` (`aa-gateway/src/service/policy_service.rs:1623-1625`); `did:key` registration (ADR 0004); DI-API capability tokens and the compile-time `aa-devtool-contract` boundary (ADR 0030) | Platform-independent |
 | **E6** | **Evidence & Protection-State Pipeline** | How a protection *claim* is substantiated, degraded, and reported. | ADR 0030 §4's protection-state ladder; adjudication reported by the component that actually decided (`aa-proxy/src/probe_adjudication.rs:1-14`); audit publication; `LayerDegradation` reporting | Platform-independent |
 
@@ -307,7 +338,7 @@ raises it") applied to the architecture as a whole.
 Correspondingly, an empty audit log is evidence about the *observer*, not about the
 agent.
 
-### 5. Host enforcement is platform-specific and optional; eBPF is one Linux mechanism
+### 5. Host-level interception is platform-specific and optional; eBPF is one Linux mechanism
 
 **eBPF is not an architectural layer. It is one implementation of E4, available on
 Linux, and today it is predominantly an observation mechanism.**
@@ -364,14 +395,31 @@ file-I/O coverage from this mechanism.
 | --- | --- | --- | --- |
 | **Linux x86_64** | `aa-proxy`; CA trust via CLI `update-ca-certificates` (`aa-cli/src/commands/proxy/ca.rs:149,173`) | eBPF observation (TLS/file/exec); syscall guard as opt-in asynchronous kill | **Implemented**, with the §5.1 limits stated |
 | **Linux aarch64** | `aa-proxy` | eBPF TLS/exec only; **no** file-I/O kprobe targets | **Implemented (partial)** — must say which probes are absent |
-| **macOS** | `aa-proxy`; an **opt-in, admin-authorized** System Keychain trust install — `security add-trusted-cert` shelled out from `add_trusted_cert` (`aa-proxy/src/tls/keychain.rs:11-18`, reached via `aa-proxy/src/tls/ca.rs:214-232`). It is not automatic, and the Claude Code integration deliberately does not use it, establishing trust per-launch through `NODE_EXTRA_CA_CERTS` instead (`aa-devtool-claude-code/src/lifecycle.rs:653-659`) | **None.** Endpoint Security / Network Extension is an **explicit non-goal** — asserted in product docs (`docs/src/devtools/product-brief.md:448,655` — *"macOS Endpoint Security and Network Extension remain explicit non-goals"*, and `aa-ebpf` is *"Linux-only and is a **detection** layer that cannot modify traffic in flight"*) and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) | Transport mediation **Implemented**; host enforcement **Unsupported** |
+| **macOS** | `aa-proxy`; an **opt-in, admin-authorized** System Keychain trust install — `security add-trusted-cert` shelled out from `add_trusted_cert` (`aa-proxy/src/tls/keychain.rs:11-18`, reached via `aa-proxy/src/tls/ca.rs:214-232`). It is not automatic, and the Claude Code integration deliberately does not use it, establishing trust per-launch through `NODE_EXTRA_CA_CERTS` instead (`aa-devtool-claude-code/src/lifecycle.rs:653-659`) | **None.** Endpoint Security / Network Extension is an **explicit non-goal** — asserted in product docs (`docs/src/devtools/product-brief.md:448,655` — *"macOS Endpoint Security and Network Extension remain explicit non-goals"*, and `aa-ebpf` is *"Linux-only and is a **detection** layer that cannot modify traffic in flight"*) and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`) | Transport mediation **Implemented**; **E4 host-level interception Unsupported**. **Do not read this as "no host enforcement on macOS"** — see the note below: macOS is the *only* platform on which ADR 0030's `HostEnforced` rung is reachable today. |
 | **Windows** | **None** — `aa-proxy`'s accept loop uses `tokio::signal::unix` unconditionally (`aa-proxy/src/proxy/mod.rs:296,298`), so the crate has no Windows build path. Note the naive grep is misleading: `#[cfg(windows)]` blocks *do* exist (`aa-devtool-copilot/src/lib.rs:260,292`; `aa-cli/src/commands/dashboard/stop.rs:23`, which calls `windows_sys::…::OpenProcess`). The dispositive evidence is that **`windows_sys` is declared in no `Cargo.toml` in the workspace**, so those blocks cannot compile as written | **None.** No ETW, WFP or minifilter code exists | **Unsupported** |
 
-The macOS "Host Enforced" protection state is reached, where it is reached at all, by
-an opt-in root-owned managed-settings **file write** — a tool-governance control, not
-host-level interception — and the adapter's own docs record that whether the tool
-honours those keys at runtime is unmeasured and *"remains the open half of AAASM-5298"*
-(`aa-devtool-claude-code/src/managed_settings.rs:50-57`).
+> **The macOS exception — read this before citing the row above.**
+>
+> macOS has no E4 adapter, yet it is the **only** platform where ADR 0030's
+> `HostEnforced` protection state is reachable in production. The single production
+> producer of `EvidenceKind::HostAttested` is the macOS managed-settings path
+> (`aa-devtool-claude-code/src/lifecycle.rs:556`), which feeds
+> `is_host_enforcement_grade` → `justifies_host_enforcement`
+> (`aa-core/src/integration/state.rs:291,296`) and the `HostEnforcement` capability
+> (`aa-core/src/integration/capability.rs:116-118`).
+>
+> The code is explicit that unavailability must not be stated as a blanket
+> (`aa-devtool-claude-code/src/lifecycle.rs:653-657`): *"Stated as a reason it is not
+> active here, not as a blanket unavailability: since AAASM-5298 there is a path to it,
+> and it is opt-in, privileged and verified."* That is the AAASM-5454
+> `host_enforced_availability` fix, and this ADR must not re-break it.
+>
+> Two consequences. First, the route is a **root-owned managed-settings file write** —
+> neither of the two routes ADR 0030 §4.1 (`0030:465`) names, which is why this ADR
+> **amends** 0030 rather than complementing it. Second, whether the tool honours those
+> keys at runtime is **unmeasured** — the adapter's own docs call it *"the open half of
+> AAASM-5298"* (`aa-devtool-claude-code/src/managed_settings.rs:50-57`) — so the
+> reachable state rests on a read-back of the file, not on observed enforcement.
 
 DTrace was considered and rejected for macOS in the original design discussion as
 observability-only, not enforcement; no DTrace code exists. Any future macOS or Windows
@@ -757,9 +805,9 @@ Point-in-time execution records — annotate with a pointer, do **not** rewrite:
 | [ADR 0002](0002-sdk-security-boundary.md) | Complements — the SDK is not a security boundary |
 | [ADR 0004](0004-governance-enforcement-flow.md) | Complements — single `aa-sdk-client` transport boundary |
 | [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | Complements — fail-closed redaction discipline |
-| [ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | Complements — the five-way `RuntimeVerdict`, whose derivation is unimplemented (§6) |
+| [ADR 0018](0018-canonical-runtime-verdict-and-enriched-decision-record.md) | **Amends §A.** 0018's schema freeze and its five-way `RuntimeVerdict` stand unchanged, but its *Point of derivation* line (`0018:134`) calls `RuntimeScanner` *"the authoritative enforcement pipeline … where an action's outcome is actually decided"*; forbidden design 9 withdraws that characterisation. An `Update — AAASM-5604` note is recorded in 0018 itself |
 | [ADR 0029](0029-capability-over-permission-derivation.md) | Complements — declared vs. effective capability. **Status `Proposed`**, so this ADR relies on it as direction, not as a ratified constraint |
-| [ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) | Complements — protection-state ladder and evidence rules; this ADR places them as E6 |
+| [ADR 0030](0030-developer-integration-boundaries-and-trust-model.md) | **Amends §4.1** (adds the macOS managed-settings route to `HostEnforced`, which `0030:465` does not list) and otherwise complements — the ladder and evidence rules are adopted wholesale as E6 |
 | [ADR 0032](0032-local-first-sensitive-data-provider-architecture.md) | Complements — local-first sensitive-data detection |
 | Superseded material | The `SDK → Proxy → eBPF` three-layer interception model wherever it appears; see the Migration checklist. No prior ADR recorded it. |
 | Implementation PRs | This ADR is documentation-only; the migration PRs are tracked by the tickets in the Migration checklist |
