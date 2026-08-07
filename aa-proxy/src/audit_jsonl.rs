@@ -2090,21 +2090,45 @@ mod tests {
 ///
 /// # Falsification record (AAASM-5660)
 ///
-/// Assertions here were confirmed non-vacuous by mutating the implementation
-/// and watching named tests fail. Re-run these mutations if you change the
-/// retention path; a test that no longer dies to its mutation is no longer
+/// Every mutation below was **executed** against the whole `aa-proxy` suite and
+/// the failures observed, rather than reasoned about. Baseline for each run:
+/// 348 tests, 2 pre-existing failures excluded
+/// (`proxy::tests::a_body_that_reinspects_dirty_is_not_persisted` and
+/// `a_redaction_whose_bytes_still_reinspect_dirty_says_so`, both red on the
+/// commit this branch started from and unrelated to this module).
+///
+/// If you change the retention, export or completeness path, re-run these. A
+/// mutation that no longer kills its tests means those tests have stopped
 /// proving anything.
 ///
-/// | Mutation | Test that dies |
-/// |---|---|
-/// | `expire_aged_segments` returns immediately | `a_segment_past_the_age_bound_is_deleted_and_counted` |
-/// | `RotationPolicy::is_expired` always `false` | `a_segment_past_the_age_bound_is_deleted_and_counted`, `the_size_bound_wins_when_the_two_bounds_disagree` |
-/// | shortfall counting removed from `rotate` | `the_size_bound_wins_when_the_two_bounds_disagree` |
-/// | `sweep_retention` dropped from `run`'s timer arm | `a_quiet_proxy_still_honours_the_age_bound` |
-/// | export-failure counting removed from `export_segments` | `an_export_that_cannot_be_written_is_counted_never_assumed_delivered` |
-/// | `SinkCompleteness::sealed` always answers `Complete` | `a_rotated_window_and_an_empty_one_do_not_render_identically` |
-/// | torn-tail repair removed from `with_retention` | `a_record_written_after_a_crash_is_not_glued_to_the_torn_one` |
-/// | `rotate` called before the line is flushed | `rotation_never_splits_a_record_across_segments` |
+/// | # | Mutation | Tests killed |
+/// |---|---|---|
+/// | M1 | `expire_aged_segments` counts the expiry but never unlinks the file | `a_segment_past_the_age_bound_is_deleted_and_counted`, `a_quiet_proxy_still_honours_the_age_bound` |
+/// | M2 | `RotationPolicy::is_expired` always answers `false` | `the_age_bound_fires_only_at_or_past_the_configured_age`, `a_segment_past_the_age_bound_is_deleted_and_counted`, `a_quiet_proxy_still_honours_the_age_bound`, `a_discard_of_already_expired_evidence_is_not_a_shortfall` |
+/// | M3 | shortfall counting removed from `rotate` | `the_size_bound_wins_when_the_two_bounds_disagree`, `expiry_and_shortfall_counts_are_published_and_survive_a_restart` |
+/// | M4 | `sweep_retention` dropped from `run`'s timer arm | `a_quiet_proxy_still_honours_the_age_bound` |
+/// | M5 | export-failure counting removed from `export_segments` | `an_export_that_cannot_be_written_is_counted_never_assumed_delivered` |
+/// | M6 | `SinkCompleteness::is_lossless` always answers `true` | `every_kind_of_loss_makes_the_window_lossy`, `a_rotated_window_and_an_empty_one_do_not_render_identically`, `a_sink_write_that_fails_is_counted_and_published`, `a_record_written_after_a_crash_is_not_glued_to_the_torn_one` |
+/// | M7 | torn-tail repair removed from `with_retention` | `a_record_written_after_a_crash_is_not_glued_to_the_torn_one` |
+/// | M8 | `rotate` moved between the record and its newline | `rotation_never_splits_a_record_across_segments`, `a_rotated_segment_is_exported_out_of_the_ring`, `the_snapshot_names_its_bounds_and_the_left_edge_of_its_window` |
+///
+/// ## What these kills do and do not distinguish
+///
+/// M1, M2 and M4 overlap. `a_quiet_proxy_still_honours_the_age_bound` dies to
+/// all three, so **that test on its own does not tell them apart** — it
+/// establishes that the age bound is enforced somewhere on the timed path, not
+/// which part of it. The separation comes from the rest of each kill set: only
+/// M2 reaches `the_age_bound_fires_only_at_or_past_the_configured_age`, which
+/// tests `is_expired` directly with no I/O; only M1 and M2 reach
+/// `a_segment_past_the_age_bound_is_deleted_and_counted`, which drives the
+/// sweep by hand and needs no timer at all. M4 is the mutation that kills the
+/// timer test and nothing else, which is what identifies it.
+///
+/// M6 and M7 both kill `a_record_written_after_a_crash_is_not_glued_to_the_torn_one`,
+/// for different assertions inside it: M7 on the record count, M6 on the
+/// completeness verdict. Taken alone that test does not separate them; M6 is
+/// identified by `every_kind_of_loss_makes_the_window_lossy`, which touches no
+/// file at all.
 #[cfg(test)]
 mod retention_tests {
     use super::*;
