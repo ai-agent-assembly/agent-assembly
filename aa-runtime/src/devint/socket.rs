@@ -216,7 +216,7 @@ pub fn discover(path: &Path) -> SocketDiscovery {
 /// **availability** property and not an authentication one. It is fixed by
 /// bounding the wait rather than by trying to authenticate the probe: each
 /// candidate is probed on its own thread and the scan gives them
-/// [`PROBE_TIMEOUT`] in total, after which whatever has not answered is simply
+/// `PROBE_TIMEOUT` in total, after which whatever has not answered is simply
 /// not reported. A probe thread that is still blocked is abandoned; it is
 /// holding no lock and the process it belongs to (`aasm`) is short-lived.
 ///
