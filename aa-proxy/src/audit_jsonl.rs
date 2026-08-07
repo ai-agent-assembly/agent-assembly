@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use aa_core::types::sensitive_data::ExecutionEvidence;
@@ -724,6 +724,23 @@ async fn mtime_ms(path: &Path) -> Option<i64> {
     Some(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64)
 }
 
+/// Whether `path` ends on a record boundary.
+///
+/// An empty file does, trivially. A non-empty file that does not is the
+/// signature of a crash part-way through an append: the last record was cut
+/// short and its newline never landed.
+async fn ends_on_a_record_boundary(path: &Path) -> io::Result<bool> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let len = file.metadata().await?.len();
+    if len == 0 {
+        return Ok(true);
+    }
+    file.seek(io::SeekFrom::End(-1)).await?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last).await?;
+    Ok(last[0] == b'\n')
+}
+
 /// Age of the newest record in `path`, derived from its modification time.
 ///
 /// The last write to a segment is the moment its newest record was appended, so
@@ -1045,8 +1062,44 @@ impl JsonlWriter {
             tokio::fs::create_dir_all(dir).await?;
             tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await?;
         }
-        let file = Self::open_segment(path).await?;
-        let segment_bytes = file.metadata().await?.len();
+        // Read the process-wide counters *before* anything below can move them.
+        // The torn-tail repair records a write failure, and a reading taken
+        // after it would subtract that failure straight back out again — the
+        // crash's loss would be neither in the baseline nor in this process's
+        // delta, and the window would report clean over a file that lost a
+        // record.
+        let dropped_at_open = dropped_entries();
+        let discarded_at_open = discarded_segments();
+        let expired_at_open = expired_segments();
+        let shortfalls_at_open = retention_shortfalls();
+        let write_failures_at_open = write_failures();
+        let export_failures_at_open = export_failures();
+
+        let mut file = Self::open_segment(path).await?;
+        let mut segment_bytes = file.metadata().await?.len();
+        // Crash mid-append: the previous process died part-way through a line,
+        // so the file ends without a newline. Left alone, the next record would
+        // be appended onto that fragment and *both* would be unparseable — the
+        // damage would grow from the one record the crash took to two, at the
+        // end of the file, which is exactly where a tailing consumer is looking.
+        //
+        // Closing the fragment's line confines the loss to the record that was
+        // actually torn. It is counted as a write failure rather than passed
+        // over: a record the sink accepted and did not land is loss, whichever
+        // process was holding the descriptor when it happened.
+        if !ends_on_a_record_boundary(path).await? {
+            file.write_all(b"\n").await?;
+            file.flush().await?;
+            segment_bytes += 1;
+            let total = record_write_failure();
+            tracing::warn!(
+                path = %path.display(),
+                write_failures = total,
+                "proxy audit jsonl ended mid-record — an earlier process was interrupted \
+                 part-way through an append; the torn record is lost and its line is closed \
+                 so the next record stays parseable",
+            );
+        }
         // Loss recorded against this file by an earlier run. Without carrying
         // it forward a restart would publish a clean window over a file whose
         // earlier half is missing lines.
@@ -1077,12 +1130,12 @@ impl JsonlWriter {
             segment_bytes,
             live_started_ms,
             baseline,
-            dropped_at_open: dropped_entries(),
-            discarded_at_open: discarded_segments(),
-            expired_at_open: expired_segments(),
-            shortfalls_at_open: retention_shortfalls(),
-            write_failures_at_open: write_failures(),
-            export_failures_at_open: export_failures(),
+            dropped_at_open,
+            discarded_at_open,
+            expired_at_open,
+            shortfalls_at_open,
+            write_failures_at_open,
+            export_failures_at_open,
             export,
             pending_exports: 0,
             oldest_retained_ms: None,
@@ -2050,6 +2103,8 @@ mod tests {
 /// | `sweep_retention` dropped from `run`'s timer arm | `a_quiet_proxy_still_honours_the_age_bound` |
 /// | export-failure counting removed from `export_segments` | `an_export_that_cannot_be_written_is_counted_never_assumed_delivered` |
 /// | `SinkCompleteness::sealed` always answers `Complete` | `a_rotated_window_and_an_empty_one_do_not_render_identically` |
+/// | torn-tail repair removed from `with_retention` | `a_record_written_after_a_crash_is_not_glued_to_the_torn_one` |
+/// | `rotate` called before the line is flushed | `rotation_never_splits_a_record_across_segments` |
 #[cfg(test)]
 mod retention_tests {
     use super::*;
@@ -2537,6 +2592,133 @@ mod retention_tests {
             tokio::fs::metadata(segment_path(&path, 1)).await.is_ok(),
             "the fixture never rotated, so it does not control for the failing case"
         );
+    }
+
+    // ── crash mid-append (AAASM-5660) ──────────────────────────────────────
+
+    /// Parse a sink the way an out-of-process consumer would: line by line,
+    /// tolerating whatever the last one turns out to be.
+    ///
+    /// Returns the records that parsed and the number of lines that did not.
+    fn read_as_a_consumer_would(body: &str) -> (Vec<ProxyAuditEntry>, usize) {
+        let mut parsed = Vec::new();
+        let mut unparseable = 0usize;
+        for line in body.lines() {
+            match serde_json::from_str::<ProxyAuditEntry>(line) {
+                Ok(entry) => parsed.push(entry),
+                Err(_) => unparseable += 1,
+            }
+        }
+        (parsed, unparseable)
+    }
+
+    /// A crash part-way through an append leaves a truncated final line. It
+    /// must cost the reader that one record and nothing else — the file stays
+    /// parseable and every earlier record is still recoverable.
+    #[tokio::test]
+    async fn a_torn_final_line_costs_one_record_and_leaves_the_file_readable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        drain(&path, RotationPolicy::default(), 5).await;
+
+        // Simulate the crash: a partial record, no trailing newline.
+        let whole = serde_json::to_string(&entry("torn.example")).unwrap();
+        let fragment = &whole[..whole.len() / 2];
+        let mut file = tokio::fs::OpenOptions::new().append(true).open(&path).await.unwrap();
+        file.write_all(fragment.as_bytes()).await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+
+        let body = tokio::fs::read_to_string(&path).await.unwrap();
+        // Non-vacuity: the fixture really did produce a torn tail.
+        assert!(!body.ends_with('\n'), "the fixture did not leave a torn line");
+        assert!(
+            serde_json::from_str::<ProxyAuditEntry>(body.lines().last().unwrap()).is_err(),
+            "the fixture's final line parses, so there is nothing torn to survive"
+        );
+
+        let (parsed, unparseable) = read_as_a_consumer_would(&body);
+        assert_eq!(parsed.len(), 5, "records written before the crash must survive");
+        assert_eq!(unparseable, 1, "the damage must be confined to the torn line");
+    }
+
+    /// The record after a crash must not be appended onto the fragment. If it
+    /// were, one torn record would cost two, and the corruption would sit at
+    /// the end of the file where a tailing consumer is reading.
+    #[tokio::test]
+    async fn a_record_written_after_a_crash_is_not_glued_to_the_torn_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        drain(&path, RotationPolicy::default(), 2).await;
+
+        let whole = serde_json::to_string(&entry("torn.example")).unwrap();
+        let mut file = tokio::fs::OpenOptions::new().append(true).open(&path).await.unwrap();
+        file.write_all(&whole.as_bytes()[..whole.len() / 2]).await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+
+        let write_failures_before = write_failures();
+        // The restart.
+        drain(&path, RotationPolicy::default(), 3).await;
+
+        let body = tokio::fs::read_to_string(&path).await.unwrap();
+        let (parsed, unparseable) = read_as_a_consumer_would(&body);
+        assert_eq!(
+            parsed.len(),
+            5,
+            "two records before the crash and three after must all be recoverable, got {parsed:?}"
+        );
+        assert_eq!(unparseable, 1, "exactly one line — the torn one — may be unreadable");
+        assert_eq!(
+            write_failures() - write_failures_before,
+            1,
+            "the record the crash took must be counted, not passed over"
+        );
+        assert!(
+            !read_completeness(&path).await.unwrap().is_complete(),
+            "a window that lost a record to a crash must not report as complete"
+        );
+    }
+
+    /// Rotation splitting a record would put half of it in one segment and half
+    /// in the next, which no line-oriented reader can recover. AAASM-5449 made
+    /// rotation happen after a completed line; that property has to survive
+    /// everything added since.
+    #[tokio::test]
+    async fn rotation_never_splits_a_record_across_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = RotationPolicy {
+            max_segment_bytes: 512,
+            retained_segments: 3,
+            ..RotationPolicy::default()
+        };
+        drain(&path, policy, 120).await;
+
+        let mut segments = vec![path.clone()];
+        segments.extend((1..=policy.retained_segments).map(|n| segment_path(&path, n)));
+
+        let mut total_records = 0usize;
+        let mut rotated_seen = 0usize;
+        for segment in &segments {
+            let Ok(body) = tokio::fs::read_to_string(segment).await else {
+                continue;
+            };
+            if segment != &path {
+                rotated_seen += 1;
+                assert!(
+                    body.ends_with('\n'),
+                    "{} does not end on a record boundary",
+                    segment.display()
+                );
+            }
+            let (parsed, unparseable) = read_as_a_consumer_would(&body);
+            assert_eq!(unparseable, 0, "{} holds a line no reader can parse", segment.display());
+            total_records += parsed.len();
+        }
+        // Non-vacuity: the fixture actually rotated, several times.
+        assert!(rotated_seen >= 2, "only {rotated_seen} rotated segments were produced");
+        assert!(total_records > 0);
     }
 
     // ── the window verdict (AAASM-5660) ────────────────────────────────────
