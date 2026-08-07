@@ -500,8 +500,8 @@ impl Connection {
             }
             DiVerb::Apply => {
                 let plan_id = request.apply.as_ref().map(|a| a.plan_id.as_str()).unwrap_or_default();
-                let receipt = lifecycle.apply(&tool, plan_id).await?;
-                response.apply = Some(project::apply_view(&receipt));
+                let applied = lifecycle.apply(&tool, plan_id).await?;
+                response.apply = Some(project::apply_view(&applied.receipt));
             }
             DiVerb::Status => {
                 let status = lifecycle.status(&tool).await?;

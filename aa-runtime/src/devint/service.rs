@@ -60,9 +60,10 @@ use aa_core::integration::{
     VerificationOutcome, VerificationResult, VersionCompatibility, DEFAULT_FRESHNESS_WINDOW_SECS,
 };
 
+use super::apply_outcome::ApplyMutation;
 use super::lifecycle::{
-    ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport, ScopedSecurityEvent,
-    ToolDescriptor,
+    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport,
+    ScopedSecurityEvent, ToolDescriptor,
 };
 use super::projection::tool_id;
 
@@ -450,7 +451,7 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(plan)
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<IntegrationReceipt, LifecycleError> {
+    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
         let registered = self.registered(tool)?;
         let authored = self
             .plans
@@ -499,7 +500,21 @@ impl IntegrationLifecycle for EngineLifecycle {
         // additive after a crash.
         engine.recover(tool, plan.settings_scope).map_err(engine_error)?;
         let outcome = engine.apply(&plan, &context).map_err(engine_error)?;
-        Ok(outcome.receipt)
+        // The engine compares canonical forms, so this is an observation rather
+        // than a prediction: `mutated` is false only when every step found the
+        // target already exactly as the plan describes. Stated, never inferred
+        // downstream — the receipt id is reused across a no-op reapply and the
+        // timestamp is second-granularity, so neither can carry this
+        // (AAASM-5674).
+        let mutation = if outcome.mutated {
+            ApplyMutation::Changed
+        } else {
+            ApplyMutation::Unchanged
+        };
+        Ok(AppliedIntegration {
+            receipt: outcome.receipt,
+            mutation,
+        })
     }
 
     async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError> {
@@ -745,7 +760,18 @@ mod tests {
             after_first,
             "a repeated install changed the settings"
         );
-        assert_eq!(first.steps.len(), second.steps.len());
+        assert_eq!(first.receipt.steps.len(), second.receipt.steps.len());
+        // The fact the DI-API had no way to carry until AAASM-5674, asserted at
+        // the layer that establishes it. A repeated install is a success and a
+        // no-op, and the engine's canonical-form comparison is what knows the
+        // difference — not the receipt id, which the reapply deliberately
+        // reuses, and not the timestamp, which it deliberately keeps.
+        assert_eq!(first.mutation, ApplyMutation::Changed);
+        assert_eq!(second.mutation, ApplyMutation::Unchanged);
+        assert_eq!(
+            first.receipt.receipt_id, second.receipt.receipt_id,
+            "the reused receipt id is exactly why the outcome cannot be derived from it"
+        );
     }
 
     /// A plan that is not the one this service authored cannot be applied, so a

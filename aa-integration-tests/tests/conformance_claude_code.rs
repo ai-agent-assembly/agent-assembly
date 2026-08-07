@@ -95,7 +95,7 @@ use aa_core::integration::{
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
 use aa_devtool_claude_code::probe::ProtectionProbe as _;
 use aa_devtool_claude_code::ProxyAdjudicatedProbe;
-use aa_runtime::devint::IntegrationLifecycle;
+use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle};
 use conformance_support::{ConformanceHarness, Measurement, SYNTHETIC_SECRET};
 use spike_support::proxy_harness::{drive_direct, drive_emulated_client};
 use spike_support::{assert_recorded_and_secret_absent, assert_recorded_and_secret_present, AnthropicMock};
@@ -151,11 +151,17 @@ async fn install_is_idempotent_and_records_a_receipt() -> anyhow::Result<()> {
     );
 
     // ── install ────────────────────────────────────────────────────────────
-    let receipt = h
+    let applied = h
         .service()
         .apply(&h.tool(), &plan.plan_id)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let receipt = applied.receipt;
+    assert_eq!(
+        applied.mutation,
+        ApplyMutation::Changed,
+        "a first install writes the settings file, and the service must say so"
+    );
     assert_eq!(receipt.settings_scope, SettingsScope::User);
     assert_eq!(
         receipt.achieved_level,
@@ -179,11 +185,16 @@ async fn install_is_idempotent_and_records_a_receipt() -> anyhow::Result<()> {
 
     // ── repeat ─────────────────────────────────────────────────────────────
     let before = h.settings_bytes().expect("settings exist after install");
-    let again = h.install(ProtectionProfile::Recommended).await?;
+    let reapplied = h.install_reporting(ProtectionProfile::Recommended).await?;
+    let again = &reapplied.receipt;
     assert_eq!(
         again.receipt_id, receipt.receipt_id,
         "a no-op reapply is not a new installation"
     );
+    // …and reusing the id is precisely why the outcome has to be stated: the
+    // two installs are indistinguishable by every field except this one
+    // (AAASM-5674).
+    assert_eq!(reapplied.mutation, ApplyMutation::Unchanged);
     assert_eq!(
         h.settings_bytes().as_deref(),
         Some(before.as_slice()),

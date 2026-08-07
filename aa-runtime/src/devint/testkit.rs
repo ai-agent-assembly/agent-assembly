@@ -33,11 +33,12 @@ use aa_core::integration::{
 };
 use aa_proto::assembly::devint::v1 as wire;
 
+use super::apply_outcome::ApplyMutation;
 use super::audit::RecordingAuditSink;
 use super::codec::{self, DiFrame, DiResponseFrame};
 use super::lifecycle::{
-    ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport, ScopedSecurityEvent,
-    ToolDescriptor, VerdictKind,
+    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport,
+    ScopedSecurityEvent, ToolDescriptor, VerdictKind,
 };
 use super::projection::tool_id;
 use super::provenance::RuntimeProvenance;
@@ -70,10 +71,26 @@ enum Behaviour {
 }
 
 /// A stand-in for AAASM-5278's lifecycle service.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FakeLifecycle {
     behaviour: Behaviour,
+    mutation: ApplyMutation,
     calls: AtomicUsize,
+}
+
+/// `Changed` rather than a derived default.
+///
+/// [`ApplyMutation`] deliberately has no `Default`: the whole point of the type
+/// is that no outcome is the one you get for free. The fake has to pick one, and
+/// it picks the answer an ordinary first install gives.
+impl Default for FakeLifecycle {
+    fn default() -> Self {
+        Self {
+            behaviour: Behaviour::default(),
+            mutation: ApplyMutation::Changed,
+            calls: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl FakeLifecycle {
@@ -81,7 +98,21 @@ impl FakeLifecycle {
     pub fn refusing(detail: impl Into<String>) -> Self {
         Self {
             behaviour: Behaviour::Refuse(detail.into()),
-            calls: AtomicUsize::new(0),
+            ..Self::default()
+        }
+    }
+
+    /// A fake whose `apply` states `mutation`.
+    ///
+    /// The seam that makes every wire outcome reachable over a **real socket**
+    /// rather than only through the projection function. This build's own
+    /// service states two of the five, so without it `failed` and `unsupported`
+    /// would be tested against a struct literal and never against a frame — and
+    /// a frame is where the contract lives (AAASM-5674).
+    pub fn reporting(mutation: ApplyMutation) -> Self {
+        Self {
+            mutation,
+            ..Self::default()
         }
     }
 
@@ -192,10 +223,10 @@ impl IntegrationLifecycle for FakeLifecycle {
         Ok(poisoned_plan(&request.tool))
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<IntegrationReceipt, LifecycleError> {
+    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
         self.enter()?;
         let plan = poisoned_plan(tool);
-        Ok(IntegrationReceipt {
+        let receipt = IntegrationReceipt {
             schema_version: LIFECYCLE_SCHEMA_VERSION,
             receipt_id: "receipt-1".to_string(),
             plan_id: if plan_id.is_empty() {
@@ -223,6 +254,10 @@ impl IntegrationLifecycle for FakeLifecycle {
             achieved_level: ProtectionLevel::Integrated,
             achieved_evidence: Vec::new(),
             verified_at_unix_secs: None,
+        };
+        Ok(AppliedIntegration {
+            receipt,
+            mutation: self.mutation.clone(),
         })
     }
 
