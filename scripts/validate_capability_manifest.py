@@ -1173,7 +1173,12 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
     # divergence. The second half is what stops a declaration outliving the
     # reason it was written for and quietly excusing a later, different change.
     declarations = contract.get("declared_divergences") or []
-    used: set[int] = set()
+    # Keyed per (declaration, row, representation), not per declaration. One
+    # entry covers five rows across two representations; tracking it as a single
+    # flag would let nine of those ten pairs stop diverging with the tenth
+    # keeping the whole entry alive, which is the same class of standing excuse
+    # the clause exists to prevent.
+    used: set[tuple[int, str, str]] = set()
     for representation, row_id, field, manifest_value, other_value in divergences:
         matched = None
         for index, entry in enumerate(declarations):
@@ -1194,21 +1199,26 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
                 "have drifted, or the difference is deliberate and must say so",
             )
         else:
-            used.add(matched)
+            used.add((matched, row_id, representation))
+    claimed = 0
     for index, entry in enumerate(declarations):
-        if index in used:
-            continue
-        rep.error(
-            f"meta.cross_representation.declared_divergences[{index}]",
-            "R16",
-            f"declares a divergence on {entry.get('field')!r} for {entry.get('ids')} that no "
-            "longer holds. A declaration that matches nothing is a standing excuse for a "
-            "future change nobody reviewed",
-        )
+        for row_id in entry.get("ids") or []:
+            for representation in entry.get("representations") or []:
+                claimed += 1
+                if (index, row_id, representation) in used:
+                    continue
+                rep.error(
+                    f"meta.cross_representation.declared_divergences[{index}]",
+                    "R16",
+                    f"declares that {entry.get('field')!r} on {row_id} diverges from the "
+                    f"{representation}, and it does not — not with these values. A declaration "
+                    "that matches nothing is a standing excuse for a future change nobody "
+                    "reviewed",
+                )
     rep.count(
         "R16",
-        f"divergences: {len(divergences)} found, {len(declarations)} declarations, "
-        f"{len(used)} of them matched",
+        f"divergences: {len(divergences)} found; declarations claim {claimed} "
+        f"(row, representation) pair(s) across {len(declarations)} entries, {len(used)} matched",
     )
 
 

@@ -359,7 +359,7 @@ count: [R16] ids: 80 in the manifest, 80 in …-matrix.yaml, 80 shared, 0 manife
 count: [R16] fields: 51 in the union of the two schemas = 29 compared + 22 excluded with a named reason + 0 unclassified
 count: [R16] seed: 80 ids x 29 fields = 2320 pairs; 1381 agree, 8 diverge, 931 one-side-silent; 0 skipped
 count: [R16] seed_companion: 80 coverage cells read, 0 ragged rows skipped; 80 of 80 shared ids compared, 75 agree, 5 diverge
-count: [R16] divergences: 13 found, 3 declarations, 3 of them matched
+count: [R16] divergences: 13 found; declarations claim 13 (row, representation) pair(s) across 3 entries, 13 matched
 ```
 
 The eight seed divergences are the five `coverage` rows above, plus `L7` and
