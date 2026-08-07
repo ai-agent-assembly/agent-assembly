@@ -248,7 +248,16 @@ def scan_text(path: str, text: str) -> list[Finding]:
                 )
             continue
 
-        if not raw.strip() or HEADING.match(raw):
+        if HEADING.match(raw):
+            # A heading ends the block *and* is scanned as one of its own. Skipping
+            # it would leave the one position Decision 10 bound 3 calls out — "never
+            # in a heading … a heading is quoted alone in a table of contents" —
+            # as the only place in the document the rule is not enforced.
+            flush()
+            findings.extend(_scan_block(path, [(lineno, raw)]))
+            continue
+
+        if not raw.strip():
             flush()
             continue
 
@@ -394,6 +403,12 @@ _MUST_FAIL = [
         "## A banned absolute under waiver\n"
         "<!-- /truth-exempt -->\n",
     ),
+    # Review round 1, blocker: a heading was a block boundary and its text was never
+    # scanned, so the one position bound 3 singles out was the one position exempt
+    # from the check. The control for these two is "waivable-form opening" above,
+    # which differs only by not being a heading.
+    ("waiver-eligible claim in an h2", "## A `banned absolute` may be waived under an expiring waiver\n"),
+    ("waiver-eligible claim in an h4", "#### Banned absolutes may be waived under an expiring waiver\n"),
 ]
 
 _MUST_PASS = [
@@ -419,6 +434,9 @@ _MUST_PASS = [
         "denial reached before the grant",
         "An ADR 0033 banned absolute may not be waived; there is no waiver mechanism over it.\n",
     ),
+    # The backward pass and the heading scan must not fire on correct statements.
+    ("heading stating the rule", "## Truthfulness and banned absolutes are unwaivable\n"),
+    ("heading naming the mechanism only", "### 10. Waivers and exceptions\n"),
     (
         "properly exempted historical text",
         "<!-- truth-exempt: historical-withdrawn - removed from Decision 10 by AAASM-5671 -->\n"
