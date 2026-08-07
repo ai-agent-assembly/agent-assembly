@@ -127,6 +127,76 @@ The manifest additionally carries `pypi`, `npm` and `go_modules`, because the
 SDK rows ship through those registries and the core's five channels do not
 cover them.
 
+### The container channel, and rule R17 (AAASM-5680)
+
+`ghcr` was in the schema's enum and in `meta.channels_not_surveyed`, so **no row
+could claim it** while `.github/workflows/docker.yml` had been pushing to
+ghcr.io since AAASM-4480. A matrix generated faithfully from the manifest
+therefore shipped without a GHCR column, and its omission read as a deliberate
+"not distributed there". It had already cost something: AAASM-5591's audiences
+page dropped Docker/GHCR by hand, was corrected in review, and the fix replaced
+the hand-written list with a reference to *this* vocabulary — deferring to a
+source that omitted the channel the review had just restored.
+
+**Surveyed against the registry, not the workflow** (`GET
+https://ghcr.io/v2/ai-agent-assembly/<name>/tags/list`, 2026-08-07). Five
+repositories answer and two do not:
+
+| Image | Delivers | Built by |
+|---|---|---|
+| `aa-gateway` | the `aa-gateway` binary | `aa-gateway/Dockerfile:61,67`, pushed `docker.yml:160-161` |
+| `aa-runtime` | the `aa-runtime` binary | `aa-runtime/Dockerfile:58,64`, pushed `docker.yml:111-112` |
+| `python` ×3 | `agent-assembly` **and** `aasm` | `Dockerfile.python-3.14-slim:79,81-82` + `:89`, asserted `:93`,`:96` |
+| `node` ×3 | `@agent-assembly/sdk` **and** `aasm` | `Dockerfile.node-24-slim:69,74` + `:52`, asserted `:84`,`:85` |
+| `go` ×3 | `go-sdk` **and** `aasm` | `Dockerfile.go-1.26-alpine:73,75` + `:61`, asserted `:87`,`:88` |
+| `aa-proxy` | — | no pull token issued |
+| `aasm` | — | no pull token issued, **but the binary ships inside all nine language images** |
+
+23 rows carry the channel: 5 `aa-gateway`, 3 `aa-runtime` (G1, G2, G11), 2
+`aa-cli` (L8, C5) and the 13 SDK rows. **G6 and G7 are aa-runtime-owned and
+excluded** — their subject is the eBPF loader daemon, which ships to crates.io
+only. Linkage is deliberately *not* the predicate: `aa-cli` links `aa-proxy` as
+a library, yet `aasm proxy start` spawns the separate `aa-proxy` binary
+(`aa-cli/src/commands/proxy/start.rs:85-114`), so a linkage rule would have put
+`ghcr` on 17 proxy rows that ship in no image.
+
+**What `released_channels` means, stated because the addition must not inherit a
+looser reading.** It is read as *the channels through which the artifact that
+delivers this row's capability is obtained*. On the SDK family the field does
+not already hold to that: all 13 rows carrying `pypi`/`npm`/`go_modules` carry
+the same four values regardless of their own `language`, so `S1`
+(`language: [python]`) claims `npm` and `go_modules` while `S8`
+(`language: [go]`) claims `pypi` — a product-family union, wrong in both
+directions per row. **That predates this ticket and is not fixed here; it needs
+its own.** `ghcr` is true under both readings, because each language image
+installs its own language's SDK and asserts it at build time, so no row's claim
+is broadened by adding it.
+
+**Rule R17** has three clauses:
+
+| Clause | What fails |
+|---|---|
+| Vocabulary partitioned | A channel the schema admits that is neither surveyed nor explicitly not surveyed, or one recorded as both |
+| Publishing implies surveyed | A channel a workflow in `.github/workflows/` publishes to that `channels_surveyed` omits — the clause that fails on the pre-ticket state |
+| No silent row | A row that neither names a surveyed channel, nor is `released_channels: [not_applicable]`, nor appears in `meta.channel_absences` |
+
+The publish markers are a constant in the validator, not a manifest field: a
+rule whose evidence lives in the artifact it gates can be switched off by
+editing the artifact. The table is keyed by the whole channel enum and asserted
+against it, so a sixth channel forces a decision instead of a silent omission.
+
+`meta.channel_absences` carries a `status` separating the two kinds of absence:
+`not_published` (26 aa-proxy-subject rows, 7 eBPF rows — the delivering artifact
+is in no image) from `not_surveyed` (17 library and devtool rows whose code *is*
+inside the `aasm` binary the language images carry, but whose capability nobody
+has measured against a container). The second is `unmeasured`, never
+`unsupported` — ADR 0034 forbidden design 8.
+
+```
+count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 16 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
+count: [R17] ghcr: 80 rows = 23 carry it + 7 not_applicable + 50 recorded absent + 0 unaccounted
+```
+
 ## The three questions
 
 A capability can pass the first and fail the third; three dead capabilities
