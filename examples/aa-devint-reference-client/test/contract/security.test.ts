@@ -352,6 +352,74 @@ describe('a downgrade is an outcome, not a fallback', () => {
   });
 });
 
+describe('which build answered is a v4 addition, and its absence is legible', () => {
+  /**
+   * AAASM-5628 added `HelloAck.provenance` at DI-API v4. The TypeScript
+   * bindings are generated from the same `proto/devint.proto` the Rust server
+   * is, so this is the consumer-side half of the additive-change claim: the
+   * field arrives when it is negotiated for, and *is absent* — not empty —
+   * otherwise.
+   *
+   * That distinction is the whole of the older-peer contract. If a v1–v3 peer
+   * were sent a zero-valued `RuntimeProvenance`, a client could not tell
+   * "this runtime cannot say what it is" from "this runtime says it is
+   * nothing", and the second reads as an answer.
+   */
+  it('a v4 peer receives the message, naming the process that answered', async () => {
+    const raw = await RawClient.open(harness.socket);
+    try {
+      const frame = await raw.hello([4]);
+      expect(frame.kind).toBe('hello-ack');
+      if (frame.kind !== 'hello-ack') return;
+      expect(frame.message.diApiVersion).toBe(4);
+      expect(frame.message.outcome).toBe(NegotiationOutcome.SUPPORTED);
+
+      const provenance = frame.message.provenance;
+      expect(provenance).toBeDefined();
+      if (provenance === undefined) return;
+      expect(provenance.pid).toBeGreaterThan(0);
+      expect(provenance.executablePath).not.toBe('');
+      expect(provenance.coreVersion).not.toBe('');
+      // Never fabricated: `build_sha` is a commit or the honest `unknown`
+      // sentinel, and `build_id_source` says which mechanism produced it.
+      expect(provenance.buildSha).not.toBe('');
+      expect(['injected', 'checkout', 'packaged', 'absent']).toContain(provenance.buildIdSource);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('a v1–v3 peer receives no provenance field at all, rather than an empty one', async () => {
+    for (const version of [1, 2, 3]) {
+      const raw = await RawClient.open(harness.socket);
+      try {
+        const frame = await raw.hello([version]);
+        expect(frame.kind).toBe('hello-ack');
+        if (frame.kind !== 'hello-ack') continue;
+        expect(frame.message.diApiVersion).toBe(version);
+        expect(frame.message.provenance).toBeUndefined();
+      } finally {
+        raw.close();
+      }
+    }
+  });
+
+  it('the reference client is itself an older peer, and is SUPPORTED rather than degraded', async () => {
+    // The client's window is 1–2, so it never negotiates v4 and never sees the
+    // message. v3 and v4 add what a peer can *say*, not what it can call, so
+    // this must stay a full connection — an additive change that degraded an
+    // existing client would not be additive.
+    const client = await connected(harness.tokens.full);
+    try {
+      expect(client.negotiated.diApiVersion).toBe(2);
+      expect(client.negotiated.degraded).toBe(false);
+      expect(client.negotiated.unavailableVerbs).toEqual([]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
 /** `JSON.stringify` cannot serialise the `bigint` fields the wire uses. */
 function replaceBigInt(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? value.toString() : value;

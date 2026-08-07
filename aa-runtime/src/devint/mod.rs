@@ -70,6 +70,9 @@ pub mod fixture;
 pub mod lifecycle;
 pub mod negotiate;
 pub mod projection;
+pub mod provenance;
+#[cfg(test)]
+mod provenance_falsification;
 pub mod scope;
 pub mod server;
 pub mod service;
@@ -80,17 +83,25 @@ pub mod testkit;
 mod threat_model;
 pub mod token;
 pub mod verb;
+#[cfg(test)]
+mod version_contract;
 
 pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 pub use client::{ClientError, DevIntClient, Negotiated};
 pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
 pub use lifecycle::{IntegrationLifecycle, LifecycleError};
-pub use negotiate::{Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
+pub use negotiate::{
+    Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROVENANCE_SINCE,
+};
+pub use provenance::{
+    BuildIdentity, FieldReport, FieldStatus, IdentityComparison, IdentitySource, PeerProvenance, ProvenanceStanding,
+    ProvenanceVerdict, RuntimeMultiplicity, RuntimeProvenance, BUILD_IDENTITY_SOURCE, BUILD_SHA,
+};
 pub use scope::{TokenScope, ToolScope};
 pub use server::{DevIntServer, DevIntServerConfig, DevIntServices};
 pub use service::{
     EngineLifecycle, FilesystemSteps, NoContent, RegisteredIntegration, StepContentSource, StepExecutorFactory,
 };
-pub use socket::{devint_socket_path, SocketDiscovery, SocketError};
+pub use socket::{devint_socket_path, reachable_runtimes, SocketDiscovery, SocketError};
 pub use token::{CapabilityToken, TokenDenial, TokenId, TokenRecord, TokenStore};
 pub use verb::DiVerb;

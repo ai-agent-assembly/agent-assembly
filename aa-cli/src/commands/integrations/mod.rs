@@ -46,7 +46,7 @@ pub mod status;
 pub mod verify;
 
 use exit::Outcome;
-use session::{Failure, Session, SessionOptions};
+use session::{Failure, Sensitivity, Session, SessionOptions};
 
 /// The protection profile an install asks for.
 ///
@@ -112,6 +112,32 @@ pub struct IntegrationsArgs {
     /// in CI, where leaving a daemon behind is worse than failing.
     #[arg(long, global = true)]
     pub no_autostart: bool,
+
+    /// Proceed even when the runtime that answers cannot be shown to be this
+    /// build.
+    ///
+    /// By default `aasm` refuses rather than report what an unidentified
+    /// runtime said: exit 10 when the runtime was *shown* to be another build,
+    /// exit 11 when its identity could not be established at all and the
+    /// command writes state or claims enforcement. A runtime from another
+    /// checkout, or one whose executable has been deleted, answers perfectly
+    /// well and describes *its* host — which is how a healthy tool got reported
+    /// as not installed (AAASM-5628).
+    ///
+    /// It also disarms the **multiplicity** refusal, which is not an identity
+    /// cause at all: with more than one runtime reachable the command proceeds
+    /// against whichever one it connected to, and the others are never
+    /// consulted. Two runtimes compiled from one commit have identical
+    /// identities, so no identity check can notice there are two — the reported
+    /// standing is what carries it, and it never reads `verified` while
+    /// `reachable_runtimes` is above one.
+    ///
+    /// Pass this only for a deliberately mixed installation. It changes whether
+    /// the command proceeds, never what it reports: the standing appears in
+    /// `--output json` and above the result in the table rendering, so a result
+    /// recorded through it stays marked as unverified.
+    #[arg(long, global = true)]
+    pub allow_unverified_runtime: bool,
 }
 
 /// The Developer Integration lifecycle, one subcommand per stage.
@@ -135,18 +161,26 @@ pub enum IntegrationsCommands {
 
 /// Dispatch an `aasm integrations` subcommand.
 pub fn dispatch(args: IntegrationsArgs, output: OutputFormat) -> ExitCode {
-    let options = SessionOptions {
+    let options = |sensitivity| SessionOptions {
         no_autostart: args.no_autostart,
+        allow_unverified_runtime: args.allow_unverified_runtime,
+        sensitivity,
         ..Default::default()
     };
+    // AAASM-5628: which subcommand may proceed against a runtime whose identity
+    // cannot be established. `list`, `plan` and `status` read and report;
+    // everything else either writes host state (`install`, `repair`, `remove`)
+    // or asserts that enforcement is established (`verify`), and an assertion
+    // about a build that cannot be identified is unfounded rather than merely
+    // weak. See `session::Sensitivity`.
     match args.command {
-        IntegrationsCommands::List(a) => list::run(a, options, output),
-        IntegrationsCommands::Plan(a) => plan::run(a, options, output),
-        IntegrationsCommands::Install(a) => install::run(a, options, output),
-        IntegrationsCommands::Status(a) => status::run(a, options, output),
-        IntegrationsCommands::Verify(a) => verify::run(a, options, output),
-        IntegrationsCommands::Repair(a) => repair::run(a, options, output),
-        IntegrationsCommands::Remove(a) => remove::run(a, options, output),
+        IntegrationsCommands::List(a) => list::run(a, options(Sensitivity::ReadOnly), output),
+        IntegrationsCommands::Plan(a) => plan::run(a, options(Sensitivity::ReadOnly), output),
+        IntegrationsCommands::Status(a) => status::run(a, options(Sensitivity::ReadOnly), output),
+        IntegrationsCommands::Install(a) => install::run(a, options(Sensitivity::Privileged), output),
+        IntegrationsCommands::Verify(a) => verify::run(a, options(Sensitivity::Privileged), output),
+        IntegrationsCommands::Repair(a) => repair::run(a, options(Sensitivity::Privileged), output),
+        IntegrationsCommands::Remove(a) => remove::run(a, options(Sensitivity::Privileged), output),
     }
 }
 
@@ -180,6 +214,24 @@ NOTES:
     Lifecycle commands run inside the Agent Assembly runtime, which owns the
     only audited implementation of them. There is no in-process fallback; when
     no runtime is listening, aasm starts one and says so on stderr.
+
+    Every command reports which build answered — version, commit, pid and
+    executable. A reachable socket is not evidence that the right thing
+    answered: a runtime from another checkout, or one whose executable has been
+    deleted, answers perfectly well and describes ITS host.
+
+    If the runtime is SHOWN not to be this build — a different commit, a deleted
+    executable, or more than one listening — every command refuses (exit 10).
+
+    If its identity simply cannot be established, list/plan/status still answer
+    and report the standing as `unverifiable` (never as verified), while
+    install/verify/repair/remove refuse (exit 11), because each of those either
+    changes host state or asserts that enforcement is established.
+
+    Pass --allow-unverified-runtime to downgrade both refusals to a warning.
+    That includes the more-than-one-listening refusal, which is not an identity
+    cause: the command then answers from whichever runtime it reached and the
+    others are never consulted. The reported standing carries it either way.
 
 {}",
         exit::help_table()

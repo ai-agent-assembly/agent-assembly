@@ -73,6 +73,7 @@ The [global options](overview.md#global-options) (`--context`, `--output`,
 | Flag | Default | Description |
 |---|---|---|
 | `--no-autostart` | off | Report a stopped runtime (exit `7`) instead of starting one. |
+| `--allow-unverified-runtime` | off | Proceed against a runtime whose build cannot be shown to be this one. See [`10` and `11`](#10-and-11--which-build-answered). |
 
 ### `--no-autostart`
 
@@ -236,6 +237,8 @@ from `aa-cli/src/commands/integrations/exit.rs` and printed by
 | `7` | `runtime_unavailable` | No runtime is listening and none could be started. |
 | `8` | `denied` | The runtime refused this client — re-enrol or fix permissions. |
 | `9` | `aborted` | Nothing was changed — declined, or no confirmation was possible. |
+| `10` | `runtime_unverified` | The runtime that answered was shown **not** to be this build — stop it and re-run. |
+| `11` | `runtime_unverifiable` | The runtime that answered carries no build identity, so nothing was established either way. |
 
 **`2` is deliberately unused.** `clap` exits `2` for a usage error, so reusing it
 would make "you typed the command wrong" indistinguishable from a real outcome.
@@ -246,6 +249,97 @@ aasm integrations verify claude-code || case $? in
   5) aasm integrations repair claude-code --yes ;;
 esac
 ```
+
+### `10` and `11` — which build answered
+
+These two are about the runtime that served the command, not about the tool it
+was asked about. A reachable socket is not evidence that the *right* thing
+answered: a runtime built from another checkout, or one whose executable has been
+deleted, answers perfectly well and describes **its** host. That is how a healthy
+Claude Code once got reported as `not_installed`.
+
+Every `aasm integrations` command therefore checks which build answered, before
+producing any output.
+
+| Code | Standing | When |
+| --- | --- | --- |
+| `10` `runtime_unverified` | **refuted** | The runtime was *shown* not to be usable as this build: a different `build_sha` or `core_version`, an `executable_path` that no longer exists, or more than one runtime listening at once. A positive finding. |
+| `11` `runtime_unverifiable` | **unverifiable** | The runtime's identity could be neither confirmed nor refuted: one or both sides carry no authoritative build identity, or the peer predates DI-API v4 and cannot state one. An absence, not a finding. |
+
+**Which commands emit which:**
+
+| Command | Reads or writes | Exit `10` | Exit `11` |
+| --- | --- | --- | --- |
+| `aasm integrations list` | read-only | yes | **no** — answers, and reports `unverifiable` |
+| `aasm integrations plan` | read-only | yes | **no** — answers, and reports `unverifiable` |
+| `aasm integrations status` | read-only | yes | **no** — answers, and reports `unverifiable` |
+| `aasm integrations install` | writes host state | yes | **yes** |
+| `aasm integrations verify` | asserts enforcement is established | yes | **yes** |
+| `aasm integrations repair` | writes host state | yes | **yes** |
+| `aasm integrations remove` | writes host state | yes | **yes** |
+
+Read-only commands still answer under an unverifiable standing because refusing
+them would make the situation undiagnosable — they are exactly the commands you
+use to find out *which* runtime answered and stop the wrong one. They say so on
+stderr, and `--output json` carries the standing so a recorded result stays
+marked:
+
+```jsonc
+"runtime": {
+  "provenance": {
+    "standing": "unverifiable",   // verified | unverifiable | refuted
+    "verdict": "unverifiable",    // the specific fact behind the standing
+    "build_sha": "unknown",
+    "build_id_source": "absent",  // injected | checkout | packaged | absent
+    "pid": 24601,
+    "fields": [                   // which facts were absent, matched, mismatched
+      { "field": "build_sha", "status": "absent", "expected": "unknown", "reported": "unknown" }
+    ],
+    "reachable_runtimes": 1
+  }
+}
+```
+
+**`unverifiable` is never reported as verified**, on any surface or in JSON.
+Branch on `standing`, not on the presence of a `build_sha`.
+
+**`reachable_runtimes` is one-directional evidence.** Above one it *proves*
+ambiguity — each of those sockets was connected to, so each of those runtimes
+exists, and the result cannot be attributed to one of them. Equal to one it
+proves only that nothing else was **found**: the scan probes files named
+`devint*.sock`, in the answering socket's own directory, once as the session
+opens. A runtime under another name, in another directory (which
+`AA_DEVINT_SOCKET` makes trivial), or started a moment later is not counted.
+Read `1` as "no duplicate was observed", never as "this is the only runtime".
+
+`standing` is the one field that folds in *every* reason a result may not be
+attributable, which is why it is the only one a wrapper needs to read.
+`verdict` is narrower — it reports the **identity comparison** alone, and two
+runtimes compiled from one commit have identical identities, so `verdict` reads
+`verified` for both of them. `standing` cannot read `verified` while
+`reachable_runtimes` is above one.
+
+A wrapper that records evidence should refuse anything but `verified`:
+
+```bash
+aasm integrations status claude-code --output json > result.json || case $? in
+  10) echo 'the wrong runtime answered — stop it and re-run'; exit 1 ;;
+  11) echo 'the runtime carries no build identity'; exit 1 ;;
+esac
+jq -e '.runtime.provenance.standing == "verified"' result.json \
+  || { echo 'result is not attributable to this build'; exit 1; }
+```
+
+`--allow-unverified-runtime` downgrades both refusals to a stderr warning for a
+deliberately mixed installation. It does **not** change what is reported: the
+standing reaches `--output json` *and* rides above the result in the table
+rendering, so a result obtained through it stays marked as unverified rather
+than passing as verified.
+
+It also disarms the **multiplicity** refusal, which is not an identity cause at
+all. With more than one runtime reachable the command answers from whichever one
+it connected to and the others are never consulted; `reachable_runtimes` says how
+many there were, and `standing` cannot read `verified` while that is above one.
 
 ## Environment
 

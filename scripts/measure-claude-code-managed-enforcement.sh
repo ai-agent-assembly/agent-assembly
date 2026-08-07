@@ -46,6 +46,14 @@ readonly EXIT_NOT_ROOT_OWNED=6
 readonly EXIT_WORLD_WRITABLE=7
 readonly EXIT_USER_CAN_REWRITE=8
 readonly EXIT_MALFORMED=9
+# AAASM-5628: evidence recorded against a runtime that is not demonstrably the
+# build it is attributed to proves nothing, so these are refusals like the
+# others. The two codes mirror `aasm integrations`' own 10 and 11 exactly, so a
+# CI log reading either says the same thing whichever layer produced it:
+#   10 — the runtime was shown NOT to be the expected build (a positive finding)
+#   11 — the runtime's identity could be neither confirmed nor refuted
+readonly EXIT_RUNTIME_UNVERIFIED=10
+readonly EXIT_RUNTIME_UNVERIFIABLE=11
 
 out_file=""
 probe_path=""
@@ -94,6 +102,9 @@ Refuses, with a distinct non-zero exit code, unless all of the following hold:
   * no account other than its owner can rewrite it               (exit 7)
   * the invoking user cannot rewrite it or replace it            (exit 8)
   * it is a parseable managed-settings document                  (exit 9)
+  * the aasm runtime that answers was shown to be this build       (exit 10)
+  * ...rather than merely not shown to be another one              (exit 11)
+  * and is the only one reachable                                  (exit 10)
 USAGE
 }
 
@@ -323,11 +334,68 @@ say ""
 # Agent Assembly's own reading, captured verbatim. Non-fatal: the runtime may
 # not be running, and that is a recorded fact rather than a measurement failure.
 # ---------------------------------------------------------------------------
+# AAASM-5628: which runtime answered is part of the evidence, not a detail.
+# A runtime from another checkout, or one whose executable has been deleted,
+# answers perfectly well and describes *its* host — that is how a healthy
+# Claude Code got reported as `not_installed` during AAASM-5453. `aasm` exits
+# 10 rather than answer in that case, and this script must not record a
+# result it produced under any other circumstances either.
 aasm_status="not captured (aasm not on PATH)"
+aasm_runtime_pid="not captured"
+aasm_runtime_build="not captured"
+aasm_runtime_verdict="not captured"
+aasm_runtime_standing="not captured"
+aasm_runtime_source="not captured"
 if command -v aasm >/dev/null 2>&1; then
   if aasm_status="$(aasm integrations status claude-code --output json 2>&1)"; then
     note "captured 'aasm integrations status claude-code --output json'"
+    if command -v jq >/dev/null 2>&1; then
+      aasm_runtime_standing="$(printf '%s' "${aasm_status}" | jq -r '.runtime.provenance.standing // "absent"')"
+      aasm_runtime_verdict="$(printf '%s' "${aasm_status}" | jq -r '.runtime.provenance.verdict // "absent"')"
+      aasm_runtime_pid="$(printf '%s' "${aasm_status}" | jq -r '.runtime.provenance.pid // "absent"')"
+      aasm_runtime_build="$(printf '%s' "${aasm_status}" | jq -r '.runtime.provenance.build_sha // "absent"')"
+      aasm_runtime_source="$(printf '%s' "${aasm_status}" | jq -r '.runtime.provenance.build_id_source // "absent"')"
+      reachable="$(printf '%s' "${aasm_status}" | jq -r '.runtime.provenance.reachable_runtimes // 0')"
+      # `aasm integrations status` is read-only, so it *answers* under an
+      # unverifiable standing rather than refusing — see AAASM-5628. This
+      # script is manual enforcement evidence, which does not get that
+      # latitude: the artifact a reviewer trusts must not be produced from a
+      # runtime that was never shown to be the build it names.
+      case "${aasm_runtime_standing}" in
+        verified) ;;
+        unverifiable)
+          refuse "${EXIT_RUNTIME_UNVERIFIABLE}" \
+            "the runtime that answered aasm could not be identified (verdict '${aasm_runtime_verdict}', build id source '${aasm_runtime_source}') — evidence attributed to it would be unfounded"
+          ;;
+        *)
+          refuse "${EXIT_RUNTIME_UNVERIFIED}" \
+            "the runtime that answered aasm is '${aasm_runtime_standing}' (verdict '${aasm_runtime_verdict}'), not verified"
+          ;;
+      esac
+      # Note the asymmetry: >1 is proof of ambiguity, but ==1 is NOT proof of
+      # uniqueness. The scan covers the directory the answering socket lives in,
+      # so a second runtime bound elsewhere via AA_DEVINT_SOCKET is not counted.
+      # This refuses what it can see; it does not certify that nothing else is
+      # listening.
+      if [[ "${reachable}" != "1" ]]; then
+        refuse "${EXIT_RUNTIME_UNVERIFIED}" "${reachable} Agent Assembly runtimes are reachable — this result names one of several"
+      fi
+      pass "aasm answered from runtime pid ${aasm_runtime_pid}, build ${aasm_runtime_build} (via ${aasm_runtime_source})"
+    else
+      # No jq: the provenance cannot be checked at all, which is itself an
+      # unverifiable standing. Continuing would write a file that *looks* like
+      # evidence and is not, so this refuses rather than annotating.
+      refuse "${EXIT_RUNTIME_UNVERIFIABLE}" \
+        "jq is not installed, so the answering runtime's provenance could not be checked — install jq and re-run"
+    fi
   else
+    aasm_exit=$?
+    if [[ ${aasm_exit} -eq 10 ]]; then
+      refuse "${EXIT_RUNTIME_UNVERIFIED}" "aasm refused: the runtime that answered is not this build (exit 10)"
+    fi
+    if [[ ${aasm_exit} -eq 11 ]]; then
+      refuse "${EXIT_RUNTIME_UNVERIFIABLE}" "aasm refused: the runtime that answered carries no build identity (exit 11)"
+    fi
     note "'aasm integrations status claude-code' did not succeed; its output is recorded as-is"
   fi
 fi
@@ -397,6 +465,11 @@ say ""
   printf '| Measurable in the capture shell | %s |\n' "${remote_settings_measurable}"
   printf '| `forceRemoteSettingsRefresh` fails closed at startup | <!-- FILL --> |\n'
   printf '\n## Item 5 — Agent Assembly'"'"'s own reading\n\n'
+  printf '| Which runtime produced this reading | Value |\n|---|---|\n'
+  printf '| Provenance standing | %s |\n' "${aasm_runtime_standing}"
+  printf '| Provenance verdict | %s |\n' "${aasm_runtime_verdict}"
+  printf '| Runtime pid | %s |\n' "${aasm_runtime_pid}"
+  printf '| Runtime build | `%s` (via %s) |\n\n' "${aasm_runtime_build}" "${aasm_runtime_source}"
   printf '```json\n%s\n```\n' "${aasm_status}"
   printf '\n## Bypasses this mechanism closes, and those it does not\n\n'
   printf '| Bypass | Closed by the managed file? | Evidence |\n|---|---|---|\n'

@@ -40,6 +40,7 @@ use super::lifecycle::{
     ToolDescriptor, VerdictKind,
 };
 use super::projection::tool_id;
+use super::provenance::RuntimeProvenance;
 use super::scope::TokenScope;
 use super::server::{DevIntServer, DevIntServerConfig, DevIntServices};
 use super::token::{CapabilityToken, TokenRecord, TokenStore};
@@ -292,17 +293,50 @@ pub struct TestServer {
     tokens: TokenStore,
     audit: RecordingAuditSink,
     lifecycle: Arc<FakeLifecycle>,
+    provenance: Arc<RuntimeProvenance>,
     cancel: CancellationToken,
     tracker: TaskTracker,
-    // Kept alive so the socket directory outlives the server.
-    _dir: tempfile::TempDir,
+    // Kept alive so the socket directory outlives the server. `Option` because
+    // a server bound into a *caller-owned* directory has none of its own — that
+    // is how two servers end up in one directory (AAASM-5628).
+    _dir: Option<tempfile::TempDir>,
 }
 
 impl TestServer {
-    /// Bind and run a server backed by `lifecycle`.
+    /// Bind and run a server backed by `lifecycle`, reporting this build.
     pub async fn start(lifecycle: FakeLifecycle) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("run").join("devint.sock");
+        Self::bind_at(socket_path, Some(dir), lifecycle, RuntimeProvenance::detect()).await
+    }
+
+    /// Bind and run a server that reports `provenance` as its build identity.
+    ///
+    /// The seam that makes AAASM-5628's first falsification reproducible: a
+    /// runtime from build A answering a client from build B otherwise needs two
+    /// compilations, so the property would go untested and the check would be
+    /// free to rot.
+    pub async fn start_reporting(lifecycle: FakeLifecycle, provenance: RuntimeProvenance) -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("run").join("devint.sock");
+        Self::bind_at(socket_path, Some(dir), lifecycle, provenance).await
+    }
+
+    /// Bind and run a server at an exact path the caller owns.
+    ///
+    /// Lets two servers share one directory, which is the only shape the
+    /// duplicate-runtime failure can take: a second bind on the *same* path
+    /// unlinks the first, so two reachable runtimes always sit on two names.
+    pub async fn start_at(socket_path: PathBuf, lifecycle: FakeLifecycle) -> Self {
+        Self::bind_at(socket_path, None, lifecycle, RuntimeProvenance::detect()).await
+    }
+
+    async fn bind_at(
+        socket_path: PathBuf,
+        dir: Option<tempfile::TempDir>,
+        lifecycle: FakeLifecycle,
+        provenance: RuntimeProvenance,
+    ) -> Self {
         let server = DevIntServer::bind(DevIntServerConfig {
             socket_path: socket_path.clone(),
             max_connections: 8,
@@ -312,6 +346,7 @@ impl TestServer {
         let tokens = TokenStore::new();
         let audit = RecordingAuditSink::new();
         let lifecycle = Arc::new(lifecycle);
+        let provenance = Arc::new(provenance);
         let cancel = CancellationToken::new();
         let tracker = TaskTracker::new();
 
@@ -319,6 +354,7 @@ impl TestServer {
             lifecycle: Arc::clone(&lifecycle) as Arc<dyn IntegrationLifecycle>,
             tokens: tokens.clone(),
             audit: Arc::new(audit.clone()),
+            provenance: Arc::clone(&provenance),
         };
         tracker.spawn(server.run(tracker.clone(), cancel.clone(), services));
 
@@ -327,10 +363,16 @@ impl TestServer {
             tokens,
             audit,
             lifecycle,
+            provenance,
             cancel,
             tracker,
             _dir: dir,
         }
+    }
+
+    /// The build identity this server reports over the handshake.
+    pub fn provenance(&self) -> &RuntimeProvenance {
+        &self.provenance
     }
 
     /// The socket this server is listening on.

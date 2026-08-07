@@ -124,7 +124,8 @@ The first exchange on every connection, before any verb is accepted:
              lifecycle_schema_versions: [u32] }
 ← HelloAck { outcome, di_api_version, core_version, lifecycle_schema_version,
              min_supported, max_supported,
-             unavailable_verbs[], degraded_reason, remediation }
+             unavailable_verbs[], degraded_reason, remediation,
+             provenance? }                       # v4 and above only
   or
 ← Incompatible { reason, remediation, min_supported, max_supported }
 ```
@@ -148,8 +149,112 @@ Rules that follow from this:
 - A client should offer its **whole** supported window; offering less is how a
   client talks itself into a degraded connection for no reason.
 
-Current window: `min_supported = 1`, `max_supported = 2`. `scoped_events` and
+Current window: `min_supported = 1`, `max_supported = 4`. `scoped_events` and
 `approval_relay` were added at v2, so a v1 client is `DEGRADED`.
+
+### What each version added
+
+**Only v2 added verbs.** v3 and v4 add what a peer can *say*, not what it can
+call, so a v1–v3 peer is `SUPPORTED` rather than `DEGRADED` and keeps every verb
+it had. Protobuf message presence already makes a field's absence unambiguous,
+so behaviour is correct without consulting the version at all; knowing the peer
+speaks v3 lets a client name the reason — "this runtime speaks DI-API 3; build
+provenance arrived in 4" — instead of the vaguer "the field is missing".
+
+| Version | Addition | Verb change |
+| --- | --- | --- |
+| 1 | The lifecycle verbs. | — |
+| 2 | `scoped_events`, `approval_relay`. | **adds 2** |
+| 3 | `status` and `verify` carry a `PolicyView` — which policy a governed launch would run under (AAASM-5349). | none |
+| 4 | `HelloAck` carries a `RuntimeProvenance` — which build is answering (AAASM-5628). | none |
+
+### v4 — `RuntimeProvenance` on the `HelloAck`
+
+A `core_version` cannot distinguish two checkouts sitting at the same version.
+That is not hypothetical: a runtime built from a different checkout served an
+entire QA campaign while every measurement was recorded against the build under
+test, and a runtime whose worktree had been deleted kept serving and reported a
+healthy tool as `not_installed`. **Port reachability is never sufficient** — in
+both cases the socket was reachable and the runtime was healthy.
+
+So the handshake states an identity, before any result is obtained:
+
+| Field | Meaning |
+| --- | --- |
+| `core_version` | The running core version, repeated so the block is a complete identity on its own. |
+| `build_sha` | The commit the binary was compiled from, or `unknown`. Never fabricated. |
+| `build_id_source` | How `build_sha` was obtained: `injected`, `checkout`, `packaged`, or `absent`. |
+| `pid` | The serving process. The only field that distinguishes two runtimes of the *same* build. |
+| `executable_path` | Absolute path of the running executable, as the OS reports it. |
+| `executable_present` | Whether that path still exists, evaluated **when the frame is written**, not at start. |
+| `source_path` | The checkout it was built from, when known. Empty means the build suppressed it — **no build in this repository does**, so this is in practice a CI runner path on a release artifact and a developer's home directory on a local build. Treat it as such before pasting a status JSON anywhere public. |
+| `started_at_unix_secs` | When this runtime began serving. |
+
+A v1–v3 peer omits the message entirely, and *message presence* — not an empty
+string — is what tells a client "this peer cannot say" apart from "this peer has
+no identity".
+
+#### The comparison is three-state
+
+A client compares the reported identity against the one compiled into its own
+`aa-runtime`. The result is **never a boolean**:
+
+| Case | Result |
+| --- | --- |
+| two equal **authoritative** identities | `Match` |
+| two different **authoritative** identities | `Mismatch` |
+| `unknown` vs `unknown` | **`Unverifiable`** — never `Match` |
+| known vs `unknown` | **`Unverifiable`** |
+
+An identity is authoritative only when `build_id_source` names a real mechanism
+(`injected`, `checkout` or `packaged`). Absence of provenance on both peers
+proves only that both are unknown, not that they are the same build.
+
+**`pid`, executable name, executable path, DI-API version and package version
+are not proof of identical build content**, individually or in combination, and
+none of them may upgrade a verdict. `core_version` is compared because it can
+*falsify* — two different versions cannot be one build — but a version string
+can never *verify*.
+
+#### What a match does not establish
+
+**Every provenance field is self-reported.** A process that can bind the DI-API
+socket can claim any `build_sha` and any `build_id_source` and be reported
+`verified`. This is an **attribution** control — it catches a stale, duplicated
+or wrong-checkout runtime — **not an authentication** control. It is not weaker
+than what precedes it: a peer able to bind that socket already shares the
+runtime's UID and could replace the `aa-runtime` binary outright. Do not cite it
+as a defence against a hostile local process.
+
+**`checkout` names `HEAD`, not the working tree.** A build from a dirty checkout
+reports its `HEAD` commit, so two dirty worktrees at the same `HEAD` with
+different uncommitted changes compare as a match. Marking dirty builds
+unidentifiable was rejected: nearly every development build is dirty, so it would
+make refusal the normal state during development. `packaged` has no such gap — a
+tarball packaged from a dirty tree is refused outright.
+
+See [ADR 0030 §5.4a](../adr/0030-developer-integration-boundaries-and-trust-model.md)
+for the trust model this sits inside.
+
+#### What a client must do with the result
+
+| Standing | Read-only request | Privileged write, or an enforcement claim |
+| --- | --- | --- |
+| `verified` | proceed | proceed |
+| `unverifiable` | **proceed, reporting it as `unverifiable`** — never as verified | **refuse** |
+| `refuted` (mismatch, deleted executable, or more than one runtime reachable) | **refuse** | **refuse** |
+
+`aasm` implements this with exit codes `11` and `10` respectively; see the
+[CLI reference](../cli/integrations.md#exit-codes).
+
+**"More than one runtime reachable" is one-directional evidence.** A count above
+one proves ambiguity — each of those sockets was connected to. A count of one
+proves only that nothing else was *found*: `aasm`'s scan probes files named
+`devint*.sock`, in the answering socket's own directory, once as the session
+opens. A runtime under another name, in another directory (which
+`AA_DEVINT_SOCKET` makes trivial), or started a moment later is not counted.
+Read `reachable_runtimes == 1` as "no duplicate was observed", never as "this is
+the only runtime".
 
 ## The verb space
 
