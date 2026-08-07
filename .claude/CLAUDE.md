@@ -9,9 +9,8 @@ config. When a fact here duplicates `CONTRIBUTING.md`, the `Makefile`, or
 
 The **core Rust monorepo** for AI Agent Assembly — the product that evaluates what
 an AI agent does against policy and records the outcome. It contains the gateway
-("the brain"), the policy engine,
-the three interception layers, the FFI shims the language SDKs bind to, and the
-operator CLI. The language SDKs (`python-sdk`, `node-sdk`, `go-sdk`) and the cloud
+("the brain"), the policy engine, the interception mechanisms, the FFI shims the
+language SDKs bind to, and the operator CLI. The language SDKs (`python-sdk`, `node-sdk`, `go-sdk`) and the cloud
 control plane live in **separate repos**; this one is the source of truth for the
 protocol, policy semantics, and the shared `aa-*` crates they pin.
 
