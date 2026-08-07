@@ -1847,4 +1847,182 @@ mod tests {
         assert_eq!(json["reachable_runtimes"], serde_json::json!(2));
         assert_ne!(json["standing"], serde_json::json!("verified"));
     }
+
+    // ── install's change outcome (AAASM-5674) ───────────────────────────────
+
+    use aa_runtime::devint::{ApplyMutation, MutationUnknown};
+
+    use super::{InstallReport, InstallVerdict};
+
+    /// A stated mutation decides between the two success outcomes, and only
+    /// between those two.
+    #[test]
+    fn a_stated_mutation_decides_changed_from_unchanged() {
+        let changed = InstallVerdict::of(0, &ApplyMutation::Changed);
+        assert_eq!(changed.exit, Outcome::Success);
+        assert_eq!(changed.change, Some(ChangeOutcome::Changed));
+
+        let unchanged = InstallVerdict::of(0, &ApplyMutation::Unchanged);
+        assert_eq!(unchanged.exit, Outcome::Success);
+        assert_eq!(unchanged.change, Some(ChangeOutcome::Unchanged));
+    }
+
+    /// A stated failure is a failure on both axes.
+    #[test]
+    fn a_stated_failure_exits_non_zero_and_reports_failed() {
+        let verdict = InstallVerdict::of(
+            0,
+            &ApplyMutation::Failed {
+                detail: "the settings write did not land".to_string(),
+            },
+        );
+        assert_ne!(verdict.exit.code(), 0);
+        assert_eq!(verdict.change, Some(ChangeOutcome::Failed));
+    }
+
+    /// **The load-bearing case.** Every way of not having an answer produces
+    /// *no* outcome — never `unchanged`, and never any other success.
+    ///
+    /// Swept across all five non-answers rather than asserted on one, because a
+    /// classifier that special-cased the version gap and fell through to a
+    /// permissive default for the rest would pass a single-case test.
+    #[test]
+    fn no_absence_of_an_answer_is_ever_reported_as_a_success() {
+        let unanswered = [
+            ApplyMutation::Unsupported {
+                detail: "this executor cannot compare canonical forms".to_string(),
+            },
+            ApplyMutation::Unknown(MutationUnknown::NotReportedAtVersion {
+                negotiated_version: 4,
+                since: 5,
+            }),
+            ApplyMutation::Unknown(MutationUnknown::Omitted { negotiated_version: 5 }),
+            ApplyMutation::Unknown(MutationUnknown::Unspecified { detail: String::new() }),
+            ApplyMutation::Unknown(MutationUnknown::Unrecognised { value: 77 }),
+        ];
+        for mutation in unanswered {
+            let verdict = InstallVerdict::of(0, &mutation);
+            assert_eq!(verdict.change, None, "{mutation:?} produced a change outcome");
+            assert_ne!(verdict.change, Some(ChangeOutcome::Unchanged));
+            // The apply itself succeeded; what could not be established is a
+            // claim about the host, not about the command.
+            assert_eq!(verdict.exit, Outcome::Success, "{mutation:?}");
+        }
+    }
+
+    /// A failed step outranks whatever the mutation said, including a stated
+    /// `changed`. A partial install is not a mutation to celebrate.
+    #[test]
+    fn a_failed_step_outranks_every_mutation_outcome() {
+        for mutation in [
+            ApplyMutation::Changed,
+            ApplyMutation::Unchanged,
+            ApplyMutation::Unsupported { detail: String::new() },
+            ApplyMutation::Unknown(MutationUnknown::Omitted { negotiated_version: 5 }),
+        ] {
+            let verdict = InstallVerdict::of(1, &mutation);
+            assert_eq!(verdict.exit, Outcome::InternalError, "{mutation:?}");
+            assert_eq!(verdict.change, Some(ChangeOutcome::Failed), "{mutation:?}");
+        }
+    }
+
+    /// The invariant AAASM-5499 pinned, re-asserted for this command: a stated
+    /// success outcome accompanies exit `0` and nothing else does.
+    #[test]
+    fn the_sign_of_the_exit_code_agrees_with_the_stated_outcome() {
+        for failed in [0usize, 1] {
+            for mutation in [
+                ApplyMutation::Changed,
+                ApplyMutation::Unchanged,
+                ApplyMutation::Failed { detail: String::new() },
+                ApplyMutation::Unsupported { detail: String::new() },
+                ApplyMutation::Unknown(MutationUnknown::Omitted { negotiated_version: 5 }),
+            ] {
+                let verdict = InstallVerdict::of(failed, &mutation);
+                if let Some(change) = verdict.change {
+                    assert_eq!(
+                        change.is_success(),
+                        verdict.exit.code() == 0,
+                        "{mutation:?} with {failed} failed step(s) exits {} but reports {}",
+                        verdict.exit.code(),
+                        change.as_str()
+                    );
+                }
+            }
+        }
+    }
+
+    fn apply_view(outcome: Option<wire::ApplyOutcomeView>) -> wire::ApplyView {
+        wire::ApplyView {
+            plan_id: "plan-1".to_string(),
+            receipt_id: "receipt-1".to_string(),
+            applied_at_unix_secs: 1_700_000_000,
+            steps: Vec::new(),
+            planned_level: "gateway_protected".to_string(),
+            achieved_level: "integrated".to_string(),
+            outcome,
+        }
+    }
+
+    fn plan_stub() -> PlanReport {
+        PlanReport {
+            runtime: runtime(),
+            schema_version: 1,
+            plan_id: "plan-1".to_string(),
+            tool_id: "claude-code".to_string(),
+            profile: "recommended".to_string(),
+            settings_scope: "user".to_string(),
+            policy_profile: None,
+            planned_level: "gateway_protected".to_string(),
+            adapter_ceiling: "l2_enforce".to_string(),
+            steps: Vec::new(),
+            unsupported: Vec::new(),
+            warnings: Vec::new(),
+            required_permissions: Vec::new(),
+            applied: true,
+        }
+    }
+
+    /// The report's two outcome fields are set together, so a document can
+    /// neither claim an outcome while explaining its absence nor the reverse.
+    #[test]
+    fn the_report_never_states_an_outcome_and_a_reason_for_having_none() {
+        for mutation in [
+            ApplyMutation::Changed,
+            ApplyMutation::Unchanged,
+            ApplyMutation::Failed { detail: String::new() },
+            ApplyMutation::Unsupported {
+                detail: "cannot compare".to_string(),
+            },
+            ApplyMutation::Unknown(MutationUnknown::NotReportedAtVersion {
+                negotiated_version: 4,
+                since: 5,
+            }),
+        ] {
+            let (report, _) = InstallReport::from_applied(plan_stub(), &apply_view(None), &mutation);
+            assert_eq!(
+                report.outcome.is_none(),
+                report.outcome_unknown.is_some(),
+                "{mutation:?} produced a report whose two outcome fields disagree"
+            );
+        }
+    }
+
+    /// The JSON a script reads never says `unchanged` for a run whose outcome
+    /// was not stated — the exact document the ratified contract is about.
+    #[test]
+    fn the_json_says_null_rather_than_unchanged_when_nothing_was_stated() {
+        let mutation = ApplyMutation::Unknown(MutationUnknown::NotReportedAtVersion {
+            negotiated_version: 4,
+            since: 5,
+        });
+        let (report, exit) = InstallReport::from_applied(plan_stub(), &apply_view(None), &mutation);
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(json["outcome"], serde_json::Value::Null);
+        assert!(
+            json["outcome_unknown"].as_str().expect("a reason").contains("v4"),
+            "the reason must name the peer that could not say: {json}"
+        );
+        assert_eq!(exit, Outcome::Success, "the apply itself worked");
+    }
 }

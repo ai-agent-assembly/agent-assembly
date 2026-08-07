@@ -270,6 +270,14 @@ fn the_command_family_drives_the_native_claude_code_integration() {
         stdout(&install)
     );
     assert!(install.status.success(), "{}", stderr(&install));
+    // The ratified outcome, end to end: engine → DI-API v5 → CLI. A first
+    // install writes the settings file, so `changed` is the only honest answer
+    // (AAASM-5674).
+    assert!(
+        stdout(&install).contains("Applied as receipt") && stdout(&install).contains("changed"),
+        "the install did not state its change outcome:\n{}",
+        stdout(&install)
+    );
     assert!(h.ca_pem().is_file(), "the proxy CA must be materialised");
     assert_eq!(
         h.injected("NODE_EXTRA_CA_CERTS").as_deref(),
@@ -280,6 +288,26 @@ fn the_command_family_drives_the_native_claude_code_integration() {
     let settings = h.settings().expect("settings survive");
     assert_eq!(settings["theme"], serde_json::json!("gruvbox"));
     assert_eq!(settings["permissions"]["defaultMode"], serde_json::json!("default"));
+    let settings_after_install = settings.clone();
+
+    // …and the second install reaches the same end state without touching it.
+    // Both exit 0, so the outcome is the only thing that tells them apart —
+    // which is the whole of the AAASM-5499 contract, now covering `install`.
+    let reinstall = h.aasm(&["install", "claude-code", "--scope", "user", "--yes", "--output", "json"]);
+    assert!(reinstall.status.success(), "{}", stderr(&reinstall));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&reinstall)).expect("json report");
+    println!("--- aasm integrations install (repeat) ---\n{report:#}");
+    assert_eq!(
+        report["outcome"],
+        serde_json::json!("unchanged"),
+        "a repeated install must report the no-op it performed"
+    );
+    assert_eq!(report["outcome_unknown"], serde_json::Value::Null);
+    assert_eq!(
+        h.settings().expect("settings survive"),
+        settings_after_install,
+        "the repeated install reported `unchanged` while changing the settings"
+    );
 
     let status = h.aasm(&["status", "claude-code"]);
     assert!(status.status.success(), "{}", stderr(&status));
