@@ -14,10 +14,10 @@ the governance-native runtime for AI agents. It ships the **`aasm`** binary — 
 terminal entry point for inspecting agent topology, managing policies, watching
 the audit trail, and driving the governance gateway.
 
-Agent Assembly enforces governance across three independently-deployable
-interception layers (in-process SDK shim, sidecar proxy, and eBPF). `aasm` is how
-an operator observes and controls that system from the command line, talking to
-the gateway over its HTTP/OpenAPI surface.
+Agent Assembly mediates agent actions through independently-deployable mechanisms
+(in-process SDK shim, sidecar proxy, and Linux eBPF), each with its own boundary.
+`aasm` is how an operator observes and controls that system from the command
+line, talking to the gateway over its HTTP/OpenAPI surface.
 
 ## Install
 
