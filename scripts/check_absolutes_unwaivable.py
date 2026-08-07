@@ -178,10 +178,18 @@ MARKUP = re.compile(r"[`*_]")
 LINK_TARGET = re.compile(r"\](\([^)]*\))")
 BARE_URL = re.compile(r"<?https?://[^\s>)]+>?")
 
-# Segment boundaries: sentence enders followed by space, and table-cell pipes. The
-# trailing-whitespace requirement is load-bearing — without it "§2.1" and "0033:607"
-# split mid-reference and separate a denial from the absolute it denies.
-BOUNDARY = re.compile(r"(?<=[.;?!])\s+|\|")
+# Segment boundaries: sentence enders followed by space, table-cell pipes, and
+# contrastive conjunctions. The trailing-whitespace requirement is load-bearing —
+# without it "§2.1" and "0033:607" split mid-reference and separate a denial from the
+# absolute it denies.
+#
+# The contrastive clause is the fix for a regression: "Evidence freshness is
+# unwaivable, but a banned absolute may be waived for ninety days" is one sentence
+# carrying two subjects, and the denial belongs to the first. Segment-scoped guards
+# then read the foreign "unwaivable" as clearing the second clause — three separate
+# guards, all contaminated by one word. "but" starts a new subject, so it starts a
+# new segment.
+BOUNDARY = re.compile(r"(?<=[.;?!])\s+|\||,\s+(?:but|whereas|although|though|while|however|yet)\s+")
 
 # Stands in for a blank line inside a block. It is a segment boundary, so tier 1
 # never runs two paragraphs together into one "sentence", while tier 2 still reads
@@ -627,6 +635,17 @@ _MUST_FAIL = [
         "A banned absolute may be waived by any waiver-approver for ninety days.\n"
         "<!-- /truth-exempt -->\n",
     ),
+    # Review round 2, blocker 1 — a REGRESSION. Both of these were caught before the
+    # round-1 segment guards were added and missed after: one sentence, two subjects,
+    # and the denial belongs to the other one. Pinned so it cannot happen a third time.
+    (
+        "denial scoped to another rule, contrast first",
+        "Evidence freshness is unwaivable, but a banned absolute may be waived for ninety days.\n",
+    ),
+    (
+        "denial scoped to another rule, contrast second",
+        "A banned absolute may be waived for ninety days, whereas evidence freshness is unwaivable.\n",
+    ),
     (
         "bare prose inside a class that may carry a rule-statement",
         "<!-- truth-exempt: historical-withdrawn - an old rule we are recording -->\n"
@@ -666,6 +685,12 @@ _MUST_PASS = [
     ),
     # The backward pass and the heading scan must not fire on correct statements.
     ("heading stating the rule", "## Truthfulness and banned absolutes are unwaivable\n"),
+    # The contrastive split must not break correct contrastive prose, which is a
+    # natural way to state this rule.
+    (
+        "contrast used correctly",
+        "A D-dimension may be waived for ninety days, but a banned absolute is unwaivable.\n",
+    ),
     ("heading naming the mechanism only", "### 10. Waivers and exceptions\n"),
     (
         "grant, then denial, then the absolute across paragraphs",
