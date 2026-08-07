@@ -266,19 +266,27 @@ See [`docs/release/`](docs/release/) for the per-tag release notes and the
 
 ## Supported platforms
 
-The interception layers have different platform reach. The SDK shim and sidecar
-proxy run anywhere the runtime builds; kernel-level eBPF interception is
-Linux-only.
+Reach differs per mechanism. The canonical, evidence-cited matrix is §5.3 of
+[ADR 0033](docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md);
+this is a summary of it, and where the two disagree the ADR is right.
 
-| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | eBPF interception |
+| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | Host-level (eBPF) |
 |---|---|---|---|
-| Linux (x86_64 / arm64) | ✅ | ✅ | ✅ — kernel with BTF + nightly toolchain |
-| macOS (Apple Silicon / Intel) | ✅ | ✅ | ❌ — Linux-only |
-| Windows | ⚠️ via WSL2 | ⚠️ via WSL2 | ⚠️ via WSL2 |
+| Linux x86_64 | Implemented | Implemented | Implemented — observation (TLS / file / exec); syscall guard opt-in and asynchronous. Needs kernel ≥ 5.8 with BTF and a nightly toolchain |
+| Linux aarch64 | Implemented | Implemented | Implemented (partial) — TLS and exec only; no file-I/O kprobes, whose attach targets are `__x64_sys_*` |
+| macOS (Apple Silicon / Intel) | Implemented | Implemented, with conditions — no prebuilt binary on any channel, and CA trust is attempted at proxy start via an admin prompt that fails startup if refused | **Unsupported** — no host adapter exists |
+| Windows | **Unsupported** | **Unsupported** | **Unsupported** |
 
-On macOS, governance is enforced through the SDK and proxy layers; the eBPF
-layer is unavailable. See [`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel
-requirements.
+Windows is unsupported in all three columns rather than partial: `aa-proxy` uses
+`tokio::signal::unix` unconditionally so the crate has no Windows build path, `aasm`
+takes `aa-proxy` as an unconditional dependency, no release target is a Windows
+target, and no ETW, WFP or minifilter code exists. WSL2 is Linux — a Linux binary
+in a Linux VM is the Linux row, not Windows support, and reading it the other way
+is what ADR 0033 forbidden design 5 rules out.
+
+Where a mechanism is unsupported it is absent, and absence is reported as absence:
+nothing underneath picks up what it would have done. See
+[`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel requirements.
 
 ## Quickstart
 
