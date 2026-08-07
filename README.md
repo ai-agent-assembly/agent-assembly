@@ -130,15 +130,26 @@ and the outcome is recorded in a hash-chained, **tamper-evident** audit trail th
 `aasm audit verify-chain` re-verifies offline. An action that never reaches a
 checkpoint is reported as *unmeasured*, never as allowed.
 
-The three interception layers, lowest-latency first:
+Governance is assembled from independently-deployable mechanisms rather than a
+fixed pipeline, and each one holds a stated boundary — lowest-latency first:
 
-- **SDK shim** (in-process) — fastest path; requires the agent to adopt an SDK.
-- **Sidecar proxy** (`aa-proxy`) — intercepts outbound HTTPS without code changes.
-- **eBPF** (Linux kernel) — catches everything else, including bypass attempts.
+- **SDK shim** (in-process) — the fastest path. Where an agent adopts an SDK and
+  opts a tool call into the explicit wrapper, that call is *denied before
+  execution*; the shim is advisory and not a security boundary (ADR 0002).
+- **Sidecar proxy** (`aa-proxy`) — refuses or redacts outbound HTTPS before it
+  leaves the machine, without changing the *agent's* own code. It must be
+  installed, started, routed to (`HTTPS_PROXY`) and have its CA trusted, and
+  `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
+  Linux and macOS; on macOS `cargo install aa-proxy` is the only channel that
+  ships it.
+- **eBPF** (`aa-ebpf*`) — **Linux only**, published to crates.io only, and its
+  one enforcing program is off by default. It *observes* TLS, file and exec
+  activity and *detects* findings; it does not deny an action before it runs.
 
-Each layer reports to the same gateway, so you get one unified view no matter
-which layers a deployment runs. See the [Architecture overview](docs/src/architecture/README.md)
-for the full picture, or jump straight to the [Quickstart](#quickstart).
+A mechanism that is not deployed is reported as absent — nothing underneath
+silently picks up what it would have done. See the
+[Architecture overview](docs/src/architecture/README.md) for the full picture, or
+jump straight to the [Quickstart](#quickstart).
 
 ### Governing an AI dev tool
 
