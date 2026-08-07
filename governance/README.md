@@ -499,8 +499,9 @@ manifest reads as the broadest admissible value.
    fixture. A consumer publishing a release-scoped surface (AAASM-5609's "What
    Ships Today" especially) must either re-derive at the tag or label the
    surface as describing `main`.
-7. **Five rows were weakened for unverifiability, not for absence.** N4 and G8
-   have no located test in this repo, measured. S6, S9 and G5 assert tests in
+7. **Five rows were weakened — two for measured absence, three for
+   unverifiability.** The distinction is the point, so the heading has to carry
+   it. N4 and G8 have no located test in this repo, measured. S6, S9 and G5 assert tests in
    the `node-sdk`, `go-sdk` and all three SDK repositories respectively, and
    rule R5 resolves paths only against *this* repo's evidence tree, so they
    cannot be checked here at all. All five now read `evaluated` rather than
