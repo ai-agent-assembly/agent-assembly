@@ -1,8 +1,11 @@
 //! Sidecar traffic interception proxy for Agent Assembly.
 //!
-//! This crate implements the Layer 2 interception model: a sidecar proxy that
-//! sits alongside each AI agent process, intercepting outbound HTTPS traffic
-//! and enforcing governance policies before forwarding requests.
+//! This crate implements E3, Protocol / Transport Mediation (ADR 0033 §1): a
+//! sidecar proxy that sits alongside an AI agent process, intercepting outbound
+//! HTTPS traffic and refusing or redacting a request before it leaves the
+//! machine. The agent's own code does not change, but the proxy must be
+//! installed, started, routed to via `HTTPS_PROXY` and have its CA trusted, and
+//! `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
 //!
 //! ## Architecture
 //!
