@@ -21,7 +21,7 @@ It is **not** a second content-ownership specification. `content-ownership.md`
 remains the instrument a contributor applies; this page only records what the
 tree contains and what should happen to it.
 
-It does not reproduce the contents of private repositories. Six of the seventeen
+It does not reproduce the contents of private repositories. Six of the eighteen
 repositories below are private. For those, this page records that documentation
 exists, how much, and where — which is a fact about the repository, not content
 from inside it. No private page's text, structure below directory level, or
@@ -48,8 +48,10 @@ The organisation has **18** repositories:
 gh repo list ai-agent-assembly --limit 100 --json name,isPrivate,isArchived
 ```
 
-**17 are measured below** — 14 named in the brief for this work, plus three that
-were not and are documentation-bearing:
+**Seventeen of those carry tracked Markdown**; `agent-assembly-spec` is archived
+and empty. Adding the one external L0 site gives the **eighteen repositories
+measured below** — 13 named in the brief for this work, plus five that were not
+and are documentation-bearing:
 
 - [`arena`](https://github.com/ai-agent-assembly/arena), which
   [content-ownership.md](content-ownership.md#the-content-layers) names as an L3
@@ -60,7 +62,7 @@ were not and are documentation-bearing:
   [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) assigns;
 - `saas-infra`, `homebrew-tap` and `.github-private`, which the brief did not
   name and which carry 30 tracked Markdown files between them — including a
-  second ADR tree of 12 decisions in `saas-infra/docs/adr/`.
+  second ADR tree in `saas-infra/docs/adr/` (11 files, 10 numbered decisions).
 
 Omitting any of them would have left a hole in the layer model this page exists
 to measure against.
@@ -385,11 +387,38 @@ snapshot page's blob against the live `docs/` page at the same relative path:
 **288 differ, 3 are identical, and 3 have no live counterpart.** Only 93 unique
 blobs back the 294 files, so two thirds are byte-duplicates of another snapshot.
 
-```bash
-git ls-tree -r <ref> -- website/versioned_docs   # snapshot blobs
-git ls-tree -r <ref> -- docs                     # live blobs
-# strip the version- prefix from each snapshot path, compare blob SHAs
+```python
+# Run from a node-sdk checkout. Prints 288 / 3 / 3 / 93 at remote/main.
+import re, subprocess
+
+def blobs(ref, sub):
+    out = subprocess.run(["git", "ls-tree", "-r", ref, "--", sub],
+                         capture_output=True, text=True).stdout.splitlines()
+    d = {}
+    for line in out:
+        meta, path = line.split("\t", 1)
+        if path.endswith((".md", ".mdx")):
+            d[path] = meta.split()[2]        # blob SHA
+    return d
+
+REF = "remote/main"
+snap = blobs(REF, "website/versioned_docs")
+live = blobs(REF, "docs")
+same = diff = absent = 0
+for path, sha in snap.items():
+    rel = re.sub(r"^website/versioned_docs/version-[^/]+/", "", path)
+    counterpart = live.get("docs/" + rel)
+    if counterpart is None: absent += 1
+    elif counterpart == sha: same += 1
+    else:                    diff += 1
+print(f"differ={diff} identical={same} no-counterpart={absent} "
+      f"unique-blobs={len(set(snap.values()))} total={len(snap)}")
 ```
+
+An earlier attempt at this in shell returned all zeros — every `sed` and `awk`
+inside the loop had silently failed on a lost `PATH`, and "0 differ" is a
+plausible-looking answer. The Python is published because the number is only as
+trustworthy as the reader's ability to re-run it and see the same thing.
 
 Treating them as a migration surface would be a category error, and treating
 their drift as a duplication defect would be too.
@@ -483,9 +512,15 @@ files in total across the two repositories.
 ### L4 · Examples — `examples` (43 docs-bucket files)
 
 One `README.md` per runnable integration, plus scenarios and a choosing guide.
-41 of the 43 are READMEs; the shape is one directory per framework under
-`python/` (16), `node/` (6) and `go/` (4), plus `scenarios/` (6 end-to-end
-scenarios) and `docs/` (2).
+The 43 docs-bucket files are **40 READMEs + 2 pages under `docs/`
+(`choosing-an-example.md`, `concepts.md`) + `CONTRIBUTING.md`**.
+
+The READMEs distribute as `python/` 17, `scenarios/` 9, `node/` 7, `go/` 5,
+`snippets/` 1 and the repository root 1 — each language directory's count
+including its own index README above the per-framework ones.
+
+A 41st `README.md` exists at `.github/workflows/README.md`; it is **Tool config**
+under this page's own bucket rules and is not part of the 43.
 
 **Disposition: Keep**, with the standing constraint that L4 has **no truth
 layer**. Under
@@ -495,12 +530,27 @@ canonical source for anything it says.
 
 ### L5 · Repository READMEs — 158 files
 
-Every one of the seventeen repositories has a root `README.md`. The total across
+Every one of the eighteen repositories has a root `README.md`. The total across
 all directory levels is 158, concentrated in `agent-assembly` (45, mostly crate
 READMEs), `examples` (41, which are the L4 example pages counted above rather
-than L5 signposts) and `saas-infra` (12, one per Terraform module).
+than L5 signposts) and `saas-infra` (12).
 
 **Disposition: Keep.** Like L4, L5 has no truth layer and may only restate.
+
+#### The other repository signposts
+
+`README.md` is not the only signpost, and the rest would otherwise fall between
+the groups above. Every remaining docs-bucket file that is not under a `docs/`,
+`website/` or `blog/` tree is one of these:
+
+| File | Where | Disposition |
+|---|---|---|
+| `CONTRIBUTING.md` | 8 repositories | **Keep** — contributor process, correctly per-repo |
+| `SECURITY.md` | `agent-assembly`, `node-sdk`, `python-sdk`, `.github-private`, and the org-wide one in `.github` | **Keep** — the [canonical-source table](content-ownership.md#canonical-source-by-content-type) assigns this per repository, falling back to the org default, which is exactly the arrangement present |
+| `node-sdk/website/README.md` | 1 file | **Keep** — Docusaurus scaffolding, not a page |
+
+That closes the docs bucket: every file in it is now either inside a named
+`docs/`/`website/`/`blog/` group, a `README.md` counted above, or one of these.
 
 `homebrew-tap`'s `README.md` is the exception worth naming: it is the tap the
 install documentation points readers at, so it is a **published install surface**
@@ -561,32 +611,50 @@ public migration scope, and no public page may restate their internals.
 | Repo | Docs | Evidence | Shape |
 |---|---:|---:|---|
 | `internal-docs` | 40 | 24 | `docs/{architecture,adr,runbooks,enterprise,reference,onboarding,design}` |
-| `saas-infra` | 23 | 0 | `docs/adr/` (12), `docs/runbooks/`, one `README.md` per Terraform module |
+| `saas-infra` | 23 | 0 | `docs/adr/` (11), `docs/runbooks/`, 12 READMEs |
 | `cloud` | 21 | 18 | `docs/`, `docs/architecture/`, `design/` |
 | `agent-assembly-enterprise` | 17 | 7 | `docs/`, `docs/generated/` (9) |
 | `e2e-private` | 12 | 3 | `docs/`, `tests/`, `fixtures/` |
 | `.github-private` | 2 | 0 | `README.md`, `SECURITY.md` |
 
-`saas-infra` deserves a note beyond its count, because it changes what a reader
-should conclude from this page's own findings. It holds a **second ADR tree** —
-12 decisions on repository boundary, environment separation, Terraform layout,
-CI/CD identity, secret ownership, release promotion, observability, DNS, managed
-Postgres and cloud provider. Core's `adr/` is not the organisation's only
-decision record.
+#### Core's `adr/` is not the organisation's only decision record
 
-One of those decisions, `docs/adr/0008-domain-registration-and-dns.md`, is in
-exactly the subject matter of
-[D9's `tool.agent-assembly.dev` contradiction](#d9--four-confirmed-contradictions),
-which this page adjudicates from Core's
-[ADR 0007](../adr/0007-public-domain-and-url-contract.md) alone. That finding
-should be re-checked against the private ADR before it is filed; the two may
-agree, but this page has not established that they do, and it cannot show the
-private text either way.
+There are **four decision-record trees**, three of them private:
 
-`internal-docs` and `cloud` both carry a `docs/architecture/` tree, and
-`internal-docs` carries `docs/adr/` (10 files). Whether those overlap Core's
-`architecture/` and `adr/` cannot be assessed in a public page and is out of
-scope here; it is flagged for a private-side review, not resolved.
+| Tree | Files | Numbering |
+|---|---:|---|
+| `agent-assembly/docs/src/adr/` | 33 | `0001`… |
+| `saas-infra/docs/adr/` *(private)* | 11 | `0001`… |
+| `internal-docs/docs/adr/` *(private)* | 10 | `ADR-001`… |
+| `internal-docs/docs/architecture/adr/` *(private)* | 8 | `ADR-001`… |
+
+`internal-docs` therefore collides with **itself**, before any cross-repository
+collision is considered.
+
+Directory names and file counts are facts about a repository; what those
+decisions say is not, and none of it appears here.
+
+Two consequences follow, and both are directory-level observations that need no
+private content to state:
+
+**Numbering collides across the trees, and this page cites some of the colliding
+identifiers bare.** Each tree numbers from `0001`, so a bare "ADR 0007" or
+"ADR 0014" — both of which appear on this page — identifies a document only once
+the reader already knows which tree is meant. This is exactly the hazard
+[D2](#d2--three-numbering-schemes-two-of-which-are-spelled-l) records for the
+`L0`–`L6` / `T1`–`T7` / `L0`–`L3` collision, and the remedy is the same:
+qualify the identifier with its tree. Every ADR reference on this page is to
+Core's tree.
+
+**[D9's `tool.agent-assembly.dev` contradiction](#d9--four-confirmed-contradictions)
+is adjudicated from Core's ADR set alone.** A private tree covers infrastructure
+subject matter that may bear on it. That finding should therefore be re-checked
+against the private trees before it is filed. The two may agree; this page has
+not established that they do, and cannot show either way.
+
+`internal-docs` and `cloud` both also carry a `docs/architecture/` tree. Whether
+any of these overlap Core's `architecture/` cannot be assessed in a public page.
+Flagged for a private-side review, not resolved.
 
 ## Findings
 
@@ -662,6 +730,14 @@ page.
 Not a contradiction — the schemes are independently coherent. **Report as a
 naming hazard** for AAASM-5594 to resolve, most cheaply by renaming the
 governance tiers.
+
+**The same hazard applies to bare ADR numbers, and this page is not exempt.**
+There are [four decision-record trees](#cores-adr-is-not-the-organisations-only-decision-record),
+each numbering from `0001`, so "ADR 0007" identifies a document only once the
+reader knows which tree is meant. This page cites several such identifiers bare;
+all of them refer to Core's tree. Qualifying the identifier with its tree is the
+same remedy as renaming the governance tiers, and is worth applying wherever an
+ADR is cited across repositories.
 
 ### D3 · Every SDK example page has an examples-repo twin
 
@@ -1014,10 +1090,26 @@ files in the six private repositories, node-sdk's 294 frozen snapshots, and
 `arena`'s 2 test-fixture READMEs.
 
 Every docs-bucket file in every counted repository falls under exactly one group
-in [The inventory](#the-inventory) or one row above. The check that this is true
-is arithmetic rather than assertion: the four buckets sum to each repository's
-total by construction (see the [Appendix](#appendix-the-bucket-script)), and
-every repository in the count table has a section.
+in [The inventory](#the-inventory) or one row above.
+
+That is a file-level claim and needs a file-level check, so here is the one that
+actually tests it. For each repository, list the docs bucket, subtract the files
+matched by the groups, and require the remainder to be empty:
+
+```bash
+# docs bucket for one repo
+git -C <repo> ls-tree -r --name-only <ref> | grep -E '\.(md|mdx)$' \
+  | grep -Ev "$EV" | grep -Ev "$TC" | grep -E "$DC" > /tmp/bucket
+# everything the groups name: docs/, website/, blog/ trees, plus the signposts
+grep -Ev '^docs/|^website/|^blog/' /tmp/bucket \
+  | grep -Ev '(^|/)(README|CONTRIBUTING|SECURITY)\.md$'
+# must print nothing
+```
+
+Run across all eighteen repositories the remainder is empty. Note what this
+does **not** prove: that the four buckets sum to each repository's total shows
+only that the *bucketing* is exhaustive, which is a different and weaker claim —
+it would hold even if the disposition map covered nothing at all.
 
 ### Partitioning this for implementation tickets
 
