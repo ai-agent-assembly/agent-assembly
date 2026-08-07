@@ -116,8 +116,16 @@ schema:
       #   shipped                 reachable through the listed channels (41 rows)
       #   shipped_with_platform_exception
       #                           reachable through every listed channel, but NOT
-      #                           on every platform — the 21 aa-proxy-backed rows
-      #                           (N*, M*, C1/C2/C4, I6, G3/G4) carve out Windows,
+      #                           on every platform. The 21 aa-proxy-backed rows,
+      #                           listed literally because a glob over these
+      #                           prefixes resolves to 29 and sweeps in 8 rows that
+      #                           are NOT in this class (M5/M6/M8 are
+      #                           absent_mechanism — the opposite of reachable —
+      #                           plus M10, N10, N11, N12, N13):
+      #                             N1 N2 N3 N4 N5 N6 N7 N8 N9
+      #                             M1 M2 M3 M4 M7 M9
+      #                             C1 C2 C4 I6 G3 G4
+      #                           They carve out Windows,
       #                           and on macOS the bin is crates.io-only
       #                           (AAASM-5653). NEVER fold these into `shipped`:
       #                           doing so overstated 21 of 80 rows, which is what
