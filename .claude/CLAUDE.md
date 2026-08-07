@@ -67,7 +67,7 @@ authoritative *versus the untrusted SDK's own scan*, not the policy gate. The
 | `aa-runtime` | Authoritative chokepoint: policy gate (`handle_policy_query`) + scan/redact stage (`RuntimeScanner`) |
 | `aa-sdk-client` | FFI-agnostic client the SDK shims pin by git SHA |
 | `aa-security` | Credential scanner + redaction (leaf crate) |
-| `aa-proxy` / `aa-ebpf*` / `aa-sandbox` | Interception layers 2 & 3 |
+| `aa-proxy` / `aa-ebpf*` / `aa-sandbox` | Interception mechanisms: transport mediation, Linux host-level, WASM tool sandbox |
 | `aa-cache` / `aa-storage*` | L1 cache + storage drivers |
 | `aa-cli` | `aasm` operator binary |
 | `aa-devtool*` | Per-tool governance adapters (claude-code, codex, copilot, windsurf, saas) |
