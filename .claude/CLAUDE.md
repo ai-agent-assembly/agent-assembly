@@ -1,7 +1,7 @@
 # CLAUDE.md — agent-assembly
 
 Guidance for Claude Code (and humans) working in this repository. This file holds
-**repo-specific** context only; universal engineering policy lives in the global
+**repo-specific** context only; general engineering policy lives in the global
 config. When a fact here duplicates `CONTRIBUTING.md`, the `Makefile`, or
 `Cargo.toml`, treat those as the source of truth and update them, not just this file.
 
