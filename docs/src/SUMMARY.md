@@ -154,6 +154,7 @@
 - [Shared Docs Metadata](development/shared-docs-metadata.md)
 - [Content-Layer Ownership](development/content-ownership.md)
 - [Truth Adoption Record](development/truth-adoption-record.md)
+- [Claim Vocabulary and Waivers](development/claim-vocabulary.md)
 
 # Architecture Decision Records
 
