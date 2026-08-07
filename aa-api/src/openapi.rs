@@ -20,7 +20,7 @@ use crate::models::trace::{TraceResponse, TraceSpan};
 use crate::models::ws_payloads::{ApprovalPayload, BudgetAlertPayload, EventPayload, ViolationPayload};
 use crate::routes::{
     admin, agents, alert_rules, alerts, analytics, approvals, audit, auth, capability, costs, destinations, dispatch,
-    edges, iam, logs, native_auth, ops, policies, scrub, tools, topology, traces,
+    edges, iam, logs, native_auth, ops, policies, scrub, sensitive_data, tools, topology, traces,
 };
 
 /// Root OpenAPI document collecting all annotated paths and schemas.
@@ -60,6 +60,7 @@ use crate::routes::{
         (name = "dispatch", description = "Secret Injection — tool dispatch with placeholder resolution (AAASM-1920)"),
         (name = "tools", description = "Auto-discovered AI dev tools on the gateway host"),
         (name = "scrub", description = "DLP / secret-scrub — effective pattern catalogue, per-pattern detection counts, and leak posture (AAASM-5174)"),
+        (name = "sensitive-data", description = "Sensitive-data analytics over the durable ADR 0032 §8 projection: counters that never collapse events into findings, bounded-cardinality breakdowns, privacy-safe drill-down, and an access-logged compliance export (AAASM-5359)"),
     ),
     paths(
         crate::routes::health::health,
@@ -169,6 +170,13 @@ use crate::routes::{
         scrub::get_patterns,
         scrub::get_pattern_counts,
         scrub::get_posture,
+        sensitive_data::get_summary,
+        sensitive_data::get_timeseries,
+        sensitive_data::get_breakdown,
+        sensitive_data::list_events,
+        sensitive_data::get_event,
+        sensitive_data::get_top_offenders,
+        sensitive_data::export_compliance_records,
     ),
     components(schemas(
         crate::routes::health::HealthResponse,
@@ -373,6 +381,25 @@ use crate::routes::{
         scrub::PatternCount,
         scrub::PatternCountsResponse,
         scrub::PostureResponse,
+        sensitive_data::SensitiveDataCounters,
+        sensitive_data::SensitiveDataRates,
+        sensitive_data::MetricDimension,
+        sensitive_data::DimensionBucket,
+        sensitive_data::QueryScope,
+        sensitive_data::SensitiveDataSummaryResponse,
+        sensitive_data::TimeseriesPoint,
+        sensitive_data::SensitiveDataTimeseriesResponse,
+        sensitive_data::SensitiveDataBreakdownResponse,
+        sensitive_data::SensitiveDataEventSummary,
+        sensitive_data::SensitiveDataFindingDetail,
+        sensitive_data::SensitiveDataEventsResponse,
+        sensitive_data::SensitiveDataEventDetailResponse,
+        sensitive_data::TrendDirection,
+        sensitive_data::TopOffenderEntry,
+        sensitive_data::TopOffendersResponse,
+        sensitive_data::ExportAccessRecord,
+        sensitive_data::ExportedFindings,
+        sensitive_data::ComplianceExportResponse,
     )),
     modifiers(&SecurityAddon, &AlertsWsSubprotocolAddon),
 )]
