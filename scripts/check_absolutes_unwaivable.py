@@ -338,12 +338,17 @@ def scan_text(path: str, text: str) -> list[Finding]:
             continue
 
         if HEADING.match(raw):
-            # A heading ends the block *and* is scanned as one of its own. Skipping
-            # it would leave the one position Decision 10 bound 3 calls out — "never
-            # in a heading … a heading is quoted alone in a table of contents" —
-            # as the only place in the document the rule is not enforced.
+            # A heading ends the previous block, is scanned as one of its own, and
+            # then *opens* the next one. Skipping it entirely would leave the one
+            # position Decision 10 bound 3 calls out — "never in a heading … a
+            # heading is quoted alone in a table of contents" — as the only place in
+            # the document the rule is not enforced. Scanning it in isolation and
+            # discarding it leaves the more natural shape uncovered: the absolute in
+            # the heading, the grant in the section it introduces, and no block ever
+            # holding both. It has to be in the section it heads.
             flush()
             findings.extend(_scan_block(path, [(lineno, raw)]))
+            block.append((lineno, raw))
             continue
 
         if not raw.strip():
@@ -362,7 +367,18 @@ def scan_text(path: str, text: str) -> list[Finding]:
     if in_fence:
         findings.append(Finding(path, 1, "unbalanced code fence; the scan skipped to end of file", ""))
 
-    return findings
+    # A heading is scanned twice by design — alone, and as the opening line of the
+    # section it heads — so a violation confined to the heading is found twice. One
+    # wrong sentence is one finding.
+    seen: set[tuple[int, str, str]] = set()
+    unique: list[Finding] = []
+    for finding in findings:
+        key = (finding.line, finding.message, finding.excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(finding)
+    return unique
 
 
 def _scan_block(path: str, block: list[tuple[int, str]]) -> list[Finding]:
@@ -646,6 +662,12 @@ _MUST_FAIL = [
         "denial scoped to another rule, contrast second",
         "A banned absolute may be waived for ninety days, whereas evidence freshness is unwaivable.\n",
     ),
+    # Review round 2, blocker 2 — the absolute in the heading, the grant in the
+    # section it introduces. The heading now opens the block it heads.
+    (
+        "absolute in a heading, grant in its section",
+        "## ADR 0033's banned absolutes\n\nEach may be published under an expiring waiver.\n",
+    ),
     (
         "bare prose inside a class that may carry a rule-statement",
         "<!-- truth-exempt: historical-withdrawn - an old rule we are recording -->\n"
@@ -690,6 +712,12 @@ _MUST_PASS = [
     (
         "contrast used correctly",
         "A D-dimension may be waived for ninety days, but a banned absolute is unwaivable.\n",
+    ),
+    (
+        "heading stating the rule, section elaborating it",
+        "## Banned absolutes are unwaivable\n"
+        "\n"
+        "No approver, no expiry and no waiver route makes one publishable.\n",
     ),
     ("heading naming the mechanism only", "### 10. Waivers and exceptions\n"),
     (
