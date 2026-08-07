@@ -130,6 +130,9 @@
             }
           }
         },
+        "cross_representation": {
+          "$ref": "#/definitions/crossrepresentation"
+        },
         "retired_ids": {
           "description": "Row ids that once existed and must never be reissued. External surfaces cite ids; reusing one silently repoints a published claim at a different capability.",
           "type": "array",
@@ -875,6 +878,165 @@
       "items": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "crossrepresentation": {
+      "description": "AAASM-5678. The contract rule R16 executes: which fields of which other representations of this matrix are compared against this manifest, which are deliberately not, and which disagreements are deliberate. Without this block a disagreement between the manifest and the AAASM-5527 seed is indistinguishable from drift, because the manifest is deliberately WEAKER than the seed on rows whose evidence is `test_unlocated` and nothing recorded that in a form a machine could read.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "seed_companion",
+        "declared_divergences"
+      ],
+      "properties": {
+        "seed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "compared_fields_from_seed_schema",
+            "additional_compared_fields",
+            "field_renames",
+            "excluded_fields"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "compared_fields_from_seed_schema": {
+              "description": "The key under the seed's own top-level `schema` mapping whose keys name the compared fields. Reading the compared set out of the seed's own declaration is deliberate: a hand-picked subset is the defect AAASM-5678 records, where a comparison over three fields was reported as though it covered every mechanical field.",
+              "type": "string",
+              "enum": [
+                "enums"
+              ]
+            },
+            "additional_compared_fields": {
+              "description": "Structured fields compared on top of the seed's declared enums. Each must be machine-comparable on both sides after normalisation.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "field_renames": {
+              "description": "seed field name -> manifest field name, for fields that exist on both sides under different names.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "excluded_fields": {
+              "description": "Every field NOT compared, grouped by the reason it cannot be. R16 fails if the compared set plus these groups do not cover every field either representation can carry, so a field added later cannot fall silently outside the comparison.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "fields",
+                  "reason"
+                ],
+                "properties": {
+                  "fields": {
+                    "$ref": "#/definitions/stringlist"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "seed_companion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "compared_fields",
+            "exclusion_reason"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "compared_fields": {
+              "$ref": "#/definitions/stringlist"
+            },
+            "exclusion_reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "declared_divergences": {
+          "description": "Disagreements that are deliberate. Each names the exact rows and the exact pair of values, so a declaration excuses the divergence it describes and no other: change either side's value and the declaration stops matching and R16 fails.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field",
+              "ids",
+              "representations",
+              "reason"
+            ],
+            "properties": {
+              "field": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/definitions/rowid"
+                }
+              },
+              "representations": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "seed",
+                    "seed_companion"
+                  ]
+                }
+              },
+              "manifest_value": {
+                "type": "string",
+                "minLength": 1
+              },
+              "other_value": {
+                "type": "string",
+                "minLength": 1
+              },
+              "manifest_adds": {
+                "$ref": "#/definitions/stringlist"
+              },
+              "manifest_omits": {
+                "$ref": "#/definitions/stringlist"
+              },
+              "rule": {
+                "description": "The validator rule that forces the manifest's weaker value, where one does. This is what distinguishes deliberate conservatism from drift: the manifest cannot hold the other representation's value without that rule failing.",
+                "type": "string",
+                "pattern": "^R[0-9]+b?$"
+              },
+              "ticket": {
+                "$ref": "#/definitions/ticket"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
       }
     }
   }
