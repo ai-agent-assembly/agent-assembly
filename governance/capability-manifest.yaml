@@ -331,7 +331,7 @@ meta:
         schema.enums lists eight channel values and ghcr is not among them — so the seed
         cannot carry it on any row and this is an addition, not a disagreement. Declared
         as manifest_adds rather than a value pair because the full list differs per row
-        while the delta does not: every one of these 23 rows adds ghcr and removes
+        while the delta does not: every one of these 24 rows adds ghcr and removes
         nothing. The seed stays as the point-in-time record it was written as; back-filling
         a channel it never surveyed would destroy the evidence of what was surveyed.
     - field: coverage

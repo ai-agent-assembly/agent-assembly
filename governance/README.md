@@ -211,9 +211,12 @@ iterated the channels appearing *in* `meta.channel_absences` — so deleting tha
 one key deleted the check, exit 0, with the denominator vanishing alongside it.
 `EXHAUSTIVE_ROW_CLASSIFICATION` now drives it. Only `ghcr` is enforced there, and
 the other eight channels carry a written reason rather than an omission: AAASM-5527
-surveyed them at document level, leaving 23 to 60 rows per channel silent, and
-enforcing exhaustiveness would demand a measured absence for each of them that
-nobody derived. **A rule must not be satisfied by inventing a measurement.**
+surveyed them at document level, so enforcing exhaustiveness across all of them
+raises **249 errors** — 23 rows silent on each of `github_release`, `homebrew`
+and `install_script`, 60 on each of `pypi`, `npm` and `go_modules`, and 0 on
+`crates_io`, which no row is silent about only by accident. Every one of the 249
+would demand a measured absence nobody derived. **A rule must not be satisfiable
+only by inventing a measurement**, so the scope is written down instead.
 
 `meta.channel_absences` carries a `status` separating the two kinds of absence.
 `not_published` (32 rows: 26 aa-proxy-subject, 5 owned by `aa-ebpf`/`aa-ebpf-probes`
