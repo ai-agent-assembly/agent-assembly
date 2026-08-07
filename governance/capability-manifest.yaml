@@ -2864,6 +2864,21 @@ capabilities:
   - linux_x86_64
   - linux_aarch64
   - macos
+  released_note: >-
+    The proxy this row's denial runs through is macOS crates.io ONLY.
+    `.github/workflows/release.yml:274` — 'proxy is a Linux-only component (ADR-014); only
+    built/packaged there' — so `aa-proxy` is absent from the macOS GitHub Release assets, the
+    Homebrew tap and `scripts/install-cli.sh`. It IS on crates.io (newest 0.0.1-rc.6, bin_names
+    ['aa-proxy'], no `publish` key), so `cargo install aa-proxy` is the only macOS route
+    (AAASM-5653). This row is macOS-only, and the gap bites it rather than merely touching it:
+    `aasm proxy start` spawns the SEPARATE aa-proxy binary, resolved from PATH or ~/.cargo/bin
+    and nothing else since AAASM-4020 dropped the cwd-relative fallback
+    (aa-cli/src/commands/proxy/start.rs:85-114), and resolve_launch_proxy
+    (aa-cli/src/commands/run.rs:372-388) refuses to launch at all unless
+    resolve_trusted_endpoint finds a live, verified proxy. An operator who installed through
+    Homebrew, the GitHub Release or install-cli.sh has no proxy to start, so the governed
+    launch refuses rather than degrading. The failure is safe, but the row's four channels
+    overstate where this capability is actually reachable on macOS.
   buildable: unmeasured
   default_state: 'on'
   reachability: shipped
