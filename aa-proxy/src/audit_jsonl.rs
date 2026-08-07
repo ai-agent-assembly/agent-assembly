@@ -739,6 +739,56 @@ async fn newest_record_age(path: &Path) -> Option<Duration> {
     SystemTime::now().duration_since(modified).ok()
 }
 
+/// Whether this file is the whole record, or only part of it (AAASM-5660).
+///
+/// This is the distinction the sink exists to make legible: **"no prevention
+/// occurred" and "prevention occurred and the record was rotated away" are not
+/// the same fact, and must never render identically.** A consumer reading zero
+/// refusals out of a [`Self::Complete`] window has measured an absence; the
+/// same zero out of a [`Self::Lossy`] window has measured nothing at all.
+///
+/// A third state exists and is deliberately not a variant here: when
+/// [`read_completeness`] returns `None` the answer is *unknown*, and a missing
+/// file must never be read as either of these two. Encoding it as a variant
+/// would let a consumer default-construct the reassuring answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowCompleteness {
+    /// Every record this sink ever accepted is still in it. Nothing was
+    /// dropped on the way in, nothing was deleted by either retention bound,
+    /// and no write failed.
+    Complete,
+    /// Records are missing. What is here is a lower bound on what happened, and
+    /// the per-cause counts say which mechanism took them.
+    Lossy,
+}
+
+/// The retention bounds in force, echoed so a consumer knows the shape of the
+/// window it is reading without linking this crate or guessing at defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RetentionSnapshot {
+    /// Bytes a segment may reach before rotating.
+    pub max_segment_bytes: u64,
+    /// Rotated segments kept beside the live file.
+    pub retained_segments: u64,
+    /// Configured maximum age in seconds, or `None` for no age bound.
+    ///
+    /// A **maximum**, never a reservation: see [`RotationPolicy`]. If the size
+    /// bound cut it short, [`SinkCompleteness::retention_shortfalls`] is
+    /// non-zero and this figure was not achieved.
+    pub max_age_secs: Option<u64>,
+}
+
+impl From<RotationPolicy> for RetentionSnapshot {
+    fn from(policy: RotationPolicy) -> Self {
+        Self {
+            max_segment_bytes: policy.max_segment_bytes,
+            retained_segments: policy.retained_segments as u64,
+            max_age_secs: policy.max_age.map(|d| d.as_secs()),
+        }
+    }
+}
+
 /// What a consumer has to know before turning a count from this sink into a
 /// rate (AAASM-5449).
 ///
@@ -814,6 +864,79 @@ pub struct SinkCompleteness {
     /// outstanding because nothing is being exported at all.
     #[serde(default)]
     pub pending_exports: u64,
+    /// The single answer a consumer needs before treating a count from this
+    /// file as a measurement.
+    ///
+    /// Derived from the counters above by [`Self::sealed`] and never set by
+    /// hand, so it cannot drift away from them. An older sidecar without the
+    /// field decodes as [`WindowCompleteness::Lossy`], because a snapshot whose
+    /// completeness was never computed is not evidence that nothing was lost.
+    #[serde(default = "lossy_until_proven")]
+    pub window: WindowCompleteness,
+    /// The retention bounds that produced this window.
+    #[serde(default)]
+    pub retention: RetentionSnapshot,
+    /// Timestamp of the oldest record still on disk, or `None` when the sink
+    /// holds nothing.
+    ///
+    /// The window's actual left edge — the answer to "a rate over what
+    /// period?". It moves forward every time retention deletes a segment,
+    /// which is what makes a shrinking window visible rather than merely
+    /// counted.
+    #[serde(default)]
+    pub oldest_retained_ms: Option<i64>,
+}
+
+/// `serde` default for [`SinkCompleteness::window`].
+///
+/// Absence means the snapshot predates the field, and a window whose
+/// completeness was never computed has not been shown to be complete. The
+/// default therefore has to be the unreassuring one.
+fn lossy_until_proven() -> WindowCompleteness {
+    WindowCompleteness::Lossy
+}
+
+impl SinkCompleteness {
+    /// Recompute [`Self::window`] from the counters and return the snapshot.
+    ///
+    /// Every publish goes through this, so the verdict is a function of the
+    /// counts rather than a field anyone can set independently of them. That is
+    /// the property the falsification targets: make this always answer
+    /// `Complete` and a rotated window starts claiming to be whole.
+    #[must_use]
+    fn sealed(mut self) -> Self {
+        self.window = if self.is_lossless() {
+            WindowCompleteness::Complete
+        } else {
+            WindowCompleteness::Lossy
+        };
+        self
+    }
+
+    /// Whether nothing was lost on the way in, on the way to disk, or to
+    /// retention.
+    ///
+    /// An expiry counts as loss even though it is the deletion the operator
+    /// asked for. From a consumer's side the record is gone either way, and
+    /// "the deletion was intentional" is not an argument that the remaining
+    /// window is the whole one — which is the only question this answers.
+    fn is_lossless(&self) -> bool {
+        self.dropped_entries == 0
+            && self.discarded_segments == 0
+            && self.expired_segments == 0
+            && self.retention_shortfalls == 0
+            && self.write_failures == 0
+            && self.export_failures == 0
+    }
+
+    /// Whether this window is the whole record.
+    ///
+    /// A consumer computing a prevention rate must gate on this: a rate over a
+    /// [`WindowCompleteness::Lossy`] window is a rate over an unknown
+    /// denominator, and a zero out of one is not an absence of prevention.
+    pub fn is_complete(&self) -> bool {
+        matches!(self.window, WindowCompleteness::Complete)
+    }
 }
 
 /// Read the completeness published beside `path`, if any.
@@ -865,6 +988,10 @@ pub struct JsonlWriter {
     /// Segments in the ring the exporter has not accepted, as of the last
     /// attempt.
     pending_exports: u64,
+    /// Oldest record still on disk, refreshed whenever retention moves a
+    /// segment rather than on every line — it changes only when a segment is
+    /// created or deleted.
+    oldest_retained_ms: Option<i64>,
     /// Last snapshot written, so an unchanged sidecar is not rewritten on
     /// every line.
     published: SinkCompleteness,
@@ -933,6 +1060,9 @@ impl JsonlWriter {
             export: export.status(),
             export_failures: 0,
             pending_exports: 0,
+            window: WindowCompleteness::Complete,
+            retention: rotation.into(),
+            oldest_retained_ms: None,
         });
         // The live segment may already hold records from an earlier process, so
         // its age is read back rather than assumed to start now — a proxy
@@ -955,6 +1085,7 @@ impl JsonlWriter {
             export_failures_at_open: export_failures(),
             export,
             pending_exports: 0,
+            oldest_retained_ms: None,
             published: baseline,
         })
     }
@@ -1074,6 +1205,7 @@ impl JsonlWriter {
         // could still have been exported.
         self.export_segments().await;
         if self.rotation.max_age.is_none() {
+            self.refresh_window_start().await;
             return;
         }
         if self.live_segment_has_aged_out() {
@@ -1087,6 +1219,7 @@ impl JsonlWriter {
             }
         }
         self.expire_aged_segments().await;
+        self.refresh_window_start().await;
     }
 
     /// Offer every rotated segment to the exporter.
@@ -1240,6 +1373,7 @@ impl JsonlWriter {
         self.file = tokio::io::BufWriter::new(Self::open_segment(&self.path).await?);
         self.segment_bytes = 0;
         self.live_started_ms = None;
+        self.refresh_window_start().await;
         Ok(())
     }
 
@@ -1262,7 +1396,28 @@ impl JsonlWriter {
             export_failures: self.baseline.export_failures
                 + export_failures().saturating_sub(self.export_failures_at_open),
             pending_exports: self.pending_exports,
+            // Overwritten by `sealed`; never authored here, so it cannot
+            // disagree with the counts above.
+            window: WindowCompleteness::Lossy,
+            retention: self.rotation.into(),
+            oldest_retained_ms: self.oldest_retained_ms,
         }
+        .sealed()
+    }
+
+    /// Re-read the timestamp of the oldest record still on disk.
+    ///
+    /// Called only where retention can have moved a segment. Doing it per line
+    /// would stat the whole chain on every append for a value that cannot have
+    /// changed.
+    async fn refresh_window_start(&mut self) {
+        for n in (1..=self.rotation.retained_segments).rev() {
+            if let Some(ts) = first_record_ms(&segment_path(&self.path, n)).await {
+                self.oldest_retained_ms = Some(ts);
+                return;
+            }
+        }
+        self.oldest_retained_ms = first_record_ms(&self.path).await;
     }
 
     /// Write the completeness snapshot beside the sink.
@@ -1280,6 +1435,7 @@ impl JsonlWriter {
             && current.write_failures == self.published.write_failures
             && current.export_failures == self.published.export_failures
             && current.pending_exports == self.published.pending_exports
+            && current.oldest_retained_ms == self.published.oldest_retained_ms
         {
             return;
         }
@@ -1886,6 +2042,8 @@ mod tests {
 /// | `RotationPolicy::is_expired` always `false` | `a_segment_past_the_age_bound_is_deleted_and_counted`, `the_size_bound_wins_when_the_two_bounds_disagree` |
 /// | shortfall counting removed from `rotate` | `the_size_bound_wins_when_the_two_bounds_disagree` |
 /// | `sweep_retention` dropped from `run`'s timer arm | `a_quiet_proxy_still_honours_the_age_bound` |
+/// | export-failure counting removed from `export_segments` | `an_export_that_cannot_be_written_is_counted_never_assumed_delivered` |
+/// | `SinkCompleteness::sealed` always answers `Complete` | `a_rotated_window_and_an_empty_one_do_not_render_identically` |
 #[cfg(test)]
 mod retention_tests {
     use super::*;
@@ -2342,6 +2500,10 @@ mod retention_tests {
             published.write_failures, failures,
             "the failure never reached the file a consumer reads: {published:?}"
         );
+        assert!(
+            !published.is_complete(),
+            "a window whose sink could not complete its writes reported itself complete"
+        );
     }
 
     /// The control: the identical fixture without the obstruction completes
@@ -2369,6 +2531,185 @@ mod retention_tests {
             tokio::fs::metadata(segment_path(&path, 1)).await.is_ok(),
             "the fixture never rotated, so it does not control for the failing case"
         );
+    }
+
+    // ── the window verdict (AAASM-5660) ────────────────────────────────────
+
+    /// **The property this ticket exists for.**
+    ///
+    /// A consumer must be able to tell "no prevention occurred" from
+    /// "prevention occurred and the record was rotated away". Both leave a
+    /// JSONL a reader can find few or no refusals in; only the sidecar
+    /// separates them, so the two must not render identically.
+    ///
+    /// AAASM-5359/5360 compute prevention rates from this sink, and a rate over
+    /// a rotated window is a rate over an unknown denominator.
+    #[tokio::test]
+    async fn a_rotated_window_and_an_empty_one_do_not_render_identically() {
+        // (a) Nothing ever happened: no preventions, nothing lost.
+        let quiet = tempfile::tempdir().unwrap();
+        let quiet_path = quiet.path().join("audit.jsonl");
+        drain(&quiet_path, RotationPolicy::default(), 0).await;
+        let quiet_window = read_completeness(&quiet_path).await.expect("the sidecar must exist");
+
+        // (b) Preventions happened and rotation threw them away.
+        let busy = tempfile::tempdir().unwrap();
+        let busy_path = busy.path().join("audit.jsonl");
+        drain(
+            &busy_path,
+            RotationPolicy {
+                max_segment_bytes: 512,
+                retained_segments: 1,
+                ..RotationPolicy::default()
+            },
+            200,
+        )
+        .await;
+        let busy_window = read_completeness(&busy_path).await.expect("the sidecar must exist");
+
+        // Non-vacuity: the second run really did discard evidence, and the
+        // first really did record none — otherwise the contrast is invented.
+        assert!(
+            busy_window.discarded_segments > 0,
+            "the fixture never discarded a segment, so it is not a rotated window"
+        );
+        assert_eq!(quiet_window.discarded_segments, 0);
+        assert!(
+            tokio::fs::read_to_string(&quiet_path).await.unwrap().is_empty(),
+            "the quiet fixture must hold no records at all"
+        );
+
+        assert!(
+            quiet_window.is_complete(),
+            "a window in which nothing happened and nothing was lost is complete: {quiet_window:?}"
+        );
+        assert!(
+            !busy_window.is_complete(),
+            "a window whose evidence was rotated away reported itself complete: {busy_window:?}"
+        );
+        assert_ne!(
+            quiet_window.window, busy_window.window,
+            "'nothing was prevented' and 'the record was rotated away' rendered identically"
+        );
+
+        // And the distinction survives to a non-Rust reader.
+        let quiet_raw = tokio::fs::read_to_string(completeness_path(&quiet_path)).await.unwrap();
+        let busy_raw = tokio::fs::read_to_string(completeness_path(&busy_path)).await.unwrap();
+        assert!(quiet_raw.contains("\"complete\""), "{quiet_raw}");
+        assert!(busy_raw.contains("\"lossy\""), "{busy_raw}");
+    }
+
+    /// Every mechanism that can remove a record has to reach the verdict, or a
+    /// window can be lossy in a way the verdict does not see.
+    #[test]
+    fn every_kind_of_loss_makes_the_window_lossy() {
+        let clean = SinkCompleteness {
+            updated_ms: 1,
+            dropped_entries: 0,
+            discarded_segments: 0,
+            expired_segments: 0,
+            retention_shortfalls: 0,
+            write_failures: 0,
+            export: ExportStatus::LocalRingOnly,
+            export_failures: 0,
+            pending_exports: 0,
+            window: WindowCompleteness::Lossy,
+            retention: RetentionSnapshot::default(),
+            oldest_retained_ms: None,
+        }
+        .sealed();
+        assert!(clean.is_complete(), "a window with no loss at all must be complete");
+
+        /// One named way a window can be lossy.
+        type Loss = (&'static str, fn(&mut SinkCompleteness));
+        let mutations: [Loss; 6] = [
+            ("dropped_entries", |c| c.dropped_entries = 1),
+            ("discarded_segments", |c| c.discarded_segments = 1),
+            ("expired_segments", |c| c.expired_segments = 1),
+            ("retention_shortfalls", |c| c.retention_shortfalls = 1),
+            ("write_failures", |c| c.write_failures = 1),
+            ("export_failures", |c| c.export_failures = 1),
+        ];
+        for (field, apply) in mutations {
+            let mut lossy = clean;
+            apply(&mut lossy);
+            let sealed = lossy.sealed();
+            assert!(
+                !sealed.is_complete(),
+                "a window with a non-zero {field} still reported itself complete"
+            );
+            assert_eq!(sealed.window, WindowCompleteness::Lossy);
+        }
+    }
+
+    /// Unknown is a third state and must never collapse into either answer. A
+    /// consumer that finds no sidecar has learned nothing, not that the window
+    /// is whole.
+    #[tokio::test]
+    async fn an_absent_sidecar_is_unknown_rather_than_complete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("never-opened.jsonl");
+        assert!(
+            read_completeness(&path).await.is_none(),
+            "a sink that was never opened must not answer the completeness question"
+        );
+    }
+
+    /// A snapshot written before the verdict existed has not been shown to be
+    /// complete, so it must decode as lossy rather than default into the
+    /// reassuring answer.
+    #[tokio::test]
+    async fn a_sidecar_predating_the_verdict_decodes_as_lossy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        tokio::fs::write(
+            completeness_path(&path),
+            br#"{"updated_ms":1,"dropped_entries":0,"discarded_segments":0}"#,
+        )
+        .await
+        .unwrap();
+        let recovered = read_completeness(&path)
+            .await
+            .expect("an AAASM-5449 sidecar must parse");
+        assert!(
+            !recovered.is_complete(),
+            "a snapshot whose completeness was never computed claimed to be complete"
+        );
+    }
+
+    /// "A rate over what period?" has to be answerable from the sidecar alone.
+    #[tokio::test]
+    async fn the_snapshot_names_its_bounds_and_the_left_edge_of_its_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = RotationPolicy {
+            max_segment_bytes: 4096,
+            retained_segments: 2,
+            max_age: Some(Duration::from_secs(7 * 24 * 60 * 60)),
+            ..RotationPolicy::default()
+        };
+        let started = now_ms();
+        drain(&path, policy, 60).await;
+
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert_eq!(published.retention.max_segment_bytes, 4096);
+        assert_eq!(published.retention.retained_segments, 2);
+        assert_eq!(published.retention.max_age_secs, Some(7 * 24 * 60 * 60));
+
+        let edge = published
+            .oldest_retained_ms
+            .expect("a sink holding records must date its oldest one");
+        assert!(
+            edge >= started && edge <= now_ms(),
+            "the window's left edge {edge} is outside the run ({started}..)"
+        );
+
+        // Non-vacuity: an empty sink has no left edge, so the field is not
+        // simply always populated.
+        let empty = tempfile::tempdir().unwrap();
+        let empty_path = empty.path().join("audit.jsonl");
+        drain(&empty_path, RotationPolicy::default(), 0).await;
+        assert_eq!(read_completeness(&empty_path).await.unwrap().oldest_retained_ms, None);
     }
 
     // ── durable export seam (AAASM-5660) ───────────────────────────────────
