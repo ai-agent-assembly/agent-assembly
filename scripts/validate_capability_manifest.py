@@ -965,15 +965,30 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
         f"ids: {len(rows)} in the manifest, {len(seed_rows)} in {seed_path}, "
         f"{len(shared)} shared, {len(only_manifest)} manifest-only, {len(only_seed)} seed-only",
     )
+    contract = meta.get("cross_representation")
     if not shared:
-        rep.count(
-            "R16",
-            "no id is shared with the seed, so the two documents describe different "
-            "populations and no field pair was compared",
-        )
+        # Found by sweeping the F1 hazard rather than fixing it only where it was
+        # reported. Repointing `meta.sources.seed` at any YAML that shares no id
+        # turned the whole comparison off from inside the artifact — exit 0, no
+        # error, "no id is shared" printed as though it were a measurement. A
+        # document that declares the contract is asserting the two representations
+        # describe the same rows, so an empty intersection is a failure, not a skip.
+        if contract:
+            rep.error(
+                "meta.sources.seed",
+                "R16",
+                f"this document declares meta.cross_representation but shares no row id "
+                f"with {seed_path}, so nothing was compared. Either the seed is the wrong "
+                "file or the contract describes a comparison that cannot happen",
+            )
+        else:
+            rep.count(
+                "R16",
+                "no id is shared with the seed and no contract is declared, so the two "
+                "documents describe different populations and no field pair was compared",
+            )
         return
 
-    contract = meta.get("cross_representation")
     if not contract:
         rep.error(
             "meta",
