@@ -91,7 +91,8 @@ pub use client::{ClientError, DevIntClient, Negotiated};
 pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
 pub use lifecycle::{IntegrationLifecycle, LifecycleError};
 pub use negotiate::{
-    Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROVENANCE_SINCE,
+    Negotiation, NegotiationError, DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED,
+    DI_API_PROVENANCE_SINCE,
 };
 pub use provenance::{
     BuildIdentity, FieldReport, FieldStatus, IdentityComparison, IdentitySource, PeerProvenance, ProvenanceStanding,

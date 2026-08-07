@@ -212,9 +212,9 @@ fn no_public_verb_was_removed_or_renamed_by_the_version_bump() {
 /// for a test run.
 const _: () = {
     assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
-    // Provenance is the newest addition. If it stops being so, the suite above
-    // is pinning the wrong version and its "nothing below receives one" sweep
-    // silently stops covering the top of the window.
-    assert!(DI_API_PROVENANCE_SINCE == DI_API_MAX_SUPPORTED);
+    // Provenance is no longer the newest addition — the apply outcome is
+    // (AAASM-5674) — so the "nothing below receives one" sweep for provenance
+    // now runs over a strict interior of the window rather than up to its top.
+    assert!(DI_API_PROVENANCE_SINCE < DI_API_MAX_SUPPORTED);
     assert!(DI_API_PROVENANCE_SINCE > DI_API_POLICY_POSTURE_SINCE);
 };
