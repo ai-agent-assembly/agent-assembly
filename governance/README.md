@@ -567,6 +567,26 @@ is provided is the interface:
   is not itself an enforcement term, so a row that needs the qualifier cannot
   reach a generator without one — but rendering it is the generator's half.
 
+  **Do not render `pins: [protection_state]` as machine-proven.** R14 clause 1
+  requires the declaration, and R5 still checks that the named test's path is
+  real and in the evidence tree — but *nothing checks what the test asserts*. A
+  future row satisfies the clause by adding four characters. The field is
+  **reviewable, not verified**: its value is that a human had to write the
+  claim somewhere a reviewer can challenge it, instead of the rule inferring the
+  rung from mere presence. Today L1 is its only user and its declaration has
+  been read against the test; a generator must not turn that into a badge.
+
+  **`protection_state: integrated` carries no evidence guarantee from any
+  rule.** R14 gates only the top two rungs, while ADR 0030 §4.2 rule 1 says file
+  existence is never sufficient for *"`Integrated` **or above**"*. Seven rows
+  sit at `integrated` — H8, M10, L2, L3, L4, L7 and P3 — and **six of the seven
+  carry `gap`-only evidence** (P3 is the exception, with a located test). That
+  is defensible: §4.1 notes `Integrated` *"still says nothing about traffic"*,
+  and a managed-settings write plus its read-back plausibly satisfies its
+  fingerprint limb where AASM wrote the file. But it is not *enforced*, so a
+  future row could take `integrated` on pure file existence and nothing would
+  object. Render it as the weak rung it is.
+
   A row whose evidence is entirely `gap` must be presented as a gap, on **every**
   surface and not only AAASM-5588's.
 - **AAASM-5588** (Trust, Evidence and Known Limitations) — `evidence[]`,
