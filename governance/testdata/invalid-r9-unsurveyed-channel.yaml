@@ -71,6 +71,7 @@ capabilities:
   released_channels:
   - crates_io
   - npm
+  - ghcr
   released_platforms:
   - linux_x86_64
   buildable: packaging_gated

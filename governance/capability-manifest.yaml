@@ -112,34 +112,67 @@ meta:
   - channel: ghcr
     status: not_published
     ids:
-      - G6
-      - G7
       - H2
       - H3
       - H4
       - I4
       - N13
     probe: >-
-      The eBPF loader ships as `aa-ebpf`'s `aa-ebpf-loaderd` bin to crates.io only, as
-      these rows' own released_note records. No Dockerfile in this repository names
-      aa-ebpf, aa-ebpf-probes or aa-ebpf-loaderd, and no published image lists it.
+      These rows are owned by aa-ebpf and aa-ebpf-probes, whose delivering artifact is the
+      `aa-ebpf-loaderd` bin published to crates.io only, as their own released_note records.
+      No Dockerfile in this repository names aa-ebpf, aa-ebpf-probes or aa-ebpf-loaderd, and
+      no published image lists it.
     reason: >-
       Delivered by the eBPF loader daemon, which is on crates.io and nowhere else. The
       absence is measured rather than assumed: these rows already carry
-      `released_channels: [crates_io]` or a note saying the same thing about the other
-      four channels.
+      `released_channels: [crates_io]` or a note saying the same about the other channels.
+    ticket: AAASM-5680
+  - channel: ghcr
+    status: not_surveyed
+    ids:
+      - G6
+      - G7
+    probe: >-
+      `aa-runtime/src/lib.rs:15` declares `pub mod ebpf_control;` with no `#[cfg]`, so the
+      cited code — `ebpf_control.rs:204-213` for G6 and `:190-201` for G7, the latter a
+      plain `std::fs::read_to_string` with a silent fallback, no loaderd involved — is
+      compiled into every aa-runtime binary. `aa-runtime/Dockerfile:58` copies that binary
+      into the image, and the registry publishes it (20 tags incl. `latest`). What was NOT
+      run is any measurement of these two rows from inside that image.
+    reason: >-
+      Corrected in AAASM-5680 review round 2. Round 1 filed these as `not_published`
+      alongside the five aa-ebpf-owned rows, on the premise that "their subject is the eBPF
+      loader daemon". Their own fields contradict it: G7 carries no `aa-ebpf` in
+      `framework_or_tool` at all, and both rows' cited code runs in-process in aa-runtime.
+      The delivering binary IS published, so a measured absence is the wrong claim. What is
+      genuinely absent from the image is the loader daemon these rows' DEGRADATION TRIGGER
+      concerns — which makes the honest reading Unmeasured, never Unsupported (ADR 0034
+      forbidden design 8). Their `released_channels: [crates_io]` is untouched; re-deriving
+      that assignment is not this ticket's scope.
+    ticket: AAASM-5680
+  - channel: ghcr
+    status: not_published
+    ids:
+      - C3
+    probe: >-
+      Its own probe, because the group below's `cargo tree -p aa-cli` does not establish
+      this one. `grep -l aa-api */Cargo.toml` returns only `aa-api/Cargo.toml` and
+      `aa-integration-tests/Cargo.toml`: neither aa-gateway nor aa-cli depends on aa-api, so
+      it is compiled into no published binary and into no image. The row is
+      `reachability: dead_code` independently of any channel.
+    reason: >-
+      Delivered by aa-api, which is in no published image. Filed separately in review round
+      2 — round 1 placed it in the library group whose probe cannot reach it.
     ticket: AAASM-5680
   - channel: ghcr
     status: not_surveyed
     ids:
       - C1
-      - C3
       - C6
       - H5
       - H8
       - I1
       - I2
-      - I3
       - L1
       - L2
       - L3
@@ -157,11 +190,13 @@ meta:
       What was NOT run is any measurement of these capabilities against a container image.
     reason: >-
       Not `not_published` — the code is on the channel. These rows' subject is a
-      developer-tool integration, a settings-layer write or a library-internal behaviour
-      on a developer host, and no survey has measured any of them from inside a language
-      image. Silence here means Unmeasured, never Unsupported (ADR 0034 forbidden design
-      8), and claiming the channel on the strength of linkage alone would be the
-      over-claim this ticket exists to prevent.
+      developer-tool integration, a settings-layer write or a library-internal behaviour on
+      a developer host, and no survey has measured any of them from inside a language image.
+      Silence here means Unmeasured, never Unsupported (ADR 0034 forbidden design 8), and
+      claiming the channel on the strength of linkage alone would be the over-claim this
+      ticket exists to prevent. I3 was removed from this group in review round 2: its
+      capability is derived server-side in aa-gateway, so it carries ghcr like the other
+      gateway rows.
     ticket: AAASM-5680
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
@@ -270,6 +305,7 @@ meta:
       - G9
       - G10
       - G11
+      - I3
       - I5
       - I7
       - L8
@@ -4256,6 +4292,7 @@ capabilities:
   - homebrew
   - install_script
   - crates_io
+  - ghcr
   released_platforms:
   - linux_x86_64
   - linux_aarch64

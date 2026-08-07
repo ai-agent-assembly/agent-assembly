@@ -1,7 +1,15 @@
-# INVALID FIXTURE — expects rule R13.
+# Rule R17, AAASM-5680: the absence record is deleted and the rows are not.
 #
-# The row claims enforcement with launch_path `unknown`. An enforcement claim
-# that does not name how the process was launched is unfalsifiable.
+# One-line-diff partner of valid-r17-channel-absence-recorded.yaml: identical
+# except that meta.channel_absences is gone. T1 still does not name `ghcr` and
+# `ghcr` is still surveyed, so the row is silent about a surveyed channel and
+# the clause must fire.
+#
+# This is the round-1 defect, in fixture form. Clause 3 used to iterate the
+# channels appearing IN meta.channel_absences, so deleting that key deleted the
+# check with it — exit 0, no error, and the denominator that would have shown
+# the silence disappeared too. Driving the clause from a validator constant is
+# what makes this file fail; a fixture is what keeps it failing.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
@@ -45,7 +53,7 @@ capabilities:
   - any
   platform:
   - linux
-  launch_path: unknown
+  launch_path: routed through aa-proxy with the gateway endpoint configured
   preconditions:
   - kind: env
     name: AA_PROXY_GATEWAY_ENDPOINT
@@ -65,7 +73,6 @@ capabilities:
   boundary_class: B3
   released_channels:
   - crates_io
-  - ghcr
   released_platforms:
   - linux_x86_64
   buildable: packaging_gated

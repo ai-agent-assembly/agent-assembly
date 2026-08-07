@@ -138,6 +138,7 @@ capabilities:
   boundary_class: B3
   released_channels:
   - crates_io
+  - ghcr
   released_platforms:
   - linux_x86_64
   buildable: packaging_gated

@@ -1070,12 +1070,23 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
 
     # The comparison itself.
     divergences: list[tuple[str, str, str, object, object]] = []
-    pairs = agree = differ = silent = 0
+    pairs = agree = differ = silent = skipped = 0
     for row_id in shared:
-        seed_row = {renames.get(k, k): v for k, v in (seed_rows[row_id] or {}).items()}
+        manifest_row = rows[row_id]
+        raw_seed_row = seed_rows[row_id]
+        # `skipped` is COMPUTED, not printed as a constant. A row either side
+        # cannot parse as a mapping is a pair nobody compared, and a denominator
+        # that hardcodes its own zero cannot report that — which is the failure
+        # this block exists to make visible.
+        comparable = isinstance(manifest_row, dict) and isinstance(raw_seed_row, dict)
+        seed_row = {renames.get(k, k): v for k, v in (raw_seed_row or {}).items()} if comparable \
+            else {}
         for field in sorted(compared):
             pairs += 1
-            left = _cross_norm(rows[row_id].get(field))
+            if not comparable:
+                skipped += 1
+                continue
+            left = _cross_norm(manifest_row.get(field))
             right = _cross_norm(seed_row.get(field))
             if left is None or right is None:
                 silent += 1
@@ -1084,19 +1095,26 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
             else:
                 differ += 1
                 divergences.append(
-                    ("seed", row_id, field, rows[row_id].get(field), seed_row.get(field))
+                    ("seed", row_id, field, manifest_row.get(field), seed_row.get(field))
                 )
-    if agree + differ + silent != pairs:
+        if not comparable:
+            rep.error(
+                f"capabilities({row_id})",
+                "R16",
+                "this row does not parse as a mapping on one side, so none of its fields "
+                "could be compared",
+            )
+    if agree + differ + silent + skipped != pairs:
         rep.error(
             "meta.cross_representation.seed",
             "R16",
-            f"{agree} + {differ} + {silent} does not equal {pairs} compared pairs, so a pair "
-            "was counted twice or dropped",
+            f"{agree} + {differ} + {silent} + {skipped} does not equal {pairs} compared pairs, "
+            "so a pair was counted twice or dropped",
         )
     rep.count(
         "R16",
         f"seed: {len(shared)} ids x {len(compared)} fields = {pairs} pairs; {agree} agree, "
-        f"{differ} diverge, {silent} one-side-silent; 0 skipped",
+        f"{differ} diverge, {silent} one-side-silent; {skipped} skipped",
     )
 
     # The Markdown companion, on coverage alone.
@@ -1261,6 +1279,42 @@ CHANNEL_PUBLISH_MARKERS: dict[str, str | None] = {
 
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
+# AAASM-5680, round 2. Which surveyed channels have an EXHAUSTIVE per-row
+# classification — every row naming the channel, carrying
+# `released_channels: [not_applicable]`, or listed in `meta.channel_absences`.
+#
+# This table exists because round 1 drove clause 3 off the channels appearing
+# IN `meta.channel_absences`, so deleting that one key from the manifest deleted
+# the check with it: exit 0, no error, and the denominator line that would have
+# shown fifty rows going silent vanished too. That is the exact property the
+# comment above CHANNEL_PUBLISH_MARKERS warns about, written for clause 2 and
+# then not applied to the clause written next. A hazard you have named is one to
+# sweep for everywhere, not to fix only where you noticed it.
+#
+# `None` means exhaustive and enforced. A string is the reason exhaustive
+# classification has NOT been established for that channel, and it is a reason
+# rather than an omission because the honest scope has to be legible: AAASM-5527
+# surveyed the other channels at document level, so 23 to 60 rows per channel say
+# nothing about them. Asserting a measured absence for those rows here would
+# invent a measurement nobody performed — the over-claim this programme removes.
+#
+# Keyed by the whole channel enum and asserted against it, like the markers
+# above, so a sixth channel forces this decision instead of defaulting to unchecked.
+EXHAUSTIVE_ROW_CLASSIFICATION: dict[str, str | None] = {
+    "ghcr": None,
+    "github_release": "AAASM-5527 surveyed this at document level; 23 rows are silent about it",
+    "homebrew": "AAASM-5527 surveyed this at document level; 23 rows are silent about it",
+    "install_script": "AAASM-5527 surveyed this at document level; 23 rows are silent about it",
+    "crates_io": (
+        "no row is silent today, but the absence records that would keep it that way were "
+        "never derived, so enforcing it would gate on an accident"
+    ),
+    "pypi": "AAASM-5527 surveyed this at document level; 60 rows are silent about it",
+    "npm": "AAASM-5527 surveyed this at document level; 60 rows are silent about it",
+    "go_modules": "AAASM-5527 surveyed this at document level; 60 rows are silent about it",
+    "not_applicable": "not a channel; the value a row uses when the question does not apply",
+}
+
 
 def check_channel_vocabulary(doc: dict, rep: Report) -> None:
     """R17. Three clauses, each closing a different way a channel goes missing."""
@@ -1351,12 +1405,44 @@ def check_channel_vocabulary(doc: dict, rep: Report) -> None:
         f"scanned, {len(publishing)} publish here ({publishing})",
     )
 
-    # Clause 3 — no row is silent about a channel that has an absence record.
-    # Once a channel is surveyed, a row saying nothing about it is ambiguous
-    # between "not shipped there" and "nobody looked", so every row is required
-    # to be exactly one of three things.
+    # Clause 3 — no row is silent about a channel whose classification is
+    # exhaustive. Once such a channel is surveyed, a row saying nothing about it
+    # is ambiguous between "not shipped there" and "nobody looked", so every row
+    # must be exactly one of three things.
+    #
+    # Driven by EXHAUSTIVE_ROW_CLASSIFICATION, never by the manifest's own
+    # `channel_absences` keys: deleting that block must make the check FAIL, not
+    # disappear.
+    missing_decisions = sorted(enum - set(EXHAUSTIVE_ROW_CLASSIFICATION))
+    if missing_decisions:
+        rep.error(
+            "validator",
+            "R17",
+            f"EXHAUSTIVE_ROW_CLASSIFICATION has no entry for {missing_decisions}. A channel "
+            "added to the vocabulary without deciding whether its rows are classified "
+            "exhaustively defaults to unchecked, which is how clause 3 was silenceable",
+        )
+    stale_decisions = sorted(set(EXHAUSTIVE_ROW_CLASSIFICATION) - enum)
+    if stale_decisions:
+        rep.error(
+            "validator",
+            "R17",
+            f"EXHAUSTIVE_ROW_CLASSIFICATION names {stale_decisions}, not in the enum",
+        )
+    exhaustive = {
+        channel
+        for channel, why in EXHAUSTIVE_ROW_CLASSIFICATION.items()
+        if why is None and channel in enum
+    }
+    for channel in sorted(exhaustive - set(surveyed)):
+        rep.error(
+            "meta.channels_surveyed",
+            "R17",
+            f"{channel!r} is classified exhaustively per row but is not surveyed, so no row "
+            "may claim it and the per-row check would pass vacuously",
+        )
     rows = doc.get("capabilities") or []
-    for channel in sorted({entry.get("channel") for entry in (meta.get("channel_absences") or [])}):
+    for channel in sorted(exhaustive & set(surveyed)):
         listed: dict[str, int] = {}
         for index, entry in enumerate(meta.get("channel_absences") or []):
             if entry.get("channel") != channel:
