@@ -2894,6 +2894,18 @@ capabilities:
   target_level: hold; close the AAASM-5298 open half
   tickets:
   - AAASM-5298
+  notes: >-
+    SCOPE: fixed on main at 299de3883, still live in the published v0.0.1-rc.6. The companion
+    Markdown at :167-186 names I1, L1 and C6 as the three rows that must be stated this way
+    wherever they are quoted, and it matters most here: this is the manifest's only
+    host_enforced row, ADR 0030 section 4.1's sole bypass-resistance rung. Everything the
+    reversal rests on postdates the tag. aa-cli/src/commands/run_registration.rs, which the
+    Markdown cites for the gRPC registration fix, is absent at v0.0.1-rc.6, and so are all four
+    of this row's evidence items — including the pinning test
+    aa-integration-tests/tests/cli_run_claude_governed_launch.rs. R14 clause 1 therefore could
+    not be satisfied at rc.6 at all, so the rung is unearned for the published release, not
+    merely unmeasured there. Controls in the same probe: aa-cli/src/main.rs and
+    aa-devtool-claude-code/src/lib.rs both resolve at the tag, so the absences are measured.
   q4_changed_answer_in_product_favour: true
 - id: L2
   domain: devtool_launch
