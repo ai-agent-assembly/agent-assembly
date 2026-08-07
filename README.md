@@ -129,7 +129,9 @@ path — a tool call, a network request, a budget spend — is checked against y
 and the outcome is recorded in a hash-chained, **tamper-evident** audit trail that
 `aasm audit verify-chain` re-verifies offline. Where nothing inspected the payload,
 the honest state is *unmeasured* — the proxy's transparent-tunnel path records
-"forwarded, and nothing looked at it", never clean.
+"forwarded, and nothing looked at it", never clean. One known defect qualifies that:
+the CONNECT-level event for the same connection is still written as an allow, which
+ADR 0033 §2 logs as a truthfulness bug awaiting a code fix.
 
 Governance is assembled from independently-deployable mechanisms rather than a
 fixed pipeline, and each one holds a stated boundary — lowest-latency first:
