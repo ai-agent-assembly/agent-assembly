@@ -3162,6 +3162,14 @@ capabilities:
     path: aa-api/src/routes/devtools/mod.rs:57-59
   evidence_runs_on_main: standing
   target_level: correct as-is — this is the honest B7 answer
+  notes: >-
+    SCOPE, and the direction matters: aa-devtool/src/registry.rs is absent at v0.0.1-rc.6
+    (control: aa-devtool-saas/src/adapter.rs and aa-api/src/routes/devtools/mod.rs both resolve
+    at the tag), so SUPPORTED_TOOLS did not exist there — the registry is a main-only
+    mechanism. The claim is UNCHANGED by that: this row asserts the SaaS surface is NOT a
+    governed integration, and at rc.6 it is not one for the stronger reason that no adapter
+    registry existed at all. Only the citation is main-scoped, not the finding — recorded
+    because silence would let a reader take the citation as release-true.
 - id: L6
   domain: devtool_launch
   capability: Unmanaged launch — the user starts the tool directly
