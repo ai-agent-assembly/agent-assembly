@@ -686,8 +686,30 @@ fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
     let mut merged: Vec<MergedSpan> = Vec::with_capacity(sorted.len());
     for f in sorted {
         match merged.last_mut() {
-            // Overlapping (or touching) the current span — extend it to the
-            // union and adopt the higher-priority kind's label.
+            // Overlapping the current span — extend it to the union and adopt
+            // the higher-priority kind's label.
+            //
+            // `<`, not `<=`: two findings that merely *touch* (`f.offset ==
+            // last.end`) stay separate and produce two labels. That is
+            // deliberate. Adjacent findings of different kinds are genuinely two
+            // findings, and merging them would erase which kinds were present —
+            // `{"key":"<pat>","email":"<addr>"}` scrubbed to one
+            // `[REDACTED:GitHubPat]` would report a PAT and silently lose the
+            // email. Merging is for spans that share bytes, because a partially
+            // replaced region can leave a raw secret fragment on the wire; two
+            // touching spans share no byte and have no such problem.
+            //
+            // This comment previously read "Overlapping (or touching)", which
+            // describes `<=`. Reimplementations are written from it: AAASM-5373's
+            // acceptance criteria required the Python conformance runner to merge
+            // "overlapping and adjacent" spans, and implementing that faithfully
+            // would have made the harness emit one label where this function
+            // emits two. A `<=` variant differs from this code in 3,081 of 32,378
+            // span geometries, and **none** of it would have shown up against the
+            // committed corpus, because no vector has touching spans. Fixing this
+            // function to match the old comment would break the Python runner and
+            // every SDK harness silently — the code is right, the prose was wrong.
+            // `touching_spans_stay_separate` pins the boundary (AAASM-5383).
             Some(last) if f.offset < last.end => {
                 last.end = last.end.max(f.end);
                 if f.kind.priority() > last.kind.priority() {
@@ -4489,5 +4511,71 @@ mod tests {
             assert_eq!(a.kind, b.kind);
             assert_eq!(a.offset, b.offset);
         }
+    }
+
+    /// Touching spans stay separate; only overlapping spans merge (AAASM-5383).
+    ///
+    /// This is the boundary a reimplementation gets wrong. `coalesce_findings`
+    /// merges on `f.offset < last.end`, so `f.offset == last.end` — two spans
+    /// that abut with no shared byte — yields **two** labels, not one. The
+    /// inline comment used to say "Overlapping (or touching)", which describes
+    /// `<=`, and AAASM-5373's acceptance criteria were written from it.
+    ///
+    /// Nothing in the committed corpus has touching spans, so this divergence is
+    /// invisible to the conformance vectors — which is exactly why it needs a
+    /// test of its own rather than trust in the suite staying green. Anyone who
+    /// "fixes" the code to match the old prose fails here instead of silently
+    /// desynchronising the Python runner and every SDK harness.
+    ///
+    /// Both halves are asserted: the merge itself still happens when the spans
+    /// genuinely overlap, so a mutation that merged nothing at all would pass the
+    /// touching case alone.
+    #[test]
+    fn touching_spans_stay_separate_and_overlapping_spans_merge() {
+        // `end` of the first is the `offset` of the second: they abut exactly.
+        let touching = vec![
+            CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+            CredentialFinding::new(CredentialKind::EmailAddress, 10, 20),
+        ];
+        let merged = coalesce_findings(&touching);
+        let spans: Vec<(usize, usize)> = merged.iter().map(|s| (s.offset, s.end)).collect();
+        assert_eq!(
+            merged.len(),
+            2,
+            "touching spans must stay separate — merging them erases which kinds \
+             were present: {spans:?}"
+        );
+        assert_eq!((merged[0].offset, merged[0].end), (0, 10));
+        assert_eq!((merged[1].offset, merged[1].end), (10, 20));
+
+        // Positive control: one byte of overlap and they do merge, taking the
+        // higher-priority kind's label.
+        let overlapping = vec![
+            CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+            CredentialFinding::new(CredentialKind::EmailAddress, 9, 20),
+        ];
+        let merged = coalesce_findings(&overlapping);
+        let spans: Vec<(usize, usize)> = merged.iter().map(|s| (s.offset, s.end)).collect();
+        assert_eq!(
+            merged.len(),
+            1,
+            "overlapping spans share bytes, so a partial replacement could leave a \
+             raw secret fragment — they must merge: {spans:?}"
+        );
+        assert_eq!((merged[0].offset, merged[0].end), (0, 20));
+    }
+
+    /// The same boundary through the public surface, since `redact` is what
+    /// callers and reimplementations actually have to match.
+    #[test]
+    fn redact_emits_two_labels_for_touching_findings() {
+        let result = ScanResult {
+            findings: vec![
+                CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+                CredentialFinding::new(CredentialKind::EmailAddress, 10, 20),
+            ],
+        };
+        let redacted = result.redact("0123456789abcdefghij");
+        assert_eq!(redacted, "[REDACTED:GitHubPat][REDACTED:EmailAddress]");
     }
 }
