@@ -1222,6 +1222,204 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
     )
 
 
+# ── R17. The channel vocabulary covers what actually publishes ───────────────
+#
+# AAASM-5680. `released_channels` had no value for the container channel while
+# GHCR published five image repositories, so a matrix generated faithfully from
+# the manifest shipped without a GHCR column — and the omission read as a
+# deliberate "not distributed there" rather than a vocabulary gap. It had
+# already caused one downstream error: AAASM-5591's audiences page dropped
+# Docker/GHCR by hand, was corrected in review, and the fix replaced the hand
+# list with a reference to this vocabulary — deferring to a source that omitted
+# the very channel the review had just restored.
+#
+# The markers live HERE and not in the manifest on purpose. A rule whose
+# evidence sits inside the artifact it gates can be switched off by editing the
+# artifact, which is the same reason CLAIM_TERMS is a constant in this file.
+#
+# `None` means "nothing in THIS repository publishes it", and the reason is
+# stated rather than left as an absent key — the table is keyed by the schema's
+# whole channel enum and the enum is asserted against it, so adding a sixth
+# channel forces a decision instead of a silent omission.
+CHANNEL_PUBLISH_MARKERS: dict[str, str | None] = {
+    "ghcr": r"ghcr\.io/",
+    "crates_io": r"cargo (?:workspaces )?publish",
+    "github_release": r"softprops/action-gh-release|gh release (?:create|upload)",
+    "homebrew": r"homebrew",
+    # Published from the SDK repositories, which have their own release
+    # workflows; nothing in this repository uploads to them.
+    "npm": None,
+    "pypi": None,
+    # A git tag in go-sdk. There is no publish step to find, here or anywhere.
+    "go_modules": None,
+    # `scripts/install-cli.sh` is served from the GitHub Release assets rather
+    # than pushed to a registry of its own.
+    "install_script": None,
+    # Not a channel; the value a row uses when the question does not apply.
+    "not_applicable": None,
+}
+
+WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+
+
+def check_channel_vocabulary(doc: dict, rep: Report) -> None:
+    """R17. Three clauses, each closing a different way a channel goes missing."""
+    meta = doc.get("meta") or {}
+    surveyed = list(meta.get("channels_surveyed") or [])
+    not_surveyed = [entry.get("channel") for entry in (meta.get("channels_not_surveyed") or [])]
+
+    schema_fields = _schema_row_fields()  # proves the schema is readable at all
+    enum: set[str] = set()
+    if schema_fields is not None:
+        try:
+            schema = json.loads(
+                (SCHEMA_DIR / "capability-manifest.schema.json").read_text(encoding="utf-8")
+            )
+            enum = set(schema["definitions"]["channel"]["enum"])
+        except (OSError, ValueError, KeyError):
+            enum = set()
+    if not enum:
+        rep.error(
+            "meta",
+            "R17",
+            "the schema's channel enum could not be read, so the vocabulary cannot be "
+            "checked for completeness",
+        )
+        return
+
+    # Clause 1 — the vocabulary is partitioned. Every value the schema admits is
+    # either surveyed or explicitly not, and never both. Silence about a channel
+    # is what let ghcr sit outside the manifest with nothing objecting.
+    unclassified = sorted(enum - set(surveyed) - set(not_surveyed))
+    if unclassified:
+        rep.error(
+            "meta",
+            "R17",
+            f"the schema admits {unclassified} but neither channels_surveyed nor "
+            "channels_not_surveyed names them. A channel in the vocabulary that no row "
+            "may claim and no record explains is a gap that reads as an answer",
+        )
+    both = sorted(set(surveyed) & set(not_surveyed))
+    if both:
+        rep.error("meta", "R17", f"{both} are recorded as surveyed AND not surveyed")
+
+    # Clause 2 — a channel this repository publishes to must be surveyed. This is
+    # the clause that would have failed before this ticket: docker.yml has pushed
+    # to ghcr.io since AAASM-4480 while `ghcr` was in channels_not_surveyed.
+    missing_markers = sorted(enum - set(CHANNEL_PUBLISH_MARKERS))
+    if missing_markers:
+        rep.error(
+            "validator",
+            "R17",
+            f"CHANNEL_PUBLISH_MARKERS has no entry for {missing_markers}. A channel added "
+            "to the vocabulary without deciding what publishes it is how the gap this rule "
+            "closes was created",
+        )
+    stale_markers = sorted(set(CHANNEL_PUBLISH_MARKERS) - enum)
+    if stale_markers:
+        rep.error(
+            "validator", "R17", f"CHANNEL_PUBLISH_MARKERS names {stale_markers}, not in the enum"
+        )
+
+    workflows = sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml"))
+    if not workflows:
+        rep.error(
+            "validator",
+            "R17",
+            f"no workflow file was found under {WORKFLOW_DIR}, so 'what publishes' was not "
+            "measured. An empty scan is not a clean scan",
+        )
+    text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in workflows)
+    publishing = sorted(
+        channel
+        for channel, pattern in CHANNEL_PUBLISH_MARKERS.items()
+        if pattern and re.search(pattern, text)
+    )
+    for channel in publishing:
+        if channel not in surveyed:
+            rep.error(
+                "meta.channels_surveyed",
+                "R17",
+                f"a workflow in {WORKFLOW_DIR.name}/ publishes to {channel!r} and the manifest "
+                "does not survey it, so no row may claim it and a generated matrix ships "
+                "without the column. Its omission then reads as 'not distributed there'",
+            )
+    rep.count(
+        "R17",
+        f"vocabulary: {len(enum)} channels = {len(surveyed)} surveyed + {len(not_surveyed)} "
+        f"not surveyed + {len(unclassified)} unclassified; {len(workflows)} workflow files "
+        f"scanned, {len(publishing)} publish here ({publishing})",
+    )
+
+    # Clause 3 — no row is silent about a channel that has an absence record.
+    # Once a channel is surveyed, a row saying nothing about it is ambiguous
+    # between "not shipped there" and "nobody looked", so every row is required
+    # to be exactly one of three things.
+    rows = doc.get("capabilities") or []
+    for channel in sorted({entry.get("channel") for entry in (meta.get("channel_absences") or [])}):
+        listed: dict[str, int] = {}
+        for index, entry in enumerate(meta.get("channel_absences") or []):
+            if entry.get("channel") != channel:
+                continue
+            for row_id in entry.get("ids") or []:
+                if row_id in listed:
+                    rep.error(
+                        "meta.channel_absences",
+                        "R17",
+                        f"{row_id} is listed twice for {channel!r}, in groups {listed[row_id]} "
+                        f"and {index}, so it carries two reasons",
+                    )
+                listed[row_id] = index
+        carries = na = absent = 0
+        for row in rows:
+            row_id = row.get("id")
+            channels = row.get("released_channels") or []
+            in_list = row_id in listed
+            if channel in channels:
+                carries += 1
+                if in_list:
+                    rep.error(
+                        f"capabilities({row_id})",
+                        "R17",
+                        f"names {channel!r} in released_channels and is also listed as absent "
+                        "from it. The two records contradict each other",
+                    )
+            elif channels == ["not_applicable"]:
+                na += 1
+                if in_list:
+                    rep.error(
+                        f"capabilities({row_id})",
+                        "R17",
+                        f"is released_channels: [not_applicable] and also listed as absent from "
+                        f"{channel!r}. 'The question does not apply' and 'measured absent' are "
+                        "different statements and a row may make only one",
+                    )
+            elif in_list:
+                absent += 1
+            else:
+                rep.error(
+                    f"capabilities({row_id})",
+                    "R17",
+                    f"says nothing about {channel!r}, which meta.channels_surveyed covers. "
+                    "Silence is ambiguous between 'not shipped there' and 'nobody looked': "
+                    "name the channel, use released_channels: [not_applicable], or list the "
+                    "row under meta.channel_absences with the probe behind it",
+                )
+        orphans = sorted(set(listed) - {row.get("id") for row in rows})
+        if orphans:
+            rep.error(
+                "meta.channel_absences",
+                "R17",
+                f"{orphans} are listed as absent from {channel!r} and are not rows here",
+            )
+        total = carries + na + absent
+        rep.count(
+            "R17",
+            f"{channel}: {len(rows)} rows = {carries} carry it + {na} not_applicable + "
+            f"{absent} recorded absent + {len(rows) - total} unaccounted",
+        )
+
+
 def validate(doc: dict, rep: Report, use_git: bool) -> None:
     check_vocabulary_constants(rep)
 
@@ -1288,9 +1486,10 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
         if tree and scope_tag:
             check_row_release_scope(row, tree, scope_tag, where, rep)
 
-    # R16 reads two files off disk rather than the row in hand, so it runs once
-    # per document and outside the row loop. It needs no git.
+    # R16 and R17 read files off disk rather than the row in hand, so they run
+    # once per document and outside the row loop. Neither needs git.
     check_cross_representation(doc, rep)
+    check_channel_vocabulary(doc, rep)
 
 
 def main() -> int:
