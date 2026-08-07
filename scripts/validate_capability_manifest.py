@@ -20,16 +20,25 @@ rules that actually keep the manifest honest, and those live here:
   (ADR 0034 §6.1, forbidden design 5);
 * whether the three **vocabulary axes** stay on their own subjects
   (ADR 0034 hand-off 7, forbidden design 12);
+* whether an ADR 0030 enforcement rung is earned rather than asserted (§4.2);
 * whether prose and structure can disagree about the same environment fact —
-  the AAASM-5666 divergence, which is what rules R8/R8b make unstatable.
+  the AAASM-5666 divergence, which rules R8/R8b narrow.
 
 DESIGN NOTES
 ------------
 Run the gate's own command and read its exit code; do not re-implement its
-predicate. `git ls-files --with-tree=<tree> --error-unmatch` and
-`git merge-base --is-ancestor` are the tests ADR 0034 names, and this script
-shells out to exactly those rather than approximating them with a file-existence
-check or a revision-list walk.
+predicate. `git cat-file -t <tree>:<path>` and `git merge-base --is-ancestor`
+are the tests behind ADR 0034 §6.4 and §6.3, and this script shells out to
+exactly those rather than approximating them with a file-existence check or a
+revision-list walk.
+
+That rule is necessary and was not sufficient. Round 1 used
+`git ls-files --with-tree=<tree> --error-unmatch`, which reads like "tracked in
+this tree" and actually queries **index ∪ tree** — a real command, a real exit
+code, and the wrong predicate. The lesson is recorded on `path_in_tree`: when a
+gate shells out, fixture the command's SEMANTICS, not merely its failure. See
+`governance/testdata/invalid-r5-evidence-newer-than-tree.yaml`, which is the
+input on which the two candidate predicates disagree.
 
 Only PyYAML is required beyond the standard library, so the script runs in CI
 without a resolver step.
@@ -141,9 +150,10 @@ FORBIDDEN_KEYS = frozenset(
     {"released", "shipped", "available", "reachable", "reachable_in_release", "supported"}
 )
 
-# Prose fields. Rule R8 requires any AA_* token here to be declared in
-# preconditions[]; rule R8b forbids an assignment anywhere in this set, so a
-# value has exactly one home and cannot disagree with itself.
+# Prose fields. Rule R8 requires any environment token here — AA_* plus the
+# EXTERNAL_ENV allow-list below — to be declared in preconditions[]; rule R8b
+# forbids the assignment spelling anywhere in this set, so a required value has
+# one home rather than two that can disagree.
 PROSE_FIELDS = (
     "capability",
     "launch_path",
@@ -172,8 +182,23 @@ ENFORCEMENT_RUNGS = frozenset({"gateway_protected", "host_enforced"})
 COVERAGE_PREFERRING_TEST = frozenset({"redacted", "evaluated", "detected", "observed"})
 
 BRANCH_REFS = frozenset({"main", "master", "HEAD", "head"})
-AA_TOKEN = re.compile(r"\bAA_[A-Z0-9_]+")
-AA_ASSIGNMENT = re.compile(r"\bAA_[A-Z0-9_]+\s*=")
+# R8's namespace. The AA_* prefix is ours, but a handful of externally-owned
+# variables are load-bearing for our claims and were living in prose with no
+# structured home and no machine check: NODE_EXTRA_CA_CERTS is the CA-trust
+# mechanism L1 depends on, and L2/L3 cite its ABSENCE as why they fail. An
+# allow-list rather than a general env-var pattern, because the point is to
+# cover the variables a claim turns on, not every string that looks shouty.
+EXTERNAL_ENV = (
+    "NODE_EXTRA_CA_CERTS",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+)
+_ENV_ALT = "|".join(("AA_[A-Z0-9_]+", *EXTERNAL_ENV))
+AA_TOKEN = re.compile(rf"\b({_ENV_ALT})\b")
+AA_ASSIGNMENT = re.compile(rf"\b({_ENV_ALT})\s*=")
 
 STALE_ERROR_DAYS = 180
 STALE_WARN_DAYS = 90
@@ -418,10 +443,14 @@ def check_row_distribution(row: dict, meta: dict, where: str, rep: Report) -> No
 def check_row_prose(row: dict, where: str, rep: Report) -> None:
     """R8 / R8b. An environment fact has exactly one home.
 
-    R8b is the rule that makes the AAASM-5666 M1 divergence unstatable: a prose
-    field may mention that a variable matters, but the value it must hold lives
-    only in preconditions[].required_value, so there is nowhere for a second,
-    contradicting copy to sit.
+    R8b narrows the AAASM-5666 M1 divergence class: a prose field may mention
+    that a variable matters, but the value it must hold belongs in
+    preconditions[].required_value.
+
+    Scope, stated rather than overclaimed: R8b blocks the `NAME=value` spelling
+    only. "set to 0", "forces false" and similar prose still pass, and a regex
+    chasing English always will. R8 is the durable half — requiring the token to
+    be declared puts it where a reviewer can compare prose against structure.
     """
     declared = {p.get("name") for p in (row.get("preconditions") or [])}
     for field, text in prose_values(row):

@@ -16,9 +16,12 @@ meta:
   - not_applicable
   channels_not_surveyed:
   - channel: ghcr
-    reason: The AAASM-5527 survey did not enumerate the Docker/GHCR channel, which publishes
-      aa-runtime and aa-gateway images (.github/workflows/docker.yml:111,160). A row's silence
-      about ghcr is therefore Unmeasured, never Unsupported.
+    reason: >-
+      The AAASM-5527 survey did not enumerate the Docker/GHCR channel. It publishes more
+      than two images: aa-runtime and aa-gateway (.github/workflows/docker.yml:111,160)
+      AND a nine-image language matrix (:342-344). Naming only the first two would let a
+      future surveyor think two images are the whole channel. A row's silence about ghcr
+      is therefore Unmeasured, never Unsupported.
     ticket: AAASM-5531
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
@@ -1261,6 +1264,10 @@ capabilities:
   - kind: env
     name: AA_PROXY_NETWORK_ALLOWLIST
     required_value: <set>
+  - kind: env
+    name: HTTPS_PROXY
+    required_value: <set>
+    note: the client must honour it; unsetting it is the row's first known bypass
   transport: http_connect
   interception_component: connect_deny_reason aa-proxy/src/proxy/mod.rs:934, run at :1308
     -> 403
@@ -2818,6 +2825,18 @@ capabilities:
     name: AA_TEAM_ID
     required_value: <set>
     note: injected into the launched tool's environment alongside AA_AGENT_ID
+  - kind: env
+    name: NODE_EXTRA_CA_CERTS
+    required_value: <set>
+    note: injected into the launched tool's environment by the adapter's launch-env store
+  - kind: env
+    name: HTTPS_PROXY
+    required_value: <set>
+    note: injected into the launched tool's environment by the adapter's launch-env store
+  - kind: env
+    name: HTTP_PROXY
+    required_value: <set>
+    note: injected into the launched tool's environment by the adapter's launch-env store
   transport: injects AA_AGENT_ID, AA_TEAM_ID, the installed launch-env store INCLUDING NODE_EXTRA_CA_CERTS,
     HTTPS_PROXY, HTTP_PROXY
   interception_component: aa-devtool-claude-code/src/lib.rs:356-383
@@ -2887,6 +2906,16 @@ capabilities:
     name: AA_TEAM_ID
     required_value: <set>
     note: injected into the launched tool's environment alongside AA_AGENT_ID
+  - kind: env
+    name: HTTPS_PROXY
+    required_value: <set>
+    note: injected into the launched tool's environment by the adapter's launch-env store
+  - kind: env
+    name: NODE_EXTRA_CA_CERTS
+    required_value: <set>
+    optional: true
+    note: NOT injected on this launch path — its absence is the row's finding, and is
+      why a proxy that cannot terminate TLS still lets the connection through silently
   transport: injects AA_AGENT_ID, AA_TEAM_ID, HTTPS_PROXY ONLY — no CA trust
   interception_component: aa-devtool-codex/src/lib.rs:281-303
   identity_source: AA_AGENT_ID
@@ -2949,6 +2978,16 @@ capabilities:
     name: AA_TEAM_ID
     required_value: <set>
     note: injected into the launched tool's environment alongside AA_AGENT_ID
+  - kind: env
+    name: HTTPS_PROXY
+    required_value: <set>
+    note: injected into the launched tool's environment by the adapter's launch-env store
+  - kind: env
+    name: NODE_EXTRA_CA_CERTS
+    required_value: <set>
+    optional: true
+    note: NOT injected on this launch path — its absence is the row's finding, and is
+      why a proxy that cannot terminate TLS still lets the connection through silently
   transport: injects AA_AGENT_ID, AA_TEAM_ID, HTTPS_PROXY ONLY — no CA trust
   interception_component: aa-devtool-windsurf/src/lib.rs:295-315
   identity_source: AA_AGENT_ID
@@ -3203,6 +3242,17 @@ capabilities:
   - kind: env
     name: AA_AGENT_ID
     required_value: <set>
+  - kind: env
+    name: HTTPS_PROXY
+    required_value: <set>
+    optional: true
+    note: --no-proxy makes resolve_launch_proxy return None, so neither this nor HTTP_PROXY
+      is injected; that is the row's whole subject
+  - kind: env
+    name: HTTP_PROXY
+    required_value: <set>
+    optional: true
+    note: as HTTPS_PROXY — deliberately not injected on this path
   transport: none
   interception_component: resolve_launch_proxy aa-cli/src/commands/run.rs:372-388 — warns
     and returns None
