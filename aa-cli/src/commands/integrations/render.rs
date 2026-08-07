@@ -435,7 +435,22 @@ impl Report for InstallReport {
         // `--allow-unverified-runtime` — so the standing is stated once here,
         // against the installation, rather than twice via the embedded plan.
         render_provenance_caveat(&mut out, &self.plan.runtime, "this installation");
-        out.push_str(&format!("\nApplied as receipt {}\n", self.receipt_id));
+        // The outcome rides the one line that is always printed after the plan,
+        // in the same shape and with the same token `repair` and `remove` use —
+        // and the same token `--output json` carries, so a person and a `jq`
+        // read one word (AAASM-5499, extended to install by AAASM-5674).
+        out.push_str(&format!(
+            "\nApplied as receipt {}{}\n",
+            self.receipt_id,
+            change_outcome(self.outcome)
+        ));
+        // An unstated outcome is stated as unstated. Leaving the suffix off
+        // would make it indistinguishable from a rendering that forgot it, and
+        // a reader would fall back to the exit code — which answers the other
+        // question.
+        if let Some(reason) = &self.outcome_unknown {
+            out.push_str(&format!("  outcome:         not reported — {reason}\n"));
+        }
         out.push_str(&format!(
             "  at:              {}\n",
             timestamp(self.applied_at_unix_secs)
@@ -1165,6 +1180,8 @@ mod tests {
 
     fn install_report(runtime: RuntimeInfo) -> InstallReport {
         InstallReport {
+            outcome: Some(ChangeOutcome::Changed),
+            outcome_unknown: None,
             plan: plan_report(runtime, true),
             receipt_id: "receipt-1".to_string(),
             applied_at_unix_secs: 1,
@@ -1452,5 +1469,69 @@ mod tests {
                 token.as_str()
             );
         }
+    }
+
+    // ── install's change outcome (AAASM-5674) ───────────────────────────────
+
+    /// The line a person reads carries the same token `--output json` carries.
+    #[test]
+    fn an_install_states_its_outcome_on_the_receipt_line() {
+        for outcome in [ChangeOutcome::Changed, ChangeOutcome::Unchanged] {
+            let report = InstallReport {
+                outcome: Some(outcome),
+                outcome_unknown: None,
+                ..install_report(runtime())
+            };
+            let rendered = report.render_human();
+            let line = rendered
+                .lines()
+                .find(|l| l.starts_with("Applied as receipt"))
+                .expect("the receipt line");
+            assert!(
+                line.contains(outcome.as_str()),
+                "the outcome is not on the line a person reads: {line}"
+            );
+            assert_eq!(
+                serde_json::to_value(&report).expect("serialize")["outcome"],
+                serde_json::json!(outcome.as_str()),
+                "the two surfaces disagree"
+            );
+        }
+    }
+
+    /// An unstated outcome is *stated* as unstated, and no success token
+    /// appears anywhere in the document.
+    ///
+    /// Omitting the suffix would be indistinguishable from a rendering that
+    /// forgot it, and a reader would fall back to the exit code — which answers
+    /// the other question entirely.
+    #[test]
+    fn an_install_whose_outcome_was_not_stated_says_so_and_claims_nothing() {
+        let report = InstallReport {
+            outcome: None,
+            outcome_unknown: Some(
+                "this runtime speaks DI-API v4; the apply outcome arrived in v5, \
+                 so it could not be asked whether anything changed"
+                    .to_string(),
+            ),
+            ..install_report(runtime())
+        };
+        let rendered = report.render_human();
+        assert!(rendered.contains("not reported"), "{rendered}");
+        assert!(
+            rendered.contains("DI-API v4"),
+            "the reason must name the peer: {rendered}"
+        );
+        for token in [ChangeOutcome::Changed, ChangeOutcome::Unchanged] {
+            assert!(
+                !rendered.contains(&format!("— {}", token.as_str())),
+                "an unstated outcome was rendered as `{}`: {rendered}",
+                token.as_str()
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(&report).expect("serialize")["outcome"],
+            serde_json::Value::Null
+        );
     }
 }

@@ -149,17 +149,18 @@ Rules that follow from this:
 - A client should offer its **whole** supported window; offering less is how a
   client talks itself into a degraded connection for no reason.
 
-Current window: `min_supported = 1`, `max_supported = 4`. `scoped_events` and
+Current window: `min_supported = 1`, `max_supported = 5`. `scoped_events` and
 `approval_relay` were added at v2, so a v1 client is `DEGRADED`.
 
 ### What each version added
 
-**Only v2 added verbs.** v3 and v4 add what a peer can *say*, not what it can
-call, so a v1–v3 peer is `SUPPORTED` rather than `DEGRADED` and keeps every verb
-it had. Protobuf message presence already makes a field's absence unambiguous,
-so behaviour is correct without consulting the version at all; knowing the peer
-speaks v3 lets a client name the reason — "this runtime speaks DI-API 3; build
-provenance arrived in 4" — instead of the vaguer "the field is missing".
+**Only v2 added verbs.** v3, v4 and v5 add what a peer can *say*, not what it
+can call, so a v1–v4 peer is `SUPPORTED` rather than `DEGRADED` and keeps every
+verb it had. Protobuf message presence already makes a field's absence
+unambiguous, so behaviour is correct without consulting the version at all;
+knowing the peer speaks v3 lets a client name the reason — "this runtime speaks
+DI-API 3; build provenance arrived in 4" — instead of the vaguer "the field is
+missing".
 
 | Version | Addition | Verb change |
 | --- | --- | --- |
@@ -167,6 +168,7 @@ provenance arrived in 4" — instead of the vaguer "the field is missing".
 | 2 | `scoped_events`, `approval_relay`. | **adds 2** |
 | 3 | `status` and `verify` carry a `PolicyView` — which policy a governed launch would run under (AAASM-5349). | none |
 | 4 | `HelloAck` carries a `RuntimeProvenance` — which build is answering (AAASM-5628). | none |
+| 5 | `apply` carries an `ApplyOutcomeView` — whether the apply modified the host (AAASM-5674). | none |
 
 ### v4 — `RuntimeProvenance` on the `HelloAck`
 
@@ -255,6 +257,93 @@ opens. A runtime under another name, in another directory (which
 `AA_DEVINT_SOCKET` makes trivial), or started a moment later is not counted.
 Read `reachable_runtimes == 1` as "no duplicate was observed", never as "this is
 the only runtime".
+
+### v5 — `ApplyOutcomeView` on `apply`
+
+An install is idempotent: applying a plan whose target already matches leaves
+the host exactly as it was. That is a success **and** a no-op, and a caller
+deciding "do I tell someone something happened?" needs the two apart — the
+`aasm integrations` outcome contract (AAASM-5499) names `install` explicitly
+among the commands that can reach one.
+
+Nothing in the pre-v5 `ApplyView` could carry the answer, and every way of
+re-deriving it client-side is unsound:
+
+| Candidate | Why it fails |
+| --- | --- |
+| `receipt_id` | **Reused** when the plan id matches, whether or not anything mutated — a no-op reapply keeps the prior receipt deliberately, so the store's history does not record an upgrade that never happened |
+| `applied_at_unix_secs` | A cross-process, second-granularity clock compare; false-reports `changed` in a tight loop |
+| a pre-read `StatusView` | Carries neither `receipt_id` nor `plan_id`, so it cannot match "the exact desired managed state" — a policy-profile swap at the same `planned_level` reads as a false `unchanged` |
+| the request's exit status | Answers *did the command succeed?*, which is the orthogonal axis |
+
+So the runtime states it:
+
+```protobuf
+message ApplyView {
+  …
+  ApplyOutcomeView outcome = 7;   // v5 and above only
+}
+
+message ApplyOutcomeView {
+  ApplyMutation mutation = 1;
+  string detail = 2;
+}
+
+enum ApplyMutation {
+  APPLY_MUTATION_UNSPECIFIED = 0;   // no outcome was stated
+  APPLY_MUTATION_CHANGED     = 1;
+  APPLY_MUTATION_UNCHANGED   = 2;
+  APPLY_MUTATION_FAILED      = 3;
+  APPLY_MUTATION_UNSUPPORTED = 4;
+}
+```
+
+#### Why this is not a `bool`
+
+A proto3 `bool mutated` would have no presence: a peer that never sent the field
+and a peer that sent `false` decode identically. `false` means "nothing was
+modified", which is a **success claim**, so every runtime older than the field
+would silently announce `unchanged` for every install it ever performed. That is
+the defect ADR 0030 §5.4a.1 records — an absence resolved in the flattering
+direction — reproduced one field over.
+
+Five states are preserved instead, and the zero value is the non-committal one:
+
+| Value | Meaning |
+| --- | --- |
+| `CHANGED` | The end state was reached, and something was modified. |
+| `UNCHANGED` | The end state already held; nothing was modified. |
+| `FAILED` | The apply ran and did not reach the end state. |
+| `UNSUPPORTED` | This peer cannot determine it, and will not be able to. A *standing* inability — a client can stop asking. |
+| `UNSPECIFIED` | No outcome was stated. Also what a defaulted field decodes to. |
+
+The block itself is a **message**, so its absence is distinguishable from an
+inconclusive answer — the same construction `PolicyView` (v3) and
+`RuntimeProvenance` (v4) use.
+
+#### What a client must do
+
+1. **Consume the field only when the connection negotiated v5 or newer.** Below
+   that the peer never promised it, so whatever occupies its place is not an
+   answer — whether it got there through a bug, an intermediary, or a peer that
+   is not the build you think it is.
+2. **Treat absence at v5 as `Omitted`**, not as `UNCHANGED`. A peer that
+   promised an answer and gave none has said nothing.
+3. **Treat an unrecognised enum value as unknown**, never as the nearest known
+   one.
+4. **Never report a success when the outcome is unknown.** `UNSUPPORTED` and
+   `UNSPECIFIED` are non-answers alongside the two absences above; none of the
+   four may be rendered as `changed` or `unchanged`.
+5. **Do not infer the outcome** from exit status, local state, a missing field,
+   or any of the rejected candidates in the table above.
+
+`aasm` implements this: the report carries `"outcome": null` plus an
+`outcome_unknown` string naming the reason, and still exits `0` because the
+apply itself succeeded. See the
+[CLI reference](../cli/integrations.md#install-and-what-null-means-there).
+
+**This does not widen §5.5.** The block carries one enum and one operator-facing
+string. It says whether a write happened, never what was written.
 
 ## The verb space
 

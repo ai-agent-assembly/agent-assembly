@@ -40,13 +40,14 @@ use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
 use aa_core::integration::policy_posture::PolicyPosture;
 use aa_core::integration::{
     ArtifactOperation, CapabilityResolution, DevToolCapabilities, EvidenceKind, ExerciseOutcome, IntegrationCapability,
-    IntegrationPlan, IntegrationReceipt, IntegrationStatus, IntegrationStep, LifecyclePhase, PolicyProfileRef,
-    ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan, SettingsScope, StepAction,
-    StepPrivilege, StepReceipt, StepRequirement, VerificationOutcome, VerificationResult, VersionCompatibility,
+    IntegrationPlan, IntegrationStatus, IntegrationStep, LifecyclePhase, PolicyProfileRef, ProtectionEvidence,
+    ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan, SettingsScope, StepAction, StepPrivilege,
+    StepReceipt, StepRequirement, VerificationOutcome, VerificationResult, VersionCompatibility,
 };
 use aa_proto::assembly::devint::v1 as wire;
 
-use super::lifecycle::{RepairReport, ScopedSecurityEvent, ToolDescriptor};
+use super::lifecycle::{AppliedIntegration, RepairReport, ScopedSecurityEvent, ToolDescriptor};
+use super::negotiate::DI_API_APPLY_OUTCOME_SINCE;
 
 /// The stable wire id for a tool.
 pub fn tool_id(tool: &DevToolKind) -> String {
@@ -434,12 +435,21 @@ fn step_outcome_view(receipt: &StepReceipt) -> wire::StepOutcomeView {
     }
 }
 
-/// Project an apply receipt.
+/// Project an apply, for a connection that negotiated `negotiated_version`.
 ///
 /// The receipt holds each step's full `StepAction`; the view holds the step id,
 /// whether it applied, and its fingerprint. Nothing else about the action is
 /// reachable from a client.
-pub fn apply_view(receipt: &IntegrationReceipt) -> wire::ApplyView {
+///
+/// The outcome block is attached at [`DI_API_APPLY_OUTCOME_SINCE`] and above
+/// only, so a v1–v4 peer receives exactly the frame its version promised
+/// (AAASM-5674). Serving the field to a peer that did not negotiate it is how a
+/// peer starts misparsing — and, worse here, how a client that skipped its own
+/// version check would be handed something to misread. The gate is enforced on
+/// **both** ends deliberately: neither side is entitled to assume the other
+/// implemented it.
+pub fn apply_view(applied: &AppliedIntegration, negotiated_version: u32) -> wire::ApplyView {
+    let receipt = &applied.receipt;
     wire::ApplyView {
         plan_id: receipt.plan_id.clone(),
         receipt_id: receipt.receipt_id.clone(),
@@ -447,6 +457,7 @@ pub fn apply_view(receipt: &IntegrationReceipt) -> wire::ApplyView {
         steps: receipt.steps.iter().map(step_outcome_view).collect(),
         planned_level: level_name(receipt.planned_level).to_string(),
         achieved_level: level_name(receipt.achieved_level).to_string(),
+        outcome: (negotiated_version >= DI_API_APPLY_OUTCOME_SINCE).then(|| applied.mutation.to_wire()),
     }
 }
 
@@ -608,6 +619,10 @@ pub const fn artifact_operation_name(operation: ArtifactOperation) -> &'static s
 #[cfg(test)]
 mod tests {
     use aa_core::integration::policy_posture::PolicyState;
+
+    use aa_core::integration::IntegrationReceipt;
+
+    use super::super::apply_outcome::ApplyMutation;
 
     /// The four states must cross the wire as the tokens every other surface
     /// uses. A rename here would desynchronise `status` from `AA_POLICY_STATE`
@@ -918,9 +933,16 @@ mod tests {
         assert_eq!(capability_view(&caps, IntegrationCapability::Hooks).support, "absent");
     }
 
-    #[test]
-    fn an_apply_view_carries_fingerprints_not_content() {
-        let receipt = IntegrationReceipt {
+    /// A receipt with poisoned steps, for the apply projections.
+    fn apply_fixture(mutation: ApplyMutation) -> AppliedIntegration {
+        AppliedIntegration {
+            receipt: apply_receipt(),
+            mutation,
+        }
+    }
+
+    fn apply_receipt() -> IntegrationReceipt {
+        IntegrationReceipt {
             schema_version: 1,
             receipt_id: "r-1".to_string(),
             plan_id: "plan-1".to_string(),
@@ -943,14 +965,72 @@ mod tests {
             achieved_level: ProtectionLevel::Integrated,
             achieved_evidence: Vec::new(),
             verified_at_unix_secs: None,
-        };
-        let view = apply_view(&receipt);
+        }
+    }
+
+    #[test]
+    fn an_apply_view_carries_fingerprints_not_content() {
+        let applied = apply_fixture(ApplyMutation::Changed);
+        let view = apply_view(&applied, DI_API_APPLY_OUTCOME_SINCE);
         assert_eq!(view.steps.len(), 5);
         assert!(view.steps.iter().all(|s| s.fingerprint == "fp-1"));
         assert!(
             !encoded_contains(&view, SECRET),
             "the receipt holds full StepActions; the view must not"
         );
+    }
+
+    /// The outcome block rides the **negotiated** version, not this runtime's
+    /// maximum.
+    ///
+    /// Both directions matter. Below the floor a peer must receive the frame
+    /// its version promised — sending a field it did not negotiate is how a
+    /// peer starts misparsing. At or above it the block must actually be there,
+    /// or the version bought nothing and a client is left with an `Omitted` it
+    /// cannot act on.
+    #[test]
+    fn the_apply_outcome_is_attached_only_at_the_version_that_carries_it() {
+        for version in 1..DI_API_APPLY_OUTCOME_SINCE {
+            let view = apply_view(&apply_fixture(ApplyMutation::Unchanged), version);
+            assert!(
+                view.outcome.is_none(),
+                "v{version} was sent a v{DI_API_APPLY_OUTCOME_SINCE} field"
+            );
+        }
+        for mutation in [
+            ApplyMutation::Changed,
+            ApplyMutation::Unchanged,
+            ApplyMutation::Failed {
+                detail: "a step did not land".to_string(),
+            },
+            ApplyMutation::Unsupported {
+                detail: "this executor cannot compare".to_string(),
+            },
+            ApplyMutation::Unknown(super::super::apply_outcome::MutationUnknown::Unspecified {
+                detail: "interrupted".to_string(),
+            }),
+        ] {
+            let view = apply_view(&apply_fixture(mutation.clone()), DI_API_APPLY_OUTCOME_SINCE);
+            let outcome = view.outcome.expect("the carrying version must state one");
+            assert_eq!(
+                outcome,
+                mutation.to_wire(),
+                "{mutation:?} was projected as something else"
+            );
+        }
+    }
+
+    /// The outcome block carries no step content either — a `detail` string
+    /// reaches a client, so it is inside the minimisation boundary.
+    #[test]
+    fn an_apply_outcome_detail_is_not_a_hole_in_the_projection() {
+        let view = apply_view(
+            &apply_fixture(ApplyMutation::Failed {
+                detail: "the settings write did not land".to_string(),
+            }),
+            DI_API_APPLY_OUTCOME_SINCE,
+        );
+        assert!(!encoded_contains(&view, SECRET));
     }
 
     #[test]

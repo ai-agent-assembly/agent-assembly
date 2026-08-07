@@ -41,14 +41,16 @@ pub const DI_API_MIN_SUPPORTED: u32 = 1;
 
 /// The newest DI-API version this runtime speaks.
 ///
-/// **Neither v3 nor v4 adds a verb.** v3 records that `status` and `verify`
+/// **None of v3, v4 or v5 adds a verb.** v3 records that `status` and `verify`
 /// carry a [`PolicyView`](aa_proto::assembly::devint::v1::PolicyView) — which
 /// policy a governed launch would run under (AAASM-5349). v4 records that the
 /// `HelloAck` carries a
 /// [`RuntimeProvenance`](aa_proto::assembly::devint::v1::RuntimeProvenance) —
-/// which build is answering (AAASM-5628). A v2 or v3 peer is therefore *not*
-/// [`Negotiation::Degraded`]: it has every verb, and `unavailable_verbs` stays
-/// empty, because nothing became unavailable.
+/// which build is answering (AAASM-5628). v5 records that `apply` carries an
+/// [`ApplyOutcomeView`](aa_proto::assembly::devint::v1::ApplyOutcomeView) —
+/// whether the apply modified anything (AAASM-5674). A v2, v3 or v4 peer is
+/// therefore *not* [`Negotiation::Degraded`]: it has every verb, and
+/// `unavailable_verbs` stays empty, because nothing became unavailable.
 ///
 /// These versions exist for what a client can *say* rather than what it can
 /// call. Protobuf message presence already makes a field's absence
@@ -56,7 +58,7 @@ pub const DI_API_MIN_SUPPORTED: u32 = 1;
 /// knowing the peer speaks 3 lets the client name the reason — "this runtime
 /// speaks DI-API 3; build provenance arrived in 4" — instead of the vaguer
 /// "the field is missing".
-pub const DI_API_MAX_SUPPORTED: u32 = 4;
+pub const DI_API_MAX_SUPPORTED: u32 = 5;
 
 /// The first DI-API version whose `status` and `verify` carry a policy posture.
 ///
@@ -71,6 +73,16 @@ pub const DI_API_POLICY_POSTURE_SINCE: u32 = 3;
 /// no identity, and a client must not read it as one: an unattributable answer
 /// is unattributable whether the peer is old or lying (AAASM-5628).
 pub const DI_API_PROVENANCE_SINCE: u32 = 4;
+
+/// The first DI-API version whose `apply` states whether it modified anything.
+///
+/// Below this, the outcome block is absent because the peer **cannot say** —
+/// never because nothing changed. The two readings differ by exactly one
+/// fabricated success claim, which is why the gate is a version comparison
+/// rather than a field test alone: a peer that negotiated v4 has not promised
+/// this field, so whatever arrives in its place is not an answer this client
+/// is entitled to consume (AAASM-5674).
+pub const DI_API_APPLY_OUTCOME_SINCE: u32 = 5;
 
 /// Verbs that did not exist at DI-API v1.
 ///
@@ -350,8 +362,11 @@ mod tests {
         // negotiate 2, or it would be told it speaks a version it does not.
         assert_eq!(negotiate(&hello(&[1, 2])), Negotiation::Supported { version: 2 });
         assert_eq!(negotiate(&hello(&[1, 2, 3])), Negotiation::Supported { version: 3 });
+        assert_eq!(negotiate(&hello(&[1, 2, 3, 4])), Negotiation::Supported { version: 4 });
+        // The whole window, offered: the runtime's own maximum comes back.
+        let whole_window: Vec<u32> = (DI_API_MIN_SUPPORTED..=DI_API_MAX_SUPPORTED).collect();
         assert_eq!(
-            negotiate(&hello(&[1, 2, 3, 4])),
+            negotiate(&hello(&whole_window)),
             Negotiation::Supported {
                 version: DI_API_MAX_SUPPORTED
             }
@@ -527,5 +542,7 @@ mod tests {
         assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
         assert!(DI_API_PROVENANCE_SINCE <= DI_API_MAX_SUPPORTED);
         assert!(DI_API_PROVENANCE_SINCE > DI_API_POLICY_POSTURE_SINCE);
+        assert!(DI_API_APPLY_OUTCOME_SINCE <= DI_API_MAX_SUPPORTED);
+        assert!(DI_API_APPLY_OUTCOME_SINCE > DI_API_PROVENANCE_SINCE);
     };
 }

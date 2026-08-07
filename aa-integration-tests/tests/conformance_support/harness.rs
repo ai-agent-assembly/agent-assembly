@@ -40,7 +40,7 @@ use aa_proxy::audit_jsonl::ProxyAuditEntry;
 use aa_proxy::config::CredentialAction;
 use aa_proxy::tls::CaStore;
 use aa_runtime::devint::adapters::claude_code_registration;
-use aa_runtime::devint::lifecycle::RepairReport;
+use aa_runtime::devint::lifecycle::{AppliedIntegration, RepairReport};
 use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle};
 use tokio::sync::mpsc;
 
@@ -258,13 +258,18 @@ impl ConformanceHarness {
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
-    /// Plan and apply under `profile`.
-    pub async fn install(&self, profile: ProtectionProfile) -> anyhow::Result<IntegrationReceipt> {
+    /// Plan and apply under `profile`, keeping what the apply stated.
+    pub async fn install_reporting(&self, profile: ProtectionProfile) -> anyhow::Result<AppliedIntegration> {
         let plan = self.plan(profile).await?;
         self.service
             .apply(&self.tool(), &plan.plan_id)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Plan and apply under `profile`, keeping only the receipt.
+    pub async fn install(&self, profile: ProtectionProfile) -> anyhow::Result<IntegrationReceipt> {
+        Ok(self.install_reporting(profile).await?.receipt)
     }
 
     /// Re-derive the protection state.

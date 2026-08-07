@@ -9,15 +9,23 @@
 //! is the point: a confirmation prompt that appears before the material changes
 //! is a rubber stamp.
 //!
-//! # Idempotence
+//! # Idempotence, and how the no-op is reported
 //!
 //! Applying twice is safe: the engine compares canonical forms and leaves a
-//! target that already matches the plan exactly as it is. This command does not
-//! claim to know *whether* the host changed — the DI-API's `ApplyView` carries
-//! per-step outcomes and no such flag, and inventing one from "a step is
-//! recorded as applied" would report a mutation on every re-run. What it does
-//! report is what the service told it: which steps were applied, skipped or
-//! failed, and the fingerprint of each.
+//! target that already matches the plan exactly as it is. Since AAASM-5674 the
+//! runtime *states* which of the two happened, and this command reports that
+//! answer — `changed` or `unchanged` — on the result and as `outcome` in
+//! `--output json`.
+//!
+//! It is reported, never derived. A runtime older than DI-API 5 does not carry
+//! the field, and its absence means "this peer cannot say", not "nothing
+//! changed": the report then carries `outcome: null` with `outcome_unknown`
+//! explaining why. Inventing an answer from the receipt id (reused across a
+//! no-op reapply), from `applied_at_unix_secs` (second-granularity and
+//! cross-process), from a status read before the apply, or from "a step is
+//! recorded as applied" would each report a wrong `changed` or a wrong
+//! `unchanged` on some run — and a wrong `unchanged` is a success claim nobody
+//! made.
 
 use std::process::ExitCode;
 
@@ -25,7 +33,7 @@ use clap::Args;
 
 use crate::output::OutputFormat;
 
-use super::model::{InstallReport, StepOutcomeRow};
+use super::model::InstallReport;
 use super::plan::PlanArgs;
 use super::render::{emit, Report};
 use super::session::SessionOptions;
@@ -121,32 +129,17 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
             .await
             .map_err(verb_failure)?;
 
-        let report = InstallReport {
-            receipt_id: applied.receipt_id.clone(),
-            applied_at_unix_secs: applied.applied_at_unix_secs,
-            steps: applied
-                .steps
-                .iter()
-                .map(|s| StepOutcomeRow {
-                    step_id: s.step_id.clone(),
-                    outcome: s.outcome.clone(),
-                    fingerprint: (!s.fingerprint.is_empty()).then(|| s.fingerprint.clone()),
-                })
-                .collect(),
-            planned_level: applied.planned_level.clone(),
-            achieved_level: applied.achieved_level.clone(),
-            plan: super::model::PlanReport { applied: true, ..plan },
-        };
+        // Read through the negotiated connection, which is where the DI-API
+        // version gate lives. An older runtime states no outcome, and this
+        // command reports that rather than guessing one (AAASM-5674).
+        let mutation = session.client.negotiated().apply_mutation(&applied);
+        let (report, outcome) =
+            InstallReport::from_applied(super::model::PlanReport { applied: true, ..plan }, &applied, &mutation);
 
         // A step that failed is a partial install, and the user has to be told
         // which one — an exit code of 0 here would leave them believing an
         // integration exists that only half does.
-        let failed: Vec<&StepOutcomeRow> = report.steps.iter().filter(|s| s.outcome == "failed").collect();
-        let outcome = if failed.is_empty() {
-            Outcome::Success
-        } else {
-            Outcome::InternalError
-        };
+        let failed = report.failed_steps();
         if !failed.is_empty() {
             eprintln!(
                 "error: the install is partial — {} step(s) failed: {}\n  → run `aasm integrations status {}` \

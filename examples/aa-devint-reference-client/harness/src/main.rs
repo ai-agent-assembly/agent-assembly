@@ -52,11 +52,12 @@ use aa_core::integration::{
 };
 use aa_runtime::devint::audit::TracingAuditSink;
 use aa_runtime::devint::lifecycle::{
-    ApprovalInput, ApprovalRelayReceipt, RepairReport, ScopedSecurityEvent, ToolDescriptor, VerdictKind,
+    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, RepairReport, ScopedSecurityEvent, ToolDescriptor,
+    VerdictKind,
 };
 use aa_runtime::devint::{
-    DevIntServer, DevIntServerConfig, DevIntServices, DiVerb, IntegrationLifecycle, LifecycleError, TokenScope,
-    ToolScope,
+    ApplyMutation, DevIntServer, DevIntServerConfig, DevIntServices, DiVerb, IntegrationLifecycle, LifecycleError,
+    TokenScope, ToolScope,
 };
 
 /// The secret a poisoned fixture carries. Its absence from everything the
@@ -220,10 +221,10 @@ impl IntegrationLifecycle for FakeLifecycle {
         Ok(poisoned_plan(&request.tool))
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<IntegrationReceipt, LifecycleError> {
+    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
         Self::known(tool)?;
         let plan = poisoned_plan(tool);
-        Ok(IntegrationReceipt {
+        let receipt = IntegrationReceipt {
             schema_version: LIFECYCLE_SCHEMA_VERSION,
             receipt_id: "receipt-1".to_string(),
             plan_id: if plan_id.is_empty() {
@@ -253,6 +254,12 @@ impl IntegrationLifecycle for FakeLifecycle {
             achieved_level: ProtectionLevel::Integrated,
             achieved_evidence: Vec::new(),
             verified_at_unix_secs: None,
+        };
+        // A first install of a tool this harness reports as unintegrated: the
+        // host changed. Stated rather than left to the client to infer.
+        Ok(AppliedIntegration {
+            receipt,
+            mutation: ApplyMutation::Changed,
         })
     }
 

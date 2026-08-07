@@ -278,7 +278,7 @@ esac
 |---|---|---|
 | `repair` | yes | `changed` when the service restored something; `unchanged` for both no-op states. |
 | `remove` | yes | `changed` when the reversal ran; `unchanged` when there was no integration to remove. |
-| `install` | **not yet** | See below. |
+| `install` | yes, from DI-API 5 | `changed` when the apply modified the host; `unchanged` when the exact desired managed state already existed. `null` when the runtime is too old to say — see below. |
 | `list`, `plan`, `status`, `verify` | no | None of them is asked to reach an end state on the host, so neither token would mean anything. `verify` has its own pass/fail axis in `outcome` on its own report — that field is the verification result (`passed`, `partially_passed`, `failed`, `unverifiable`), not this vocabulary. |
 
 A `--dry-run` reports `null` rather than a token. It changed nothing, but it
@@ -287,12 +287,60 @@ previewing is proof of the opposite. The one exception is a `--dry-run` against
 a tool with no integration at all: that state is settled before any plan is
 previewed, so it reports `unchanged`.
 
-**`install` does not report it yet.** The runtime knows whether an apply mutated
-anything — the engine computes it — but the DI-API's `ApplyView` does not carry
-the fact, and this client will not infer it from a receipt timestamp: a wrong
-`unchanged` tells a script the world did not change when it did, which is worse
-than no answer. Until the wire carries it, compare `aasm integrations status`
-before and after. Tracked on AAASM-5499.
+### `install`, and what `null` means there
+
+`install` reports the outcome only when the runtime **states** it, which needs
+DI-API 5 or newer (AAASM-5674). The engine has always computed the fact; before
+v5 the wire had nowhere to carry it.
+
+Against an older runtime the report carries `"outcome": null` and an
+`outcome_unknown` string saying why:
+
+```console
+$ aasm integrations install claude-code --yes
+…
+Applied as receipt receipt-claude-code-user-1786078344
+  outcome:         not reported — this runtime speaks DI-API v4; the apply
+                   outcome arrived in v5, so it could not be asked whether
+                   anything changed
+```
+
+```json
+{
+  "outcome": null,
+  "outcome_unknown": "this runtime speaks DI-API v4; the apply outcome arrived in v5, …"
+}
+```
+
+**`null` is not `unchanged`.** It means no answer was established, and a script
+must handle it as its own case:
+
+```bash
+case $(aasm integrations install claude-code --yes --output json | jq -r .outcome) in
+  changed)   echo 'the tool was configured' ;;
+  unchanged) echo 'it was already exactly as planned' ;;
+  null)      echo 'this runtime cannot say; update it' ;;
+esac
+```
+
+The exit code is still `0` in the `null` case: the apply itself succeeded. What
+could not be established is a claim about the *host*, not about the command —
+which is precisely why the exit code cannot answer this question.
+
+`aasm` does not guess the missing answer, and neither should another client.
+Each available substitute is wrong in a way that produces a confident false
+`unchanged`:
+
+| Substitute | Why it is wrong |
+|---|---|
+| `receipt_id` | **Reused** when the plan id matches, whether or not anything mutated — a no-op reapply deliberately keeps the prior receipt so the store's history does not record an upgrade that never happened. |
+| `applied_at_unix_secs` | A cross-process, second-granularity clock compare. Two installs inside one second are indistinguishable, and it false-reports `changed` in a loop. |
+| a `status` read before the apply | Carries neither `receipt_id` nor `plan_id`, so it cannot match "the exact desired managed state". Swapping the policy profile at the same `planned_level` would read as a false `unchanged`. |
+| the exit code | Answers the other axis entirely. |
+
+If you need the answer from an older runtime, update the runtime. Comparing
+`aasm integrations status` before and after is a weaker fallback: it cannot see
+a change that leaves the reported level identical.
 
 ## Exit codes
 
