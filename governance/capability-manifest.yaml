@@ -2873,6 +2873,17 @@ capabilities:
   evidence:
   - kind: test
     path: aa-integration-tests/tests/cli_run_claude_governed_launch.rs
+    pins:
+    - protection_state
+    note: >-
+      run_claude_launches_the_tool_with_identity_proxy_and_a_monitored_session, in the
+      cfg(unix) governed_launch module at :97. It pins the rung rather than merely existing:
+      the session's registered identity reaches the launched tool, "the proxy THIS HOST
+      VERIFIED" reaches it too (ADR 0030 section 4.1's trust-store-present-and-in-use limb),
+      and the gateway observes session start and end — the core-side observation section 4.1
+      demands instead of an adapter-side assertion. It runs unconditionally on the macOS CI
+      runner against a claude stand-in (:151 write_stub_binary), with no require_claude gate,
+      so unlike the real-binary lane at :629 it does not skip.
   - kind: test
     path: aa-integration-tests/tests/cli_run_claude_launch_env.rs
   - kind: test
@@ -4936,7 +4947,7 @@ capabilities:
   coverage_qualifiers:
     e3_transport_mediation: denied_before_execution
     e4_host_level: unsupported
-  protection_state: host_enforced
+  protection_state: integrated
   protection_state_scope: tool_governance_only
   governance_level_ceiling: not_measured
   boundary_class: B6
@@ -4961,7 +4972,21 @@ capabilities:
   - kind: test
     path: aa-integration-tests/tests/conformance_claude_code.rs
   evidence_runs_on_main: standing
-  target_level: claim the file, never the enforcement
+  target_level: >-
+    claim the file, never the enforcement. DEMOTED from host_enforced to integrated in
+    AAASM-5531 review round 1. host_enforced beside coverage: unsupported is contradictory
+    on its face — ADR 0030 section 4.1 reserves that rung for bypass resistance and ADR
+    0033 section 6 defines unsupported as not available on this platform/configuration, and
+    a capability cannot be bypass-resistant for something it does not provide. The row's own
+    interception_component settles which half is wrong: "E4: NONE ... NO TEST PINS IT ...
+    a pass-through tautology". Neither cited test pins the rung either — both gate the macOS
+    lane on conformance_support::require_claude, and the real claude binary is absent from
+    CI, so those lanes skip rather than measure. What the evidence does earn is integrated:
+    the managed-settings write plus its read-back, which ADR 0030 section 4.1 notes "still
+    says nothing about traffic". DIRECTION GATE: demoting further needs only evidence, since
+    claiming less than the evidence supports is the safe direction; RESTORING this rung needs
+    a test that pins host enforcement on macOS AND an owner decision, because no wrapper makes
+    an unsupported claim true.
   tickets:
   - AAASM-5298
   - AAASM-5639
