@@ -12,8 +12,10 @@ refusing or redacting a request before it leaves the machine. The *agent's* own
 code does not change, but the proxy does have to be installed, started, routed to
 (`HTTPS_PROXY`, honoured by the client) and have its CA trusted; `llm_only`
 defaults to `true`, so only the built-in LLM hosts are decrypted. Linux and
-macOS — on macOS the crate is absent from the GitHub Release assets, the Homebrew
-tap and `install.sh`, so `cargo install aa-proxy` is the only channel that ships
-it. Runs as a standalone binary or embedded in-process via `aa_proxy::run()`.
+macOS, with Windows unsupported — and the release pipeline builds this crate on
+Linux only, so the only prebuilt `aasm-proxy` assets are `linux-amd64` and
+`linux-arm64` and the Homebrew formula is `depends_on :linux`. On macOS
+`cargo install aa-proxy` is therefore the only channel that ships it. Runs as a
+standalone binary or embedded in-process via `aa_proxy::run()`.
 
 Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
