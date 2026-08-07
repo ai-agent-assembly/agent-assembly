@@ -15,7 +15,8 @@ rules that actually keep the manifest honest, and those live here:
 * whether a cited evidence path is **tracked in the tree the evidence names**
   (ADR 0034 §6.4) — existence on a working checkout is not tracked-ness;
 * whether the evidence tree is an **ancestor** of the ref the manifest claims
-  to describe (ADR 0034 §6.3);
+  to describe (ADR 0034 §6.3), and — per row rather than per document —
+  whether a row citing a path the newest release tag lacks says so (R15);
 * whether the three distribution questions are answered separately
   (ADR 0034 §6.1, forbidden design 5);
 * whether the three **vocabulary axes** stay on their own subjects
@@ -199,6 +200,14 @@ EXTERNAL_ENV = (
 _ENV_ALT = "|".join(("AA_[A-Z0-9_]+", *EXTERNAL_ENV))
 AA_TOKEN = re.compile(rf"\b({_ENV_ALT})\b")
 AA_ASSIGNMENT = re.compile(rf"\b({_ENV_ALT})\s*=")
+
+# R15's prose-path extractor. Deliberately permissive — a false extraction is
+# discarded by the "must resolve at the evidence tree" gate that follows it, so
+# the cost of being loose here is zero and the cost of being tight is a missed row.
+SOURCE_PATH = re.compile(
+    r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+"
+    r"\.(?:rs|py|ts|tsx|js|mjs|go|toml|yml|yaml|md|sh|json|proto)"
+)
 
 STALE_ERROR_DAYS = 180
 STALE_WARN_DAYS = 90
@@ -504,6 +513,100 @@ def path_in_tree(tree: str, path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def newest_release_tag() -> str | None:
+    """The newest `v*` tag in this checkout, or None if there are no tags.
+
+    Returning None must never read as "nothing to check" — R15's caller warns
+    on it, because a shallow clone with no tags and a repository that genuinely
+    has no releases produce the same empty list, and a silent zero is
+    indistinguishable from a probe that never ran.
+    """
+    result = git("tag", "--list", "v*", "--sort=-v:refname")
+    if result.returncode != 0:
+        return None
+    tags = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return tags[0] if tags else None
+
+
+def _cited_paths(row: dict) -> set[str]:
+    """Every repo path the row cites, from evidence[].path and from prose.
+
+    `interception_component` is prose, so paths are pulled out by pattern. That
+    is deliberately loose: R15's caller keeps only those that resolve to a blob
+    at the row's own evidence tree, and a mis-extracted fragment cannot.
+    """
+    paths = set()
+    for item in row.get("evidence") or []:
+        value = item.get("path")
+        if isinstance(value, str) and value:
+            paths.add(value.split(":")[0])
+    component = row.get("interception_component")
+    if isinstance(component, str):
+        paths.update(SOURCE_PATH.findall(component))
+    return paths
+
+
+def check_row_release_scope(
+    row: dict, tree: str, tag: str, where: str, rep: Report
+) -> None:
+    """R15. A row whose citations postdate the newest release must say so.
+
+    Known gap 6 already records, once, at document level, that the evidence
+    tree is an ancestor of no released tag. A blanket caveat is the weakest
+    form of that statement: it is true of every row, so it distinguishes
+    nothing, and a consumer reading one row cannot tell whether THIS row
+    differs materially in the release or merely shares the general caveat.
+
+    This rule converts the caveat into a per-row machine check. Where the row
+    cites a path that exists at the evidence tree and NOT at the newest tag,
+    the row gained that citation after the release, so the release cannot be
+    described by it — and the row must name the tag rather than leave the
+    reader to infer parity. Silence reading as the broadest admissible value is
+    ADR 0034 forbidden design 8.
+
+    Scope, stated rather than overclaimed:
+
+    * The rule is one-directional. It fires on a MISSING citation, which is
+      cheap and exact to detect; it cannot see a path that exists at both refs
+      with different content, which is the larger population. `git diff` counts
+      say 51 of 93 cited-and-tracked files changed between the two refs, so the
+      rule catches the sharpest cases, not all of them.
+    * The scope statement is author-declared, exactly as R14 clause 1's `pins`
+      is. Nothing machine-checks what the sentence says. What the gate buys is
+      that a row cannot silently omit it.
+    * Only paths that resolve at the evidence tree are considered, so a
+      cross-repo path in prose (`node-sdk/...`, `go-sdk/...`) cannot trigger the
+      rule — it is absent at both refs and says nothing about the release.
+    * The rule retires itself. Once a tag containing the evidence tree is cut,
+      `merge-base --is-ancestor` succeeds and R15 stops running for every row.
+    """
+    row_tree = row.get("evidence_tree") or tree
+    missing = sorted(
+        path
+        for path in _cited_paths(row)
+        if path_in_tree(row_tree, path)[0] and not path_in_tree(tag, path)[0]
+    )
+    if not missing:
+        return
+    haystack = "\n".join(text for _, text in prose_values(row))
+    # Accept the tag verbatim, without its leading `v`, or by its pre-release
+    # suffix alone — `still live in rc.6` is how the rows that already carry
+    # this statement write it.
+    spellings = {tag, tag.lstrip("v")}
+    if "-" in tag:
+        spellings.add(tag.rsplit("-", 1)[1])
+    if any(re.search(re.escape(s), haystack, re.IGNORECASE) for s in spellings):
+        return
+    rep.error(
+        where,
+        "R15",
+        f"this row cites {len(missing)} path(s) present at evidence tree {row_tree[:9]} and "
+        f"absent at {tag}, the newest release tag — {missing} — so the row describes `main` "
+        f"and not the release, yet no prose field mentions {tag}. State the divergence on the "
+        "row: a document-level caveat is true of every row and therefore distinguishes none",
+    )
+
+
 def check_row_enforcement(row: dict, where: str, rep: Report) -> None:
     """R13. An enforcement claim that does not name its conditions is unfalsifiable.
 
@@ -667,6 +770,25 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
     # R2 — ids are stable public claim identifiers. AAASM-5588, AAASM-5600 and
     # AAASM-5609 cite them, so a duplicate or a reissued id silently repoints a
     # published claim at a different capability.
+    # R15 needs the newest release tag, and only where the evidence tree is not
+    # already inside it. Resolved once: the answer is a property of the
+    # repository, not of a row, and `git tag --list` is not free per row.
+    scope_tag: str | None = None
+    if tree and use_git:
+        scope_tag = newest_release_tag()
+        if scope_tag is None:
+            rep.warn(
+                "meta",
+                "R15",
+                "no v* tag resolves in this checkout, so per-row release-scope divergence "
+                "cannot be checked. A shallow clone and a repository with no releases look "
+                "identical here; CI must check out with fetch-depth: 0 and tags",
+            )
+        elif git("merge-base", "--is-ancestor", tree, scope_tag).returncode == 0:
+            # The evidence tree is inside the newest release, so no row can
+            # cite something the release lacks. The rule retires itself.
+            scope_tag = None
+
     seen: dict[str, int] = {}
     retired = set(meta.get("retired_ids") or [])
     for index, row in enumerate(rows):
@@ -688,6 +810,8 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
         check_row_protection(row, where, rep)
         if tree:
             check_row_evidence(row, tree, where, rep, use_git)
+        if tree and scope_tag:
+            check_row_release_scope(row, tree, scope_tag, where, rep)
 
 
 def main() -> int:
