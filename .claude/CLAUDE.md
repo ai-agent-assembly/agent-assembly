@@ -42,11 +42,13 @@ absent rather than picked up by the next. Listed lowest-latency first:
    kprobes are x86_64-only (hardcoded `__x64_sys_*`). It fails open if it cannot
    attach. It is one possible host mechanism, not a general enforcement layer.
 
+<!-- truth-exempt: negative-example - the AAASM-5528 wording, quoted to show what is prohibited -->
 > **Do not restate these as absolutes.** Public copy derived from this file was the
 > source of the AAASM-5528 truthfulness bug ("catches everything, including bypass
-> attempts"). Every layer claim must name its boundary; see
+> attempts"). Every claim above must name its boundary; see
 > `verification-reports/AAASM-5528-public-claim-inventory.md` for the evidence and
 > `docs/src/devtools/limitations.md` for the measured limits.
+<!-- /truth-exempt -->
 
 The **gateway (`aa-gateway`)** is the brain: agent registry, policy engine
 (`src/policy/`), per-team budgets (`src/budget/`), gRPC for SDKs + HTTP/OpenAPI
