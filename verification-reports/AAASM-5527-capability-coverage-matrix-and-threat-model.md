@@ -105,7 +105,8 @@ its own code is a defect in its own right, not merely a stale note.
 
 ### Which half is authoritative (AAASM-5666)
 
-This artifact is two files, and they disagreed four times. There was no rule
+This artifact is two files, and this Markdown's hand-maintained counts had drifted
+in four places. There was no rule
 saying which one wins, so each disagreement was arguable in both directions.
 
 **What this does not override.** `governance/capability-manifest.yaml` is the
@@ -239,10 +240,13 @@ beneath it in this very file — see the closing note.
 
 **This section invalidates line references into this file.** Adding it shifts
 everything below it. The exact offset is deliberately **not** quoted here: it
-changed three times while this section was being written — the anchor delta runs
-50 → 116 → 118 → 132 across `fa3fc942d`, `273ba177c`, `12c9deef8`, `c278f7f8a`,
-each value invalidated by the commit that recorded the previous one — which is the
-whole lesson. Recompute it instead — it is the delta of the
+kept changing while this section was being written. Measured at four named
+commits, the anchor delta was 50 at `fa3fc942d`, 116 at `273ba177c`, 118 at
+`12c9deef8` and 132 at `c278f7f8a` — each value invalidated by the very commit
+that recorded the previous one. Those four are history, not the current figure,
+which is deliberately left unquoted here: every edit to this section changes it,
+so any number written down is wrong by the time it is read. That is the whole
+lesson. Recompute it instead — it is the delta of the
 `## Claim vocabulary` anchor, which sits at `:106` in `9fbf42985`. That breaks all
 15 Markdown line references in the
 population table in `governance/README.md`. Those are outside AAASM-5666's
