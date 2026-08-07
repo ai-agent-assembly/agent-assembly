@@ -12,16 +12,13 @@
 //! client, and the assertion is made against the SQLite file the boot was
 //! configured with, read through a connection the gateway does not own.
 //!
-//! # What this does *not* cover, stated plainly
+//! # Scope: this file covers the TCP transport only
 //!
-//! `serve_uds` performs the identical wiring, and is **not** covered here. A
-//! Unix-socket tonic client needs a `hyper_util` connector that `aa-gateway`
-//! does not depend on, and adding a dependency for one test was not in this
-//! ticket's scope. So the UDS entrypoint's call to
-//! `attach_sensitive_data_projection` is verified by review and by the compiler
-//! — its `projection` binding is consumed by `drain_sensitive_data_projection`
-//! at the end of the function — but not by an executable assertion. A mutation
-//! that removed the wiring from `serve_uds` alone would not fail any test.
+//! `serve_uds` performs the identical wiring and has its own proof in
+//! `sensitive_data_projection_serve_uds_e2e` (AAASM-5656). The two are
+//! deliberately separate files so the kills stay attributable: removing the
+//! wiring from one transport fails only that transport's test. Do not merge
+//! them, and do not let either assert through the other's socket.
 //!
 //! # Process isolation
 //!
