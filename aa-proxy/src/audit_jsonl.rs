@@ -370,6 +370,37 @@ pub fn retention_shortfalls() -> u64 {
     RETENTION_SHORTFALLS.load(Ordering::Relaxed)
 }
 
+/// Count of sink I/O operations that failed — an append, a flush, or the
+/// rotation that follows them (AAASM-5660).
+///
+/// A full disk is the case this exists for: every one of those calls fails with
+/// `ENOSPC`, and the previous behaviour — log it and carry on — left the file
+/// silently short of what the proxy recorded, with nothing beside it to say so.
+/// A silent drop is the one option a governance sink does not get.
+///
+/// Non-zero means the file on disk is **not** what the proxy intended: either a
+/// record never landed (a failed append or flush) or the sink is outside the
+/// bound it was configured with (a failed rotation). Which of the two is in the
+/// log; that it happened at all is what a consumer needs, and that is what is
+/// published.
+///
+/// The proxy deliberately does **not** stall the data path or exit. An
+/// intercepted request must not fail because the audit disk filled, and a proxy
+/// that quits on a full disk turns a recording problem into an outage. It
+/// counts the failure, publishes it, and keeps enforcing — so the window
+/// reports as lossy rather than as complete.
+static WRITE_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Sink writes, flushes or rotations that failed since process start.
+pub fn write_failures() -> u64 {
+    WRITE_FAILURES.load(Ordering::Relaxed)
+}
+
+/// Record one failed write, returning the new running total.
+fn record_write_failure() -> u64 {
+    WRITE_FAILURES.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 /// Default bytes a live segment may reach before rotating (32 MiB).
 ///
 /// Unchanged from AAASM-5449 so that making the bound configurable does not
@@ -597,6 +628,15 @@ pub struct SinkCompleteness {
     /// left to be inferred.
     #[serde(default)]
     pub retention_shortfalls: u64,
+    /// Sink I/O the writer could not complete — a failed append or flush (the
+    /// record is not on disk) or a failed rotation (the sink is outside its
+    /// bound).
+    ///
+    /// Distinct from [`Self::dropped_entries`], which is loss on the way *to*
+    /// the writer. This is the writer's own failure, and it is the number that
+    /// stops a full disk from being a silent drop.
+    #[serde(default)]
+    pub write_failures: u64,
 }
 
 /// Read the completeness published beside `path`, if any.
@@ -641,6 +681,7 @@ pub struct JsonlWriter {
     discarded_at_open: u64,
     expired_at_open: u64,
     shortfalls_at_open: u64,
+    write_failures_at_open: u64,
     /// Last snapshot written, so an unchanged sidecar is not rewritten on
     /// every line.
     published: SinkCompleteness,
@@ -685,6 +726,7 @@ impl JsonlWriter {
             discarded_segments: 0,
             expired_segments: 0,
             retention_shortfalls: 0,
+            write_failures: 0,
         });
         // The live segment may already hold records from an earlier process, so
         // its age is read back rather than assumed to start now — a proxy
@@ -703,6 +745,7 @@ impl JsonlWriter {
             discarded_at_open: discarded_segments(),
             expired_at_open: expired_segments(),
             shortfalls_at_open: retention_shortfalls(),
+            write_failures_at_open: write_failures(),
             published: baseline,
         })
     }
@@ -759,7 +802,13 @@ impl JsonlWriter {
                 received = self.receiver.recv() => {
                     let Some(entry) = received else { break };
                     if let Err(e) = self.append(&entry).await {
-                        tracing::error!(error = %e, "proxy audit jsonl write failed");
+                        let total = record_write_failure();
+                        tracing::error!(
+                            error = %e,
+                            write_failures = total,
+                            "proxy audit jsonl write failed — the file on disk is not what \
+                             the proxy recorded; the published window is now lossy",
+                        );
                     }
                     // After the append, not before: a drop recorded by the data
                     // path while this line was in flight belongs to the window a
@@ -774,7 +823,12 @@ impl JsonlWriter {
         }
 
         if let Err(e) = self.file.flush().await {
-            tracing::error!(error = %e, "proxy audit jsonl final flush failed");
+            let total = record_write_failure();
+            tracing::error!(
+                error = %e,
+                write_failures = total,
+                "proxy audit jsonl final flush failed — buffered records were not written",
+            );
         }
         self.publish_completeness(true).await;
         tracing::info!(path = %self.path.display(), "proxy audit jsonl writer stopped");
@@ -811,7 +865,12 @@ impl JsonlWriter {
         }
         if self.live_segment_has_aged_out() {
             if let Err(e) = self.rotate().await {
-                tracing::error!(error = %e, "proxy audit jsonl age-based rotation failed");
+                let total = record_write_failure();
+                tracing::error!(
+                    error = %e,
+                    write_failures = total,
+                    "proxy audit jsonl age-based rotation failed",
+                );
             }
         }
         self.expire_aged_segments().await;
@@ -925,6 +984,7 @@ impl JsonlWriter {
             expired_segments: self.baseline.expired_segments + expired_segments().saturating_sub(self.expired_at_open),
             retention_shortfalls: self.baseline.retention_shortfalls
                 + retention_shortfalls().saturating_sub(self.shortfalls_at_open),
+            write_failures: self.baseline.write_failures + write_failures().saturating_sub(self.write_failures_at_open),
         }
     }
 
@@ -940,6 +1000,7 @@ impl JsonlWriter {
             && current.discarded_segments == self.published.discarded_segments
             && current.expired_segments == self.published.expired_segments
             && current.retention_shortfalls == self.published.retention_shortfalls
+            && current.write_failures == self.published.write_failures
         {
             return;
         }
@@ -1957,6 +2018,78 @@ mod retention_tests {
         let published = read_completeness(&path).await.unwrap();
         assert_eq!(published.dropped_entries, 7, "the earlier window's loss was erased");
         assert_eq!(published.discarded_segments, 2);
+    }
+
+    // ── failed sink I/O: the disk-full class (AAASM-5660) ──────────────────
+
+    /// Disk-full is defined as **count and keep enforcing**, never as a silent
+    /// drop and never as killing the proxy.
+    ///
+    /// `ENOSPC` surfaces at exactly one place — the `io::Result` of an append,
+    /// a flush or the rotation that follows them — so the fixture produces a
+    /// real failure at that same boundary rather than mocking the filesystem: a
+    /// directory sitting where the rotation's `remove_file` expects a segment
+    /// makes `rotate` fail with a genuine OS error, on a parent directory that
+    /// is still writable so the sidecar can still be published.
+    ///
+    /// (A literal full filesystem is not portably constructible in a unit test
+    /// on this platform; what is under test is the handling of the failure, and
+    /// that handling is shared by every `io::Error` the sink can take.)
+    #[tokio::test]
+    async fn a_sink_write_that_fails_is_counted_and_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = RotationPolicy {
+            max_segment_bytes: 256,
+            retained_segments: 1,
+            ..RotationPolicy::default()
+        };
+
+        // A directory where rotation expects to unlink the oldest segment.
+        // `remove_file` on a directory is an error on every Unix.
+        let blocked = segment_path(&path, 1);
+        std::fs::create_dir(&blocked).unwrap();
+
+        let before = write_failures();
+        drain(&path, policy, 20).await;
+
+        let failures = write_failures() - before;
+        assert!(
+            failures > 0,
+            "the sink could not complete its rotation and reported nothing"
+        );
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert_eq!(
+            published.write_failures, failures,
+            "the failure never reached the file a consumer reads: {published:?}"
+        );
+    }
+
+    /// The control: the identical fixture without the obstruction completes
+    /// every write and reports zero, so `write_failures` is not simply
+    /// always-positive.
+    #[tokio::test]
+    async fn a_sink_that_writes_cleanly_reports_no_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = RotationPolicy {
+            max_segment_bytes: 256,
+            retained_segments: 1,
+            ..RotationPolicy::default()
+        };
+
+        let before = write_failures();
+        drain(&path, policy, 20).await;
+
+        assert_eq!(write_failures(), before, "a clean run reported a write failure");
+        let published = read_completeness(&path).await.unwrap();
+        assert_eq!(published.write_failures, 0);
+        // Non-vacuity: the fixture really did rotate, so it exercised the same
+        // code path the obstructed run failed in.
+        assert!(
+            tokio::fs::metadata(segment_path(&path, 1)).await.is_ok(),
+            "the fixture never rotated, so it does not control for the failing case"
+        );
     }
 
     // ── completeness ───────────────────────────────────────────────────────
