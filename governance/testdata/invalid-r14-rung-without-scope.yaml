@@ -1,0 +1,73 @@
+
+# INVALID FIXTURE — expects rule R14, clause 2.
+#
+# protection_state: gateway_protected while coverage is `unmeasured` — not itself
+# an enforcement term — and protection_state_scope is absent.
+#
+# The row keeps a real kind: test item, so clause 1 passes and this fixture
+# discriminates clause 2 alone. Without the scope field a generator built to the
+# AAASM-5600 interface renders the bare rung and drops the qualifier that makes
+# it honest, which is how L7 would have published as "Host Enforced".
+manifest_version: 1.0.0
+meta:
+  ticket: AAASM-5531
+  epic: AAASM-5526
+  fix_version: agent-assembly v0.0.1-rc.7
+  evidence_tree: 299de38830b5f1b3a239661c35e7bc98c1a78ee4
+  evidence_date: '2026-08-06'
+  channels_surveyed:
+  - crates_io
+  - github_release
+  channels_not_surveyed: []
+  sources:
+    canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
+    protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
+    governance: docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md
+    seed: verification-reports/AAASM-5527-capability-coverage-matrix.yaml
+  retired_ids:
+  - Z9
+capabilities:
+- id: T1
+  domain: mcp
+  capability: A worked example row carrying one of every required field
+  owner:
+    repository: agent-assembly
+    component: aa-proxy
+  framework_or_tool:
+  - any_mcp_client
+  language:
+  - any
+  platform:
+  - linux
+  launch_path: routed through aa-proxy with the gateway endpoint configured
+  preconditions:
+  - kind: env
+    name: AA_PROXY_GATEWAY_ENDPOINT
+    required_value: <set>
+  transport: https POST, HTTP/1.1
+  interception_component: evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614
+  identity_source: PROXY_AGENT_ID constant
+  policy_context:
+  - tool_name
+  decision_timing: pre
+  observe_or_enforce: enforce
+  sync_or_best_effort: sync
+  failure_posture: fail_closed
+  coverage: unmeasured
+  protection_state: gateway_protected
+  governance_level_ceiling: not_applicable
+  boundary_class: B3
+  released_channels:
+  - crates_io
+  released_platforms:
+  - linux_x86_64
+  buildable: packaging_gated
+  default_state: 'off'
+  reachability: shipped
+  known_bypasses:
+  - anything that does not traverse the proxy
+  evidence:
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_interceptor.rs
+  evidence_runs_on_main: standing
+  target_level: hold

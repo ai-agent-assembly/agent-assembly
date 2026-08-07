@@ -1,0 +1,100 @@
+# INVALID FIXTURE — expects rule R15.
+#
+# This is L1's exact shape at PR #1968's round-2 head. The row cites a test that
+# exists at the evidence tree and does NOT exist at v0.0.1-rc.6, the newest
+# release tag, and no prose field on the row mentions the tag. The row therefore
+# describes `main` while reading, to anyone quoting it, as release truth.
+#
+# Known gap 6 already says at document level that the evidence tree is an
+# ancestor of no released tag. That caveat is true of all 80 rows, so it
+# distinguishes none of them: it cannot tell a reader that THIS row's evidence
+# is one of the ones that actually vanished. R15 is the per-row form.
+#
+# WHY THIS PATH, and do not "tidy" it:
+#
+#   git cat-file -t 299de3883:aa-integration-tests/tests/cli_run_claude_governed_launch.rs
+#     -> blob                    (present at the evidence tree)
+#   git cat-file -t v0.0.1-rc.6:aa-integration-tests/tests/cli_run_claude_governed_launch.rs
+#     -> exit 128, absent        (absent at the newest release tag)
+#   git cat-file -t v0.0.1-rc.6:aa-proxy/src/proxy/mod.rs
+#     -> blob                    (POSITIVE CONTROL — the tag probe is live, so
+#                                 the absence above is measured, not a broken probe)
+#
+# The discriminating power is stable rather than incidental: a historical tag
+# cannot retroactively acquire a file, so this fixture cannot silently stop
+# discriminating the way a path chosen for convenience would. Swapping it for
+# something that exists at the tag restores the blind spot.
+#
+# Everything else is valid-minimal, so no other rule can fire: the path IS a
+# blob in the evidence tree (R5 clean), it IS a locatable `kind: test` so
+# `coverage: denied_before_execution` is earned (R12 clean), and
+# `protection_state: not_applicable` keeps R14 out. The ONLY thing wrong is the
+# missing scope statement.
+#
+# The green counterpart is this file with one sentence added to `notes`, e.g.
+# "SCOPE: fixed on main, still live in the published v0.0.1-rc.6." — that alone
+# takes the validator to exit 0, which is what proves R15 keys on the statement
+# and not on something incidental to the fixture.
+manifest_version: 1.0.0
+meta:
+  ticket: AAASM-5531
+  epic: AAASM-5526
+  fix_version: agent-assembly v0.0.1-rc.7
+  evidence_tree: 299de38830b5f1b3a239661c35e7bc98c1a78ee4
+  evidence_date: '2026-08-06'
+  channels_surveyed:
+  - crates_io
+  - github_release
+  channels_not_surveyed: []
+  sources:
+    canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
+    protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
+    governance: docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md
+    seed: verification-reports/AAASM-5527-capability-coverage-matrix.yaml
+  retired_ids:
+  - Z9
+capabilities:
+- id: T1
+  domain: mcp
+  capability: A worked example row carrying one of every required field
+  owner:
+    repository: agent-assembly
+    component: aa-proxy
+  framework_or_tool:
+  - any_mcp_client
+  language:
+  - any
+  platform:
+  - linux
+  launch_path: routed through aa-proxy with the gateway endpoint configured
+  preconditions:
+  - kind: env
+    name: AA_PROXY_GATEWAY_ENDPOINT
+    required_value: <set>
+  transport: https POST, HTTP/1.1
+  interception_component: evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614
+  identity_source: PROXY_AGENT_ID constant
+  policy_context:
+  - tool_name
+  decision_timing: pre
+  observe_or_enforce: enforce
+  sync_or_best_effort: sync
+  failure_posture: fail_closed
+  coverage: denied_before_execution
+  protection_state: not_applicable
+  governance_level_ceiling: not_applicable
+  boundary_class: B3
+  released_channels:
+  - crates_io
+  released_platforms:
+  - linux_x86_64
+  buildable: packaging_gated
+  default_state: 'off'
+  reachability: shipped
+  known_bypasses:
+  - anything that does not traverse the proxy
+  evidence:
+  - kind: test
+    path: aa-integration-tests/tests/cli_run_claude_governed_launch.rs
+  evidence_runs_on_main: standing
+  target_level: hold

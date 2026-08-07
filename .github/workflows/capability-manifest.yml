@@ -1,0 +1,93 @@
+name: Capability Manifest
+
+# AAASM-5531. `governance/capability-manifest.yaml` is the T2 source of truth
+# for what Agent Assembly can be said to do; AAASM-5588, AAASM-5600 and
+# AAASM-5609 generate public surfaces from it, so a wrong row becomes published
+# output. ADR 0034's validation requirement W7 names this gate.
+#
+# Three triggers on purpose, and the third is the point. ADR 0034 records that a
+# path-filtered gate with no backstop "is not evidence of a standing property at
+# all" — a PR-only gate never runs on the merge that breaks it. So:
+#
+#   pull_request  fast feedback on the paths that matter
+#   push to main  the gate runs on the merge itself
+#   schedule      a weekly backstop, which is also what makes the freshness rule
+#                 (R11) bite: evidence quietly ages past 180 days with nobody
+#                 editing a file, and only a time-triggered run notices.
+#
+# This is what lets the manifest honestly record `evidence_runs_on_main:
+# standing` for its own gate rather than the `path_gated_no_backstop` the
+# AAASM-5527 survey had to report about itself.
+
+on:
+  pull_request:
+    paths:
+      - "governance/**"
+      - "schemas/capability-manifest/**"
+      - "scripts/validate_capability_manifest.py"
+      - ".github/workflows/capability-manifest.yml"
+  push:
+    branches:
+      - main
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  capability-manifest:
+    name: capability manifest schema & evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Rule R5 runs `git cat-file -t <evidence_tree>:<path>` and rule R4
+          # runs `git merge-base --is-ancestor`. Both need the commit the
+          # evidence names to be present, and the default shallow fetch does not
+          # have it — the checks would fail for the wrong reason.
+          fetch-depth: 0
+          # Rule R15 compares each row's citations against the newest `v*` tag.
+          # `fetch-depth: 0` already fetches tags today, but stated explicitly
+          # because R15's no-tag path can only WARN: a shallow clone with no
+          # tags and a repository with no releases are indistinguishable from
+          # inside the validator, so the gate must not depend on a default.
+          fetch-tags: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: |
+          npm install -g ajv-cli
+          python -m pip install --quiet pyyaml
+
+      - name: Schema is self-consistent
+        run: ajv compile --strict -s schemas/capability-manifest/v1/capability-manifest.schema.json
+
+      - name: Manifest conforms to the schema
+        run: |
+          ajv validate --strict --all-errors \
+            -s schemas/capability-manifest/v1/capability-manifest.schema.json \
+            -d governance/capability-manifest.yaml
+
+      - name: Evidence, vocabulary and distribution rules
+        run: python scripts/validate_capability_manifest.py
+
+      # Proves the gate can still go red. Every rule has a fixture that must
+      # fail for that rule specifically, plus a positive control that must pass;
+      # a rule silently weakened into a no-op turns this step red even though
+      # the manifest itself would still validate.
+      - name: Validator rules still fail closed
+        run: bash governance/testdata/run-validator-tests.sh

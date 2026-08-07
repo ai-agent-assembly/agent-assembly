@@ -1,0 +1,881 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "$id": "https://agent-assembly.github.io/schemas/capability-manifest/v1/capability-manifest.schema.json",
+  "title": "CapabilityManifest",
+  "description": "AAASM-5531. The machine-readable capability and evidence manifest: one row per governed capability/action, recording its exact boundary, its distribution, its activation and the evidence behind it. This schema is the structural half of the gate; scripts/validate_capability_manifest.py carries the semantic rules (evidence tracked-ness, ancestry, freshness, vocabulary-axis separation, prose/structure agreement) that JSON Schema cannot express. Vocabulary is NOT owned here: `coverage` is ADR 0033 section 6's eleven claim terms verbatim, `protection_state` is ADR 0030's ProtectionState ladder, `governance_level_ceiling` is ADR 0030 section 4.3's GovernanceLevel, and the distribution field names are ADR 0034 section 6.1's. Coining a value on the claim axis that ADR 0033 section 6 does not define is ADR 0034 forbidden design 12.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "meta",
+    "capabilities"
+  ],
+  "properties": {
+    "manifest_version": {
+      "description": "Semantic version of this manifest's contract. The major component matches the schema directory (v1). A breaking field change requires a new schemas/capability-manifest/vN directory and a migration note in governance/README.md.",
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "meta": {
+      "$ref": "#/definitions/meta"
+    },
+    "capabilities": {
+      "description": "One row per governed capability. Row ids are stable public claim identifiers: AAASM-5588, AAASM-5600 and AAASM-5609 link to them, so an id is never reused after removal (see meta.retired_ids).",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/capability"
+      }
+    }
+  },
+  "definitions": {
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ticket",
+        "epic",
+        "fix_version",
+        "evidence_tree",
+        "evidence_date",
+        "channels_surveyed",
+        "channels_not_surveyed",
+        "sources"
+      ],
+      "properties": {
+        "ticket": {
+          "type": "string",
+          "pattern": "^AAASM-[0-9]+$"
+        },
+        "epic": {
+          "type": "string",
+          "pattern": "^AAASM-[0-9]+$"
+        },
+        "fix_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_tree": {
+          "description": "Default commit-ish every row's evidence was derived at, per ADR 0034 section 6.3. A 40-character hex SHA or a release tag. The literal values main, master and HEAD are rejected by pattern here and again by name in the validator: a branch name names a moving tree, and evidence derived on a branch does not describe a published ref.",
+          "$ref": "#/definitions/commitish"
+        },
+        "evidence_date": {
+          "$ref": "#/definitions/isodate"
+        },
+        "describes_ref": {
+          "description": "Optional. The released ref this manifest is asserted to describe. When present the validator runs `git merge-base --is-ancestor <evidence_tree> <describes_ref>` and fails the manifest if it does not hold, per ADR 0034 section 6.3. Absent means the manifest describes only its own evidence_tree.",
+          "$ref": "#/definitions/commitish"
+        },
+        "channels_surveyed": {
+          "description": "Distribution channels this manifest's rows are entitled to make a claim about. A row naming a channel outside this list is a validator error, because the manifest would be asserting a distribution fact nobody checked.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/channel"
+          }
+        },
+        "channels_not_surveyed": {
+          "description": "Channels deliberately outside the survey, each with the reason and the follow-up ticket. This exists so that a row's silence about a channel reads as `unmeasured` rather than `unsupported` — ADR 0034 forbidden design 8 forbids reading silence as a bound, so the meaning of silence is written down instead.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "channel",
+              "reason"
+            ],
+            "properties": {
+              "channel": {
+                "$ref": "#/definitions/channel"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ticket": {
+                "$ref": "#/definitions/ticket"
+              }
+            }
+          }
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "canonical_architecture",
+            "protection_ladder",
+            "governance",
+            "seed"
+          ],
+          "properties": {
+            "canonical_architecture": {
+              "type": "string",
+              "minLength": 1
+            },
+            "protection_ladder": {
+              "type": "string",
+              "minLength": 1
+            },
+            "governance": {
+              "type": "string",
+              "minLength": 1
+            },
+            "seed": {
+              "type": "string",
+              "minLength": 1
+            },
+            "seed_companion": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "retired_ids": {
+          "description": "Row ids that once existed and must never be reissued. External surfaces cite ids; reusing one silently repoints a published claim at a different capability.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/rowid"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "$comment": "An ADR 0030 enforcement rung must carry its qualifier unless `coverage` is itself an enforcement term. Mirrors validator rule R14 clause 2 exactly — the coverage condition is load-bearing, not decoration: L1 is legitimately host_enforced with coverage denied_before_execution and four cited tests, and needs no qualifier, while P3 sits at the same rung with coverage unsupported and would publish as bare 'Host Enforced' without one. Kept in both halves of the gate because a generator built to the AAASM-5600 interface reads the schema, not the validator.",
+          "if": {
+            "type": "object",
+            "required": [
+              "protection_state"
+            ],
+            "properties": {
+              "protection_state": {
+                "enum": [
+                  "gateway_protected",
+                  "host_enforced"
+                ]
+              },
+              "coverage": {
+                "not": {
+                  "enum": [
+                    "denied_before_execution",
+                    "approval_required"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "protection_state_scope"
+            ],
+            "properties": {
+              "protection_state_scope": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ],
+      "required": [
+        "id",
+        "domain",
+        "capability",
+        "owner",
+        "framework_or_tool",
+        "language",
+        "platform",
+        "launch_path",
+        "preconditions",
+        "transport",
+        "interception_component",
+        "identity_source",
+        "policy_context",
+        "decision_timing",
+        "observe_or_enforce",
+        "sync_or_best_effort",
+        "failure_posture",
+        "coverage",
+        "boundary_class",
+        "released_channels",
+        "released_platforms",
+        "buildable",
+        "default_state",
+        "reachability",
+        "protection_state",
+        "governance_level_ceiling",
+        "known_bypasses",
+        "evidence",
+        "evidence_runs_on_main",
+        "target_level"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/rowid"
+        },
+        "domain": {
+          "type": "string",
+          "enum": [
+            "sdk",
+            "host_action",
+            "network",
+            "mcp",
+            "devtool_launch",
+            "credentials",
+            "identity",
+            "degraded_mode",
+            "platform"
+          ]
+        },
+        "capability": {
+          "description": "What this row is a claim about, phrased as the action, not as a marketing benefit.",
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "description": "Ticket requirement: component and repository owner. The repository is where a behaviour change to this row must be made, and therefore where AAASM-5531's update obligation lands.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repository",
+            "component"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "enum": [
+                "agent-assembly",
+                "python-sdk",
+                "node-sdk",
+                "go-sdk",
+                "cloud",
+                "agent-assembly-enterprise",
+                "docs",
+                "examples",
+                "e2e-public",
+                "e2e-private",
+                "internal-docs",
+                "not_applicable"
+              ]
+            },
+            "component": {
+              "description": "The crate, module or adapter that does the work. `none` where the row's finding is that no component intercepts this action at all — said rather than left blank.",
+              "type": "string",
+              "minLength": 1
+            },
+            "also_repositories": {
+              "description": "Further repositories a behaviour change to this row must land in. G5's posture spans all three SDKs, and a singular owner would silently hide two of them.",
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "agent-assembly",
+                  "python-sdk",
+                  "node-sdk",
+                  "go-sdk",
+                  "cloud",
+                  "agent-assembly-enterprise",
+                  "docs",
+                  "examples",
+                  "e2e-public",
+                  "e2e-private",
+                  "internal-docs"
+                ]
+              }
+            }
+          }
+        },
+        "framework_or_tool": {
+          "$ref": "#/definitions/stringlist"
+        },
+        "language": {
+          "$ref": "#/definitions/stringlist"
+        },
+        "platform": {
+          "$ref": "#/definitions/stringlist"
+        },
+        "launch_path": {
+          "description": "Mandatory for every row and load-bearing for enforcement claims: an enforcement claim that does not name how the process was launched is unfalsifiable. Any AA_* token appearing here must also appear in preconditions[].name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "preconditions": {
+          "description": "The structured, normative statement of what must hold for this row's coverage to be reached. This is the single home for environment and configuration facts: validator rule R8 rejects an environment token in any prose field that is not declared here, and R8b rejects the `NAME=value` assignment spelling outright, so a required value has one home rather than two that can disagree (the AAASM-5666 M1 divergence). SCOPE, stated honestly: R8b blocks one spelling. A prose sentence phrased 'set to X' or 'forces X' still slips through, and a regex chasing English always will — R8's declaration requirement is the durable half, because it forces the token into the structure where a reviewer can compare the two.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "env",
+                  "config",
+                  "platform",
+                  "runtime",
+                  "trust",
+                  "launch"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required_value": {
+                "type": "string"
+              },
+              "optional": {
+                "description": "True where the precondition is one of several alternatives rather than a hard requirement.",
+                "type": "boolean"
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "transport": {
+          "type": "string",
+          "minLength": 1
+        },
+        "interception_component": {
+          "description": "The symbol and file:line that actually does the work. Line numbers rot; the symbol name is what makes drift detectable.",
+          "type": "string",
+          "minLength": 1
+        },
+        "identity_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_context": {
+          "description": "Either the flat list of context fields the decision sees, or the split form where the survey found expressible and enforceable context to differ (H1, H6, H7).",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "expressible",
+                "enforceable"
+              ],
+              "properties": {
+                "expressible": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "enforceable": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "decision_timing": {
+          "type": "string",
+          "enum": [
+            "pre",
+            "in_line",
+            "post",
+            "none"
+          ]
+        },
+        "observe_or_enforce": {
+          "type": "string",
+          "enum": [
+            "enforce",
+            "observe",
+            "none"
+          ]
+        },
+        "sync_or_best_effort": {
+          "type": "string",
+          "enum": [
+            "sync",
+            "best_effort",
+            "none"
+          ]
+        },
+        "failure_posture": {
+          "description": "fail_open_silent is distinct from fail_open on purpose: G7 and G9 fail open without emitting a degradation, which is materially different from G6, which does. silent_truncation is M7/N9's posture — the request is neither refused nor forwarded intact.",
+          "$ref": "#/definitions/failureposture"
+        },
+        "response_side_posture": {
+          "description": "Where the response direction's posture differs from the request direction's.",
+          "$ref": "#/definitions/failureposture"
+        },
+        "failure_posture_node": {
+          "description": "Where one SDK diverges from the others on posture.",
+          "$ref": "#/definitions/failureposture"
+        },
+        "coverage": {
+          "description": "VOCABULARY AXIS: behaviour on evidence — one of the manifest's three axes, enumerated in governance/README.md's 'Three axes, three owners' table. Note this triple is NOT ADR 0034 hand-off 7's, whose three are claim terms, documentation-area maturity and portfolio lifecycle. ADR 0033 section 6's eleven claim terms, verbatim and closed. This axis ranges over ONE ACTION ON ONE HOST AT ONE TIME. It says nothing about how finished anything is and nothing about whether anything is installed; applying it to another axis's subject is ADR 0034 forbidden design 12.",
+          "$ref": "#/definitions/claimterm"
+        },
+        "coverage_qualifiers": {
+          "description": "Secondary coverage where one row's answer differs by aspect — connection versus payload, request versus response, MCP path versus LLM path. Values are the same closed ADR 0033 section 6 enum as `coverage`.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/definitions/claimterm"
+          }
+        },
+        "protection_state": {
+          "description": "VOCABULARY AXIS: protection state — ADR 0030's ProtectionState ladder. This axis ranges over ONE DEVELOPER-TOOL INTEGRATION ON ONE HOST. `gateway_protected` and `host_enforced` are ADR 0030 rungs, NOT claim terms: the ticket's proposed `GatewayVerified` and `HostConstrained` land here, not on `coverage`. Required on every row; `not_applicable` where no tool integration is in scope, `not_measured` where one is but the ladder was not evaluated. Silence is not permitted, per ADR 0034 forbidden design 8.",
+          "type": "string",
+          "enum": [
+            "not_installed",
+            "detected_not_integrated",
+            "partially_integrated",
+            "integrated",
+            "gateway_protected",
+            "host_enforced",
+            "drifted",
+            "degraded",
+            "incompatible",
+            "not_applicable",
+            "not_measured"
+          ]
+        },
+        "protection_state_scope": {
+          "description": "Where a rung is reachable but does not imply what a reader would assume — e.g. tool_governance_only, an ADR 0030 rung reached by a config write that carries no data-path prevention.",
+          "type": "string",
+          "minLength": 1
+        },
+        "governance_level_ceiling": {
+          "description": "VOCABULARY AXIS: adapter ceiling. ADR 0030 section 4.3's GovernanceLevel — a static build-time CEILING on what an adapter could ever achieve, not a measurement. ADR 0030 section 4.3 forbids conflating it with ProtectionState, which is why it is a separate key: the AAASM-5527 survey's single `current_level` field carried both and one row (L5) used a GovernanceLevel value where the other nine used ladder rungs.",
+          "type": "string",
+          "enum": [
+            "l0_discover",
+            "l1_observe",
+            "l2_enforce",
+            "l3_native",
+            "not_applicable",
+            "not_measured"
+          ]
+        },
+        "boundary_class": {
+          "description": "B1 universal within one patched function; B2 within one framework; B3 within one process; B4 within one container; B5 within one host; B6 within one managed device; B7 across opaque SaaS agents. Makes the word 'universal' unwritable without a boundary.",
+          "type": "string",
+          "enum": [
+            "B1",
+            "B2",
+            "B3",
+            "B4",
+            "B5",
+            "B6",
+            "B7",
+            "not_applicable"
+          ]
+        },
+        "boundary_conditional_on": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boundary_attained": {
+          "description": "False where the boundary class is named as the target but is not in fact reached.",
+          "type": "boolean"
+        },
+        "released_channels": {
+          "description": "QUESTION 1 of 3 — Distributed? ADR 0034 section 6.1's field name, kept verbatim so a second spelling never appears. Absence from RELEASE_BINARIES or from release.yml's asset list is NOT evidence of absence from crates.io: `cargo workspaces publish` ships every workspace member that does not set publish = false. Verify the published artifact, never the workflow.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/channel"
+          }
+        },
+        "released_platforms": {
+          "description": "QUESTION 1 of 3 — Distributed?, platform half. Channel and platform are separate because they do not factorise: aa-proxy is on crates.io for macOS and absent from every other macOS channel.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/platformid"
+          }
+        },
+        "released_matrix": {
+          "description": "Required by validator rule R9 wherever channel and platform do not factorise (every aa-proxy row). Keys must be a subset of released_channels; values a subset of released_platforms.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/platformid"
+            }
+          }
+        },
+        "released_note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "buildable": {
+          "description": "QUESTION 2 of 3 — Buildable? Whether the code compiles into the artifact for that channel and platform. Separate from Distributed? because a cfg(target_os = \"linux\") path ships in the source tarball and in no macOS binary. `unmeasured` is an honest value; omitting the field is not, and collapsing this into either neighbour is ADR 0034 forbidden design 5.",
+          "type": "string",
+          "enum": [
+            "compiled_unconditional",
+            "cfg_gated",
+            "feature_gated",
+            "packaging_gated",
+            "not_applicable",
+            "unmeasured"
+          ]
+        },
+        "buildable_conditions": {
+          "description": "The cfg predicates, feature flags or packaging conditions that gate the build, where buildable is not compiled_unconditional.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "default_state": {
+          "description": "QUESTION 3 of 3 — Activated?, default half. NOTE FOR AUTHORS: YAML 1.1 parses bare on and off as booleans, so these values MUST be quoted. An unquoted `on` becomes `true`, fails this string enum, and the gate goes red — which is the gate working.",
+          "type": "string",
+          "enum": [
+            "on",
+            "off",
+            "open",
+            "closed",
+            "mixed",
+            "not_applicable"
+          ]
+        },
+        "reachability": {
+          "description": "QUESTION 3 of 3 — Activated?, route half. WHY the capability is or is not reachable. Split out from a boolean predecessor that conflated four causes and was wrong in both directions for roughly 25 of 80 rows.",
+          "type": "string",
+          "enum": [
+            "shipped",
+            "shipped_with_platform_exception",
+            "shipped_crates_io_only",
+            "dead_code",
+            "absent_mechanism",
+            "stubbed_default"
+          ]
+        },
+        "deny_signal": {
+          "description": "How a denial reaches the caller. A list, because S6 carries two: the hazard this field exists to expose is that a caller catching only an exception treats a sentinel-blocked call as a success whose result is a string, and a scalar cannot say that a row does both.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "raise",
+              "sentinel_value",
+              "unknown",
+              "none"
+            ]
+          }
+        },
+        "redaction_actor": {
+          "description": "A gateway Redact verdict never replays the gateway's field paths; the proxy's own scanner does the work.",
+          "type": "string",
+          "enum": [
+            "proxy_scanner",
+            "gateway_instructions",
+            "none"
+          ]
+        },
+        "known_bypasses": {
+          "description": "Ticket requirement: known limitations / bypass references. An empty list is not permitted — where the mechanism cannot block there is nothing to bypass, and that sentence is itself the entry.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidence": {
+          "description": "Ticket AC 5: evidence ids resolve to executable tests or explicitly marked evidence gaps. Three kinds, because the seed survey had two shapes of real evidence and collapsing them would either fabricate paths or delete evidenced facts (ADR 0034 forbidden design 10).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/evidenceitem"
+          }
+        },
+        "evidence_tree": {
+          "description": "Per-row override of meta.evidence_tree, for a row re-derived at a different commit-ish.",
+          "$ref": "#/definitions/commitish"
+        },
+        "evidence_date": {
+          "$ref": "#/definitions/isodate"
+        },
+        "evidence_runs_on_main": {
+          "description": "NOT a boolean. A path-filtered gate with a cron backstop is weak evidence; one with no backstop is not evidence of a standing property at all. Must be derived from the workflow's triggers and path filters, never hand-asserted: a hand-maintained boolean reads true for exactly the PR-only gate that never runs on the merge that breaks it.",
+          "type": "string",
+          "enum": [
+            "standing",
+            "path_gated_with_schedule",
+            "path_gated_no_backstop",
+            "manual_only",
+            "none"
+          ]
+        },
+        "evidence_gate_note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_quality": {
+          "type": "string",
+          "enum": [
+            "unit_only",
+            "wire_level"
+          ]
+        },
+        "target_level": {
+          "description": "What this row should become, or the explicit statement that it should not be claimed at all.",
+          "type": "string",
+          "minLength": 1
+        },
+        "public_wording": {
+          "description": "Ticket requirement: the public wording approved for this boundary. AAASM-5588, AAASM-5600 and AAASM-5609 consume this; where it is absent they must generate from the structured fields rather than inventing prose.",
+          "type": "string",
+          "minLength": 1
+        },
+        "tickets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ticket"
+          }
+        },
+        "findings": {
+          "description": "Finding ids from the AAASM-5527 companion report (F1, F7, ...). A different namespace from Jira refs, resolving through a different document, so it gets its own key rather than being mixed into `tickets` as the seed did.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^F[0-9]+$"
+          }
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        },
+        "q3_changed_answer": {
+          "description": "Survey bookkeeping retained from AAASM-5527: asking Activated? separately changed this row's answer.",
+          "type": "boolean"
+        },
+        "q4_changed_answer": {
+          "description": "Survey bookkeeping retained from AAASM-5527: asking Distributed? per channel and platform changed this row's answer.",
+          "type": "boolean"
+        },
+        "q4_changed_answer_in_product_favour": {
+          "type": "boolean"
+        }
+      }
+    },
+    "evidenceitem": {
+      "description": "Three kinds. test — a tracked path, checked with `git ls-files --with-tree=<evidence_tree> --error-unmatch`. test_unlocated — a test asserted to exist with no path cited; weaker than a path, stronger than nothing, and kept as its own kind so the seed's 'aa-proxy unit tests' entries are neither fabricated into paths nor demoted to gaps. gap — no evidence, stated as such.",
+      "type": "object",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/evidencetest"
+        },
+        {
+          "$ref": "#/definitions/evidencetestunlocated"
+        },
+        {
+          "$ref": "#/definitions/evidencegap"
+        }
+      ]
+    },
+    "evidencetest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "test"
+        },
+        "path": {
+          "description": "Repository-relative path, optionally with :line or :start-end. Must be TRACKED in the evidence tree — existence on a working checkout is not tracked-ness (ADR 0034 section 6.4).",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._/-]+\\.[A-Za-z0-9]+(:[0-9]+(-[0-9]+)?)?$"
+        },
+        "test": {
+          "description": "Optional test function name within path.",
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ticket": {
+          "$ref": "#/definitions/ticket"
+        },
+        "pins": {
+          "description": "Which of this row's claims this test actually SUBSTANTIATES. Required on at least one test item wherever protection_state is an ADR 0030 enforcement rung (validator rule R14 clause 1). It exists because 'the row has a locatable test' and 'a test pins this rung' are different assertions, and the first is satisfied by any sufficiently-tested row: P3 passed the untightened rule on two Claude Code launch tests while its own text said of macOS host enforcement 'NO TEST PINS IT'. HONEST LIMIT: this is an author assertion. Nothing machine-checks that the named test truly pins the claim — what the gate enforces is that somebody stated it, in a field a reviewer can challenge, instead of the rule inferring it from mere presence.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "coverage",
+              "protection_state",
+              "failure_posture",
+              "default_state",
+              "reachability"
+            ]
+          }
+        }
+      }
+    },
+    "evidencetestunlocated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "describes"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "test_unlocated"
+        },
+        "describes": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ticket": {
+          "$ref": "#/definitions/ticket"
+        }
+      }
+    },
+    "evidencegap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "gap"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "control": {
+          "description": "The positive control run in the same command as the absence probe. An absence with no control is not a measured absence.",
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ticket": {
+          "$ref": "#/definitions/ticket"
+        }
+      }
+    },
+    "claimterm": {
+      "description": "ADR 0033 section 6's eleven claim terms. Closed set. Adding a twelfth here without amending ADR 0033 section 6 is forbidden design 12.",
+      "type": "string",
+      "enum": [
+        "observed",
+        "detected",
+        "evaluated",
+        "denied_before_execution",
+        "redacted",
+        "approval_required",
+        "degraded",
+        "unmeasured",
+        "experimental",
+        "planned",
+        "unsupported"
+      ]
+    },
+    "failureposture": {
+      "type": "string",
+      "enum": [
+        "fail_closed",
+        "fail_open",
+        "fail_open_silent",
+        "silent_truncation",
+        "not_applicable"
+      ]
+    },
+    "channel": {
+      "description": "ADR 0034 section 6.2 names five agent-assembly channels: github_release, homebrew, ghcr, install_script, crates_io. The SDK registries are added because the SDK rows ship through them. not_applicable is for rows whose subject is not a distributed artifact at all.",
+      "type": "string",
+      "enum": [
+        "github_release",
+        "homebrew",
+        "ghcr",
+        "install_script",
+        "crates_io",
+        "pypi",
+        "npm",
+        "go_modules",
+        "not_applicable"
+      ]
+    },
+    "platformid": {
+      "type": "string",
+      "enum": [
+        "linux_x86_64",
+        "linux_aarch64",
+        "macos",
+        "windows",
+        "not_applicable"
+      ]
+    },
+    "rowid": {
+      "description": "Stable public claim identifier. One or two uppercase letters and one or two digits.",
+      "type": "string",
+      "pattern": "^[A-Z]{1,2}[0-9]{1,2}$"
+    },
+    "ticket": {
+      "type": "string",
+      "pattern": "^AAASM-[0-9]+$"
+    },
+    "commitish": {
+      "description": "A 40-character hex SHA or a release tag. Branch names are excluded by construction.",
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|v[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.]+)?)$"
+    },
+    "isodate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "stringlist": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
