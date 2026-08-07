@@ -41,6 +41,20 @@ python3 scripts/validate_capability_manifest.py
 bash governance/testdata/run-validator-tests.sh
 ```
 
+Step 3 also runs two probes the fixture files cannot express:
+
+* **`real_manifest_probes.py`** — mutates *this* manifest in place, asserts the
+  gate goes red, and restores it (sha256-verified, refuses on a dirty tree).
+  Three instances of one hazard — a rule whose driver lives inside the artifact
+  it gates — reached review because every fixture is a one- or two-row synthetic
+  document, and every instance lived in the input class *"the canonical
+  document, minus one key"*. A suite blind to an input class is silent about it,
+  and silence reads as green.
+* **`readme_counts_probe.py`** — asserts every `count:` line pasted into *this
+  page* is the live one, by value. The counts below were shipped stale once, in
+  the document whose thesis is that they are printed on every run; correcting
+  them was not a mechanism, so this is one.
+
 All three run in CI on every PR touching this area, on every push to `main`,
 and weekly. The weekly run is not decoration: a PR-only gate never runs on the
 merge that breaks it, and evidence ages past the freshness limit with nobody
