@@ -144,8 +144,10 @@ fixed pipeline, and each one holds a stated boundary — lowest-latency first:
   leaves the machine, without changing the *agent's* own code. It must be
   installed, started, routed to (`HTTPS_PROXY`) and have its CA trusted, and
   `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
-  Linux and macOS; on macOS no release asset or Homebrew formula ships it, so
-  `cargo install aa-proxy` is the only channel that does.
+  Linux and macOS. On macOS no prebuilt binary exists on any channel — not the
+  GitHub Release assets, not the Homebrew tap, not the `install.sh` component
+  installer, not GHCR — so a source build of the `aa-proxy` crate from crates.io
+  (`cargo install aa-proxy`) is the only route.
 - **eBPF** (`aa-ebpf*`) — **Linux only**; there is no macOS or Windows host
   adapter. Its TLS, file and exec probes reach *observed* / *detected* and no
   further — a blocked path sets an alert bit and the syscall still proceeds. Its
