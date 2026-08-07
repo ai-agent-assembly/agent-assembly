@@ -151,10 +151,12 @@ fixed pipeline, and each one holds a stated boundary — lowest-latency first:
 - **eBPF** (`aa-ebpf*`) — **Linux only**; there is no macOS or Windows host
   adapter. Its TLS, file and exec probes reach *observed* / *detected* and no
   further — a blocked path sets an alert bit and the syscall still proceeds. Its
-  one enforcing program, the syscall guard, is **off by default** and kills
-  asynchronously, so the offending syscall runs once before the process dies.
-  The loader daemon is not shipped as a binary on any channel; building the
-  `aa-ebpf` crate from crates.io is the only route to it.
+  one program that terminates rather than observes, the syscall guard, reaches
+  *detected* plus asynchronous process termination — explicitly **not** *denied
+  before execution*. It is **off by default**, and the offending syscall runs once
+  before the `SIGKILL` lands. Its loader daemon has no prebuilt binary on any
+  channel either; a source build of the `aa-ebpf` crate from crates.io is the
+  only route.
 
 A mechanism that is not deployed is reported as absent — nothing underneath
 silently picks up what it would have done. See the
