@@ -1,6 +1,6 @@
 # aa-gateway
 
-Control plane — policy enforcement engine and agent registry for Agent Assembly.
+Control plane — policy evaluation engine and agent registry for Agent Assembly.
 
 [![crates.io](https://img.shields.io/crates/v/aa-gateway?logo=rust&label=crates.io)](https://crates.io/crates/aa-gateway)
 [![docs.rs](https://img.shields.io/docsrs/aa-gateway?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-gateway)
