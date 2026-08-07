@@ -403,9 +403,10 @@ PCRE construct. **It expands wrapped in a non-capturing group**: `<GOV-NOUN>`
 becomes `(?:coverage|protection|…)`, never the bare alternation. Substituting the
 bare form changes what the rule means — `\b<GOV-NOUN>\b` becomes a top-level
 alternation, the collocation requirement disappears, and the rule degenerates
-into a bare-token match. Measured over the corpus in
-[§8](#8-self-test-and-the-current-baseline), the three macro-bearing rules go
-from `0`/`0`/`12` to **1312**, **1344** and **900** hits. That is the same
+into a bare-token match. Measured over the full [§6.5](#65-file-scope) scope at
+this branch's head, with the same pipeline and the same guards so that macro
+grouping is the only variable, the three macro-bearing rules go from `0` / `0` /
+`12` to **1503**, **1550** and **1155** matches. That is the same
 failure the guards exist to prevent, arriving as a flood instead of a silence.
 The `pattern` values in [§5.6](#56-guards) carry the group explicitly so an
 implementer who substitutes textually still gets the right semantics.
@@ -892,7 +893,7 @@ clean one (ADR 0034 §6.4).
 | | |
 | --- | --- |
 | **Extensions** | `.md`, `.markdown`, `.mdx`, `.html`, `.txt` |
-| **Included in this repository** | `docs/src/**`, `README.md`, `*/README.md`, `CONTRIBUTING.md`, `.claude/**.md` |
+| **Included in this repository** | `docs/src/**`, `README.md`, `**/README.md` (any depth), `CONTRIBUTING.md`, `.claude/**` |
 | **Excluded by default** | `verification-reports/**`, `.ai/**`, `scratchpad/**`, `target/**`, `node_modules/**`, and any path a repository's `TRUTH-ADOPTION.md` excludes |
 
 `verification-reports/**` is excluded because it is an L6 evidence layer whose
@@ -914,6 +915,14 @@ enforcement scope the repository does not have is itself a violation.
   ([AAASM-5602](https://lightning-dust-mite.atlassian.net/browse/AAASM-5602)).
 - **Diagnostic shape.** `path:line:col rule-id severity message`, with the
   matched text and the resolved manifest row id when one was found.
+- **Granularity: one diagnostic per match.** Two matches of the same rule on one
+  logical line are two diagnostics — `CLAIM-ABS-10` on a line naming both
+  `full fleet` and `whole fleet` emits twice. The `col` field only makes sense
+  under this reading, and without it stated a count is not reproducible: over ADR
+  0033 the same corpus yields 17 `info` per match, 16 per line-and-rule.
+- **A replaced diagnostic is not an extra one.** `CLAIM-QUOTE-01` is emitted *in
+  place of* a diagnostic that would otherwise have fired, so a match a guard
+  already cleared produces nothing at all — not an `info`.
 - **Adoption sequence.** Until the tree's `blocking` baseline is empty, run
   `blocking` rules against **added and modified lines in the pull request's
   diff** and all rules against the full tree in report mode. Switch `blocking`
@@ -1171,12 +1180,19 @@ whose purpose is to forbid the phrase.
 
 [§6.5](#65-file-scope) declares an enforced scope wider than `docs/src/**`, so a
 baseline drawn only over `docs/src/**` under-reports the debt an implementer will
-actually meet. Both are given.
+actually meet. Both are given, and **both are measured at this branch's head** —
+mixing a head count with a base count is how the two rows stop adding up.
 
 | Corpus | Files | Blocking | Findings |
 | --- | --- | --- | --- |
 | `docs/src/**` only | 143 | 3 | 10 |
-| **Full [§6.5](#65-file-scope) scope** (adds `README.md`, `*/README.md`, `CONTRIBUTING.md`, `.claude/**.md`) | **198** | **6** | **13** |
+| **Full [§6.5](#65-file-scope) scope** | **198** | **6** | **13** |
+
+The wider corpus is the narrower one plus 55 files: 43 `README.md` at any depth,
+15 under `.claude/`, and `CONTRIBUTING.md`, less the READMEs already inside
+`docs/src/**`. A reader who reproduces a different total should check the README
+glob first — `*/README.md` matches 22 files and `**/README.md` matches 43, which
+is why [§6.5](#65-file-scope) now spells out *any depth*.
 
 Per rule, over the full scope:
 
