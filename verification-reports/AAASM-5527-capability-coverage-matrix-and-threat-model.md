@@ -304,8 +304,8 @@ crates.io — and two components reach a strict subset of them:
 Two consequences for how this matrix must be read, and for AAASM-5531:
 
 1. **`reachability` records the cause, not just the fact.** `shipped`,
-   `shipped_crates_io_only`, `dead_code`, `absent_mechanism` and
-   `stubbed_default` are different states with different remedies. C3 is
+   `shipped_crates_io_only`, `shipped_with_platform_exception`, `dead_code`,
+   `absent_mechanism` and `stubbed_default` are different states with different remedies. C3 is
    `dead_code` — its binaries ship and no route populates the secrets store —
    so channel scoping tells you nothing about it. Rows like H1, H6, H7, M5, M6,
    M8 and P4 are `absent_mechanism`, where the field is simply not the question.
@@ -363,7 +363,7 @@ Epic exists.
 Reachability is recorded as `released_channels` + `released_platforms` + a
 `reachability` enum, never a boolean — see [the channel-scoping
 note](#reachability-is-per-channel-and-per-platform). By `reachability`:
-**62 shipped · 10 shipped_crates_io_only · 7 absent_mechanism · 1 dead_code**.
+**41 shipped · 21 shipped_with_platform_exception · 10 shipped_crates_io_only · 7 absent_mechanism · 1 dead_code**. An earlier revision reported *"62 shipped"*, folding the 21 platform-exception rows into `shipped` and overstating the reach of every one of them; `stubbed_default` is a defined value with **0** rows.
 **18 rows changed on question 3** and **21 on question 4.**
 
 Platform coverage is not a useful count on its own — most rows are
@@ -1084,7 +1084,7 @@ its absence made a claim ambiguous somewhere above.
 | Field | Values | Why the survey needs it |
 |---|---|---|
 | `default_state` | `on` \| `off` \| `open` \| `closed` | Question 3. Six capabilities ship as their default, not as themselves (N1, N4, M2, C1, C2, H2) |
-| `released_channels` · `released_platforms` · `reachability` | channel and platform lists, plus `shipped` \| `shipped_crates_io_only` \| `dead_code` \| `absent_mechanism` \| `stubbed_default` | Question 4. **Replaces a boolean `reachable_in_release`, which was wrong in both directions on roughly a quarter of the rows** because it treated the GitHub Release artifact set as a universal reachability test. It is channel-specific — `aa-ebpf-loaderd` and `aa-proxy` both publish to crates.io while being absent from the release assets — and platform-specific, since `aa-proxy` is packaged on Linux only |
+| `released_channels` · `released_platforms` · `reachability` | channel and platform lists, plus `shipped` \| `shipped_with_platform_exception` \| `shipped_crates_io_only` \| `dead_code` \| `absent_mechanism` \| `stubbed_default` | Question 4. **Replaces a boolean `reachable_in_release`, which was wrong in both directions on roughly a quarter of the rows** because it treated the GitHub Release artifact set as a universal reachability test. It is channel-specific — `aa-ebpf-loaderd` and `aa-proxy` both publish to crates.io while being absent from the release assets — and platform-specific, since `aa-proxy` is packaged on Linux only |
 | `boundary_class` | `B1`…`B7` | Makes "universal" unwritable without a boundary, which is the Epic's security principle |
 | `decision_timing` | `pre` \| `in-line` \| `post` \| `none` | Separates *Denied before execution* from the eBPF guard's post-hoc kill |
 | `failure_posture` | `fail_closed` \| `fail_open` \| `fail_open_silent` | The third value is the finding: G7 and G9 fail open **without** emitting a degradation, which is materially different from G6 |
