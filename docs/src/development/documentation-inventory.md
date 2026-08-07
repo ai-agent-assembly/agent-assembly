@@ -21,7 +21,7 @@ It is **not** a second content-ownership specification. `content-ownership.md`
 remains the instrument a contributor applies; this page only records what the
 tree contains and what should happen to it.
 
-It does not reproduce the contents of private repositories. Four of the fifteen
+It does not reproduce the contents of private repositories. Six of the seventeen
 repositories below are private. For those, this page records that documentation
 exists, how much, and where — which is a fact about the repository, not content
 from inside it. No private page's text, structure below directory level, or
@@ -29,18 +29,68 @@ internal reasoning appears here.
 
 ## Method
 
-### The repository set
+### The repository set, and the rule that defines it
 
-Fifteen repositories carry tracked Markdown. Thirteen were named in the brief for
-this work; **two were not, and both are documentation-bearing** —
-[`arena`](https://github.com/ai-agent-assembly/arena), which
-[content-ownership.md](content-ownership.md#the-content-layers) names as an L3
-component, and the organisation's `.github` repository, which
-[owns the org-wide `SECURITY.md`](content-ownership.md#canonical-source-by-content-type)
-and the metadata registry
-[ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) assigns.
-Omitting either would have left a hole in the layer model this page is meant to
-measure against, so both are included.
+**Scope rule.** Every repository in the `ai-agent-assembly` organisation, plus
+exactly one outside it: the L0 company site, which
+[content-ownership.md](content-ownership.md#the-content-layers) names as a layer
+of *this product's* content model. Nothing else outside the organisation is in
+scope, whether or not it is checked out on a contributor's machine.
+
+The rule is stated because the boundary is not self-evident and an inventory
+that cannot be re-derived is not evidence. "Repositories in the organisation"
+and "repositories this workspace checks out" are different sets, and the L0 site
+is the one member of the second that the content model puts inside the first.
+
+The organisation has **18** repositories:
+
+```bash
+gh repo list ai-agent-assembly --limit 100 --json name,isPrivate,isArchived
+```
+
+**17 are measured below** — 14 named in the brief for this work, plus three that
+were not and are documentation-bearing:
+
+- [`arena`](https://github.com/ai-agent-assembly/arena), which
+  [content-ownership.md](content-ownership.md#the-content-layers) names as an L3
+  component and whose docs the Hub mounts at `/arena/`;
+- the organisation's `.github` repository, which
+  [owns the org-wide `SECURITY.md`](content-ownership.md#canonical-source-by-content-type)
+  and the metadata registry
+  [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) assigns;
+- `saas-infra`, `homebrew-tap` and `.github-private`, which the brief did not
+  name and which carry 30 tracked Markdown files between them — including a
+  second ADR tree of 12 decisions in `saas-infra/docs/adr/`.
+
+Omitting any of them would have left a hole in the layer model this page exists
+to measure against.
+
+#### What is out of scope, and why
+
+A silent exclusion is the defect this page exists to prevent, so every exclusion
+is named and counted. None of the following is included in any total on this
+page.
+
+| Excluded | Files | Why |
+|---|---:|---|
+| `ai-agent-assembly/agent-assembly-spec` | 0 | Archived **and empty** — `git/trees/HEAD` returns HTTP 409 *"Git Repository is empty"*. Per project policy the spec stays in the Core monorepo. |
+| `horonomy/.github` | 8 | Horonomy's own org profile |
+| `horonomy/internal-docs` | 48 | Horonomy's own internal documentation |
+| `horonomy/infra` | 5 | Horonomy's own infrastructure |
+| `horonomy/GearMeshing-AI` | 13 | A separate Horonomy product |
+
+The four `horonomy` repositories are excluded **by the scope rule, not by
+oversight**: they are the company's own repositories, and none is a surface of
+Agent Assembly's content model at any layer. `horonomy/official-website` is in
+scope because `content-ownership.md` names it as L0 — the company's *product
+portfolio* page is a layer of this product's content — and its four siblings are
+not.
+
+They are counted here anyway so the exclusion is quantified rather than
+asserted. `horonomy/internal-docs` is the one worth knowing about: at 47
+docs-bucket files it is a larger private surface than any of the six private
+repositories that *are* recorded below. If a future decision brings Horonomy's
+own documentation into this programme's scope, that is where the volume is.
 
 ### The counting rule
 
@@ -51,7 +101,7 @@ which has produced a wrong number in this programme before:
 - A directory walk counts untracked scratch files and anything a build step
   emitted, inflating the total.
 - A walk cannot distinguish a checked-in generated file from a hand-authored one.
-- Two of the fifteen repositories are checked out on a feature branch, so the
+- Two of the checked-out repositories are on a feature branch, so the
   local `HEAD` is not the published state. Reading the remote ref sidesteps this.
 
 Tracked-ness is tested with `git cat-file -e "${ref}:${path}"`, not with a
@@ -80,7 +130,7 @@ exactly one bucket by path:
 
 ### Per-repository counts
 
-Measured at the refs shown. Public repositories first.
+Measured at the refs shown. Public repositories first, private second.
 
 | Repository | Ref | Total | Docs | Evidence | Tool config | Other |
 |---|---|---:|---:|---:|---:|---:|
@@ -95,11 +145,23 @@ Measured at the refs shown. Public repositories first.
 | `e2e-public` | `origin/main` | 26 | 5 | 19 | 2 | 0 |
 | `horonomy-official-website` | `origin/main` | 11 | 6 | 0 | 2 | 3 |
 | `official-website` | `origin/main` | 9 | 8 | 0 | 1 | 0 |
+| `homebrew-tap` | `HEAD` † | 3 | 1 | 0 | 2 | 0 |
 | `internal-docs` *(private)* | `origin/main` | 66 | 40 | 24 | 2 | 0 |
 | `cloud` *(private)* | `remote/main` | 43 | 21 | 18 | 1 | 3 |
 | `agent-assembly-enterprise` *(private)* | `remote/main` | 25 | 17 | 7 | 1 | 0 |
+| `saas-infra` *(private)* | `HEAD` † | 24 | 23 | 0 | 1 | 0 |
 | `e2e-private` *(private)* | `origin/main` | 17 | 12 | 3 | 2 | 0 |
-| **Total** | | **1131** | **826** | **192** | **87** | **26** |
+| `.github-private` *(private)* | `HEAD` † | 3 | 2 | 0 | 0 | 1 |
+| **Total** | | **1161** | **852** | **192** | **90** | **27** |
+
+† Three repositories are not checked out in this workspace, so their trees were
+read from the GitHub API at the default branch rather than from a local remote
+ref. The bucket rules applied are identical:
+
+```bash
+gh api "repos/ai-agent-assembly/<repo>/git/trees/HEAD?recursive=1" \
+  --jq '.tree[]|select(.type=="blob")|.path' | grep -E '\.(md|mdx)$'
+```
 
 The bucket script that produced the four right-hand columns is a `grep -E` chain
 over the same `ls-tree` output; it is reproduced in
@@ -318,11 +380,19 @@ in `website/versions.json`. They are cut by `pnpm docusaurus docs:version` at
 publish time, and `website/docusaurus.config.ts` instructs contributors not to
 cut or edit one by hand.
 
-They are **build output that is deliberately expected to drift**: 285 of the 294
-already differ from their live counterpart, and only 93 unique blobs back the
-294 files, so 68% are byte-duplicates of another snapshot. Treating them as a
-migration surface would be a category error, and treating their drift as a
-duplication defect would be too.
+They are **build output that is deliberately expected to drift**. Comparing each
+snapshot page's blob against the live `docs/` page at the same relative path:
+**288 differ, 3 are identical, and 3 have no live counterpart.** Only 93 unique
+blobs back the 294 files, so two thirds are byte-duplicates of another snapshot.
+
+```bash
+git ls-tree -r <ref> -- website/versioned_docs   # snapshot blobs
+git ls-tree -r <ref> -- docs                     # live blobs
+# strip the version- prefix from each snapshot path, compare blob SHAs
+```
+
+Treating them as a migration surface would be a category error, and treating
+their drift as a duplication defect would be too.
 
 **Disposition: Record.** No migration ticket should touch them. They are noted
 here only so that the next person to run a repository-wide Markdown count is not
@@ -336,8 +406,9 @@ Neither sibling SDK pays this cost: `python-sdk` publishes versions to
 
 #### Structural parity across the three SDKs
 
-Twelve topics exist in all three. The asymmetries are real and are a content
-gap rather than a migration item:
+The three sets cover the same product, and most of their topics line up. The
+asymmetries below are the ones that do not, and they are a content gap rather
+than a migration item:
 
 | Topic | node-sdk | python-sdk | go-sdk |
 |---|---|---|---|
@@ -356,6 +427,59 @@ gap rather than a migration item:
 Framework-example depth is the widest gap: python-sdk documents twelve
 framework integrations, go-sdk one.
 
+### L3 · Arena — `arena` (25 docs-bucket files)
+
+The fifth L3 component, and the one most easily missed: its docs are **mounted
+into the published Hub at `/arena/`** by `docs/scripts/aggregate.sh`, so these
+are live reader-facing URLs, not repository-internal notes.
+
+| Group | Pages | Job | Disposition |
+|---|---:|---|---|
+| `docs/*.md` | 13 | The component doc set — architecture, API reference, runners, behaviour profiles, report schema, glossary, submitting an agent | **Keep** |
+| `docs/samples/**` | 2 | Two example match reports | **Keep** |
+| `agents/**/README.md` | 6 | One per bundled agent | **Keep** — L5 signposts |
+| `tests/fixtures/**/README.md` | 2 | Fixture scaffolding | **Record** — not a documentation surface |
+| `README.md`, `CONTRIBUTING.md` | 2 | Repository signposts | **Keep** |
+
+`docs/security-policy.md` is the instance
+[content-ownership.md](content-ownership.md#canonical-source-by-content-type)
+already anticipates when it notes that Arena "additionally scopes its own
+trial-ground policy as a docs page". It is a scoped local policy, not a rival to
+the org-wide `SECURITY.md`, and stays.
+
+**All 15 `docs/**` pages are published**, so any move among them carries a
+redirect obligation against `docs.agent-assembly.com/arena/`. None is proposed
+here.
+
+### L3 · Verification harness — `e2e-public` (5 docs-bucket files)
+
+19 of this repository's 26 Markdown files are evidence, already counted under
+L6. The remaining five are the harness's own contributor documentation.
+
+| Page | Disposition |
+|---|---|
+| `docs/ci-profiles.md`, `docs/verification-modes.md`, `docs/production-validation-runbook.md` | **Keep** — how to run the harness |
+| `docs/evidence-template.md` | **Keep** — a template, but a contributor-side one that is not published in any book, unlike Core's `migration/template.md` |
+| `README.md` | **Keep** |
+
+### L5 · Org profile — `.github` (9 docs-bucket files)
+
+30 of its 41 files are tool config, noted below. The nine docs-bucket files:
+
+| Page | What it is | Disposition |
+|---|---|---|
+| `SECURITY.md` | The **org-wide vulnerability reporting process** — canonical for every repository that has no `SECURITY.md` of its own | **Keep** — this is why the repository is in this inventory |
+| `README.md`, `profile/README.md` | The org profile GitHub renders | **Keep** |
+| `CONTRIBUTING.md` | Org-wide contribution guidance | **Keep** |
+| `metadata/README.md`, `scripts/README.md` | Signposts for the ADR 0014 metadata registry and its tooling | **Keep** |
+| `docs/onboarding-poc/AAASM-394{5,6,7}-*.md` | Scaffold-integration findings, dogfooding notes and a POC findings summary | **Move** — records of an investigation, not reader-facing pages |
+
+Those last three are the same pattern as
+[D5](#d5--nine-evidence-files-are-filed-in-the-source-tree): findings records
+filed on a documentation path. They are **not** in D5's list of nine, which
+covered only `agent-assembly`; counting them makes twelve misfiled evidence
+files in total across the two repositories.
+
 ### L4 · Examples — `examples` (43 docs-bucket files)
 
 One `README.md` per runnable integration, plus scenarios and a choosing guide.
@@ -369,14 +493,22 @@ layer**. Under
 an example may restate and never author, so no example README can be the
 canonical source for anything it says.
 
-### L5 · Repository READMEs — 144 files
+### L5 · Repository READMEs — 158 files
 
-Every one of the fifteen repositories has a root `README.md`. The total across
-all directory levels is 144, concentrated in `agent-assembly` (45, mostly crate
-READMEs) and `examples` (41, which are the L4 example pages counted above rather
-than L5 signposts).
+Every one of the seventeen repositories has a root `README.md`. The total across
+all directory levels is 158, concentrated in `agent-assembly` (45, mostly crate
+READMEs), `examples` (41, which are the L4 example pages counted above rather
+than L5 signposts) and `saas-infra` (12, one per Terraform module).
 
 **Disposition: Keep.** Like L4, L5 has no truth layer and may only restate.
+
+`homebrew-tap`'s `README.md` is the exception worth naming: it is the tap the
+install documentation points readers at, so it is a **published install surface**
+rather than a repository signpost. It is 1 of that repository's 3 Markdown files,
+the other two being tool config. **Disposition: Keep**, and it belongs in any
+sweep that checks install instructions for agreement — see
+[D9](#d9--four-confirmed-contradictions), where two of the four contradictions
+are about installation.
 
 Core's root `README.md` and its `aa-*/README.md` set are owned by
 [AAASM-5672](https://lightning-dust-mite.atlassian.net/browse/AAASM-5672) and are
@@ -421,17 +553,35 @@ repository is 30 of the 87, which is what that repository is for.
 
 ### Private repositories — recorded, not reproduced
 
-Four repositories are private. This page records their documentation volume and
+Six repositories are private. This page records their documentation volume and
 top-level shape, which is a fact about the repository rather than content from
-inside it. **Disposition: Record** for all 90 docs-bucket files; none is in the
+inside it. **Disposition: Record** for all 115 docs-bucket files; none is in the
 public migration scope, and no public page may restate their internals.
 
 | Repo | Docs | Evidence | Shape |
 |---|---:|---:|---|
 | `internal-docs` | 40 | 24 | `docs/{architecture,adr,runbooks,enterprise,reference,onboarding,design}` |
+| `saas-infra` | 23 | 0 | `docs/adr/` (12), `docs/runbooks/`, one `README.md` per Terraform module |
 | `cloud` | 21 | 18 | `docs/`, `docs/architecture/`, `design/` |
 | `agent-assembly-enterprise` | 17 | 7 | `docs/`, `docs/generated/` (9) |
 | `e2e-private` | 12 | 3 | `docs/`, `tests/`, `fixtures/` |
+| `.github-private` | 2 | 0 | `README.md`, `SECURITY.md` |
+
+`saas-infra` deserves a note beyond its count, because it changes what a reader
+should conclude from this page's own findings. It holds a **second ADR tree** —
+12 decisions on repository boundary, environment separation, Terraform layout,
+CI/CD identity, secret ownership, release promotion, observability, DNS, managed
+Postgres and cloud provider. Core's `adr/` is not the organisation's only
+decision record.
+
+One of those decisions, `docs/adr/0008-domain-registration-and-dns.md`, is in
+exactly the subject matter of
+[D9's `tool.agent-assembly.dev` contradiction](#d9--four-confirmed-contradictions),
+which this page adjudicates from Core's
+[ADR 0007](../adr/0007-public-domain-and-url-contract.md) alone. That finding
+should be re-checked against the private ADR before it is filed; the two may
+agree, but this page has not established that they do, and it cannot show the
+private text either way.
 
 `internal-docs` and `cloud` both carry a `docs/architecture/` tree, and
 `internal-docs` carries `docs/adr/` (10 files). Whether those overlap Core's
@@ -462,10 +612,16 @@ to defect triage as leads.
 
 ### D1 · Seventeen internal links in Core point at a path that does not exist
 
-Ten pages in the Core book link to `architecture/index.md` (13 links),
-`../architecture/index.md` (2) or `introduction/index.md` (2). Neither file is
+Ten pages in the Core book link to `../architecture/index.md` (13 links),
+`architecture/index.md` (2) or `introduction/index.md` (2). Neither target is
 tracked; the real files are `architecture/README.md` and
 `introduction/README.md`.
+
+```bash
+git grep -o -e '\.\./architecture/index\.md' -e 'architecture/index\.md' \
+             -e 'introduction/index\.md' <ref> -- docs/src \
+  | sed 's/.*://' | sort | uniq -c
+```
 
 This is confirmed by the repository's own gate rather than by inspection —
 `scripts/check-doc-links.sh` **exits 1** on the current tree:
@@ -835,7 +991,7 @@ which are frozen by design.
 
 ## Disposition summary
 
-The overwhelming majority of the 826-file documentation surface is **Keep**.
+The overwhelming majority of the 852-file documentation surface is **Keep**.
 That is the correct outcome for an inventory of a documentation set that is
 broadly well-placed, and it is worth stating plainly so the exceptions below are
 read as exceptions rather than as a sample of a larger problem.
@@ -845,15 +1001,23 @@ Everything that is **not** Keep or Record, in full:
 | Disposition | Files | What |
 |---|---:|---|
 | **Move** | 2 | Core: `migration/template.md`, `research/AAASM-5269-…md` |
-| **Move** | 9 | Evidence in the source tree: `dashboard/docs/verification/**` (7), `aa-cli/AAASM-4457-…md`, `aa-gateway/benches/REPORT.md` |
+| **Move** | 9 | Evidence in Core's source tree: `dashboard/docs/verification/**` (7), `aa-cli/AAASM-4457-…md`, `aa-gateway/benches/REPORT.md` |
 | **Move** | 7 | Core: `docs/release/security-signoff/*.md` |
+| **Move** | 3 | `.github`: `docs/onboarding-poc/AAASM-394{5,6,7}-*.md` |
 | **Merge** | 1 | Core: `events/cross_team_edge.md` |
 | **Review** | 1 | Hub: `policy-reference.md` — owned by AAASM-5586 / 5609, not by this map |
 | **Delete** *(recommended, needs sign-off)* | 13 | Core: `docs/superpowers/**` |
 | **Keep, retitle** | 1 | Core: `devtools/product-brief.md` |
 
-**Record** covers 192 evidence files, 87 tool-config files, the 90 docs-bucket
-files in the four private repositories, and node-sdk's 294 frozen snapshots.
+**Record** covers 192 evidence files, 90 tool-config files, the 115 docs-bucket
+files in the six private repositories, node-sdk's 294 frozen snapshots, and
+`arena`'s 2 test-fixture READMEs.
+
+Every docs-bucket file in every counted repository falls under exactly one group
+in [The inventory](#the-inventory) or one row above. The check that this is true
+is arithmetic rather than assertion: the four buckets sum to each repository's
+total by construction (see the [Appendix](#appendix-the-bucket-script)), and
+every repository in the count table has a section.
 
 ### Partitioning this for implementation tickets
 
@@ -861,8 +1025,10 @@ The groups in [The inventory](#the-inventory) are disjoint path globs, so a
 ticket can take a slice by naming its glob and no two tickets will collide. Four
 natural slices, in dependency order:
 
-1. **Misfiled evidence** — the 16 *Move* files above that are evidence. No
-   redirect obligation, no reader impact, no dependency on anything else.
+1. **Misfiled evidence** — the 19 *Move* files above that are evidence: 9 in
+   Core's source tree, 7 release sign-offs, 3 in `.github`. None is published,
+   so there is no redirect obligation, no reader impact, and no dependency on
+   anything else. This slice spans two repositories.
 2. **Core book hygiene** — the 3 published *Move*/*Merge* pages, plus adding
    `[output.html.redirect]` to `docs/book.toml` so the moves do not 404. The
    redirect section must land first or with them.
