@@ -118,7 +118,7 @@ was false when it was written, in a point-in-time report other pages quote.
 | Kind of fact | Authoritative | Established by |
 |---|---|---|
 | What may be **published** as a capability claim — `coverage`, and counts derived from it | **`governance/capability-manifest.yaml`** | It is the artifact rule R5 gates, and the one AAASM-5588/5600/5609 build public surfaces from. Where it is weaker than this survey, it is deliberately weaker — see below |
-| **Retraction history** — that a claim was withdrawn, and what a row must say instead | **this Markdown** | The manifest carries no retraction records at all. The seed YAML carries withdrawal *records* — 4 `WITHDRAWN:` and 3 `SCOPE:` notes, three of each added by AAASM-5666 — but not the history of what was retracted or why |
+| **Retraction history** — that a claim was withdrawn, and what a row must say instead | **this Markdown** | Not because the YAMLs carry none: **both** carry withdrawal records on **5 rows each** — manifest `S13`·`L1`·`L6`·`I1`·`I5`, seed `S13`·`M1`·`L1`·`C6`·`I1`, and the two `S13` records are verbatim twins. The difference is **coverage**: this Markdown carries the whole population of 16 units over 33 rows, and a row that carries no record cannot be checked against itself — which is true of ~28 rows in either YAML |
 | **Per-row structured values** as measured at the evidence tree `299de3883` | **the seed YAML** | It is the point-in-time record the manifest was seeded from; the prose counts in this Markdown are hand-maintained and had drifted in four places |
 
 **Neither half is machine-validated, and "authoritative" does not mean "gated".**
