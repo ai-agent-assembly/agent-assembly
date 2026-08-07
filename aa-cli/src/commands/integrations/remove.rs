@@ -51,8 +51,28 @@ use super::render::{emit, Report};
 use super::session::{Failure, SessionOptions};
 use super::{confirm, exit::Outcome, open, resolve_tool, run_blocking, verb_failure};
 
+/// What `remove` reports, and why a teardown loop does not need to special-case
+/// its second run.
+const OUTCOME_HELP: &str = "\
+OUTCOME:
+    Removing an integration that is already gone is a success and exits 0, so
+    the exit code cannot tell the first run from the second. What can is the
+    outcome on the result's first line, and `outcome` in --output json:
+
+        changed     the reversal ran and restored what the integration replaced
+        unchanged   there was no integration to remove; `plan_id` is null
+
+    A --dry-run of a real removal reports no outcome: it authored the reversal
+    without performing it, and authoring establishes nothing about whether the
+    end state already holds.
+
+    Non-zero means the removal did NOT happen — including the refusal to leave
+    items behind without --force, which exits 9 and reports `refused`.
+";
+
 /// `aasm integrations remove` arguments.
 #[derive(Args)]
+#[command(after_long_help = OUTCOME_HELP)]
 pub struct RemoveArgs {
     /// The tool to remove the integration from.
     pub tool: String,

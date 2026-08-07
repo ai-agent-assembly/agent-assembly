@@ -56,8 +56,34 @@ use super::render::emit;
 use super::session::SessionOptions;
 use super::{confirm, exit::Outcome, open, resolve_tool, run_blocking, verb_failure};
 
+/// What `repair` reports, and why `&& echo repaired` is the wrong test.
+const OUTCOME_HELP: &str = "\
+OUTCOME:
+    Repairing nothing is a success and exits 0, so the exit code cannot tell a
+    restored integration from one that never needed restoring. What can is the
+    outcome on the result's first line, and `outcome` in --output json:
+
+        changed     drifted AASM-owned state was rewritten
+        unchanged   nothing needed rewriting — either the state already matched
+                    its receipt, or no receipt accounts for this tool at all.
+                    `nothing_to_repair` says which.
+
+    So this is wrong, and announces a repair of a tool that was never installed:
+
+        aasm integrations repair claude-code --yes && echo repaired
+
+    and this is right:
+
+        test \"$(aasm integrations repair claude-code --yes --output json \\
+                | jq -r .outcome)\" = changed && echo repaired
+
+    A --dry-run that found drift reports no outcome at all: it previewed work
+    rather than doing it, and it did not establish that anything already held.
+";
+
 /// `aasm integrations repair` arguments.
 #[derive(Args)]
+#[command(after_long_help = OUTCOME_HELP)]
 pub struct RepairArgs {
     /// The tool to repair, as `aasm integrations list` reports it.
     pub tool: String,

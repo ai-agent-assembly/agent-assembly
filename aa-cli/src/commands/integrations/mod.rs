@@ -184,7 +184,7 @@ pub fn dispatch(args: IntegrationsArgs, output: OutputFormat) -> ExitCode {
     }
 }
 
-/// The long help: the journey, an example per stage, and the exit-code table.
+/// The long help: the journey, an example per stage, and both outcome tables.
 fn long_help() -> String {
     format!(
         "\
@@ -210,6 +210,14 @@ EXAMPLES:
       5) aasm integrations repair claude-code --yes ;;
     esac
 
+    # Tell a no-op apart from a mutation. The exit code is 0 for both, so read
+    # the outcome — NOT `&& echo repaired`, which announces a repair of a tool
+    # that was never installed.
+    case $(aasm integrations repair claude-code --yes --output json | jq -r .outcome) in
+      changed)   echo 'drifted state was restored' ;;
+      unchanged) echo 'nothing needed repairing' ;;
+    esac
+
 NOTES:
     Lifecycle commands run inside the Agent Assembly runtime, which owns the
     only audited implementation of them. There is no in-process fallback; when
@@ -233,7 +241,23 @@ NOTES:
     cause: the command then answers from whichever runtime it reached and the
     others are never consulted. The reported standing carries it either way.
 
+    The exit code answers `did the command succeed?`.
+    It does NOT answer `did the world change?` — a remove of an integration
+    that is already gone succeeded and modified nothing. That is answered by the
+    outcome below, which repair and remove print on the result's first line and
+    carry as `outcome` in --output json. On a non-zero exit the outcome is named
+    on stderr instead; stdout stays empty there, so a harness has no result to
+    record from a run that refused.
+
+    install does NOT yet report it. The runtime knows whether an apply mutated
+    anything, but the DI-API's ApplyView does not carry the fact, and this
+    client will not guess at it from a timestamp — a wrong `unchanged` is worse
+    than an absent one. Until the wire carries it, check `aasm integrations
+    status` before and after instead.
+
+{}
 {}",
+        exit::change_help_table(),
         exit::help_table()
     )
 }
@@ -524,6 +548,25 @@ mod tests {
         for verb in ["list", "plan", "install", "status", "verify", "repair", "remove"] {
             assert!(help.contains(verb), "{verb} is missing from the journey");
         }
+    }
+
+    /// The other half of the contract has to be in the same help, or a caller
+    /// reading `--help` to find out how to branch learns only about the axis
+    /// that cannot answer their question (AAASM-5499).
+    #[test]
+    fn the_long_help_documents_the_change_outcomes_and_that_a_no_op_exits_zero() {
+        let help = long_help();
+        for outcome in ChangeOutcome::ALL {
+            assert!(help.contains(outcome.as_str()), "{} is undocumented", outcome.as_str());
+        }
+        assert!(
+            help.contains("did the world change?"),
+            "the help never states which question the outcome answers: {help}"
+        );
+        assert!(
+            help.contains("exits 0"),
+            "the help never states that a no-op is a success: {help}"
+        );
     }
 
     /// A machine-readable run cannot answer a prompt, so it must abort rather
