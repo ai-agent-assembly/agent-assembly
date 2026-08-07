@@ -449,6 +449,17 @@ model is built on outer layers restating inner ones, and
 forms of it. **Disagreement** is never correct: two pages stating incompatible
 things about one fact is a defect regardless of which layers they sit in.
 
+**What is published here is what was verified here.** Each finding below was
+established by reading both sides at a named ref, or by running the gate that
+decides the question and reading its exit code. A wider cross-repository sweep
+produced further contradiction *candidates* — around the compatibility matrix's
+per-release SDK pairings, container base-image version pins, SDK auto-start
+defaults, and how the interception layers are described relative to
+[ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md).
+Those are not listed here, because a governance page that publishes an
+unverified defect has committed the error it exists to prevent. They were handed
+to defect triage as leads.
+
 ### D1 · Seventeen internal links in Core point at a path that does not exist
 
 Ten pages in the Core book link to `architecture/index.md` (13 links),
@@ -627,7 +638,78 @@ to check it was written correctly. The adoption decision belongs to AAASM-5610,
 not to a page that is only supposed to be counting. Recorded here so the
 omission is a visible choice rather than an oversight.
 
-### D9 · Two Core `docs/` trees are outside the book by design, and one is stale
+### D10 · Four confirmed contradictions
+
+These are pages stating incompatible things about one fact. Each was verified by
+reading both sides at the named ref, and each is a **defect** — the resolution
+belongs to defect triage, not to this page, which deliberately does not pick a
+winner.
+
+Every entry names the layer that should change under
+[ADR 0034 Decision 1](../adr/0034-one-product-truth-and-cross-repository-documentation-governance.md#1-the-product-truth-hierarchy).
+
+#### `:8080` has three mutually exclusive definitions
+
+| Where | What it says `8080` is |
+|---|---|
+| Core `quick-start/first-run.md` | The gateway's own HTTP API — *"`aasm status`, `aasm agent`, and `aasm topology` talk to the gateway's **HTTP API on `http://localhost:8080`**"* |
+| Core `usage-guide/overview.md`, `usage-guide/troubleshooting.md` | The **SaaS** control-plane API, *"not part of the open-source local runtime"*; the local gateway *"serves its API on `7391`, not `8080`"* |
+| Hub `troubleshooting.md` | *"Port `8080` is a **different** endpoint — the aa-runtime health/metrics server (`AA_METRICS_ADDR`) — not the gateway REST API."* |
+
+The first two are both in **this book**, so this is an intra-repository
+contradiction before it is a cross-repository one. `T1` settles the behaviour:
+`aa-cli/src/config.rs` defaults the CLI to `http://localhost:8080` while
+`aa-cli/src/commands/start.rs` defaults the local gateway's port to `7391`. The
+mismatch the second row describes is real, which makes the first row's account
+of where operator commands land wrong in local mode.
+
+#### The compatibility matrix carries a row for a release that does not exist
+
+Core's `compatibility.md` states `| v0.0.1 | v0.0.1 ✓ | v0.0.1 ✓ | v0.0.1 ✓ |`.
+There is no `v0.0.1` tag: `git tag -l "v0.0.1"` returns nothing, while the
+control `git tag -l "v0.0.1-rc.6"` returns the tag. The Hub's matrix has no such
+row. A ✓ against an unreleased version is a claim with no artifact behind it.
+
+#### The installer's default directory
+
+Core's `README.md` states the binary installs to `~/.local/bin`.
+`quick-start/installation.md` states `/usr/local/bin` first, falling back to
+`~/.local/bin`. `scripts/install-cli.sh` implements the second. `T1` wins and
+the README is the defect; it is owned by
+[AAASM-5672](https://lightning-dust-mite.atlassian.net/browse/AAASM-5672) and is
+recorded here, not touched.
+
+#### An installer host is advertised and retired at the same time
+
+[ADR 0007](../adr/0007-public-domain-and-url-contract.md) states that
+`tool.agent-assembly.dev` is *"**retired**"* and *"no longer an advertised
+installer alternate"*. Core's `README.md` advertises it — *"The alternate host
+`https://tool.agent-assembly.dev` serves the same script"* — and
+`quick-start/installation.md` calls it *"a kept alternate"*.
+`infra/redirects/README.md` §2 also treats it as live and forbids redirecting
+it. An Accepted ADR states the intended contract, so under ADR 0034's carve-out
+the ADR wins and the three pages are the defect.
+
+### D11 · The claim vocabulary has no enforcing check
+
+`development/claim-vocabulary.md` is a 1,263-line specification: twelve
+`CLAIM-ABS-*` rules plus a verb rule and a quotation rule, with severities,
+PCRE patterns, five silent exemption classes and a documented scan pipeline.
+
+**No script implements it and no workflow runs it.** Searching `scripts/` and
+`.github/workflows/` for `CLAIM-ABS`, `claim_vocab` and `claim-vocab` returns
+nothing; the control — `check_absolutes` — is found, in `docs.yml`.
+
+The gate that does exist, `scripts/check_absolutes_unwaivable.py`, is a
+different and much narrower instrument. It does not look for the vocabulary at
+all: it fails when a governance page asserts that one of those rules is
+*waiver-eligible*. Both are needed, and only the second one runs.
+
+**Report as a gap.** The distinction matters because a green CI run on a
+documentation change currently proves the second property and says nothing about
+the first, which is the one most readers would assume it covers.
+
+### D12 · Two Core `docs/` trees are outside the book by design, and one is stale
 
 `docs/release/` (27 files) and `docs/superpowers/` (13 files) sit in Core's
 `docs/` tree but not in `docs/src/`, so they are neither book pages nor
