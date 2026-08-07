@@ -148,17 +148,38 @@ repositories answer and two do not:
 | `aa-runtime` | the `aa-runtime` binary | `aa-runtime/Dockerfile:58,64`, pushed `docker.yml:111-112` |
 | `python` ×3 | `agent-assembly` **and** `aasm` | `Dockerfile.python-3.14-slim:79,81-82` + `:89`, asserted `:93`,`:96` |
 | `node` ×3 | `@agent-assembly/sdk` **and** `aasm` | `Dockerfile.node-24-slim:69,74` + `:52`, asserted `:84`,`:85` |
-| `go` ×3 | `go-sdk` **and** `aasm` | `Dockerfile.go-1.26-alpine:73,75` + `:61`, asserted `:87`,`:88` |
+| `go` ×3 | `go-sdk` **and** `aasm` | `Dockerfile.go-1.26-alpine:73,75` + `:61`, asserted `:87`; the module is in the image's module cache |
 | `aa-proxy` | — | no pull token issued |
 | `aasm` | — | no pull token issued, **but the binary ships inside all nine language images** |
 
-23 rows carry the channel: 5 `aa-gateway`, 3 `aa-runtime` (G1, G2, G11), 2
-`aa-cli` (L8, C5) and the 13 SDK rows. **G6 and G7 are aa-runtime-owned and
-excluded** — their subject is the eBPF loader daemon, which ships to crates.io
-only. Linkage is deliberately *not* the predicate: `aa-cli` links `aa-proxy` as
-a library, yet `aasm proxy start` spawns the separate `aa-proxy` binary
-(`aa-cli/src/commands/proxy/start.rs:85-114`), so a linkage rule would have put
-`ghcr` on 17 proxy rows that ship in no image.
+> On `go:88`. `RUN go list -m …@latest` is a GOPROXY query, and it resolves a
+> *different* version than `:73` installs — the published layer
+> `sha256:0c89b228fea4a…` holds both `go-sdk/@v/v0.0.1-beta.3.zip` (installed)
+> and `v0.0.1-rc.5.info` (what `@latest` resolved). The module zip and
+> `go/bin/minimal` genuinely are in the image; `:88` is not what proves it.
+
+24 rows carry the channel: 5 `aa-gateway`, 3 `aa-runtime` (G1, G2, G11), 2
+`aa-cli` (L8, C5), the 13 SDK rows, and `I3`. Linkage is deliberately *not* the
+predicate: `aa-cli` links `aa-proxy` as a library, yet `aasm proxy start` spawns
+the separate `aa-proxy` binary (`aa-cli/src/commands/proxy/start.rs:85-114`), so
+a linkage rule would have put `ghcr` on 17 proxy rows that ship in no image.
+
+**`I3` was added in review round 2.** Its `owner.component` is `aa-core`, but
+its capability is *derived server-side* at
+`aa-gateway/src/service/lifecycle_service.rs:477-497` — gateway code in the
+published gateway image, exactly like I5/I7/G8/G9/G10. Round 1 filed it under
+`owner.component`, which is not the predicate this page states; where the two
+disagree, the delivering artifact wins.
+
+**`G6` and `G7` do not carry it, and round 1 recorded the wrong reason.** They
+were filed `not_published` on the premise that "their subject is the eBPF loader
+daemon". Their own fields say otherwise: `G7` carries no `aa-ebpf` in
+`framework_or_tool`, and both rows' cited code (`ebpf_control.rs:204-213` and
+`:190-201`, the latter a plain `std::fs::read_to_string`) is compiled into every
+`aa-runtime` binary — `aa-runtime/src/lib.rs:15` has no `#[cfg]` — and shipped in
+the image. They are now `not_surveyed`: what is absent is the loader daemon their
+*degradation trigger* concerns, and nobody measured these two rows from inside
+the image.
 
 **What `released_channels` means, stated because the addition must not inherit a
 looser reading.** It is read as *the channels through which the artifact that
@@ -178,23 +199,34 @@ is broadened by adding it.
 |---|---|
 | Vocabulary partitioned | A channel the schema admits that is neither surveyed nor explicitly not surveyed, or one recorded as both |
 | Publishing implies surveyed | A channel a workflow in `.github/workflows/` publishes to that `channels_surveyed` omits — the clause that fails on the pre-ticket state |
-| No silent row | A row that neither names a surveyed channel, nor is `released_channels: [not_applicable]`, nor appears in `meta.channel_absences` |
+| No silent row | For a channel classified exhaustively, a row that neither names it, nor is `released_channels: [not_applicable]`, nor appears in `meta.channel_absences` |
 
-The publish markers are a constant in the validator, not a manifest field: a
-rule whose evidence lives in the artifact it gates can be switched off by
-editing the artifact. The table is keyed by the whole channel enum and asserted
-against it, so a sixth channel forces a decision instead of a silent omission.
+**Both of R17's tables are constants in the validator, not manifest fields**: a
+rule whose evidence lives in the artifact it gates can be switched off by editing
+the artifact. Each is keyed by the whole channel enum and asserted against it, so
+a sixth channel forces a decision instead of a silent omission.
 
-`meta.channel_absences` carries a `status` separating the two kinds of absence:
-`not_published` (26 aa-proxy-subject rows, 7 eBPF rows — the delivering artifact
-is in no image) from `not_surveyed` (17 library and devtool rows whose code *is*
-inside the `aasm` binary the language images carry, but whose capability nobody
-has measured against a container). The second is `unmeasured`, never
-`unsupported` — ADR 0034 forbidden design 8.
+Round 1 got that right for the publish markers and wrong for clause 3, which
+iterated the channels appearing *in* `meta.channel_absences` — so deleting that
+one key deleted the check, exit 0, with the denominator vanishing alongside it.
+`EXHAUSTIVE_ROW_CLASSIFICATION` now drives it. Only `ghcr` is enforced there, and
+the other eight channels carry a written reason rather than an omission: AAASM-5527
+surveyed them at document level, leaving 23 to 60 rows per channel silent, and
+enforcing exhaustiveness would demand a measured absence for each of them that
+nobody derived. **A rule must not be satisfied by inventing a measurement.**
+
+`meta.channel_absences` carries a `status` separating the two kinds of absence.
+`not_published` (32 rows: 26 aa-proxy-subject, 5 owned by `aa-ebpf`/`aa-ebpf-probes`
+and delivered by the crates.io-only `aa-ebpf-loaderd`, and `C3`, whose `aa-api`
+crate no published binary depends on) means the delivering artifact is in no
+image, measured. `not_surveyed` (17 rows: 15 library and devtool rows whose code
+*is* inside the `aasm` binary the language images carry, plus `G6`/`G7`) means the
+code is on the channel and nobody measured the capability against a container.
+The second is `unmeasured`, never `unsupported` — ADR 0034 forbidden design 8.
 
 ```
 count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 16 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
-count: [R17] ghcr: 80 rows = 23 carry it + 7 not_applicable + 50 recorded absent + 0 unaccounted
+count: [R17] ghcr: 80 rows = 24 carry it + 7 not_applicable + 49 recorded absent + 0 unaccounted
 ```
 
 ## The three questions
@@ -427,18 +459,24 @@ population smaller than the one claimed shows up as a sum that does not close:
 ```
 count: [R16] ids: 80 in the manifest, 80 in …-matrix.yaml, 80 shared, 0 manifest-only, 0 seed-only
 count: [R16] fields: 51 in the union of the two schemas = 29 compared + 22 excluded with a named reason + 0 unclassified
-count: [R16] seed: 80 ids x 29 fields = 2320 pairs; 1381 agree, 8 diverge, 931 one-side-silent; 0 skipped
+count: [R16] seed: 80 ids x 29 fields = 2320 pairs; 1357 agree, 32 diverge, 931 one-side-silent; 0 skipped
 count: [R16] seed_companion: 80 coverage cells read, 0 ragged rows skipped; 80 of 80 shared ids compared, 75 agree, 5 diverge
-count: [R16] divergences: 13 found; declarations claim 13 (row, representation) pair(s) across 3 entries, 13 matched
+count: [R16] divergences: 37 found; declarations claim 37 (row, representation) pair(s) across 4 entries, 37 matched
 ```
 
-The eight seed divergences are the five `coverage` rows above, plus `L7` and
-`P3` demoted off `host_enforced` by R14, plus `L5`, where the seed's
+The 32 seed divergences are 8 + 24. The 8: the five `coverage` rows above, plus
+`L7` and `P3` demoted off `host_enforced` by R14, plus `L5`, where the seed's
 `current_level` enum admitted the GovernanceLevel `l1_observe` on the
-ProtectionState axis and R7 rejects it. **All eight name the rule that forces
-them**, which is what makes conservatism distinguishable from drift: the
-manifest could not hold the other representation's value without a different
-rule failing.
+ProtectionState axis and R7 rejects it. **Each names the rule that forces it**,
+which is what makes conservatism distinguishable from drift: the manifest could
+not hold the other representation's value without a different rule failing.
+
+The other 24 are the `released_channels` rows AAASM-5680 added `ghcr` to. They
+are declared with `manifest_adds: [ghcr]` rather than a value pair, because the
+full list differs per row while the delta does not, and the AAASM-5527 survey
+never enumerated the channel — its own `schema.enums` has eight channel values
+and `ghcr` is not among them. R16 flagged all of them as undeclared on the first
+run of that change, which is the rule doing its job on work written after it.
 
 **Scope, stated rather than overclaimed.**
 
