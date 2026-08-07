@@ -772,8 +772,14 @@ capabilities:
   default_state: not_applicable
   reachability: shipped
   known_bypasses:
-  - resolve_decision has ZERO non-test callers in this repository; refusal lives in the out-of-repo
-    FFI shims
+  - >-
+    resolve_decision has ZERO non-test callers in this repository — every reference is in
+    aa-sdk-client/src/decision.rs itself, below the test gate at :99. The out-of-repo FFI
+    shims do not reliably supply the refusal either: the Node shim hard-codes fail-OPEN,
+    mapping QueryFailed, ChannelClosed and Shutdown to Decision::Allow
+    (node-sdk/native/aa-ffi-node/src/lib.rs:204-209). POSITIVE CONTROL for the zero:
+    aa-cli does depend on aa-sdk-client (aa-cli/Cargo.toml:74), so a cross-crate call
+    would be findable.
   evidence:
   - kind: gap
     reason: 'GAP, with a control that holds. resolve_decision is defined at aa-sdk-client/src/decision.rs:58;
@@ -3703,9 +3709,22 @@ capabilities:
   target_level: keep
   tickets:
   - AAASM-5332
-  notes: 'Prior belief was that the Ed25519 seed is SHA-256(public agent id), making any agent
-    impersonable. FIXED by AAASM-5332. Residual smell: aa-cli and gateway lifecycle TESTS
-    still mint registration keys with derive_transport_key(agent_id) — aa-cli/src/commands/run_registration.rs:583,668.'
+  notes: >-
+    Prior belief was that the Ed25519 seed is SHA-256(public agent id), making any agent
+    impersonable. FIXED by AAASM-5332 — the identity key is random CSPRNG, persisted
+    owner-only, with enforce_did_key_binding on the gateway side. The claim this row
+    previously carried against aa-cli/src/commands/run_registration.rs:583,668 is
+    withdrawn by the companion Markdown at :690 and :1046, and was an inversion. Read at
+    the evidence tree, both call sites
+    sit inside that module's own test block (opens at :462). :583 mints a deliberately
+    FOREIGN key ("somebody-else") to assert the binding check refuses it; :668 IS the
+    AAASM-5332 regression assertion (assert_ne! on derive_transport_key("parity-check")
+    against cli.public_key). Both exist to prove the vulnerability is CLOSED, so citing
+    them as evidence it is partly open reversed their meaning. The
+    aa-gateway/tests/lifecycle_service_test.rs fixtures do seed from derive_transport_key,
+    which is untidy but implies no production gap — a SHA-256-seeded Ed25519 public key is
+    indistinguishable from a random one server-side. SCOPE: fixed on main, still live in
+    the published v0.0.1-rc.6.
   q4_changed_answer_in_product_favour: true
 - id: I2
   domain: identity
