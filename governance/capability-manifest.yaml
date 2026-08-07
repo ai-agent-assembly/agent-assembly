@@ -32,15 +32,137 @@ meta:
   # What each image DELIVERS, which is what a row's released_channels answers:
   #   aa-gateway image  the aa-gateway binary        aa-gateway/Dockerfile:61,67
   #   aa-runtime image  the aa-runtime binary        aa-runtime/Dockerfile:58,64
-  #   language images   the language SDK package AND the aasm binary
-  #                     docker/Dockerfile.python-3.14-slim:76-81 (pip install
-  #                     agent-assembly) and :99 (COPY --from=aasm-builder
-  #                     /usr/local/bin/aasm), mirrored in the node and go files
+  #   language images   the language SDK package AND the aasm binary. Each image
+  #                     installs its OWN language's SDK and asserts it at build time,
+  #                     so the claim holds per row and not merely for the family:
+  #                       python  pip install agent-assembly
+  #                               docker/Dockerfile.python-3.14-slim:79,81-82
+  #                               asserted :96 `import agent_assembly._core`
+  #                       node    npm install -g @agent-assembly/sdk
+  #                               docker/Dockerfile.node-24-slim:69,74
+  #                               asserted :85 `require('@agent-assembly/sdk')`
+  #                       go      go install github.com/ai-agent-assembly/go-sdk/...
+  #                               docker/Dockerfile.go-1.26-alpine:73,75
+  #                               asserted :88 `go list -m .../go-sdk`
+  #                     and each copies the aasm binary built from aa-cli:
+  #                       python :89   node :52   go :61
+  #                     asserted `RUN aasm --version` at :93, :84 and :87.
   #
   # There is no `aasm` image, but `aasm` IS distributed on this channel — inside all
-  # nine language images, whose build asserts it (`RUN aasm --version`, :103). The
-  # AAASM-5680 ticket records aasm as "not published" on the strength of the missing
-  # image alone; that is the image question, not the distribution question.
+  # nine language images, whose build asserts it. The AAASM-5680 ticket records aasm
+  # as "not published" on the strength of the missing image alone; that is the image
+  # question, not the distribution question.
+  #
+  # SEMANTICS OF THIS FIELD, because an addition must not silently inherit a looser one.
+  # `released_channels` is read here as "the channels through which the artifact that
+  # delivers this row's capability is obtained". On the SDK family the field does NOT
+  # already hold to that: all 13 rows carrying pypi/npm/go_modules carry the same four
+  # values regardless of their own `language`, so S1 (language: [python]) claims npm and
+  # go_modules while S8 (language: [go]) claims pypi — a product-family union, wrong in
+  # both directions per row. That predates this ticket and is NOT fixed here; it needs
+  # its own. What matters for `ghcr` is that the new value is true under BOTH readings,
+  # because each language image installs its own language's SDK per the assertions
+  # above, so no row's claim is broadened by adding it.
+  channel_absences:
+  - channel: ghcr
+    status: not_published
+    ids:
+      - C2
+      - C4
+      - G3
+      - G4
+      - I6
+      - M1
+      - M2
+      - M3
+      - M4
+      - M7
+      - M9
+      - N1
+      - N2
+      - N3
+      - N4
+      - N5
+      - N6
+      - N7
+      - N8
+      - N9
+      - N10
+      - N11
+      - N12
+      - P1
+      - P2
+      - P3
+    probe: >-
+      `GET https://ghcr.io/token?scope=repository:ai-agent-assembly/aa-proxy:pull` issues no
+      token, so the repository is absent or private, and `.github/workflows/docker.yml`
+      pushes exactly five: aa-runtime (:111-112), aa-gateway (:160-161) and the nine
+      language images (:342-344). aa-proxy is in none of their contents either — the two
+      service Dockerfiles copy a single binary each (aa-runtime/Dockerfile:58,
+      aa-gateway/Dockerfile:61) and the language images copy only aasm
+      (docker/Dockerfile.python-3.14-slim:89).
+    reason: >-
+      These rows' capability is delivered by the aa-proxy binary, which has no published
+      image. aa-cli DOES link aa-proxy as a library (aa-cli/Cargo.toml), so the crate's
+      code travels inside aasm and therefore inside the language images — but `aasm proxy
+      start` spawns the SEPARATE aa-proxy binary resolved from PATH or ~/.cargo/bin
+      (aa-cli/src/commands/proxy/start.rs:85-114), so what an operator needs is not there.
+      Linkage is not distribution, and this is the row set where the two answers differ.
+    ticket: AAASM-5680
+  - channel: ghcr
+    status: not_published
+    ids:
+      - G6
+      - G7
+      - H2
+      - H3
+      - H4
+      - I4
+      - N13
+    probe: >-
+      The eBPF loader ships as `aa-ebpf`'s `aa-ebpf-loaderd` bin to crates.io only, as
+      these rows' own released_note records. No Dockerfile in this repository names
+      aa-ebpf, aa-ebpf-probes or aa-ebpf-loaderd, and no published image lists it.
+    reason: >-
+      Delivered by the eBPF loader daemon, which is on crates.io and nowhere else. The
+      absence is measured rather than assumed: these rows already carry
+      `released_channels: [crates_io]` or a note saying the same thing about the other
+      four channels.
+    ticket: AAASM-5680
+  - channel: ghcr
+    status: not_surveyed
+    ids:
+      - C1
+      - C3
+      - C6
+      - H5
+      - H8
+      - I1
+      - I2
+      - I3
+      - L1
+      - L2
+      - L3
+      - L4
+      - L5
+      - L6
+      - L7
+      - M10
+      - S13
+    probe: >-
+      `cargo tree -p aa-cli --edges normal` lists aa-devtool-claude-code, aa-devtool-codex,
+      aa-devtool-copilot, aa-devtool-windsurf, aa-sandbox, aa-sdk-client, aa-security and
+      aa-core, so their code IS inside the aasm binary the nine language images carry
+      (docker/Dockerfile.python-3.14-slim:89, asserted at :93 by `RUN aasm --version`).
+      What was NOT run is any measurement of these capabilities against a container image.
+    reason: >-
+      Not `not_published` — the code is on the channel. These rows' subject is a
+      developer-tool integration, a settings-layer write or a library-internal behaviour
+      on a developer host, and no survey has measured any of them from inside a language
+      image. Silence here means Unmeasured, never Unsupported (ADR 0034 forbidden design
+      8), and claiming the channel on the strength of linkage alone would be the
+      over-claim this ticket exists to prevent.
+    ticket: AAASM-5680
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
     protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
