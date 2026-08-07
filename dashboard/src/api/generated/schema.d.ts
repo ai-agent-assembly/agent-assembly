@@ -2174,6 +2174,11 @@ export interface paths {
          *     window. Only kinds that actually fired appear, so an idle window returns an
          *     empty list rather than zero-filled fabricated rows. The alert read is
          *     bounded by [`MAX_SCRUB_ALERTS`] and confined to the caller's tenant.
+         *
+         *     **`hits` counts alerts, not findings, and only the alert's first kind** —
+         *     see [`PatternCount::hits`] for exactly what that loses and why it is
+         *     recorded rather than repaired here. `GET /api/v1/sensitive-data/breakdown`
+         *     is the finding-accurate surface.
          */
         get: operations["get_pattern_counts"];
         put?: never;
@@ -5163,12 +5168,30 @@ export interface components {
         PatternCount: {
             /**
              * Format: int64
-             * @description Number of `secret_detected` alerts of this kind in the window.
+             * @description Number of `secret_detected` **alerts** whose first detected kind was this
+             *     one — an *action* count, not a finding count.
+             *
+             *     **This is not "how many secrets of this kind were found."** One alert is
+             *     raised per inspected action, `SecretAlert::primary_kind` takes the first
+             *     entry of its `kinds` list, and this tally increments that single bucket
+             *     by one. An action carrying one AWS key and three email addresses adds 1
+             *     to `AwsAccessKey` and **0** to the email kind — the three emails are not
+             *     represented anywhere in this response.
+             *
+             *     Recorded here rather than fixed, because a fix is a contract change:
+             *     `StoredAlert.detected_pattern_type` is a single `Option<String>` and is
+             *     published on `/api/v1/alerts` as well, so carrying every kind and its
+             *     finding count means widening a shipped, dashboard-consumed shape
+             *     (AAASM-5359 follow-up). The finding-accurate surface is
+             *     `GET /api/v1/sensitive-data/breakdown?group_by=category`, which reports
+             *     `finding_count` and `event_count` separately and never collapses them
+             *     (ADR 0032 forbidden design #11).
              */
             hits: number;
             /**
              * @description Detected credential kind, e.g. `"AwsAccessKey"`. This is the
-             *     `detected_pattern_type` recorded on each `secret_detected` alert.
+             *     `detected_pattern_type` recorded on each `secret_detected` alert, which
+             *     is the alert's **first** kind — see [`hits`](Self::hits).
              */
             kind: string;
         };
