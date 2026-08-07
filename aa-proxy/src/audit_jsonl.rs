@@ -884,7 +884,7 @@ pub struct SinkCompleteness {
     /// The single answer a consumer needs before treating a count from this
     /// file as a measurement.
     ///
-    /// Derived from the counters above by [`Self::sealed`] and never set by
+    /// Derived from the counters above by `SinkCompleteness::sealed` and never set by
     /// hand, so it cannot drift away from them. An older sidecar without the
     /// field decodes as [`WindowCompleteness::Lossy`], because a snapshot whose
     /// completeness was never computed is not evidence that nothing was lost.
