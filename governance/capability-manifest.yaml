@@ -363,7 +363,7 @@ capabilities:
   observe_or_enforce: enforce
   sync_or_best_effort: sync
   failure_posture: fail_closed
-  coverage: denied_before_execution
+  coverage: evaluated
   protection_state: not_applicable
   governance_level_ceiling: not_applicable
   boundary_class: B2
@@ -388,6 +388,11 @@ capabilities:
   evidence:
   - kind: test_unlocated
     describes: node-sdk unit tests
+    note: >-
+      AAASM-5531 review round 1 — the tests are asserted to exist in the node-sdk
+      repository and cannot be verified from this one — R5 resolves paths against THIS
+      repo's evidence tree. Weakened for unverifiability, NOT because the tests are
+      believed absent
   evidence_runs_on_main: standing
   target_level: conditional on closing S7
 - id: S7
@@ -536,7 +541,7 @@ capabilities:
   observe_or_enforce: enforce
   sync_or_best_effort: sync
   failure_posture: fail_closed
-  coverage: denied_before_execution
+  coverage: evaluated
   protection_state: not_applicable
   governance_level_ceiling: not_applicable
   boundary_class: B1
@@ -560,6 +565,10 @@ capabilities:
   evidence:
   - kind: test_unlocated
     describes: go-sdk unit tests
+    note: >-
+      AAASM-5531 review round 1 — the tests are asserted to exist in the go-sdk repository
+      and cannot be verified from this one. Weakened for unverifiability, NOT because the
+      tests are believed absent
   evidence_runs_on_main: standing
   target_level: document that the default build denies everything
   notes: Fail-closed, but not the advertised behaviour either — every wrapped tool call denies.
@@ -1376,8 +1385,13 @@ capabilities:
   - N11
   - traffic not routed to the proxy
   evidence:
-  - kind: test_unlocated
-    describes: aa-proxy unit tests
+  - kind: test
+    path: aa-proxy/src/ssrf.rs
+    note: >-
+      11 test cases from :29, directly on the SSRF predicate — metadata endpoint,
+      loopback, RFC1918, link-local/CGNAT, IPv4-mapped-v6 smuggling, 0.0.0.0/8, NAT64,
+      6to4. Located during AAASM-5531 review round 1; previously cited only as
+      "aa-proxy unit tests"
   evidence_runs_on_main: standing
   target_level: hold
 - id: N3
@@ -1489,7 +1503,7 @@ capabilities:
   observe_or_enforce: enforce
   sync_or_best_effort: sync
   failure_posture: fail_closed
-  coverage: denied_before_execution
+  coverage: evaluated
   protection_state: not_applicable
   governance_level_ceiling: not_applicable
   boundary_class: B3
@@ -1532,6 +1546,12 @@ capabilities:
   evidence:
   - kind: test_unlocated
     describes: aa-proxy unit tests
+    note: >-
+      AAASM-5531 review round 1 — no located test pins the non-LLM MitM payload path:
+      e2e_policy_proxy.rs:34 and e2e_secret_interception.rs:567 both run with mitm_hosts
+      empty, so neither traverses it, and none of the 36 tests in aa-
+      proxy/src/proxy/mod.rs is named for it. Restore denied_before_execution when a test
+      exercises handle_non_llm_mitm with a named MitM host
   evidence_runs_on_main: standing
   target_level: publish the default
   q3_changed_answer: true
@@ -3131,7 +3151,7 @@ capabilities:
   sync_or_best_effort: sync
   failure_posture: fail_open_silent
   coverage: unmeasured
-  protection_state: host_enforced
+  protection_state: integrated
   protection_state_scope: tool_governance_only
   governance_level_ceiling: not_measured
   boundary_class: B6
@@ -4330,7 +4350,7 @@ capabilities:
   sync_or_best_effort: sync
   failure_posture: fail_closed
   failure_posture_node: fail_open_silent
-  coverage: denied_before_execution
+  coverage: evaluated
   coverage_qualifiers:
     node_default_mode: unmeasured
   protection_state: not_applicable
@@ -4354,6 +4374,10 @@ capabilities:
   evidence:
   - kind: test_unlocated
     describes: per-SDK unit tests
+    note: >-
+      AAASM-5531 review round 1 — the tests are asserted to exist across all three SDK
+      repositories and cannot be verified from this one. Weakened for unverifiability, NOT
+      because the tests are believed absent
   evidence_runs_on_main: standing
   target_level: bring Node to parity with Python and Go
   tickets:
@@ -4493,7 +4517,7 @@ capabilities:
   observe_or_enforce: enforce
   sync_or_best_effort: sync
   failure_posture: fail_closed
-  coverage: denied_before_execution
+  coverage: evaluated
   protection_state: not_applicable
   governance_level_ceiling: not_applicable
   boundary_class: B3
@@ -4514,6 +4538,12 @@ capabilities:
   evidence:
   - kind: test_unlocated
     describes: aa-gateway unit tests
+    note: >-
+      AAASM-5531 review round 1 — no located test pins the startup abort: server.rs's own
+      tests cover policy-engine ROUTING (load_policy_engine_routes_directory_to_cascade /
+      _file_to_single_policy), not refusal to serve, and 0 of the 71 files in aa-
+      gateway/tests/ reference serve_tcp or serve_uds. Restore denied_before_execution
+      when a test asserts the abort
   evidence_runs_on_main: standing
   target_level: hold
 - id: G9
