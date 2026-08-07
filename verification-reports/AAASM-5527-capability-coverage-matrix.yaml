@@ -2259,6 +2259,14 @@ capabilities:
     current_level: not_applicable
     target_level: "bounded by the pattern set — say so"
     tickets: [AAASM-5368]
+    notes: >-
+      SCOPE — closed on `main`, STILL LIVE in the published v0.0.1-rc.6. The Pass 5
+      closure is AAASM-5368, and at the rc.6 tag `AAASM-5368` has 0 occurrences in
+      aa-security/src/scanner.rs (positive control: `AAASM` = 28 in the SAME blob, so
+      the probe is live; 8 on `main`). A base64 secret split by ONE separator is
+      therefore still scanned clean in the newest release on crates.io. Quote this row
+      as "closed on `main`, still live in rc.6", never as closed — the companion
+      Markdown requires the statement twice, at :167-187 (row C6 / D-g) and at :819.
 
   # ───────────────────────────────────────────────────────────────────────────
   # D7 · Identity propagation
