@@ -544,10 +544,10 @@ capabilities:
         aa-cli DOES depend on aa-sdk-client (aa-cli/Cargo.toml:74), so a cross-crate
         call would be findable."
       - "WITHDRAWN: \"refusal lives in the out-of-repo FFI shims\" — that is false.
-        Settled from the node-sdk source at 3d8ecd8df: native/aa-ffi-node/src/lib.rs:203-209
+        Settled from the node-sdk source at 3d8ecd8df: native/aa-ffi-node/src/lib.rs:204-209
         maps QueryFailed | ChannelClosed | Shutdown to Decision::Allow with
-        FAIL_OPEN_REASON, under a comment at :202 reading 'Fail-open: a slow,
-        unreachable, or shut-down runtime must never block the agent.' The shim
+        FAIL_OPEN_REASON, under a two-line comment at :202-203 reading 'Fail-open: a
+        slow, unreachable, or shut-down runtime must never block the agent.' The shim
         hard-codes fail-OPEN, so it is not where refusal lives. No in-repo artifact
         proves the SDK honours a deny."
     evidence: >-
