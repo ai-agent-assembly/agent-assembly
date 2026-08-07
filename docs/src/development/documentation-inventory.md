@@ -638,7 +638,7 @@ to check it was written correctly. The adoption decision belongs to AAASM-5610,
 not to a page that is only supposed to be counting. Recorded here so the
 omission is a visible choice rather than an oversight.
 
-### D10 · Four confirmed contradictions
+### D9 · Four confirmed contradictions
 
 These are pages stating incompatible things about one fact. Each was verified by
 reading both sides at the named ref, and each is a **defect** — the resolution
@@ -690,7 +690,7 @@ installer alternate"*. Core's `README.md` advertises it — *"The alternate host
 it. An Accepted ADR states the intended contract, so under ADR 0034's carve-out
 the ADR wins and the three pages are the defect.
 
-### D11 · The claim vocabulary has no enforcing check
+### D10 · The claim vocabulary has no enforcing check
 
 `development/claim-vocabulary.md` is a 1,263-line specification: twelve
 `CLAIM-ABS-*` rules plus a verb rule and a quotation rule, with severities,
@@ -709,7 +709,7 @@ all: it fails when a governance page asserts that one of those rules is
 documentation change currently proves the second property and says nothing about
 the first, which is the one most readers would assume it covers.
 
-### D12 · Two Core `docs/` trees are outside the book by design, and one is stale
+### D11 · Two Core `docs/` trees are outside the book by design, and one is stale
 
 `docs/release/` (27 files) and `docs/superpowers/` (13 files) sit in Core's
 `docs/` tree but not in `docs/src/`, so they are neither book pages nor
