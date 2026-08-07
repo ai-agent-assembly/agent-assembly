@@ -112,6 +112,20 @@ GRANTING_PHRASES: tuple[str, ...] = (
     "approved exception",
 )
 
+# Classes that describe *someone else's* words or a fixed form of words. None of them
+# can license a statement about what this project's rules permit, so a granting
+# phrase inside one is a marker being used as a bypass rather than a label.
+# `negative-example`, `historical-withdrawn` and `test-fixture` are excluded from
+# this restriction because carrying a rule-statement is exactly their purpose.
+NON_LICENSING_CLASSES: frozenset[str] = frozenset(
+    {"attributed-quotation", "legal-literal", "external-term"}
+)
+
+# A marker is a label on a passage, not a switch for a document. The longest
+# legitimate block in this repository is the AAASM-5671 struck-text record; the cap
+# is set well above it and well below "a marker at the top of the file".
+MAX_EXEMPT_BLOCK_LINES = 60
+
 # Saying it is unwaivable. A segment that pairs an anchor with the waiver stem must
 # contain one of these, or it reads as an assertion of waiver-eligibility.
 UNWAIVABLE_MARKERS: tuple[str, ...] = (
@@ -191,6 +205,7 @@ def scan_text(path: str, text: str) -> list[Finding]:
     in_fence = False
     exempt_open_line = 0
     exempt_class = ""
+    exempt_body: list[str] = []
 
     # (line_number, line_text) pairs of the block being accumulated. A block runs to
     # the next heading rather than to the next blank line: an absolute stated in one
@@ -222,8 +237,13 @@ def scan_text(path: str, text: str) -> list[Finding]:
                 findings.append(
                     Finding(path, lineno, "truth-exempt close marker with no open marker", _excerpt(raw))
                 )
+            else:
+                findings.extend(
+                    _audit_exempt_block(path, exempt_open_line, exempt_class, exempt_body, lineno)
+                )
             exempt_open_line = 0
             exempt_class = ""
+            exempt_body = []
             continue
 
         opener = OPEN_MARKER.search(raw)
@@ -240,6 +260,7 @@ def scan_text(path: str, text: str) -> list[Finding]:
                 )
             exempt_open_line = lineno
             exempt_class = opener.group("class")
+            exempt_body = []
             reason = opener.group("reason") or ""
             if exempt_class not in EXEMPT_CLASSES:
                 findings.append(
@@ -260,6 +281,7 @@ def scan_text(path: str, text: str) -> list[Finding]:
         if exempt_open_line:
             # Inside an exemption: the literal text is permitted, but it may not be
             # promoted into a heading, where the label does not travel with it.
+            exempt_body.append(raw)
             if HEADING.match(raw):
                 findings.append(
                     Finding(
@@ -401,6 +423,50 @@ def _scan_block(path: str, block: list[tuple[int, str]]) -> list[Finding]:
     return [findings[k] for k in sorted(findings)]
 
 
+def _audit_exempt_block(
+    path: str, open_line: int, cls: str, body: list[str], close_line: int
+) -> list[Finding]:
+    """Check that a closed truth-exempt block is a label, not a bypass.
+
+    The marker suppresses everything between its fences, which makes it the one
+    construct in this check that can be turned against it: a marker naming a class
+    that cannot license a rule-statement, or a marker stretched over a whole file,
+    silences text the decision governs.
+    """
+    findings: list[Finding] = []
+
+    if len(body) > MAX_EXEMPT_BLOCK_LINES:
+        findings.append(
+            Finding(
+                path,
+                open_line,
+                f"truth-exempt ({cls}) block spans {len(body)} lines to line {close_line}, over the "
+                f"{MAX_EXEMPT_BLOCK_LINES}-line cap; a marker labels a passage, it does not switch off a document",
+                "",
+            )
+        )
+
+    if cls in NON_LICENSING_CLASSES:
+        text = _strip_markup(" ".join(body)).lower()
+        spans = [(at, at + len(m)) for at, m in _occurrences(text, UNWAIVABLE_MARKERS)]
+        for at, phrase in sorted(_occurrences(text, GRANTING_PHRASES)):
+            if any(lo <= at < hi for lo, hi in spans):
+                continue
+            findings.append(
+                Finding(
+                    path,
+                    open_line,
+                    f"truth-exempt class {cls!r} cannot license a statement about waivability, but the "
+                    f"block contains {phrase!r}; use negative-example, historical-withdrawn or "
+                    "test-fixture, or state the rule outside the marker",
+                    _excerpt(text),
+                )
+            )
+            break
+
+    return findings
+
+
 def _segments(text: str) -> list[tuple[int, str]]:
     """Split a block into sentences and table cells, keeping each one's offset."""
     out: list[tuple[int, str]] = []
@@ -499,6 +565,19 @@ _MUST_FAIL = [
         ">\n"
         "> Each may be published under an expiring waiver.\n",
     ),
+    # Review round 1: the marker silenced arbitrary content.
+    (
+        "non-licensing class used to silence a rule statement",
+        "<!-- truth-exempt: external-term - fixed terminology we cannot paraphrase -->\n"
+        "A banned absolute may be waived by any waiver-approver for ninety days.\n"
+        "<!-- /truth-exempt -->\n",
+    ),
+    (
+        "marker stretched over a document",
+        "<!-- truth-exempt: negative-example - a demonstration of banned wording -->\n"
+        + "filler line\n" * (MAX_EXEMPT_BLOCK_LINES + 1)
+        + "<!-- /truth-exempt -->\n",
+    ),
 ]
 
 _MUST_PASS = [
@@ -534,6 +613,12 @@ _MUST_PASS = [
         "It may never waive whether a statement is true.\n"
         "\n"
         "ADR 0033's banned absolutes are therefore unwaivable.\n",
+    ),
+    (
+        "non-licensing class labelling text that states no rule",
+        "<!-- truth-exempt: external-term - a vendor product name we cannot paraphrase -->\n"
+        "The product is marketed as Immutable Audit Vault.\n"
+        "<!-- /truth-exempt -->\n",
     ),
     (
         "properly exempted historical text",
