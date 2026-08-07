@@ -16,6 +16,29 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`changed`/`unchanged`/`refused`/`failed` outcome on `aasm integrations`**
+  (AAASM-5499) — the ratified public contract for telling a no-op from a
+  mutation. The exit code answers *did the command succeed?*; a new, separately
+  reported **outcome** answers *did the world change?*. **No exit code was
+  minted**: a legitimate no-op is a successful idempotent outcome and still
+  exits `0`, which is why the distinction had to live somewhere else — `aasm
+  integrations repair X && echo repaired` printing "repaired" for a tool that
+  was never installed (AAASM-5455) is what overloading one code with both
+  questions cost. `repair` and `remove` now report `changed` or `unchanged` on
+  the result's first line and as `outcome` in `--output json` / `--output
+  yaml`; refusals and failures name `refused` or `failed` on stderr beside
+  their existing exit code, and stdout stays empty there so a QA harness has no
+  result to record from a run that refused (AAASM-5628). `--dry-run` reports
+  `null` rather than guessing, except against a tool with no integration at
+  all, whose end state is settled before any plan is previewed. The two ad-hoc
+  markers this replaces — `repair`'s `nothing_to_repair` (AAASM-5455) and
+  `remove`'s `plan_id: null` (AAASM-5629) — are unchanged in JSON and now set
+  by the same constructor call as the outcome, so they cannot contradict it.
+  **`install` does not report the outcome yet**: the runtime computes whether an
+  apply mutated anything but the DI-API's `ApplyView` does not carry it, and
+  inferring it from a receipt timestamp would produce a wrong `unchanged`.
+  Documented at `docs/src/cli/integrations.md` and in `aasm integrations
+  --help`.
 - **`aasm integrations` lifecycle** (AAASM-5280) — seven subcommands (`list`,
   `plan`, `install`, `status`, `verify`, `repair`, `remove`) covering the whole
   journey for an AI dev tool, with an **eleven-value exit-code vocabulary** so a
