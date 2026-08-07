@@ -321,14 +321,39 @@ conclusion is drawn:
 
 1. Grep the Markdown for a *list* of retraction markers, recording the hit
    count for each — **including the zeros**, since a silent zero and a broken
-   probe look identical. At the pinned commit: `Correction` 3, `corrected` 3,
-   `withdrawn` 2, `inverted` 2, `Withdrawn` 1, `on re-reading` 1,
-   `that is false` 1, `earlier revision` 11; and `Retract`, `retracted`,
-   `Superseded`, `no longer`, `revised`, `Amended`, `mistake` all **0**.
-   18 hits at 18 distinct lines.
+   probe look identical. At the pinned commit: `earlier revision` 11,
+   `Correction` 3, `corrected` 3, `withdrawn` 2, `inverted` 2, `was wrong` 2,
+   `Withdrawn` 1, `on re-reading` 1, `that is false` 1; and `Retract`,
+   `retracted`, `Superseded`, `no longer`, `revised`, `Revised`, `Amended`,
+   `mistake`, `Corrected`, `Inverted`, `not true`, `in fact` all **0**.
+   Positive control `AAASM` = 109, so the probe is live. 26 line-hits at **18
+   distinct lines**.
+
+   `was wrong` was **missing from the round-2 list** and is live. Its two hits:
+   `:172`, already inside the rc.6 preamble, and `:1087`, a schema-design note
+   retiring the boolean `reachable_in_release`, already reflected in the
+   `reachability` enum and governing no row.
+
+   **Two retractions carry no marker at all** and were found only by reading:
+   `:618-632` (the launch-env defect class — fixed for one adapter, open for
+   L2 and L3) and `:890-899` (*"three corrections upward"*, I1 · L1 · C2).
+   Recorded because it bounds what a marker list can do: the list finds hits,
+   reading finds retractions.
 2. Read each hit in context and map it to the row ids it governs — a Markdown
    table groups rows (`**I1** · **I2** · **I3**`), so one retraction can bind
-   several. 38 of 80 rows are governed by at least one.
+   several. **Key the result on (row, retraction) pairs, not rows.** A row
+   governed by two retractions can be Corrected for one and Divergent for the
+   other, and a per-row bucket cannot express that — which is exactly how L1
+   held "Corrected" for the R8/`AA_TEAM_ID` retraction while the rc.6 scoping
+   retraction that also names it went unapplied. **15 retractions govern at
+   least one row, producing 40 (row, retraction) pairs over 32 distinct rows;
+   5 rows appear in more than one pair.**
+
+   Each retraction carries an explicit **obligation** — what the row must
+   actually say — so a pair is Corrected only when the manifest says it, never
+   because the row was attributed. Where a Markdown table cell groups ids but
+   the retraction's substance concerns only some of them, the others are
+   bucketed **Not binding with the reason recorded**, never silently dropped.
 3. For each row compare seed, manifest and Markdown across `notes`,
    `known_bypasses[]`, `evidence[].reason`, `target_level`,
    `interception_component` and `released_note` — not `notes` alone. I1's
@@ -343,16 +368,60 @@ conclusion is drawn:
 5. Where the two documents disagree, **settle it from source**, not by assuming
    the later document wins, and cite the file:line that settled it.
 
-Result, every row in exactly one bucket:
+Result. Every **pair** in exactly one bucket — 40 pairs:
 
-| Bucket | Count | Rows |
+| Bucket | Pairs | |
 |---|---|---|
-| **Corrected** — manifest follows the retraction | 38 | C2 C3 C4 C5 C6 G3 G6 G7 G10 G11 H2 H3 H4 I1 I2 I3 I4 I7 L1 L5 L6 L7 L8 M1 N3 N5 N13 P1 P2 P3 S1 S2 S4 S5 S6 S8 S9 S13 |
-| **Divergent** — still carries a retracted claim | 0 | — |
-| **Self-contradictory** — two fields of one row disagree | 0 | — |
-| **Not applicable** — no retraction touches the row | 42 | the remainder |
+| **Corrected** — the row says what the retraction requires | 37 | |
+| **Divergent** — the row still carries the retracted claim, or is silent where a statement is required | 0 | was 1 — L1 × the rc.6 retraction, fixed below |
+| **Not binding** — the Markdown cell groups this id, the retraction's substance does not reach it | 3 | C4 × `:670`, C5 × `:670`, I2 × `:690` |
+| **Self-contradictory** — two fields of one row disagree | 0 | round 2's within-row detector, re-run unchanged, across all 80 rows |
 
-The two rows that failed the first pass, and how source settled them:
+Projected back onto rows, from the **same** attribution so the two cannot
+disagree:
+
+| Bucket | Rows | |
+|---|---|---|
+| **Corrected** | 29 | C2 C6 G3 G6 G7 H2 H3 H4 I1 I3 I4 I7 L1 L2 L3 L8 M1 N3 N13 P1 P2 S1 S2 S4 S5 S6 S8 S9 S13 |
+| **Divergent** | 0 | — |
+| **Not binding** | 3 | C4 C5 I2 |
+| **Not applicable** | 48 | the remainder |
+
+The row counts differ from round 2's (38 / 42) because the attribution was
+re-derived, in both directions, and the differences are stated rather than
+reconciled away:
+
+- Round 2's `:616` key bound L5 · L6 · L7 · L8. The marker at `:616` is inside
+  **L8's** table cell (the ambient-proxy strip correction); the blockquote that
+  follows at `:618-632` is the launch-env defect class and binds **L2 and L3**,
+  the two adapters still injecting one variable. L5/L6/L7 are re-attributed out
+  and L2/L3 in.
+- Round 2's `:913` key bound P3 · C3 · N5 · G10 · G6 · G11 — rows read off the
+  **gap-to-ticket mapping** table. That table maps gaps to follow-up issues; it
+  is not a retraction population, and its one marker (*"corrected and
+  retitled"*) sits on the AAASM-5640 line, which binds the eBPF nine. The block
+  is swept separately below rather than folded in.
+
+**Adjacent sweep — the gap-to-ticket mapping block (`:908-925`).** Not
+retractions, so not in the pair table, but swept because round 2 folded part of
+it in and because the escape it exposes has the same shape: a **lone omission**
+inside a line whose siblings all comply. Per mapping line, rows citing the
+mapped ticket:
+
+| Mapping line | Rows citing it | Shape |
+|---|---|---|
+| AAASM-5653 — `aa-proxy` absent from the macOS release channels | **14 / 14** | was 13/14; **L1 was the lone omission**, fixed below |
+| AAASM-5640 — eBPF absent from every channel except crates.io | 6 / 9 | I4, G6, G7 carry the packaging fact in `released_note` but not the ticket id — the claim is stated, the reference is not |
+| AAASM-5535 — degraded-state reporting | 1 / 2 | G6's own `target_level` delegates: *"the reporting half is G11"*, and G11 carries it |
+| AAASM-5533 — MCP transport mediation | 5 / 7 | M7 and M9 route to a different follow-up (F2) in their own `target_level` |
+| AAASM-5631 · 5637 · 5626 · 5532 | 1 / 1 each | complete |
+| AAASM-5534, AAASM-5529 | 0 / 5, 0 / 9 | **uniform** absence — a scoping decision that gap→ticket mapping is the Markdown's job, not a per-row escape |
+
+A uniform zero and a lone omission are different findings, and only the second
+is an escape. That distinction is why the sweep reports coverage per line
+rather than a single compliance number.
+
+The rows that failed a pass, and how source settled them:
 
 - **I1** recorded a *closed* vulnerability as partly open, citing
   `run_registration.rs:583,668` as a residual smell. Read at the evidence tree,
@@ -365,6 +434,30 @@ The two rows that failed the first pass, and how source settled them:
   `known_bypasses` while its own `evidence[].reason` recorded that as withdrawn,
   the Node shim being hard-coded fail-open. `known_bypasses[]` is AAASM-5588's
   publication surface, so it was one generator away from being published.
+- **L1**, twice, and it is what the pair keying was for. The rc.6 retraction
+  names I1 · L1 · C6; I1 and C6 carried the statement and L1 had no `notes`
+  field at all — on the manifest's **only** `host_enforced` row, ADR 0030
+  §4.1's sole bypass-resistance rung. Settled at the tag with controls in the
+  same probe: `aa-cli/src/commands/run_registration.rs` and **all four** of
+  L1's evidence items — including the pinning test
+  `cli_run_claude_governed_launch.rs` — are absent at `v0.0.1-rc.6`, while
+  `aa-cli/src/main.rs` and `aa-devtool-claude-code/src/lib.rs` resolve there.
+  R14 clause 1 could not be satisfied at rc.6 at all, so the rung is *unearned*
+  for the release, not merely unmeasured. Separately, L1 was the lone omission
+  in the AAASM-5653 mapping line, and there the Markdown's attribution needed
+  checking rather than copying: `aasm proxy start` spawns the **separate**
+  `aa-proxy` binary from `PATH` or `~/.cargo/bin` only
+  (`aa-cli/src/commands/proxy/start.rs:85-114`) and `resolve_launch_proxy`
+  (`run.rs:372-388`) refuses to launch without a live verified endpoint — so on
+  this macOS-only row the packaging gap denies the capability outright.
+- **L5** — surfaced by rule R15 rather than by the comparison.
+  `aa-devtool/src/registry.rs` does not exist at `v0.0.1-rc.6` (control:
+  `aa-devtool-saas/src/adapter.rs` and `aa-api/src/routes/devtools/mod.rs` both
+  resolve at the tag), so the row cited a mechanism the release lacks. The
+  direction is the opposite of L1's and the row now says so: L5's claim is a
+  *negative* one — the SaaS surface is not a governed integration — and it
+  holds more strongly at rc.6, where no adapter registry existed at all. Only
+  the citation was main-scoped.
 
 Also corrected on content: **M1** (the `AA_PROXY_LLM_ONLY` divergence, plus
 `AA_PROXY_MITM_HOSTS` promoted to a first-class optional route), **C2** and
