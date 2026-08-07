@@ -2008,6 +2008,57 @@ mod tests {
         }
     }
 
+    /// **The falsification, at the surface a user sees.**
+    ///
+    /// `aa-runtime`'s suite proves the rejected `bool` reading fabricates
+    /// `Unchanged` from an older peer's frame. This carries that fabricated
+    /// value the rest of the way and shows what it becomes: a published
+    /// `"outcome": "unchanged"` next to exit `0` — a claim that the user's
+    /// machine was already in the state they asked for, sourced from a field no
+    /// runtime sent.
+    ///
+    /// Both readings are run against **one** frame, so the difference is the
+    /// reading and nothing else.
+    #[test]
+    fn the_rejected_bool_reading_publishes_a_success_this_client_refuses() {
+        // What a v4 runtime sends: no outcome block.
+        let frame = apply_view(None);
+
+        // The rejected design's reading of it, transcribed: one bit, and
+        // absence lands on `false`.
+        let bool_shaped = if frame
+            .outcome
+            .as_ref()
+            .is_some_and(|o| o.mutation == wire::ApplyMutation::Changed as i32)
+        {
+            ApplyMutation::Changed
+        } else {
+            ApplyMutation::Unchanged
+        };
+        let fabricated = InstallVerdict::of(0, &bool_shaped);
+        assert_eq!(
+            fabricated.change,
+            Some(ChangeOutcome::Unchanged),
+            "the falsification is vacuous if the rejected reading does not publish a success"
+        );
+        assert_eq!(fabricated.exit, Outcome::Success);
+
+        // The shipped reading of the same frame, through the version gate.
+        let stated = ApplyMutation::from_view(frame.outcome.as_ref(), 4);
+        let (report, exit) = InstallReport::from_applied(plan_stub(), &frame, &stated);
+        let json = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(
+            json["outcome"],
+            serde_json::Value::Null,
+            "this client published the fabricated success"
+        );
+        assert_ne!(json["outcome"], serde_json::json!("unchanged"));
+        assert!(json["outcome_unknown"].as_str().expect("a reason").contains("v4"));
+        // The apply itself worked, so the exit code is unchanged — which is
+        // exactly why the exit code cannot be the thing that answers this.
+        assert_eq!(exit, Outcome::Success);
+    }
+
     /// The JSON a script reads never says `unchanged` for a run whose outcome
     /// was not stated — the exact document the ratified contract is about.
     #[test]
