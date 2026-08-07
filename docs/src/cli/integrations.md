@@ -201,6 +201,12 @@ adapter and run by the service; no real credential is read, sent or printed.
 | `--dry-run` | off | Show what drifted and stop. |
 | `--yes` | off | Repair without asking. Required for non-interactive and machine-readable runs. |
 
+Repairing nothing is a **success** and exits `0` — see
+[Outcome: did the world change?](#outcome-did-the-world-change) below, which is
+what tells a restored integration from one that never needed restoring.
+`nothing_to_repair` additionally says *which* no-op it was: no receipt accounts
+for the tool at all, or the AASM-owned state already matches the receipt it has.
+
 ## `aasm integrations remove <TOOL>`
 
 | Flag | Default | Description |
@@ -219,12 +225,85 @@ Restoration is **semantics-exact, not byte-exact** — the keys Agent Assembly
 owns are removed and the prior values restored, but formatting and key order in
 a file someone else also writes are not guaranteed to be reproduced verbatim.
 
+Removing an integration that is already gone is a **success** and exits `0`, so
+a teardown loop does not have to special-case its second run. What tells the two
+runs apart is the outcome below.
+
+## Outcome: did the world change?
+
+The exit code answers *did the command succeed?*. It does **not** answer *did
+the world change?*, and the two are different questions: a `remove` of an
+integration that is already absent succeeded and modified nothing. Overloading
+one code with both is how `aasm integrations repair X && echo repaired` came to
+print "repaired" for a tool that was never installed.
+
+So no exit code was minted for a no-op. A legitimate no-op is a successful
+idempotent outcome and exits `0`, and the mutation question is answered by a
+separate, explicitly reported **outcome**:
+
+| Outcome | Meaning | Exit |
+|---|---|---|
+| `changed` | The requested end state was reached, and something was modified. | `0` |
+| `unchanged` | The requested end state already held; nothing was modified. | `0` |
+| `refused` | The command declined to act — authorization, policy, consent, invalid input. Nothing was modified. | non-zero |
+| `failed` | The command tried and did not reach the requested end state. | non-zero |
+
+`changed` and `unchanged` are reported on the result's first line and as
+`outcome` in `--output json` / `--output yaml`. `refused` and `failed` are named
+on **stderr**, beside the specific exit code from the table below — stdout stays
+empty on a non-zero exit, so a QA harness has no result to record from a run
+that refused.
+
+### Branching on it
+
+This is wrong, and is the defect this contract exists to prevent:
+
+```bash
+# WRONG — prints "repaired" for a tool that was never installed.
+aasm integrations repair claude-code --yes && echo repaired
+```
+
+This is right:
+
+```bash
+case $(aasm integrations repair claude-code --yes --output json | jq -r .outcome) in
+  changed)   echo 'drifted state was restored' ;;
+  unchanged) echo 'nothing needed repairing' ;;
+esac
+```
+
+### Which commands report it
+
+| Command | Reports `outcome` | Notes |
+|---|---|---|
+| `repair` | yes | `changed` when the service restored something; `unchanged` for both no-op states. |
+| `remove` | yes | `changed` when the reversal ran; `unchanged` when there was no integration to remove. |
+| `install` | **not yet** | See below. |
+| `list`, `plan`, `status`, `verify` | no | None of them is asked to reach an end state on the host, so neither token would mean anything. `verify` has its own pass/fail axis in `outcome` on its own report — that field is the verification result (`passed`, `partially_passed`, `failed`, `unverifiable`), not this vocabulary. |
+
+A `--dry-run` reports `null` rather than a token. It changed nothing, but it
+also did not establish that the end state already holds — the drift it is
+previewing is proof of the opposite. The one exception is a `--dry-run` against
+a tool with no integration at all: that state is settled before any plan is
+previewed, so it reports `unchanged`.
+
+**`install` does not report it yet.** The runtime knows whether an apply mutated
+anything — the engine computes it — but the DI-API's `ApplyView` does not carry
+the fact, and this client will not infer it from a receipt timestamp: a wrong
+`unchanged` tells a script the world did not change when it did, which is worse
+than no answer. Until the wire carries it, compare `aasm integrations status`
+before and after. Tracked on AAASM-5499.
+
 ## Exit codes
 
 `aasm integrations` gives every outcome its own code so a wrapper can branch on
 the code rather than parse English out of stderr. The table below is generated
 from `aa-cli/src/commands/integrations/exit.rs` and printed by
 `aasm integrations --help`.
+
+These answer *did the command succeed?* only. For *did the world change?* see
+[Outcome](#outcome-did-the-world-change) above — a no-op exits `0` here and is
+distinguished there, never by a code of its own.
 
 | Code | Name | Meaning |
 |---|---|---|

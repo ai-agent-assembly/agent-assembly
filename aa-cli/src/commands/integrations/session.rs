@@ -95,7 +95,20 @@ pub struct Failure {
 
 impl Failure {
     /// Build a failure with the exit code it should produce.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if `outcome` is [`Outcome::Success`]. A failure that
+    /// exits `0` would be reported as `unchanged` by the ratified contract
+    /// (AAASM-5499) — a *success* token on a run that did not reach the end
+    /// state — which is the one classification the vocabulary must never
+    /// produce.
     pub fn new(outcome: Outcome, detail: impl Into<String>, remediation: impl Into<String>) -> Self {
+        debug_assert_ne!(
+            outcome,
+            Outcome::Success,
+            "a Failure that exits 0 would report the successful `unchanged` outcome"
+        );
         Self {
             detail: detail.into(),
             remediation: remediation.into(),

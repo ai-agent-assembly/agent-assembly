@@ -39,6 +39,8 @@ use serde::Serialize;
 
 use aa_proto::assembly::devint::v1 as wire;
 
+use super::exit::ChangeOutcome;
+
 /// The runtime this command talked to.
 ///
 /// Present on every report so a machine-readable answer always says which core
@@ -985,6 +987,14 @@ impl VerifyReport {
 /// The `repair` report.
 #[derive(Debug, Clone, Serialize)]
 pub struct RepairReport {
+    /// Whether this run modified anything (AAASM-5499).
+    ///
+    /// `None` on a preview: `--dry-run` reports what a run *would* restore and
+    /// establishes nothing about whether the end state already holds. The one
+    /// preview that does carry an outcome is the tool with no integration at
+    /// all, because that state is settled before any plan is previewed — see
+    /// [`RepairReport::nothing_to_repair`].
+    pub outcome: Option<ChangeOutcome>,
     /// Which runtime answered.
     pub runtime: RuntimeInfo,
     /// The tool.
@@ -1007,14 +1017,115 @@ pub struct RepairReport {
     /// repair of nothing looks like — so the reason is carried explicitly
     /// rather than left to be inferred from which optional blocks are absent
     /// (AAASM-5455). `None` means the run went through the repair verb.
+    ///
+    /// Since AAASM-5499 this is the *reason* half of an `unchanged` outcome,
+    /// not a second way of saying it: it is only ever set by
+    /// [`RepairReport::nothing_to_do`], which sets [`RepairReport::outcome`] in
+    /// the same call, so the two cannot disagree. The implication runs one way
+    /// — a stated reason means `unchanged`, while an `unchanged` run that *did*
+    /// send the repair verb and restored nothing has no reason to give beyond
+    /// its empty `repaired` list.
     pub nothing_to_repair: Option<String>,
     /// The status after the repair, when one ran.
     pub status: Option<Box<StatusReport>>,
 }
 
+impl RepairReport {
+    /// A run that never sent the repair verb, because the state it would have
+    /// acted on is already the state that was asked for.
+    ///
+    /// The `unchanged` outcome and the reason are set together here, which is
+    /// what makes them one statement rather than two that could drift apart.
+    /// `dry_run` does not soften it: this state is settled from the lifecycle
+    /// phase or from an empty drift list, both of which are established facts
+    /// about the host and not a preview of work.
+    pub fn nothing_to_do(
+        runtime: RuntimeInfo,
+        tool_id: &str,
+        dry_run: bool,
+        reason: String,
+        status: Option<Box<StatusReport>>,
+    ) -> Self {
+        Self {
+            outcome: Some(ChangeOutcome::Unchanged),
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run,
+            drifted: Vec::new(),
+            repaired: Vec::new(),
+            unresolved: Vec::new(),
+            nothing_to_repair: Some(reason),
+            status,
+        }
+    }
+
+    /// A preview of a repair that has drift to restore.
+    ///
+    /// Carries no outcome: it changed nothing, but it also did not establish
+    /// that the end state already holds — the drift it is previewing is proof
+    /// of the opposite — and calling it `failed` because it exits `drifted`
+    /// would describe a working preview as a failure.
+    pub fn preview(
+        runtime: RuntimeInfo,
+        tool_id: &str,
+        drifted: Vec<String>,
+        status: Option<Box<StatusReport>>,
+    ) -> Self {
+        Self {
+            outcome: None,
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run: true,
+            drifted,
+            repaired: Vec::new(),
+            unresolved: Vec::new(),
+            nothing_to_repair: None,
+            status,
+        }
+    }
+
+    /// A run that sent the repair verb, classified from what it exits with and
+    /// what it restored.
+    ///
+    /// `repaired` is the mutation evidence, and it is the service's own answer
+    /// rather than something inferred from the drift that went in: a verb that
+    /// ran and restored nothing is `unchanged`, not `changed`.
+    pub fn ran(
+        runtime: RuntimeInfo,
+        tool_id: &str,
+        outcome: super::exit::Outcome,
+        drifted: Vec<String>,
+        repaired: Vec<String>,
+        unresolved: Vec<UnsupportedRow>,
+        status: Option<Box<StatusReport>>,
+    ) -> Self {
+        Self {
+            outcome: Some(ChangeOutcome::of(outcome, !repaired.is_empty())),
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run: false,
+            drifted,
+            repaired,
+            unresolved,
+            // The repair verb ran. Whether it restored anything is what
+            // `repaired` says; this field is for runs that never got here.
+            nothing_to_repair: None,
+            status,
+        }
+    }
+}
+
 /// The `remove` report.
 #[derive(Debug, Clone, Serialize)]
 pub struct RemoveReport {
+    /// Whether this run modified anything (AAASM-5499).
+    ///
+    /// `None` on a preview of a removal that has something to reverse: it
+    /// changed nothing, and it established nothing about whether the end state
+    /// already holds. A tool with no integration at all is not that preview —
+    /// its end state is settled from the lifecycle phase before any plan is
+    /// authored — so it reports `unchanged` with or without `--dry-run`.
+    pub outcome: Option<ChangeOutcome>,
     /// Which runtime answered.
     pub runtime: RuntimeInfo,
     /// The tool.
@@ -1031,6 +1142,12 @@ pub struct RemoveReport {
     /// it printed `(plan )` to a person and `"plan_id": ""` to a script, which
     /// is indistinguishable from a plan the runtime failed to name
     /// (AAASM-5629).
+    ///
+    /// Since AAASM-5499 the *outcome* of that state is stated by
+    /// [`RemoveReport::outcome`] instead, and this field is back to answering
+    /// only the question it names — which plan, if any, was authored. The two
+    /// are set in one call ([`RemoveReport::nothing_to_remove`]), so a report
+    /// cannot name no plan while claiming to have changed something.
     pub plan_id: Option<String>,
     /// The restoration actions, in order.
     pub steps: Vec<StepRow>,
@@ -1041,9 +1158,37 @@ pub struct RemoveReport {
 }
 
 impl RemoveReport {
+    /// A tool with no Agent Assembly integration to remove.
+    ///
+    /// The end state the caller asked for already holds, which is a success and
+    /// a no-op — so `unchanged` is stated here rather than left to be inferred
+    /// from a `null` plan id and an empty step list, both of which a reader had
+    /// to know the shape of the report to interpret.
+    pub fn nothing_to_remove(runtime: RuntimeInfo, tool_id: &str, dry_run: bool, reason: String) -> Self {
+        Self {
+            outcome: Some(ChangeOutcome::Unchanged),
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run,
+            // No plan exists to name: the Remove verb is never sent here, and
+            // it would refuse anyway — the service authors a reversal from a
+            // receipt, and there is none (AAASM-5629).
+            plan_id: None,
+            steps: Vec::new(),
+            residual: Vec::new(),
+            warnings: vec![reason],
+        }
+    }
+
     /// Build the report from the service's removal plan.
+    ///
+    /// `dry_run` decides the outcome, and it is the honest reading of what the
+    /// two calls mean: the Remove verb without a plan id *authors* the reversal
+    /// and mutates nothing, and with one it *executes* it. So a preview reports
+    /// no outcome and an execution reports `changed`.
     pub fn from_view(runtime: RuntimeInfo, view: &wire::RemovalView, dry_run: bool) -> Self {
         Self {
+            outcome: (!dry_run).then_some(ChangeOutcome::Changed),
             runtime,
             tool_id: view.tool_id.clone(),
             dry_run,

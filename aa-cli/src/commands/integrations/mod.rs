@@ -45,7 +45,7 @@ pub mod session;
 pub mod status;
 pub mod verify;
 
-use exit::Outcome;
+use exit::{ChangeOutcome, Outcome};
 use session::{Failure, Sensitivity, Session, SessionOptions};
 
 /// The protection profile an install asks for.
@@ -184,7 +184,7 @@ pub fn dispatch(args: IntegrationsArgs, output: OutputFormat) -> ExitCode {
     }
 }
 
-/// The long help: the journey, an example per stage, and the exit-code table.
+/// The long help: the journey, an example per stage, and both outcome tables.
 fn long_help() -> String {
     format!(
         "\
@@ -210,6 +210,14 @@ EXAMPLES:
       5) aasm integrations repair claude-code --yes ;;
     esac
 
+    # Tell a no-op apart from a mutation. The exit code is 0 for both, so read
+    # the outcome — NOT `&& echo repaired`, which announces a repair of a tool
+    # that was never installed.
+    case $(aasm integrations repair claude-code --yes --output json | jq -r .outcome) in
+      changed)   echo 'drifted state was restored' ;;
+      unchanged) echo 'nothing needed repairing' ;;
+    esac
+
 NOTES:
     Lifecycle commands run inside the Agent Assembly runtime, which owns the
     only audited implementation of them. There is no in-process fallback; when
@@ -233,7 +241,23 @@ NOTES:
     cause: the command then answers from whichever runtime it reached and the
     others are never consulted. The reported standing carries it either way.
 
+    The exit code answers `did the command succeed?`.
+    It does NOT answer `did the world change?` — a remove of an integration
+    that is already gone succeeded and modified nothing. That is answered by the
+    outcome below, which repair and remove print on the result's first line and
+    carry as `outcome` in --output json. On a non-zero exit the outcome is named
+    on stderr instead; stdout stays empty there, so a harness has no result to
+    record from a run that refused.
+
+    install does NOT yet report it. The runtime knows whether an apply mutated
+    anything, but the DI-API's ApplyView does not carry the fact, and this
+    client will not guess at it from a timestamp — a wrong `unchanged` is worse
+    than an absent one. Until the wire carries it, check `aasm integrations
+    status` before and after instead.
+
+{}
 {}",
+        exit::change_help_table(),
         exit::help_table()
     )
 }
@@ -241,9 +265,10 @@ NOTES:
 /// Run an async command body on a current-thread runtime and turn its outcome
 /// into an exit code.
 ///
-/// Failures print to **stderr** in two lines — what happened, then what to do
-/// about it — so `--output json` on stdout stays parseable even when the
-/// command failed.
+/// Failures print to **stderr** in three lines — what happened, what to do
+/// about it, and the change outcome the ratified contract names it by (see
+/// [`report_failure`]) — so `--output json` on stdout stays parseable even when
+/// the command failed.
 pub(crate) fn run_blocking<F>(body: F) -> ExitCode
 where
     F: std::future::Future<Output = Result<Outcome, Failure>>,
@@ -251,17 +276,44 @@ where
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("error: could not start an async runtime: {e}");
-            return Outcome::InternalError.into();
+            let failure = Failure::new(
+                Outcome::InternalError,
+                format!("could not start an async runtime: {e}"),
+                "retry, and report this if it persists",
+            );
+            report_failure(&failure);
+            return failure.outcome.into();
         }
     };
     match runtime.block_on(body) {
         Ok(outcome) => outcome.into(),
         Err(failure) => {
-            eprintln!("error: {failure}");
+            report_failure(&failure);
             failure.outcome.into()
         }
     }
+}
+
+/// Print a failure on stderr, naming the change outcome the contract calls it.
+///
+/// The exit code already distinguishes *which* refusal or failure this is, and
+/// the table `--help` prints is what maps that code onto `refused` or `failed`.
+/// This line saves the reader the lookup: `refused` says nothing was modified,
+/// `failed` says the end state was not reached and the host may need checking,
+/// and that is the difference between "re-run it" and "go and look" (AAASM-5499).
+///
+/// **stdout is deliberately untouched.** A refused command must leave a harness
+/// with no report to record (AAASM-5628) — that is a property of the whole
+/// provenance design, not a rendering choice — and a document on stdout is a
+/// record, however plainly it is labelled a refusal.
+fn report_failure(failure: &Failure) {
+    eprintln!("error: {failure}");
+    eprintln!(
+        "outcome: {} (exit {} {})",
+        ChangeOutcome::of(failure.outcome, false).as_str(),
+        failure.outcome.code(),
+        failure.outcome.as_str()
+    );
 }
 
 /// Open a session, starting the runtime if that is what is missing.
@@ -496,6 +548,25 @@ mod tests {
         for verb in ["list", "plan", "install", "status", "verify", "repair", "remove"] {
             assert!(help.contains(verb), "{verb} is missing from the journey");
         }
+    }
+
+    /// The other half of the contract has to be in the same help, or a caller
+    /// reading `--help` to find out how to branch learns only about the axis
+    /// that cannot answer their question (AAASM-5499).
+    #[test]
+    fn the_long_help_documents_the_change_outcomes_and_that_a_no_op_exits_zero() {
+        let help = long_help();
+        for outcome in ChangeOutcome::ALL {
+            assert!(help.contains(outcome.as_str()), "{} is undocumented", outcome.as_str());
+        }
+        assert!(
+            help.contains("did the world change?"),
+            "the help never states which question the outcome answers: {help}"
+        );
+        assert!(
+            help.contains("exits 0"),
+            "the help never states that a no-op is a success: {help}"
+        );
     }
 
     /// A machine-readable run cannot answer a prompt, so it must abort rather

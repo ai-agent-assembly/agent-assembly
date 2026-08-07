@@ -20,6 +20,7 @@ use serde::Serialize;
 
 use crate::output::OutputFormat;
 
+use super::exit::ChangeOutcome;
 use super::model::{
     EvidenceRow, InstallReport, LevelAvailability, PlanReport, RemoveReport, RepairReport, RuntimeInfo, StatusReport,
     StepRow, ToolListReport, VerifyReport,
@@ -49,6 +50,16 @@ pub fn emit(report: &impl Report, output: OutputFormat) {
         },
         OutputFormat::Table => print!("{}", report.render_human()),
     }
+}
+
+/// The ratified change outcome, as the suffix the result's first line carries.
+///
+/// Empty for a preview, which has none to report. Everything else prints the
+/// same token `--output json` serializes, so a person reading the table and a
+/// script reading the JSON are reading one word rather than two renderings of
+/// it that could diverge (AAASM-5499).
+fn change_outcome(outcome: Option<ChangeOutcome>) -> String {
+    outcome.map(|o| format!(" — {}", o.as_str())).unwrap_or_default()
 }
 
 /// The operator-facing name of an integration state.
@@ -615,10 +626,15 @@ impl Report for RepairReport {
         // below it is conditional, so a reader who does not already know which
         // ones are optional cannot tell a repair that restored nothing from one
         // that had nothing to restore — which is the whole of AAASM-5455.
+        //
+        // The ratified token comes first and the prose marker second: the token
+        // is what a person and a `grep` read the same way, and it is the same
+        // string `--output json` carries (AAASM-5499).
         out.push_str(&format!(
-            "{} — {}{}\n",
+            "{} — {}{}{}\n",
             self.tool_id,
             if self.dry_run { "repair preview" } else { "repair" },
+            change_outcome(self.outcome),
             if self.nothing_to_repair.is_some() {
                 " (nothing to repair)"
             } else {
@@ -669,9 +685,10 @@ impl Report for RemoveReport {
         // would have carried it. A run that authored no plan says so here in
         // the same shape `repair` states its own no-op (AAASM-5629).
         out.push_str(&format!(
-            "{} — {} ({})\n",
+            "{} — {}{} ({})\n",
             self.tool_id,
             if self.dry_run { "removal preview" } else { "removal" },
+            change_outcome(self.outcome),
             match &self.plan_id {
                 Some(id) => format!("plan {id}"),
                 None => "nothing to remove".to_string(),
@@ -697,6 +714,7 @@ impl Report for RemoveReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::integrations::exit::Outcome;
     use crate::commands::integrations::model::{
         Assertion, EvidenceRow, RuntimeInfo, RuntimeProvenanceInfo, VerifyReport,
     };
@@ -1158,6 +1176,7 @@ mod tests {
 
     fn remove_report(runtime: RuntimeInfo) -> RemoveReport {
         RemoveReport {
+            outcome: Some(ChangeOutcome::Changed),
             runtime,
             tool_id: "claude-code".to_string(),
             dry_run: false,
@@ -1169,16 +1188,13 @@ mod tests {
     }
 
     fn repair_report(runtime: RuntimeInfo) -> RepairReport {
-        RepairReport {
+        RepairReport::nothing_to_do(
             runtime,
-            tool_id: "claude-code".to_string(),
-            dry_run: false,
-            drifted: Vec::new(),
-            repaired: Vec::new(),
-            unresolved: Vec::new(),
-            nothing_to_repair: Some("no receipt accounts for this tool".to_string()),
-            status: None,
-        }
+            "claude-code",
+            false,
+            "no receipt accounts for this tool".to_string(),
+            None,
+        )
     }
 
     /// A verification that passed **and** exercised the protected path — the
@@ -1316,5 +1332,125 @@ mod tests {
         let verify = serde_json::to_value(vacuous()).expect("serialize");
         assert_eq!(verify["verified_at_unix_secs"], serde_json::json!(1));
         assert_eq!(verify["evidence"][0]["observed_at_unix_secs"], serde_json::json!(1));
+    }
+
+    // ── the change outcome, on both surfaces (AAASM-5499) ───────────────────
+
+    /// The token a person reads and the token a script reads are one string.
+    /// Rendering them from separate sources is how they come to disagree, and a
+    /// disagreement here is worse than either surface being silent.
+    #[test]
+    fn the_rendered_token_is_the_json_token() {
+        for report in [
+            RepairReport::nothing_to_do(runtime(), "claude-code", false, "already matches".to_string(), None),
+            RepairReport::ran(
+                runtime(),
+                "claude-code",
+                Outcome::Success,
+                vec!["settings".to_string()],
+                vec!["settings".to_string()],
+                Vec::new(),
+                None,
+            ),
+        ] {
+            let token = serde_json::to_value(&report).expect("serialize")["outcome"]
+                .as_str()
+                .expect("the JSON report carried no outcome token")
+                .to_string();
+            assert!(
+                report
+                    .render_human()
+                    .lines()
+                    .next()
+                    .expect("a first line")
+                    .contains(&token),
+                "the table rendering does not carry `{token}`: {}",
+                report.render_human()
+            );
+        }
+    }
+
+    /// The falsification the ticket requires, at the rendering layer: a repair
+    /// that restored something and one that had nothing to restore must not
+    /// produce the same first line. A mutation that hard-codes either token
+    /// fails one of these two assertions.
+    #[test]
+    fn a_repair_that_restored_something_reads_differently_from_one_that_did_not() {
+        let unchanged = RepairReport::nothing_to_do(
+            runtime(),
+            "claude-code",
+            false,
+            "AASM-owned state already matches its receipt".to_string(),
+            None,
+        )
+        .render_human();
+        let changed = RepairReport::ran(
+            runtime(),
+            "claude-code",
+            Outcome::Success,
+            vec!["settings".to_string()],
+            vec!["settings".to_string()],
+            Vec::new(),
+            None,
+        )
+        .render_human();
+
+        assert!(changed.contains("— changed"), "{changed}");
+        assert!(
+            !changed.contains("unchanged"),
+            "a repair that restored a key read as a no-op: {changed}"
+        );
+        assert!(unchanged.contains("— unchanged"), "{unchanged}");
+        assert_ne!(
+            changed.lines().next(),
+            unchanged.lines().next(),
+            "the two outcomes render identically"
+        );
+    }
+
+    /// The same falsification for `remove`: the first run and the second must
+    /// not read alike. A mutation that hard-codes either token fails here.
+    #[test]
+    fn a_removal_that_reversed_something_reads_differently_from_one_that_did_not() {
+        let changed = remove_report(runtime()).render_human();
+        let unchanged = RemoveReport::nothing_to_remove(
+            runtime(),
+            "claude-code",
+            false,
+            "nothing was installed, so nothing was removed".to_string(),
+        )
+        .render_human();
+
+        assert!(changed.contains("— changed"), "{changed}");
+        assert!(
+            !changed.contains("unchanged"),
+            "an executed removal read as a no-op: {changed}"
+        );
+        assert!(unchanged.contains("— unchanged"), "{unchanged}");
+        assert_ne!(
+            changed.lines().next(),
+            unchanged.lines().next(),
+            "the two outcomes render identically"
+        );
+    }
+
+    /// A preview reports what a run *would* do. It changed nothing and it
+    /// established nothing about whether the end state already holds, so it
+    /// claims neither token rather than picking the more flattering one.
+    #[test]
+    fn a_preview_of_real_drift_claims_no_outcome() {
+        let preview = RepairReport::preview(runtime(), "claude-code", vec!["settings".to_string()], None);
+        assert_eq!(
+            serde_json::to_value(&preview).expect("serialize")["outcome"],
+            serde_json::Value::Null
+        );
+        let first = preview.render_human().lines().next().expect("a first line").to_string();
+        for token in ChangeOutcome::ALL {
+            assert!(
+                !first.contains(token.as_str()),
+                "a preview claimed `{}`: {first}",
+                token.as_str()
+            );
+        }
     }
 }

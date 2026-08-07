@@ -16,7 +16,7 @@
 //! restore is reported in `residual` and the receipt is *kept*, so a user whose
 //! configuration was not fully restored can still see what is left behind.
 //!
-//! # Removing nothing has no plan, and says so (AAASM-5629)
+//! # Removing nothing has no plan, and says so (AAASM-5629, AAASM-5499)
 //!
 //! A tool with no integration is short-circuited below, before either half of
 //! the verb is sent. That is not a removal whose plan went unnamed: the service
@@ -25,6 +25,13 @@
 //! [`RemoveReport::plan_id`](super::model::RemoveReport::plan_id) is `None`,
 //! which renders as `nothing to remove` for a person and `null` for a script —
 //! rather than carrying an empty id that both surfaces have to guess about.
+//!
+//! Removing twice is a success both times, and since the contract was ratified
+//! (AAASM-5499) the two runs are no longer told apart only by a plan id a
+//! reader has to know how to interpret: the first reports `changed` and the
+//! second `unchanged`, on the result's first line and as `outcome` in
+//! `--output json`. No exit code moved — both are `0`, because both reached
+//! the end state the caller asked for.
 //!
 //! # `--force`
 //!
@@ -44,8 +51,28 @@ use super::render::{emit, Report};
 use super::session::{Failure, SessionOptions};
 use super::{confirm, exit::Outcome, open, resolve_tool, run_blocking, verb_failure};
 
+/// What `remove` reports, and why a teardown loop does not need to special-case
+/// its second run.
+const OUTCOME_HELP: &str = "\
+OUTCOME:
+    Removing an integration that is already gone is a success and exits 0, so
+    the exit code cannot tell the first run from the second. What can is the
+    outcome on the result's first line, and `outcome` in --output json:
+
+        changed     the reversal ran and restored what the integration replaced
+        unchanged   there was no integration to remove; `plan_id` is null
+
+    A --dry-run of a real removal reports no outcome: it authored the reversal
+    without performing it, and authoring establishes nothing about whether the
+    end state already holds.
+
+    Non-zero means the removal did NOT happen — including the refusal to leave
+    items behind without --force, which exits 9 and reports `refused`.
+";
+
 /// `aasm integrations remove` arguments.
 #[derive(Args)]
+#[command(after_long_help = OUTCOME_HELP)]
 pub struct RemoveArgs {
     /// The tool to remove the integration from.
     pub tool: String,
@@ -92,18 +119,12 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
                 args.tool, status.phase
             );
             emit(
-                &RemoveReport {
+                &RemoveReport::nothing_to_remove(
                     runtime,
-                    tool_id: args.tool.clone(),
-                    dry_run: args.dry_run,
-                    // No plan exists to name: the Remove verb is never sent
-                    // here, and it would refuse anyway — the service authors a
-                    // reversal from a receipt, and there is none (AAASM-5629).
-                    plan_id: None,
-                    steps: Vec::new(),
-                    residual: Vec::new(),
-                    warnings: vec!["nothing was installed, so nothing was removed".to_string()],
-                },
+                    &args.tool,
+                    args.dry_run,
+                    "nothing was installed, so nothing was removed".to_string(),
+                ),
                 output,
             );
             return Ok(Outcome::Success);
