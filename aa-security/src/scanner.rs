@@ -1353,7 +1353,118 @@ fn is_base64_char(b: u8) -> bool {
 /// [`is_hex_group_separator`]), and every byte of a multi-byte UTF-8 sequence
 /// is ≥ `0x80`, so non-ASCII terminates their runs exactly as whitespace does.
 /// Their runs are therefore ASCII by construction and score correctly already.
+///
+/// # The scanner's own output is not evidence about the payload (AAASM-5441)
+///
+/// Every pass here runs over `text` with the redaction labels this crate writes
+/// masked out ([`mask_redaction_markers`]). Without that, the labels are scored
+/// as if they were payload: `[REDACTED:AnthropicKey]` inside a compact-JSON body
+/// contributes both its length and its punctuation-rich byte distribution to the
+/// enclosing whitespace token, and a **correctly and completely scrubbed** body
+/// re-reads as still carrying a secret. That inverts the meaning of the signal —
+/// the better a redacting proxy behaves, the less protective it looks — and it
+/// does not converge: each re-scan splices another label in, so a payload passing
+/// two inspection points accumulates markers instead of reaching a fixed point.
+///
+/// Masking is length-preserving, so every offset these passes report is still an
+/// offset into the caller's `text`.
 fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
+    match mask_redaction_markers(text) {
+        Some(masked) => high_entropy_passes(&masked, findings),
+        None => high_entropy_passes(text, findings),
+    }
+}
+
+/// The prefix every redaction label this crate writes begins with.
+///
+/// Used only to find *candidate* positions cheaply; whether a candidate is
+/// actually a label is decided by [`redaction_marker_len_at`] against the closed
+/// set of labels, never by this prefix alone.
+const REDACTION_MARKER_PREFIX: &str = "[REDACTED";
+
+/// Byte length of the redaction label starting at `at`, or `None` if no label
+/// starts there.
+///
+/// # Why this cannot become an evasion
+///
+/// The recognised set is **closed and literal**: the bare `[REDACTED]` that the
+/// locale packs and [`ScanResult::redact`]'s fail-closed branch emit, plus
+/// `[REDACTED:<kind>]` for each `<kind>` in [`CredentialKind::ALL`] and for
+/// `Custom` — the complete set of labels [`CredentialFinding::new`] and
+/// `CanonicalCategory::redaction_label` can produce. It is matched
+/// character-for-character, with no wildcard between the colon and the closing
+/// bracket.
+///
+/// So an attacker who writes marker-shaped text around a secret excises **zero
+/// bytes of their own choosing**: `[REDACTED:AKIAIOSFODNN7EXAMPLE]` is not in the
+/// set, is not masked, and its contents are scanned exactly as before. The only
+/// strings this removes from the scanner's view are 28 fixed constants that carry
+/// no attacker payload, and removing them cannot hide anything adjacent — a
+/// label is bracketed by `[` and `]`, which already terminate every run and token
+/// the passes build, so a genuine secret beside one is a separate candidate
+/// before and after masking. `a_marker_cannot_be_used_to_smuggle_a_secret` and
+/// `marker_shaped_text_is_not_a_marker` pin both halves of that argument.
+fn redaction_marker_len_at(text: &str, at: usize) -> Option<usize> {
+    let rest = text.get(at..)?.strip_prefix(REDACTION_MARKER_PREFIX)?;
+    if rest.starts_with(']') {
+        return Some(REDACTION_MARKER_PREFIX.len() + 1);
+    }
+    let named = rest.strip_prefix(':')?;
+    CredentialKind::ALL
+        .iter()
+        .chain(std::iter::once(&CredentialKind::Custom))
+        .map(CredentialKind::as_str)
+        .find(|name| named.strip_prefix(*name).is_some_and(|tail| tail.starts_with(']')))
+        .map(|name| REDACTION_MARKER_PREFIX.len() + 1 + name.len() + 1)
+}
+
+/// `text` with every redaction label replaced by spaces of the same byte length,
+/// or `None` when it carries no label and the caller can scan it as-is.
+///
+/// A space is the mask because it is a boundary for *every* entropy pass at once:
+/// it ends a `split_whitespace` token, it is neither a hex digit nor a
+/// [`is_base64_char`], and a label is at least ten bytes, so the ten-plus space
+/// gap it leaves can never be the single-separator gap [`is_one_separator`]
+/// requires. The label's bytes therefore contribute neither entropy nor length to
+/// any candidate, rather than being filtered out after the fact — a finding whose
+/// span lay *outside* the label (pass 1 clamps its span at the first delimiter,
+/// which for a scrubbed compact-JSON body was the opening `{`) survives any
+/// post-hoc filter.
+///
+/// Returning `None` for the common case keeps the allocation off every scan of a
+/// payload that has never been through a scrubber.
+fn mask_redaction_markers(text: &str) -> Option<String> {
+    let mut masked: Option<String> = None;
+    // Bytes of `text` already copied into `masked`.
+    let mut copied = 0usize;
+    let mut search = 0usize;
+    while let Some(rel) = text[search..].find(REDACTION_MARKER_PREFIX) {
+        let at = search + rel;
+        match redaction_marker_len_at(text, at) {
+            Some(len) => {
+                let out = masked.get_or_insert_with(|| String::with_capacity(text.len()));
+                out.push_str(&text[copied..at]);
+                // Same byte count in, same byte count out: the offsets the passes
+                // report have to index the caller's original text.
+                for _ in 0..len {
+                    out.push(' ');
+                }
+                copied = at + len;
+                search = copied;
+            }
+            // Marker-shaped but not a marker. Resume past the prefix so an
+            // overlapping real marker later in the text is still found.
+            None => search = at + REDACTION_MARKER_PREFIX.len(),
+        }
+    }
+    let mut out = masked?;
+    out.push_str(&text[copied..]);
+    Some(out)
+}
+
+/// The five entropy passes, over text whose redaction labels [`scan_high_entropy`]
+/// has already masked out.
+fn high_entropy_passes(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
     let mut offset = 0usize;
     for token in text.split_whitespace() {
@@ -1977,6 +2088,7 @@ mod tests {
         );
         assert!(CredentialScanner::new().scan(pem).findings.is_empty());
     }
+
     use super::*;
 
     // --- CredentialKind::as_str ---
