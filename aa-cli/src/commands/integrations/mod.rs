@@ -45,7 +45,7 @@ pub mod session;
 pub mod status;
 pub mod verify;
 
-use exit::Outcome;
+use exit::{ChangeOutcome, Outcome};
 use session::{Failure, Sensitivity, Session, SessionOptions};
 
 /// The protection profile an install asks for.
@@ -241,9 +241,10 @@ NOTES:
 /// Run an async command body on a current-thread runtime and turn its outcome
 /// into an exit code.
 ///
-/// Failures print to **stderr** in two lines — what happened, then what to do
-/// about it — so `--output json` on stdout stays parseable even when the
-/// command failed.
+/// Failures print to **stderr** in three lines — what happened, what to do
+/// about it, and the change outcome the ratified contract names it by (see
+/// [`report_failure`]) — so `--output json` on stdout stays parseable even when
+/// the command failed.
 pub(crate) fn run_blocking<F>(body: F) -> ExitCode
 where
     F: std::future::Future<Output = Result<Outcome, Failure>>,
@@ -251,17 +252,44 @@ where
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("error: could not start an async runtime: {e}");
-            return Outcome::InternalError.into();
+            let failure = Failure::new(
+                Outcome::InternalError,
+                format!("could not start an async runtime: {e}"),
+                "retry, and report this if it persists",
+            );
+            report_failure(&failure);
+            return failure.outcome.into();
         }
     };
     match runtime.block_on(body) {
         Ok(outcome) => outcome.into(),
         Err(failure) => {
-            eprintln!("error: {failure}");
+            report_failure(&failure);
             failure.outcome.into()
         }
     }
+}
+
+/// Print a failure on stderr, naming the change outcome the contract calls it.
+///
+/// The exit code already distinguishes *which* refusal or failure this is, and
+/// the table `--help` prints is what maps that code onto `refused` or `failed`.
+/// This line saves the reader the lookup: `refused` says nothing was modified,
+/// `failed` says the end state was not reached and the host may need checking,
+/// and that is the difference between "re-run it" and "go and look" (AAASM-5499).
+///
+/// **stdout is deliberately untouched.** A refused command must leave a harness
+/// with no report to record (AAASM-5628) — that is a property of the whole
+/// provenance design, not a rendering choice — and a document on stdout is a
+/// record, however plainly it is labelled a refusal.
+fn report_failure(failure: &Failure) {
+    eprintln!("error: {failure}");
+    eprintln!(
+        "outcome: {} (exit {} {})",
+        ChangeOutcome::of(failure.outcome, false).as_str(),
+        failure.outcome.code(),
+        failure.outcome.as_str()
+    );
 }
 
 /// Open a session, starting the runtime if that is what is missing.
