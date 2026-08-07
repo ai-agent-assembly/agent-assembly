@@ -15,10 +15,12 @@ it maintains the **agent registry**, evaluates **governance policies**, tracks
 **per-team budgets**, routes enforcement decisions back to the proxy and SDK
 shims, and writes the audit trail.
 
-Agent Assembly enforces governance through three independently-deployable
-interception layers (in-process SDK shim, sidecar proxy, eBPF). The gateway sits
-behind all of them — exposing **gRPC** for the SDK shims and an **HTTP/OpenAPI**
-surface (via `aa-api`) for the dashboard and operator tooling.
+Agent Assembly mediates agent actions through independently-deployable mechanisms
+(in-process SDK shim, sidecar proxy, Linux eBPF), each with its own boundary. The
+gateway is **E1, the Governance Control Plane** (ADR 0033 §1): it *evaluates* and
+holds no traffic, so it produces a decision record rather than refusing an action
+itself. It exposes **gRPC** for the SDK shims and an **HTTP/OpenAPI** surface (via
+`aa-api`) for the dashboard and operator tooling.
 
 The crate ships both a library and the `aa-gateway` binary.
 
