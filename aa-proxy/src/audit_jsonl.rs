@@ -25,10 +25,10 @@ use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use aa_core::types::sensitive_data::ExecutionEvidence;
@@ -330,6 +330,10 @@ pub fn dropped_entries() -> u64 {
 /// throwing records away. A prevention rate computed over a window that was
 /// rotated out from under the reader is an under-count, so the discard is
 /// counted and published exactly like a channel drop.
+///
+/// Counts the **size** bound only. Deletions made by the age bound are
+/// [`EXPIRED_SEGMENTS`], because the two answer different operator questions:
+/// "did I lose evidence I wanted?" and "did the deletion I asked for happen?".
 static DISCARDED_SEGMENTS: AtomicU64 = AtomicU64::new(0);
 
 /// Segments discarded since process start.
@@ -337,7 +341,54 @@ pub fn discarded_segments() -> u64 {
     DISCARDED_SEGMENTS.load(Ordering::Relaxed)
 }
 
-/// How large the sink is allowed to get, and how much history survives.
+/// Count of segments deleted because they aged past
+/// [`RotationPolicy::max_age`] (AAASM-5660).
+///
+/// Separate from [`DISCARDED_SEGMENTS`] on purpose. An expiry is the operator's
+/// configured deletion happening as asked; a size discard is evidence being lost
+/// to a ceiling they may not have intended. Merging them into one number would
+/// make a healthy retention policy indistinguishable from an undersized ring.
+static EXPIRED_SEGMENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Segments deleted by the age bound since process start.
+pub fn expired_segments() -> u64 {
+    EXPIRED_SEGMENTS.load(Ordering::Relaxed)
+}
+
+/// Count of segments the **size** bound deleted while the **age** bound would
+/// still have kept them (AAASM-5660).
+///
+/// This is the disagreement between the two bounds, made countable. See
+/// [`RotationPolicy`] for the rule: size always wins, so a shortfall is the
+/// proxy telling an operator who configured 90 days that they are getting
+/// rather less, at the moment it happens rather than at the moment they need
+/// the answer.
+static RETENTION_SHORTFALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Segments lost to the size bound while still inside the age bound.
+pub fn retention_shortfalls() -> u64 {
+    RETENTION_SHORTFALLS.load(Ordering::Relaxed)
+}
+
+/// Default bytes a live segment may reach before rotating (32 MiB).
+///
+/// Unchanged from AAASM-5449 so that making the bound configurable does not
+/// change what an existing deployment does.
+pub const DEFAULT_MAX_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Default rotated segments kept beside the live file.
+pub const DEFAULT_RETAINED_SEGMENTS: usize = 3;
+
+/// How often the writer re-examines the segments for age-based expiry.
+///
+/// The size bound is enforced by the append path, so it needs no timer. The age
+/// bound does: a proxy that stops receiving traffic still owes the operator the
+/// deletion they configured, and a purely append-driven sweep would leave a
+/// quiet host holding evidence for ever.
+pub const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How large the sink is allowed to get, how much history survives, and how
+/// long any of it may live.
 ///
 /// # Why the proxy rotates rather than leaving it to the operator
 ///
@@ -349,6 +400,38 @@ pub fn discarded_segments() -> u64 {
 /// keep being written and nothing can read them again. An operator who
 /// configured rotation would end up with *less* audit trail than one who
 /// configured none, and would have no way to notice.
+///
+/// # The rule when the two bounds disagree
+///
+/// They are both **ceilings, never floors**, and a segment is retained only if
+/// it satisfies *both*. Deletion is therefore the union of the two triggers and
+/// retention is their intersection:
+///
+/// * past [`Self::retained_segments`] → deleted, counted in
+///   [`discarded_segments`];
+/// * older than [`Self::max_age`] → deleted, counted in [`expired_segments`];
+/// * both → deleted once, counted as a size discard, because that is the bound
+///   that reached it first.
+///
+/// **Size wins.** [`Self::max_age`] is a maximum age, never a minimum
+/// guarantee: setting 90 days does not reserve 90 days of disk, and under
+/// enough traffic the ring will discard a segment the age bound would have
+/// kept. That case is not left to be inferred — it increments
+/// [`retention_shortfalls`], so an operator who configured 90 days and is
+/// actually getting six hours learns it from the sidecar rather than from the
+/// quarter-end question they cannot answer.
+///
+/// The converse never happens: the age bound cannot make the sink exceed the
+/// size bound, because it only ever deletes.
+///
+/// # Granularity of the age bound
+///
+/// Segments are deleted whole, so the age bound is not exact to the record. A
+/// rotated segment expires when its **newest** record is older than
+/// [`Self::max_age`] — so no record is ever deleted *before* its age is up —
+/// and the live segment is rotated once its **oldest** record reaches that age,
+/// so a quiet proxy cannot hold a segment open indefinitely. A single record
+/// therefore survives at least `max_age` and at most about `2 * max_age`.
 ///
 /// # Growth rate
 ///
@@ -366,14 +449,41 @@ pub struct RotationPolicy {
     pub max_segment_bytes: u64,
     /// Rotated segments kept beside the live file (`<path>.1` … `<path>.N`).
     pub retained_segments: usize,
+    /// Longest a segment may live before it is deleted, or `None` for no age
+    /// bound.
+    ///
+    /// `None` is the default because it reproduces AAASM-5449's behaviour
+    /// exactly; an existing deployment that upgrades gets the same ring it had.
+    /// See the type docs for what happens when this disagrees with the size
+    /// bound.
+    pub max_age: Option<Duration>,
+    /// How often [`JsonlWriter::run`] re-checks the age bound.
+    ///
+    /// Not operator-configurable: it trades promptness of a deletion against
+    /// idle wakeups and has no effect on what is retained, only on how late the
+    /// deletion is. It is a field rather than a constant so a test can drive the
+    /// timer path in milliseconds instead of minutes.
+    pub sweep_interval: Duration,
 }
 
 impl Default for RotationPolicy {
     fn default() -> Self {
         Self {
-            max_segment_bytes: 32 * 1024 * 1024,
-            retained_segments: 3,
+            max_segment_bytes: DEFAULT_MAX_SEGMENT_BYTES,
+            retained_segments: DEFAULT_RETAINED_SEGMENTS,
+            max_age: None,
+            sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }
+    }
+}
+
+impl RotationPolicy {
+    /// Whether `age` has passed this policy's age bound.
+    ///
+    /// `false` when no age bound is configured — the absence of a bound must
+    /// never expire anything.
+    pub fn is_expired(&self, age: Duration) -> bool {
+        self.max_age.is_some_and(|max| age >= max)
     }
 }
 
@@ -389,6 +499,58 @@ fn completeness_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".completeness.json");
     PathBuf::from(name)
+}
+
+/// Milliseconds since the Unix epoch, saturating rather than panicking on a
+/// clock before 1970.
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Bytes read when looking for a segment's first record.
+///
+/// One line is bounded by [`MAX_PERSISTED_BODY_BYTES`] plus
+/// [`MAX_PERSISTED_FINDINGS`] rows, so 32 KiB comfortably contains the first
+/// newline of any line this writer produces. Reading a bounded prefix rather
+/// than the file keeps the age check O(1) in segment size.
+const FIRST_RECORD_PROBE_BYTES: usize = 32 * 1024;
+
+/// Timestamp of the first record in `path`, if it has one.
+///
+/// Used for the age bound instead of the filesystem's creation time, which is
+/// not reported on every platform and filesystem, and which would in any case
+/// describe the file rather than the evidence. The record's own `ts_ms` is what
+/// an operator means by "older than 90 days".
+///
+/// `None` for an empty, unreadable or unparseable segment. A caller must treat
+/// that as "age unknown" and not as "expired": deleting evidence because its
+/// first line could not be parsed would turn a read failure into data loss.
+async fn first_record_ms(path: &Path) -> Option<i64> {
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut buf = vec![0u8; FIRST_RECORD_PROBE_BYTES];
+    let read = file.read(&mut buf).await.ok()?;
+    let head = &buf[..read];
+    let line_end = head.iter().position(|b| *b == b'\n')?;
+    let line = std::str::from_utf8(&head[..line_end]).ok()?;
+    serde_json::from_str::<ProxyAuditEntry>(line).ok().map(|e| e.ts_ms)
+}
+
+/// Age of the newest record in `path`, derived from its modification time.
+///
+/// The last write to a segment is the moment its newest record was appended, so
+/// mtime dates the *youngest* evidence it holds. Expiring on that is what makes
+/// the age bound safe in the direction that matters: a segment is deleted only
+/// once everything in it is past the bound, so no record is ever deleted early.
+///
+/// `None` when the file is absent or its mtime is unreadable, or when the clock
+/// has moved backwards since the write — all of which mean "cannot say", and a
+/// caller must not expire on that.
+async fn newest_record_age(path: &Path) -> Option<Duration> {
+    let modified = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
+    SystemTime::now().duration_since(modified).ok()
 }
 
 /// What a consumer has to know before turning a count from this sink into a
@@ -416,6 +578,25 @@ pub struct SinkCompleteness {
     pub dropped_entries: u64,
     /// Rotated segments discarded to hold the sink inside its size bound.
     pub discarded_segments: u64,
+    /// Segments deleted because they aged past the configured retention.
+    ///
+    /// Reported separately from [`Self::discarded_segments`]: an expiry is the
+    /// deletion the operator asked for, a discard is evidence the ceiling took.
+    ///
+    /// `#[serde(default)]` so a sidecar written by an older proxy still
+    /// deserializes — the restart baseline depends on being able to read the
+    /// previous process's snapshot, and a field-count mismatch that made it
+    /// unreadable would silently reset an earlier window's loss to zero.
+    #[serde(default)]
+    pub expired_segments: u64,
+    /// Segments the size bound deleted while the age bound would still have
+    /// kept them.
+    ///
+    /// The configured retention was not met for those segments. See
+    /// [`RotationPolicy`] for why size wins and why this is counted rather than
+    /// left to be inferred.
+    #[serde(default)]
+    pub retention_shortfalls: u64,
 }
 
 /// Read the completeness published beside `path`, if any.
@@ -444,12 +625,22 @@ pub struct JsonlWriter {
     /// Bytes in the live segment, seeded from its length at open so an
     /// appended-to file is not treated as empty.
     segment_bytes: u64,
+    /// `ts_ms` of the oldest record in the live segment, or `None` while it is
+    /// empty.
+    ///
+    /// The age bound rotates the live segment once its *oldest* record reaches
+    /// [`RotationPolicy::max_age`]. Without that, a proxy quiet enough never to
+    /// fill a segment would hold its first record for ever and the configured
+    /// deletion would simply not happen.
+    live_started_ms: Option<i64>,
     /// Loss recorded against this file before this process opened it.
     baseline: SinkCompleteness,
     /// Process-wide counter readings at open, so only this process's own
     /// increments are added to the baseline.
     dropped_at_open: u64,
     discarded_at_open: u64,
+    expired_at_open: u64,
+    shortfalls_at_open: u64,
     /// Last snapshot written, so an unchanged sidecar is not rewritten on
     /// every line.
     published: SinkCompleteness,
@@ -492,16 +683,26 @@ impl JsonlWriter {
             updated_ms: 0,
             dropped_entries: 0,
             discarded_segments: 0,
+            expired_segments: 0,
+            retention_shortfalls: 0,
         });
+        // The live segment may already hold records from an earlier process, so
+        // its age is read back rather than assumed to start now — a proxy
+        // restarted every hour would otherwise reset the age bound every hour
+        // and never expire anything.
+        let live_started_ms = first_record_ms(path).await;
         Ok(Self {
             receiver,
             file: tokio::io::BufWriter::new(file),
             path: path.to_path_buf(),
             rotation,
             segment_bytes,
+            live_started_ms,
             baseline,
             dropped_at_open: dropped_entries(),
             discarded_at_open: discarded_segments(),
+            expired_at_open: expired_segments(),
+            shortfalls_at_open: retention_shortfalls(),
             published: baseline,
         })
     }
@@ -537,18 +738,41 @@ impl JsonlWriter {
     /// the line as soon as the proxy returns to the client. Per-entry write
     /// failures are logged but do not stop the loop — losing one audit line
     /// is preferable to silently halting subsequent requests.
+    /// The age bound needs a clock, not just traffic: a proxy that stops
+    /// receiving requests still owes the operator the deletion they configured,
+    /// so the loop waits on the channel *and* a sweep timer.
     pub async fn run(mut self) {
         tracing::info!(path = %self.path.display(), "proxy audit jsonl writer started");
+        // Before the first tick, so a proxy restarted after a long outage
+        // expires what aged out while it was down rather than after another
+        // sweep interval.
+        self.sweep_retention().await;
         self.publish_completeness(true).await;
-        while let Some(entry) = self.receiver.recv().await {
-            if let Err(e) = self.append(&entry).await {
-                tracing::error!(error = %e, "proxy audit jsonl write failed");
+
+        let mut sweep = tokio::time::interval(self.rotation.sweep_interval);
+        // `interval` fires immediately; the startup sweep above already covered
+        // that instant.
+        sweep.tick().await;
+
+        loop {
+            tokio::select! {
+                received = self.receiver.recv() => {
+                    let Some(entry) = received else { break };
+                    if let Err(e) = self.append(&entry).await {
+                        tracing::error!(error = %e, "proxy audit jsonl write failed");
+                    }
+                    // After the append, not before: a drop recorded by the data
+                    // path while this line was in flight belongs to the window a
+                    // reader is about to see.
+                    self.publish_completeness(false).await;
+                }
+                _ = sweep.tick() => {
+                    self.sweep_retention().await;
+                    self.publish_completeness(false).await;
+                }
             }
-            // After the append, not before: a drop recorded by the data path
-            // while this line was in flight belongs to the window a reader is
-            // about to see.
-            self.publish_completeness(false).await;
         }
+
         if let Err(e) = self.file.flush().await {
             tracing::error!(error = %e, "proxy audit jsonl final flush failed");
         }
@@ -562,6 +786,7 @@ impl JsonlWriter {
         self.file.write_all(b"\n").await?;
         self.file.flush().await?;
         self.segment_bytes += json.len() as u64 + 1;
+        self.live_started_ms.get_or_insert(entry.ts_ms);
         // Rotate *after* the write so a line is never split across segments —
         // a consumer parses this file line by line and half a record is worse
         // than a segment that overshoots by one line.
@@ -569,6 +794,70 @@ impl JsonlWriter {
             self.rotate().await?;
         }
         Ok(())
+    }
+
+    /// Apply the age bound: rotate the live segment if its oldest record has
+    /// aged out, then delete every rotated segment whose newest record has.
+    ///
+    /// A no-op when [`RotationPolicy::max_age`] is `None`, which is the default
+    /// — an operator who configured no age bound must get exactly the ring
+    /// AAASM-5449 gave them.
+    ///
+    /// Failures are logged rather than propagated: a sweep that cannot delete a
+    /// segment must not stop the writer from recording the next refusal.
+    async fn sweep_retention(&mut self) {
+        if self.rotation.max_age.is_none() {
+            return;
+        }
+        if self.live_segment_has_aged_out() {
+            if let Err(e) = self.rotate().await {
+                tracing::error!(error = %e, "proxy audit jsonl age-based rotation failed");
+            }
+        }
+        self.expire_aged_segments().await;
+    }
+
+    /// Whether the oldest record in the live segment has reached the age bound.
+    fn live_segment_has_aged_out(&self) -> bool {
+        let Some(started) = self.live_started_ms else {
+            return false;
+        };
+        let elapsed_ms = now_ms().saturating_sub(started).max(0) as u64;
+        self.rotation.is_expired(Duration::from_millis(elapsed_ms))
+    }
+
+    /// Delete rotated segments whose newest record is past the age bound.
+    ///
+    /// Iterates the whole chain rather than stopping at the first survivor: a
+    /// clock adjustment or a hand-copied file can leave the chain out of age
+    /// order, and a bound that gave up at the first young segment would then
+    /// keep evidence the operator asked to have deleted.
+    async fn expire_aged_segments(&mut self) {
+        for n in 1..=self.rotation.retained_segments {
+            let segment = segment_path(&self.path, n);
+            let Some(age) = newest_record_age(&segment).await else {
+                continue;
+            };
+            if !self.rotation.is_expired(age) {
+                continue;
+            }
+            match tokio::fs::remove_file(&segment).await {
+                Ok(()) => {
+                    let total = EXPIRED_SEGMENTS.fetch_add(1, Ordering::Relaxed) + 1;
+                    tracing::info!(
+                        path = %segment.display(),
+                        age_secs = age.as_secs(),
+                        expired_total = total,
+                        "proxy audit jsonl segment deleted by the configured retention period",
+                    );
+                }
+                Err(e) => tracing::error!(
+                    error = %e,
+                    path = %segment.display(),
+                    "proxy audit jsonl segment expiry failed",
+                ),
+            }
+        }
     }
 
     /// Shift the segment chain along by one and start a fresh live file.
@@ -580,6 +869,13 @@ impl JsonlWriter {
         self.file.flush().await?;
         let oldest = segment_path(&self.path, self.rotation.retained_segments);
         if tokio::fs::metadata(&oldest).await.is_ok() {
+            // Read the age *before* the unlink: this is the one moment the two
+            // bounds can be compared on the same segment, and a segment the
+            // size bound is about to take while the age bound would have kept
+            // it is the disagreement made concrete.
+            let still_within_age = newest_record_age(&oldest)
+                .await
+                .is_some_and(|age| !self.rotation.is_expired(age));
             tokio::fs::remove_file(&oldest).await?;
             let total = DISCARDED_SEGMENTS.fetch_add(1, Ordering::Relaxed) + 1;
             tracing::warn!(
@@ -587,6 +883,15 @@ impl JsonlWriter {
                 discarded_total = total,
                 "proxy audit jsonl segment discarded to stay inside the size bound",
             );
+            if self.rotation.max_age.is_some() && still_within_age {
+                let shortfall = RETENTION_SHORTFALLS.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    path = %oldest.display(),
+                    shortfall_total = shortfall,
+                    "configured retention period NOT met: the size bound discarded a segment the \
+                     age bound would have kept — reduce traffic, raise the size bound, or export",
+                );
+            }
         }
         for n in (1..self.rotation.retained_segments).rev() {
             let from = segment_path(&self.path, n);
@@ -605,6 +910,7 @@ impl JsonlWriter {
         }
         self.file = tokio::io::BufWriter::new(Self::open_segment(&self.path).await?);
         self.segment_bytes = 0;
+        self.live_started_ms = None;
         Ok(())
     }
 
@@ -612,13 +918,13 @@ impl JsonlWriter {
     /// what this process has lost since.
     fn completeness(&self) -> SinkCompleteness {
         SinkCompleteness {
-            updated_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64,
+            updated_ms: now_ms(),
             dropped_entries: self.baseline.dropped_entries + dropped_entries().saturating_sub(self.dropped_at_open),
             discarded_segments: self.baseline.discarded_segments
                 + discarded_segments().saturating_sub(self.discarded_at_open),
+            expired_segments: self.baseline.expired_segments + expired_segments().saturating_sub(self.expired_at_open),
+            retention_shortfalls: self.baseline.retention_shortfalls
+                + retention_shortfalls().saturating_sub(self.shortfalls_at_open),
         }
     }
 
@@ -632,6 +938,8 @@ impl JsonlWriter {
         if !force
             && current.dropped_entries == self.published.dropped_entries
             && current.discarded_segments == self.published.discarded_segments
+            && current.expired_segments == self.published.expired_segments
+            && current.retention_shortfalls == self.published.retention_shortfalls
         {
             return;
         }
@@ -1223,6 +1531,21 @@ mod tests {
     }
 }
 
+/// Retention, rotation and completeness of the sink.
+///
+/// # Falsification record (AAASM-5660)
+///
+/// Assertions here were confirmed non-vacuous by mutating the implementation
+/// and watching named tests fail. Re-run these mutations if you change the
+/// retention path; a test that no longer dies to its mutation is no longer
+/// proving anything.
+///
+/// | Mutation | Test that dies |
+/// |---|---|
+/// | `expire_aged_segments` returns immediately | `a_segment_past_the_age_bound_is_deleted_and_counted` |
+/// | `RotationPolicy::is_expired` always `false` | `a_segment_past_the_age_bound_is_deleted_and_counted`, `the_size_bound_wins_when_the_two_bounds_disagree` |
+/// | shortfall counting removed from `rotate` | `the_size_bound_wins_when_the_two_bounds_disagree` |
+/// | `sweep_retention` dropped from `run`'s timer arm | `a_quiet_proxy_still_honours_the_age_bound` |
 #[cfg(test)]
 mod retention_tests {
     use super::*;
@@ -1230,9 +1553,13 @@ mod retention_tests {
     use crate::transmission_evidence::DecisionRecord;
     use aa_core::policy::EnforcementMode;
 
+    /// `ts_ms` is *now* rather than a frozen literal: the age bound reads the
+    /// first record's own timestamp to decide when the live segment has aged
+    /// out, so a 2023 literal would make every fixture's live segment
+    /// instantly expired and mask whatever the test meant to show.
     fn entry(host: &str) -> ProxyAuditEntry {
         ProxyAuditEntry {
-            ts_ms: 1_700_000_000_000,
+            ts_ms: now_ms(),
             agent_id: None,
             host: host.into(),
             method: "POST".into(),
@@ -1252,7 +1579,27 @@ mod retention_tests {
         RotationPolicy {
             max_segment_bytes: 1024,
             retained_segments: 2,
+            ..RotationPolicy::default()
         }
+    }
+
+    /// Move a file's modification time into the past.
+    ///
+    /// The age bound reads mtime to date a rotated segment's newest record, so
+    /// this is how a test produces a segment that is genuinely old without
+    /// waiting. It writes the real filesystem timestamp — the code under test
+    /// reads the same `metadata().modified()` a production sweep does, with no
+    /// injected clock standing in for it.
+    fn backdate(path: &Path, age: Duration) {
+        let when = SystemTime::now()
+            .checked_sub(age)
+            .expect("test ages are far smaller than the epoch");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap_or_else(|e| panic!("open {} to backdate: {e}", path.display()));
+        file.set_times(std::fs::FileTimes::new().set_modified(when))
+            .unwrap_or_else(|e| panic!("backdate {}: {e}", path.display()));
     }
 
     async fn drain(path: &Path, policy: RotationPolicy, count: usize) {
@@ -1349,6 +1696,267 @@ mod retention_tests {
         let seg = segment_path(&path, 1);
         let mode = tokio::fs::metadata(&seg).await.unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "rotated segment mode was {mode:o}");
+    }
+
+    // ── time-based retention (AAASM-5660) ──────────────────────────────────
+
+    /// Making the bound configurable must not move it. An existing deployment
+    /// that upgrades gets the same 32 MiB × 3 ring AAASM-5449 gave it, and no
+    /// age bound at all.
+    #[test]
+    fn the_defaults_reproduce_the_previous_hard_coded_bound() {
+        let policy = RotationPolicy::default();
+        assert_eq!(policy.max_segment_bytes, 32 * 1024 * 1024);
+        assert_eq!(policy.retained_segments, 3);
+        assert_eq!(
+            policy.max_age, None,
+            "a default age bound would delete evidence a 5449-era deployment expected to keep"
+        );
+        assert!(
+            !policy.is_expired(Duration::from_secs(60 * 60 * 24 * 3650)),
+            "with no age bound configured, nothing may ever expire on age"
+        );
+    }
+
+    /// The age bound is a threshold, not a mood: it must fire at and past the
+    /// configured age and never before it.
+    #[test]
+    fn the_age_bound_fires_only_at_or_past_the_configured_age() {
+        let policy = RotationPolicy {
+            max_age: Some(Duration::from_secs(100)),
+            ..RotationPolicy::default()
+        };
+        assert!(!policy.is_expired(Duration::from_secs(99)));
+        assert!(policy.is_expired(Duration::from_secs(100)));
+        assert!(policy.is_expired(Duration::from_secs(101)));
+    }
+
+    /// Compliance questions are phrased in days, so a segment past the
+    /// configured period has to actually be deleted — and the deletion has to
+    /// be counted, because a deletion nobody can see is indistinguishable from
+    /// a window in which nothing was ever prevented.
+    #[tokio::test]
+    async fn a_segment_past_the_age_bound_is_deleted_and_counted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        drain(&path, tiny(), 60).await;
+
+        let old = segment_path(&path, 1);
+        let kept = segment_path(&path, 2);
+        // Non-vacuity: both segments exist and hold real lines before the sweep,
+        // so "deleted" is a change rather than a description of the start state.
+        for seg in [&old, &kept] {
+            let body = tokio::fs::read_to_string(seg).await.unwrap();
+            assert!(!body.is_empty(), "{} must hold lines before the sweep", seg.display());
+        }
+        backdate(&old, Duration::from_secs(48 * 60 * 60));
+
+        let before = expired_segments();
+        let policy = RotationPolicy {
+            max_age: Some(Duration::from_secs(24 * 60 * 60)),
+            ..tiny()
+        };
+        let (_tx, rx) = mpsc::channel(1);
+        let mut writer = JsonlWriter::with_rotation(&path, rx, policy).await.unwrap();
+        writer.sweep_retention().await;
+
+        assert!(
+            tokio::fs::metadata(&old).await.is_err(),
+            "a segment two days past a one-day retention period was kept"
+        );
+        assert_eq!(
+            expired_segments(),
+            before + 1,
+            "the expiry happened but nothing counted it"
+        );
+        // The control: a segment inside the period is untouched, so the sweep
+        // is deleting by age rather than deleting whatever it finds.
+        assert!(
+            tokio::fs::metadata(&kept).await.is_ok(),
+            "a segment inside the retention period was deleted"
+        );
+    }
+
+    /// The pinned rule when the two bounds disagree: **size wins**, and the
+    /// shortfall against the configured period is counted rather than left to
+    /// emerge. See [`RotationPolicy`].
+    ///
+    /// An operator who configures 90 days and gets six hours has to learn it
+    /// from the sink, not from the quarter-end question they cannot answer.
+    #[tokio::test]
+    async fn the_size_bound_wins_when_the_two_bounds_disagree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        // A generous age bound that would keep everything, against a ring far
+        // too small to hold what the fixture writes.
+        let policy = RotationPolicy {
+            max_segment_bytes: 512,
+            retained_segments: 1,
+            max_age: Some(Duration::from_secs(90 * 24 * 60 * 60)),
+            ..RotationPolicy::default()
+        };
+
+        let discarded_before = discarded_segments();
+        let shortfall_before = retention_shortfalls();
+        let expired_before = expired_segments();
+        drain(&path, policy, 200).await;
+
+        let discarded = discarded_segments() - discarded_before;
+        assert!(
+            discarded > 0,
+            "the fixture never overflowed the ring, so it cannot show which bound wins"
+        );
+        assert_eq!(
+            retention_shortfalls() - shortfall_before,
+            discarded,
+            "every segment the size bound took inside the 90-day period is a shortfall against it"
+        );
+        assert_eq!(
+            expired_segments() - expired_before,
+            0,
+            "nothing was old enough to expire; these deletions are the size bound's"
+        );
+    }
+
+    /// The other half of the rule, and the control that stops
+    /// `retention_shortfalls` from being "the discard counter under a second
+    /// name": a discard of an *already expired* segment is not a shortfall,
+    /// because the age bound would have deleted it anyway.
+    #[tokio::test]
+    async fn a_discard_of_already_expired_evidence_is_not_a_shortfall() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = RotationPolicy {
+            max_segment_bytes: 512,
+            retained_segments: 1,
+            // Everything is instantly past a zero-length retention period.
+            max_age: Some(Duration::ZERO),
+            ..RotationPolicy::default()
+        };
+
+        let discarded_before = discarded_segments();
+        let shortfall_before = retention_shortfalls();
+        drain(&path, policy, 200).await;
+
+        assert!(
+            discarded_segments() - discarded_before > 0,
+            "the fixture never overflowed the ring, so the assertion below is vacuous"
+        );
+        assert_eq!(
+            retention_shortfalls() - shortfall_before,
+            0,
+            "a segment the age bound had already condemned was reported as a retention shortfall"
+        );
+    }
+
+    /// A configured deletion is a promise about the calendar, not about
+    /// traffic. A proxy that goes quiet still has to honour it, which is why
+    /// the writer waits on a timer as well as on the channel — an
+    /// append-driven sweep alone would leave an idle host holding evidence for
+    /// ever.
+    #[tokio::test]
+    async fn a_quiet_proxy_still_honours_the_age_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = RotationPolicy {
+            // Far too large to ever rotate on size: only the age bound can
+            // move anything here.
+            max_segment_bytes: 64 * 1024 * 1024,
+            retained_segments: 2,
+            max_age: Some(Duration::from_millis(50)),
+            sweep_interval: Duration::from_millis(20),
+        };
+
+        let before = expired_segments();
+        let (tx, rx) = mpsc::channel(8);
+        let writer = JsonlWriter::with_rotation(&path, rx, policy).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+
+        // One record, then silence. Nothing else will ever wake the writer.
+        tx.send(entry("quiet.example")).await.unwrap();
+
+        // The live segment must first age out and rotate, then the rotated
+        // segment must itself age out — two sweeps at minimum.
+        let mut expired = false;
+        for _ in 0..500 {
+            if expired_segments() > before {
+                expired = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(tx);
+        handle.await.unwrap();
+
+        assert!(
+            expired,
+            "no traffic arrived after the first record and nothing was ever deleted, \
+             so the configured retention period was not honoured on an idle proxy"
+        );
+        assert!(
+            tokio::fs::metadata(segment_path(&path, 1)).await.is_err(),
+            "the aged segment survived the sweep"
+        );
+    }
+
+    /// Both new counters reach a consumer, and a restart does not erase them —
+    /// the same baseline discipline AAASM-5449 established for the two it
+    /// already published.
+    #[tokio::test]
+    async fn expiry_and_shortfall_counts_are_published_and_survive_a_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let policy = RotationPolicy {
+            max_segment_bytes: 512,
+            retained_segments: 1,
+            max_age: Some(Duration::from_secs(90 * 24 * 60 * 60)),
+            ..RotationPolicy::default()
+        };
+        drain(&path, policy, 200).await;
+
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert!(
+            published.retention_shortfalls > 0,
+            "the shortfall never reached the file a consumer reads: {published:?}"
+        );
+        let shortfalls = published.retention_shortfalls;
+
+        // A clean second run must carry the first run's shortfall forward.
+        drain(&path, RotationPolicy::default(), 2).await;
+        let after = read_completeness(&path).await.unwrap();
+        assert_eq!(
+            after.retention_shortfalls, shortfalls,
+            "a restart erased the earlier window's retention shortfall"
+        );
+    }
+
+    /// A sidecar written before these fields existed must still deserialize:
+    /// the restart baseline is read from it, and a decode failure would
+    /// silently reset an earlier window's recorded loss to zero — exactly the
+    /// regression requirement 4 forbids.
+    #[tokio::test]
+    async fn an_older_sidecar_without_the_new_fields_still_seeds_the_baseline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        tokio::fs::write(
+            completeness_path(&path),
+            br#"{"updated_ms":1,"dropped_entries":7,"discarded_segments":2}"#,
+        )
+        .await
+        .unwrap();
+
+        let recovered = read_completeness(&path)
+            .await
+            .expect("an AAASM-5449 sidecar must parse");
+        assert_eq!(recovered.dropped_entries, 7);
+        assert_eq!(recovered.discarded_segments, 2);
+        assert_eq!(recovered.expired_segments, 0);
+
+        // And the writer carries it forward rather than starting from zero.
+        drain(&path, RotationPolicy::default(), 1).await;
+        let published = read_completeness(&path).await.unwrap();
+        assert_eq!(published.dropped_entries, 7, "the earlier window's loss was erased");
+        assert_eq!(published.discarded_segments, 2);
     }
 
     // ── completeness ───────────────────────────────────────────────────────
