@@ -903,28 +903,98 @@ pub(crate) fn ascii_digit_of(c: char) -> Option<char> {
 /// pushes the ASCII equivalent into the normalised string while advancing `end`
 /// by the *original* character's width.
 ///
+/// AAASM-5450 adds the full stop `.` and its full-width twin `．` (U+FF0E) to the
+/// hyphen role, for the reasons set out under *The boundary* below.
+///
+/// # What widening this set costs, measured
+///
+/// Every character admitted here lengthens the run [`digit_segment`] joins, and a
+/// longer run is a fresh chance to land in the 13-19 digit window where
+/// [`luhn_valid`] — a mod-10 checksum — passes an arbitrary number roughly one
+/// time in ten. On the enforcement path a coincidental pass redacts or blocks a
+/// legitimate payload, so this set is widened by measurement, never by admitting
+/// a character class.
+///
+/// AAASM-5450 priced all seven candidates the same way: admit one, rebuild, scan
+/// `aaasm5450_machine_payload_v1` (4,194,360 bytes of ordinary machine output —
+/// JSON log lines with float unix timestamps, TSV numeric columns, CSV amounts,
+/// dotted versions and IPv4 addresses, underscore-grouped numeric literals,
+/// slash-formatted dates, bare numeric columns — containing no card and no SSN,
+/// so every finding is a false positive). See
+/// `aa-security/tests/digit_separator_fp_cost.rs`:
+///
+/// | admitted | card false positives | runs it pushed into the window |
+/// |---|---|---|
+/// | `.` U+002E | 1255 | 12,284 |
+/// | `．` U+FF0E | 1193 | 11,963 |
+/// | `_` U+005F | 1207 | 12,127 |
+/// | `/` U+002F | 1253 | 12,176 |
+/// | `,` U+002C | 1175 | 12,265 |
+/// | tab U+0009 | 1218 | 12,265 |
+/// | newline U+000A | 532 | 5,395 |
+///
+/// The ratio is 9.6-10.3% on every row. That is the measurement's actual finding:
+/// **no candidate is intrinsically safer than any other** — each costs the same
+/// ~10% of whatever runs it pushes into the window. So the choice cannot be made
+/// on cost, only on *coverage*: whether a real card or SSN is ever written with
+/// the character. Only the two full stops are.
+///
 /// # The boundary, and why it stops here
 ///
-/// U+2010–U+2015 (hyphen, non-breaking hyphen, figure/en/em dash, horizontal bar)
-/// and U+00A0 (no-break space) were considered and **declined**:
+/// **Admitted, individually:**
 ///
-/// * No input method emits any of them for the hyphen or space key, so admitting
-///   them buys nothing against the evasion this rule exists to close — the threat
-///   is an input-mode switch, not an arbitrary look-alike glyph.
-/// * Each admitted separator lengthens the run [`digit_segment`] will join, and
-///   every additional joined run is an independent ~10% chance of a coincidental
-///   Luhn pass. The en dash is the standard glyph for a numeric *range*
-///   (`1990–2000`, `第 12–15 頁`) — precisely where two unrelated numbers sit
-///   adjacent with a dash between them — so it carries that risk at the highest
-///   rate of the set for no coverage in return.
+/// * `.` (U+002E) — the one candidate with an attested grouping usage. `123.45.6789`
+///   is a standard written form of an SSN, alongside `123-45-6789`, and dot-grouped
+///   card numbers (`4532.0151.1283.0366`) appear on invoices and statements. It is
+///   admitted in the *hyphen* role, not the space role, so a dot-written SSN
+///   normalises to `DDD-DD-DDDD` and satisfies [`is_ssn`]'s exact-11-byte shape.
+/// * `．` (U+FF0E, full-width full stop) — admitted because `.` is. A CJK input
+///   method in full-width mode emits U+FF0E for the period key exactly as it emits
+///   U+FF0D for the hyphen key, so admitting only the ASCII form would catch an
+///   en-US user's dot-written SSN and miss a Taiwanese user's — reopening the
+///   input-mode asymmetry AAASM-5364 existed to remove, one glyph later.
 ///
-/// The boundary is cheap to move if a payload is ever observed using one of them;
-/// `digit_separator_boundary_declines_en_dash_and_nbsp` pins it so the decision
-/// is visible rather than implicit.
+/// **Declined, individually.** Each is priced above at the same ~10% per exposed
+/// run, and none of them groups the digits of a card or an SSN in any written
+/// form, so each is cost without coverage:
+///
+/// * `,` (U+002C) — the thousands separator. Its numeric job is to group the
+///   digits of one number that is not a card (`1,234,567,890,123` is thirteen
+///   joined digits, inside the window).
+/// * `/` (U+002F) — the date and path separator. `2026/08/07 12/30/45` is fourteen
+///   joined digits once the already-admitted space links the two halves.
+/// * `_` (U+005F) — the digit-group separator in Rust and Python numeric literals
+///   (`1_000_000_000_000_000` is sixteen) and a joiner inside identifiers.
+/// * tab (U+0009) — a column delimiter, so joining across it merges two adjacent
+///   numeric *columns* of a TSV row. It is also a space-role glyph, so it could
+///   not produce an SSN shape even if admitted: it would buy card coverage only,
+///   and a tab-grouped card number is a four-column spreadsheet, not a card.
+/// * newline (U+000A) — the *record* delimiter in JSON Lines, CSV and log output,
+///   so joining across it merges two unrelated records. A wrapped card number
+///   wraps at the space, which is already admitted.
+///
+/// `digit_separator_declines_the_candidates_that_buy_no_coverage` pins all five.
+///
+/// **Unchanged from AAASM-5364:** U+2010–U+2015 (hyphen, non-breaking hyphen,
+/// figure/en/em dash, horizontal bar) and U+00A0 (no-break space) stay declined.
+/// No input method emits any of them for the hyphen or space key, and the en dash
+/// is the standard glyph for a numeric *range* (`1990–2000`, `第 12–15 頁`) —
+/// precisely where two unrelated numbers sit adjacent with a dash between them.
+/// AAASM-5450 produced no coverage evidence for them, so it did not reopen the
+/// decision; `digit_separator_boundary_declines_en_dash_and_nbsp` still pins it.
+///
+/// # What this rule cannot do
+///
+/// It cannot close *adversarial* evasion. An attacker who wants a card to slip
+/// past picks a glyph nobody enumerated, and the set of glyphs is unbounded, so
+/// widening by enumeration can never catch up. What it closes is the *natural*
+/// formatting a real payload carries — which is why every entry above is
+/// justified by an attested written form rather than by how plausible the glyph
+/// looks as an evasion.
 fn ascii_separator_of(c: char) -> Option<char> {
     match c {
         ' ' | '\u{3000}' => Some(' '),
-        '-' | '\u{FF0D}' => Some('-'),
+        '-' | '\u{FF0D}' | '.' | '\u{FF0E}' => Some('-'),
         _ => None,
     }
 }
