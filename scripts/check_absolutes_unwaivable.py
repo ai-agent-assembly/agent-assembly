@@ -681,6 +681,22 @@ _MUST_PASS = [
         "> The product is marketed as Immutable Audit Vault.\n"
         "<!-- /truth-exempt -->\n",
     ),
+    # The marker's own documentation must survive the marker parser. ADR 0034 shows
+    # the construct inside a ```text fence: the opening placeholder does not match
+    # OPEN_MARKER (the class pattern is [a-z-]+ and "<class>" starts with "<") while
+    # the closing line matches exactly, so a parser that read markers before fences
+    # would report "close marker with no open marker" against the very page that
+    # defines them. This fixture pins the ordering.
+    (
+        "fenced documentation of the marker itself",
+        "Use the marker like this:\n\n"
+        "```text\n"
+        "<!-- truth-exempt: <class> — <reason> -->\n"
+        "… the exempted text …\n"
+        "<!-- /truth-exempt -->\n"
+        "```\n\n"
+        "The class is one of the six above.\n",
+    ),
     # Heading slugs carry this check's vocabulary with the spaces removed; a
     # correctly named section must not accuse itself.
     ("slug in a bare link", "See [§7.4](#74-banned-absolutes-are-never-waivable) for the rule.\n"),
