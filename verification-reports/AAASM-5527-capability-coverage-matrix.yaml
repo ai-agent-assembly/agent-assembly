@@ -526,7 +526,18 @@ capabilities:
     coverage: evaluated
     q4_changed_answer: true
     known_bypasses:
-      - "resolve_decision has ZERO non-test callers in this repository; refusal lives in the out-of-repo FFI shims"
+      - "resolve_decision has ZERO non-test callers in this repository — every
+        reference is in its own file below #[cfg(test)] (aa-sdk-client/src/decision.rs:58,99),
+        and 0 in aa-cli/src, aa-runtime/src and all three SDK repos. Positive control:
+        aa-cli DOES depend on aa-sdk-client (aa-cli/Cargo.toml:74), so a cross-crate
+        call would be findable."
+      - "WITHDRAWN: \"refusal lives in the out-of-repo FFI shims\" — that is false.
+        Settled from the node-sdk source at 3d8ecd8df: native/aa-ffi-node/src/lib.rs:203-209
+        maps QueryFailed | ChannelClosed | Shutdown to Decision::Allow with
+        FAIL_OPEN_REASON, under a comment at :202 reading 'Fail-open: a slow,
+        unreachable, or shut-down runtime must never block the agent.' The shim
+        hard-codes fail-OPEN, so it is not where refusal lives. No in-repo artifact
+        proves the SDK honours a deny."
     evidence: >-
       GAP, with a control that holds. resolve_decision is defined at
       aa-sdk-client/src/decision.rs:58; every reference is in that file, all
