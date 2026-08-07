@@ -127,8 +127,9 @@ brew uninstall aasm            # plus aasm-runtime / aasm-proxy if installed
 path — a tool call, a network request, a budget spend — is checked against your
 **policy**, by a central **gateway** or by the sidecar proxy's local egress rules,
 and the outcome is recorded in a hash-chained, **tamper-evident** audit trail that
-`aasm audit verify-chain` re-verifies offline. An action that never reaches a
-checkpoint is reported as *unmeasured*, never as allowed.
+`aasm audit verify-chain` re-verifies offline. Where nothing inspected the payload,
+the honest state is *unmeasured* — the proxy's transparent-tunnel path records
+"forwarded, and nothing looked at it", never clean.
 
 Governance is assembled from independently-deployable mechanisms rather than a
 fixed pipeline, and each one holds a stated boundary — lowest-latency first:
