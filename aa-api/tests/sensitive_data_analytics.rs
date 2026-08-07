@@ -366,8 +366,18 @@ async fn every_counter_and_every_rate_uses_its_stated_denominator() {
         "redacted findings / findings"
     );
     // No fixture event carries prevention evidence, so the rate is a real zero
-    // here rather than an absent one — the window is not empty.
+    // here rather than an absent one — the window is not empty. And the
+    // companion counter says *why* it is zero: nothing measured transmission on
+    // any of the four events, so this zero is unmeasured, not observed. A
+    // consumer reading `prevention_rate` alone would call this "we prevent
+    // nothing"; reading both, it is "nothing measured whether we do".
     assert_eq!(rate("prevention_rate"), Some(0.0));
+    assert_eq!(counter(&body, "unmeasured_transmission_event_count"), 4);
+    assert_eq!(
+        rate("unmeasured_transmission_rate"),
+        Some(1.0),
+        "the whole window is unmeasured, so prevention_rate carries no information about prevention"
+    );
     assert_eq!(rate("inspection_incomplete_rate"), Some(0.0));
 
     // Findings grouped by category, both counts reported and different.
@@ -487,6 +497,20 @@ async fn prevention_counts_only_events_with_all_four_conditions() {
         "its two findings, and no others"
     );
     assert_eq!(body["rates"]["prevention_rate"].as_f64(), Some(1.0 / 5.0));
+
+    // AAASM-5660's distinction, arriving on this surface: a zero in
+    // `prevention_rate` must be readable as "we prevented nothing" or as
+    // "nothing measured it", never ambiguously. Exactly one fixture event
+    // recorded no transmission evidence at all, and it is *not* the same event
+    // as the one that failed some other prevention condition — so a handler
+    // that derived this from `!counts_as_prevented_transmission()` would report
+    // 4 here instead of 1.
+    assert_eq!(
+        counter(&body, "unmeasured_transmission_event_count"),
+        1,
+        "only `evt-no-observation` recorded no transmission evidence"
+    );
+    assert_eq!(body["rates"]["unmeasured_transmission_rate"].as_f64(), Some(1.0 / 5.0));
 
     // …and the same judgement is visible per event on the drill-down, so the
     // aggregate can be reconciled against the rows it came from.

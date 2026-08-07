@@ -6156,6 +6156,30 @@ export interface components {
              *     transmitted" — see the module doc. Denominator: `finding_count`.
              */
             redacted_finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** for which no transmission evidence was recorded at all, so
+             *     they could not satisfy the prevention test whatever actually happened
+             *     to the payload. Denominator: `event_count`.
+             *
+             *     # Why this counter exists next to `prevented_event_count`
+             *
+             *     Without it, `prevention_rate = 0` has two completely different meanings
+             *     and renders identically: *"we prevented nothing"* and *"nothing measured
+             *     whether we prevented anything."* That is the same distinction AAASM-5660
+             *     drew for the proxy's evidence sink, arriving here.
+             *
+             *     It is load-bearing right now, not hypothetical. The gateway producer
+             *     writes `TransmissionEvidence::NotRecorded` unconditionally
+             *     (`aa-gateway/src/engine/sensitive_data.rs`) — it decides, it does not
+             *     observe the bytes — so **every** row this build can read has no
+             *     transmission evidence, and `prevention_rate` is structurally `0`. A
+             *     reader who cannot see that reads a truthful zero as a measured one.
+             *
+             *     When this equals `event_count`, `prevention_rate` carries no information
+             *     about prevention and must not be presented as though it does.
+             */
+            unmeasured_transmission_event_count: number;
         };
         /**
          * @description What the sensitive-data pipeline did to an action's payload and to the
@@ -6347,6 +6371,16 @@ export interface components {
              * @description `redacted_event_count / event_count`.
              */
             redaction_rate?: number | null;
+            /**
+             * Format: double
+             * @description `unmeasured_transmission_event_count / event_count` — the share of the
+             *     window over which `prevention_rate` could not have been measured at all.
+             *
+             *     At `1.0`, `prevention_rate` is a rate over an unmeasured denominator and
+             *     says nothing about prevention. A consumer must read the two together;
+             *     this field exists so it cannot fail to notice.
+             */
+            unmeasured_transmission_rate?: number | null;
         };
         /** @description Response for `GET /api/v1/sensitive-data/summary`. */
         SensitiveDataSummaryResponse: {

@@ -89,6 +89,27 @@ pub struct SensitiveDataCounters {
     /// failed closed, or answered from a reduced path. Never folded into a
     /// "clean" count (ADR 0032 forbidden design #2). Denominator: `event_count`.
     pub inspection_incomplete_event_count: u64,
+    /// **Events** for which no transmission evidence was recorded at all, so
+    /// they could not satisfy the prevention test whatever actually happened
+    /// to the payload. Denominator: `event_count`.
+    ///
+    /// # Why this counter exists next to `prevented_event_count`
+    ///
+    /// Without it, `prevention_rate = 0` has two completely different meanings
+    /// and renders identically: *"we prevented nothing"* and *"nothing measured
+    /// whether we prevented anything."* That is the same distinction AAASM-5660
+    /// drew for the proxy's evidence sink, arriving here.
+    ///
+    /// It is load-bearing right now, not hypothetical. The gateway producer
+    /// writes `TransmissionEvidence::NotRecorded` unconditionally
+    /// (`aa-gateway/src/engine/sensitive_data.rs`) — it decides, it does not
+    /// observe the bytes — so **every** row this build can read has no
+    /// transmission evidence, and `prevention_rate` is structurally `0`. A
+    /// reader who cannot see that reads a truthful zero as a measured one.
+    ///
+    /// When this equals `event_count`, `prevention_rate` carries no information
+    /// about prevention and must not be presented as though it does.
+    pub unmeasured_transmission_event_count: u64,
 }
 
 /// The derived ratios, each `null` when its denominator is zero.
@@ -107,6 +128,13 @@ pub struct SensitiveDataRates {
     pub prevention_rate: Option<f64>,
     /// `inspection_incomplete_event_count / event_count`.
     pub inspection_incomplete_rate: Option<f64>,
+    /// `unmeasured_transmission_event_count / event_count` — the share of the
+    /// window over which `prevention_rate` could not have been measured at all.
+    ///
+    /// At `1.0`, `prevention_rate` is a rate over an unmeasured denominator and
+    /// says nothing about prevention. A consumer must read the two together;
+    /// this field exists so it cannot fail to notice.
+    pub unmeasured_transmission_rate: Option<f64>,
     /// `finding_count / event_count` — how much sensitive data an average
     /// inspected action carried. The one figure that makes the event/finding
     /// distinction visible on a dashboard.
@@ -172,6 +200,14 @@ impl SensitiveDataCounters {
         if row.inspection_failure_path != "completed" {
             self.inspection_incomplete_event_count += 1;
         }
+
+        // Read from the stored column rather than from
+        // `counts_as_prevented_transmission()` being false: that predicate is
+        // false for many honest reasons (an allowed action, a post-transmission
+        // decision), and only this one means "nothing observed the bytes".
+        if row.transmission_evidence == "not_recorded" {
+            self.unmeasured_transmission_event_count += 1;
+        }
     }
 
     /// The derived ratios for these counters.
@@ -181,6 +217,7 @@ impl SensitiveDataCounters {
             redaction_rate: rate(self.redacted_event_count, self.event_count),
             prevention_rate: rate(self.prevented_event_count, self.event_count),
             inspection_incomplete_rate: rate(self.inspection_incomplete_event_count, self.event_count),
+            unmeasured_transmission_rate: rate(self.unmeasured_transmission_event_count, self.event_count),
             findings_per_event: rate(self.finding_count, self.event_count),
             blocked_finding_share: rate(self.blocked_finding_count, self.finding_count),
             redacted_finding_share: rate(self.redacted_finding_count, self.finding_count),
