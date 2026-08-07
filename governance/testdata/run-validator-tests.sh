@@ -71,6 +71,32 @@ else
   bad "r15_branch_probes.py" "$(printf '%s' "${out}" | tail -3)"
 fi
 
+# The input class the fixtures above CANNOT express: the real manifest, minus one
+# key. Every instance of the "driver lives inside the artifact it gates" hazard —
+# R17 clause 3's absence block, R16's seed repoint, and the two-edit variant that
+# survived the first fix — lives in that class, and all three reached review
+# because nothing here ever ran the validator against the canonical document.
+# A suite blind to an input class is silent about it, and silence reads as green.
+echo "negative controls (real manifest, mutated in place)"
+if out="$(python3 "${here}/real_manifest_probes.py" 2>&1)"; then
+  printf '%s\n' "${out}" | sed -n 's/^  ok    /  ok    /p'
+  pass=$((pass + 1))
+else
+  # A refusal (dirty manifest) is reported as a failure on purpose: a probe that
+  # did not run must never read as one that passed.
+  bad "real_manifest_probes.py" "$(printf '%s' "${out}" | grep -E '^  FAIL|RESTORE|Refusing' | head -3)"
+fi
+
+# The README pastes the gate's own count: lines. Round 1 shipped them stale, in a
+# document whose thesis is that the counts are printed on every run. Correcting
+# them was not a mechanism; this is.
+echo "governance/README.md count block matches the live gate"
+if out="$(python3 "${here}/readme_counts_probe.py" 2>&1)"; then
+  ok "README count: lines match the validator output"
+else
+  bad "readme_counts_probe.py" "$(printf '%s' "${out}" | grep -E '^  FAIL' | head -3)"
+fi
+
 # Fixtures whose defect is structural rather than semantic must ALSO be caught
 # by the schema, because ajv is the half of the gate that runs first.
 echo "negative controls (schema)"

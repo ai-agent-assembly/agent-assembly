@@ -155,14 +155,17 @@ def main() -> int:
             else:
                 print(f"  ok    {name} -> exit {code}, {hits} {expect_rule} finding(s)")
     finally:
+        # No `return` in here: it would swallow an in-flight exception and report
+        # a tidy exit code for a run that actually blew up.
         MANIFEST.write_bytes(original)
         restored = hashlib.sha256(MANIFEST.read_bytes()).hexdigest()
-        if restored != digest:
-            sys.stderr.write(
-                f"real_manifest_probes: RESTORE FAILED. sha256 was {digest}, is {restored}. "
-                f"Recover with: git checkout -- {MANIFEST.relative_to(REPO)}\n"
-            )
-            return 2
+
+    if restored != digest:
+        sys.stderr.write(
+            f"real_manifest_probes: RESTORE FAILED. sha256 was {digest}, is {restored}. "
+            f"Recover with: git checkout -- {MANIFEST.relative_to(REPO)}\n"
+        )
+        return 2
 
     # And the restore has to be measured, not assumed.
     code, _ = run_gate()
