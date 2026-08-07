@@ -105,53 +105,54 @@ its own code is a defect in its own right, not merely a stale note.
 
 ### Which half is authoritative (AAASM-5666)
 
-This artifact is two files, and they disagreed. Per ADR 0034's
-one-canonical-source-per-fact rule, the split is by *kind of fact*, and it is
-settled by evidence rather than by preference — on every mechanical field checked,
-the seed YAML and `governance/capability-manifest.yaml` agree **exactly**
-(reachability 41/21/10/7/1; the same nine `coverage_qualifiers` rows; `M9` and `C4`
-both `B3`), and this Markdown was the lone outlier each time.
+This artifact is two files, and they disagreed four times. There was no rule
+saying which one wins, so each disagreement was arguable in both directions.
 
-| Kind of fact | Authoritative half | Why |
+**What this does not override.** `governance/capability-manifest.yaml` is the
+maintained artifact from here on — `governance/README.md`, under *"Migration from
+the AAASM-5527 survey"*, says exactly that, and adds that this survey "should not
+be edited to track code changes". Nothing below displaces it. The corrections
+AAASM-5666 made here are not code-tracking edits: each withdraws a statement that
+was false when it was written, in a point-in-time report other pages quote.
+
+| Kind of fact | Authoritative | Established by |
 |---|---|---|
-| Per-row structured values, enums, and any count derived from them | **`AAASM-5527-capability-coverage-matrix.yaml`** | Machine-validated by `scripts/validate_capability_manifest.py`; the manifest agrees with it; the prose counts here are hand-maintained and had drifted in four places |
-| Retractions — that a claim was withdrawn, and what the row must say instead | **this Markdown** | The YAML records no retraction history at all. A retraction exists only here, so the YAML can never be checked against itself |
+| What may be **published** as a capability claim — `coverage`, and counts derived from it | **`governance/capability-manifest.yaml`** | It is the artifact rule R5 gates, and the one AAASM-5588/5600/5609 build public surfaces from. Where it is weaker than this survey, it is deliberately weaker — see below |
+| **Retraction history** — that a claim was withdrawn, and what a row must say instead | **this Markdown** | The manifest carries no retraction records at all. The seed YAML carries withdrawal *records* — 4 `WITHDRAWN:` and 3 `SCOPE:` notes, three of each added by AAASM-5666 — but not the history of what was retracted or why |
+| **Per-row structured values** as measured at the evidence tree `299de3883` | **the seed YAML** | It is the point-in-time record the manifest was seeded from; the prose counts in this Markdown are hand-maintained and had drifted in four places |
 
-Consequence: a disagreement about *a value* is a defect in this Markdown; a
-disagreement about *whether something was withdrawn* is a defect in the YAML.
-Neither half may be edited to match the other without settling the fact from
-source first.
+**Neither half is machine-validated, and "authoritative" does not mean "gated".**
+`scripts/validate_capability_manifest.py` reads `governance/capability-manifest.yaml`
+only. Pointed at the seed YAML it exits 1 on an `AttributeError`, because the
+seed's `evidence` items are strings and the manifest's are dicts — a documented
+migration, not a defect in the seed, and a category error to run. No CI job reads
+either file in this directory. "Authoritative" here means *the one to quote*,
+never *the one a gate proved*.
 
-### Re-running the retraction comparison
+**`coverage` is where the direction reverses, and the reversal is intentional.**
+On five rows — `G5`, `G8`, `N4`, `S6`, `S9` — this survey and this Markdown both
+say **Denied before execution** while the manifest says **Evaluated**. That is not
+drift, and here the manifest is the outlier by design. Each of the five carries
+`kind: test_unlocated` in the manifest with a note recording why it was weakened:
 
-The method is published at [`governance/README.md`](../governance/README.md)
-(AAASM-5531) and is not restated here. AAASM-5666 re-ran it against **this
-artifact pair** rather than the manifest, and the re-run is recorded because it
-moved the population.
+- **`G5`, `S6`, `S9`** — the tests are asserted to exist in the SDK repositories,
+  and rule R5 resolves evidence paths only against *this* repo's tree. Each note
+  ends: *"Weakened for unverifiability, NOT because the tests are believed
+  absent"*.
+- **`G8`, `N4`** — located negative evidence. 0 of the 71 files in
+  `aa-gateway/tests/` reference `serve_tcp` or `serve_uds`; both proxy e2e tests
+  run with `mitm_hosts` empty, so neither traverses `handle_non_llm_mitm`. Both
+  notes carry an explicit condition for restoring `denied_before_execution`.
 
-- **Marker enumeration reproduces exactly**: 26 line-hits at 18 distinct lines,
-  positive control `AAASM` = 109.
-- **The population is 16, not 15**, and the extra unit is not the `:913`
-  disagreement the published grouping rule 3 already settles. It is `:730-748` —
-  the withdrawal of the inherited citation
-  `aa-cli/src/commands/integrations/model.rs:1200,1204`, which governs **P3**.
-  With it: **41 (row, retraction) pairs over 33 distinct rows.**
-- **Why every per-line probe missed it, and this is a third limit the published
-  list does not name.** The phrase is `Earlier revisions`, hard-wrapped across
-  `:730`/`:731`. `grep` is line-oriented, so the phrase exists in the document
-  and on **no line**: a per-line search for `Earlier revision` returns **0**,
-  case-sensitively *or* insensitively, while the same search over the
-  blockquote-unwrapped text returns **1**. Capitalisation alone would not have
-  hidden it; the line wrap does. A marker list must be run against unwrapped text.
-- **One apparent second wrapped hit is not a new retraction.** `:441`-`:442`
-  (*"not what an earlier revision claimed"*) sits in the same blockquote,
-  `:441-463`, as the published `:455-459` unit — one blockquote, one withdrawal,
-  per the published grouping rule 1. Recorded so the count is checkable rather
-  than merely asserted.
-- **The `WITHDRAWN:` exclusion is phrase-scoped, not field-scoped.** The published
-  rule exempts `evidence[].reason`; applied literally it re-flags a fix recorded in
-  `notes`, reporting the audit trail as the defect. The predicate that works is
-  *"is this occurrence inside a withdrawal record"*, wherever it lives.
+The two files answer different questions: this survey records what the code does
+at `299de3883`; the manifest records what is *evidenced in this repository*, and
+is deliberately the more conservative of the two. **Quote the manifest.**
+
+**An unresolved conflict, surfaced rather than settled.** ADR 0034 still names
+this seed YAML as the T2 capability manifest, while `governance/README.md` and
+`scripts/validate_capability_manifest.py` both name
+`governance/capability-manifest.yaml`. AAASM-5666 does not resolve that — it is a
+decision for the ADR and the governance README, not for a verification report.
 
 ## Claim vocabulary
 
