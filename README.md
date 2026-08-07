@@ -220,7 +220,7 @@ The Cargo workspace declares **30 members** in the top-level `Cargo.toml`. The t
 | `aa-proxy` | Sidecar HTTPS interception proxy (MitM with per-host CA) |
 | `aa-sdk-client` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the language shims wrap |
 | `aa-wasm` | WebAssembly target via wasm-bindgen |
-| `aa-gateway` | Control plane — policy enforcement, agent registry, budget tracking |
+| `aa-gateway` | Control plane — policy evaluation, agent registry, budget tracking |
 | `aa-api` | HTTP presentation layer with OpenAPI spec generation (utoipa) |
 | `aa-cli` | `aasm` command-line tool |
 | `conformance` | Cross-SDK protocol conformance test harness |
