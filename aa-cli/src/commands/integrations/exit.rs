@@ -170,8 +170,7 @@ impl From<Outcome> for ExitCode {
 /// absence of an optional block or from the emptiness of a list: those are what
 /// a reader had to guess from before, and guessing is what the contract exists
 /// to remove.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeOutcome {
     /// The requested end state was reached, and something was modified.
     Changed,
@@ -248,6 +247,20 @@ impl ChangeOutcome {
     /// Whether this outcome accompanies exit code `0`.
     pub const fn is_success(self) -> bool {
         matches!(self, ChangeOutcome::Changed | ChangeOutcome::Unchanged)
+    }
+}
+
+/// Serialized from [`ChangeOutcome::as_str`], **not** derived.
+///
+/// A derived `rename_all` implementation would give the JSON surface its own
+/// copy of the four tokens, and two copies of one contract are two things that
+/// can disagree — a build could then print `changed` to a person while telling
+/// a script `unchanged`, with no single edit able to reveal it. Routing both
+/// through one function makes that skew unrepresentable rather than merely
+/// tested for.
+impl Serialize for ChangeOutcome {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
     }
 }
 
