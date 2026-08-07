@@ -15,10 +15,12 @@ language SDKs bind to, and the operator CLI. The language SDKs (`python-sdk`,
 one is the source of truth for the protocol, policy semantics, and the shared
 `aa-*` crates they pin.
 
-## Architecture: the three-layer interception model
+## Architecture: the interception mechanisms
 
-Governance is enforced through three independently-deployable layers, ordered by
-latency cost (lowest first) and detection authority (highest first):
+Governance is assembled from independently-deployable mechanisms, and a deployment
+runs whichever subset it installs. They are not a fallback chain and not a ranking:
+each reaches a different ADR 0033 §6 claim level, and an absent one is reported as
+absent rather than picked up by the next. Listed lowest-latency first:
 
 1. **SDK layer (in-process)** — language SDKs call a thin Rust shim (`aa-ffi-*` in
    the SDK repos) over **`aa-sdk-client`**, which emits events and denies a wrapped
