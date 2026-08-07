@@ -61,6 +61,7 @@
 // strip-for-publish:begin devtool
 pub mod adapters;
 // strip-for-publish:end devtool
+pub mod apply_outcome;
 pub mod audit;
 pub mod client;
 pub mod codec;
@@ -86,6 +87,7 @@ pub mod verb;
 #[cfg(test)]
 mod version_contract;
 
+pub use apply_outcome::{ApplyMutation, MutationUnknown};
 pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 pub use client::{ClientError, DevIntClient, Negotiated};
 pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
