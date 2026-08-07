@@ -1,8 +1,11 @@
-//! Control plane for Agent Assembly — policy enforcement and agent registry.
+//! Control plane for Agent Assembly — policy evaluation and agent registry.
 //!
 //! The gateway is the central coordination point: it maintains the agent
-//! registry, evaluates governance policies, routes enforcement decisions
-//! back to proxies and SDK shims, and writes the audit trail.
+//! registry, evaluates governance policies, routes policy decisions back to
+//! proxies and SDK shims, and writes the audit trail.
+//!
+//! It is E1 of ADR 0033 and only E1: it evaluates and holds no traffic, so a
+//! `Deny` here is exactly as strong as the caller that blocks on the answer.
 
 pub mod alerts;
 pub mod anomaly;

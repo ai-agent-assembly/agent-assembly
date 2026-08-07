@@ -1,33 +1,40 @@
 # CLAUDE.md — agent-assembly
 
 Guidance for Claude Code (and humans) working in this repository. This file holds
-**repo-specific** context only; universal engineering policy lives in the global
+**repo-specific** context only; general engineering policy lives in the global
 config. When a fact here duplicates `CONTRIBUTING.md`, the `Makefile`, or
 `Cargo.toml`, treat those as the source of truth and update them, not just this file.
 
 ## What this repo is
 
-The **core Rust monorepo** for AI Agent Assembly — the product that enforces
-governance on AI agents. It contains the gateway ("the brain"), the policy engine,
-the three interception layers, the FFI shims the language SDKs bind to, and the
-operator CLI. The language SDKs (`python-sdk`, `node-sdk`, `go-sdk`) and the cloud
-control plane live in **separate repos**; this one is the source of truth for the
-protocol, policy semantics, and the shared `aa-*` crates they pin.
+The **core Rust monorepo** for AI Agent Assembly — the product that evaluates what
+an AI agent does against policy and records the outcome. It contains the gateway
+("the brain"), the policy engine, the interception mechanisms, the FFI shims the
+language SDKs bind to, and the operator CLI. The language SDKs (`python-sdk`,
+`node-sdk`, `go-sdk`) and the cloud control plane live in **separate repos**; this
+one is the source of truth for the protocol, policy semantics, and the shared
+`aa-*` crates they pin.
 
-## Architecture: the three-layer interception model
+## Architecture: the interception mechanisms
 
-Governance is enforced through three independently-deployable layers, ordered by
-latency cost (lowest first) and detection authority (highest first):
+Governance is assembled from independently-deployable mechanisms, and a deployment
+runs whichever subset it installs. They are not a fallback chain and not a ranking:
+each reaches a different ADR 0033 §6 claim level, and an absent one is reported as
+absent rather than picked up by the next. Listed lowest-latency first:
 
 1. **SDK layer (in-process)** — language SDKs call a thin Rust shim (`aa-ffi-*` in
-   the SDK repos) over **`aa-sdk-client`**, which emits events and denies a wrapped
-   framework tool call before it runs. Fastest path; requires SDK adoption *and* an
-   explicit initializer call. Advisory only — see ADR 0002.
+   the SDK repos) over **`aa-sdk-client`**, which emits events and asks the runtime
+   for a decision on a wrapped framework tool call. Fastest path; requires SDK
+   adoption *and* an explicit initializer call *and* a reachable runtime. In this
+   repo it reaches *Evaluated* (advisory) — `aa-sdk-client` is not an enforcement
+   point here, and *denied before execution* depends on the out-of-repo shim
+   honouring the answer. Advisory only — see ADR 0002.
 2. **Sidecar proxy (`aa-proxy`)** — MitM of outbound HTTPS using per-host certificates
-   minted from a local root CA; enforces network-egress policy with no *agent code*
-   change. Requires the process to honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
+   minted from a local root CA; refuses or redacts a request before it leaves the
+   machine, without changing the *agent's* own code. Requires the process to honour
+   `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
    (on macOS *attempted* at proxy start via `security add-trusted-cert`, which needs
-   admin authorization — a refused prompt fails proxy startup, `aa-proxy/src/lib.rs:64-69`
+   admin authorization — a refused prompt fails proxy startup, `aa-proxy/src/lib.rs:68-73`
    + `tls/keychain.rs:16`; on Linux `sudo aasm proxy install-ca`,
    `aa-cli/src/commands/proxy/ca.rs:150-188`; Windows unsupported). HTTP/1.1 only on
    MitM'd hosts, and `llm_only` defaults to `true`, so only the built-in LLM hosts
@@ -39,11 +46,13 @@ latency cost (lowest first) and detection authority (highest first):
    kprobes are x86_64-only (hardcoded `__x64_sys_*`). It fails open if it cannot
    attach. It is one possible host mechanism, not a general enforcement layer.
 
+<!-- truth-exempt: negative-example - the AAASM-5528 wording, quoted to show what is prohibited -->
 > **Do not restate these as absolutes.** Public copy derived from this file was the
 > source of the AAASM-5528 truthfulness bug ("catches everything, including bypass
-> attempts"). Every layer claim must name its boundary; see
+> attempts"). Every claim above must name its boundary; see
 > `verification-reports/AAASM-5528-public-claim-inventory.md` for the evidence and
 > `docs/src/devtools/limitations.md` for the measured limits.
+<!-- /truth-exempt -->
 
 The **gateway (`aa-gateway`)** is the brain: agent registry, policy engine
 (`src/policy/`), per-team budgets (`src/budget/`), gRPC for SDKs + HTTP/OpenAPI
@@ -64,7 +73,7 @@ authoritative *versus the untrusted SDK's own scan*, not the policy gate. The
 | `aa-runtime` | Authoritative chokepoint: policy gate (`handle_policy_query`) + scan/redact stage (`RuntimeScanner`) |
 | `aa-sdk-client` | FFI-agnostic client the SDK shims pin by git SHA |
 | `aa-security` | Credential scanner + redaction (leaf crate) |
-| `aa-proxy` / `aa-ebpf*` / `aa-sandbox` | Interception layers 2 & 3 |
+| `aa-proxy` / `aa-ebpf*` / `aa-sandbox` | Interception mechanisms: transport mediation, Linux host-level, WASM tool sandbox |
 | `aa-cache` / `aa-storage*` | L1 cache + storage drivers |
 | `aa-cli` | `aasm` operator binary |
 | `aa-devtool*` | Per-tool governance adapters (claude-code, codex, copilot, windsurf, saas) |
@@ -145,7 +154,8 @@ constraints, invariants, and non-obvious decisions. Restating what the code alre
 says is noise that rots out of sync — avoid it.
 
 - **Crate / module (`//!`):** yes — its role in the architecture, key invariants,
-  where it sits in the three-layer model.
+  and which ADR 0033 element it implements. Do not write the superseded three-layer
+  model into a new `//!`; forbidden design 1 names code comments explicitly.
 - **Public items (`///` on `pub` fn/struct/trait):** yes — the contract: behavior,
   errors returned, units, side effects, and any threading/async/`unsafe`/ordering
   constraints. Especially the surprising ones (e.g. "built inside `run()` so both
