@@ -116,17 +116,40 @@ impl AgentIdentityAttribution {
     /// it as bound.
     #[must_use]
     pub fn resolve(claimed: Option<&str>, authoritative: Option<&str>) -> Self {
+        let agreement = authoritative.map(|a| Some(a) == claimed.filter(|c| !c.is_empty()));
+        Self::from_claim(claimed, agreement)
+    }
+
+    /// Resolve the attribution when the receiver's authoritative identity is
+    /// not a string and so cannot be compared here.
+    ///
+    /// * `claimed` — as [`Self::resolve`].
+    /// * `agreement` — `None` when the receiver has no authoritative identity
+    ///   for this request; `Some(true)` when it resolved one **and already
+    ///   compared it** to the claim and they agree; `Some(false)` when they
+    ///   disagree.
+    ///
+    /// The gateway needs this because its authoritative identity is a
+    /// registry key derived from the `{org, team, agent}` triple, while the
+    /// claim travelling in evidence is the wire `agentId` string — the
+    /// comparison happens over keys, the record keeps the string.
+    ///
+    /// `Some(false)` yields [`Self::Asserted`], never [`Self::Bound`]. So does
+    /// every value of `agreement` when there is no claim.
+    #[must_use]
+    pub fn from_claim(claimed: Option<&str>, agreement: Option<bool>) -> Self {
         let claimed = match claimed {
             Some(c) if !c.is_empty() => c,
             _ => return Self::Unattributed,
         };
-        match authoritative {
-            Some(a) if a == claimed => Self::Bound {
+        if agreement == Some(true) {
+            Self::Bound {
                 agent_id: claimed.to_string(),
-            },
-            _ => Self::Asserted {
+            }
+        } else {
+            Self::Asserted {
                 claimed: claimed.to_string(),
-            },
+            }
         }
     }
 
@@ -238,6 +261,42 @@ mod tests {
         assert_eq!(a.claimed_id(), Some("agent-a"));
         assert_eq!(a.bound_id(), None);
         assert!(!a.assurance().is_bound());
+    }
+
+    #[test]
+    fn from_claim_agrees_with_resolve_on_every_combination() {
+        // `resolve` is a thin string-comparing wrapper over `from_claim`; if the
+        // two ever diverge, one caller's evidence would disagree with another's.
+        for claimed in [None, Some(""), Some("agent-a")] {
+            for authoritative in [None, Some("agent-a"), Some("agent-b")] {
+                let via_resolve = AgentIdentityAttribution::resolve(claimed, authoritative);
+                let agreement = authoritative.map(|a| Some(a) == claimed.filter(|c| !c.is_empty()));
+                let via_from_claim = AgentIdentityAttribution::from_claim(claimed, agreement);
+                assert_eq!(
+                    via_resolve, via_from_claim,
+                    "claimed={claimed:?} auth={authoritative:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn from_claim_with_disagreement_is_asserted() {
+        let a = AgentIdentityAttribution::from_claim(Some("agent-a"), Some(false));
+        assert_eq!(a.assurance(), AgentIdentityAssurance::Asserted);
+        assert_eq!(a.claimed_id(), Some("agent-a"));
+        assert_eq!(a.bound_id(), None);
+    }
+
+    #[test]
+    fn from_claim_without_a_claim_is_unattributed_whatever_the_agreement() {
+        for agreement in [None, Some(true), Some(false)] {
+            assert_eq!(
+                AgentIdentityAttribution::from_claim(None, agreement),
+                AgentIdentityAttribution::Unattributed,
+                "agreement={agreement:?}"
+            );
+        }
     }
 
     #[test]

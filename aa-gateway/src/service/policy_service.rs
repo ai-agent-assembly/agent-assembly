@@ -12,7 +12,10 @@ use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
-use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel, Lineage};
+use aa_core::{
+    AgentContext, AgentIdentityAssurance, AgentIdentityAttribution, AuditEntry, AuditEventType, GovernanceLevel,
+    Lineage,
+};
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyService;
 use aa_proto::assembly::policy::v1::{
     BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage,
@@ -36,6 +39,23 @@ use crate::ops::{OpsRegistry, SharedOpControlPublisher};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
 use crate::service::convert;
+
+/// Map the core three-state assurance onto its proto discriminant
+/// (AAASM-5665).
+///
+/// The proto enum has a fourth value, `UNSPECIFIED = 0`, that this function
+/// never produces: it exists only so a producer that predates the field
+/// decodes as "not stated". Every response the gateway emits states one of the
+/// three real levels.
+fn proto_assurance(assurance: AgentIdentityAssurance) -> i32 {
+    use aa_proto::assembly::common::v1::AgentIdentityAssurance as Proto;
+    let proto = match assurance {
+        AgentIdentityAssurance::Unattributed => Proto::Unattributed,
+        AgentIdentityAssurance::Asserted => Proto::Asserted,
+        AgentIdentityAssurance::Bound => Proto::Bound,
+    };
+    proto as i32
+}
 
 /// Live anomaly-detection wiring for the `CheckAction` / `BatchCheck` flow
 /// (AAASM-3378).
@@ -330,14 +350,80 @@ impl PolicyServiceImpl {
     /// that forwards checks without a per-agent token — mirroring
     /// [`Self::apply_authoritative_tenancy`].
     fn authoritative_agent_key(&self, req: &CheckActionRequest) -> Option<[u8; 16]> {
-        if let Some(registry) = &self.registry {
-            if !req.credential_token.is_empty() {
-                if let Some(owner_key) = registry.find_by_credential_token(&req.credential_token) {
-                    return Some(owner_key);
-                }
-            }
+        self.credentialed_owner_key(req)
+            .or_else(|| req.agent_id.as_ref().map(proto_agent_id_to_key))
+    }
+
+    /// The agent identity the gateway resolves **without reference to the
+    /// claim**: the registered owner of the presented `credential_token`.
+    ///
+    /// This is the gateway's only authoritative agent identity today, and it is
+    /// what makes an [`AgentIdentityAttribution::Bound`] attribution possible.
+    /// Its strength is exactly the strength of a bearer credential issued at
+    /// registration and stored in [`AgentRegistry`] — it establishes that the
+    /// caller holds that agent's token, not that the caller is that agent's
+    /// process.
+    ///
+    /// `None` — meaning no authoritative identity for this request, so a claim
+    /// can only be *asserted* — when no registry is attached, no token is
+    /// presented, or the token owns no registered agent.
+    ///
+    /// Unlike [`Self::authoritative_agent_key`] this never falls back to the
+    /// client-supplied `agent_id`: a value derived from the claim cannot
+    /// corroborate the claim.
+    fn credentialed_owner_key(&self, req: &CheckActionRequest) -> Option<[u8; 16]> {
+        let registry = self.registry.as_ref()?;
+        if req.credential_token.is_empty() {
+            return None;
         }
-        req.agent_id.as_ref().map(proto_agent_id_to_key)
+        registry.find_by_credential_token(&req.credential_token)
+    }
+
+    /// Resolve what is known about the `agentId` this request claimed
+    /// (AAASM-5665).
+    ///
+    /// The comparison runs over registry keys, because the registry stores
+    /// agents under the 16-byte hash of the `{org, team, agent}` triple rather
+    /// than under the wire string; the string is what travels into evidence.
+    /// See [`AgentIdentityAttribution::from_claim`].
+    fn agent_identity_attribution(&self, req: &CheckActionRequest) -> AgentIdentityAttribution {
+        let agreement = self
+            .credentialed_owner_key(req)
+            .map(|owner_key| req.agent_id.as_ref().map(proto_agent_id_to_key) == Some(owner_key));
+        AgentIdentityAttribution::from_claim(convert::claimed_agent_id(req), agreement)
+    }
+
+    /// Deposit the resolved assurance onto the policy evaluation context
+    /// (AAASM-5665).
+    ///
+    /// `convert::request_to_core` deposits the claimed `agentId` string; the
+    /// assurance can only be resolved once the registry is reachable, which is
+    /// here. Both travel in `ctx.metadata` alongside `org_id` / `team_id`, so
+    /// the context the engine evaluates states which agent the action was
+    /// attributed to and on what basis.
+    ///
+    /// No policy predicate reads either key today — they are carried, not
+    /// matched. Nothing in this function changes which rules fire.
+    fn stamp_attribution_on_context(attribution: &AgentIdentityAttribution, ctx: &mut AgentContext) {
+        ctx.metadata.insert(
+            convert::AGENT_IDENTITY_ASSURANCE_KEY.to_string(),
+            attribution.assurance().as_str().to_string(),
+        );
+    }
+
+    /// Stamp the resolved identity assurance onto a decision before it is
+    /// returned to the caller and handed to the audit path.
+    ///
+    /// Applied to every response the service emits, including denials — a
+    /// refused call is exactly where a reviewer needs to know whether the
+    /// identity in the record was bound or merely claimed.
+    fn stamp_identity_assurance(
+        &self,
+        req: &CheckActionRequest,
+        mut response: CheckActionResponse,
+    ) -> CheckActionResponse {
+        response.agent_identity_assurance = proto_assurance(self.agent_identity_attribution(req).assurance());
+        response
     }
 
     /// Look up the per-agent `enforcement_mode` override for the request's
@@ -446,6 +532,8 @@ impl PolicyServiceImpl {
         })?;
 
         self.apply_authoritative_tenancy(req, &mut ctx);
+
+        Self::stamp_attribution_on_context(&self.agent_identity_attribution(req), &mut ctx);
 
         let start = Instant::now();
         let eval = self.engine.evaluate(&ctx, &action);
@@ -863,11 +951,17 @@ impl PolicyServiceImpl {
         eval: &EvaluationResult,
         shadow: Option<&ShadowEvent>,
     ) {
-        let proto_agent = match req.agent_id.as_ref() {
-            Some(a) => a,
-            None => return, // No agent identity — cannot construct entry.
-        };
-        let agent_id = AgentId::from_bytes(convert::hash_to_16(&proto_agent.agent_id));
+        // AAASM-5665 — a request that carried no agent identity used to produce
+        // no audit entry at all, so an unattributed action left no trace. It is
+        // now recorded under the reserved unattributed id with the absence
+        // stated in the payload, rather than dropped or given a placeholder
+        // subject.
+        let attribution = self.agent_identity_attribution(req);
+        let claimed_agent_id = attribution.claimed_id();
+        let agent_id = AgentId::from_bytes(match claimed_agent_id {
+            Some(id) => convert::hash_to_16(id),
+            None => convert::UNATTRIBUTED_AGENT_ID,
+        });
         let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
 
         // AAASM-1944: when the request carries `caller_agent_id` and it
@@ -877,7 +971,7 @@ impl PolicyServiceImpl {
         // graphs. Deny / Redact / Pending decisions continue to flow
         // through the existing variants per `decision_to_event_type_from_response`.
         let caller_agent_id_str: Option<&str> = req.caller_agent_id.as_ref().and_then(|c| {
-            if c.agent_id.is_empty() || c.agent_id == proto_agent.agent_id {
+            if c.agent_id.is_empty() || Some(c.agent_id.as_str()) == claimed_agent_id {
                 None
             } else {
                 Some(c.agent_id.as_str())
@@ -902,7 +996,8 @@ impl PolicyServiceImpl {
         let lineage = self
             .registry
             .as_ref()
-            .and_then(|r| r.lineage(&proto_agent_id_to_key(proto_agent)))
+            .zip(req.agent_id.as_ref())
+            .and_then(|(r, proto_agent)| r.lineage(&proto_agent_id_to_key(proto_agent)))
             .map(|reg_lineage| Lineage {
                 org_id: reg_lineage.org_id,
                 team_id: reg_lineage.team_id,
@@ -981,8 +1076,10 @@ impl PolicyServiceImpl {
                 "dry_run": true,
                 "shadow_decision": &s.shadow_decision,
                 "shadow_reason": &s.reason,
+                "agent_id_claimed": claimed_agent_id,
+                "agent_identity_assurance": attribution.assurance().as_str(),
                 "caller_agent_id": caller_agent_id_str,
-                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "callee_agent_id": caller_agent_id_str.and(claimed_agent_id),
                 "trace_id": trace_id_str,
                 "span_id": span_id_str,
                 "org_id": &lineage.org_id,
@@ -1002,8 +1099,10 @@ impl PolicyServiceImpl {
                 "policy_rule": &response.policy_rule,
                 "policy_doc_id": policy_doc_id,
                 "latency_us": response.decision_latency_us,
+                "agent_id_claimed": claimed_agent_id,
+                "agent_identity_assurance": attribution.assurance().as_str(),
                 "caller_agent_id": caller_agent_id_str,
-                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "callee_agent_id": caller_agent_id_str.and(claimed_agent_id),
                 "trace_id": trace_id_str,
                 "span_id": span_id_str,
                 "org_id": &lineage.org_id,
@@ -1162,15 +1261,22 @@ impl PolicyServiceImpl {
             }
         };
 
-        let response = CheckActionResponse {
-            decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
-            reason: reason.into(),
-            policy_rule: "a2a_identity_verification".into(),
-            approval_id: String::new(),
-            redact: None,
-            decision_latency_us: 0,
-            ..Default::default()
-        };
+        // AAASM-5665 — a rejected impersonation is the case where the assurance
+        // matters most, so the refusal states it too. It can only be ASSERTED:
+        // the claim reached this branch precisely because it did not agree with
+        // the registered identity behind the presented token.
+        let response = self.stamp_identity_assurance(
+            req,
+            CheckActionResponse {
+                decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+                reason: reason.into(),
+                policy_rule: "a2a_identity_verification".into(),
+                approval_id: String::new(),
+                redact: None,
+                decision_latency_us: 0,
+                ..Default::default()
+            },
+        );
 
         self.record_impersonation_audit(req, &response).await;
         Some(response)
@@ -1196,6 +1302,10 @@ impl PolicyServiceImpl {
             "claimed_agent_id": &proto_agent.agent_id,
             "claimed_org_id": &proto_agent.org_id,
             "credential_token_present": !req.credential_token.is_empty(),
+            // AAASM-5665 — same key as `record_audit` so one query over the
+            // audit trail answers "how was this identity established?" for
+            // every decision, refusals included.
+            "agent_identity_assurance": self.agent_identity_attribution(req).assurance().as_str(),
         })
         .to_string();
 
@@ -1671,6 +1781,11 @@ impl PolicyService for PolicyServiceImpl {
         // reflected as a Deny everywhere downstream.
         let response = self.maybe_accrue_llm_spend(&req, response);
 
+        // AAASM-5665: stamp how the claimed `agentId` was treated. Placed after
+        // every path that can rewrite the decision (approval, anomaly, budget)
+        // so a rewritten response carries it too.
+        let response = self.stamp_identity_assurance(&req, response);
+
         // AAASM-1422 / AAASM-1657: transition the registry op to match the
         // final policy decision. Allow → Running, Deny → Terminated.
         // RequiresApproval is handled by the approval queue path above and
@@ -1758,6 +1873,8 @@ impl PolicyService for PolicyServiceImpl {
             // AAASM-3353 / AAASM-3986: atomically reserve LLM-call cost so budget
             // limits fire in batch mode too, rewriting to Deny on overspend.
             let resp = self.maybe_accrue_llm_spend(req, resp);
+            // AAASM-5665: same stamp as `check_action`, per batch entry.
+            let resp = self.stamp_identity_assurance(req, resp);
             self.maybe_suspend_agent(req, deny_action).await;
             self.record_audit(req, &resp, &eval, shadow_event.as_ref()).await;
             responses.push(resp);
@@ -1860,5 +1977,59 @@ impl PolicyService for PolicyServiceImpl {
         };
 
         Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+#[cfg(test)]
+mod attribution_context_tests {
+    //! AAASM-5665 — the assurance actually lands on the `AgentContext` the
+    //! engine evaluates, for every one of the three states.
+
+    use super::*;
+
+    fn fresh_ctx() -> AgentContext {
+        AgentContext::now(AgentId::from_bytes([1u8; 16]), SessionId::from_bytes([2u8; 16]), 0)
+    }
+
+    #[test]
+    fn every_assurance_state_is_deposited_on_the_evaluation_context() {
+        let cases = [
+            (AgentIdentityAttribution::Unattributed, "unattributed"),
+            (
+                AgentIdentityAttribution::Asserted {
+                    claimed: "agent-a".into(),
+                },
+                "asserted",
+            ),
+            (
+                AgentIdentityAttribution::Bound {
+                    agent_id: "agent-a".into(),
+                },
+                "bound",
+            ),
+        ];
+        for (attribution, expected) in cases {
+            let mut ctx = fresh_ctx();
+            PolicyServiceImpl::stamp_attribution_on_context(&attribution, &mut ctx);
+            assert_eq!(
+                ctx.metadata
+                    .get(convert::AGENT_IDENTITY_ASSURANCE_KEY)
+                    .map(String::as_str),
+                Some(expected),
+                "attribution {attribution:?} must deposit {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_deposit_leaves_the_rest_of_the_context_untouched() {
+        // The key is additive: it must not disturb the tenancy metadata the
+        // engine already reads.
+        let mut ctx = fresh_ctx();
+        ctx.metadata.insert("org_id".into(), "org-1".into());
+        ctx.metadata.insert("team_id".into(), "team-1".into());
+        PolicyServiceImpl::stamp_attribution_on_context(&AgentIdentityAttribution::Unattributed, &mut ctx);
+        assert_eq!(ctx.metadata.get("org_id").map(String::as_str), Some("org-1"));
+        assert_eq!(ctx.metadata.get("team_id").map(String::as_str), Some("team-1"));
     }
 }
