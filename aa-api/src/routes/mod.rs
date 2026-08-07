@@ -33,6 +33,9 @@ pub(crate) mod over_permission;
 pub mod policies;
 pub mod policy_hits;
 pub mod scrub;
+/// Sensitive-data analytics, drill-down and compliance export over the durable
+/// projection (AAASM-5359, ADR 0032 §8/§9).
+pub mod sensitive_data;
 pub mod tools;
 pub mod topology;
 pub mod traces;
