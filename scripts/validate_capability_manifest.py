@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import pathlib
 import re
 import subprocess
@@ -217,12 +218,19 @@ class Report:
     def __init__(self) -> None:
         self.errors: list[str] = []
         self.warnings: list[str] = []
+        # Denominators. A rule that reports only its verdict cannot be told apart
+        # from one that silently measured a smaller population than it claims, so
+        # R16 prints what it counted and the counts are asserted to add up.
+        self.counts: list[str] = []
 
     def error(self, where: str, rule: str, msg: str) -> None:
         self.errors.append(f"{where}: [{rule}] {msg}")
 
     def warn(self, where: str, rule: str, msg: str) -> None:
         self.warnings.append(f"{where}: [{rule}] {msg}")
+
+    def count(self, rule: str, msg: str) -> None:
+        self.counts.append(f"[{rule}] {msg}")
 
 
 def git(*args: str) -> subprocess.CompletedProcess:
@@ -771,6 +779,432 @@ def check_row_evidence(row: dict, tree: str, where: str, rep: Report, use_git: b
         )
 
 
+# ── R16. Cross-representation consistency ────────────────────────────────────
+#
+# AAASM-5678. Three documents describe the same 80 capabilities: this manifest,
+# the AAASM-5527 seed YAML and the seed's Markdown companion. On five rows they
+# disagree about `coverage`, the ADR 0033 §6 field the whole public claim
+# vocabulary rests on — and the disagreement is DELIBERATE. Each of the five
+# carries `kind: test_unlocated` evidence, which rule R12 refuses to accept as
+# support for `denied_before_execution`, so the manifest is forced to the weaker
+# `evaluated`. The defect the ticket records is not the divergence. It is that
+# nothing compared the three documents at all, and that a deliberate weakening
+# and a genuine drift looked identical when it did.
+#
+# So this rule does two things that have to be done together. It compares, and
+# it makes the deliberate cases DECLARABLE — each declaration naming the exact
+# rows and the exact pair of values, so it excuses the divergence it describes
+# and no other. Change either side and the declaration stops matching.
+#
+# Scope, stated rather than overclaimed:
+#
+# * The compared set is read out of the SEED's own `schema.enums` plus a named
+#   list of additions, never hand-picked here. The defect that produced this
+#   ticket was a comparison over three fields reported as though it covered
+#   every mechanical field, so the manifest declares its field partition and
+#   this rule fails when that partition does not cover every field the schema
+#   allows. A field added to the schema later cannot fall silently outside.
+# * Prose fields are excluded and the manifest says why per group. That is a
+#   real limit: the manifest's prose was rewritten during the AAASM-5531 review
+#   rounds while the seed keeps the original sentence, so equality there reports
+#   the correction as the defect. The claim, ladder and distribution
+#   vocabularies — the fields that carry a fact — are all compared.
+# * The rule compares SHARED ids only, and reports the three id populations. A
+#   document sharing no id with the seed (every fixture in governance/testdata
+#   except the R16 ones) is not comparable and says so with the count, rather
+#   than passing quietly. Where ids ARE shared, a difference in either
+#   population is an error.
+# * The Markdown companion is compared on `coverage` alone, because that is the
+#   only column it states for all 80 rows in a fixed position. The manifest
+#   records the measured reason for every other column.
+
+MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
+# `denied_before_execution` is written "Denied before execution" in the Markdown
+# and `denied-before-execution` would be equally readable, so the separator is
+# matched loosely while the term itself is not.
+MD_CLAIM_TERM = {
+    term: re.compile(r"\b" + term.replace("_", "[ _-]") + r"\b", re.IGNORECASE)
+    for term in CLAIM_TERMS
+}
+
+
+def _cross_norm(value):
+    """Normalise one field value for cross-representation comparison.
+
+    Returns None for "this representation states nothing here", which is counted
+    as one-side-silent rather than as agreement or as divergence. An empty list
+    is silence: it states no member, and reading it as a value would be ADR 0034
+    forbidden design 8 in miniature.
+
+    The seed spells activation with YAML booleans (`default_state: true`) where
+    the manifest spells it `'on'`; both are in the seed's own declared enum for
+    that field, so this is one fact in two spellings and not a disagreement.
+    Scalars and single-item lists are also unified — the seed writes
+    `deny_signal: raise`, the manifest `deny_signal: [raise]`.
+    """
+    if value is True:
+        return ("on",)
+    if value is False:
+        return ("off",)
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return tuple(sorted(str(item) for item in value)) or None
+    if isinstance(value, dict):
+        return tuple(sorted((str(k), str(v)) for k, v in value.items())) or None
+    text = str(value).strip()
+    return (text,) if text else None
+
+
+def _markdown_coverage(text: str) -> tuple[dict[str, set[str]], int, int]:
+    """Extract each row id's coverage terms from the companion's ID tables.
+
+    Returns (id -> terms, cells read, rows skipped as ragged). The skip count is
+    returned rather than swallowed: a table whose row has fewer cells than its
+    header is exactly how a parser quietly measures a smaller population than it
+    reports, and the caller prints both numbers.
+
+    Only terms inside a `**bold**` run count. Reading the whole cell instead
+    picks up prose that NAMES a term in order to deny it — H2's cell reads
+    "Detected + async process kill — explicitly *not* Denied before execution",
+    and C2's explains a redaction in terms of what is not denied. Both parse as
+    two-term cells without this restriction, and both are single-term rows.
+    """
+    found: dict[str, set[str]] = {}
+    cells = 0
+    ragged = 0
+    header: list[str] | None = None
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            header = None
+            continue
+        row = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if row and row[0] == "ID":
+            header = row
+            continue
+        if not header or "Coverage" not in header:
+            continue
+        if set("".join(row)) <= set("-: "):  # the |---|---| separator
+            continue
+        row_id = re.sub(r"[*`]", "", row[0]).strip()
+        if not re.fullmatch(r"[A-Z]{1,2}[0-9]{1,2}", row_id):
+            continue
+        if len(row) != len(header):
+            ragged += 1
+            continue
+        cells += 1
+        bold = " ".join(MD_BOLD.findall(row[header.index("Coverage")]))
+        found.setdefault(row_id, set()).update(
+            term for term, pattern in MD_CLAIM_TERM.items() if pattern.search(bold)
+        )
+    return found, cells, ragged
+
+
+def _schema_row_fields() -> set[str] | None:
+    """Every property the row schema allows, or None if the schema is unreadable.
+
+    The universe R16 partitions is taken from the SCHEMA rather than from the
+    documents in hand, so the answer does not depend on which document is being
+    validated and a field allowed but not yet used still has to be classified.
+    """
+    path = SCHEMA_DIR / "capability-manifest.schema.json"
+    try:
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        return set(schema["definitions"]["capability"]["properties"])
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _declaration_matches(entry: dict, manifest_value, other_value) -> bool:
+    """Does this declaration describe exactly this pair of values?
+
+    Two spellings, because two kinds of field diverge differently. A scalar field
+    declares the pair outright. A list field declares the difference — the ghcr
+    channel added to the manifest and absent from a survey that never enumerated
+    it — because the full list differs per row while the delta does not.
+
+    Both spellings compare what CHANGED, not the whole value. G5's coverage cell
+    in the companion carries the row's qualifier as well as its primary term, so
+    the two sides read `{evaluated, unmeasured}` against
+    `{denied_before_execution, unmeasured}`; the declaration names the one term
+    that moved. This stays strict: move a second term and the difference no
+    longer equals the declared pair.
+    """
+    manifest_set = set(_cross_norm(manifest_value) or ())
+    other_set = set(_cross_norm(other_value) or ())
+    if "manifest_value" in entry or "other_value" in entry:
+        return manifest_set - other_set == {entry.get("manifest_value")} and (
+            other_set - manifest_set == {entry.get("other_value")}
+        )
+    adds = set(entry.get("manifest_adds") or ())
+    omits = set(entry.get("manifest_omits") or ())
+    return manifest_set - other_set == adds and other_set - manifest_set == omits
+
+
+def check_cross_representation(doc: dict, rep: Report) -> None:
+    """R16. The three representations agree, or the disagreement is declared."""
+    meta = doc.get("meta") or {}
+    rows = {row.get("id"): row for row in (doc.get("capabilities") or [])}
+
+    seed_path = ((meta.get("sources") or {}).get("seed")) or ""
+    if not seed_path:
+        rep.error("meta.sources", "R16", "no seed is named, so nothing can be compared")
+        return
+    try:
+        seed_doc = yaml.safe_load((REPO_ROOT / seed_path).read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        rep.error("meta.sources.seed", "R16", f"{seed_path} could not be read as YAML: {exc}")
+        return
+    seed_rows = {row.get("id"): row for row in ((seed_doc or {}).get("capabilities") or [])}
+
+    shared = sorted(set(rows) & set(seed_rows))
+    only_manifest = sorted(set(rows) - set(seed_rows))
+    only_seed = sorted(set(seed_rows) - set(rows))
+    rep.count(
+        "R16",
+        f"ids: {len(rows)} in the manifest, {len(seed_rows)} in {seed_path}, "
+        f"{len(shared)} shared, {len(only_manifest)} manifest-only, {len(only_seed)} seed-only",
+    )
+    if not shared:
+        rep.count(
+            "R16",
+            "no id is shared with the seed, so the two documents describe different "
+            "populations and no field pair was compared",
+        )
+        return
+
+    contract = meta.get("cross_representation")
+    if not contract:
+        rep.error(
+            "meta",
+            "R16",
+            f"this document shares {len(shared)} row id(s) with {seed_path} but declares no "
+            "meta.cross_representation. Without the contract a disagreement between the two "
+            "cannot be told apart from a deliberate weakening, which is the defect AAASM-5678 "
+            "records",
+        )
+        return
+    if only_manifest or only_seed:
+        rep.error(
+            "meta.cross_representation",
+            "R16",
+            f"the two representations describe different rows: {only_manifest} are in the "
+            f"manifest only and {only_seed} in the seed only. A row present in one and not "
+            "the other is drift no per-field comparison can see",
+        )
+
+    seed_spec = contract.get("seed") or {}
+    renames = seed_spec.get("field_renames") or {}
+    enum_key = seed_spec.get("compared_fields_from_seed_schema")
+    seed_schema = (seed_doc or {}).get("schema") or {}
+    declared_enums = seed_schema.get(enum_key)
+    if not isinstance(declared_enums, dict) or not declared_enums:
+        rep.error(
+            "meta.cross_representation.seed",
+            "R16",
+            f"the seed's schema declares no non-empty {enum_key!r} mapping, so the compared "
+            "set cannot be read from the seed's own declaration",
+        )
+        return
+    compared = {renames.get(name, name) for name in declared_enums}
+    compared |= set(seed_spec.get("additional_compared_fields") or [])
+
+    # The partition. Universe from the schema, so it does not shrink to whatever
+    # the document in hand happens to carry.
+    schema_fields = _schema_row_fields()
+    if schema_fields is None:
+        rep.error(
+            "meta.cross_representation.seed",
+            "R16",
+            f"{SCHEMA_DIR / 'capability-manifest.schema.json'} could not be read, so the "
+            "field partition cannot be checked for completeness",
+        )
+        return
+    seed_declared = set()
+    for key in ("required_fields", "recommended_additions"):
+        seed_declared |= set(seed_schema.get(key) or [])
+    seed_declared |= set(declared_enums)
+    universe = schema_fields | {renames.get(name, name) for name in seed_declared}
+    universe -= {"id"} | FORBIDDEN_KEYS
+
+    excluded: dict[str, int] = {}
+    for index, group in enumerate(seed_spec.get("excluded_fields") or []):
+        for name in group.get("fields") or []:
+            if name in excluded:
+                rep.error(
+                    "meta.cross_representation.seed",
+                    "R16",
+                    f"field {name!r} is excluded twice, in groups {excluded[name]} and "
+                    f"{index}, so it carries two reasons and a reader cannot tell which holds",
+                )
+            excluded[name] = index
+    both = compared & set(excluded)
+    if both:
+        rep.error(
+            "meta.cross_representation.seed",
+            "R16",
+            f"{sorted(both)} are both compared and excluded",
+        )
+    unclassified = sorted(universe - compared - set(excluded))
+    if unclassified:
+        rep.error(
+            "meta.cross_representation.seed",
+            "R16",
+            f"{len(unclassified)} field(s) the schema allows are neither compared nor named "
+            f"as excluded: {unclassified}. A partial comparison that does not say what it "
+            "left out reads as a complete one",
+        )
+    unknown = sorted((compared | set(excluded)) - universe)
+    if unknown:
+        rep.error(
+            "meta.cross_representation.seed",
+            "R16",
+            f"the contract classifies {unknown}, which no representation can carry. A "
+            "classification for a field that does not exist hides that a real one is missing",
+        )
+    rep.count(
+        "R16",
+        f"fields: {len(universe)} in the union of the two schemas = {len(compared)} compared "
+        f"+ {len(excluded)} excluded with a named reason + {len(unclassified)} unclassified",
+    )
+
+    # The comparison itself.
+    divergences: list[tuple[str, str, str, object, object]] = []
+    pairs = agree = differ = silent = 0
+    for row_id in shared:
+        seed_row = {renames.get(k, k): v for k, v in (seed_rows[row_id] or {}).items()}
+        for field in sorted(compared):
+            pairs += 1
+            left = _cross_norm(rows[row_id].get(field))
+            right = _cross_norm(seed_row.get(field))
+            if left is None or right is None:
+                silent += 1
+            elif left == right:
+                agree += 1
+            else:
+                differ += 1
+                divergences.append(
+                    ("seed", row_id, field, rows[row_id].get(field), seed_row.get(field))
+                )
+    if agree + differ + silent != pairs:
+        rep.error(
+            "meta.cross_representation.seed",
+            "R16",
+            f"{agree} + {differ} + {silent} does not equal {pairs} compared pairs, so a pair "
+            "was counted twice or dropped",
+        )
+    rep.count(
+        "R16",
+        f"seed: {len(shared)} ids x {len(compared)} fields = {pairs} pairs; {agree} agree, "
+        f"{differ} diverge, {silent} one-side-silent; 0 skipped",
+    )
+
+    # The Markdown companion, on coverage alone.
+    companion = contract.get("seed_companion") or {}
+    companion_path = companion.get("path") or ""
+    companion_fields = list(companion.get("compared_fields") or [])
+    if companion_fields != ["coverage"]:
+        rep.error(
+            "meta.cross_representation.seed_companion",
+            "R16",
+            f"compared_fields is {companion_fields}; this rule can extract `coverage` and "
+            "nothing else from the companion, so any other field would be declared as "
+            "compared and never looked at",
+        )
+    else:
+        try:
+            companion_text = (REPO_ROOT / companion_path).read_text(encoding="utf-8")
+        except OSError as exc:
+            rep.error(
+                "meta.cross_representation.seed_companion",
+                "R16",
+                f"{companion_path} could not be read: {exc}",
+            )
+            companion_text = None
+        if companion_text is not None:
+            stated, cells, ragged = _markdown_coverage(companion_text)
+            missing = [row_id for row_id in shared if row_id not in stated]
+            md_pairs = md_agree = md_differ = 0
+            for row_id in shared:
+                if row_id not in stated:
+                    continue
+                md_pairs += 1
+                expected = {rows[row_id].get("coverage")} | set(
+                    (rows[row_id].get("coverage_qualifiers") or {}).values()
+                )
+                if stated[row_id] == expected:
+                    md_agree += 1
+                else:
+                    md_differ += 1
+                    divergences.append(
+                        ("seed_companion", row_id, "coverage", sorted(expected),
+                         sorted(stated[row_id]))
+                    )
+            if missing:
+                rep.error(
+                    "meta.cross_representation.seed_companion",
+                    "R16",
+                    f"{len(missing)} shared row(s) state no coverage cell in "
+                    f"{companion_path}: {missing}. An id the companion does not carry cannot "
+                    "be compared, and an uncompared row must not be counted as agreeing",
+                )
+            if ragged:
+                rep.error(
+                    "meta.cross_representation.seed_companion",
+                    "R16",
+                    f"{ragged} table row(s) in {companion_path} have a cell count their "
+                    "header does not match, so they were not read",
+                )
+            rep.count(
+                "R16",
+                f"seed_companion: {cells} coverage cells read, {ragged} ragged rows skipped; "
+                f"{md_pairs} of {len(shared)} shared ids compared, {md_agree} agree, "
+                f"{md_differ} diverge",
+            )
+
+    # Declarations. Every divergence needs one; every declaration needs a
+    # divergence. The second half is what stops a declaration outliving the
+    # reason it was written for and quietly excusing a later, different change.
+    declarations = contract.get("declared_divergences") or []
+    used: set[int] = set()
+    for representation, row_id, field, manifest_value, other_value in divergences:
+        matched = None
+        for index, entry in enumerate(declarations):
+            if entry.get("field") != field or row_id not in (entry.get("ids") or []):
+                continue
+            if representation not in (entry.get("representations") or []):
+                continue
+            if _declaration_matches(entry, manifest_value, other_value):
+                matched = index
+                break
+        if matched is None:
+            rep.error(
+                f"capabilities({row_id})",
+                "R16",
+                f"{field} is {manifest_value!r} here and {other_value!r} in the "
+                f"{representation}, and no meta.cross_representation.declared_divergences "
+                "entry covers that pair for this row. Either the two representations really "
+                "have drifted, or the difference is deliberate and must say so",
+            )
+        else:
+            used.add(matched)
+    for index, entry in enumerate(declarations):
+        if index in used:
+            continue
+        rep.error(
+            f"meta.cross_representation.declared_divergences[{index}]",
+            "R16",
+            f"declares a divergence on {entry.get('field')!r} for {entry.get('ids')} that no "
+            "longer holds. A declaration that matches nothing is a standing excuse for a "
+            "future change nobody reviewed",
+        )
+    rep.count(
+        "R16",
+        f"divergences: {len(divergences)} found, {len(declarations)} declarations, "
+        f"{len(used)} of them matched",
+    )
+
+
 def validate(doc: dict, rep: Report, use_git: bool) -> None:
     check_vocabulary_constants(rep)
 
@@ -837,6 +1271,10 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
         if tree and scope_tag:
             check_row_release_scope(row, tree, scope_tag, where, rep)
 
+    # R16 reads two files off disk rather than the row in hand, so it runs once
+    # per document and outside the row loop. It needs no git.
+    check_cross_representation(doc, rep)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -877,6 +1315,8 @@ def main() -> int:
     rep = Report()
     validate(doc, rep, use_git)
 
+    for line in rep.counts:
+        print(f"count: {line}")
     for line in rep.warnings:
         print(f"warning: {line}")
     for line in rep.errors:
