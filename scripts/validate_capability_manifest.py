@@ -159,9 +159,14 @@ PROSE_FIELDS = (
     "boundary_conditional_on",
 )
 
-# Terms whose evidence must be a test, not a gap: AC 8 of the ticket — stale or
-# unverified protection cannot be rendered as a current enforced status.
+# Terms whose evidence must be a LOCATABLE test, not a gap and not an unlocated
+# one: AC 8 of the ticket — stale or unverified protection cannot be rendered as
+# a current enforced status.
 COVERAGE_REQUIRING_TEST = frozenset({"denied_before_execution", "approval_required"})
+# The ADR 0030 rungs that assert traffic is actually governed. `gateway_protected`
+# is the first rung claiming a core-side observation; `host_enforced` is the only
+# one claiming bypass resistance. Both are earned, never asserted — see R14.
+ENFORCEMENT_RUNGS = frozenset({"gateway_protected", "host_enforced"})
 # Terms where a gap-only row is suspicious but the survey may legitimately have
 # derived the answer from code reading rather than a test.
 COVERAGE_PREFERRING_TEST = frozenset({"redacted", "evaluated", "detected", "observed"})
@@ -438,10 +443,114 @@ def check_row_prose(row: dict, where: str, rep: Report) -> None:
                 )
 
 
-def check_row_evidence(row: dict, tree: str, where: str, rep: Report, use_git: bool) -> None:
-    """R5 / R12 / R13. Evidence resolves to a test or an explicitly marked gap."""
+def path_in_tree(tree: str, path: str) -> tuple[bool, str]:
+    """Is `path` a file in `tree`? Returns (ok, explanation-for-the-error).
+
+    ADR 0034 §6.4 asks whether a path is tracked **in the tree the evidence
+    names**. The obvious-looking `git ls-files --with-tree=<tree>` does NOT ask
+    that: `--with-tree` *adds* the tree's paths to the index's, so the effective
+    set is index ∪ tree and any path tracked in the current checkout passes even
+    when it did not exist at the evidence tree. That is a strictly weaker
+    predicate, and it is the one this validator shipped in round 1.
+
+    `git cat-file -t <tree>:<path>` reads the tree alone. Reading the *type*
+    rather than only existence additionally rejects a directory cited where a
+    file is meant — `cat-file -e` answers 0 for a directory.
+
+    Note the exit code is 128, not 1, when the path's directory prefix is also
+    absent from the tree, so this tests `!= 0` rather than `== 1`.
+    """
+    result = git("cat-file", "-t", f"{tree}:{path}")
+    if result.returncode != 0:
+        return False, (
+            f"`git cat-file -t {tree}:{path}` exited {result.returncode} — the path does "
+            f"not exist in tree {tree}"
+        )
+    kind = result.stdout.strip()
+    if kind != "blob":
+        return False, (
+            f"`git cat-file -t {tree}:{path}` reported {kind!r}, not 'blob' — a cited "
+            "evidence path must be a file"
+        )
+    return True, ""
+
+
+def check_row_enforcement(row: dict, where: str, rep: Report) -> None:
+    """R13. An enforcement claim that does not name its conditions is unfalsifiable.
+
+    Deliberately independent of the evidence tree: this rule is about the row's
+    own fields and must still run when `evidence_tree` is missing or unresolvable.
+    In round 1 it lived inside `check_row_evidence`, behind an `if tree:` guard
+    that had nothing to do with it.
+    """
+    if row.get("observe_or_enforce") != "enforce":
+        return
+    for field in ("platform", "transport", "launch_path"):
+        value = row.get(field)
+        empty = not value or (isinstance(value, str) and value.strip().lower() == "unknown")
+        if empty:
+            rep.error(
+                where,
+                "R13",
+                f"this row claims enforcement but {field} is empty or unknown. Platform, "
+                "transport and launch-path conditions are mandatory for enforcement claims",
+            )
+
+
+def check_row_protection(row: dict, where: str, rep: Report) -> None:
+    """R14. An ADR 0030 enforcement rung must be earned, not asserted.
+
+    ADR 0030 §4.1 makes `HostEnforced` "the only state that claims bypass
+    resistance" and `GatewayProtected` the first rung claiming traffic is
+    governed at all, requiring "a core-side observation, not a client-side or
+    adapter-side assertion". §4.2 rule 1 adds that file existence is never
+    sufficient for `Integrated` **or above**, and rule 2 that missing evidence
+    lowers the state and never raises it.
+
+    None of that was enforced in round 1: `evidence[]` is required on every row
+    regardless of rung, so "the rung plus its evidence" added no constraint and
+    `host_enforced` was assertable on a single `gap`.
+
+    Clause 2 keeps the qualifier attached. A rung reached only by tool-governance
+    config writes is not a data-path claim, and the scope field is the only thing
+    that says so — so where `coverage` is not itself an enforcement term, the
+    scope must be present rather than left for a generator to drop.
+    """
+    state = row.get("protection_state")
+    if state not in ENFORCEMENT_RUNGS:
+        return
+
     items = row.get("evidence") or []
-    has_test = any(item.get("kind") in ("test", "test_unlocated") for item in items)
+    if not any(item.get("kind") == "test" for item in items):
+        kinds = sorted({item.get("kind") for item in items})
+        rep.error(
+            where,
+            "R14",
+            f"protection_state is {state!r} — an ADR 0030 enforcement rung — but no evidence "
+            f"item is a locatable test (kinds present: {kinds}). ADR 0030 §4.2 rule 1: file "
+            "existence is never sufficient for Integrated or above, and §4.2 rule 2: missing "
+            "evidence lowers the state, never raises it",
+        )
+
+    if row.get("coverage") not in COVERAGE_REQUIRING_TEST and not row.get("protection_state_scope"):
+        rep.error(
+            where,
+            "R14",
+            f"protection_state is {state!r} while coverage is {row.get('coverage')!r}, which is "
+            "not itself an enforcement term, so protection_state_scope is required. Without it a "
+            "generated table renders the bare rung and drops the qualifier that makes it honest",
+        )
+
+
+def check_row_evidence(row: dict, tree: str, where: str, rep: Report, use_git: bool) -> None:
+    """R5 / R12. Evidence resolves to a locatable test or an explicitly marked gap."""
+    items = row.get("evidence") or []
+    # Split deliberately. `test_unlocated` is real evidence but nobody can run
+    # it, so it may support the soft branch and must not support the hard one:
+    # in round 1 a single "aa-proxy unit tests" string satisfied the guard on
+    # ADR 0033 §6's strongest claim term.
+    has_located_test = any(item.get("kind") == "test" for item in items)
+    has_any_test = any(item.get("kind") in ("test", "test_unlocated") for item in items)
     row_tree = row.get("evidence_tree") or tree
 
     for i, item in enumerate(items):
@@ -453,17 +562,13 @@ def check_row_evidence(row: dict, tree: str, where: str, rep: Report, use_git: b
                 rep.error(label, "R5", "kind: test carries no path")
                 continue
             if use_git:
-                result = git(
-                    "ls-files", f"--with-tree={row_tree}", "--error-unmatch", "--", path
-                )
-                if result.returncode != 0:
+                ok, why = path_in_tree(row_tree, path)
+                if not ok:
                     rep.error(
                         label,
                         "R5",
-                        f"`git ls-files --with-tree={row_tree} --error-unmatch -- {path}` "
-                        f"exited {result.returncode}. A cited path must be TRACKED in the tree "
-                        "the evidence names; existence on a working checkout is not "
-                        "tracked-ness (ADR 0034 §6.4)",
+                        f"{why}. A cited path must be tracked in the tree the evidence names; "
+                        "existence on a working checkout is not tracked-ness (ADR 0034 §6.4)",
                     )
         elif kind == "gap" and not item.get("reason"):
             rep.error(label, "R5", "kind: gap must state a reason")
@@ -471,35 +576,21 @@ def check_row_evidence(row: dict, tree: str, where: str, rep: Report, use_git: b
             rep.error(label, "R5", "kind: test_unlocated must state what it describes")
 
     coverage = row.get("coverage")
-    if coverage in COVERAGE_REQUIRING_TEST and not has_test:
+    if coverage in COVERAGE_REQUIRING_TEST and not has_located_test:
         rep.error(
             where,
             "R12",
-            f"coverage is {coverage!r} but every evidence item is a gap. Unverified protection "
-            "cannot be rendered as a current enforced status; the honest term is unmeasured",
+            f"coverage is {coverage!r} — one of ADR 0033 §6's strongest terms — but no evidence "
+            "item is a locatable test. An unlocated test is not something a reader can re-run, "
+            "so it cannot substantiate this term; the honest term is 'evaluated' or 'unmeasured'",
         )
-    elif coverage in COVERAGE_PREFERRING_TEST and not has_test:
+    elif coverage in COVERAGE_PREFERRING_TEST and not has_any_test:
         rep.warn(
             where,
             "R12",
             f"coverage is {coverage!r} with gap-only evidence. Confirm the term is derived from "
             "something a reader can re-run",
         )
-
-    # R13 — an enforcement claim that does not name its conditions is
-    # unfalsifiable. The ticket makes platform, transport and launch path
-    # mandatory for exactly this reason.
-    if row.get("observe_or_enforce") == "enforce":
-        for field in ("platform", "transport", "launch_path"):
-            value = row.get(field)
-            empty = not value or (isinstance(value, str) and value.strip().lower() == "unknown")
-            if empty:
-                rep.error(
-                    where,
-                    "R13",
-                    f"this row claims enforcement but {field} is empty or unknown. Platform, "
-                    "transport and launch-path conditions are mandatory for enforcement claims",
-                )
 
 
 def validate(doc: dict, rep: Report, use_git: bool) -> None:
@@ -540,6 +631,10 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
         check_row_axes(row, where, rep)
         check_row_distribution(row, meta, where, rep)
         check_row_prose(row, where, rep)
+        # R13 and R14 read only the row's own fields, so they run whether or not
+        # the evidence tree resolved. Only R5's path check needs a tree.
+        check_row_enforcement(row, where, rep)
+        check_row_protection(row, where, rep)
         if tree:
             check_row_evidence(row, tree, where, rep, use_git)
 
