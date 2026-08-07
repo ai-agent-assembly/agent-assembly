@@ -11,15 +11,19 @@
 //!
 //! # What these tests must not become
 //!
-//! "Scanning a redaction label finds nothing" is true of the bare label even
-//! *without* the fix — 29 bytes at 4.06 bits, below the 4.5-bit gate — so a test
-//! built on the bare label passes for the wrong reason and proves nothing. The
-//! defect needs the label to be **pooled into a longer candidate**: in a compact
-//! JSON body the whole payload is one whitespace token, and the label's brackets,
-//! colon and mixed case lift that token over the gate. Every assertion here is
-//! therefore made over a realistic scrubbed body, and each is preceded by a
-//! non-vacuity check that the body is non-empty, carries a label, and reaches the
-//! entropy pass's 20-64 character window at all.
+//! "Scanning a redaction label finds nothing" is true of the label on its own
+//! even *without* the fix. The longest of them, `[REDACTED:GenericHighEntropy]`,
+//! is 29 bytes at 4.3492 bits over 22 distinct values — below the 4.5-bit gate,
+//! and below the 23 distinct values that gate arithmetically requires, so it
+//! cannot clear it at any length. A test built on the label in isolation
+//! therefore passes for the wrong reason and proves nothing. The defect needs
+//! the label to be **pooled into a longer candidate**: in a compact JSON body
+//! the whole payload is one whitespace token, and the label's brackets, colon
+//! and mixed case carry that token to 4.7582 bits, over the gate.
+//!
+//! Every assertion here is therefore made over a realistic scrubbed body, and
+//! each is preceded by a non-vacuity check that the body is non-empty, carries a
+//! label, and reaches the entropy pass's 20-64 character window at all.
 
 use aa_security::{CredentialKind, CredentialScanner, ScanResult};
 
