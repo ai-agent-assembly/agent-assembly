@@ -239,8 +239,10 @@ beneath it in this very file — see the closing note.
 
 **This section invalidates line references into this file.** Adding it shifts
 everything below it. The exact offset is deliberately **not** quoted here: it
-changed twice while this section was being written (50, then 116, then 130), which
-is the whole lesson. Recompute it instead — it is the delta of the
+changed three times while this section was being written — the anchor delta runs
+50 → 116 → 118 → 132 across `fa3fc942d`, `273ba177c`, `12c9deef8`, `c278f7f8a`,
+each value invalidated by the commit that recorded the previous one — which is the
+whole lesson. Recompute it instead — it is the delta of the
 `## Claim vocabulary` anchor, which sits at `:106` in `9fbf42985`. That breaks all
 15 Markdown line references in the
 population table in `governance/README.md`. Those are outside AAASM-5666's
