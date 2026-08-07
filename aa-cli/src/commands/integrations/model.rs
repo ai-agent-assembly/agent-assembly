@@ -1118,6 +1118,14 @@ impl RepairReport {
 /// The `remove` report.
 #[derive(Debug, Clone, Serialize)]
 pub struct RemoveReport {
+    /// Whether this run modified anything (AAASM-5499).
+    ///
+    /// `None` on a preview of a removal that has something to reverse: it
+    /// changed nothing, and it established nothing about whether the end state
+    /// already holds. A tool with no integration at all is not that preview —
+    /// its end state is settled from the lifecycle phase before any plan is
+    /// authored — so it reports `unchanged` with or without `--dry-run`.
+    pub outcome: Option<ChangeOutcome>,
     /// Which runtime answered.
     pub runtime: RuntimeInfo,
     /// The tool.
@@ -1134,6 +1142,12 @@ pub struct RemoveReport {
     /// it printed `(plan )` to a person and `"plan_id": ""` to a script, which
     /// is indistinguishable from a plan the runtime failed to name
     /// (AAASM-5629).
+    ///
+    /// Since AAASM-5499 the *outcome* of that state is stated by
+    /// [`RemoveReport::outcome`] instead, and this field is back to answering
+    /// only the question it names — which plan, if any, was authored. The two
+    /// are set in one call ([`RemoveReport::nothing_to_remove`]), so a report
+    /// cannot name no plan while claiming to have changed something.
     pub plan_id: Option<String>,
     /// The restoration actions, in order.
     pub steps: Vec<StepRow>,
@@ -1144,9 +1158,37 @@ pub struct RemoveReport {
 }
 
 impl RemoveReport {
+    /// A tool with no Agent Assembly integration to remove.
+    ///
+    /// The end state the caller asked for already holds, which is a success and
+    /// a no-op — so `unchanged` is stated here rather than left to be inferred
+    /// from a `null` plan id and an empty step list, both of which a reader had
+    /// to know the shape of the report to interpret.
+    pub fn nothing_to_remove(runtime: RuntimeInfo, tool_id: &str, dry_run: bool, reason: String) -> Self {
+        Self {
+            outcome: Some(ChangeOutcome::Unchanged),
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run,
+            // No plan exists to name: the Remove verb is never sent here, and
+            // it would refuse anyway — the service authors a reversal from a
+            // receipt, and there is none (AAASM-5629).
+            plan_id: None,
+            steps: Vec::new(),
+            residual: Vec::new(),
+            warnings: vec![reason],
+        }
+    }
+
     /// Build the report from the service's removal plan.
+    ///
+    /// `dry_run` decides the outcome, and it is the honest reading of what the
+    /// two calls mean: the Remove verb without a plan id *authors* the reversal
+    /// and mutates nothing, and with one it *executes* it. So a preview reports
+    /// no outcome and an execution reports `changed`.
     pub fn from_view(runtime: RuntimeInfo, view: &wire::RemovalView, dry_run: bool) -> Self {
         Self {
+            outcome: (!dry_run).then_some(ChangeOutcome::Changed),
             runtime,
             tool_id: view.tool_id.clone(),
             dry_run,

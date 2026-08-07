@@ -685,9 +685,10 @@ impl Report for RemoveReport {
         // would have carried it. A run that authored no plan says so here in
         // the same shape `repair` states its own no-op (AAASM-5629).
         out.push_str(&format!(
-            "{} — {} ({})\n",
+            "{} — {}{} ({})\n",
             self.tool_id,
             if self.dry_run { "removal preview" } else { "removal" },
+            change_outcome(self.outcome),
             match &self.plan_id {
                 Some(id) => format!("plan {id}"),
                 None => "nothing to remove".to_string(),
@@ -1175,6 +1176,7 @@ mod tests {
 
     fn remove_report(runtime: RuntimeInfo) -> RemoveReport {
         RemoveReport {
+            outcome: Some(ChangeOutcome::Changed),
             runtime,
             tool_id: "claude-code".to_string(),
             dry_run: false,
@@ -1397,6 +1399,32 @@ mod tests {
         assert!(
             !changed.contains("unchanged"),
             "a repair that restored a key read as a no-op: {changed}"
+        );
+        assert!(unchanged.contains("— unchanged"), "{unchanged}");
+        assert_ne!(
+            changed.lines().next(),
+            unchanged.lines().next(),
+            "the two outcomes render identically"
+        );
+    }
+
+    /// The same falsification for `remove`: the first run and the second must
+    /// not read alike. A mutation that hard-codes either token fails here.
+    #[test]
+    fn a_removal_that_reversed_something_reads_differently_from_one_that_did_not() {
+        let changed = remove_report(runtime()).render_human();
+        let unchanged = RemoveReport::nothing_to_remove(
+            runtime(),
+            "claude-code",
+            false,
+            "nothing was installed, so nothing was removed".to_string(),
+        )
+        .render_human();
+
+        assert!(changed.contains("— changed"), "{changed}");
+        assert!(
+            !changed.contains("unchanged"),
+            "an executed removal read as a no-op: {changed}"
         );
         assert!(unchanged.contains("— unchanged"), "{unchanged}");
         assert_ne!(

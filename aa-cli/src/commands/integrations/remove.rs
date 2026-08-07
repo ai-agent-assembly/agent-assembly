@@ -16,7 +16,7 @@
 //! restore is reported in `residual` and the receipt is *kept*, so a user whose
 //! configuration was not fully restored can still see what is left behind.
 //!
-//! # Removing nothing has no plan, and says so (AAASM-5629)
+//! # Removing nothing has no plan, and says so (AAASM-5629, AAASM-5499)
 //!
 //! A tool with no integration is short-circuited below, before either half of
 //! the verb is sent. That is not a removal whose plan went unnamed: the service
@@ -25,6 +25,13 @@
 //! [`RemoveReport::plan_id`](super::model::RemoveReport::plan_id) is `None`,
 //! which renders as `nothing to remove` for a person and `null` for a script —
 //! rather than carrying an empty id that both surfaces have to guess about.
+//!
+//! Removing twice is a success both times, and since the contract was ratified
+//! (AAASM-5499) the two runs are no longer told apart only by a plan id a
+//! reader has to know how to interpret: the first reports `changed` and the
+//! second `unchanged`, on the result's first line and as `outcome` in
+//! `--output json`. No exit code moved — both are `0`, because both reached
+//! the end state the caller asked for.
 //!
 //! # `--force`
 //!
@@ -92,18 +99,12 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
                 args.tool, status.phase
             );
             emit(
-                &RemoveReport {
+                &RemoveReport::nothing_to_remove(
                     runtime,
-                    tool_id: args.tool.clone(),
-                    dry_run: args.dry_run,
-                    // No plan exists to name: the Remove verb is never sent
-                    // here, and it would refuse anyway — the service authors a
-                    // reversal from a receipt, and there is none (AAASM-5629).
-                    plan_id: None,
-                    steps: Vec::new(),
-                    residual: Vec::new(),
-                    warnings: vec!["nothing was installed, so nothing was removed".to_string()],
-                },
+                    &args.tool,
+                    args.dry_run,
+                    "nothing was installed, so nothing was removed".to_string(),
+                ),
                 output,
             );
             return Ok(Outcome::Success);
