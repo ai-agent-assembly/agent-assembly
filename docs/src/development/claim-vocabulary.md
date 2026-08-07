@@ -958,7 +958,7 @@ the one thing the two documents above leave to the caller.
 > waive process, timing and review sequencing. It may **never** waive factual
 > truthfulness, so no waiver in this section reaches a banned absolute
 > (`CLAIM-ABS-*`) or an undifferentiated verb (`CLAIM-VERB-01`); both are
-> **unwaivable**. What remains open to a waiver here is the ADR 0034
+> **unwaivable**. What remains waivable here is the ADR 0034
 > **D-dimension** rules — §2.2's extent, distribution and strength comparisons,
 > and Rule M.
 
@@ -1032,11 +1032,11 @@ receives`, justified as a verbatim quotation of a customer's audit-control
 language, is **not** valid. Two things are wrong with it, and only the second is
 obvious:
 
-1. It asks a waiver to authorise an absolute product claim, which
-   [§7.4](#74-banned-absolutes-are-unwaivable) forbids outright. The checker
-   validates the record and does not apply it.
-2. The stated justification is actually a **class N1** situation — an attributed
-   third-party quotation — and N1 needs no waiver at all. The correct remedy is
+1. It asks a waiver to authorise an absolute product claim, and an absolute
+   product claim is **unwaivable** — [§7.4](#74-banned-absolutes-are-unwaivable)
+   forbids it outright. The checker validates the record and does not apply it.
+2. The stated justification is actually an `attributed-quotation` — someone
+   else's words — and that class needs no waiver at all. The correct remedy is
    [§6.3.1](#631-what-the-exemptions-are-for-non-product-assertions): attribute
    the quotation to the auditor, place it in a quoted span in body text, and keep
    it out of the heading and the page summary. The page then carries the string
@@ -1062,7 +1062,7 @@ ADR 0034 Decision 10 now states it directly: *"A waiver reaches process, never
 truth"*, and its unwaivable list has grown from three categories to **four**, with
 **factual truthfulness first in its own right** and forbidden design 7's banned
 absolutes named as the second — **unwaivable**, with the decision recording that
-the route over them *"was removed rather than narrowed"*.
+*"the waiver route over them was removed rather than narrowed"*.
 
 So the rule, without qualification:
 
@@ -1135,12 +1135,12 @@ conclusion:
 - **Only the ADR statement is independent.** Both sibling pages derive their
   sentence from Decision 10 and cite it; neither is a separate witness. The split
   was six statements to one, not one to three.
-- **[content-ownership.md](content-ownership.md)'s *Absolutes* section states
+- **[content-ownership.md](content-ownership.md)'s *Absolutes* section stated
   both forms, six lines apart, in the same paragraph on the same subject** — it
-  named Decision 10 as the mechanism reaching the absolutes ban, and then said
-  an ADR 0033 forbidden design cannot be waived. It is a witness for
-  both readings, and that internal contradiction is the tightest evidence that a
-  drafting defect existed. AAASM-5671 corrects it.
+  named Decision 10 as the mechanism by which the absolutes ban *was* waived, and
+  then said that an ADR 0033 forbidden design cannot be waived. It was a witness
+  for both readings, and that internal contradiction is the tightest evidence
+  that a drafting defect existed. AAASM-5671 corrects it.
 
 **Sequencing.** AAASM-5671 merges before this page. Until it does, a reader
 comparing this section with ADR 0034 will find the six statements above still
@@ -1157,7 +1157,7 @@ sits in an inline code span (E3) and is silent; the six `info` diagnostics are
 the six real violations quoted verbatim in
 [§8.1](#81-two-corpora-and-why-the-baseline-must-cover-the-larger-one)'s table,
 each attributed to a file and line. That is `CLAIM-QUOTE-01` behaving exactly as
-designed — a class **N4** negative example, visible in the checker's output and
+designed — a `negative-example`, visible in the checker's output and
 gating nothing. The convention that keeps the first number at zero is simple: *a
 banned phrase named in a specification is a literal, so it goes in backticks; a
 banned phrase being reported as a violation is a quotation, so it goes in quotes
