@@ -2089,6 +2089,74 @@ mod tests {
         assert!(CredentialScanner::new().scan(pem).findings.is_empty());
     }
 
+    /// AAASM-5441 — the exclusion list and the label writer must not drift apart.
+    ///
+    /// A new [`CredentialKind`] arrives with a new `[REDACTED:<kind>]` label the
+    /// moment it is added to `as_str`, and if the exclusion does not recognise it
+    /// then bodies scrubbed of that kind start re-inspecting dirty — silently,
+    /// because nothing else in the suite mentions the new name. This enumerates
+    /// the labels from the same source the writer uses, so the drift is a failing
+    /// test rather than a field report.
+    #[test]
+    fn every_label_this_crate_can_emit_is_excluded() {
+        let labels = CredentialKind::ALL
+            .iter()
+            .chain(std::iter::once(&CredentialKind::Custom))
+            .map(|kind| format!("[REDACTED:{}]", kind.as_str()))
+            .chain(std::iter::once("[REDACTED]".to_string()));
+
+        for label in labels {
+            assert_eq!(
+                redaction_marker_len_at(&label, 0),
+                Some(label.len()),
+                "{label} is a label this crate writes but not one it excludes"
+            );
+            assert_eq!(
+                mask_redaction_markers(&label).as_deref(),
+                Some(" ".repeat(label.len()).as_str()),
+                "{label} was not fully masked"
+            );
+        }
+    }
+
+    /// The masking must be length-preserving, because the offsets the entropy
+    /// passes report over the masked text are handed back to the caller as
+    /// offsets into the *original* text. A mask that changed length would move
+    /// every later finding's span onto the wrong bytes — and `redact` splices by
+    /// span, so the failure mode is a leaked secret, not a cosmetic slip.
+    #[test]
+    fn masking_preserves_every_byte_offset() {
+        for text in [
+            "value [REDACTED:GenericHighEntropy] tail",
+            "{\"a\":\"[REDACTED]\",\"b\":\"[REDACTED:SsnPattern]\"}",
+            "統編[REDACTED] 已登記",
+            "[REDACTED][REDACTED:Custom]",
+        ] {
+            let masked = mask_redaction_markers(text).expect("carries a label");
+            assert_eq!(masked.len(), text.len(), "{text} changed length under masking");
+            for (i, (a, b)) in text.bytes().zip(masked.bytes()).enumerate() {
+                assert!(
+                    a == b || b == b' ',
+                    "byte {i} of {text} changed to something other than the mask"
+                );
+            }
+        }
+    }
+
+    /// Text that merely looks like a label is left alone, and a real label that
+    /// follows it is still found — the resume point after a rejected candidate
+    /// must not skip past the next one.
+    #[test]
+    fn label_shaped_text_is_left_in_place() {
+        assert_eq!(redaction_marker_len_at("[REDACTED:NotAKind]", 0), None);
+        assert_eq!(redaction_marker_len_at("[REDACTEDX]", 0), None);
+        assert_eq!(redaction_marker_len_at("[REDACTED", 0), None);
+        assert_eq!(mask_redaction_markers("[REDACTED:NotAKind]"), None);
+        assert_eq!(
+            mask_redaction_markers("[REDACTED:NotAKind][REDACTED]").as_deref(),
+            Some("[REDACTED:NotAKind]          ")
+        );
+    }
     use super::*;
 
     // --- CredentialKind::as_str ---
