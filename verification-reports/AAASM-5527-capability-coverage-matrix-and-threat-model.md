@@ -154,6 +154,71 @@ this seed YAML as the T2 capability manifest, while `governance/README.md` and
 `governance/capability-manifest.yaml`. AAASM-5666 does not resolve that — it is a
 decision for the ADR and the governance README, not for a verification report.
 
+### Re-running the retraction comparison
+
+The method is published at [`governance/README.md`](../governance/README.md)
+(AAASM-5531) and is not restated here. AAASM-5666 re-ran it against **this
+artifact pair** rather than the manifest. **Every line number below is pinned to
+the base commit `9fbf42985`**, because adding this section shifts every line
+beneath it in this very file — see the closing note.
+
+- **Marker enumeration reproduces exactly**: 26 line-hits at 18 distinct lines,
+  positive control `AAASM` = 109.
+- **The population is 16, not 15.** The extra unit is not the `:913` disagreement
+  the published grouping rule 3 already settles. It is the blockquote opening
+  *"A citation this artifact inherited, and the note P3 refers to"* (`9fbf42985`
+  `:730-748`), which withdraws the inherited citation
+  `aa-cli/src/commands/integrations/model.rs:1200,1204` and governs **P3** —
+  giving **41 (row, retraction) pairs over 33 distinct rows**.
+- **A fourth limit on marker lists — not a third.** The published list already
+  names two beyond the markers themselves: markerless retractions, and
+  case-sensitivity, which it numbers third. The fourth is **line wrapping across
+  intervening block markup**, and normalising whitespace does not fix it.
+  Measured on the base file, probing the two spellings separately:
+
+  | pass | `earlier revision` — ci / cs | `Earlier revision` — ci / cs |
+  |---|---|---|
+  | raw, per line | 11 / 11 | 11 / 0 |
+  | whitespace-normalised | 11 / 11 | 11 / 0 |
+  | whitespace-normalised **and `>` markers stripped** | **13 / 12** | **13 / 1** |
+
+  Whitespace normalisation alone recovers **nothing**. The control moves on that
+  same pass — `AAASM` goes from 109 line-hits to 167 occurrences, so the probe is
+  live — while the marker does not, because a `>` blockquote continuation marker
+  sits between "Earlier" and "revisions". Only stripping the marker as well
+  recovers them. **Two** occurrences are hidden, not one: the `:441` one by the
+  wrap alone, and the `:730` one by the wrap *and* by capitalisation
+  independently, since the published marker is lowercase and the text reads
+  *"Earlier revisions"*. The remedy is normalise-**then-strip**.
+- **Correcting an earlier revision of this section.** It claimed a per-line search
+  "returns 0, case-sensitively *or* insensitively". False in both readings: the
+  published lowercase marker returns **11** per line either way, and only the
+  capitalised spelling returns 0, only case-sensitively. It also claimed
+  "capitalisation alone would not have hidden it" — capitalisation alone does
+  hide it.
+- **One apparent second wrapped hit is not a new retraction.** The `:441`
+  occurrence sits in the same blockquote (`9fbf42985` `:441-463`) as the published
+  `:455-459` unit — one blockquote, one withdrawal, per grouping rule 1.
+- **The already-published case limit hides two more markers, now swept.**
+  Lowercase `superseded` occurs twice (`9fbf42985` `:282` and `:1061`) where the
+  published probe tests `Superseded` and reports 0. Both were read, and neither is
+  a retraction of this artifact's own claims — both describe *other* documentation
+  pages still narrating the superseded three-layer model, owned by
+  AAASM-5592/5605. The population is unchanged; the zero had simply never been
+  examined. By contrast `retract` is a genuine zero even under the most relaxed
+  probe, case-insensitive and stripped.
+- **The `WITHDRAWN:` exclusion is phrase-scoped, not field-scoped.** The published
+  rule exempts `evidence[].reason`; applied literally it re-flags a fix recorded
+  in `notes`, reporting the audit trail as the defect. The predicate that works is
+  *"is this occurrence inside a withdrawal record"*, wherever it lives.
+
+**This section invalidates line references into this file.** Adding it shifts
+everything below by 50 lines, which breaks all 15 Markdown line references in the
+population table in `governance/README.md`. Those are outside AAASM-5666's
+ownership and are reported to AAASM-5531/5600 rather than edited here. The
+underlying fragility is that the published method keys a reproducible population
+on line numbers in a file other tickets edit — anchor text would not rot.
+
 ## Claim vocabulary
 
 This artifact does **not** define its own vocabulary. The `Coverage` column takes
