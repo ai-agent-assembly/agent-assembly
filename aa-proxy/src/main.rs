@@ -7,10 +7,11 @@ use clap::Parser;
 
 /// Agent Assembly sidecar traffic-interception proxy.
 ///
-/// `aa-proxy` is a MitM HTTPS proxy that enforces Layer 2 governance policy
-/// (credential scanning, network egress allowlists, and MCP `tools/call`
-/// enforcement against `aa-gateway`). It is normally spawned by `aa-runtime`,
-/// but can be run standalone for testing and debugging.
+/// `aa-proxy` is a MitM HTTPS proxy implementing E3, Protocol / Transport
+/// Mediation (ADR 0033 §1): it refuses or redacts a request before it leaves
+/// the machine (credential scanning, network egress allowlists, and MCP
+/// `tools/call` adjudication against `aa-gateway`). It is normally spawned by
+/// `aa-runtime`, but can be run standalone for testing and debugging.
 ///
 /// All runtime configuration is read from environment variables. The most
 /// common knobs are listed below; see the project documentation for the full
