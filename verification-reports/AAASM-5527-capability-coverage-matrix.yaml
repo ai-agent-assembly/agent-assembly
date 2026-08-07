@@ -1782,6 +1782,16 @@ capabilities:
     current_level: host_enforced   # reachable — the only adapter for which it is
     target_level: "hold; close the AAASM-5298 open half"
     tickets: [AAASM-5298]
+    notes: >-
+      SCOPE: fixed on `main` at the base commit 299de3883; the registration half
+      is NOT in the published v0.0.1-rc.6, where
+      aa-cli/src/commands/run_registration.rs does not exist at the tag — so the
+      reversal recorded here cites a file the published release does not contain.
+      Quote this row as "fixed on main, still live in rc.6", never as "fixed".
+      Of the three host_enforced rows (L1, L7, P3) this is the only one whose
+      coverage also reaches denied_before_execution — L7 is unmeasured and P3
+      unsupported — so the scoping is load-bearing: for rc.6 the rung is
+      unearned, not merely unmeasured.
 
   - id: L2
     domain: devtool_launch
