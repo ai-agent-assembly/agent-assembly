@@ -1136,21 +1136,68 @@ both looked more rigorous than the thing they replaced:
 The check below subtracts **the disposition groups' own globs**, listed per
 repository, rather than the bucket definition:
 
-```python
-GROUPS = {   # the globs this page's groups actually name
-  "agent-assembly": [r"^docs/src/", r"^docs/release/", r"^docs/superpowers/", SIGNPOST],
-  "docs":           [r"^docs/src/", r"^docs/sync-architecture\.md$",
-                     r"^(AGGREGATION|MIGRATION)\.md$", SIGNPOST],
-  "node-sdk":       [r"^docs/", r"^website/versioned_docs/",
-                     r"^website/README\.md$", SIGNPOST],
-  # …one entry per repository; private repos are Record in full
-}
-SIGNPOST = r"(^|/)(README|CONTRIBUTING|SECURITY)\.md$"
+Run it from the workspace root that holds the checkouts. Any extra arguments are
+injected into every repository as a negative control.
 
-for repo, globs in GROUPS.items():
-    for path in docs_bucket(repo, REF[repo]) + sys.argv[1:]:
+```python
+#!/usr/bin/env python3
+"""Is every docs-bucket file inside a group this page names?"""
+import re, subprocess, sys
+
+EV = r"(^|/)verification-reports/|(^|/)reports/"
+TC = r"^\.claude/|^\.github/|(^|/)CODE_OF_CONDUCT\.md$|(^|/)SUPPORT\.md$"
+DC = r"^docs/|^website/|^blog/|(^|/)(README|CONTRIBUTING|SECURITY)\.md$"
+SIGNPOST = r"(^|/)(README|CONTRIBUTING|SECURITY)\.md$"
+RECORD = [r".*"]                      # private repos: Record in full
+LOCAL, API = "local", "api"
+
+# repo -> (how to read its tree, ref, the globs this page's groups name)
+REPOS = {
+ "agent-assembly":            (LOCAL, "remote/main", [r"^docs/src/", r"^docs/release/", r"^docs/superpowers/", SIGNPOST]),
+ "docs":                      (LOCAL, "origin/main", [r"^docs/src/", r"^docs/sync-architecture\.md$", r"^(AGGREGATION|MIGRATION)\.md$", SIGNPOST]),
+ "official-website":          (LOCAL, "origin/main", [r"^blog/", r"^docs/", SIGNPOST]),
+ "horonomy-official-website": (LOCAL, "origin/main", [r"^blog/", r"^docs/", SIGNPOST]),
+ "python-sdk":                (LOCAL, "remote/main", [r"^docs/", SIGNPOST]),
+ "node-sdk":                  (LOCAL, "remote/main", [r"^docs/", r"^website/versioned_docs/", r"^website/README\.md$", SIGNPOST]),
+ "go-sdk":                    (LOCAL, "remote/main", [r"^docs/", SIGNPOST]),
+ "examples":                  (LOCAL, "origin/main", [r"^docs/", SIGNPOST]),
+ "arena":                     (LOCAL, "origin/main", [r"^docs/", SIGNPOST]),
+ "dotgithub":                 (LOCAL, "remote/main", [r"^docs/onboarding-poc/", SIGNPOST]),
+ "e2e-public":                (LOCAL, "origin/main", [r"^docs/", SIGNPOST]),
+ "cloud":                     (LOCAL, "remote/main", RECORD),
+ "agent-assembly-enterprise": (LOCAL, "remote/main", RECORD),
+ "e2e-private":               (LOCAL, "origin/main", RECORD),
+ "internal-docs":             (LOCAL, "origin/main", RECORD),
+ "ai-agent-assembly/homebrew-tap":    (API, "HEAD", [SIGNPOST]),
+ "ai-agent-assembly/saas-infra":      (API, "HEAD", RECORD),
+ "ai-agent-assembly/.github-private": (API, "HEAD", RECORD),
+}
+
+def tree(repo, how, ref):
+    if how == LOCAL:
+        cmd = ["git", "-C", repo, "ls-tree", "-r", "--name-only", ref]
+    else:
+        cmd = ["gh", "api", f"repos/{repo}/git/trees/{ref}?recursive=1",
+               "--jq", '.tree[]|select(.type=="blob")|.path']
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+    files = [p for p in out.splitlines() if p.endswith((".md", ".mdx"))]
+    assert files, f"{repo}: no markdown — refusing to report a vacuous pass"
+    return files
+
+def docs_bucket(repo, how, ref):
+    return [p for p in tree(repo, how, ref)
+            if not re.search(EV, p) and not re.search(TC, p) and re.search(DC, p)]
+
+leaks, checked = [], 0
+for repo, (how, ref, globs) in REPOS.items():
+    for path in docs_bucket(repo, how, ref) + sys.argv[1:]:
+        checked += 1
         if not any(re.search(g, path) for g in globs):
             leaks.append(f"{repo}: {path}")
+
+print(f"repositories: {len(REPOS)}   docs-bucket files checked: {checked}")
+for l in leaks:
+    print("  NOT COVERED — " + l)
 sys.exit(1 if leaks else 0)
 ```
 
@@ -1158,11 +1205,24 @@ Because `agent-assembly`'s entry names three subtrees rather than `^docs/`, a
 page added at `docs/anything-else/` leaks. That is the property the previous
 version lacked.
 
-**Result: 828 docs-bucket files checked, remainder empty, exit 0.** And the
-check demonstrably fails — passing three paths that no group names
-(`docs/totally/unlisted-nobody-dispositioned-this.md`,
-`website/orphan-page-not-in-any-group.md`, `some/deep/dir/GUIDE.md`) reports 25
-leaks and exits 1.
+**Clean run: 18 repositories, 855 docs-bucket files checked, no leaks, exit 0.**
+
+**Failing run:** passing three paths that no group names —
+`docs/totally/unlisted-nobody-dispositioned-this.md`,
+`website/orphan-page-not-in-any-group.md` and `some/deep/dir/GUIDE.md` — gives
+909 checked, **28 leaks, exit 1**. Fewer than 54 because a repository whose
+group is `^docs/` legitimately covers the first path, and `node-sdk`'s narrower
+`^website/versioned_docs/` is why it catches the second where its siblings do
+not. The control file is `GUIDE.md` rather than `README.md` deliberately: a
+`README.md` at any depth matches `SIGNPOST` and would be absorbed, correctly.
+
+**Why 855 and not the 852 in the [count table](#per-repository-counts).** The
+table is pinned to the refs named in it; this check reads whatever the refs
+point at now. The whole difference is drift in two repositories since the table
+was measured — the Hub `+2` and Core `+1` — and every other row is unchanged.
+The check is deliberately not pinned: its job is to answer whether the map still
+covers the tree today, which is the question that matters when someone runs it
+after this page merges.
 
 It earned its keep on first run: it found `docs/sync-architecture.md`, a Hub
 page inside `docs/` but outside `docs/src/` that none of the three earlier
