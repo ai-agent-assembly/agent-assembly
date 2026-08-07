@@ -30,8 +30,9 @@ absent rather than picked up by the next. Listed lowest-latency first:
    point here, and *denied before execution* depends on the out-of-repo shim
    honouring the answer. Advisory only — see ADR 0002.
 2. **Sidecar proxy (`aa-proxy`)** — MitM of outbound HTTPS using per-host certificates
-   minted from a local root CA; enforces network-egress policy with no *agent code*
-   change. Requires the process to honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
+   minted from a local root CA; refuses or redacts a request before it leaves the
+   machine, without changing the *agent's* own code. Requires the process to honour
+   `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
    (on macOS *attempted* at proxy start via `security add-trusted-cert`, which needs
    admin authorization — a refused prompt fails proxy startup, `aa-proxy/src/lib.rs:64-69`
    + `tls/keychain.rs:16`; on Linux `sudo aasm proxy install-ca`,
