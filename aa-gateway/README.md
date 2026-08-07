@@ -12,8 +12,8 @@ Control plane — policy evaluation engine and agent registry for Agent Assembly
 `aa-gateway` is the brain of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly),
 the governance-native runtime for AI agents. It is the central coordination point:
 it maintains the **agent registry**, evaluates **governance policies**, tracks
-**per-team budgets**, routes enforcement decisions back to the proxy and SDK
-shims, and writes the audit trail.
+**per-team budgets**, routes policy decisions back to the proxy and SDK shims,
+and writes the audit trail.
 
 The gateway is **E1, the Governance Control Plane** (ADR 0033 §1), and only E1: it
 *evaluates* and holds no traffic, so it produces a decision record rather than
