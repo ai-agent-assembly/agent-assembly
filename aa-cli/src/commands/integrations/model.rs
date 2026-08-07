@@ -39,7 +39,9 @@ use serde::Serialize;
 
 use aa_proto::assembly::devint::v1 as wire;
 
-use super::exit::ChangeOutcome;
+use aa_runtime::devint::ApplyMutation;
+
+use super::exit::{ChangeOutcome, Outcome};
 
 /// The runtime this command talked to.
 ///
@@ -419,9 +421,89 @@ pub struct StepOutcomeRow {
     pub fingerprint: Option<String>,
 }
 
+/// What a completed apply amounts to, on both axes.
+///
+/// The **single** place `install` decides them, so the exit code, the rendered
+/// first line and the JSON `outcome` are three renderings of one verdict rather
+/// than three independent derivations that could disagree (AAASM-5674, and the
+/// shape AAASM-5499 established for `repair`/`remove`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InstallVerdict {
+    /// What the process exits with.
+    pub exit: Outcome,
+    /// The ratified change outcome, when one can be stated.
+    ///
+    /// `None` is the *unknown* case and it is deliberately not a fifth token: a
+    /// caller reading `null` cannot mistake it for a word that means something,
+    /// whereas any string put here would eventually be branched on as though it
+    /// were an answer.
+    pub change: Option<ChangeOutcome>,
+}
+
+impl InstallVerdict {
+    /// Classify from the service's own answers: how many steps it reported as
+    /// failed, and what it said about mutation.
+    ///
+    /// Three rules, in order:
+    ///
+    /// 1. A step the service reported as **failed** makes the install partial.
+    ///    That is a stated fact from the same authority, not an inference from
+    ///    an exit code or from local state, and it outranks the mutation
+    ///    outcome — a run that did not reach the end state is neither a
+    ///    mutation nor a no-op, whatever it touched on the way.
+    /// 2. An **authoritative** mutation outcome decides between `changed` and
+    ///    `unchanged`, routed through [`ChangeOutcome::of`] so the "success
+    ///    outcomes are exactly the zero exits" invariant stays a property of one
+    ///    function.
+    /// 3. Anything else — the peer could not say, would not say, or was never
+    ///    asked — states **no** change outcome. The apply itself succeeded, so
+    ///    the exit code is `0`; what did not happen is a claim about the host.
+    ///
+    /// Rule 3 is the whole point. There is no branch here that turns an absence
+    /// into `unchanged`.
+    pub fn of(failed_steps: usize, mutation: &ApplyMutation) -> Self {
+        if failed_steps > 0 {
+            return Self {
+                exit: Outcome::InternalError,
+                change: Some(ChangeOutcome::of(Outcome::InternalError, false)),
+            };
+        }
+        match mutation {
+            ApplyMutation::Failed { .. } => Self {
+                exit: Outcome::InternalError,
+                change: Some(ChangeOutcome::of(Outcome::InternalError, false)),
+            },
+            ApplyMutation::Changed | ApplyMutation::Unchanged => Self {
+                exit: Outcome::Success,
+                change: Some(ChangeOutcome::of(Outcome::Success, mutation.modified_the_host())),
+            },
+            ApplyMutation::Unsupported { .. } | ApplyMutation::Unknown(_) => Self {
+                exit: Outcome::Success,
+                change: None,
+            },
+        }
+    }
+}
+
 /// The `install` report.
 #[derive(Debug, Clone, Serialize)]
 pub struct InstallReport {
+    /// Whether this run modified anything (AAASM-5674).
+    ///
+    /// `None` means the runtime did not state an outcome — it is older than
+    /// DI-API [`DI_API_APPLY_OUTCOME_SINCE`], it omitted the field, or it said
+    /// it could not tell. [`InstallReport::outcome_unknown`] then carries why.
+    /// It is **never** `unchanged`: this client does not derive the answer from
+    /// the receipt id (reused across a no-op reapply), from
+    /// `applied_at_unix_secs` (second-granularity and cross-process), from a
+    /// pre-read status (which carries neither id) or from the exit code (which
+    /// answers the other axis).
+    pub outcome: Option<ChangeOutcome>,
+    /// Why no outcome could be stated, when none could.
+    ///
+    /// Set in the same call as [`InstallReport::outcome`], so a report cannot
+    /// claim an outcome while explaining its absence, or the reverse.
+    pub outcome_unknown: Option<String>,
     /// The plan that was applied.
     pub plan: PlanReport,
     /// The receipt now on record.
@@ -434,6 +516,44 @@ pub struct InstallReport {
     pub planned_level: String,
     /// The level actually reached.
     pub achieved_level: String,
+}
+
+impl InstallReport {
+    /// Build the report from what the runtime answered.
+    ///
+    /// `mutation` must come from
+    /// [`Negotiated::apply_mutation`](aa_runtime::devint::Negotiated::apply_mutation),
+    /// which is where the version gate lives. Passing a value read straight off
+    /// `ApplyView::outcome` would skip it.
+    pub fn from_applied(plan: PlanReport, applied: &wire::ApplyView, mutation: &ApplyMutation) -> (Self, Outcome) {
+        let steps: Vec<StepOutcomeRow> = applied
+            .steps
+            .iter()
+            .map(|s| StepOutcomeRow {
+                step_id: s.step_id.clone(),
+                outcome: s.outcome.clone(),
+                fingerprint: (!s.fingerprint.is_empty()).then(|| s.fingerprint.clone()),
+            })
+            .collect();
+        let failed = steps.iter().filter(|s| s.outcome == "failed").count();
+        let verdict = InstallVerdict::of(failed, mutation);
+        let report = Self {
+            outcome: verdict.change,
+            outcome_unknown: verdict.change.is_none().then(|| mutation.detail()),
+            plan,
+            receipt_id: applied.receipt_id.clone(),
+            applied_at_unix_secs: applied.applied_at_unix_secs,
+            steps,
+            planned_level: applied.planned_level.clone(),
+            achieved_level: applied.achieved_level.clone(),
+        };
+        (report, verdict.exit)
+    }
+
+    /// The steps the runtime reported as failed.
+    pub fn failed_steps(&self) -> Vec<&StepOutcomeRow> {
+        self.steps.iter().filter(|s| s.outcome == "failed").collect()
+    }
 }
 
 /// One observation behind a protection claim.

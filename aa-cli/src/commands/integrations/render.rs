@@ -435,7 +435,22 @@ impl Report for InstallReport {
         // `--allow-unverified-runtime` — so the standing is stated once here,
         // against the installation, rather than twice via the embedded plan.
         render_provenance_caveat(&mut out, &self.plan.runtime, "this installation");
-        out.push_str(&format!("\nApplied as receipt {}\n", self.receipt_id));
+        // The outcome rides the one line that is always printed after the plan,
+        // in the same shape and with the same token `repair` and `remove` use —
+        // and the same token `--output json` carries, so a person and a `jq`
+        // read one word (AAASM-5499, extended to install by AAASM-5674).
+        out.push_str(&format!(
+            "\nApplied as receipt {}{}\n",
+            self.receipt_id,
+            change_outcome(self.outcome)
+        ));
+        // An unstated outcome is stated as unstated. Leaving the suffix off
+        // would make it indistinguishable from a rendering that forgot it, and
+        // a reader would fall back to the exit code — which answers the other
+        // question.
+        if let Some(reason) = &self.outcome_unknown {
+            out.push_str(&format!("  outcome:         not reported — {reason}\n"));
+        }
         out.push_str(&format!(
             "  at:              {}\n",
             timestamp(self.applied_at_unix_secs)
@@ -1165,6 +1180,8 @@ mod tests {
 
     fn install_report(runtime: RuntimeInfo) -> InstallReport {
         InstallReport {
+            outcome: Some(ChangeOutcome::Changed),
+            outcome_unknown: None,
             plan: plan_report(runtime, true),
             receipt_id: "receipt-1".to_string(),
             applied_at_unix_secs: 1,
