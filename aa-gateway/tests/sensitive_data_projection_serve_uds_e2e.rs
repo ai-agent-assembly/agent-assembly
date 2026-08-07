@@ -1,24 +1,41 @@
-//! The shipped entrypoint really wires the sensitive-data projection
-//! (AAASM-5440).
+//! The shipped UDS entrypoint really wires the sensitive-data projection
+//! (AAASM-5656).
 //!
-//! `sensitive_data_projection_boot_test` proves
-//! `attach_sensitive_data_projection` works; this proves
-//! [`aa_gateway::server::serve_tcp`] — the function `aasm-gateway` itself calls
-//! — invokes it. Without this the composition helper could be correct and
-//! unreferenced, which is exactly the shape of "operationally dead code".
+//! `sensitive_data_projection_serve_e2e` proves the same thing for
+//! [`aa_gateway::server::serve_tcp`]. This is its counterpart for
+//! [`aa_gateway::server::serve_uds`] — the *other* production transport, and
+//! until this file existed the only one whose projection wiring no test
+//! asserted: a mutation deleting it from `serve_uds` alone failed nothing.
+//! Two transports, two independent proofs; neither borrows the other's.
 //!
 //! Nothing here is a fixture standing in for production: the gateway is booted
-//! by its own `serve_tcp`, driven over a real gRPC socket by the generated
-//! client, and the assertion is made against the SQLite file the boot was
-//! configured with, read through a connection the gateway does not own.
+//! by its own `serve_uds`, driven over a real Unix-socket gRPC connection by
+//! the generated client, and the assertion is made against the SQLite file the
+//! boot was configured with, read through a connection the gateway does not
+//! own.
 //!
-//! # Scope: this file covers the TCP transport only
+//! # The two kills are disjoint, and that was executed
 //!
-//! `serve_uds` performs the identical wiring and has its own proof in
-//! `sensitive_data_projection_serve_uds_e2e` (AAASM-5656). The two are
-//! deliberately separate files so the kills stay attributable: removing the
-//! wiring from one transport fails only that transport's test. Do not merge
-//! them, and do not let either assert through the other's socket.
+//! Both mutations were run against the full `cargo nextest run -p aa-gateway`
+//! suite (1257 tests, `--no-fail-fast`), each replacing one transport's
+//! `attach_sensitive_data_projection` call with `let projection = None;`:
+//!
+//! | Mutation | Failing tests | Suite |
+//! | --- | --- | --- |
+//! | `serve_uds` stops attaching | this file's test, and only it | 1256 passed, 1 failed |
+//! | `serve_tcp` stops attaching | `serve_tcp_persists_a_finding_…`, and only it | 1256 passed, 1 failed |
+//!
+//! Each transport's test survives the *other* transport's mutation, which is
+//! the property that makes either kill attributable. Recorded here rather than
+//! in a commit message because the next person to edit these files needs it.
+//!
+//! # No new dependency was needed
+//!
+//! AAASM-5440 recorded a Unix-socket tonic client as needing a `hyper_util`
+//! connector `aa-gateway` does not depend on. That was true of older tonic;
+//! it is not true of the pinned 0.14, which resolves a `unix:` endpoint to its
+//! own built-in UDS connector. The client below is therefore built from
+//! `tonic::transport::Endpoint` alone.
 //!
 //! # Process isolation
 //!
@@ -45,22 +62,23 @@ use aa_proto::assembly::policy::v1::{action_context::Action, ActionContext, Chec
 use chrono::Utc;
 
 const ORG: &str = "acme";
-const TOKEN: &str = "token-e2e";
+const TOKEN: &str = "token-uds-e2e";
 /// AWS's own published documentation key — recognised by the built-in scanner,
 /// and backed by no account.
 const SYNTHETIC_AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
 
-/// **The shipped gateway writes the projection.**
+/// **The shipped gateway writes the projection on the UDS transport too.**
 ///
-/// Boots `serve_tcp` with the projection configured, sends one governed tool
-/// call carrying a synthetic credential over the real gRPC surface, and waits
-/// for the row to become durable in the configured database.
+/// Boots `serve_uds` with the projection configured, sends one governed tool
+/// call carrying a synthetic credential over a real Unix-socket gRPC
+/// connection, and waits for the row to become durable in the configured
+/// database.
 ///
 /// The wait is a poll rather than a sleep because the write is deliberately off
 /// the enforcement path: the RPC returns before the drain has persisted
 /// anything, and that ordering is the feature, not a race to paper over.
 #[tokio::test]
-async fn serve_tcp_persists_a_finding_through_the_real_grpc_surface() {
+async fn serve_uds_persists_a_finding_through_the_real_grpc_surface() {
     let dir = tempfile::tempdir().expect("temp dir");
     // Redirect every path the serve path writes to — budget state, the escalation
     // database, the audit chain — into the temp directory, so booting a real
@@ -82,27 +100,25 @@ async fn serve_tcp_persists_a_finding_through_the_real_grpc_surface() {
     let registry = Arc::new(AgentRegistry::new());
     registry.register(record(&agent)).expect("register agent");
 
-    // Bind to pick a free port, then release it for `serve_tcp` to take. The
-    // window is a few microseconds and the alternative is a hardcoded port that
-    // collides with whatever else the machine is running.
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = probe.local_addr().unwrap();
-    drop(probe);
+    // A short name under the temp directory: `sun_path` is capped at ~104 bytes
+    // on macOS, and a long fixture name silently turns into a bind failure.
+    let socket = dir.path().join("gw.sock");
 
     let (alert_tx, _alert_rx) = tokio::sync::broadcast::channel(64);
     let queue = aa_runtime::approval::ApprovalQueue::new();
     let policy_path = policy.path().to_path_buf();
+    let socket_path = socket.clone();
     let serve = tokio::spawn(async move {
         // Held so the policy file outlives the server.
         let _policy = policy;
-        // `serve_tcp`'s error is a bare `Box<dyn Error>`, which is not `Send`;
+        // `serve_uds`'s error is a bare `Box<dyn Error>`, which is not `Send`;
         // rendered here so the future this task returns is spawnable.
-        aa_gateway::server::serve_tcp(&policy_path, &addr.to_string(), registry, queue, alert_tx, None)
+        aa_gateway::server::serve_uds(&policy_path, &socket_path, registry, queue, alert_tx, None)
             .await
             .map_err(|e| e.to_string())
     });
 
-    let mut client = connect(addr).await;
+    let mut client = connect(&socket).await;
     let response = client
         .check_action(leaky_request(&agent))
         .await
@@ -118,7 +134,7 @@ async fn serve_tcp_persists_a_finding_through_the_real_grpc_surface() {
     let stored = wait_for_rows(&db).await;
     assert_eq!(
         stored, 1,
-        "`serve_tcp` did not write the sensitive-data projection it was configured with"
+        "`serve_uds` did not write the sensitive-data projection it was configured with"
     );
 
     serve.abort();
@@ -167,8 +183,8 @@ fn leaky_request(agent: &ProtoAgentId) -> CheckActionRequest {
     CheckActionRequest {
         agent_id: Some(agent.clone()),
         credential_token: TOKEN.into(),
-        trace_id: "trace-e2e".into(),
-        span_id: "span-e2e".into(),
+        trace_id: "trace-uds-e2e".into(),
+        span_id: "span-uds-e2e".into(),
         action_type: ActionType::ToolCall as i32,
         context: Some(ActionContext {
             action: Some(Action::ToolCall(ToolCallContext {
@@ -182,17 +198,30 @@ fn leaky_request(agent: &ProtoAgentId) -> CheckActionRequest {
     }
 }
 
-/// Retry until the freshly booted server is accepting, or give up loudly.
-async fn connect(addr: std::net::SocketAddr) -> PolicyServiceClient<tonic::transport::Channel> {
+/// Retry until the freshly booted server is accepting on the socket, or give up
+/// loudly.
+///
+/// `Endpoint::from_shared` routes a `unix:` target through tonic's own
+/// `UdsConnector`, so no third-party connector is involved — the transport
+/// under test is the one the shipped client library would use.
+async fn connect(socket: &std::path::Path) -> PolicyServiceClient<tonic::transport::Channel> {
+    let target = format!("unix://{}", socket.display());
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     loop {
-        match PolicyServiceClient::connect(format!("http://{addr}")).await {
-            Ok(client) => return client,
+        let attempt = async {
+            tonic::transport::Endpoint::from_shared(target.clone())
+                .map_err(|e| e.to_string())?
+                .connect()
+                .await
+                .map_err(|e| e.to_string())
+        };
+        match attempt.await {
+            Ok(channel) => return PolicyServiceClient::new(channel),
             Err(e) if std::time::Instant::now() < deadline => {
                 let _ = e;
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            Err(e) => panic!("the booted gateway never accepted a connection: {e}"),
+            Err(e) => panic!("the booted gateway never accepted a connection on {target}: {e}"),
         }
     }
 }
