@@ -113,14 +113,26 @@ schema:
       # WHY the capability is or is not reachable. Split out from the old
       # boolean `reachable_in_release`, which conflated four different causes
       # and was wrong in both directions for ~25 of 80 rows.
-      #   shipped                 reachable through the listed channels
+      #   shipped                 reachable through the listed channels (41 rows)
+      #   shipped_with_platform_exception
+      #                           reachable through every listed channel, but NOT
+      #                           on every platform — the 21 aa-proxy-backed rows
+      #                           (N*, M*, C1/C2/C4, I6, G3/G4) carve out Windows,
+      #                           and on macOS the bin is crates.io-only
+      #                           (AAASM-5653). NEVER fold these into `shipped`:
+      #                           doing so overstated 21 of 80 rows, which is what
+      #                           the companion Markdown's *"62 shipped"* did
+      #                           before AAASM-5666 (21 rows)
       #   shipped_crates_io_only  the bin publishes to crates.io but is absent
       #                           from the GitHub Release / Homebrew / installer
-      #                           channels most users actually use
-      #   dead_code               the binary ships; no route reaches the code
-      #   absent_mechanism        no such mechanism exists in the tree
+      #                           channels most users actually use (10 rows)
+      #   dead_code               the binary ships; no route reaches the code (1)
+      #   absent_mechanism        no such mechanism exists in the tree (7 rows)
       #   stubbed_default         the code path exists but the default config
-      #                           routes past it (S7)
+      #                           routes past it. DEFINED BUT UNUSED — 0 rows. An
+      #                           earlier revision cited S7 as the instance, but
+      #                           S7 is `shipped` here and in the manifest, so the
+      #                           example was stale, not the value.
       [shipped, shipped_with_platform_exception, shipped_crates_io_only, dead_code, absent_mechanism, stubbed_default]
     boundary_class:
       B1: universal within one patched function
