@@ -145,16 +145,23 @@ drift, and here the manifest is the outlier by design. Each of the five carries
   e2e tests run with `mitm_hosts` empty so neither traverses
   `handle_non_llm_mitm`.
 
-  **`G8`'s supporting count has since rotted, though its conclusion has not.** The
-  note says *"0 of the 71 files in `aa-gateway/tests/`"* reference `serve_tcp` or
-  `serve_uds`; at `remote/main` there are **91** files and **6** reference them,
-  the two largest being the `sensitive_data_projection_serve*_e2e.rs` pair added
-  by AAASM-5656. They do **not** meet the restoration condition: both are named
-  `…_persists_a_finding_through_the_real_grpc_surface` and prove projection
-  wiring, and their `abort()` calls are `JoinHandle::abort()` teardown, not an
-  assertion that the gateway refuses to serve on a policy-load failure. So `G8`
-  stays `evaluated` — but the count behind it should be re-derived by AAASM-5531
-  rather than re-quoted.
+  **`G8`'s supporting count was wrong when it was written, not merely rotted** —
+  the same category this section's own preamble defines. The note says *"0 of the
+  71 files in `aa-gateway/tests/`"* reference `serve_tcp` or `serve_uds`. On the
+  note's own basis, top-level `.rs` files, it was **5 of 71** at `9fbf42985` — the
+  commit that introduced it — and is **6 of 72** at `remote/main`, AAASM-5656
+  having added exactly one of them, `sensitive_data_projection_serve_uds_e2e.rs`;
+  its `_serve_e2e.rs` sibling, which supplies 10 of the references, predates this
+  PR. (A recursive all-entries count gives 90 and 91, which is **not** the note's
+  basis and would imply twenty files were added where the delta is one.)
+  **The conclusion survives, on a broader basis than the note's.** None of the six
+  meets the restoration condition: four reference the symbols only in `//!` or
+  `///` doc comments, and the two real callers invoke
+  `aa_gateway::server::serve_tcp`/`serve_uds` to assert that the sensitive-data
+  projection is written, with `JoinHandle::abort()` teardown *after* the
+  assertion — not an assertion that the gateway refuses to serve on a policy-load
+  failure. So `G8` stays `evaluated`, and AAASM-5531 should re-derive the count
+  rather than re-quote it.
 
 The two files answer different questions: this survey records what the code does
 at `299de3883`; the manifest records what is *evidenced in this repository*, and
