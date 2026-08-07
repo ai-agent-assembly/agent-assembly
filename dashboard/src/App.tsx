@@ -15,6 +15,7 @@ import { TraceViewPage } from './pages/TraceViewPage'
 import { TopologyPage } from './pages/TopologyPage'
 import { LiveOpsPage } from './pages/LiveOpsPage'
 import { ScrubPage } from './pages/ScrubPage'
+import { SensitiveDataPage } from './pages/SensitiveDataPage'
 import { OnboardingPage } from './pages/OnboardingPage'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
@@ -57,6 +58,7 @@ function App() {
             <Route path="/capability" element={<CapabilityPage />} />
             <Route path="/policies" element={<PoliciesPage />} />
             <Route path="/scrub" element={<ScrubPage />} />
+            <Route path="/sensitive-data" element={<SensitiveDataPage />} />
             {/* manage */}
             <Route path="/costs" element={<CostsPage />} />
             <Route path="/teams" element={<TeamsPage />} />
