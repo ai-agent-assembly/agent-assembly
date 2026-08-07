@@ -572,8 +572,10 @@ def check_row_release_scope(
       this manifest's own citations by comparing blob oids at the two refs: of
       the 72 cited paths tracked at the evidence tree, 10 are absent at
       v0.0.1-rc.6 (what this rule sees), 29 are present with different content
-      (what it cannot see) and 33 are byte-identical. So it catches the sharpest
-      cases, not all of them.
+      (what it cannot see) and 33 are byte-identical. Those 29 are the honest
+      limit and they are the larger number: a row may cite one, describe
+      behaviour the release does not have, and this rule will not object. A
+      silent R15 does NOT mean a row is release-true.
     * The scope statement is author-declared, exactly as R14 clause 1's `pins`
       is. Nothing machine-checks what the sentence says. What the gate buys is
       that a row cannot silently omit it.
