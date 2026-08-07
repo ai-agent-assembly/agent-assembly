@@ -796,6 +796,85 @@ users degrade to `Unverifiable` — read-only commands keep working and say so, 
 ones refuse. That is a loud degradation rather than a silent one, but it is still a
 degradation, and the release build must be fixed rather than the rule relaxed.
 
+#### 5.4b Update — AAASM-5674: `apply` states whether it changed anything
+
+*Added by [AAASM-5674](https://lightning-dust-mite.atlassian.net/browse/AAASM-5674). §5.4 and
+§5.4a are unchanged; this adds one field to one verb's response.*
+
+§5.7's install lifecycle is idempotent by construction: the engine compares canonical forms and
+leaves a target that already matches the plan exactly as it is. A repeated install is therefore
+a **success and a no-op**, and those are different facts. `aasm integrations`' ratified outcome
+contract (AAASM-5499) names `install` explicitly among the commands that can reach one — but
+the contract shipped covering only `repair` and `remove`, because `ApplyView` had no field for
+the answer and the engine's `ApplyOutcome::mutated` stopped at the service boundary.
+
+Every client-side substitute was evaluated and each fabricates a wrong answer in a *specific*
+reachable case, not merely in principle:
+
+| Substitute | The case it gets wrong |
+| --- | --- |
+| `receipt_id` | A no-op reapply deliberately **keeps the prior receipt**, id and timestamp included, so the store's history does not record an upgrade that never happened. The id is therefore identical across a mutation and a no-op. |
+| `applied_at_unix_secs` | A cross-process, second-granularity clock compare. Two installs inside one second are indistinguishable, and it false-reports `changed` in a tight loop — which is required test #4 of the AAASM-5499 contract. |
+| a pre-read `StatusView` | Carries neither `receipt_id` nor `plan_id`, so it cannot express "the exact desired managed state". Swapping the policy profile at the same `planned_level` reads as a false `unchanged`. |
+| the exit code | Answers *did the command succeed?*. Overloading it with both questions is the AAASM-5455 defect the outcome contract exists to remove. |
+
+**Decision.** `ApplyView` carries an `ApplyOutcomeView` at **DI-API v5**
+(`DI_API_APPLY_OUTCOME_SINCE`). Like v3 and v4 it adds **no verb**, so a v1–v4 peer is not
+`Degraded` and keeps the whole verb space.
+
+**A proto3 `bool` is a forbidden representation for this field.** proto3 scalars have no
+presence: a peer that never sent the field and a peer that sent `false` decode identically.
+`false` means "nothing was modified", which is a *success claim* — so every runtime older than
+the field would have silently announced `unchanged` for every install it ever performed. This is
+[§5.4a.1](#54a1-correction--absence-of-provenance-is-not-agreement)'s finding transposed onto a
+different field: an absence resolved in the flattering direction, reported with confidence, and
+indistinguishable from the real answer. The rule generalises, and is stated here as a rule
+rather than as a decision about one field: **no DI-API field whose absence would decode to a
+determinate, favourable value may be represented as a bare proto3 scalar.**
+
+Five states are preserved instead, carried as an enum inside a message so that "the peer could
+not be asked" and "the peer answered inconclusively" stay distinguishable — the construction
+`PolicyView` (§5.4, v3) and `RuntimeProvenance` (§5.4a, v4) already use:
+
+| State | Meaning | A success? |
+| --- | --- | --- |
+| `CHANGED` | The end state was reached, and something was modified. | yes |
+| `UNCHANGED` | The end state already held; nothing was modified. | yes |
+| `FAILED` | The apply ran and did not reach the end state. | no |
+| `UNSUPPORTED` | This peer cannot determine it, and will not be able to — a *standing* inability. | no |
+| `UNSPECIFIED` | No outcome was stated. **The enum's zero value**, and therefore what a defaulted field decodes to. | no |
+
+Seven obligations follow, and they bind every DI-API client, not only `aasm`:
+
+1. **Absence from an older peer means unknown or unsupported — never `UNCHANGED`, and never any
+   success.**
+2. **A client must not infer the outcome** from exit status, local state, a missing field, or
+   any other indirect signal when the authoritative answer is unavailable.
+3. **The negotiated version decides whether the field may be consumed at all.** A presence test
+   alone asks "did something arrive?", which a broken or hostile peer answers for you; the
+   version asks "was this peer entitled to answer?", which only the handshake settles.
+4. **A new client against an old peer degrades truthfully** — it reports the absence, naming the
+   version that could not say.
+5. **An old client against a new peer** is unaffected: it never negotiated v5, so the server
+   does not attach the block. The gate is enforced on the serving side as well as the reading
+   side, because neither end may assume the other implemented it.
+6. **No surface may disagree.** The rendered result, `--output json`, the exit code, the receipt
+   and any status surface state one verdict, produced in one place.
+7. **No success may be claimed when the outcome is unknown.** The apply having succeeded is a
+   claim about the *command*; `unchanged` is a claim about the *host*, and the exit code stays
+   `0` while the outcome stays absent.
+
+**Why `unchanged` and not `changed` is the dangerous fabrication.** Both are wrong, and they
+fail in opposite directions. A fabricated `changed` says something happened that did not:
+irritating, and self-correcting the moment anyone looks. A fabricated `unchanged` says *the
+machine is already in the state you asked for* — and nobody looks at a no-op. The falsification
+suite is therefore one-sided: it is not enough for the shipped reading to differ from the
+rejected one, it must specifically refuse to say `unchanged` and refuse to be authoritative.
+
+**This does not widen §5.5.** The block carries one enum and one operator-facing string. It
+states whether a write happened, never what was written, and the projection test that asserts no
+step content escapes covers it.
+
 #### 5.5 Data minimisation — the response types cannot carry what must not leave
 
 Minimisation is enforced by the *shape of the response types*, not by a redaction pass
@@ -1189,6 +1268,8 @@ that ticket rather than as checks present in this documentation-only change.
 | [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281) | First productized integration (Claude Code) exercising the whole model end to end |
 | [AAASM-5453](https://lightning-dust-mite.atlassian.net/browse/AAASM-5453) | QA campaign that found the provenance gap — recorded as AAASM-5480, Executed Fail |
 | [AAASM-5628](https://lightning-dust-mite.atlassian.net/browse/AAASM-5628) | Adds §5.4a: DI-API v4 runtime provenance, and the client-side refusal. Blocks a trustworthy [AAASM-5308](https://lightning-dust-mite.atlassian.net/browse/AAASM-5308) privileged run |
+| [AAASM-5499](https://lightning-dust-mite.atlassian.net/browse/AAASM-5499) | Ratifies the `changed`/`unchanged`/`refused`/`failed` outcome contract §5.4b completes for `install` |
+| [AAASM-5674](https://lightning-dust-mite.atlassian.net/browse/AAASM-5674) | Adds §5.4b: DI-API v5 apply outcome, and the rule that no field whose absence would decode to a favourable value may be a bare proto3 scalar |
 | [ADR 0002](0002-sdk-security-boundary.md) | Complements — "position, not code, confers authority"; the untrusted client / trusted runtime split this ADR extends to Developer Integrations |
 | [ADR 0004](0004-governance-enforcement-flow.md) | Complements — the DI-API sits in the same non-SDK carve-out as REST and carries no policy decisions (§1.2). **Not superseded.** |
 | [ADR 0015](0015-dlp-trust-boundary-and-redaction-semantics.md) | Complements — fail-closed and audit-visible resolution failures, transferred to capability-token resolution (§5.3) and protection-state reporting (§4.2) |
