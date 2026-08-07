@@ -68,20 +68,25 @@ ABSOLUTE_ANCHORS: tuple[str, ...] = (
     "absolute claim",
 )
 
-# Naming the waiver mechanism. One stem covers waiver / waive / waived / waivable /
-# waiving / waiver-approver / waiver-eligible — and, deliberately, "unwaivable",
-# which the negation list below then clears.
-WAIVER_STEM = "waiv"
+# Naming the mechanism. "waiv" covers waiver / waive / waived / waivable / waiving /
+# waiver-approver / waiver-eligible — and, deliberately, "unwaivable", which the
+# denial list below then clears. Decision 10 is titled "Waivers **and exceptions**"
+# and its body says "a bounded exception", so a rule stated in the synonym is the
+# same rule: without these stems, "a banned absolute may be published under a
+# recorded, approved, expiring exception" reads as clean.
+MECHANISM_STEMS: tuple[str, ...] = ("waiv", "exception", "exempted from")
 
 # Tier 2. Three of the six sentences this amendment struck put the absolute in one
-# sentence (or one table cell) and the waiver in the next, so a same-segment test
+# sentence (or one table cell) and the mechanism in the next, so a same-segment test
 # cannot see them: "…the banned-absolutes list … | … this ADR adds the waiver
-# mechanism, not the check". Tier 2 reads *forward* from each mention of a banned
-# absolute to the end of its block and asks which comes first — a phrase that grants
-# a waiver, or a phrase that denies one. Direction is what keeps it honest: prose
-# states the ban and then qualifies it, so a grant reached before any denial is the
-# qualification, while "a waiver may waive process … ADR 0033's banned absolutes are
-# unwaivable" grants before the anchor and is not a qualification of it at all.
+# mechanism, not the check". Tier 2 pairs each mention of an absolute with the
+# nearest granting phrase in *either* direction and asks whether a denial stands
+# between them. Both directions are needed and neither is redundant: a grant that
+# follows the absolute is the six struck sentences, and a grant that precedes it is
+# "An expiring waiver may be approved for any rule. That includes ADR 0033's
+# banned-absolutes list." The denial-between rule is what keeps "a waiver may waive
+# process … it may never waive whether a statement is true … absolutes are
+# unwaivable" clean: the denial intervenes, so the earlier grant is not about them.
 GRANTING_PHRASES: tuple[str, ...] = (
     "may waive",
     "who may waive",
@@ -94,9 +99,17 @@ GRANTING_PHRASES: tuple[str, ...] = (
     "waiver over",
     "waiver route",
     "under a waiver",
-    "under an expiring waiver",
+    "expiring waiver",
+    "approved waiver",
+    "waiver may be approved",
     "permission to publish",
     "waiver-eligible",
+    # The "exceptions" half of Decision 10's own title.
+    "exempted from",
+    "under an exception",
+    "under a recorded exception",
+    "expiring exception",
+    "approved exception",
 )
 
 # Saying it is unwaivable. A segment that pairs an anchor with the waiver stem must
@@ -146,6 +159,11 @@ MARKUP = re.compile(r"[`*_]")
 # split mid-reference and separate a denial from the absolute it denies.
 BOUNDARY = re.compile(r"(?<=[.;?!])\s+|\|")
 
+# Stands in for a blank line inside a block. It is a segment boundary, so tier 1
+# never runs two paragraphs together into one "sentence", while tier 2 still reads
+# across the break.
+PARAGRAPH_BREAK = "|"
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -174,11 +192,17 @@ def scan_text(path: str, text: str) -> list[Finding]:
     exempt_open_line = 0
     exempt_class = ""
 
-    # (line_number, line_text) pairs of the block being accumulated.
+    # (line_number, line_text) pairs of the block being accumulated. A block runs to
+    # the next heading rather than to the next blank line: an absolute stated in one
+    # paragraph and granted a waiver in the next is one claim, and a paragraph-scoped
+    # unit cannot see it. Paragraph breaks are kept as segment boundaries so tier 1
+    # still never merges two paragraphs into one "sentence".
     block: list[tuple[int, str]] = []
 
     def flush() -> None:
         nonlocal block
+        while block and block[-1][1] == PARAGRAPH_BREAK:
+            block.pop()
         if block:
             findings.extend(_scan_block(path, block))
             block = []
@@ -258,7 +282,8 @@ def scan_text(path: str, text: str) -> list[Finding]:
             continue
 
         if not raw.strip():
-            flush()
+            if block and block[-1][1] != PARAGRAPH_BREAK:
+                block.append((lineno, PARAGRAPH_BREAK))
             continue
 
         block.append((lineno, raw))
@@ -295,18 +320,25 @@ def _scan_block(path: str, block: list[tuple[int, str]]) -> list[Finding]:
     kept_lines = [line_of[i] for i, ch in enumerate(joined) if not MARKUP.match(ch)]
 
     lowered_block = normalised.lower()
+    segments = _segments(normalised)
 
     def line_at(offset: int) -> int:
         return kept_lines[offset] if offset < len(kept_lines) else block[0][0]
 
+    def segment_at(offset: int) -> str:
+        for start, seg in segments:
+            if start <= offset < start + len(seg):
+                return seg.lower()
+        return ""
+
     # Reported at most once per offset, since tier 1 and tier 2 overlap by design.
     findings: dict[int, Finding] = {}
 
-    # Tier 1 — an absolute and the waiver mechanism inside one sentence or cell,
-    # in either order, with nothing saying it is unwaivable.
-    for start, segment in _segments(normalised):
+    # Tier 1 — an absolute and the mechanism inside one sentence or cell, in either
+    # order, with nothing saying it is unwaivable.
+    for start, segment in segments:
         seg = segment.lower()
-        if WAIVER_STEM not in seg:
+        if not any(stem in seg for stem in MECHANISM_STEMS):
             continue
         if not any(anchor in seg for anchor in ABSOLUTE_ANCHORS):
             continue
@@ -320,26 +352,51 @@ def _scan_block(path: str, block: list[tuple[int, str]]) -> list[Finding]:
             _excerpt(segment),
         )
 
-    # Tier 2 — reading forward from an absolute, a grant is reached before a denial.
-    grants = sorted(_occurrences(lowered_block, GRANTING_PHRASES))
-    denials = sorted(_occurrences(lowered_block, UNWAIVABLE_MARKERS))
+    # Tier 2 — the nearest grant on either side of an absolute, with no denial
+    # standing between the two.
+    denial_hits = sorted(_occurrences(lowered_block, UNWAIVABLE_MARKERS))
+    denial_spans = [(at, at + len(text)) for at, text in denial_hits]
+    denial_at = [at for at, _ in denial_hits]
+
+    def inside_a_denial(offset: int) -> bool:
+        # "waivable" is a substring of "unwaivable"; a grant found inside a denial is
+        # the denial, and treating it as a grant inverts the test.
+        return any(lo <= offset < hi for lo, hi in denial_spans)
+
+    grants = sorted(
+        (at, text) for at, text in _occurrences(lowered_block, GRANTING_PHRASES) if not inside_a_denial(at)
+    )
+
     for anchor_at, _ in sorted(_occurrences(lowered_block, ABSOLUTE_ANCHORS)):
-        grant = next((g for g in grants if g[0] > anchor_at), None)
-        if grant is None:
+        # If the absolute's own sentence says it is unwaivable, the pairing is settled
+        # there and no neighbouring grant can be about it.
+        if any(marker in segment_at(anchor_at) for marker in UNWAIVABLE_MARKERS):
             continue
-        denial = next((d for d in denials if d[0] > anchor_at), None)
-        if denial is not None and denial[0] < grant[0]:
-            continue
-        offset, phrase = grant
-        if offset in findings:
-            continue
-        findings[offset] = Finding(
-            path,
-            line_at(offset),
-            f"reading forward from a banned absolute, {phrase!r} grants a waiver before anything "
-            "denies one (ADR 0034 Decision 10, AAASM-5671)",
-            _excerpt(normalised[max(0, offset - 90) : offset + 90]),
-        )
+
+        after = next(((at, text) for at, text in grants if at > anchor_at), None)
+        before = next(((at, text) for at, text in reversed(grants) if at < anchor_at), None)
+
+        for hit, direction in ((after, "forward"), (before, "backward")):
+            if hit is None:
+                continue
+            offset, phrase = hit
+            # A granting phrase in a sentence that denies waivability is not a grant:
+            # "Four things may not be waived, because a waiver over them would remove
+            # the property the rule exists to establish" is the denial itself.
+            if any(marker in segment_at(offset) for marker in UNWAIVABLE_MARKERS):
+                continue
+            lo, hi = (anchor_at, offset) if direction == "forward" else (offset, anchor_at)
+            if any(lo < d < hi for d in denial_at):
+                continue
+            if offset in findings:
+                continue
+            findings[offset] = Finding(
+                path,
+                line_at(offset),
+                f"reading {direction} from a banned absolute, {phrase!r} grants a waiver with no "
+                "denial between the two (ADR 0034 Decision 10, AAASM-5671)",
+                _excerpt(normalised[max(0, min(lo, offset) - 60) : max(hi, offset) + 60]),
+            )
 
     return [findings[k] for k in sorted(findings)]
 
@@ -409,6 +466,39 @@ _MUST_FAIL = [
     # which differs only by not being a heading.
     ("waiver-eligible claim in an h2", "## A `banned absolute` may be waived under an expiring waiver\n"),
     ("waiver-eligible claim in an h4", "#### Banned absolutes may be waived under an expiring waiver\n"),
+    # Review round 1: the mechanism stated in Decision 10's own synonym.
+    (
+        "exception as the mechanism",
+        "A banned absolute may be published under a recorded, approved, expiring exception.\n",
+    ),
+    (
+        "exempted-from as the mechanism",
+        "ADR 0033's banned absolutes are exempted from enforcement under a recorded exception.\n",
+    ),
+    # Review round 1: tier 2 read forward only, and only to the end of a paragraph.
+    (
+        "grant precedes the absolute across sentences",
+        "An expiring waiver may be approved by a waiver-approver for any rule.\n"
+        "That includes ADR 0033's banned-absolutes list.\n",
+    ),
+    (
+        "grant follows the absolute across a blank line",
+        "ADR 0033's banned absolutes are listed in forbidden design 7.\n"
+        "\n"
+        "Each of them may be published under an expiring waiver once an approver signs.\n",
+    ),
+    (
+        "grant in an earlier table column than the absolute",
+        "| Rule | Status | Applies to |\n"
+        "| --- | --- | --- |\n"
+        "| Publication | may be waived for ninety days | ADR 0033's banned-absolutes list |\n",
+    ),
+    (
+        "grant across blockquote paragraphs",
+        "> ADR 0033's banned absolutes bind architecture and product descriptions.\n"
+        ">\n"
+        "> Each may be published under an expiring waiver.\n",
+    ),
 ]
 
 _MUST_PASS = [
@@ -437,6 +527,14 @@ _MUST_PASS = [
     # The backward pass and the heading scan must not fire on correct statements.
     ("heading stating the rule", "## Truthfulness and banned absolutes are unwaivable\n"),
     ("heading naming the mechanism only", "### 10. Waivers and exceptions\n"),
+    (
+        "grant, then denial, then the absolute across paragraphs",
+        "A waiver may waive process, timing or review sequencing.\n"
+        "\n"
+        "It may never waive whether a statement is true.\n"
+        "\n"
+        "ADR 0033's banned absolutes are therefore unwaivable.\n",
+    ),
     (
         "properly exempted historical text",
         "<!-- truth-exempt: historical-withdrawn - removed from Decision 10 by AAASM-5671 -->\n"
