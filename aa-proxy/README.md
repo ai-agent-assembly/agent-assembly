@@ -6,9 +6,14 @@ Sidecar traffic interception proxy for Agent Assembly.
 [![docs.rs](https://img.shields.io/docsrs/aa-proxy?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-proxy)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/LICENSE)
 
-Implements Layer 2 of the three-layer interception model: a sidecar proxy that
-sits alongside each AI agent process, intercepting outbound HTTPS traffic and
-enforcing governance policy before forwarding requests — with no code changes to
-the agent. Runs as a standalone binary or embedded in-process via `aa_proxy::run()`.
+Implements **E3, Protocol / Transport Mediation** (ADR 0033 §1): a sidecar proxy
+that sits alongside an AI agent process, intercepting outbound HTTPS traffic and
+refusing or redacting a request before it leaves the machine. The *agent's* own
+code does not change, but the proxy does have to be installed, started, routed to
+(`HTTPS_PROXY`, honoured by the client) and have its CA trusted; `llm_only`
+defaults to `true`, so only the built-in LLM hosts are decrypted. Linux and
+macOS — on macOS the crate is absent from the GitHub Release assets, the Homebrew
+tap and `install.sh`, so `cargo install aa-proxy` is the only channel that ships
+it. Runs as a standalone binary or embedded in-process via `aa_proxy::run()`.
 
 Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
