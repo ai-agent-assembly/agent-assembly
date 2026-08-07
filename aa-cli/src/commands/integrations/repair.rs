@@ -15,24 +15,35 @@
 //! a confirmation is asked for, so the destructive-looking half never happens
 //! before the user has seen what it will rewrite.
 //!
-//! # Repairing nothing exits `0`, and says so (AAASM-5455)
+//! # Repairing nothing exits `0`, and says so (AAASM-5455, AAASM-5499)
 //!
 //! Two states repair nothing: no receipt accounts for the tool, and the
 //! AASM-owned state already matches the receipt it has. Both exit `0`, because
 //! [`Outcome::Success`](super::exit::Outcome::Success) means "the command did
 //! what it was asked to do" and neither state is a failure of the command —
 //! the same reading that makes a second `remove` a success rather than an
-//! error. The distinction they need is carried by the output, not the code:
-//! `nothing_to_repair` states which of the two happened, on the report's
-//! always-printed first line and in `--output json`.
+//! error.
 //!
-//! No *new* exit code is minted for the uninstalled case, and no existing one
-//! is borrowed for it. `unsupported` is about a tool, mechanism or verb this
-//! host does not have, which an uninstalled-but-detected tool is not; `aborted`
-//! is about a decision nobody made here; `internal_error` is about a failure
-//! that did not happen. Widening [`Outcome`](super::exit::Outcome) is a change
-//! to a documented contract that `--help` prints and a test pins, so it is a
-//! product decision rather than a bug fix's to take.
+//! The distinction they need is carried by the output, not the code. Since the
+//! contract was ratified (AAASM-5499) that is the
+//! [`ChangeOutcome`](super::exit::ChangeOutcome) token `unchanged`, on the
+//! report's always-printed first line and as `outcome` in `--output json`;
+//! `nothing_to_repair` narrowed to the *reason* half, stating which of the two
+//! states happened. They are set in one call — see
+//! [`RepairReport::nothing_to_do`](super::model::RepairReport::nothing_to_do)
+//! — so no run can report one and not the other.
+//!
+//! No exit code was minted for the no-op, and no existing one is borrowed for
+//! it. `unsupported` is about a tool, mechanism or verb this host does not
+//! have, which an uninstalled-but-detected tool is not; `aborted` is about a
+//! decision nobody made here; `internal_error` is about a failure that did not
+//! happen. The question a caller is really asking — *did the world change?* —
+//! is orthogonal to whether the command worked, so it gets its own axis rather
+//! than a share of the exit code's.
+//!
+//! A repair that *ran* is classified from what the service says it restored,
+//! not from the drift that went in: a verb that ran and restored nothing
+//! reports `unchanged` too.
 
 use std::process::ExitCode;
 
@@ -98,44 +109,22 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
             );
             eprintln!("{reason}.");
             emit(
-                &RepairReport {
-                    runtime: runtime.clone(),
-                    tool_id: args.tool.clone(),
-                    dry_run: args.dry_run,
-                    drifted: Vec::new(),
-                    repaired: Vec::new(),
-                    unresolved: Vec::new(),
-                    nothing_to_repair: Some(reason),
-                    status: Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
-                },
+                &RepairReport::nothing_to_do(
+                    runtime.clone(),
+                    &args.tool,
+                    args.dry_run,
+                    reason,
+                    Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
+                ),
                 output,
             );
             return Ok(Outcome::Success);
         }
 
-        if args.dry_run {
-            emit(
-                &RepairReport {
-                    runtime: runtime.clone(),
-                    tool_id: args.tool.clone(),
-                    dry_run: true,
-                    drifted: drifted.clone(),
-                    repaired: Vec::new(),
-                    unresolved: Vec::new(),
-                    // A preview reports what *would* be restored; it is not
-                    // itself a run that repaired nothing.
-                    nothing_to_repair: None,
-                    status: Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
-                },
-                output,
-            );
-            return Ok(if drifted.is_empty() {
-                Outcome::Success
-            } else {
-                Outcome::Drifted
-            });
-        }
-
+        // An empty drift list is an established fact about the host — the end
+        // state already holds — and stays `unchanged` whether or not this run
+        // was a preview. Only a preview that found work to do is a preview in
+        // the sense that has no change outcome to report (AAASM-5499).
         if drifted.is_empty() {
             // Nothing to do is a success, and saying so beats performing a
             // no-op rewrite that would churn the receipt for no reason. An
@@ -143,22 +132,29 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
             // different fact from the uninstalled case handled above, so it
             // carries its own reason rather than sharing that one's wording.
             emit(
-                &RepairReport {
-                    runtime: runtime.clone(),
-                    tool_id: args.tool.clone(),
-                    dry_run: false,
-                    drifted,
-                    repaired: Vec::new(),
-                    unresolved: Vec::new(),
-                    nothing_to_repair: Some(format!(
-                        "AASM-owned state for {} already matches its receipt",
-                        args.tool
-                    )),
-                    status: Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
-                },
+                &RepairReport::nothing_to_do(
+                    runtime.clone(),
+                    &args.tool,
+                    args.dry_run,
+                    format!("AASM-owned state for {} already matches its receipt", args.tool),
+                    Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
+                ),
                 output,
             );
             return Ok(Outcome::Success);
+        }
+
+        if args.dry_run {
+            emit(
+                &RepairReport::preview(
+                    runtime.clone(),
+                    &args.tool,
+                    drifted,
+                    Some(Box::new(StatusReport::from_view(runtime, &before, Some(&summary)))),
+                ),
+                output,
+            );
+            return Ok(Outcome::Drifted);
         }
 
         eprintln!("Drifted AASM-owned state for {}:", args.tool);
@@ -188,18 +184,15 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
         };
 
         emit(
-            &RepairReport {
+            &RepairReport::ran(
                 runtime,
-                tool_id: args.tool.clone(),
-                dry_run: false,
+                &args.tool,
+                outcome,
                 drifted,
-                repaired: view.repaired.clone(),
+                view.repaired.clone(),
                 unresolved,
-                // The repair verb ran. Whether it restored anything is what
-                // `repaired` says; this field is for runs that never got here.
-                nothing_to_repair: None,
                 status,
-            },
+            ),
             output,
         );
         Ok(outcome)

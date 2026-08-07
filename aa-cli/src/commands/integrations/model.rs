@@ -39,6 +39,8 @@ use serde::Serialize;
 
 use aa_proto::assembly::devint::v1 as wire;
 
+use super::exit::ChangeOutcome;
+
 /// The runtime this command talked to.
 ///
 /// Present on every report so a machine-readable answer always says which core
@@ -985,6 +987,14 @@ impl VerifyReport {
 /// The `repair` report.
 #[derive(Debug, Clone, Serialize)]
 pub struct RepairReport {
+    /// Whether this run modified anything (AAASM-5499).
+    ///
+    /// `None` on a preview: `--dry-run` reports what a run *would* restore and
+    /// establishes nothing about whether the end state already holds. The one
+    /// preview that does carry an outcome is the tool with no integration at
+    /// all, because that state is settled before any plan is previewed — see
+    /// [`RepairReport::nothing_to_repair`].
+    pub outcome: Option<ChangeOutcome>,
     /// Which runtime answered.
     pub runtime: RuntimeInfo,
     /// The tool.
@@ -1007,9 +1017,102 @@ pub struct RepairReport {
     /// repair of nothing looks like — so the reason is carried explicitly
     /// rather than left to be inferred from which optional blocks are absent
     /// (AAASM-5455). `None` means the run went through the repair verb.
+    ///
+    /// Since AAASM-5499 this is the *reason* half of an `unchanged` outcome,
+    /// not a second way of saying it: it is only ever set by
+    /// [`RepairReport::nothing_to_do`], which sets [`RepairReport::outcome`] in
+    /// the same call, so the two cannot disagree. The implication runs one way
+    /// — a stated reason means `unchanged`, while an `unchanged` run that *did*
+    /// send the repair verb and restored nothing has no reason to give beyond
+    /// its empty `repaired` list.
     pub nothing_to_repair: Option<String>,
     /// The status after the repair, when one ran.
     pub status: Option<Box<StatusReport>>,
+}
+
+impl RepairReport {
+    /// A run that never sent the repair verb, because the state it would have
+    /// acted on is already the state that was asked for.
+    ///
+    /// The `unchanged` outcome and the reason are set together here, which is
+    /// what makes them one statement rather than two that could drift apart.
+    /// `dry_run` does not soften it: this state is settled from the lifecycle
+    /// phase or from an empty drift list, both of which are established facts
+    /// about the host and not a preview of work.
+    pub fn nothing_to_do(
+        runtime: RuntimeInfo,
+        tool_id: &str,
+        dry_run: bool,
+        reason: String,
+        status: Option<Box<StatusReport>>,
+    ) -> Self {
+        Self {
+            outcome: Some(ChangeOutcome::Unchanged),
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run,
+            drifted: Vec::new(),
+            repaired: Vec::new(),
+            unresolved: Vec::new(),
+            nothing_to_repair: Some(reason),
+            status,
+        }
+    }
+
+    /// A preview of a repair that has drift to restore.
+    ///
+    /// Carries no outcome: it changed nothing, but it also did not establish
+    /// that the end state already holds — the drift it is previewing is proof
+    /// of the opposite — and calling it `failed` because it exits `drifted`
+    /// would describe a working preview as a failure.
+    pub fn preview(
+        runtime: RuntimeInfo,
+        tool_id: &str,
+        drifted: Vec<String>,
+        status: Option<Box<StatusReport>>,
+    ) -> Self {
+        Self {
+            outcome: None,
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run: true,
+            drifted,
+            repaired: Vec::new(),
+            unresolved: Vec::new(),
+            nothing_to_repair: None,
+            status,
+        }
+    }
+
+    /// A run that sent the repair verb, classified from what it exits with and
+    /// what it restored.
+    ///
+    /// `repaired` is the mutation evidence, and it is the service's own answer
+    /// rather than something inferred from the drift that went in: a verb that
+    /// ran and restored nothing is `unchanged`, not `changed`.
+    pub fn ran(
+        runtime: RuntimeInfo,
+        tool_id: &str,
+        outcome: super::exit::Outcome,
+        drifted: Vec<String>,
+        repaired: Vec<String>,
+        unresolved: Vec<UnsupportedRow>,
+        status: Option<Box<StatusReport>>,
+    ) -> Self {
+        Self {
+            outcome: Some(ChangeOutcome::of(outcome, !repaired.is_empty())),
+            runtime,
+            tool_id: tool_id.to_string(),
+            dry_run: false,
+            drifted,
+            repaired,
+            unresolved,
+            // The repair verb ran. Whether it restored anything is what
+            // `repaired` says; this field is for runs that never got here.
+            nothing_to_repair: None,
+            status,
+        }
+    }
 }
 
 /// The `remove` report.
