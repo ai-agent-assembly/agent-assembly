@@ -113,14 +113,34 @@ schema:
       # WHY the capability is or is not reachable. Split out from the old
       # boolean `reachable_in_release`, which conflated four different causes
       # and was wrong in both directions for ~25 of 80 rows.
-      #   shipped                 reachable through the listed channels
+      #   shipped                 reachable through the listed channels (41 rows)
+      #   shipped_with_platform_exception
+      #                           reachable through every listed channel, but NOT
+      #                           on every platform. The 21 aa-proxy-backed rows,
+      #                           listed literally because a glob over these
+      #                           prefixes resolves to 29 and sweeps in 8 rows that
+      #                           are NOT in this class (M5/M6/M8 are
+      #                           absent_mechanism — the opposite of reachable —
+      #                           plus M10, N10, N11, N12, N13):
+      #                             N1 N2 N3 N4 N5 N6 N7 N8 N9
+      #                             M1 M2 M3 M4 M7 M9
+      #                             C1 C2 C4 I6 G3 G4
+      #                           They carve out Windows,
+      #                           and on macOS the bin is crates.io-only
+      #                           (AAASM-5653). NEVER fold these into `shipped`:
+      #                           doing so overstated 21 of 80 rows, which is what
+      #                           the companion Markdown's *"62 shipped"* did
+      #                           before AAASM-5666 (21 rows)
       #   shipped_crates_io_only  the bin publishes to crates.io but is absent
       #                           from the GitHub Release / Homebrew / installer
-      #                           channels most users actually use
-      #   dead_code               the binary ships; no route reaches the code
-      #   absent_mechanism        no such mechanism exists in the tree
+      #                           channels most users actually use (10 rows)
+      #   dead_code               the binary ships; no route reaches the code (1)
+      #   absent_mechanism        no such mechanism exists in the tree (7 rows)
       #   stubbed_default         the code path exists but the default config
-      #                           routes past it (S7)
+      #                           routes past it. DEFINED BUT UNUSED — 0 rows. An
+      #                           earlier revision cited S7 as the instance, but
+      #                           S7 is `shipped` here and in the manifest, so the
+      #                           example was stale, not the value.
       [shipped, shipped_with_platform_exception, shipped_crates_io_only, dead_code, absent_mechanism, stubbed_default]
     boundary_class:
       B1: universal within one patched function
@@ -526,7 +546,18 @@ capabilities:
     coverage: evaluated
     q4_changed_answer: true
     known_bypasses:
-      - "resolve_decision has ZERO non-test callers in this repository; refusal lives in the out-of-repo FFI shims"
+      - "resolve_decision has ZERO non-test callers in this repository — every
+        reference is in its own file below #[cfg(test)] (aa-sdk-client/src/decision.rs:58,99),
+        and 0 in aa-cli/src, aa-runtime/src and all three SDK repos. Positive control:
+        aa-cli DOES depend on aa-sdk-client (aa-cli/Cargo.toml:74), so a cross-crate
+        call would be findable."
+      - "WITHDRAWN: \"refusal lives in the out-of-repo FFI shims\" — that is false.
+        Settled from the node-sdk source at 3d8ecd8df: native/aa-ffi-node/src/lib.rs:204-209
+        maps QueryFailed | ChannelClosed | Shutdown to Decision::Allow with
+        FAIL_OPEN_REASON, under a two-line comment at :202-203 reading 'Fail-open: a
+        slow, unreachable, or shut-down runtime must never block the agent.' The shim
+        hard-codes fail-OPEN, so it is not where refusal lives. No in-repo artifact
+        proves the SDK honours a deny."
     evidence: >-
       GAP, with a control that holds. resolve_decision is defined at
       aa-sdk-client/src/decision.rs:58; every reference is in that file, all
@@ -719,7 +750,7 @@ capabilities:
     known_bypasses:
       - "x86_64 only — 16 __x64_sys_ matches vs 0 __arm64_sys_ in aa-ebpf/src/kprobe.rs"
       - "observe-only: the path blocklist sets event.flags=1 and the syscall proceeds"
-      - "aa-ebpf-loaderd unreleased"
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
     evidence: [aa-integration-tests/tests/e2e_file_monitoring.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
@@ -1350,7 +1381,7 @@ capabilities:
     known_bypasses:
       - "Go crypto/tls, rustls, Node BoringSSL, GnuTLS, NSS, BoringSSL, LibreSSL and s2n expose no such symbols — full list at aa-ebpf-probes/src/ssl_probes.rs:22-25"
       - "events are NOT bridged to the audit pipeline (aa-runtime/src/runtime.rs:302-305,344-350)"
-      - "aa-ebpf-loaderd unreleased"
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
@@ -1406,10 +1437,20 @@ capabilities:
     target_level: "per-agent MCP policy and per-agent MCP audit do not exist and must not be claimed"
     tickets: [AAASM-5533]
     notes: >-
-      The only gateway-bound pre-dial block in the system. Mediation is COUPLED
-      to whole-machine MitM: the only supported route sets
-      AA_PROXY_GATEWAY_ENDPOINT and forces AA_PROXY_LLM_ONLY=false
-      (aa-cli/src/commands/proxy/start.rs:128-135; aa-runtime/src/runtime.rs:246-259).
+      The only gateway-bound pre-dial block in the system. Mediation is coupled
+      to whole-machine MitM on the CONVENIENCE path, not in the mechanism. Both
+      MANAGED routes — `aasm proxy start --gateway <url>`
+      (aa-cli/src/commands/proxy/start.rs:128-135) and an aa-runtime-spawned
+      proxy (aa-runtime/src/runtime.rs:246-259) — set AA_PROXY_GATEWAY_ENDPOINT
+      and force AA_PROXY_LLM_ONLY=false, widening TLS MitM to every host on the
+      machine. WITHDRAWN: "the only supported route". Settled from source at the
+      base commit 299de3883 — should_mitm (aa-proxy/src/proxy/mod.rs:1385-1389)
+      is `detect_api(host) != Unknown` OR a mitm_hosts match, and the llm_only
+      branch at :1333 consults it, so AA_PROXY_GATEWAY_ENDPOINT together with
+      AA_PROXY_MITM_HOSTS adjudicates exactly the named hosts with llm_only left
+      TRUE. The targeted configuration EXISTS; what is missing is a CLI flag that
+      produces it and any page saying so — recommendation F7 in the companion, an
+      ergonomics and documentation gap, NOT an absent capability.
 
   - id: M2
     domain: mcp
@@ -1772,6 +1813,16 @@ capabilities:
     current_level: host_enforced   # reachable — the only adapter for which it is
     target_level: "hold; close the AAASM-5298 open half"
     tickets: [AAASM-5298]
+    notes: >-
+      SCOPE: fixed on `main` at the base commit 299de3883; the registration half
+      is NOT in the published v0.0.1-rc.6, where
+      aa-cli/src/commands/run_registration.rs does not exist at the tag — so the
+      reversal recorded here cites a file the published release does not contain.
+      Quote this row as "fixed on main, still live in rc.6", never as "fixed".
+      Of the three host_enforced rows (L1, L7, P3) this is the only one whose
+      coverage also reaches denied_before_execution — L7 is unmeasured and P3
+      unsupported — so the scoping is load-bearing: for rc.6 the rung is
+      unearned, not merely unmeasured.
 
   - id: L2
     domain: devtool_launch
@@ -2228,6 +2279,14 @@ capabilities:
     current_level: not_applicable
     target_level: "bounded by the pattern set — say so"
     tickets: [AAASM-5368]
+    notes: >-
+      SCOPE — closed on `main`, STILL LIVE in the published v0.0.1-rc.6. The Pass 5
+      closure is AAASM-5368, and at the rc.6 tag `AAASM-5368` has 0 occurrences in
+      aa-security/src/scanner.rs (positive control: `AAASM` = 28 in the SAME blob, so
+      the probe is live; 8 on `main`). A base64 secret split by ONE separator is
+      therefore still scanned clean in the newest release on crates.io. Quote this row
+      as "closed on `main`, still live in rc.6", never as closed — the companion
+      Markdown requires the statement twice, at :167-187 (row C6 / D-g) and at :819.
 
   # ───────────────────────────────────────────────────────────────────────────
   # D7 · Identity propagation
@@ -2270,9 +2329,26 @@ capabilities:
     tickets: [AAASM-5332]
     notes: >-
       Prior belief was that the Ed25519 seed is SHA-256(public agent id), making
-      any agent impersonable. FIXED by AAASM-5332. Residual smell: aa-cli and
-      gateway lifecycle TESTS still mint registration keys with
-      derive_transport_key(agent_id) — aa-cli/src/commands/run_registration.rs:583,668.
+      any agent impersonable. FIXED by AAASM-5332 — one of the three Question-4
+      answers that moved in the product's favour. SCOPE: fixed on `main` at the
+      base commit 299de3883; STILL LIVE in the published v0.0.1-rc.6, where
+      aa-sdk-client/src/identity_store.rs does not exist and
+      enforce_did_key_binding has 0 occurrences in lifecycle_service.rs (control:
+      verify_possession_proof = 7 in the same file at the same tag). Quote it as
+      "fixed on main, still live in rc.6", never as "fixed". WITHDRAWN: the
+      "residual smell" citation of aa-cli/src/commands/run_registration.rs:583,668.
+      Read at the base commit, both call sites are inside that module's test block
+      (opens at :462) and both prove the vulnerability is CLOSED: :583 derives a
+      deliberately FOREIGN key for "somebody-else" and :584-588 asserts
+      assert_did_key_binds_public_key REFUSES it — a negative control — while
+      :667-672 is the AAASM-5332 regression assertion
+      (assert_ne!(derive_transport_key("parity-check").public_key_hex(),
+      cli.public_key)) under a comment at :663-666 naming the ticket. Citing them
+      as evidence of a partly-open vulnerability inverted their meaning. The
+      aa-gateway half (lifecycle_service_test.rs fixtures seeded from
+      derive_transport_key) is test hygiene only and implies no production gap: a
+      SHA-256-seeded Ed25519 public key is indistinguishable from a random one
+      server-side.
 
   - id: I2
     domain: identity
@@ -2922,11 +2998,11 @@ capabilities:
     coverage_qualifiers: {tls_file_exec_probes: observed, path_blocklist: detected}   # the probes observe/detect; only the opt-in guard is experimental
     q3_changed_answer: true
     q4_changed_answer: true
-    known_bypasses: ["everything — the loader daemon does not ship"]
+    known_bypasses: ["everything on the channels most users install through — aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"]
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs, aa-integration-tests/tests/e2e_three_layers_together.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
-    target_level: "No-Go for B5 until the daemon ships AND a synchronous deny exists"
+    target_level: "No-Go for B5 until the daemon reaches a channel beyond crates.io AND a synchronous deny exists — it DOES ship, to crates.io only"
     tickets: [AAASM-5640, AAASM-3872]
 
   - id: P2
@@ -2967,7 +3043,7 @@ capabilities:
     boundary_attained: false
     coverage: observed
     q4_changed_answer: true
-    known_bypasses: ["0 __arm64_sys_* targets against 16 __x64_sys_ in aa-ebpf/src/kprobe.rs", "loader daemon unshipped"]
+    known_bypasses: ["0 __arm64_sys_* targets against 16 __x64_sys_ in aa-ebpf/src/kprobe.rs", "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"]
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
