@@ -2280,9 +2280,26 @@ capabilities:
     tickets: [AAASM-5332]
     notes: >-
       Prior belief was that the Ed25519 seed is SHA-256(public agent id), making
-      any agent impersonable. FIXED by AAASM-5332. Residual smell: aa-cli and
-      gateway lifecycle TESTS still mint registration keys with
-      derive_transport_key(agent_id) — aa-cli/src/commands/run_registration.rs:583,668.
+      any agent impersonable. FIXED by AAASM-5332 — one of the three Question-4
+      answers that moved in the product's favour. SCOPE: fixed on `main` at the
+      base commit 299de3883; STILL LIVE in the published v0.0.1-rc.6, where
+      aa-sdk-client/src/identity_store.rs does not exist and
+      enforce_did_key_binding has 0 occurrences in lifecycle_service.rs (control:
+      verify_possession_proof = 7 in the same file at the same tag). Quote it as
+      "fixed on main, still live in rc.6", never as "fixed". WITHDRAWN: the
+      "residual smell" citation of aa-cli/src/commands/run_registration.rs:583,668.
+      Read at the base commit, both call sites are inside that module's test block
+      (opens at :462) and both prove the vulnerability is CLOSED: :583 derives a
+      deliberately FOREIGN key for "somebody-else" and :584-588 asserts
+      assert_did_key_binds_public_key REFUSES it — a negative control — while
+      :667-672 is the AAASM-5332 regression assertion
+      (assert_ne!(derive_transport_key("parity-check").public_key_hex(),
+      cli.public_key)) under a comment at :663-666 naming the ticket. Citing them
+      as evidence of a partly-open vulnerability inverted their meaning. The
+      aa-gateway half (lifecycle_service_test.rs fixtures seeded from
+      derive_transport_key) is test hygiene only and implies no production gap: a
+      SHA-256-seeded Ed25519 public key is indistinguishable from a random one
+      server-side.
 
   - id: I2
     domain: identity
