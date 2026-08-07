@@ -310,7 +310,90 @@ Field-by-field, what changed and why:
 | `deny_signal: <scalar>` | `deny_signal: [<enum>]` | S6 carries two signals and a scalar cannot say so |
 | `default_state: on` (unquoted) | `default_state: 'on'` | YAML 1.1 parsed 38 rows' values as booleans |
 | `transport`, `language`, `identity_source`, `released_channels`, … mixed scalar/list | consistent types | Consumers could not rely on a shape |
-| `coverage` enum (already ADR 0033 §6) | unchanged | The survey got this right; it is kept verbatim |
+| `coverage` enum (already ADR 0033 §6) | vocabulary unchanged; **five rows weakened** | The survey chose the right vocabulary and it is kept verbatim. Five values are not: `G5`, `G8`, `N4`, `S6` and `S9` moved to `evaluated` because R12 refuses the stronger term on `test_unlocated` evidence — see rule R16 below |
+
+### The three representations, and rule R16 (AAASM-5678)
+
+Three documents describe the same 80 rows: this manifest, the seed YAML, and
+the seed's companion Markdown. On five rows — `G5`, `G8`, `N4`, `S6`, `S9` —
+they disagreed about `coverage`, the ADR 0033 §6 field the entire public claim
+vocabulary rests on, and **nothing compared them**.
+
+**The manifest is not the outlier by accident; it is weaker on purpose.** Each
+of the five carries exactly one evidence item, of `kind: test_unlocated`, and
+rule R12 refuses `denied_before_execution` on a row with no locatable test. Set
+any of the five to the seed's value and the gate exits non-zero — the weakening
+is *forced*, not editorial. Positive control that the correlation is exact:
+`S1` holds `denied_before_execution` on two `kind: test` items and does not
+diverge. `G5`, `S6` and `S9` assert tests in the SDK repositories, which R5
+cannot resolve because it reads only this repository's evidence tree; `G8` and
+`N4` have located negative evidence with recorded restoration conditions.
+
+So the residual defect was never the divergence. It was that a deliberate,
+rule-driven weakening and a genuine drift looked identical, because neither was
+written anywhere a machine could read.
+
+**Rule R16** compares and requires a declaration:
+
+| Clause | What fails |
+|---|---|
+| Contract present | A document sharing an id with its seed and declaring no `meta.cross_representation` |
+| Populations match | A row in one representation and not the other |
+| Partition total | A field the schema allows that is neither compared nor named as excluded, or one named twice |
+| Per-field agreement | Any divergence with no declaration naming that row, that field and that exact pair of values |
+| Declarations live | A declaration matching no divergence — a standing excuse for a change nobody reviewed |
+
+The compared set is read out of the **seed's own `schema.enums`** plus a named
+list of additions, never hand-picked here: 29 fields of the 51 the two schemas
+allow between them. The remaining 22 are named with their reason in
+`meta.cross_representation.seed.excluded_fields`. The defect that produced this
+ticket was a comparison over three fields reported as covering "every mechanical
+field", so a partial comparison that does not say what it left out is itself a
+failure.
+
+Every count is printed on each run and the pair arithmetic is asserted, so a
+population smaller than the one claimed shows up as a sum that does not close:
+
+```
+count: [R16] ids: 80 in the manifest, 80 in …-matrix.yaml, 80 shared, 0 manifest-only, 0 seed-only
+count: [R16] fields: 51 in the union of the two schemas = 29 compared + 22 excluded with a named reason + 0 unclassified
+count: [R16] seed: 80 ids x 29 fields = 2320 pairs; 1381 agree, 8 diverge, 931 one-side-silent; 0 skipped
+count: [R16] seed_companion: 80 coverage cells read, 0 ragged rows skipped; 80 of 80 shared ids compared, 75 agree, 5 diverge
+count: [R16] divergences: 13 found; declarations claim 13 (row, representation) pair(s) across 3 entries, 13 matched
+```
+
+The eight seed divergences are the five `coverage` rows above, plus `L7` and
+`P3` demoted off `host_enforced` by R14, plus `L5`, where the seed's
+`current_level` enum admitted the GovernanceLevel `l1_observe` on the
+ProtectionState axis and R7 rejects it. **All eight name the rule that forces
+them**, which is what makes conservatism distinguishable from drift: the
+manifest could not hold the other representation's value without a different
+rule failing.
+
+**Scope, stated rather than overclaimed.**
+
+- Prose is excluded, and that is a real limit. The manifest's prose was
+  rewritten during the AAASM-5531 review rounds while the seed keeps the
+  sentence as first compiled — measured at the current tree, `known_bypasses`
+  differs on 10 of 80 rows, `transport` on 6, `notes` on 4, `launch_path` and
+  `target_level` on 2 each, `identity_source` on 1 — and every one is a
+  correction, not a disagreement about a fact. Equality there would report the
+  fix as the defect. The fields that carry a fact are all compared.
+- `evidence` is excluded because the two shapes differ on 80 of 80 rows by
+  design: bare path strings against typed items. That migration is what makes
+  R5, R12 and R14 possible, and it is the reason the manifest can be weaker
+  than the seed at all.
+- The companion is compared on `coverage` alone. It is the only column stated
+  for all 80 ids in a fixed position; `Bnd` is present for 69 and annotates the
+  class in prose (`B3 (conditional)`), `Timing` for 58, and `Mode` and `Failure
+  posture` are two structured fields written as one sentence. Only terms inside
+  a `**bold**` run count — reading the whole cell picks up prose that names a
+  term to deny it, which is what `H2` ("explicitly *not* Denied before
+  execution") and `C2` do.
+- One-side-silent is neither agreement nor divergence. It is counted and
+  printed — 931 of the 2320 pairs — because a field one representation never
+  carried says nothing about the other, and folding it into "agree" would
+  inflate the gate's apparent reach by 40%.
 
 ### Rows corrected on content, and how they were found
 
