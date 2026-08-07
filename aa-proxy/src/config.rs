@@ -2,7 +2,9 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
+use crate::audit_jsonl::{ExportTarget, RotationPolicy, MAX_PERSISTED_BODY_BYTES};
 use crate::error::ProxyError;
 
 /// Action the proxy takes when its `CredentialScanner` produces a finding
@@ -483,6 +485,75 @@ pub fn audit_jsonl_path_from_env() -> Option<PathBuf> {
     env_optional("AA_PROXY_AUDIT_JSONL_PATH").map(PathBuf::from)
 }
 
+/// Retention bounds for the audit sink, read from the environment
+/// (AAASM-5660).
+///
+/// Every knob defaults to the value AAASM-5449 hard-coded, so an unset
+/// environment reproduces the previous behaviour exactly and making retention
+/// configurable does not by itself change any deployment.
+///
+/// * `AA_PROXY_AUDIT_MAX_SEGMENT_BYTES` — default 33554432 (32 MiB)
+/// * `AA_PROXY_AUDIT_RETAINED_SEGMENTS` — default 3
+/// * `AA_PROXY_AUDIT_RETENTION_DAYS` — unset means no age bound
+///
+/// # Errors
+///
+/// An unparseable or nonsensical value is rejected rather than ignored. A
+/// typo'd retention period that silently fell back to the default would leave
+/// an operator believing they had configured a deletion policy they do not
+/// have, and this sink's whole purpose is to stop that class of belief.
+pub fn audit_rotation_policy_from_env() -> Result<RotationPolicy, ProxyError> {
+    let mut policy = RotationPolicy::default();
+
+    if let Some(raw) = env_optional("AA_PROXY_AUDIT_MAX_SEGMENT_BYTES") {
+        let bytes: u64 = raw
+            .parse()
+            .map_err(|e| ProxyError::Config(format!("invalid AA_PROXY_AUDIT_MAX_SEGMENT_BYTES: {e}")))?;
+        // A segment smaller than the largest possible line would rotate on
+        // every record, turning the ring into a one-line window.
+        if bytes < MAX_PERSISTED_BODY_BYTES as u64 {
+            return Err(ProxyError::Config(format!(
+                "AA_PROXY_AUDIT_MAX_SEGMENT_BYTES must be at least {} (one record's maximum body), got {bytes}",
+                MAX_PERSISTED_BODY_BYTES
+            )));
+        }
+        policy.max_segment_bytes = bytes;
+    }
+
+    if let Some(raw) = env_optional("AA_PROXY_AUDIT_RETAINED_SEGMENTS") {
+        policy.retained_segments = raw
+            .parse()
+            .map_err(|e| ProxyError::Config(format!("invalid AA_PROXY_AUDIT_RETAINED_SEGMENTS: {e}")))?;
+    }
+
+    if let Some(raw) = env_optional("AA_PROXY_AUDIT_RETENTION_DAYS") {
+        let days: u64 = raw
+            .parse()
+            .map_err(|e| ProxyError::Config(format!("invalid AA_PROXY_AUDIT_RETENTION_DAYS: {e}")))?;
+        if days == 0 {
+            return Err(ProxyError::Config(
+                "AA_PROXY_AUDIT_RETENTION_DAYS must be at least 1; unset it to keep no age bound".into(),
+            ));
+        }
+        policy.max_age = Some(Duration::from_secs(days * 24 * 60 * 60));
+    }
+
+    Ok(policy)
+}
+
+/// Where rotated segments are handed off, read from the environment
+/// (AAASM-5660).
+///
+/// `AA_PROXY_AUDIT_EXPORT_DIR`. Unset means [`ExportTarget::LocalRingOnly`] —
+/// the bounded ring on this host is the only copy, which is the open-source
+/// position and is published as such rather than left as an absent field.
+pub fn audit_export_target_from_env() -> ExportTarget {
+    match env_optional("AA_PROXY_AUDIT_EXPORT_DIR") {
+        Some(dir) => ExportTarget::Directory(PathBuf::from(dir)),
+        None => ExportTarget::LocalRingOnly,
+    }
+}
+
 /// Read an env var as `Some(value)` when set and non-empty, otherwise `None`.
 fn env_optional(name: &str) -> Option<String> {
     match std::env::var(name) {
@@ -550,6 +621,10 @@ mod tests {
         std::env::remove_var("AA_PROXY_GATEWAY_ENDPOINT");
         std::env::remove_var("AA_PROXY_MCP_FAIL_OPEN");
         std::env::remove_var("AA_PROXY_AUDIT_JSONL_PATH");
+        std::env::remove_var("AA_PROXY_AUDIT_MAX_SEGMENT_BYTES");
+        std::env::remove_var("AA_PROXY_AUDIT_RETAINED_SEGMENTS");
+        std::env::remove_var("AA_PROXY_AUDIT_RETENTION_DAYS");
+        std::env::remove_var("AA_PROXY_AUDIT_EXPORT_DIR");
         std::env::remove_var("AASM_STATE_DIR");
     }
 
@@ -565,6 +640,71 @@ mod tests {
         // append to a file named "".
         std::env::set_var("AA_PROXY_AUDIT_JSONL_PATH", "");
         assert_eq!(audit_jsonl_path_from_env(), None);
+        clear_env_vars();
+    }
+
+    /// Making the bound configurable must not move it. An unset environment
+    /// has to produce the exact ring AAASM-5449 hard-coded, or this change
+    /// alters every existing deployment by itself (AAASM-5660).
+    #[test]
+    fn an_unset_environment_reproduces_the_previous_hard_coded_retention() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env_vars();
+        let policy = audit_rotation_policy_from_env().expect("an empty environment is valid");
+        assert_eq!(policy.max_segment_bytes, 32 * 1024 * 1024);
+        assert_eq!(policy.retained_segments, 3);
+        assert_eq!(policy.max_age, None);
+        assert_eq!(audit_export_target_from_env(), ExportTarget::LocalRingOnly);
+        clear_env_vars();
+    }
+
+    #[test]
+    fn each_retention_knob_is_read_from_the_environment() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_AUDIT_MAX_SEGMENT_BYTES", "1048576");
+        std::env::set_var("AA_PROXY_AUDIT_RETAINED_SEGMENTS", "10");
+        std::env::set_var("AA_PROXY_AUDIT_RETENTION_DAYS", "90");
+        std::env::set_var("AA_PROXY_AUDIT_EXPORT_DIR", "/var/lib/aasm/spool");
+
+        let policy = audit_rotation_policy_from_env().expect("valid settings");
+        assert_eq!(policy.max_segment_bytes, 1024 * 1024);
+        assert_eq!(policy.retained_segments, 10);
+        assert_eq!(policy.max_age, Some(Duration::from_secs(90 * 24 * 60 * 60)));
+        assert_eq!(
+            audit_export_target_from_env(),
+            ExportTarget::Directory(PathBuf::from("/var/lib/aasm/spool"))
+        );
+        clear_env_vars();
+    }
+
+    /// A typo'd retention period that silently fell back to the default would
+    /// leave an operator believing they configured a deletion policy they do
+    /// not have — the exact class of belief this sink exists to prevent.
+    #[test]
+    fn an_invalid_retention_setting_is_rejected_rather_than_ignored() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (var, value) in [
+            ("AA_PROXY_AUDIT_MAX_SEGMENT_BYTES", "ninety"),
+            // Below one record's maximum body: the ring would rotate on every
+            // line and hold a one-record window.
+            ("AA_PROXY_AUDIT_MAX_SEGMENT_BYTES", "16"),
+            ("AA_PROXY_AUDIT_RETAINED_SEGMENTS", "-1"),
+            ("AA_PROXY_AUDIT_RETENTION_DAYS", "0"),
+            ("AA_PROXY_AUDIT_RETENTION_DAYS", "forever"),
+        ] {
+            clear_env_vars();
+            std::env::set_var(var, value);
+            assert!(
+                audit_rotation_policy_from_env().is_err(),
+                "{var}={value} was accepted and silently ignored"
+            );
+        }
+        clear_env_vars();
+        // Non-vacuity: the same parser accepts the valid forms, so it is not
+        // simply always failing.
+        std::env::set_var("AA_PROXY_AUDIT_RETENTION_DAYS", "1");
+        assert!(audit_rotation_policy_from_env().is_ok());
         clear_env_vars();
     }
 

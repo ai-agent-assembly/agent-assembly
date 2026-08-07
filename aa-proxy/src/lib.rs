@@ -78,9 +78,38 @@ pub async fn run(
     // on each entry worth recording. A configured-but-unopenable path is an
     // error rather than a silent `None`: an operator who believes an audit trail
     // exists and has none is the failure mode this work stream is about.
-    let audit_jsonl_tx = audit_jsonl::build_audit_sink(config::audit_jsonl_path_from_env().as_deref()).await?;
+    //
+    // AAASM-5660: the retention bounds and the export target come from the same
+    // place. A misconfigured retention period is an error rather than a silent
+    // fallback to the default, for the same reason the path is: an operator who
+    // believes they configured a ninety-day policy and quietly did not is in the
+    // state this surface exists to prevent.
+    let audit_rotation = config::audit_rotation_policy_from_env()?;
+    let audit_export = config::audit_export_target_from_env();
+    let audit_jsonl_tx = audit_jsonl::build_audit_sink(
+        config::audit_jsonl_path_from_env().as_deref(),
+        audit_rotation,
+        audit_export.clone(),
+    )
+    .await?;
     if audit_jsonl_tx.is_some() {
-        tracing::info!("proxy audit JSONL persistence enabled via AA_PROXY_AUDIT_JSONL_PATH");
+        tracing::info!(
+            max_segment_bytes = audit_rotation.max_segment_bytes,
+            retained_segments = audit_rotation.retained_segments,
+            retention_days = audit_rotation.max_age.map(|d| d.as_secs() / 86_400),
+            export = ?audit_export.status(),
+            "proxy audit JSONL persistence enabled via AA_PROXY_AUDIT_JSONL_PATH",
+        );
+        if matches!(audit_export, audit_jsonl::ExportTarget::LocalRingOnly) {
+            // Said out loud at startup rather than left to be discovered when
+            // the evidence is asked for: this ring is bounded, rotation deletes
+            // earlier refusals permanently, and nothing replicates it off this
+            // host. Durable retention that outlives the host is a SaaS
+            // capability, not an unset flag.
+            tracing::warn!(
+                "proxy audit evidence is LOCAL-RING-ONLY: rotation permanently deletes earlier                  prevention records and nothing survives loss of this host — set                  AA_PROXY_AUDIT_EXPORT_DIR to hand sealed segments to a collector",
+            );
+        }
     }
 
     let server = proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);

@@ -1497,10 +1497,14 @@ const AUDIT_CHANNEL_CAPACITY: usize = 1024;
 /// configured an audit trail and silently got none would be in exactly the state
 /// this whole work stream exists to prevent — believing a record exists when it
 /// does not — so the proxy refuses to start instead.
-pub async fn build_audit_sink(path: Option<&Path>) -> io::Result<Option<mpsc::Sender<ProxyAuditEntry>>> {
+pub async fn build_audit_sink(
+    path: Option<&Path>,
+    rotation: RotationPolicy,
+    export: ExportTarget,
+) -> io::Result<Option<mpsc::Sender<ProxyAuditEntry>>> {
     let Some(path) = path else { return Ok(None) };
     let (tx, rx) = mpsc::channel(AUDIT_CHANNEL_CAPACITY);
-    let writer = JsonlWriter::new(path, rx).await?;
+    let writer = JsonlWriter::with_retention(path, rx, rotation, export).await?;
     tokio::spawn(writer.run());
     Ok(Some(tx))
 }
@@ -1940,7 +1944,9 @@ mod tests {
     /// nothing on disk.
     #[tokio::test]
     async fn no_configured_path_builds_no_sink() {
-        let sink = build_audit_sink(None).await.expect("no path is not an error");
+        let sink = build_audit_sink(None, RotationPolicy::default(), ExportTarget::LocalRingOnly)
+            .await
+            .expect("no path is not an error");
         assert!(sink.is_none(), "an unconfigured proxy must not construct a writer");
     }
 
@@ -1952,7 +1958,7 @@ mod tests {
     async fn a_configured_path_builds_a_sink_that_reaches_the_file() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("audit.jsonl");
-        let sink = build_audit_sink(Some(&path))
+        let sink = build_audit_sink(Some(&path), RotationPolicy::default(), ExportTarget::LocalRingOnly)
             .await
             .expect("open succeeds")
             .expect("a configured path yields a sender");
@@ -1984,7 +1990,7 @@ mod tests {
     async fn an_unopenable_path_is_an_error_not_a_silent_none() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("does/not/exist/audit.jsonl");
-        match build_audit_sink(Some(&path)).await {
+        match build_audit_sink(Some(&path), RotationPolicy::default(), ExportTarget::LocalRingOnly).await {
             Ok(_) => panic!("a configured-but-unopenable audit path must not degrade to no sink"),
             Err(e) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
         }
