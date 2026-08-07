@@ -134,9 +134,10 @@ the honest state is *unmeasured* — the proxy's transparent-tunnel path records
 Governance is assembled from independently-deployable mechanisms rather than a
 fixed pipeline, and each one holds a stated boundary — lowest-latency first:
 
-- **SDK shim** (in-process) — the fastest path. Where an agent adopts an SDK and
-  opts a tool call into the explicit wrapper, that call is *denied before
-  execution*; the shim is advisory and not a security boundary (ADR 0002).
+- **SDK shim** (in-process) — the fastest path, but it needs SDK adoption, an
+  explicit initializer call and a reachable runtime. In this repo it reaches
+  *Evaluated* (advisory); *denied before execution* depends on the out-of-repo
+  shim honouring the answer, and the SDK is not a security boundary (ADR 0002).
 - **Sidecar proxy** (`aa-proxy`) — refuses or redacts outbound HTTPS before it
   leaves the machine, without changing the *agent's* own code. It must be
   installed, started, routed to (`HTTPS_PROXY`) and have its CA trusted, and
