@@ -730,7 +730,7 @@ capabilities:
     known_bypasses:
       - "x86_64 only — 16 __x64_sys_ matches vs 0 __arm64_sys_ in aa-ebpf/src/kprobe.rs"
       - "observe-only: the path blocklist sets event.flags=1 and the syscall proceeds"
-      - "aa-ebpf-loaderd unreleased"
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
     evidence: [aa-integration-tests/tests/e2e_file_monitoring.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
@@ -1361,7 +1361,7 @@ capabilities:
     known_bypasses:
       - "Go crypto/tls, rustls, Node BoringSSL, GnuTLS, NSS, BoringSSL, LibreSSL and s2n expose no such symbols — full list at aa-ebpf-probes/src/ssl_probes.rs:22-25"
       - "events are NOT bridged to the audit pipeline (aa-runtime/src/runtime.rs:302-305,344-350)"
-      - "aa-ebpf-loaderd unreleased"
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
@@ -2970,11 +2970,11 @@ capabilities:
     coverage_qualifiers: {tls_file_exec_probes: observed, path_blocklist: detected}   # the probes observe/detect; only the opt-in guard is experimental
     q3_changed_answer: true
     q4_changed_answer: true
-    known_bypasses: ["everything — the loader daemon does not ship"]
+    known_bypasses: ["everything on the channels most users install through — aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"]
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs, aa-integration-tests/tests/e2e_three_layers_together.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
-    target_level: "No-Go for B5 until the daemon ships AND a synchronous deny exists"
+    target_level: "No-Go for B5 until the daemon reaches a channel beyond crates.io AND a synchronous deny exists — it DOES ship, to crates.io only"
     tickets: [AAASM-5640, AAASM-3872]
 
   - id: P2
@@ -3015,7 +3015,7 @@ capabilities:
     boundary_attained: false
     coverage: observed
     q4_changed_answer: true
-    known_bypasses: ["0 __arm64_sys_* targets against 16 __x64_sys_ in aa-ebpf/src/kprobe.rs", "loader daemon unshipped"]
+    known_bypasses: ["0 __arm64_sys_* targets against 16 __x64_sys_ in aa-ebpf/src/kprobe.rs", "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"]
     evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
     evidence_runs_on_main: path_gated_with_schedule
     current_level: not_applicable
