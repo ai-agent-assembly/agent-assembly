@@ -1169,6 +1169,7 @@ impl PolicyServiceImpl {
             approval_id: String::new(),
             redact: None,
             decision_latency_us: 0,
+            ..Default::default()
         };
 
         self.record_impersonation_audit(req, &response).await;
@@ -1394,6 +1395,7 @@ impl PolicyServiceImpl {
                     approval_id: String::new(),
                     redact: None,
                     decision_latency_us: response.decision_latency_us,
+                    ..Default::default()
                 }
             }
         }
@@ -1506,6 +1508,7 @@ impl PolicyServiceImpl {
             approval_id: String::new(),
             redact: None,
             decision_latency_us: response.decision_latency_us,
+            ..Default::default()
         }
     }
 

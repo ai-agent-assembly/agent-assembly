@@ -175,6 +175,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             approval_id: String::new(),
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         };
     }
 
@@ -210,6 +211,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             approval_id: String::new(),
             redact: Some(RedactInstructions { rules }),
             decision_latency_us: latency_us,
+            ..Default::default()
         };
     }
 
@@ -221,6 +223,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             approval_id: String::new(),
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         },
         PolicyResult::Deny { .. } => unreachable!("Deny is handled by the short-circuit above"),
         PolicyResult::RequiresApproval { .. } => {
@@ -310,6 +313,7 @@ pub fn approval_decision_to_response(
             approval_id: id_str,
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         },
         ApprovalDecision::Rejected { reason, .. } => CheckActionResponse {
             decision: Decision::Deny as i32,
@@ -318,6 +322,7 @@ pub fn approval_decision_to_response(
             approval_id: id_str,
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         },
         ApprovalDecision::TimedOut { fallback } => {
             let (proto_decision, reason) = match fallback {
@@ -332,6 +337,7 @@ pub fn approval_decision_to_response(
                 approval_id: id_str,
                 redact: None,
                 decision_latency_us: latency_us,
+                ..Default::default()
             }
         }
     }
