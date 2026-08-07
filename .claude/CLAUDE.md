@@ -148,7 +148,8 @@ constraints, invariants, and non-obvious decisions. Restating what the code alre
 says is noise that rots out of sync — avoid it.
 
 - **Crate / module (`//!`):** yes — its role in the architecture, key invariants,
-  where it sits in the three-layer model.
+  and which ADR 0033 element it implements. Do not write the superseded three-layer
+  model into a new `//!`; forbidden design 1 names code comments explicitly.
 - **Public items (`///` on `pub` fn/struct/trait):** yes — the contract: behavior,
   errors returned, units, side effects, and any threading/async/`unsafe`/ordering
   constraints. Especially the surprising ones (e.g. "built inside `run()` so both
