@@ -160,12 +160,8 @@ impl Harness {
             ReceiptStore::at(&store_root),
         ));
 
-        let services = DevIntServices {
-            lifecycle,
-            tokens,
-            audit: Arc::new(aa_runtime::devint::audit::TracingAuditSink),
-            provenance: Arc::new(provenance),
-        };
+        let services = DevIntServices::new(lifecycle, tokens, Arc::new(aa_runtime::devint::audit::TracingAuditSink))
+            .with_provenance(Arc::new(provenance));
         let server_token = self.shutdown.clone();
         let config = DevIntServerConfig {
             socket_path: socket.clone(),

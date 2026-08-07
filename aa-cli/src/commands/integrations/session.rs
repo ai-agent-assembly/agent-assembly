@@ -200,6 +200,16 @@ impl Default for SessionOptions {
 /// `Debug` reports only the negotiated facts. The client itself holds the
 /// capability token, and a derived `Debug` would put it into any panic message
 /// that formatted a `Result<Session, _>`.
+///
+/// # `#[non_exhaustive]` (AAASM-5669)
+///
+/// `aa-cli` ships a library target as well as the `aasm` binary, so this `pub`
+/// struct with `pub` fields is reachable from outside the crate and every field
+/// added to it is a source break for a struct literal — `provenance` and
+/// `multiplicity` already were. It is constructed only by [`connect_with`],
+/// which is the supported way in; marking it non-exhaustive says so in the type
+/// system and makes the next field additive.
+#[non_exhaustive]
 pub struct Session {
     /// The negotiated client.
     pub client: DevIntClient,
@@ -322,7 +332,7 @@ pub async fn connect_with<S: RuntimeSpawner>(
 ///
 /// A count above one **proves** ambiguity: those sockets were connected to, so
 /// those runtimes exist. A count of one proves nothing in the other direction,
-/// because the scan has three limits and each of them can hide a runtime:
+/// because the scan has four limits and each of them can hide a runtime:
 ///
 /// 1. **Name-filtered.** Only files matching `devint*.sock` are probed, so a
 ///    runtime bound to any other name is invisible.
@@ -331,6 +341,11 @@ pub async fn connect_with<S: RuntimeSpawner>(
 ///    makes easy — is not seen unless it is the one that answered.
 /// 3. **Point in time.** The scan runs once, as the session opens. A runtime
 ///    that binds a moment later is not counted.
+/// 4. **Time-bounded.** Each socket is probed under a deadline the whole scan
+///    shares, so a socket that does not complete a connection in time is not
+///    reported (AAASM-5667). Waiting instead would let any same-UID process
+///    that binds a `devint*.sock` and never accepts hang this command — the one
+///    an operator runs to find out which runtime is answering.
 ///
 /// So `reachable_runtimes == 1` means "nothing else was found", never "nothing
 /// else is listening", and no surface may present it as a uniqueness guarantee.
