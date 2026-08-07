@@ -10,8 +10,21 @@
 //!
 //! AAASM-5456 is that enforcement. Two assertions, each falsifiable:
 //!
-//! * the entropy pass produces **at most one finding per 20 MB** of clean prose;
+//! * the entropy pass produces **no findings** over this corpus of clean prose;
 //! * it detects **at least 99%** of secrets split 23+17 across a separator.
+//!
+//! # The ceiling is tighter than the one AAASM-5368 was accepted on
+//!
+//! AAASM-5368 was accepted at roughly one false positive per 25 MB, and
+//! AAASM-5456 locked a limit of one per 20 MB above it. AAASM-5502 then changed
+//! the entropy bar and the measured rate went to **zero on this corpus**, at
+//! which point the 1-per-20 MB limit permitted two findings that the pass was
+//! not producing — enforcement lagging the measurement it exists to protect.
+//!
+//! AAASM-5451 closed that gap by pinning the ceiling to the measurement. The
+//! consequence is deliberate and is the point: one new false positive here now
+//! fails the build, so a precision-for-recall trade has to be argued rather
+//! than absorbed.
 //!
 //! # Why the corpus is generated rather than committed
 //!
@@ -61,13 +74,40 @@ const CORPUS_BYTES: usize = 20_971_526;
 /// one cannot: text that changed without changing length.
 const CORPUS_CHECKSUM: u64 = 0x6d5a_4588_7502_e932;
 
-/// The accepted false-positive ceiling: at most one finding per 20 MB.
+/// The accepted false-positive ceiling: **zero findings** over this corpus.
 ///
-/// This is the **limit**, not the measurement. AAASM-5368 measured roughly one
-/// per 25 MB; the gap is headroom for this test to catch a regression before it
-/// reaches the accepted bound, not budget to spend. Lowering this constant is a
-/// product decision (AAASM-5451), not a tidy-up.
-const FP_CEILING_PER_BYTES: usize = 20 * 1024 * 1024;
+/// # Why this is a count and not a rate (AAASM-5451)
+///
+/// It used to be `1 per 20 * 1024 * 1024` bytes, which over [`CORPUS_BYTES`]
+/// permitted **two** findings while the pass produced **none**. A rate is only
+/// worth expressing when the denominator can vary; this one cannot — the corpus
+/// is pinned by name, seed, length and checksum, so a rate over it is a count
+/// wearing a disguise, and the disguise cost two findings of unenforced slack.
+/// A regression could have introduced two false positives and left the build
+/// green, which is precisely the "stated bound that nothing enforces" this file
+/// exists to eliminate.
+///
+/// # Why zero rather than some smaller cushion
+///
+/// AAASM-5368 was accepted at roughly one false positive per 25 MB, and this
+/// constant was set to 1-per-20 MB as headroom above that. AAASM-5502 then
+/// changed the entropy bar and the measurement went to **zero on this corpus**.
+/// Headroom above a measurement of zero is not headroom, it is unenforced slack:
+/// any nonzero value here permits a regression nobody chose.
+///
+/// So this is a real tightening of the bar, deliberately: a single new false
+/// positive on this corpus now fails the build. That is the intended cost. A
+/// change that trades precision for recall is a product decision, and this
+/// constant is where it has to be argued rather than absorbed. Raising it back
+/// requires the same kind of owner decision that AAASM-5368 itself needed —
+/// recorded on AAASM-5451.
+///
+/// Note the number this replaces was **not** measured on this corpus:
+/// `aaasm5456_mixed_en_zh_tw_prose_v1` was created by AAASM-5456, after
+/// AAASM-5368. There is no comparable prior figure over these bytes, and quoting
+/// one would be the error this file warns about elsewhere — a rate without its
+/// corpus is not a measurement.
+const FP_CEILING_FINDINGS: usize = 0;
 
 /// The accepted recall floor for the 23+17 split band, in percent.
 const RECALL_FLOOR_PERCENT: u32 = 99;
@@ -239,26 +279,35 @@ fn the_corpus_identity_is_pinned() {
 
 /// **The accepted ceiling, enforced.**
 ///
-/// At most one finding per 20 MB of clean prose. Breaching this fails the build.
+/// Zero findings over this corpus. Breaching this fails the build.
 #[test]
 fn the_false_positive_rate_stays_under_the_accepted_ceiling() {
     let text = corpus();
     let scanner = CredentialScanner::new();
     let findings = scanner.scan(&text).findings.len();
 
-    let allowed = text.len().div_ceil(FP_CEILING_PER_BYTES);
+    // `<=` and not `==`: the relation this test enforces is "at most the accepted
+    // ceiling", and `FP_CEILING_FINDINGS` is a product constant that a future owner
+    // decision may raise. Clippy sees only today's value of 0 and reads the
+    // comparison as absurd; writing `==` instead would silently invert the test's
+    // meaning the moment the ceiling moved, failing a build that produced *fewer*
+    // false positives than allowed.
+    #[allow(clippy::absurd_extreme_comparisons)]
+    let within_ceiling = findings <= FP_CEILING_FINDINGS;
 
     assert!(
-        findings <= allowed,
+        within_ceiling,
         "{CORPUS_NAME}: {findings} false positives over {} bytes exceeds the accepted \
-         ceiling of {allowed} (1 per {FP_CEILING_PER_BYTES} bytes). The ceiling is a \
-         product decision recorded on AAASM-5368 — raising this constant to make the \
-         test pass would silently move an accepted threshold.",
+         ceiling of {FP_CEILING_FINDINGS}. The ceiling is a product decision recorded on \
+         AAASM-5368 and tightened on AAASM-5451 — raising this constant to make the test \
+         pass would silently move an accepted threshold. If a detection change genuinely \
+         needs to spend a false positive here, that is a trade to argue on the ticket, \
+         with the recall it buys measured.",
         text.len()
     );
 
     println!(
-        "false positives: {findings} over {} bytes (ceiling {allowed})",
+        "false positives: {findings} over {} bytes (ceiling {FP_CEILING_FINDINGS})",
         text.len()
     );
 }
