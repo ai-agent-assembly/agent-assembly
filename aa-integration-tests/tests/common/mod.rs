@@ -951,6 +951,12 @@ spec:
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
             // AAASM-5306: the no-op logging mailer — tests never send real email.
             mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -1099,6 +1105,12 @@ spec:
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
             // AAASM-5306: the no-op logging mailer — tests never send real email.
             mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -1248,6 +1260,12 @@ spec:
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
             // AAASM-5306: the no-op logging mailer — tests never send real email.
             mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -1389,6 +1407,12 @@ spec:
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
             // AAASM-5306: the no-op logging mailer — tests never send real email.
             mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -1523,6 +1547,12 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
             // AAASM-5306: the no-op logging mailer — tests never send real email.
             mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
