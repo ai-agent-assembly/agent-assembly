@@ -126,6 +126,31 @@ def drop_declared_divergences(text: str) -> str:
 # decision someone writes down, not a deletion nobody notices.
 EXPECTED_PROBES = 5
 
+def stale_evidence_date(text: str) -> str:
+    """An R11-only defect: the gate goes red for a reason that is not R16."""
+    return text.replace("  evidence_date: '2026-08-06'\n", "  evidence_date: '2024-01-01'\n", 1)
+
+
+# R3-F2 / R4-F2. Mutations that make the gate go red for a rule OTHER than the
+# one named. The predicate must DECLINE to attribute them — `code != 0` alone
+# would accept, which is exactly the bug round 3 fixed.
+#
+# Round 3's report cited a duplicated row id as the motivating example and
+# described a "WRONG-REASON CONTROL" probe. That probe never existed: it was a
+# temporary injection into a working copy, run once and reverted, never
+# committed. This list is the committed thing that should have been there.
+#
+# Measured, because "duplicate id" names two different mutations with opposite
+# results: duplicating the S1 BLOCK leaves the id set intact and yields
+# {R2: 1} — a clean isolator; renaming S2 to S1 REMOVES S2 from the id set and
+# yields {R2: 1, R16: 4}, so it isolates nothing. `evidence_date` avoids the
+# ambiguity entirely at {R11: 1}.
+ATTRIBUTION_CONTROLS = [
+    ("evidence_date -> 2024 is R11, must NOT be attributed to R16",
+     stale_evidence_date, "[R16]"),
+]
+EXPECTED_ATTRIBUTION_CONTROLS = 1
+
 PROBES = [
     ("R17 clause 3 — meta.channel_absences deleted", drop_channel_absences, "[R17]"),
     ("R16 — meta.sources.seed repointed, contract kept", repoint_seed, "[R16]"),
@@ -140,6 +165,14 @@ PROBES = [
 
 
 def main() -> int:
+    if len(ATTRIBUTION_CONTROLS) != EXPECTED_ATTRIBUTION_CONTROLS:
+        sys.stderr.write(
+            f"real_manifest_probes: ATTRIBUTION_CONTROLS holds "
+            f"{len(ATTRIBUTION_CONTROLS)} entries, expected "
+            f"{EXPECTED_ATTRIBUTION_CONTROLS}.\n"
+        )
+        return 2
+
     if len(PROBES) != EXPECTED_PROBES:
         sys.stderr.write(
             f"real_manifest_probes: PROBES holds {len(PROBES)} entries, expected "
@@ -186,6 +219,22 @@ def main() -> int:
                 failures += 1
             else:
                 print(f"  ok    {name} -> exit {code}, {hits} {expect_rule} finding(s)")
+
+        for name, mutate, not_rule in ATTRIBUTION_CONTROLS:
+            MANIFEST.write_text(mutate(original.decode("utf-8")), encoding="utf-8")
+            code, out = run_gate()
+            hits = findings(out, not_rule)
+            if code == 0:
+                print(f"  FAIL  {name} — expected a non-zero exit, got 0")
+                failures += 1
+            elif hits:
+                print(
+                    f"  FAIL  {name} — {hits} {not_rule} error line(s); the predicate "
+                    "attributed a defect to a rule that did not raise it"
+                )
+                failures += 1
+            else:
+                print(f"  ok    {name} -> exit {code}, 0 {not_rule} error lines")
     finally:
         # No `return` in here: it would swallow an in-flight exception and report
         # a tidy exit code for a run that actually blew up.
@@ -207,7 +256,7 @@ def main() -> int:
     else:
         print("  ok    restore control — manifest byte-identical and exits 0")
 
-    total = len(PROBES) + 2  # + positive control + restore control
+    total = len(PROBES) + len(ATTRIBUTION_CONTROLS) + 2  # + positive control + restore control
     print(f"\n{total - failures} passed, {failures} failed")
     # The harness adds these to its own totals rather than crediting this file a
     # flat +1, so a probe that stops running moves the number it is counted in.

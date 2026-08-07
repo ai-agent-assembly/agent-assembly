@@ -71,6 +71,23 @@ def main() -> int:
         return 1
 
     failures = 0
+
+    # Cross-reference for EXPECTED_TOTAL. It appears in exactly one place, and
+    # editing it down is a way to drop a check quietly; corroborating it in a
+    # second artifact means that edit has to be made twice.
+    harness = (HERE / "run-validator-tests.sh").read_text(encoding="utf-8")
+    m = re.search(r"^EXPECTED_TOTAL=(\d+)", harness, re.M)
+    readme_total = re.search(r"asserted total, \*\*(\d+) checks\*\*", README.read_text("utf-8"))
+    if not m or not readme_total:
+        print("  FAIL  EXPECTED_TOTAL is not stated in both run-validator-tests.sh and the README")
+        failures += 1
+    elif m.group(1) != readme_total.group(1):
+        print(f"  FAIL  EXPECTED_TOTAL — harness {m.group(1)}, README {readme_total.group(1)}")
+        failures += 1
+    else:
+        print(f"  ok    EXPECTED_TOTAL={m.group(1)} agrees between the harness and the README")
+    checks = 1
+
     for key in sorted(set(quoted) | set(live)):
         label = f"[{key[0]}] {key[1]}"
         if key not in live:
@@ -86,7 +103,7 @@ def main() -> int:
         else:
             print(f"  ok    {label} matches ({len(live[key])} value(s))")
 
-    total = len(set(quoted) | set(live))
+    total = len(set(quoted) | set(live)) + checks
     print(f"\n{total - failures} passed, {failures} failed")
     print(f"HARNESS_COUNTS passed={total - failures} failed={failures}")
     return 1 if failures else 0

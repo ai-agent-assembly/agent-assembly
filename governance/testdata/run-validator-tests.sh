@@ -28,6 +28,24 @@ fail=0
 ok()   { printf '  ok    %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  FAIL  %s — %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
+#
+# Credited by what actually RAN, never a flat +1. R3-F1: crediting this file
+# `pass+1` meant emptying its PROBES list left the harness total unchanged at 51
+# with every hazard regression gone and CI green. The sub-counts are now folded
+# in, so a probe that stops running moves the number it is counted in.
+credit() {  # $1 = label, $2 = script output
+  local line p f
+  line="$(printf '%s\n' "$2" | grep -E '^HARNESS_COUNTS ' | tail -1)"
+  if [ -z "${line}" ]; then
+    bad "$1" "emitted no HARNESS_COUNTS trailer, so its results cannot be counted"
+    return
+  fi
+  p="$(printf '%s' "${line}" | sed -E 's/.*passed=([0-9]+).*/\1/')"
+  f="$(printf '%s' "${line}" | sed -E 's/.*failed=([0-9]+).*/\1/')"
+  pass=$((pass + p))
+  fail=$((fail + f))
+}
+
 # Positive controls. Globbed rather than naming valid-minimal alone, so a rule
 # whose green counterpart is a separate file (R15's one-line-diff pair) is
 # asserted to PASS and not merely asserted to fail — a gate nobody has watched
@@ -66,7 +84,8 @@ done
 # script beside this one, with a positive control proving its zeros are measured.
 echo "negative controls (R15 repository-state branches)"
 if out="$(python3 "${here}/r15_branch_probes.py" 2>&1)"; then
-  ok "r15_branch_probes.py — 4 branches"
+  printf '%s\n' "${out}" | sed -n 's/^  ok    /  ok    /p'
+  credit "r15_branch_probes.py" "${out}"
 else
   bad "r15_branch_probes.py" "$(printf '%s' "${out}" | tail -3)"
 fi
@@ -77,24 +96,6 @@ fi
 # survived the first fix — lives in that class, and all three reached review
 # because nothing here ever ran the validator against the canonical document.
 # A suite blind to an input class is silent about it, and silence reads as green.
-#
-# Credited by what actually RAN, never a flat +1. R3-F1: crediting this file
-# `pass+1` meant emptying its PROBES list left the harness total unchanged at 51
-# with every hazard regression gone and CI green. The sub-counts are now folded
-# in, so a probe that stops running moves the number it is counted in.
-credit() {  # $1 = label, $2 = script output
-  local line p f
-  line="$(printf '%s\n' "$2" | grep -E '^HARNESS_COUNTS ' | tail -1)"
-  if [ -z "${line}" ]; then
-    bad "$1" "emitted no HARNESS_COUNTS trailer, so its results cannot be counted"
-    return
-  fi
-  p="$(printf '%s' "${line}" | sed -E 's/.*passed=([0-9]+).*/\1/')"
-  f="$(printf '%s' "${line}" | sed -E 's/.*failed=([0-9]+).*/\1/')"
-  pass=$((pass + p))
-  fail=$((fail + f))
-}
-
 echo "negative controls (real manifest, mutated in place)"
 if out="$(python3 "${here}/real_manifest_probes.py" 2>&1)"; then
   printf '%s\n' "${out}" | sed -n 's/^  ok    /  ok    /p'
@@ -156,12 +157,12 @@ printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
 # breakdown is here so the next person can see WHICH part moved:
 #   4  valid-*.yaml through the validator
 #  34  invalid-*.yaml through the validator
-#   1  r15_branch_probes.py
-#   7  real_manifest_probes.py   (5 mutations + positive control + restore control)
-#   7  readme_counts_probe.py    (one per quoted count: line)
+#   4  r15_branch_probes.py    (one per R15 repository-state branch)
+#   8  real_manifest_probes.py   (5 mutations + 1 attribution control + positive + restore)
+#   8  readme_counts_probe.py    (one per quoted count: line + the EXPECTED_TOTAL cross-check)
 #   6  schema negative controls through ajv
 #   4  valid-*.yaml through ajv
-EXPECTED_TOTAL=63
+EXPECTED_TOTAL=68
 if [ "$((pass + fail))" -ne "${EXPECTED_TOTAL}" ]; then
   printf 'FAIL  the harness ran %d checks, expected %d. A check that stops running is
 ' \

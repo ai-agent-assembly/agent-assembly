@@ -53,7 +53,11 @@ Step 3 also runs two probes the fixture files cannot express:
 * **`readme_counts_probe.py`** — asserts every `count:` line pasted into *this
   page* is the live one, by value. The counts below were shipped stale once, in
   the document whose thesis is that they are printed on every run; correcting
-  them was not a mechanism, so this is one.
+  them was not a mechanism, so this is one. It also cross-checks the harness's
+  own asserted total, **68 checks**, against `EXPECTED_TOTAL` in
+  `run-validator-tests.sh` — that constant is the only thing standing between a
+  silently-dropped check and a green run, and a single uncorroborated number is
+  defended by nothing but the visible diff.
 
 All three run in CI on every PR touching this area, on every push to `main`,
 and weekly. The weekly run is not decoration: a PR-only gate never runs on the
