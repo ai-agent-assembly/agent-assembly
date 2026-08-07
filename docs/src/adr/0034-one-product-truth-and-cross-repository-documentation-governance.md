@@ -2,7 +2,7 @@
 
 **Status**: Accepted
 **Date**: 2026-08
-**Revision**: `AAASM-5621` (initial publication — see [Revisions](#revisions-and-supersession))
+**Revision**: `AAASM-5671` (see [Update — AAASM-5671](#update--aaasm-5671-truthfulness-and-banned-absolutes-are-unwaivable) and [Revisions](#revisions-and-supersession))
 **Ticket**: [AAASM-5621](https://lightning-dust-mite.atlassian.net/browse/AAASM-5621) (Epic [AAASM-5580](https://lightning-dust-mite.atlassian.net/browse/AAASM-5580))
 
 This ADR is the **canonical governance source** for how a statement about Agent
@@ -786,7 +786,7 @@ expiry bounds an exception's exposure; none of them makes an unsupported claim
 true, so over an untrue sentence there is nothing for the bound to bound. ADR
 0033's banned absolutes are therefore **unwaivable** here — the waiver route
 over them was removed rather than narrowed, for the reason recorded in
-[Update — AAASM-5671](#update--aaasm-5671).
+[Update — AAASM-5671](#update--aaasm-5671-truthfulness-and-banned-absolutes-are-unwaivable).
 
 Required fields:
 
@@ -958,7 +958,7 @@ Settled in [Decision 10](#10-waivers-and-exceptions): expiring, approved by a
 renewed by re-approval rather than extension, and with four **unwaivable**
 categories — of which the first two, factual truthfulness and ADR 0033's banned
 absolutes, mean the answer to *who may approve an absolute* is nobody
-([Update — AAASM-5671](#update--aaasm-5671)).
+([Update — AAASM-5671](#update--aaasm-5671-truthfulness-and-banned-absolutes-are-unwaivable)).
 
 #### Hand-off 3 · Cross-repository enforcement
 
@@ -1594,3 +1594,101 @@ understand the rules that release was published under.
 | [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536) | Owns the banned-absolutes CI gate (W8), which this ADR does not supply. Banned absolutes are **unwaivable** under [Decision 10](#10-waivers-and-exceptions), so there is no waiver route over that gate — what this ADR supplies is the six non-claim exemption classes it must honour |
 | [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586) · [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609) | Own the Docs Hub and product-website surfaces, including the rival *Policy reference* instance |
 | Implementation PRs | This ADR is documentation-only; the implementations are tracked by the tickets above |
+
+## Update — AAASM-5671: Truthfulness and banned absolutes are unwaivable
+
+**Date**: 2026-08 · **Ticket**:
+[AAASM-5671](https://lightning-dust-mite.atlassian.net/browse/AAASM-5671)
+
+As published, this ADR said both things at once — six statements in one direction,
+three in the other, with the two sibling pages copying one reading each and
+[content-ownership.md](../development/content-ownership.md) contradicting itself
+inside a single paragraph. The withdrawn form, and the sites that carried it:
+
+<!-- truth-exempt: historical-withdrawn — describes and quotes the rule AAASM-5671 struck; retained because this ADR's history is the record of what changed -->
+
+> Decision 10 opened by defining a waiver as a **recorded, approved, expiring**
+> permission "to publish against a rule in this ADR **or against ADR 0033's
+> banned-absolutes list**". Its `rule` field enumerated "a D-dimension, a
+> forbidden design, **a banned absolute**" as legal values. Unwaivable category 1
+> read "An ADR 0033 **forbidden design**. Those are architectural bans; they are
+> amended in 0033 or they hold." Hand-off 2 counted "three unwaivable categories".
+> W8 read "this ADR adds the waiver mechanism, not the check", and the AAASM-5536
+> Traceability row "This ADR supplies the waiver mechanism over it, not the
+> check".
+>
+> In the sibling pages: content-ownership.md's *Absolutes* section read "**Who may
+> waive it** is ADR 0034 Decision 10 — an expiring, string-scoped waiver approved
+> by a `waiver-approver` who is not the author", six lines above "an ADR 0033
+> forbidden design is one of the three categories that **cannot** be waived"; its
+> hand-off 2 read "who may approve publishing against a rule here or against ADR
+> 0033's banned-absolutes list, on what evidence, and for how long"; and
+> `0033:923` read "how the ban is policed across repos, and who may waive it, is
+> 5621's".
+
+<!-- /truth-exempt -->
+
+**The owner's ruling, 2026-08-06: the waivable form is struck.** A waiver may
+waive process, timing, review sequencing, or a temporary governance requirement.
+It must never waive factual truthfulness or authorise publishing an unsupported
+absolute product claim.
+
+**Why the mechanism was removed rather than narrowed.** A bounded waiver is a
+trade: accept a known deviation for a stated period, in exchange for shipping. It
+works because the cost of the deviation is *delay*, and a deadline is exactly the
+right instrument for bounding delay. Truthfulness is not a process control, so
+there is no cost of that shape for a deadline to bound. A time limit, a named
+owner, an approver, or a fail-closed expiry does not make an unsupported claim
+true; it only fixes the date on which the product stops saying something that was
+never true in the first place. Narrowing the mechanism — a shorter expiry, a
+higher approver, more evidence fields — would have kept the shape and moved the
+dial, and there is no setting of the dial at which the claim becomes publishable.
+
+**The contrary reading, recorded.** The AAASM-5598 review ruled the other way, on
+three grounds: every statement in this file that named the absolutes list called
+it waivable, while the one independent flat statement named only the generic class
+of forbidden designs; the flat reading left Decision 10's own `rule` field
+enumerating a value that could never legally be written; and unwaivable category
+1's rationale described the other eight forbidden designs rather than a wording
+ban. That analysis is why this amendment knows precisely which sentences to
+strike, and its second point was a real defect under either reading — the `rule`
+enumeration is corrected here too. The owner decision governs.
+
+**What changed.**
+
+1. Decision 10's opening now bounds waivers to waivable process and governance
+   rules, and states that ADR 0033's banned absolutes are **unwaivable**.
+2. The unwaivable list has four categories rather than three: **factual
+   truthfulness** is first, in its own right, and forbidden designs are named as
+   including forbidden design 7's banned absolutes, which are **unwaivable** in
+   the product's own voice, rather than only as "architectural bans".
+3. The `rule` field enumerates waivable rules only, and records that the two
+   unwaivable categories are never legal values of it.
+4. Hand-off 2, W8 and the AAASM-5536 Traceability row now state that the
+   banned-absolutes gate has **no waiver route** over it.
+5. [content-ownership.md](../development/content-ownership.md) and the
+   [truth adoption record](../development/truth-adoption-record.md) state the same
+   rule as this ADR. So does `0033:919-923`, which had deferred *who may waive it*
+   to this ADR and now records that the answer is nobody.
+6. A new subsection, [What the ban does not reach](#what-the-ban-does-not-reach),
+   enumerates the six non-claim classes that may carry the literal text, with
+   worked examples and a machine-readable `truth-exempt` marker.
+7. **W10** adds the check that fails if an ADR or governance page asserts the
+   struck form again. The contradiction shipped inside an Accepted decision and
+   survived review because nothing could see it; a rule this ADR cannot keep is a
+   rule it should not claim.
+
+**What did not change.** Bounded waivers remain in force for every waivable
+process and governance control here: the D-dimensions of §2.1's claim tuple,
+review sequencing, and the timing requirements a repository can trade against a
+deadline. Expiry still fails closed, renewal is still a new approval with fresh
+evidence, and a waiver still covers an exact string rather than a page or a topic.
+
+**Downstream.** [AAASM-5598](https://lightning-dust-mite.atlassian.net/browse/AAASM-5598)'s
+claim-vocabulary document carried a §7.4 escalation describing this question as
+unsettled, with an interim rule that a `CLAIM-ABS-*` waiver is validated in full
+and never applied. That interim is now the permanent behaviour, and the escalation
+is discharged by this amendment.
+[AAASM-5599](https://lightning-dust-mite.atlassian.net/browse/AAASM-5599)'s linter
+implements it: a `CLAIM-ABS-*` waiver record is a malformed record, because `rule`
+has no legal value that would produce one.
