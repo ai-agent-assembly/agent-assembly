@@ -131,6 +131,7 @@
 - [In-Flight Ops Registry](operations/ops-registry-architecture.md)
 - [Sandbox / Dry-Run Mode](operations/sandbox-dry-run.md)
 - [Compliance Export](operations/compliance-export.md)
+- [Proxy Prevention-Evidence Retention](operations/proxy-audit-retention.md)
 - [Agent-to-Agent Identity](operations/a2a-identity.md)
 - [Tool Sandbox: Network Egress](operations/tool-sandbox-network.md)
 - [Org-Tier Isolation](operations/org-isolation.md)
