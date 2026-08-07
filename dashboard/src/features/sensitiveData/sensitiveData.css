@@ -1,0 +1,435 @@
+/* ============================================================
+   Sensitive-data analytics surface (AAASM-5360)
+
+   Every colour, radius and type size here resolves to a token
+   from src/styles.css. There is no hex literal below, and none
+   should be added: the palette is the hi-fi design's, and a
+   literal here is a value the theme cannot reach.
+
+   design/v2/hi-fi has no mock for this surface — `data.jsx` is
+   sample data, not a page — so the visual vocabulary is borrowed
+   from the two nearest shipped surfaces, Scrub and Analytics,
+   rather than invented. Stated as a deliberate deviation.
+   ============================================================ */
+
+.sd-page {
+  padding: 24px 28px 48px;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sd-page-head h1 {
+  font-size: 20px;
+  font-weight: 650;
+  margin: 0 0 6px;
+  letter-spacing: -0.01em;
+}
+
+.sd-page-head p {
+  margin: 0;
+  max-width: 78ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+/* ── Panels ─────────────────────────────────────────────── */
+
+.sd-panel {
+  background: var(--surface-card);
+  border: 1px solid var(--surface-card-border);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+
+.sd-panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.sd-panel__title {
+  font-size: 14px;
+  font-weight: 620;
+  margin: 0;
+}
+
+.sd-panel__note {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  max-width: 88ch;
+}
+
+.sd-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+/* ── Figures: a number is never rendered without its unit ─ */
+
+.sd-figure {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.sd-figure__value {
+  font-size: 22px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* The unit noun is smaller than the number but never hidden: the
+   whole point is that "3" alone is not a legible figure here. */
+.sd-figure__unit {
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+.sd-figure--inline .sd-figure__value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sd-measure-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--surface-card-border);
+  border-radius: 6px;
+  background: var(--surface-subtle-bg);
+}
+
+.sd-measure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sd-measure__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sd-measure__description {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.sd-measure-pair__rule {
+  border: 0;
+  border-top: 1px dashed var(--surface-card-border);
+  margin: 2px 0;
+}
+
+/* ── Prevention ─────────────────────────────────────────── */
+
+.sd-prevention__headline {
+  font-size: 20px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-prevention__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.sd-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+
+.sd-badge--measured {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.sd-badge--partly-measured {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+/* An unmeasured governance figure is not "fine" and is not a warning
+   about load — it is the absence of a measurement, and it reads in the
+   information tone the truthfulness vocabulary uses for absences. */
+.sd-badge--unmeasured {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.sd-badge--nothing-inspected {
+  background: var(--badge-neutral-bg);
+  color: var(--badge-neutral-text);
+  border-color: var(--surface-card-border);
+}
+
+.sd-prevention__qualifier {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  max-width: 88ch;
+}
+
+.sd-prevention__cause {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-muted);
+  border-left: 2px solid var(--info);
+  padding-left: 10px;
+  max-width: 88ch;
+}
+
+/* ── Coverage notices ───────────────────────────────────── */
+
+.sd-coverage {
+  font-size: 12px;
+  line-height: 1.55;
+  border-radius: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--surface-card-border);
+  background: var(--surface-subtle-bg);
+  color: var(--text-secondary);
+  max-width: 92ch;
+}
+
+.sd-coverage--spaced {
+  margin: 14px 0 0;
+}
+
+.sd-coverage--incomplete {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+/* ── Tables ─────────────────────────────────────────────── */
+
+.sd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.sd-table th,
+.sd-table td {
+  text-align: left;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--surface-card-border);
+  vertical-align: middle;
+}
+
+.sd-table th {
+  font-weight: 620;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.sd-table td.sd-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sd-table tbody tr:hover {
+  background: var(--surface-hover-bg);
+}
+
+.sd-table__scroll {
+  overflow-x: auto;
+}
+
+.sd-bar {
+  display: block;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--accent);
+  min-width: 1px;
+}
+
+.sd-bar--finding {
+  background: var(--scrub);
+}
+
+.sd-bar-cell {
+  width: 34%;
+  min-width: 120px;
+}
+
+.sd-row-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent-hover);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.sd-trend {
+  font-weight: 620;
+}
+
+.sd-trend--up {
+  color: var(--danger);
+}
+
+.sd-trend--down {
+  color: var(--ok);
+}
+
+.sd-trend--flat {
+  color: var(--text-muted);
+}
+
+.sd-trend--new {
+  color: var(--warn);
+}
+
+/* ── Filters ────────────────────────────────────────────── */
+
+.sd-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: flex-end;
+}
+
+.sd-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.sd-field input,
+.sd-field select {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--form-input-border);
+  border-radius: 4px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  min-width: 150px;
+}
+
+.sd-button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--form-input-border);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.sd-button:hover:not(:disabled) {
+  background: var(--surface-hover-bg);
+}
+
+.sd-button:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.sd-button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.sd-button--primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.sd-button--primary:disabled {
+  background: var(--surface-skeleton-base);
+  border-color: var(--surface-card-border);
+}
+
+/* ── Export ─────────────────────────────────────────────── */
+
+.sd-export__ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  max-width: 88ch;
+  margin-bottom: 10px;
+}
+
+.sd-export__result {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin: 10px 0 0;
+}
+
+/* ── Drill-down detail ──────────────────────────────────── */
+
+.sd-detail__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 20px;
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
+.sd-detail__term {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.sd-detail__value {
+  color: var(--text-primary);
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+/* ── Screen-reader-only text ────────────────────────────── */
+
+.sd-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -2,8 +2,8 @@
  * Navigation route table for the governance dashboard.
  *
  * The first 12 entries mirror the canonical `ROUTES` const in
- * `design/v1/hi-fi/shell.jsx`; `analytics` (num 13) is an addition beyond that
- * design (see the note on that entry). The AppShell nav renders entries grouped
+ * `design/v1/hi-fi/shell.jsx`; `analytics` (num 13) and `sensitive` (num 14) are
+ * additions beyond that design (see the notes on those entries). The AppShell nav renders entries grouped
  * by `group`; `App.tsx` wires each `path` to an implemented page or `<ComingSoon />`.
  */
 
@@ -53,6 +53,12 @@ export const CANONICAL_ROUTES: readonly CanonicalRoute[] = [
   // live after the hi-fi shell was drawn and was previously reachable only by
   // direct URL. Surfaced here as an observability/reporting view (AAASM-4158).
   { id: 'analytics',  num: '13', label: 'Analytics',        group: 'monitor', path: '/analytics' },
+  // Also beyond the canonical 12: the sensitive-data surface (AAASM-5360), which
+  // reads the AAASM-5359 projection routes. It sits in `control` beside Secret
+  // Scrubbing because the two answer adjacent questions — Scrub is the detector
+  // catalogue and the redaction posture, this is what was actually detected,
+  // decided and (where anything recorded it) prevented.
+  { id: 'sensitive',  num: '14', label: 'Sensitive Data',   group: 'control', path: '/sensitive-data' },
 ] as const
 
 export const ROUTE_GROUPS: readonly RouteGroup[] = ['monitor', 'control', 'manage'] as const
