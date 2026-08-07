@@ -1406,10 +1406,20 @@ capabilities:
     target_level: "per-agent MCP policy and per-agent MCP audit do not exist and must not be claimed"
     tickets: [AAASM-5533]
     notes: >-
-      The only gateway-bound pre-dial block in the system. Mediation is COUPLED
-      to whole-machine MitM: the only supported route sets
-      AA_PROXY_GATEWAY_ENDPOINT and forces AA_PROXY_LLM_ONLY=false
-      (aa-cli/src/commands/proxy/start.rs:128-135; aa-runtime/src/runtime.rs:246-259).
+      The only gateway-bound pre-dial block in the system. Mediation is coupled
+      to whole-machine MitM on the CONVENIENCE path, not in the mechanism. Both
+      MANAGED routes — `aasm proxy start --gateway <url>`
+      (aa-cli/src/commands/proxy/start.rs:128-135) and an aa-runtime-spawned
+      proxy (aa-runtime/src/runtime.rs:246-259) — set AA_PROXY_GATEWAY_ENDPOINT
+      and force AA_PROXY_LLM_ONLY=false, widening TLS MitM to every host on the
+      machine. WITHDRAWN: "the only supported route". Settled from source at the
+      base commit 299de3883 — should_mitm (aa-proxy/src/proxy/mod.rs:1385-1389)
+      is `detect_api(host) != Unknown` OR a mitm_hosts match, and the llm_only
+      branch at :1333 consults it, so AA_PROXY_GATEWAY_ENDPOINT together with
+      AA_PROXY_MITM_HOSTS adjudicates exactly the named hosts with llm_only left
+      TRUE. The targeted configuration EXISTS; what is missing is a CLI flag that
+      produces it and any page saying so — recommendation F7 in the companion, an
+      ergonomics and documentation gap, NOT an absent capability.
 
   - id: M2
     domain: mcp
