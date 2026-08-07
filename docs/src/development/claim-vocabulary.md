@@ -896,6 +896,17 @@ clean one (ADR 0034 §6.4).
 | **Included in this repository** | `docs/src/**`, `README.md`, `**/README.md` (any depth), `CONTRIBUTING.md`, `.claude/**` |
 | **Excluded by default** | `verification-reports/**`, `.ai/**`, `scratchpad/**`, `target/**`, `node_modules/**`, and any path a repository's `TRUTH-ADOPTION.md` excludes |
 
+**Three root pages are deliberately not listed, and the omission is tracked, not
+accidental.** `SECURITY.md`, `RELEASING.md` and `CHANGELOG.md` are reader-facing
+and none is currently known to carry a violation, but adding them moves the
+baseline in [§8.1](#81-two-corpora-and-why-the-baseline-must-cover-the-larger-one)
+and the question deserves deciding on its merits rather than inside this page.
+`SECURITY.md` is the one that matters — a security researcher's first stop, and
+exactly the page that attracts absolute phrasing about what the product prevents.
+Whether the three come into scope is
+[AAASM-5673](https://lightning-dust-mite.atlassian.net/browse/AAASM-5673); until
+it decides, they are out.
+
 `verification-reports/**` is excluded because it is an L6 evidence layer whose
 job is to *record measurements*, including quoting overstatements in order to
 disprove them; content-ownership.md's layer table already states that L6 must
@@ -954,7 +965,7 @@ the one thing the two documents above leave to the caller.
 | Field | For a claim-wording waiver |
 | --- | --- |
 | `id` | Stable identifier, referenced from the waived text so a reader of the page can find the waiver |
-| `rule` | The **waivable** rule — a D-dimension of ADR 0034 §2.1's tuple, or Rule M. Not a prose description. Since the AAASM-5671 amendment, an ADR 0033 forbidden design, including forbidden design 7's banned absolutes, is **never a legal value** here; a `CLAIM-ABS-*` or `CLAIM-VERB-01` id is validated and then not applied — [§7.4](#74-banned-absolutes-are-unwaivable) |
+| `rule` | The **waivable** rule — a D-dimension of ADR 0034 §2.1's tuple, or Rule M. Not a prose description. Since the AAASM-5671 amendment, an ADR 0033 forbidden design, including forbidden design 7's banned absolutes, is **unwaivable** and is never a legal value here; a `CLAIM-ABS-*` or `CLAIM-VERB-01` id is validated and then not applied — [§7.4](#74-banned-absolutes-are-unwaivable) |
 | `text` | The **exact string** permitted, byte for byte, including case. A waiver covers a string, never a page, a section or a topic |
 | `scope` | Repository, path, and the surface(s). A waiver for a T6 sentence does not travel to the T4 page it was derived from |
 | `justification` | Why the rule cannot be satisfied by rewording. *"The reviewer preferred it"* is not a justification; *"the manifest row is being re-derived under AAASM-nnnn and lands next week"* is. A justification that amounts to *the claim is not supported but we want to publish it* is the case [§7.4](#74-banned-absolutes-are-unwaivable) forbids |
