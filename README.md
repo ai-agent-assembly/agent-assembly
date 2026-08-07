@@ -142,8 +142,8 @@ fixed pipeline, and each one holds a stated boundary — lowest-latency first:
   leaves the machine, without changing the *agent's* own code. It must be
   installed, started, routed to (`HTTPS_PROXY`) and have its CA trusted, and
   `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
-  Linux and macOS; on macOS `cargo install aa-proxy` is the only channel that
-  ships it.
+  Linux and macOS; on macOS no release asset or Homebrew formula ships it, so
+  `cargo install aa-proxy` is the only channel that does.
 - **eBPF** (`aa-ebpf*`) — **Linux only**, published to crates.io only, and its
   one enforcing program is off by default. It *observes* TLS, file and exec
   activity and *detects* findings; it does not deny an action before it runs.
