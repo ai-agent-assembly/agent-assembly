@@ -168,6 +168,16 @@ HEADING = re.compile(r"^#{1,6}\s")
 # "no `waiver-approver`" reads as "no waiver-approver" to the negation list.
 MARKUP = re.compile(r"[`*_]")
 
+# Link targets and bare URLs are dropped before matching. A heading slug is this
+# check's vocabulary with the spaces removed —
+# `#74-banned-absolutes-are-never-waivable` contains the anchor "banned-absolutes"
+# and the grant "waivable", but not the denial "never waivable", which needs a
+# space. A correctly named section therefore accused itself, and the AAASM-5598
+# lane hit twelve of these on one page. A URL is never the sentence making the
+# claim, so removing targets is both the fix and a precision win.
+LINK_TARGET = re.compile(r"\](\([^)]*\))")
+BARE_URL = re.compile(r"<?https?://[^\s>)]+>?")
+
 # Segment boundaries: sentence enders followed by space, and table-cell pipes. The
 # trailing-whitespace requirement is load-bearing — without it "§2.1" and "0033:607"
 # split mid-reference and separate a denial from the absolute it denies.
@@ -191,7 +201,32 @@ class Finding:
 
 
 def _strip_markup(text: str) -> str:
-    return MARKUP.sub("", text)
+    return _normalise(text, [0] * len(text))[0]
+
+
+def _normalise(joined: str, line_of: list[int]) -> tuple[str, list[int]]:
+    """Drop markup, link targets and bare URLs, keeping a per-character line map.
+
+    Every removal is a deletion of whole characters, so the map is rebuilt in the
+    same pass rather than inferred afterwards — an offset that points at the wrong
+    line turns a real finding into an unfollowable one.
+    """
+    drop = bytearray(len(joined))
+    for match in LINK_TARGET.finditer(joined):
+        for i in range(match.start(1), match.end(1)):
+            drop[i] = 1
+    for match in BARE_URL.finditer(joined):
+        for i in range(match.start(), match.end()):
+            drop[i] = 1
+
+    out: list[str] = []
+    lines: list[int] = []
+    for i, ch in enumerate(joined):
+        if drop[i] or MARKUP.match(ch):
+            continue
+        out.append(ch)
+        lines.append(line_of[i])
+    return "".join(out), lines
 
 
 def _excerpt(text: str, limit: int = 160) -> str:
@@ -337,9 +372,7 @@ def _scan_block(path: str, block: list[tuple[int, str]]) -> list[Finding]:
         joined += raw
         line_of.extend([lineno] * len(raw))
 
-    normalised = _strip_markup(joined)
-    # _strip_markup only deletes characters, so rebuild the offset map alongside it.
-    kept_lines = [line_of[i] for i, ch in enumerate(joined) if not MARKUP.match(ch)]
+    normalised, kept_lines = _normalise(joined, line_of)
 
     lowered_block = normalised.lower()
     segments = _segments(normalised)
@@ -619,6 +652,18 @@ _MUST_PASS = [
         "<!-- truth-exempt: external-term - a vendor product name we cannot paraphrase -->\n"
         "The product is marketed as Immutable Audit Vault.\n"
         "<!-- /truth-exempt -->\n",
+    ),
+    # Heading slugs carry this check's vocabulary with the spaces removed; a
+    # correctly named section must not accuse itself.
+    ("slug in a bare link", "See [§7.4](#74-banned-absolutes-are-never-waivable) for the rule.\n"),
+    (
+        "slug in a table of contents entry",
+        "- [7.4 Banned absolutes are never waivable](#74-banned-absolutes-are-never-waivable)\n",
+    ),
+    (
+        "slug in a wrapped sentence",
+        "The banned-absolutes rule lives at\n"
+        "[7.4](#74-banned-absolutes-are-never-waivable) and is enforced on every page.\n",
     ),
     (
         "properly exempted historical text",
