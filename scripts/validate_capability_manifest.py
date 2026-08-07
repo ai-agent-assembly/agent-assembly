@@ -941,10 +941,38 @@ def _declaration_matches(entry: dict, manifest_value, other_value) -> bool:
     return manifest_set - other_set == adds and other_set - manifest_set == omits
 
 
-def check_cross_representation(doc: dict, rep: Report) -> None:
+def _id_map(items, where: str, rep: Report) -> dict:
+    """id -> row, counting the entries that are not mappings instead of crashing.
+
+    R2-F3. `{row.get("id"): row for row in …}` raises `AttributeError` on a
+    non-mapping entry, which exits non-zero with a stack trace and no `[R16]`
+    finding — a gate failing for the wrong reason, and the same crash shape
+    AAASM-5678's own description recorded against the seed (tracked as
+    AAASM-5692). It also made the `skipped` branch below unreachable, because
+    nothing survived to be counted as unparseable.
+    """
+    out = {}
+    malformed = 0
+    for index, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            malformed += 1
+            rep.error(
+                f"{where}[{index}]",
+                "R16",
+                f"entry is a {type(item).__name__}, not a mapping, so it has no id and "
+                "cannot be compared",
+            )
+            continue
+        out[item.get("id")] = item
+    if malformed:
+        rep.count("R16", f"{where}: {malformed} entr(ies) are not mappings and were not indexed")
+    return out
+
+
+def check_cross_representation(doc: dict, rep: Report, is_canonical: bool) -> None:
     """R16. The three representations agree, or the disagreement is declared."""
     meta = doc.get("meta") or {}
-    rows = {row.get("id"): row for row in (doc.get("capabilities") or [])}
+    rows = _id_map(doc.get("capabilities"), "capabilities", rep)
 
     seed_path = ((meta.get("sources") or {}).get("seed")) or ""
     if not seed_path:
@@ -955,7 +983,7 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
     except (OSError, yaml.YAMLError) as exc:
         rep.error("meta.sources.seed", "R16", f"{seed_path} could not be read as YAML: {exc}")
         return
-    seed_rows = {row.get("id"): row for row in ((seed_doc or {}).get("capabilities") or [])}
+    seed_rows = _id_map((seed_doc or {}).get("capabilities"), f"{seed_path}:capabilities", rep)
 
     shared = sorted(set(rows) & set(seed_rows))
     only_manifest = sorted(set(rows) - set(seed_rows))
@@ -967,25 +995,39 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
     )
     contract = meta.get("cross_representation")
     if not shared:
-        # Found by sweeping the F1 hazard rather than fixing it only where it was
-        # reported. Repointing `meta.sources.seed` at any YAML that shares no id
-        # turned the whole comparison off from inside the artifact — exit 0, no
-        # error, "no id is shared" printed as though it were a measurement. A
-        # document that declares the contract is asserting the two representations
-        # describe the same rows, so an empty intersection is a failure, not a skip.
-        if contract:
+        # The same hazard, third instance. Round 2 guarded this only inside
+        # `if contract:`, so the bypass survived with one extra edit: repoint
+        # `meta.sources.seed` AND delete `meta.cross_representation` and R16 went
+        # entirely quiet at exit 0 — while printing the "no id is shared" line,
+        # which reads like a measurement. A gate that narrates its own bypass
+        # manufactures the evidence that nothing is wrong.
+        #
+        # The skip is load-bearing for fixtures: 30 of the 38 in
+        # governance/testdata point at the real 80-row seed, share no id with it,
+        # and declare no contract. So the discriminator is not the contract, and
+        # not "the seed must have rows" (a one-row seed defeats that) — it is
+        # WHICH DOCUMENT is being validated. The repository's own manifest must
+        # always compare; a fixture may legitimately not.
+        if contract or is_canonical:
+            why = (
+                "declares meta.cross_representation"
+                if contract
+                else "is the repository's own capability manifest"
+            )
             rep.error(
                 "meta.sources.seed",
                 "R16",
-                f"this document declares meta.cross_representation but shares no row id "
-                f"with {seed_path}, so nothing was compared. Either the seed is the wrong "
-                "file or the contract describes a comparison that cannot happen",
+                f"this document {why} but shares no row id with {seed_path}, so nothing was "
+                "compared. Either the seed is the wrong file or the contract describes a "
+                "comparison that cannot happen. R16 is not switchable off from inside the "
+                "artifact it gates",
             )
         else:
             rep.count(
                 "R16",
-                "no id is shared with the seed and no contract is declared, so the two "
-                "documents describe different populations and no field pair was compared",
+                "no id is shared with the seed, this is not the canonical manifest, and no "
+                "contract is declared, so the two documents describe different populations "
+                "and no field pair was compared",
             )
         return
 
@@ -1521,7 +1563,7 @@ def check_channel_vocabulary(doc: dict, rep: Report) -> None:
         )
 
 
-def validate(doc: dict, rep: Report, use_git: bool) -> None:
+def validate(doc: dict, rep: Report, use_git: bool, is_canonical: bool = False) -> None:
     check_vocabulary_constants(rep)
 
     version = str(doc.get("manifest_version", ""))
@@ -1589,7 +1631,13 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
 
     # R16 and R17 read files off disk rather than the row in hand, so they run
     # once per document and outside the row loop. Neither needs git.
-    check_cross_representation(doc, rep)
+    #
+    # `is_canonical` says whether the document under test IS
+    # governance/capability-manifest.yaml. R16's empty-intersection case is an
+    # error for that document and a skip for a fixture, which is what keeps the
+    # rule un-switchable-off without breaking the 30 fixtures that legitimately
+    # share no id with the seed they name.
+    check_cross_representation(doc, rep, is_canonical)
     check_channel_vocabulary(doc, rep)
 
 
@@ -1630,7 +1678,11 @@ def main() -> int:
         return 2
 
     rep = Report()
-    validate(doc, rep, use_git)
+    try:
+        is_canonical = args.manifest.resolve() == MANIFEST.resolve()
+    except OSError:
+        is_canonical = False
+    validate(doc, rep, use_git, is_canonical)
 
     for line in rep.counts:
         print(f"count: {line}")
