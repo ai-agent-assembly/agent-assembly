@@ -59,7 +59,10 @@
 //! together, and none of them may raise a comparison to `Match`. `core_version`
 //! is carried and compared because it can *falsify* — two different versions
 //! cannot be one build — but a version string cannot verify: two checkouts sat
-//! at the same version in the failure this module exists to prevent.
+//! at the same version in the failure this module exists to prevent. A peer
+//! that does not state one has withheld the falsifier, and that too is an
+//! absence rather than an agreement, so it yields `Unverifiable` rather than a
+//! `Match` on the SHA alone (AAASM-5670).
 //!
 //! # Why the constants are compiled in
 //!
@@ -228,8 +231,14 @@ impl BuildIdentity {
     /// 2. **A non-authoritative SHA on either side ends it.** Neither peer has
     ///    established what it is, so the relationship is *unverifiable*. Never
     ///    a match: `unknown` vs `unknown` proves only shared ignorance.
-    /// 3. **Two authoritative SHAs decide.** Equal is the only `Match` this
-    ///    function can return, and it names `build_sha` as what proved it.
+    /// 3. **Two authoritative SHAs that differ decide.** A positive refutation
+    ///    stands whatever the versions did or did not say.
+    /// 4. **A version neither side stated withholds the `Match`.** `Match` is
+    ///    the only outcome that requires *both* peers to have stated a version:
+    ///    the field is carried because it can falsify, and a peer that omits it
+    ///    has withheld the falsifier rather than passed it (AAASM-5670). Equal
+    ///    is the only `Match` this function can return, and it names
+    ///    `build_sha` as what proved it — a version can never be `proved_by`.
     ///
     /// Nothing else is consulted. `pid`, executable name, executable path,
     /// DI-API version and package version are not proof of identical build
@@ -265,8 +274,11 @@ impl BuildIdentity {
             self.sha_source.is_authoritative() && other.sha_source.is_authoritative(),
         ));
 
-        // 1. A version disagreement falsifies outright.
-        if !self.core_version.is_empty() && !other.core_version.is_empty() && self.core_version != other.core_version {
+        // 1. A version disagreement falsifies outright. Both sides must have
+        //    stated one for them to disagree; an unstated version is handled at
+        //    step 4, where it withholds a `Match` instead of granting one.
+        let version_stated = !self.core_version.is_empty() && !other.core_version.is_empty();
+        if version_stated && self.core_version != other.core_version {
             return IdentityComparison::Mismatch { fields };
         }
 
@@ -276,14 +288,30 @@ impl BuildIdentity {
             return IdentityComparison::Unverifiable { fields };
         }
 
-        // 3. Two authoritative SHAs settle it either way.
-        if self.build_sha == other.build_sha {
-            IdentityComparison::Match {
-                proved_by: "build_sha",
-                fields,
-            }
-        } else {
-            IdentityComparison::Mismatch { fields }
+        // 3. Two authoritative SHAs that differ settle it, whatever the versions
+        //    did. An unstated version must not *soften* a positive finding —
+        //    removing the waiver is about refusing to conclude sameness, not
+        //    about retracting a refutation the operator needs to act on.
+        if self.build_sha != other.build_sha {
+            return IdentityComparison::Mismatch { fields };
+        }
+
+        // 4. Equal SHAs, but a side that never stated its version has withheld
+        //    the one field in this message that could have contradicted them
+        //    (AAASM-5670). Proto3 gives a string no way to distinguish "unset"
+        //    from "empty", so an empty `core_version` is an *absence*, and
+        //    absence is not agreement — the same rule ADR 0030 §5.4a applies to
+        //    a non-authoritative SHA, one field over. Waiving the falsifier and
+        //    matching on `build_sha` alone would let a peer skip the check by
+        //    saying less, which is the wrong direction for a check that exists
+        //    to catch a confident wrong answer.
+        if !version_stated {
+            return IdentityComparison::Unverifiable { fields };
+        }
+
+        IdentityComparison::Match {
+            proved_by: "build_sha",
+            fields,
         }
     }
 
@@ -1071,6 +1099,84 @@ mod tests {
                 "got {comparison:?}"
             );
         }
+    }
+
+    /// AAASM-5670 — a peer that did not state a version cannot reach `Match`,
+    /// even when the SHAs are equal and authoritative.
+    ///
+    /// `core_version` is carried *because it can falsify*. A peer that omits it
+    /// (proto3's default for a string is the empty one, so "unset" and "empty"
+    /// are the same wire) has withheld the only field in the message that could
+    /// contradict the SHA. Reading that silence as consent is the same error
+    /// ADR 0030 §5.4a rejects for `unknown` SHAs, one field over.
+    ///
+    /// The two halves of this test are its own positive control: the *only*
+    /// difference between them is whether the peer stated a version, and the
+    /// second half must still be a `Match` — otherwise the first half would
+    /// pass under a `compare` that never matched anything.
+    #[test]
+    fn an_absent_peer_version_is_unverifiable_even_with_equal_shas() {
+        let sha = "1234567890abcdef1234567890abcdef12345678";
+        let me = identity("0.0.1-rc.7", sha);
+        let silent_peer = identity("", sha);
+
+        let comparison = me.compare(&silent_peer);
+        assert!(
+            matches!(comparison, IdentityComparison::Unverifiable { .. }),
+            "a withheld version is an absence, not an agreement: {comparison:?}"
+        );
+        assert!(
+            comparison.named(FieldStatus::Absent).contains(&"core_version"),
+            "the diagnostic must name the field that was not stated: {comparison:?}"
+        );
+
+        // Positive control: the identical comparison with the version present
+        // is still a Match, so the assertion above is about the absence and not
+        // about `compare` having been made unable to match at all.
+        let speaking_peer = identity("0.0.1-rc.7", sha);
+        assert!(
+            matches!(me.compare(&speaking_peer), IdentityComparison::Match { .. }),
+            "a stated, agreeing version must still reach Match"
+        );
+    }
+
+    /// AAASM-5670 — the rule is symmetric: a *local* build with no version
+    /// cannot reach `Match` either.
+    ///
+    /// Both sides run the same comparison in opposite directions, so a fix that
+    /// only inspected the peer would leave half the case open.
+    #[test]
+    fn an_absent_version_is_unverifiable_in_both_directions() {
+        let sha = "1234567890abcdef1234567890abcdef12345678";
+        let silent = identity("", sha);
+        let speaking = identity("0.0.1-rc.7", sha);
+
+        for (left, right) in [(&silent, &speaking), (&speaking, &silent)] {
+            let comparison = left.compare(right);
+            assert!(
+                matches!(comparison, IdentityComparison::Unverifiable { .. }),
+                "got {comparison:?}"
+            );
+        }
+    }
+
+    /// AAASM-5670 — an absent version must not *rescue* a differing SHA.
+    ///
+    /// The waiver is being removed in the direction that refuses to conclude
+    /// sameness; it must not become a blanket "we cannot tell". Two
+    /// authoritative, differing SHAs are still a positive finding, and the
+    /// operator is still told the runtime is the wrong build.
+    #[test]
+    fn an_absent_version_does_not_soften_a_differing_sha() {
+        let me = identity("0.0.1-rc.7", "1111111111111111111111111111111111111111");
+        let silent_peer = identity("", "2222222222222222222222222222222222222222");
+
+        let comparison = me.compare(&silent_peer);
+        assert!(
+            matches!(comparison, IdentityComparison::Mismatch { .. }),
+            "differing authoritative SHAs still falsify: {comparison:?}"
+        );
+        assert_eq!(comparison.named(FieldStatus::Mismatched), vec!["build_sha"]);
     }
 
     /// TEST 5 — two official packaged artifacts from one commit are a Match.

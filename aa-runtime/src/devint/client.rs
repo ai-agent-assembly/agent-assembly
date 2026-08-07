@@ -26,6 +26,7 @@
 //! the server has an independent consumer in its tests.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::UnixStream;
@@ -38,6 +39,42 @@ use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
 use super::socket::{self, SocketDiscovery};
 use super::verb::DiVerb;
 use aa_core::integration::LIFECYCLE_SCHEMA_VERSION;
+
+/// How long the DI-API handshake may take before the runtime is treated as
+/// non-responsive (AAASM-5667).
+///
+/// Neither half of the handshake is bounded by anything else: `connect` can
+/// wait on a full backlog, and the `HelloAck` read waits forever against a peer
+/// that accepted the connection and then said nothing. `aasm` opens this
+/// handshake on every `integrations` invocation, so without a bound a
+/// same-UID process that binds `devint.sock` and never answers hangs the CLI
+/// outright. Same-UID is already inside the trust boundary (ADR 0030 §5.1) —
+/// this is an availability bound, not an authentication one.
+///
+/// Generous by design. A healthy runtime answers `Hello` as soon as it accepts,
+/// so the only thing this delays is a diagnosis; making it tight would risk
+/// turning a loaded machine into a spurious "runtime not responding".
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The error a handshake that ran out of time reports.
+///
+/// Deliberately an `io::ErrorKind::TimedOut` inside the existing
+/// [`ClientError::Transport`] rather than a new enum variant: `ClientError` is
+/// a public, exhaustively-matchable enum, and adding a variant would be a
+/// source break for out-of-crate callers — the very kind of break AAASM-5669
+/// is about. The sentence names the socket and the bound, so the diagnostic
+/// loses nothing by travelling in the existing variant.
+fn handshake_timed_out(path: &Path, timeout: Duration) -> ClientError {
+    ClientError::Transport(DiCodecError::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "the runtime at {} did not complete the DI-API handshake within {:?}; \
+             it may be a process that bound the socket without serving it",
+            path.display(),
+            timeout
+        ),
+    )))
+}
 
 /// Why a client call did not produce a response.
 #[derive(Debug)]
@@ -229,11 +266,52 @@ impl DevIntClient {
         capability_token: Option<String>,
         di_api_versions: Vec<u32>,
     ) -> Result<Self, ClientError> {
+        Self::connect_within(
+            path,
+            client_name,
+            client_version,
+            capability_token,
+            di_api_versions,
+            HANDSHAKE_TIMEOUT,
+        )
+        .await
+    }
+
+    /// [`Self::connect_inner`] with the handshake bound supplied, so a test
+    /// need not wait out [`HANDSHAKE_TIMEOUT`] to prove the bound exists.
+    async fn connect_within(
+        path: &Path,
+        client_name: &str,
+        client_version: &str,
+        capability_token: Option<String>,
+        di_api_versions: Vec<u32>,
+        timeout: Duration,
+    ) -> Result<Self, ClientError> {
         if !path.exists() {
             return Err(ClientError::RuntimeNotRunning {
                 path: path.to_path_buf(),
             });
         }
+        let handshake = Self::handshake(path, client_name, client_version, capability_token, di_api_versions);
+        match tokio::time::timeout(timeout, handshake).await {
+            Ok(result) => result,
+            Err(_) => Err(handshake_timed_out(path, timeout)),
+        }
+    }
+
+    /// Connect, say `Hello`, and read the answer.
+    ///
+    /// Everything here is unbounded on its own — `connect` can wait on a full
+    /// backlog and `read_response_frame` waits forever on a peer that accepted
+    /// and then said nothing — which is why it is only ever reached through
+    /// [`Self::connect_within`].
+    async fn handshake(
+        path: &Path,
+        client_name: &str,
+        client_version: &str,
+        capability_token: Option<String>,
+        di_api_versions: Vec<u32>,
+    ) -> Result<Self, ClientError> {
         let stream = UnixStream::connect(path)
             .await
             .map_err(|e| ClientError::Transport(DiCodecError::Io(e)))?;
@@ -407,6 +485,80 @@ mod tests {
         DevIntClient::connect(server.socket_path(), "reference-client", "0.1.0", token)
             .await
             .expect("connect")
+    }
+
+    /// AAASM-5667 — a peer that accepts the connection and never answers must
+    /// fail the handshake on a deadline, not hold the caller forever.
+    ///
+    /// This is the shape a same-UID process that binds `devint.sock` without
+    /// serving it takes: `connect()` succeeds, `Hello` is written, and the
+    /// `HelloAck` read never completes. Before the bound existed there was no
+    /// error to return and no time at which the call gave up.
+    #[tokio::test]
+    async fn a_socket_that_accepts_and_never_answers_fails_on_a_deadline() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("devint.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        // Accept and hold the connection open, answering nothing at all. The
+        // guard keeps the accepted stream alive so the client's read blocks
+        // rather than seeing EOF.
+        let stalled = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            std::future::pending::<()>().await;
+            drop(stream);
+        });
+
+        let started = std::time::Instant::now();
+        let error = DevIntClient::connect_within(
+            &path,
+            "reference-client",
+            "0.1.0",
+            None,
+            vec![DI_API_MAX_SUPPORTED],
+            Duration::from_millis(200),
+        )
+        .await
+        .err()
+        .expect("a runtime that never answers must not produce a client");
+        let elapsed = started.elapsed();
+        stalled.abort();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the handshake must give up on its own deadline, took {elapsed:?}"
+        );
+        match error {
+            ClientError::Transport(DiCodecError::Io(io)) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::TimedOut, "{io}");
+                assert!(
+                    io.to_string().contains("did not complete the DI-API handshake"),
+                    "the diagnostic must say what timed out: {io}"
+                );
+            }
+            other => panic!("expected a timed-out transport error, got {other:?}"),
+        }
+    }
+
+    /// **Positive control** for the test above: the same bound, against a real
+    /// server, still produces a negotiated client.
+    ///
+    /// Without this, a `connect_within` that always timed out — or one whose
+    /// deadline was far too tight to be usable — would pass the stall test
+    /// while breaking every real connection.
+    #[tokio::test]
+    async fn the_same_bound_still_admits_a_runtime_that_answers() {
+        let server = TestServer::start(FakeLifecycle::default()).await;
+        let client = DevIntClient::connect_within(
+            server.socket_path(),
+            "reference-client",
+            "0.1.0",
+            None,
+            vec![DI_API_MAX_SUPPORTED],
+            Duration::from_millis(200),
+        )
+        .await
+        .expect("a responsive runtime must still negotiate");
+        assert_eq!(client.negotiated().di_api_version, DI_API_MAX_SUPPORTED);
     }
 
     #[tokio::test]

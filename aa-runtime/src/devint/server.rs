@@ -90,7 +90,18 @@ impl DevIntServerConfig {
 /// Everything a connection needs to serve a verb.
 ///
 /// Cloned per connection; every field is cheap to clone.
+///
+/// # `#[non_exhaustive]` (AAASM-5669)
+///
+/// This struct is `pub` with `pub` fields in a **published** crate, so every
+/// field added to it is a source break for any out-of-crate struct literal —
+/// `provenance` already was one. Marking it non-exhaustive moves that cost to
+/// this commit and pays it once: from here, callers build it through
+/// [`Self::new`] plus the `with_*` seams, and adding a field is additive.
+/// It is not an API removal and not an ABI change; see
+/// `docs/src/compatibility.md`.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct DevIntServices {
     /// The nine lifecycle operations.
     pub lifecycle: Arc<dyn IntegrationLifecycle>,
@@ -116,6 +127,19 @@ impl DevIntServices {
             audit,
             provenance: Arc::new(RuntimeProvenance::detect()),
         }
+    }
+
+    /// The same services, answering with `provenance` rather than the running
+    /// process's own.
+    ///
+    /// The seam [`Self::new`] cannot cover, and the reason it is `pub`: serving
+    /// a *different* build's identity over a real socket is the only way to
+    /// reproduce the mismatch the DI-API's provenance check exists to catch
+    /// without producing two actual compilations of the runtime. `aa-cli`'s
+    /// provenance tests are the out-of-crate caller.
+    pub fn with_provenance(mut self, provenance: Arc<RuntimeProvenance>) -> Self {
+        self.provenance = provenance;
+        self
     }
 }
 
