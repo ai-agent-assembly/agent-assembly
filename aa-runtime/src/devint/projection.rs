@@ -447,6 +447,7 @@ pub fn apply_view(receipt: &IntegrationReceipt) -> wire::ApplyView {
         steps: receipt.steps.iter().map(step_outcome_view).collect(),
         planned_level: level_name(receipt.planned_level).to_string(),
         achieved_level: level_name(receipt.achieved_level).to_string(),
+        outcome: None,
     }
 }
 
