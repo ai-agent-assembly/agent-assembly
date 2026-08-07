@@ -512,16 +512,26 @@ manifest reads as the broadest admissible value.
    rc.6 statement its two named siblings carry and still read as release truth.
    **Rule R15** requires the tag to be named on any row citing a path that
    exists at the evidence tree and not at the newest `v*` tag. Its limits,
-   stated rather than left to be discovered: it fires on a *missing* citation,
-   not a *changed* one — re-derived by comparing blob oids at the two refs, of
-   the **72** paths this manifest cites that are tracked at the evidence tree,
-   **10 are absent** at `v0.0.1-rc.6` (what R15 sees), **29 are present with
-   different content** (what it cannot see) and 33 are byte-identical, so it
-   catches the sharpest cases and not all of them; the sentence it forces is
-   author-declared, exactly as R14's `pins` is; and it
-   retires itself once a tag containing the evidence tree is cut. Where no
-   `v*` tag resolves it **warns** rather than passing — a shallow clone and a
-   repository with no releases are indistinguishable from inside the validator.
+   stated rather than left to be discovered. It fires on a *missing* citation,
+   never a *changed* one. Re-derived by comparing blob oids at the two refs —
+   over **this manifest's** citations, not the Markdown preamble's, which
+   counts a different population — of the **72** cited paths tracked at the
+   evidence tree, **10 are absent** at `v0.0.1-rc.6`, **29 are present with
+   different content**, and 33 are byte-identical.
+
+   **Those 29 are the honest limit of this rule, and they are the larger
+   number.** A row may cite any of them, describe behaviour the release does
+   not have, and R15 will not object — the path resolves at both refs, so
+   nothing distinguishes "same file, changed behaviour" from "same file, same
+   behaviour" without reading the diff. R15 buys the 10 sharpest cases, where
+   the cited artifact does not exist in the release at all. It does not make a
+   row release-true, and no consumer should read a silent R15 as saying it did.
+
+   Two further limits: the sentence R15 forces is author-declared, exactly as
+   R14's `pins` is; and the rule retires itself once a tag containing the
+   evidence tree is cut. Where no `v*` tag resolves it **warns** rather than
+   passing — a shallow clone and a repository with no releases are
+   indistinguishable from inside the validator.
 7. **Five rows were weakened — two for measured absence, three for
    unverifiability.** The distinction is the point, so the heading has to carry
    it. N4 and G8 have no located test in this repo, measured. S6, S9 and G5
@@ -608,3 +618,16 @@ is provided is the interface:
 is a minor bump. Removing a field, tightening a rule, or renaming a value is a
 **major** bump and needs a new `vN` schema directory plus a migration section
 here — consumers in other repositories pin to the major.
+
+**The bump obligation binds from first release, not from introduction.** What a
+major bump protects is a consumer that already pins the major; before
+`manifest_version 1.0.0` has been published there is no such consumer, so a new
+`vN` directory would be a migration path from nothing to nothing. Concretely:
+**R14 and R15 were both added at `1.0.0` without a bump**, under this reading,
+while the manifest was still unreleased. That is stated here rather than left
+for a reader to notice, because a page whose own repository contradicts it is
+the defect this manifest exists to remove — and because the next author is the
+one who needs to know the rule is real: **once `1.0.0` ships, tightening a rule
+is a `2.0.0` and a `schemas/capability-manifest/v2/` directory, with no
+pre-release exemption to appeal to.** "Released" here means published for
+consumption by another repository, not merged to `main`.
