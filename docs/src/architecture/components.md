@@ -125,7 +125,7 @@ policy without code changes.
 | `intercept/` | Detect, extract, and classify intercepted requests (`detect.rs`, `extract.rs`, `event.rs`), including MCP traffic (`mcp.rs`). |
 | `proxy/` | The HTTP forwarding core (`http.rs`). |
 | `mcp_enforce.rs` | MCP-specific enforcement. |
-| `audit_jsonl.rs` | Local JSONL audit fallback. |
+| `audit_jsonl.rs` | Local JSONL prevention-evidence sink: a bounded ring with size- and age-based retention, a completeness sidecar recording every deletion, and an optional segment-export seam. See [Proxy Prevention-Evidence Retention](../operations/proxy-audit-retention.md). |
 
 **Depends on:** `aa-core`, `aa-proto`, `aa-runtime`, `aa-sandbox`.
 
