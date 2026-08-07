@@ -28,6 +28,27 @@ The marker is validated too — an unknown class, a missing reason, an unclosed 
 or a heading inside a block is an error, because each of those would turn the
 exemption into a general bypass.
 
+KNOWN LIMITS
+------------
+Recorded rather than hidden, because a gate that overstates its reach is the same
+defect as a page that overstates the product's. None is closed today; each is
+diff-visible and requires deliberate construction.
+
+1. **A decoy denial clears a real pairing.** An unrelated denial standing between a
+   grant and an absolute satisfies the between-test:
+   "An expiring waiver may be approved by a waiver-approver. Evidence freshness can
+   never be waived. That mechanism covers ADR 0033's banned absolutes." — and the
+   same across adjacent table cells. Narrowing the between-test to denials that name
+   the *same* subject needs subject resolution, which this check does not have.
+2. **An absolute in one section, the grant in the next.** A heading opens the block
+   it heads, so heading-then-grant is caught, but prose-then-heading-then-grant is
+   not: no block holds both. Measured cost of closing it by carrying a block across
+   one heading boundary: two false positives on correct text in this repository
+   (`0033:919`, `content-ownership.md:756`), so it is not closed.
+3. **The block-length cap is per block, not per file.** N consecutive sub-cap
+   `truth-exempt` blocks silence arbitrarily much. Every one of them is a visible
+   marker in the diff.
+
 Usage:
     python3 scripts/check_absolutes_unwaivable.py            # scan the default set
     python3 scripts/check_absolutes_unwaivable.py PATH...    # scan specific files
