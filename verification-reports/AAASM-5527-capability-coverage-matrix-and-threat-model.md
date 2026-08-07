@@ -201,9 +201,15 @@ beneath it in this very file — see the closing note.
   | whitespace-normalised | 11 / 11 | 11 / 0 |
   | whitespace-normalised **and `>` markers stripped** | **13 / 12** | **13 / 1** |
 
-  Whitespace normalisation alone recovers **nothing**. The control moves on that
-  same pass — `AAASM` goes from 109 line-hits to 167 occurrences, so the probe is
-  live — while the marker does not, because a `>` blockquote continuation marker
+  Whitespace normalisation alone recovers **nothing**, and the discriminating
+  control is in the table's own right-hand column: case-sensitive
+  `Earlier revision` goes **0 → 0 → 1**, moving only on the strip pass, which is
+  what shows that pass ran and the one before it did not. (An earlier revision of
+  this section offered `AAASM` "109 line-hits to 167 occurrences" as the liveness
+  control. It is not one: `AAASM` is 167 occurrences under *all three* passes, so
+  that movement is a metric change — lines to occurrences — and would have looked
+  identical with no normalisation at all. A control must be something the pass
+  *changes*.) The marker does not move because a `>` blockquote continuation marker
   sits between "Earlier" and "revisions". Only stripping the marker as well
   recovers them. **Two** occurrences are hidden, not one: the `:441` one by the
   wrap alone, and the `:730` one by the wrap *and* by capitalisation
