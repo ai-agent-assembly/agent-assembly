@@ -1101,9 +1101,16 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
 
     # The Markdown companion, on coverage alone.
     companion = contract.get("seed_companion") or {}
-    companion_path = companion.get("path") or ""
+    companion_path = (meta.get("sources") or {}).get("seed_companion") or ""
     companion_fields = list(companion.get("compared_fields") or [])
-    if companion_fields != ["coverage"]:
+    if not companion_path:
+        rep.error(
+            "meta.sources",
+            "R16",
+            "meta.cross_representation declares how the companion is compared but "
+            "meta.sources.seed_companion names no file",
+        )
+    elif companion_fields != ["coverage"]:
         rep.error(
             "meta.cross_representation.seed_companion",
             "R16",

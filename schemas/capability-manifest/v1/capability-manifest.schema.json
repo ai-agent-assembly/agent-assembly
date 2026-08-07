@@ -881,7 +881,7 @@
       }
     },
     "crossrepresentation": {
-      "description": "AAASM-5678. The contract rule R16 executes: which fields of which other representations of this matrix are compared against this manifest, which are deliberately not, and which disagreements are deliberate. Without this block a disagreement between the manifest and the AAASM-5527 seed is indistinguishable from drift, because the manifest is deliberately WEAKER than the seed on rows whose evidence is `test_unlocated` and nothing recorded that in a form a machine could read.",
+      "description": "AAASM-5678. The contract rule R16 executes over the representations `meta.sources.seed` and `meta.sources.seed_companion` already name — the paths are not repeated here, so the two declarations cannot point at different files. It records which fields of those representations of this matrix are compared against this manifest, which are deliberately not, and which disagreements are deliberate. Without this block a disagreement between the manifest and the AAASM-5527 seed is indistinguishable from drift, because the manifest is deliberately WEAKER than the seed on rows whose evidence is `test_unlocated` and nothing recorded that in a form a machine could read.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -894,17 +894,12 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "path",
             "compared_fields_from_seed_schema",
             "additional_compared_fields",
             "field_renames",
             "excluded_fields"
           ],
           "properties": {
-            "path": {
-              "type": "string",
-              "minLength": 1
-            },
             "compared_fields_from_seed_schema": {
               "description": "The key under the seed's own top-level `schema` mapping whose keys name the compared fields. Reading the compared set out of the seed's own declaration is deliberate: a hand-picked subset is the defect AAASM-5678 records, where a comparison over three fields was reported as though it covered every mechanical field.",
               "type": "string",
@@ -955,15 +950,10 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "path",
             "compared_fields",
             "exclusion_reason"
           ],
           "properties": {
-            "path": {
-              "type": "string",
-              "minLength": 1
-            },
             "compared_fields": {
               "$ref": "#/definitions/stringlist"
             },

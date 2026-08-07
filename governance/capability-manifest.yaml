@@ -31,7 +31,6 @@ meta:
     seed_companion: verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
   cross_representation:
     seed:
-      path: verification-reports/AAASM-5527-capability-coverage-matrix.yaml
       compared_fields_from_seed_schema: enums
       additional_compared_fields:
       - boundary_attained
@@ -109,7 +108,6 @@ meta:
           manifest's list grows past the seed's by construction. It records provenance, not
           a claim, and equality would fail on the next ticket that cites a row.
     seed_companion:
-      path: verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
       compared_fields:
       - coverage
       exclusion_reason: >-
