@@ -440,6 +440,7 @@ written anywhere a machine could read.
 | Clause | What fails |
 |---|---|
 | Contract present | A document sharing an id with its seed and declaring no `meta.cross_representation` |
+| Comparison happens | A document that declares the contract and shares **no** id with the seed it names — repointing `meta.sources.seed` must not switch the comparison off |
 | Populations match | A row in one representation and not the other |
 | Partition total | A field the schema allows that is neither compared nor named as excluded, or one named twice |
 | Per-field agreement | Any divergence with no declaration naming that row, that field and that exact pair of values |
@@ -477,6 +478,16 @@ full list differs per row while the delta does not, and the AAASM-5527 survey
 never enumerated the channel — its own `schema.enums` has eight channel values
 and `ghcr` is not among them. R16 flagged all of them as undeclared on the first
 run of that change, which is the rule doing its job on work written after it.
+
+**Two rules, one hazard, swept rather than patched.** R16 and R17 each had a
+clause whose driver lived in the manifest they gate, so one edit to the artifact
+retired the check and the denominator that would have shown it. R17 clause 3
+iterated the channels appearing *in* `meta.channel_absences`; R16 returned early
+whenever `meta.sources.seed` named a document sharing no row id, printing "no id
+is shared" as though it were a measurement. Both were exit 0. The review found
+the first; the second came from asking where else the same shape occurs, which
+is the only way that question gets answered — a hazard you have named is one to
+sweep for, not to fix where you happened to notice it.
 
 **Scope, stated rather than overclaimed.**
 
