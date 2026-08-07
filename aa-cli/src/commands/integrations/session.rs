@@ -322,7 +322,7 @@ pub async fn connect_with<S: RuntimeSpawner>(
 ///
 /// A count above one **proves** ambiguity: those sockets were connected to, so
 /// those runtimes exist. A count of one proves nothing in the other direction,
-/// because the scan has three limits and each of them can hide a runtime:
+/// because the scan has four limits and each of them can hide a runtime:
 ///
 /// 1. **Name-filtered.** Only files matching `devint*.sock` are probed, so a
 ///    runtime bound to any other name is invisible.
@@ -331,6 +331,11 @@ pub async fn connect_with<S: RuntimeSpawner>(
 ///    makes easy — is not seen unless it is the one that answered.
 /// 3. **Point in time.** The scan runs once, as the session opens. A runtime
 ///    that binds a moment later is not counted.
+/// 4. **Time-bounded.** Each socket is probed under a deadline the whole scan
+///    shares, so a socket that does not complete a connection in time is not
+///    reported (AAASM-5667). Waiting instead would let any same-UID process
+///    that binds a `devint*.sock` and never accepts hang this command — the one
+///    an operator runs to find out which runtime is answering.
 ///
 /// So `reachable_runtimes == 1` means "nothing else was found", never "nothing
 /// else is listening", and no surface may present it as a uniqueness guarantee.

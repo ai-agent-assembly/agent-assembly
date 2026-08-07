@@ -44,6 +44,8 @@
 
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::net::UnixListener;
 
@@ -61,6 +63,18 @@ const SOCKET_NAME_PREFIX: &str = "devint";
 
 /// What a DI-API socket's file name ends with, for [`reachable_runtimes`].
 const SOCKET_NAME_SUFFIX: &str = ".sock";
+
+/// How long a whole [`reachable_runtimes`] scan may take before the sockets
+/// that have not answered are treated as unreachable (AAASM-5667).
+const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// The most `devint*.sock` entries one scan will probe.
+///
+/// The scan runs on every `aasm integrations` invocation and each entry costs a
+/// thread; the count that can *legitimately* appear is one per running runtime,
+/// so a directory holding more than this is already anomalous. The cap keeps
+/// the anomaly from becoming an unbounded amount of work.
+const MAX_PROBED_SOCKETS: usize = 32;
 
 /// Required mode for the directory holding the socket.
 pub const REQUIRED_DIR_MODE: u32 = 0o700;
@@ -187,17 +201,79 @@ pub fn discover(path: &Path) -> SocketDiscovery {
 /// Returns sorted paths so a diagnostic naming several runtimes is stable
 /// between runs. Unreadable directories yield an empty list rather than an
 /// error: not being able to enumerate is not evidence of a second runtime.
+///
+/// # The scan is bounded in time and in count (AAASM-5667)
+///
+/// `connect()` on a unix socket is not the instant operation it looks like. On
+/// Linux, once a listener's backlog is full and nothing is calling `accept()`,
+/// a blocking `connect()` **waits indefinitely** for room. This scan runs on
+/// every `aasm integrations` invocation, over every `devint*.sock` in the
+/// directory, so any same-UID process that binds a matching name and never
+/// accepts could otherwise hang the CLI — in exactly the command an operator
+/// reaches for to diagnose a misbehaving runtime.
+///
+/// Same-UID is already inside the trust boundary (ADR 0030 §5.1), so this is an
+/// **availability** property and not an authentication one. It is fixed by
+/// bounding the wait rather than by trying to authenticate the probe: each
+/// candidate is probed on its own thread and the scan gives them
+/// [`PROBE_TIMEOUT`] in total, after which whatever has not answered is simply
+/// not reported. A probe thread that is still blocked is abandoned; it is
+/// holding no lock and the process it belongs to (`aasm`) is short-lived.
+///
+/// Under-reporting is the safe direction and is already part of this function's
+/// contract: a count above one *proves* ambiguity, a count of one proves
+/// nothing (see `survey_runtimes` in `aa-cli`, which enumerates the scan's
+/// limits). A socket that will not answer within the bound is a **fourth**
+/// limit of the same kind. Waiting instead would trade a documented
+/// under-count for a hang.
 pub fn reachable_runtimes(dir: &Path) -> Vec<PathBuf> {
+    reachable_within(dir, PROBE_TIMEOUT, Arc::new(connects))
+}
+
+/// [`reachable_runtimes`] with the bound and the probe supplied.
+///
+/// A seam for the tests: the OS-level stall this guards against is Linux-only
+/// (macOS refuses a connection to a full backlog instead of blocking), so the
+/// *bounding* has to be verifiable independently of the platform that can
+/// produce the stall.
+fn reachable_within(dir: &Path, timeout: Duration, probe: Arc<dyn Fn(&Path) -> bool + Send + Sync>) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
 
-    let mut found: Vec<PathBuf> = entries
+    let mut candidates: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| is_devint_socket_name(path))
-        .filter(|path| is_listening(path))
+        .filter(|path| is_socket_inode(path))
         .collect();
+    // Sorted before truncating so which entries survive the cap is stable
+    // between runs rather than left to directory order.
+    candidates.sort();
+    candidates.truncate(MAX_PROBED_SOCKETS);
+
+    let deadline = Instant::now() + timeout;
+    let (tx, rx) = std::sync::mpsc::channel();
+    for path in candidates {
+        let tx = tx.clone();
+        let probe = Arc::clone(&probe);
+        std::thread::spawn(move || {
+            let reachable = probe(&path);
+            // The receiver may already have given up; that is the timeout doing
+            // its job, not an error.
+            let _ = tx.send((path, reachable));
+        });
+    }
+    // The loop below ends on disconnect, which cannot happen while this clone
+    // is alive.
+    drop(tx);
+
+    let mut found = Vec::new();
+    while let Ok((path, reachable)) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        if reachable {
+            found.push(path);
+        }
+    }
     found.sort();
     found
 }
@@ -215,10 +291,21 @@ fn is_devint_socket_name(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with(SOCKET_NAME_PREFIX) && name.ends_with(SOCKET_NAME_SUFFIX))
 }
 
-/// Whether something accepts a connection at `path` right now.
-fn is_listening(path: &Path) -> bool {
+/// Whether `path` is a socket inode at all — the cheap, non-blocking half of
+/// the probe, done before a thread is spent on the connecting half.
+fn is_socket_inode(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket())
-        && std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+/// Whether something accepts a connection at `path` right now.
+///
+/// Blocking, and deliberately so: [`reachable_within`] runs it on a thread it
+/// is willing to abandon, which is the only way to bound a `connect()` that the
+/// kernel may never return from without hand-rolling a non-blocking connect.
+/// The connection is dropped immediately, with no `Hello` — see
+/// [`reachable_runtimes`].
+fn connects(path: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
 /// Create the socket's parent directory `0700` if it is missing, and re-assert
@@ -404,6 +491,86 @@ mod tests {
         std::fs::write(dir.join("other.sock"), b"not-a-socket").expect("write");
 
         assert_eq!(reachable_runtimes(&dir), vec![live]);
+    }
+
+    /// AAASM-5667 — a socket whose probe never returns must not hold up the
+    /// scan.
+    ///
+    /// The real stall is a Linux `connect()` against a full backlog that nobody
+    /// is accepting from, which macOS refuses instead of blocking. The property
+    /// under test is not the kernel's behaviour but this function's response to
+    /// it: a probe that does not come back within the bound is *not reported*,
+    /// and the caller gets an answer.
+    #[tokio::test]
+    async fn a_probe_that_never_returns_does_not_hold_up_the_scan() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("run");
+        let _a = bind(&dir.join("devint.sock")).expect("bind");
+        let _b = bind(&dir.join("devint-second.sock")).expect("bind");
+
+        let started = Instant::now();
+        let found = reachable_within(
+            &dir,
+            Duration::from_millis(150),
+            Arc::new(|_: &Path| {
+                std::thread::sleep(Duration::from_secs(3_600));
+                true
+            }),
+        );
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the scan must return on its own deadline, took {elapsed:?}"
+        );
+        assert!(
+            found.is_empty(),
+            "a socket that did not answer within the bound is not evidence of a runtime: {found:?}"
+        );
+    }
+
+    /// **Positive control** for the test above: with the *same* two sockets and
+    /// the *same* bound, a probe that answers is reported.
+    ///
+    /// Without this, `a_probe_that_never_returns_does_not_hold_up_the_scan`
+    /// would still pass if `reachable_within` were changed to return an empty
+    /// list unconditionally.
+    #[tokio::test]
+    async fn a_probe_that_answers_within_the_bound_is_reported() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("run");
+        let first = dir.join("devint.sock");
+        let second = dir.join("devint-second.sock");
+        let _a = bind(&first).expect("bind");
+        let _b = bind(&second).expect("bind");
+
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(
+            reachable_within(&dir, Duration::from_millis(150), Arc::new(connects)),
+            expected
+        );
+    }
+
+    /// AAASM-5667 — the number of entries probed is capped, so a directory
+    /// stuffed with socket names cannot turn one `aasm` invocation into an
+    /// unbounded amount of work.
+    #[tokio::test]
+    async fn the_scan_probes_at_most_the_capped_number_of_sockets() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("run");
+        let overflow = MAX_PROBED_SOCKETS + 5;
+        let mut listeners = Vec::with_capacity(overflow);
+        for i in 0..overflow {
+            listeners.push(bind(&dir.join(format!("devint-{i:03}.sock"))).expect("bind"));
+        }
+
+        let found = reachable_within(&dir, Duration::from_secs(5), Arc::new(connects));
+        assert_eq!(
+            found.len(),
+            MAX_PROBED_SOCKETS,
+            "the scan must stop at the cap, not enumerate every entry"
+        );
     }
 
     #[test]
