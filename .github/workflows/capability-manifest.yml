@@ -26,6 +26,12 @@ on:
       - "schemas/capability-manifest/**"
       - "scripts/validate_capability_manifest.py"
       - ".github/workflows/capability-manifest.yml"
+      # AAASM-5678. Rule R16 compares the manifest against these two, so they
+      # are gate INPUTS and not merely referenced documents. A PR that edits the
+      # seed alone is exactly how the manifest and the seed drift apart, and
+      # without these entries that PR is the one the gate never runs on.
+      - "verification-reports/AAASM-5527-capability-coverage-matrix.yaml"
+      - "verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md"
   push:
     branches:
       - main

@@ -29,6 +29,155 @@ meta:
     governance: docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md
     seed: verification-reports/AAASM-5527-capability-coverage-matrix.yaml
     seed_companion: verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
+  cross_representation:
+    seed:
+      compared_fields_from_seed_schema: enums
+      additional_compared_fields:
+      - boundary_attained
+      - coverage_qualifiers
+      - domain
+      - evidence_quality
+      - failure_posture_node
+      - framework_or_tool
+      - language
+      - platform
+      - policy_context
+      - protection_state_scope
+      - q3_changed_answer
+      - q4_changed_answer
+      - q4_changed_answer_in_product_favour
+      - released_matrix
+      - response_side_posture
+      field_renames:
+        current_level: protection_state
+        current_level_scope: protection_state_scope
+      excluded_fields:
+      - fields:
+        - boundary_conditional_on
+        - capability
+        - evidence_gate_note
+        - identity_source
+        - interception_component
+        - known_bypasses
+        - launch_path
+        - notes
+        - public_wording
+        - released_note
+        - target_level
+        - transport
+        reason: >-
+          Free prose, and the manifest's copies were deliberately rewritten during the
+          AAASM-5531 review rounds while the seed keeps the sentence as first compiled.
+          Equality would fire on every corrected sentence and say nothing about the claim:
+          measured over these fields at the current tree, known_bypasses differs on 10 of
+          80 rows, transport on 6, notes on 4, launch_path and target_level on 2 each and
+          identity_source on 1, and every one of those is a rewrite, not a disagreement
+          about a fact. The fields that CARRY a fact — the claim, ladder and distribution
+          vocabularies — are all in the compared set instead.
+      - fields:
+        - evidence
+        reason: >-
+          Different shape by design, on 80 of 80 rows. The seed's evidence items are bare
+          path strings; the manifest's are typed objects carrying kind/path/reason/
+          describes/pins. That migration is what makes rules R5, R12 and R14 possible and
+          it is the reason the manifest can be weaker than the seed at all, so comparing
+          the two for equality would report the fix as the defect.
+      - fields:
+        - buildable
+        - buildable_conditions
+        - findings
+        - governance_level_ceiling
+        - owner
+        - preconditions
+        reason: >-
+          Added after the AAASM-5527 survey compiled; the seed has no counterpart field, so
+          there is nothing to compare against. Present on the manifest side only, which the
+          R16 denominator counts as one-side-silent rather than as agreement.
+      - fields:
+        - evidence_date
+        - evidence_tree
+        reason: >-
+          Per-row overrides of the document's evidence provenance. They name where THIS
+          repository's tree was read, which is a property of the manifest's own derivation
+          rather than a claim about the capability, and the seed records its base commit
+          once at document level instead.
+      - fields:
+        - tickets
+        reason: >-
+          An append-only ledger: every later ticket that touches a row adds its key, so the
+          manifest's list grows past the seed's by construction. It records provenance, not
+          a claim, and equality would fail on the next ticket that cites a row.
+    seed_companion:
+      compared_fields:
+      - coverage
+      exclusion_reason: >-
+        Coverage is the only field this Markdown states for every row in a fixed position —
+        all 80 ids appear exactly once under a `Coverage` column, and every one of those
+        cells emphasises its terms in bold, which is what makes extraction exact rather
+        than a guess at prose. No other column is comparable: `Bnd` is present for 69 of
+        the 80 ids and annotates the class in prose (`B3 (conditional)`), `Timing` and
+        `Framework - language` for 58, and `Mode` and `Failure posture` are composites of
+        two structured fields written as one sentence. A parser for those would need a
+        hand-maintained exception list, which is the drift this rule exists to detect.
+    declared_divergences:
+    - field: coverage
+      ids:
+      - G5
+      - G8
+      - N4
+      - S6
+      - S9
+      representations:
+      - seed
+      - seed_companion
+      manifest_value: evaluated
+      other_value: denied_before_execution
+      rule: R12
+      ticket: AAASM-5678
+      reason: >-
+        Deliberate conservatism, and it is rule-driven rather than editorial: the sole
+        evidence item on each of these five rows is `kind: test_unlocated`, and R12 refuses
+        `denied_before_execution` on a row with no locatable test. The manifest CANNOT hold
+        the seed's value — setting it makes this validator exit non-zero — so the weakening
+        is forced, not chosen. Positive control that the correlation is exact and not a
+        coincidence of these five: S1 holds `denied_before_execution` on two `kind: test`
+        items and does not diverge. G5, S6 and S9 assert tests in the SDK repositories,
+        which rule R5 cannot resolve because it reads only this repository's evidence tree;
+        G8 and N4 have located negative evidence with recorded restoration conditions. The
+        seed and the Markdown state the stronger term because they predate the evidence
+        being typed. Weakened for unverifiability, NOT because the tests are believed absent.
+    - field: protection_state
+      ids:
+      - L7
+      - P3
+      representations:
+      - seed
+      manifest_value: integrated
+      other_value: host_enforced
+      rule: R14
+      ticket: AAASM-5531
+      reason: >-
+        Demoted in AAASM-5531 review round 1 and forced by R14: an ADR 0030 enforcement rung
+        needs a located test declaring `pins: [protection_state]`, and neither row has one.
+        P3 additionally held `host_enforced` beside `coverage: unsupported`, which ADR 0030
+        section 4.1 and ADR 0033 section 6 make contradictory on its face. Both rows keep
+        `protection_state_scope: tool_governance_only`, which the seed also carries, so the
+        qualifier agrees and only the rung moved.
+    - field: protection_state
+      ids:
+      - L5
+      representations:
+      - seed
+      manifest_value: not_measured
+      other_value: l1_observe
+      rule: R7
+      ticket: AAASM-5531
+      reason: >-
+        An axis correction, not a claim change. `l1_observe` is an ADR 0030 section 4.3
+        GovernanceLevel — a build-time ceiling — and the seed's `current_level` enum admitted
+        it on the ProtectionState axis. R7 rejects a GovernanceLevel where a ladder rung is
+        meant, so the manifest cannot carry the seed's value here either. Nothing was measured
+        about this row's ladder state, and `not_measured` says exactly that.
   retired_ids: []
 capabilities:
 - id: S1
