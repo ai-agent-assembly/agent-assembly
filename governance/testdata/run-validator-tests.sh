@@ -77,14 +77,33 @@ fi
 # survived the first fix — lives in that class, and all three reached review
 # because nothing here ever ran the validator against the canonical document.
 # A suite blind to an input class is silent about it, and silence reads as green.
+#
+# Credited by what actually RAN, never a flat +1. R3-F1: crediting this file
+# `pass+1` meant emptying its PROBES list left the harness total unchanged at 51
+# with every hazard regression gone and CI green. The sub-counts are now folded
+# in, so a probe that stops running moves the number it is counted in.
+credit() {  # $1 = label, $2 = script output
+  local line p f
+  line="$(printf '%s\n' "$2" | grep -E '^HARNESS_COUNTS ' | tail -1)"
+  if [ -z "${line}" ]; then
+    bad "$1" "emitted no HARNESS_COUNTS trailer, so its results cannot be counted"
+    return
+  fi
+  p="$(printf '%s' "${line}" | sed -E 's/.*passed=([0-9]+).*/\1/')"
+  f="$(printf '%s' "${line}" | sed -E 's/.*failed=([0-9]+).*/\1/')"
+  pass=$((pass + p))
+  fail=$((fail + f))
+}
+
 echo "negative controls (real manifest, mutated in place)"
 if out="$(python3 "${here}/real_manifest_probes.py" 2>&1)"; then
   printf '%s\n' "${out}" | sed -n 's/^  ok    /  ok    /p'
-  pass=$((pass + 1))
+  credit "real_manifest_probes.py" "${out}"
 else
-  # A refusal (dirty manifest) is reported as a failure on purpose: a probe that
-  # did not run must never read as one that passed.
-  bad "real_manifest_probes.py" "$(printf '%s' "${out}" | grep -E '^  FAIL|RESTORE|Refusing' | head -3)"
+  # A refusal (dirty manifest, or a shrunken PROBES list) is reported as a
+  # failure on purpose: a probe that did not run must never read as one that
+  # passed.
+  bad "real_manifest_probes.py" "$(printf '%s' "${out}" | grep -E '^  FAIL|RESTORE|Refusing|expected' | head -3)"
 fi
 
 # The README pastes the gate's own count: lines. Round 1 shipped them stale, in a
@@ -92,7 +111,8 @@ fi
 # them was not a mechanism; this is.
 echo "governance/README.md count block matches the live gate"
 if out="$(python3 "${here}/readme_counts_probe.py" 2>&1)"; then
-  ok "README count: lines match the validator output"
+  printf '%s\n' "${out}" | sed -n 's/^  ok    /  ok    /p'
+  credit "readme_counts_probe.py" "${out}"
 else
   bad "readme_counts_probe.py" "$(printf '%s' "${out}" | grep -E '^  FAIL' | head -3)"
 fi
@@ -125,4 +145,29 @@ for fixture in "${here}"/valid-*.yaml; do
 done
 
 printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
+
+# R3-F1, the general form. Nothing asserted this suite's own denominator, so
+# `mv invalid-r17-absence-block-deleted.yaml /tmp/` — the regression test for
+# round 1's F1 — gave "50 passed, 0 failed" and exit 0. A check silently no
+# longer running is the failure mode every rule in this directory exists to
+# prevent; the harness has to hold itself to it.
+#
+# Bump this deliberately when adding or removing a fixture or a probe. The
+# breakdown is here so the next person can see WHICH part moved:
+#   4  valid-*.yaml through the validator
+#  34  invalid-*.yaml through the validator
+#   1  r15_branch_probes.py
+#   7  real_manifest_probes.py   (5 mutations + positive control + restore control)
+#   7  readme_counts_probe.py    (one per quoted count: line)
+#   6  schema negative controls through ajv
+#   4  valid-*.yaml through ajv
+EXPECTED_TOTAL=63
+if [ "$((pass + fail))" -ne "${EXPECTED_TOTAL}" ]; then
+  printf 'FAIL  the harness ran %d checks, expected %d. A check that stops running is
+' \
+    "$((pass + fail))" "${EXPECTED_TOTAL}"
+  printf '      indistinguishable from one that passes unless the total is asserted.\n'
+  exit 1
+fi
+
 [ "${fail}" -eq 0 ]

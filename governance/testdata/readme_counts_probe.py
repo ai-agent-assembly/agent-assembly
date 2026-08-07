@@ -86,7 +86,9 @@ def main() -> int:
         else:
             print(f"  ok    {label} matches ({len(live[key])} value(s))")
 
-    print(f"\n{len(set(quoted) | set(live)) - failures} passed, {failures} failed")
+    total = len(set(quoted) | set(live))
+    print(f"\n{total - failures} passed, {failures} failed")
+    print(f"HARNESS_COUNTS passed={total - failures} failed={failures}")
     return 1 if failures else 0
 
 

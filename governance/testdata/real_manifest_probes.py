@@ -57,6 +57,22 @@ def run_gate() -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
+def findings(out: str, rule: str) -> int:
+    """How many `error:` lines name this rule.
+
+    R3-F2. Counting the rule anywhere in the output counts `count:` lines too,
+    and those are present on a CLEAN run — `[R16]` appears 5 times with the
+    manifest untouched. That left `code != 0` as the only load-bearing half of
+    the predicate, so a mutation failing for an unrelated reason passed as
+    though the named rule had caught it: a duplicate id is an R2 defect and
+    still yielded `exit=1, [R16] mentions=9, ok`.
+
+    A probe that reports the right verdict for the wrong rule is precisely the
+    failure this ticket is about, so attribution reads `error:` lines only.
+    """
+    return sum(1 for line in out.splitlines() if line.startswith("error:") and rule in line)
+
+
 # ── Mutations. Each takes the manifest text and returns the mutated text. ─────
 
 
@@ -102,6 +118,14 @@ def drop_declared_divergences(text: str) -> str:
     return text[:start] + "    declared_divergences: []\n" + text[text.index("  retired_ids:", start) :]
 
 
+# R3-F1. Emptying PROBES used to make this file print "2 passed, 0 failed" and
+# exit 0, and the harness credited it +1 regardless — so all five hazard
+# regressions could vanish with CI green. Every rule in this change asserts its
+# own denominator; the harness proving those rules asserted nothing about its
+# own. The floor is deliberately a hard number: dropping a probe has to be a
+# decision someone writes down, not a deletion nobody notices.
+EXPECTED_PROBES = 5
+
 PROBES = [
     ("R17 clause 3 — meta.channel_absences deleted", drop_channel_absences, "[R17]"),
     ("R16 — meta.sources.seed repointed, contract kept", repoint_seed, "[R16]"),
@@ -116,6 +140,14 @@ PROBES = [
 
 
 def main() -> int:
+    if len(PROBES) != EXPECTED_PROBES:
+        sys.stderr.write(
+            f"real_manifest_probes: PROBES holds {len(PROBES)} entries, expected "
+            f"{EXPECTED_PROBES}. Every entry is a regression test for a shipped defect; "
+            "removing one is a decision to record, not a deletion to absorb silently.\n"
+        )
+        return 2
+
     if subprocess.run(
         ["git", "diff", "--quiet", "--", str(MANIFEST)], cwd=REPO, check=False
     ).returncode != 0:
@@ -145,7 +177,7 @@ def main() -> int:
         for name, mutate, expect_rule in PROBES:
             MANIFEST.write_text(mutate(original.decode("utf-8")), encoding="utf-8")
             code, out = run_gate()
-            hits = out.count(expect_rule)
+            hits = findings(out, expect_rule)
             if code == 0:
                 print(f"  FAIL  {name} — expected a non-zero exit, got 0")
                 failures += 1
@@ -175,7 +207,11 @@ def main() -> int:
     else:
         print("  ok    restore control — manifest byte-identical and exits 0")
 
-    print(f"\n{len(PROBES) + 2 - failures} passed, {failures} failed")
+    total = len(PROBES) + 2  # + positive control + restore control
+    print(f"\n{total - failures} passed, {failures} failed")
+    # The harness adds these to its own totals rather than crediting this file a
+    # flat +1, so a probe that stops running moves the number it is counted in.
+    print(f"HARNESS_COUNTS passed={total - failures} failed={failures}")
     return 1 if failures else 0
 
 
