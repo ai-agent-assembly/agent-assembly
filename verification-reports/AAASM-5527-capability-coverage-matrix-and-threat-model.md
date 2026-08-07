@@ -139,10 +139,22 @@ drift, and here the manifest is the outlier by design. Each of the five carries
   and rule R5 resolves evidence paths only against *this* repo's tree. Each note
   ends: *"Weakened for unverifiability, NOT because the tests are believed
   absent"*.
-- **`G8`, `N4`** — located negative evidence. 0 of the 71 files in
-  `aa-gateway/tests/` reference `serve_tcp` or `serve_uds`; both proxy e2e tests
-  run with `mitm_hosts` empty, so neither traverses `handle_non_llm_mitm`. Both
-  notes carry an explicit condition for restoring `denied_before_execution`.
+- **`G8`, `N4`** — located negative evidence, and both notes carry an explicit
+  condition for restoring `denied_before_execution`. As recorded by AAASM-5531
+  review round 1: no located test pins the gateway's startup abort, and both proxy
+  e2e tests run with `mitm_hosts` empty so neither traverses
+  `handle_non_llm_mitm`.
+
+  **`G8`'s supporting count has since rotted, though its conclusion has not.** The
+  note says *"0 of the 71 files in `aa-gateway/tests/`"* reference `serve_tcp` or
+  `serve_uds`; at `remote/main` there are **91** files and **6** reference them,
+  the two largest being the `sensitive_data_projection_serve*_e2e.rs` pair added
+  by AAASM-5656. They do **not** meet the restoration condition: both are named
+  `…_persists_a_finding_through_the_real_grpc_surface` and prove projection
+  wiring, and their `abort()` calls are `JoinHandle::abort()` teardown, not an
+  assertion that the gateway refuses to serve on a policy-load failure. So `G8`
+  stays `evaluated` — but the count behind it should be re-derived by AAASM-5531
+  rather than re-quoted.
 
 The two files answer different questions: this survey records what the code does
 at `299de3883`; the manifest records what is *evidenced in this repository*, and
@@ -213,9 +225,11 @@ beneath it in this very file — see the closing note.
   *"is this occurrence inside a withdrawal record"*, wherever it lives.
 
 **This section invalidates line references into this file.** Adding it shifts
-everything below it by **116** lines — measured, not estimated: base `:106`
-(`## Claim vocabulary`) is head `:222`, and each of the 15 refs below resolves to
-its base content at base+116. That breaks all 15 Markdown line references in the
+everything below it. The exact offset is deliberately **not** quoted here: it
+changed twice while this section was being written (50, then 116, then 130), which
+is the whole lesson. Recompute it instead — it is the delta of the
+`## Claim vocabulary` anchor, which sits at `:106` in `9fbf42985`. That breaks all
+15 Markdown line references in the
 population table in `governance/README.md`. Those are outside AAASM-5666's
 ownership and are reported to AAASM-5531/5600 rather than edited here. The
 underlying fragility is that the published method keys a reproducible population
