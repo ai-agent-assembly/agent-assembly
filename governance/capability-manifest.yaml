@@ -13,16 +13,34 @@ meta:
   - pypi
   - npm
   - go_modules
+  - ghcr
   - not_applicable
-  channels_not_surveyed:
-  - channel: ghcr
-    reason: >-
-      The AAASM-5527 survey did not enumerate the Docker/GHCR channel. It publishes more
-      than two images: aa-runtime and aa-gateway (.github/workflows/docker.yml:111,160)
-      AND a nine-image language matrix (:342-344). Naming only the first two would let a
-      future surveyor think two images are the whole channel. A row's silence about ghcr
-      is therefore Unmeasured, never Unsupported.
-    ticket: AAASM-5531
+  channels_not_surveyed: []
+  # AAASM-5680. The ghcr survey, done against the registry rather than the workflow.
+  # Five image repositories answer a pull-token request; two do not, and the two that
+  # do not are the ones a hand-written matrix would have guessed wrong.
+  #
+  #   GET https://ghcr.io/v2/ai-agent-assembly/<name>/tags/list, 2026-08-07
+  #   aa-gateway  v0.0.1-rc.4, rc.5, rc.6, latest
+  #   aa-runtime  v0.0.1-alpha.1 ... v0.0.1-rc.6, latest
+  #   python      3.12-slim, 3.13-slim, 3.14-slim (+ -v0.0.1-rc.N), latest
+  #   node        20-slim, 22-slim, 24-slim (+ -v0.0.1-rc.N), latest
+  #   go          1.24-alpine, 1.25-alpine, 1.26-alpine (+ -v0.0.1-rc.N), latest
+  #   aa-proxy    no token issued
+  #   aasm        no token issued
+  #
+  # What each image DELIVERS, which is what a row's released_channels answers:
+  #   aa-gateway image  the aa-gateway binary        aa-gateway/Dockerfile:61,67
+  #   aa-runtime image  the aa-runtime binary        aa-runtime/Dockerfile:58,64
+  #   language images   the language SDK package AND the aasm binary
+  #                     docker/Dockerfile.python-3.14-slim:76-81 (pip install
+  #                     agent-assembly) and :99 (COPY --from=aasm-builder
+  #                     /usr/local/bin/aasm), mirrored in the node and go files
+  #
+  # There is no `aasm` image, but `aasm` IS distributed on this channel — inside all
+  # nine language images, whose build asserts it (`RUN aasm --version`, :103). The
+  # AAASM-5680 ticket records aasm as "not published" on the strength of the missing
+  # image alone; that is the image question, not the distribution question.
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
     protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
