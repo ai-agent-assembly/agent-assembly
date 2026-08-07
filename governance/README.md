@@ -164,6 +164,24 @@ kinds:
 | `test_unlocated` | `describes` | Not machine-checkable. A test asserted to exist with no path cited |
 | `gap` | `reason` (`control` where an absence was probed) | Nothing to check; the honest statement that no test exists |
 
+A `test` item may also carry **`pins`**, naming which of the row's claims it
+actually substantiates. At least one test must declare `pins: [protection_state]`
+wherever `protection_state` is an ADR 0030 enforcement rung (rule R14 clause 1).
+
+The field exists because *"the row has a locatable test"* and *"a test pins this
+rung"* are different assertions, and the first is satisfied by **any**
+sufficiently-tested row. P3 passed the untightened rule on two Claude Code launch
+tests while its own text said of macOS host enforcement "NO TEST PINS IT". Applied
+retroactively to the manifest as it stood before this fix, the tightened rule
+flags all three rows then at an enforcement rung — L1, L7 and P3 — where the
+untightened rule flagged only L7.
+
+**Honest limit:** `pins` is an author assertion. Nothing machine-checks that the
+named test truly substantiates the claim. What the gate buys is that somebody had
+to state it, in a field a reviewer can challenge, rather than the rule inferring
+it from mere presence — and the note beside L1's pin is what that statement looks
+like when it is doing its job.
+
 `test_unlocated` exists because the AAASM-5527 survey recorded real evidence in
 two shapes. Collapsing "aa-proxy unit tests" into `test` would mean inventing a
 path; collapsing it into `gap` would mean deleting an evidenced fact, which
@@ -396,14 +414,22 @@ manifest reads as the broadest admissible value.
    `denied_before_execution`. Recording *why* matters: for the three SDK rows
    this weakening may itself be an understatement, and cross-repo evidence has
    no mechanism yet.
-8. **P3 sits at `host_enforced` with `coverage: unsupported`, and is escalated
-   rather than mechanically fixed.** Its two cited tests are Claude Code launch
-   tests, and its own `interception_component` says of macOS host enforcement
-   "NO TEST PINS IT ... a pass-through tautology". R14 clause 1 passes it
-   because the tests are locatable, and clause 2 passes because
-   `protection_state_scope: tool_governance_only` is set — but a rung that ADR
-   0030 §4.1 reserves for bypass resistance, on a row whose coverage is
-   `unsupported`, needs a human decision about which of the two is wrong.
+8. **P3 was demoted from `host_enforced` to `integrated`** — resolved, not
+   outstanding. `host_enforced` beside `coverage: unsupported` is contradictory
+   on its face: ADR 0030 §4.1 reserves that rung for bypass resistance and ADR
+   0033 §6 defines `unsupported` as *not available on this platform or
+   configuration*, and a capability cannot be bypass-resistant for something it
+   does not provide. The row's own `interception_component` settles which half
+   is wrong — "E4: NONE … NO TEST PINS IT … a pass-through tautology" — and
+   neither cited test pins the rung either: both gate their macOS lane on
+   `require_claude`, and the real binary is absent from CI, so those lanes skip
+   rather than measure. `integrated` is what the managed-settings write plus its
+   read-back earns, and ADR 0030 §4.1 notes that rung "still says nothing about
+   traffic". **The two directions are gated differently, and the row says so:**
+   demoting further needs only evidence, because claiming less than the evidence
+   supports is the safe direction; *restoring* the rung needs a test that pins
+   macOS host enforcement **and** an owner decision, because no wrapper makes an
+   unsupported claim true.
 
 ## Interfaces this manifest provides
 

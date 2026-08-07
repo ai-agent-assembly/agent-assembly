@@ -550,16 +550,38 @@ def check_row_protection(row: dict, where: str, rep: Report) -> None:
         return
 
     items = row.get("evidence") or []
-    if not any(item.get("kind") == "test" for item in items):
-        kinds = sorted({item.get("kind") for item in items})
-        rep.error(
-            where,
-            "R14",
-            f"protection_state is {state!r} — an ADR 0030 enforcement rung — but no evidence "
-            f"item is a locatable test (kinds present: {kinds}). ADR 0030 §4.2 rule 1: file "
-            "existence is never sufficient for Integrated or above, and §4.2 rule 2: missing "
-            "evidence lowers the state, never raises it",
-        )
+    # Clause 1 asks whether a test PINS the rung, not merely whether the row is
+    # tested. The untightened form — "at least one kind: test" — is satisfied by
+    # any sufficiently-tested row, which is how P3 held host_enforced on two
+    # Claude Code launch tests while its own text said of macOS host enforcement
+    # "NO TEST PINS IT". A rule any tested row passes is not earning the rung.
+    pinning = [
+        item
+        for item in items
+        if item.get("kind") == "test" and "protection_state" in (item.get("pins") or [])
+    ]
+    if not pinning:
+        located = [item for item in items if item.get("kind") == "test"]
+        if located:
+            rep.error(
+                where,
+                "R14",
+                f"protection_state is {state!r} — an ADR 0030 enforcement rung — and the row "
+                f"has {len(located)} locatable test(s), but none declares `pins: "
+                "[protection_state]`. Being tested is not the same as pinning the rung: name "
+                "the test that substantiates §4.1's requirements for this rung, or lower the "
+                "rung. §4.2 rule 2 — missing evidence lowers the state, never raises it",
+            )
+        else:
+            kinds = sorted({item.get("kind") for item in items})
+            rep.error(
+                where,
+                "R14",
+                f"protection_state is {state!r} — an ADR 0030 enforcement rung — but no evidence "
+                f"item is a locatable test (kinds present: {kinds}). ADR 0030 §4.2 rule 1: file "
+                "existence is never sufficient for Integrated or above, and §4.2 rule 2: missing "
+                "evidence lowers the state, never raises it",
+            )
 
     if row.get("coverage") not in COVERAGE_REQUIRING_TEST and not row.get("protection_state_scope"):
         rep.error(

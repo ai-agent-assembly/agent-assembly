@@ -726,6 +726,21 @@
         },
         "ticket": {
           "$ref": "#/definitions/ticket"
+        },
+        "pins": {
+          "description": "Which of this row's claims this test actually SUBSTANTIATES. Required on at least one test item wherever protection_state is an ADR 0030 enforcement rung (validator rule R14 clause 1). It exists because 'the row has a locatable test' and 'a test pins this rung' are different assertions, and the first is satisfied by any sufficiently-tested row: P3 passed the untightened rule on two Claude Code launch tests while its own text said of macOS host enforcement 'NO TEST PINS IT'. HONEST LIMIT: this is an author assertion. Nothing machine-checks that the named test truly pins the claim — what the gate enforces is that somebody stated it, in a field a reviewer can challenge, instead of the rule inferring it from mere presence.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "coverage",
+              "protection_state",
+              "failure_posture",
+              "default_state",
+              "reachability"
+            ]
+          }
         }
       }
     },
