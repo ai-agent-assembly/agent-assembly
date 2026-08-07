@@ -144,9 +144,13 @@ fixed pipeline, and each one holds a stated boundary — lowest-latency first:
   `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
   Linux and macOS; on macOS no release asset or Homebrew formula ships it, so
   `cargo install aa-proxy` is the only channel that does.
-- **eBPF** (`aa-ebpf*`) — **Linux only**, published to crates.io only, and its
-  one enforcing program is off by default. It *observes* TLS, file and exec
-  activity and *detects* findings; it does not deny an action before it runs.
+- **eBPF** (`aa-ebpf*`) — **Linux only**; there is no macOS or Windows host
+  adapter. Its TLS, file and exec probes reach *observed* / *detected* and no
+  further — a blocked path sets an alert bit and the syscall still proceeds. Its
+  one enforcing program, the syscall guard, is **off by default** and kills
+  asynchronously, so the offending syscall runs once before the process dies.
+  The loader daemon is not shipped as a binary on any channel; building the
+  `aa-ebpf` crate from crates.io is the only route to it.
 
 A mechanism that is not deployed is reported as absent — nothing underneath
 silently picks up what it would have done. See the
