@@ -146,8 +146,12 @@ fn llm_call_converts_to_tool_call() {
     }
 }
 
+/// AAASM-5665 replaced the `MissingAgentId` rejection with explicit
+/// unattributed semantics: an old client that never sets `agent_id` used to get
+/// `InvalidArgument`, which an enforce-posture SDK reads as a deny. It is now
+/// converted and evaluated, carrying the reserved unattributed id and no claim.
 #[test]
-fn missing_agent_id_returns_error() {
+fn missing_agent_id_converts_as_unattributed_rather_than_erroring() {
     let req = CheckActionRequest {
         agent_id: None,
         context: Some(ActionContext {
@@ -158,8 +162,15 @@ fn missing_agent_id_returns_error() {
         }),
         ..Default::default()
     };
-    let err = request_to_core(&req).unwrap_err();
-    assert!(matches!(err, ConvertError::MissingAgentId));
+    let (ctx, _action) = request_to_core(&req).expect("an omitted agent_id is unattributed, not an error");
+    assert_eq!(
+        ctx.agent_id.as_bytes(),
+        &aa_gateway::service::convert::UNATTRIBUTED_AGENT_ID
+    );
+    assert_eq!(
+        ctx.metadata.get(aa_gateway::service::convert::CLAIMED_AGENT_ID_KEY),
+        None
+    );
 }
 
 #[test]
