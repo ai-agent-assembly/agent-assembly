@@ -209,6 +209,11 @@ Two rules about the tree the evidence names:
   `evidence_tree`. Set `meta.describes_ref` when the manifest is asserted to
   describe a release, and `git merge-base --is-ancestor` must hold — a row
   failing it is `Unmeasured` for that ref, not "probably still true".
+- **And a document-level caveat about that is not a per-row statement.** Rule
+  **R15**: where the evidence tree is not inside the newest `v*` tag and a row
+  cites a path present at the tree and absent at the tag, the row must name the
+  tag. See [Known gaps](#known-gaps) 6 for its scope and its limits — it is one
+  more author-declared statement forced into a reviewable field, not a proof.
 
 ## Prose may not restate a structured fact
 
@@ -499,6 +504,21 @@ manifest reads as the broadest admissible value.
    fixture. A consumer publishing a release-scoped surface (AAASM-5609's "What
    Ships Today" especially) must either re-derive at the tag or label the
    surface as describing `main`.
+
+   **This caveat is now backed by a per-row check, because on its own it was
+   not enough.** Being true of all 80 rows, it distinguishes none of them: a
+   reader cannot tell from it whether a given row differs *materially* in the
+   release. That is exactly how L1 — the only `host_enforced` row — omitted the
+   rc.6 statement its two named siblings carry and still read as release truth.
+   **Rule R15** requires the tag to be named on any row citing a path that
+   exists at the evidence tree and not at the newest `v*` tag. Its limits,
+   stated rather than left to be discovered: it fires on a *missing* citation,
+   not a *changed* one (51 of the 93 cited-and-tracked files changed between
+   the two refs, so it catches the sharpest cases and not all of them); the
+   sentence it forces is author-declared, exactly as R14's `pins` is; and it
+   retires itself once a tag containing the evidence tree is cut. Where no
+   `v*` tag resolves it **warns** rather than passing — a shallow clone and a
+   repository with no releases are indistinguishable from inside the validator.
 7. **Five rows were weakened — two for measured absence, three for
    unverifiability.** The distinction is the point, so the heading has to carry
    it. N4 and G8 have no located test in this repo, measured. S6, S9 and G5 assert tests in
