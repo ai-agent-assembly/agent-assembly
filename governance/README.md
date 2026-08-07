@@ -344,6 +344,15 @@ conclusion is drawn:
    L2 and L3) and `:890-899` (*"three corrections upward"*, I1 · L1 · C2).
    Recorded because it bounds what a marker list can do: the list finds hits,
    reading finds retractions.
+
+   **And the list is case-sensitive, which is a third limit, not a detail.**
+   `:890` is *"three corrections upward"*: `Correction`, `Corrected` and
+   `corrected` all return **0** on that line, while a case-insensitive
+   `correction` returns **1** (control: `Question 4` = 1 on the same line, so
+   the probe is live). So "carries no marker" is true of *this* list and a
+   slightly different list would have caught it — which is the honest way to
+   read every zero above. Grepping is a way to bound a population, never a way
+   to prove one is empty.
 2. Read each hit in context and map it to the row ids it governs — a Markdown
    table groups rows (`**I1** · **I2** · **I3**`), so one retraction can bind
    several. **Key the result on (row, retraction) pairs, not rows.** A row
@@ -359,6 +368,49 @@ conclusion is drawn:
    because the row was attributed. Where a Markdown table cell groups ids but
    the retraction's substance concerns only some of them, the others are
    bucketed **Not binding with the reason recorded**, never silently dropped.
+
+   **Grouping rule, published because 18 marker lines do not become 15
+   retractions without one** — an independent reconstruction reached 16, and
+   the difference is rule 3:
+
+   1. A retraction is a **unit of withdrawal, not a line**. Marker hits on
+      adjacent lines inside one blockquote or one table cell are one
+      retraction: `:171`+`:172` are the rc.6 preamble, `:456`+`:457` the
+      `deny_signal` counts. 18 lines → 16 units.
+   2. Units governing **no capability row** are counted, but separately:
+      `:1087` (a schema-design note) and `:1098` (a method note). 16 → 14.
+   3. **`:913` restates `:786-795` and is not a second retraction.** Its marker
+      (*"corrected and retitled"*) is on the gap-to-ticket mapping's AAASM-5640
+      line, and that line binds the **identical nine rows** —
+      H2 · H3 · H4 · N13 · I4 · G6 · G7 · P1 · P2 — as the retraction at
+      `:786-795`. Counting it separately double-counts one withdrawal over one
+      row set. 14 → 13. **This single step is the 15-vs-16 difference**; the
+      mapping block is swept separately below instead.
+   4. Marker-**less** retractions found by reading count: `:618-632` and
+      `:890-899`. 13 → **15**.
+
+   The population itself, so the attribution is reproducible rather than only
+   its arithmetic checkable:
+
+   | # | Markdown | Retraction | Rows | Pairs |
+   |---|---|---|---|---|
+   | 1 | `:167-187` | rc.6 scoping — three named rows must read *fixed on `main`, still live in rc.6* | I1 · L1 · C6 | 3 |
+   | 2 | `:439` | *"refusal lives in the out-of-repo FFI shims"* is false — the Node shim is fail-open | S13 | 1 |
+   | 3 | `:455-459` | *"six sentinel / five raise"* and *"seven underived"* both withdrawn; 5 raise / 3 sentinel / 4 underived | S1 · S2 · S4 · S5 · S6 · S8 · S9 · G3 · N3 | 9 |
+   | 4 | `:529` | N13 — the uncovered-TLS-library list is longer than earlier revisions reproduced | N13 | 1 |
+   | 5 | `:585` | M1 — *"the only supported route"* corrected; the targeted `mitm_hosts` route exists | M1 | 1 |
+   | 6 | `:616` | L8 — the ambient-proxy strip applies exactly on `--no-proxy`, not *"on this path"* | L8 | 1 |
+   | 7 | `:618-632` | the launch-env defect class is fixed for one adapter and open for two *(no marker)* | L2 · L3 | 2 |
+   | 8 | `:670` | C6 — the residual is pinned at `scanner.rs:3960-4005`; the earlier `:1071-1092`/`:3012-3030` citation was unrelated | C4 · C5 · C6 | 3 |
+   | 9 | `:684` | I7 — a tokenless call does **not** keep its client-supplied tenancy | I7 | 1 |
+   | 10 | `:690` | I1/I2/I3 — `run_registration.rs:583,668` is the AAASM-5332 regression test, withdrawn on re-reading | I1 · I2 · I3 | 3 |
+   | 11 | `:786-795` | AAASM-5640 corrected and retitled — host interception is Linux + crates.io + nightly only | H2 · H3 · H4 · N13 · I4 · G6 · G7 · P1 · P2 | 9 |
+   | 12 | `:819` | D-g — closed on `main` by AAASM-5368, still live in the published rc.6 | C6 | 1 |
+   | 13 | `:890-899` | Question 4 answered in the product's favour — three corrections upward *(no marker)* | I1 · L1 · C2 | 3 |
+   | 14 | `:950` | F7 — there is no CLI route to targeted MCP adjudication, but the mechanism exists | M1 | 1 |
+   | 15 | `:1046` | I1 — the `aa-cli` half is withdrawn; the `aa-gateway` half is a fixture smell only | I1 | 1 |
+   | | | | **32 distinct rows** | **40** |
+
 3. For each row compare seed, manifest and Markdown across `notes`,
    `known_bypasses[]`, `evidence[].reason`, `target_level`,
    `interception_component` and `released_note` — not `notes` alone. I1's
@@ -527,11 +579,31 @@ manifest reads as the broadest admissible value.
    the cited artifact does not exist in the release at all. It does not make a
    row release-true, and no consumer should read a silent R15 as saying it did.
 
-   Two further limits: the sentence R15 forces is author-declared, exactly as
-   R14's `pins` is; and the rule retires itself once a tag containing the
-   evidence tree is cut. Where no `v*` tag resolves it **warns** rather than
-   passing — a shallow clone and a repository with no releases are
-   indistinguishable from inside the validator.
+   **The sentence R15 forces is author-declared, and the failure mode is an
+   inverted sentence, not a vague one.** The check is a substring search for
+   the tag, so `notes: "Behaviour is unchanged since rc.6; no divergence
+   between main and the release"` — false of every row R15 fires on — passes,
+   because it contains `rc.6`. The gate buys that a row cannot silently *omit*
+   the statement. It buys nothing about the statement being true. Reviewing
+   these sentences is a human job and R15 does not replace it.
+
+   **Field coverage is part of the rule, because it was a defect once.** R15's
+   read set is `evidence[].path` plus every field `prose_values` walks — the
+   same set the scope statement may be written in. An earlier revision read
+   only `evidence[].path` and `interception_component` while accepting the
+   statement anywhere, and three rows fell in that gap: I7 (cited in `notes`),
+   L6 (`evidence[0].reason`) and I5 (`known_bypasses[2]`), the last two on
+   AAASM-5588's publication surface. **A rule whose read set is narrower than
+   its write set has a hole exactly that wide.**
+   `testdata/invalid-r15-path-cited-in-notes.yaml` is the input on which the
+   two read sets disagree, and its header carries that truth table.
+
+   Two further limits: the rule retires itself once a tag containing the
+   evidence tree is cut; and where no `v*` tag resolves it **warns** rather
+   than passing — a shallow clone and a repository with no releases are
+   indistinguishable from inside the validator. Those two branches, plus
+   `--no-git` and a positive control, are asserted by
+   `testdata/r15_branch_probes.py`, which the fixture harness runs.
 7. **Five rows were weakened — two for measured absence, three for
    unverifiability.** The distinction is the point, so the heading has to carry
    it. N4 and G8 have no located test in this repo, measured. S6, S9 and G5
@@ -620,14 +692,25 @@ is a minor bump. Removing a field, tightening a rule, or renaming a value is a
 here — consumers in other repositories pin to the major.
 
 **The bump obligation binds from first release, not from introduction.** What a
-major bump protects is a consumer that already pins the major; before
-`manifest_version 1.0.0` has been published there is no such consumer, so a new
-`vN` directory would be a migration path from nothing to nothing. Concretely:
-**R14 and R15 were both added at `1.0.0` without a bump**, under this reading,
-while the manifest was still unreleased. That is stated here rather than left
-for a reader to notice, because a page whose own repository contradicts it is
-the defect this manifest exists to remove — and because the next author is the
-one who needs to know the rule is real: **once `1.0.0` ships, tightening a rule
-is a `2.0.0` and a `schemas/capability-manifest/v2/` directory, with no
-pre-release exemption to appeal to.** "Released" here means published for
-consumption by another repository, not merged to `main`.
+major bump protects is a consumer that already pins the major; before this
+manifest has been published there is no such consumer, so a new `vN` directory
+would be a migration path from nothing to nothing. Concretely: **R14 and R15
+were both added at `1.0.0` without a bump**, under this reading, while the
+manifest was still unreleased. That is stated here rather than left for a
+reader to notice, because a page whose own repository contradicts it is the
+defect this manifest exists to remove.
+
+**The release trigger, concretely, because the artifact cannot express the
+window.** The schema pins `manifest_version` to `^1\.[0-9]+\.[0-9]+$` — no
+`0.x`, no prerelease suffix — so the file reads `1.0.0` in both states and a
+future author cannot tell from it which one applies. The trigger is therefore
+named rather than inferred:
+
+> **This manifest becomes released when AAASM-5600 merges a generator that
+> reads it.** That is the first moment another repository's output depends on
+> these rules. Until then, tightening a rule is a free edit. From then on,
+> **tightening a rule is a `2.0.0` plus a `schemas/capability-manifest/v2/`
+> directory and a migration section here, with no pre-release exemption to
+> appeal to.**
+
+Merging this file to `main` does not trip the trigger; being consumed does.

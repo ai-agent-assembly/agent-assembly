@@ -529,20 +529,30 @@ def newest_release_tag() -> str | None:
 
 
 def _cited_paths(row: dict) -> set[str]:
-    """Every repo path the row cites, from evidence[].path and from prose.
+    """Every repo path the row cites, from `evidence[].path` and from ALL prose.
 
-    `interception_component` is prose, so paths are pulled out by pattern. That
-    is deliberately loose: R15's caller keeps only those that resolve to a blob
-    at the row's own evidence tree, and a mis-extracted fragment cannot.
+    Prose paths are pulled out by pattern. That is deliberately loose: R15's
+    caller keeps only those that resolve to a blob at the row's own evidence
+    tree, and a mis-extracted fragment cannot.
+
+    The prose sweep MUST be `prose_values`, not a hand-picked field or two.
+    Round 3 shipped this reading only `interception_component`, while the same
+    rule two lines later used `prose_values` — twelve fields plus
+    `known_bypasses[]`, `preconditions[].note` and
+    `evidence[].{reason,describes,control,note}` — to decide whether the scope
+    statement was present. So a row could cite a release-absent path in a field
+    the rule would happily accept a scope note in, and go unchecked. Three rows
+    did: I7 in `notes`, L6 in `evidence[0].reason`, I5 in `known_bypasses[2]`,
+    and the latter two fields are AAASM-5588's publication surface. A rule whose
+    read set is narrower than its write set has a hole exactly that wide.
     """
     paths = set()
     for item in row.get("evidence") or []:
         value = item.get("path")
         if isinstance(value, str) and value:
             paths.add(value.split(":")[0])
-    component = row.get("interception_component")
-    if isinstance(component, str):
-        paths.update(SOURCE_PATH.findall(component))
+    for _label, text in prose_values(row):
+        paths.update(SOURCE_PATH.findall(text))
     return paths
 
 
@@ -577,8 +587,17 @@ def check_row_release_scope(
       behaviour the release does not have, and this rule will not object. A
       silent R15 does NOT mean a row is release-true.
     * The scope statement is author-declared, exactly as R14 clause 1's `pins`
-      is. Nothing machine-checks what the sentence says. What the gate buys is
-      that a row cannot silently omit it.
+      is, and the failure mode is worse than "a vague sentence": the check is a
+      substring search for the tag, so an INVERTED sentence passes just as
+      readily as a true one. `notes: "Behaviour is unchanged since rc.6; no
+      divergence between main and the release"` is false of every row this rule
+      fires on, and it satisfies R15 because it contains `rc.6`. The gate buys
+      that a row cannot silently OMIT the statement. It buys nothing at all
+      about the statement being true, and a reviewer still has to read it.
+    * Field coverage was itself a defect once and is therefore stated: the read
+      set is `evidence[].path` plus `prose_values` — every field the scope
+      statement could be written in. Round 3 shipped a narrower read set than
+      write set and three rows fell in the gap. Keep the two symmetric.
     * Only paths that resolve at the evidence tree are considered, so a
       cross-repo path in prose (`node-sdk/...`, `go-sdk/...`) cannot trigger the
       rule — it is absent at both refs and says nothing about the release.

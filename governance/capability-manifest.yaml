@@ -3214,8 +3214,14 @@ capabilities:
   - this IS the bypass, and it is not detectable
   evidence:
   - kind: gap
-    reason: aa-devtool-claude-code/src/bypass.rs:228-235 names it as an unobservable bypass.
-      There is NO process watcher on any platform.
+    reason: >-
+      aa-devtool-claude-code/src/bypass.rs:228-235 names it as an unobservable bypass. There is
+      NO process watcher on any platform. SCOPE: that file does not exist at v0.0.1-rc.6 —
+      UNOBSERVABLE_BYPASSES has 0 occurrences under aa-devtool-claude-code/ at the tag against
+      5 at the evidence tree, with managed_settings at 3 against 48 in the same directory as
+      the control that keeps the zero measured. The direction is the opposite of L1's: the
+      claim holds at least as strongly at rc.6, where the bypass is not merely unobserved but
+      unenumerated. Only the citation is main-scoped.
   evidence_runs_on_main: standing
   target_level: keep announcing it
 - id: L7
@@ -4035,8 +4041,13 @@ capabilities:
   known_bypasses:
   - a caller that omits org_id on a filtered read
   - get_agent by id
-  - aa-storage-memory has ZERO org_id references across all nine source files, against 85
-    in aa-storage-postgres/src/user_store.rs as positive control
+  - 'aa-storage-memory has ZERO org_id references across all nine source files, against 85
+    in aa-storage-postgres/src/user_store.rs as positive control. SCOPE: only the named
+    control is main-scoped, not the claim. user_store.rs does not exist at v0.0.1-rc.6, but
+    the claim is unchanged there — re-measured at the tag, aa-storage-memory still has 9
+    source files and 0 org_id references, and the substitute control aa-storage-postgres/src/
+    reads 38 at rc.6 against 123 at the evidence tree, so the zero is measured at both refs
+    rather than inherited from one.'
   - TenancyMode defaults to Untenanted (aa-gateway/src/server.rs:657-663)
   evidence:
   - kind: test
@@ -4182,8 +4193,18 @@ capabilities:
     as 'authenticated'
   tickets:
   - AAASM-3422
-  notes: 'By design for bootstrap: Register is documented as an unauthenticated bootstrap
-    endpoint (aa-sdk-client/src/identity_store.rs:5-9).'
+  notes: >-
+    By design for bootstrap: Register is documented as an unauthenticated bootstrap endpoint
+    (aa-sdk-client/src/identity_store.rs:5-9). SCOPE, and the justification is what moves, not
+    the finding: the exposure itself is identical in the published v0.0.1-rc.6 —
+    enrich_interceptor occurs 9 times in aa-gateway/src/iam/grpc_auth.rs at both refs, and
+    auth_interceptor 11 at both. But the sentence above rests on a file that does not exist at
+    the tag. identity_store.rs is the AAASM-5332 artifact, and "unauthenticated bootstrap by
+    design" is only defensible while the possession proof means something; at rc.6
+    enforce_did_key_binding has 0 occurrences in aa-gateway/src/service/lifecycle_service.rs
+    against 3 at the evidence tree, with verify_possession_proof at 7 in the same file at both
+    refs as the control that keeps the zero measured. So at rc.6 this row's own justification
+    does not hold and the exposure is WORSE than stated here, not better.
   q3_changed_answer: true
 - id: G1
   domain: degraded_mode

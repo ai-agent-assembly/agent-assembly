@@ -28,12 +28,20 @@ fail=0
 ok()   { printf '  ok    %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  FAIL  %s — %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
-echo "positive control"
-if out="$(python3 "${validator}" --manifest "${here}/valid-minimal.yaml" 2>&1)"; then
-  ok "valid-minimal.yaml exits 0"
-else
-  bad "valid-minimal.yaml" "expected exit 0, got $?: ${out}"
-fi
+# Positive controls. Globbed rather than naming valid-minimal alone, so a rule
+# whose green counterpart is a separate file (R15's one-line-diff pair) is
+# asserted to PASS and not merely asserted to fail — a gate nobody has watched
+# pass for the right reason is no better evidenced than one nobody has watched
+# fail.
+echo "positive controls"
+for fixture in "${here}"/valid-*.yaml; do
+  name="$(basename "${fixture}")"
+  if out="$(python3 "${validator}" --manifest "${fixture}" 2>&1)"; then
+    ok "${name} exits 0"
+  else
+    bad "${name}" "expected exit 0: ${out}"
+  fi
+done
 
 echo "negative controls (validator)"
 for fixture in "${here}"/invalid-*.yaml; do
@@ -51,6 +59,17 @@ for fixture in "${here}"/invalid-*.yaml; do
     ok "${name} -> ${rule}"
   fi
 done
+
+# R15's other three branches turn on the state of the REPOSITORY — whether any
+# tag resolves, whether the evidence tree is inside the newest one, whether
+# --no-git was passed — so no manifest fixture can express them. They live in a
+# script beside this one, with a positive control proving its zeros are measured.
+echo "negative controls (R15 repository-state branches)"
+if out="$(python3 "${here}/r15_branch_probes.py" 2>&1)"; then
+  ok "r15_branch_probes.py — 4 branches"
+else
+  bad "r15_branch_probes.py" "$(printf '%s' "${out}" | tail -3)"
+fi
 
 # Fixtures whose defect is structural rather than semantic must ALSO be caught
 # by the schema, because ajv is the half of the gate that runs first.
@@ -70,11 +89,14 @@ do
   fi
 done
 
-if npx --yes ajv-cli@5 validate --strict -s "${schema}" -d "${here}/valid-minimal.yaml" >/dev/null 2>&1; then
-  ok "valid-minimal.yaml accepted by ajv"
-else
-  bad "valid-minimal.yaml" "ajv rejected the positive control"
-fi
+for fixture in "${here}"/valid-*.yaml; do
+  name="$(basename "${fixture}")"
+  if npx --yes ajv-cli@5 validate --strict -s "${schema}" -d "${fixture}" >/dev/null 2>&1; then
+    ok "${name} accepted by ajv"
+  else
+    bad "${name}" "ajv rejected a positive control"
+  fi
+done
 
 printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ]
