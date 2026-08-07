@@ -50,22 +50,24 @@ gh repo list ai-agent-assembly --limit 100 --json name,isPrivate,isArchived
 
 **Seventeen of those carry tracked Markdown**; `agent-assembly-spec` is archived
 and empty. Adding the one external L0 site gives the **eighteen repositories
-measured below** — 13 named in the brief for this work, plus five that were not
-and are documentation-bearing:
+measured below**.
 
-- [`arena`](https://github.com/ai-agent-assembly/arena), which
-  [content-ownership.md](content-ownership.md#the-content-layers) names as an L3
-  component and whose docs the Hub mounts at `/arena/`;
+Nine of the eighteen are the surfaces this work was asked to inventory — the
+company site, the product website, the Docs Hub, Core, the three SDKs, Arena and
+Examples. The **other nine were not asked for**, and are included because
+omitting them would have left a hole in the layer model this page measures
+against:
+
+- the four private product repositories — `cloud`, `agent-assembly-enterprise`,
+  `internal-docs` and `e2e-private` — recorded at directory granularity only;
+- `e2e-public`, whose evidence is 19 of its 26 files;
 - the organisation's `.github` repository, which
   [owns the org-wide `SECURITY.md`](content-ownership.md#canonical-source-by-content-type)
   and the metadata registry
   [ADR 0014](../adr/0014-canonical-metadata-registry-and-drift-gate.md) assigns;
-- `saas-infra`, `homebrew-tap` and `.github-private`, which the brief did not
-  name and which carry 30 tracked Markdown files between them — including a
-  second ADR tree in `saas-infra/docs/adr/` (11 files, 10 numbered decisions).
-
-Omitting any of them would have left a hole in the layer model this page exists
-to measure against.
+- `saas-infra`, `homebrew-tap` and `.github-private`, which carry 30 tracked
+  Markdown files between them — including a second ADR tree in
+  `saas-infra/docs/adr/` (11 files, 10 numbered decisions).
 
 #### What is out of scope, and why
 
@@ -274,6 +276,14 @@ Root files `README.md`, `CONTRIBUTING.md`, `AGGREGATION.md` and `MIGRATION.md`
 are not book pages. `MIGRATION.md` is the AAASM-3665 plan and is quoted under
 [Redirect obligations](#redirect-obligations).
 
+One further page sits in the Hub repository's `docs/` tree but **outside**
+`docs/src/`, so it is not in the book and not in `SUMMARY.md`:
+`docs/sync-architecture.md`, a contributor-facing description of how
+documentation reaches the hub. It says so itself, and records that the
+cross-repo sync it describes is designed but not built (AAASM-302).
+**Disposition: Keep** — the same category as Core's `docs/release/` and
+`docs/superpowers/`: inside `docs/`, deliberately outside the book.
+
 Five pages carry real generated regions (eight regions), fed by two generators
 and two manifests:
 
@@ -392,8 +402,10 @@ blobs back the 294 files, so two thirds are byte-duplicates of another snapshot.
 import re, subprocess
 
 def blobs(ref, sub):
+    # check=True: a failed git call must raise, not return an empty set.
     out = subprocess.run(["git", "ls-tree", "-r", ref, "--", sub],
-                         capture_output=True, text=True).stdout.splitlines()
+                         capture_output=True, text=True,
+                         check=True).stdout.splitlines()
     d = {}
     for line in out:
         meta, path = line.split("\t", 1)
@@ -404,6 +416,8 @@ def blobs(ref, sub):
 REF = "remote/main"
 snap = blobs(REF, "website/versioned_docs")
 live = blobs(REF, "docs")
+# An empty input would print a clean-looking row of zeros. Refuse to.
+assert snap and live, "empty tree — run this from a node-sdk checkout"
 same = diff = absent = 0
 for path, sha in snap.items():
     rel = re.sub(r"^website/versioned_docs/version-[^/]+/", "", path)
@@ -528,12 +542,26 @@ layer**. Under
 an example may restate and never author, so no example README can be the
 canonical source for anything it says.
 
-### L5 · Repository READMEs — 158 files
+### L5 · Repository READMEs — 151 in the docs bucket
 
-Every one of the eighteen repositories has a root `README.md`. The total across
-all directory levels is 158, concentrated in `agent-assembly` (45, mostly crate
-READMEs), `examples` (41, which are the L4 example pages counted above rather
-than L5 signposts) and `saas-infra` (12).
+Every one of the eighteen repositories has a root `README.md`. Across all
+directory levels there are **158 tracked `README.md` files, of which 151 are in
+the docs bucket** — the other seven are Evidence or Tool config by this page's
+own rules and are counted there instead:
+
+| | All levels | Docs bucket | The difference |
+|---|---:|---:|---|
+| `agent-assembly` | 45 | 44 | `verification-reports/README.md` |
+| `examples` | 41 | 40 | `.github/workflows/README.md` |
+| `saas-infra` | 12 | 12 | — |
+| `arena` | 10 | 9 | `reports/README.md` |
+| `cloud` | 9 | 6 | three under `verification-reports/` |
+| `e2e-public` | 2 | 1 | `verification-reports/releases/README.md` |
+| all others | 39 | 39 | — |
+| **Total** | **158** | **151** | |
+
+`agent-assembly`'s 44 are mostly crate READMEs; `examples`' 40 are the L4 example
+pages counted above rather than L5 signposts.
 
 **Disposition: Keep.** Like L4, L5 has no truth layer and may only restate.
 
@@ -545,7 +573,7 @@ the groups above. Every remaining docs-bucket file that is not under a `docs/`,
 
 | File | Where | Disposition |
 |---|---|---|
-| `CONTRIBUTING.md` | 8 repositories | **Keep** — contributor process, correctly per-repo |
+| `CONTRIBUTING.md` | 11 repositories | **Keep** — contributor process, correctly per-repo |
 | `SECURITY.md` | `agent-assembly`, `node-sdk`, `python-sdk`, `.github-private`, and the org-wide one in `.github` | **Keep** — the [canonical-source table](content-ownership.md#canonical-source-by-content-type) assigns this per repository, falling back to the org default, which is exactly the arrangement present |
 | `node-sdk/website/README.md` | 1 file | **Keep** — Docusaurus scaffolding, not a page |
 
@@ -1092,24 +1120,53 @@ files in the six private repositories, node-sdk's 294 frozen snapshots, and
 Every docs-bucket file in every counted repository falls under exactly one group
 in [The inventory](#the-inventory) or one row above.
 
-That is a file-level claim and needs a file-level check, so here is the one that
-actually tests it. For each repository, list the docs bucket, subtract the files
-matched by the groups, and require the remainder to be empty:
+That is a file-level claim, and it needs a check that can fail. Two earlier
+attempts at this could not, and the way they failed is worth recording because
+both looked more rigorous than the thing they replaced:
 
-```bash
-# docs bucket for one repo
-git -C <repo> ls-tree -r --name-only <ref> | grep -E '\.(md|mdx)$' \
-  | grep -Ev "$EV" | grep -Ev "$TC" | grep -E "$DC" > /tmp/bucket
-# everything the groups name: docs/, website/, blog/ trees, plus the signposts
-grep -Ev '^docs/|^website/|^blog/' /tmp/bucket \
-  | grep -Ev '(^|/)(README|CONTRIBUTING|SECURITY)\.md$'
-# must print nothing
+- Asserting the coverage. It was wrong — 25 files had no group.
+- Arguing it from the buckets summing to each repository's total. That shows the
+  *bucketing* is exhaustive, which is a weaker and different claim: it holds
+  even if the disposition map covers nothing.
+- Subtracting `^docs/|^website/|^blog/` and the signposts from the docs bucket.
+  The [Appendix](#appendix-the-bucket-script) **defines** that bucket as exactly
+  those patterns, so the check tested the definition against itself and returned
+  an empty remainder no matter what was in the tree.
+
+The check below subtracts **the disposition groups' own globs**, listed per
+repository, rather than the bucket definition:
+
+```python
+GROUPS = {   # the globs this page's groups actually name
+  "agent-assembly": [r"^docs/src/", r"^docs/release/", r"^docs/superpowers/", SIGNPOST],
+  "docs":           [r"^docs/src/", r"^docs/sync-architecture\.md$",
+                     r"^(AGGREGATION|MIGRATION)\.md$", SIGNPOST],
+  "node-sdk":       [r"^docs/", r"^website/versioned_docs/",
+                     r"^website/README\.md$", SIGNPOST],
+  # …one entry per repository; private repos are Record in full
+}
+SIGNPOST = r"(^|/)(README|CONTRIBUTING|SECURITY)\.md$"
+
+for repo, globs in GROUPS.items():
+    for path in docs_bucket(repo, REF[repo]) + sys.argv[1:]:
+        if not any(re.search(g, path) for g in globs):
+            leaks.append(f"{repo}: {path}")
+sys.exit(1 if leaks else 0)
 ```
 
-Run across all eighteen repositories the remainder is empty. Note what this
-does **not** prove: that the four buckets sum to each repository's total shows
-only that the *bucketing* is exhaustive, which is a different and weaker claim —
-it would hold even if the disposition map covered nothing at all.
+Because `agent-assembly`'s entry names three subtrees rather than `^docs/`, a
+page added at `docs/anything-else/` leaks. That is the property the previous
+version lacked.
+
+**Result: 828 docs-bucket files checked, remainder empty, exit 0.** And the
+check demonstrably fails — passing three paths that no group names
+(`docs/totally/unlisted-nobody-dispositioned-this.md`,
+`website/orphan-page-not-in-any-group.md`, `some/deep/dir/GUIDE.md`) reports 25
+leaks and exits 1.
+
+It earned its keep on first run: it found `docs/sync-architecture.md`, a Hub
+page inside `docs/` but outside `docs/src/` that none of the three earlier
+checks could see. It is now [dispositioned](#l2--docs-hub--docs-22-pages--4-root-files).
 
 ### Partitioning this for implementation tickets
 
