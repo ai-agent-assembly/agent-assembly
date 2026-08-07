@@ -23,9 +23,12 @@ each reaches a different ADR 0033 §6 claim level, and an absent one is reported
 absent rather than picked up by the next. Listed lowest-latency first:
 
 1. **SDK layer (in-process)** — language SDKs call a thin Rust shim (`aa-ffi-*` in
-   the SDK repos) over **`aa-sdk-client`**, which emits events and denies a wrapped
-   framework tool call before it runs. Fastest path; requires SDK adoption *and* an
-   explicit initializer call. Advisory only — see ADR 0002.
+   the SDK repos) over **`aa-sdk-client`**, which emits events and asks the runtime
+   for a decision on a wrapped framework tool call. Fastest path; requires SDK
+   adoption *and* an explicit initializer call *and* a reachable runtime. In this
+   repo it reaches *Evaluated* (advisory) — `aa-sdk-client` is not an enforcement
+   point here, and *denied before execution* depends on the out-of-repo shim
+   honouring the answer. Advisory only — see ADR 0002.
 2. **Sidecar proxy (`aa-proxy`)** — MitM of outbound HTTPS using per-host certificates
    minted from a local root CA; enforces network-egress policy with no *agent code*
    change. Requires the process to honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
