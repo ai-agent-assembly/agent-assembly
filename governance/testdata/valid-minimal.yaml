@@ -14,7 +14,19 @@ meta:
   channels_surveyed:
   - crates_io
   - github_release
-  channels_not_surveyed: []
+  - homebrew
+  - ghcr
+  channels_not_surveyed:
+  - channel: install_script
+    reason: Not a registry; the script is served from the release assets.
+  - channel: npm
+    reason: Published from node-sdk; nothing in this repository uploads to it.
+  - channel: pypi
+    reason: Published from python-sdk; nothing in this repository uploads to it.
+  - channel: go_modules
+    reason: A git tag in go-sdk; there is no publish step to find.
+  - channel: not_applicable
+    reason: Not a channel; the value a row uses when the question does not apply.
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
     protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md

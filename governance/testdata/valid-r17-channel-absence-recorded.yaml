@@ -1,26 +1,10 @@
-
-# INVALID FIXTURE — expects rule R5.
+# Positive control for rule R17, AAASM-5680.
 #
-# THE DISCRIMINATING FIXTURE. Do not "tidy" the cited path.
-#
-# invalid-r5-untracked-evidence.yaml cites a gitignored generated file, which is
-# in neither the index nor the tree — so it is rejected by BOTH the correct
-# predicate (present in the tree) and the plausible wrong one (present in
-# index UNION tree). It therefore proves only that R5 is not a no-op.
-#
-# This fixture cites a path that is TRACKED AT HEAD and ABSENT FROM THE EVIDENCE
-# TREE. That is the single input on which the two predicates disagree:
-#
-#   predicate                                          verdict
-#   git cat-file -t <tree>:<path>        (the tree)    REJECT  <- ADR 0034 §6.4
-#   git ls-files --with-tree=<tree>      (index∪tree)  ACCEPT  <- shipped in round 1
-#
-# WHY THIS PATH: scripts/validate_capability_manifest.py was added by commit
-# 267319be1, in the very PR that introduced this manifest. evidence_tree
-# 299de3883 predates it, and a historical commit cannot retroactively acquire a
-# file — so the fixture's discriminating power is stable, not incidental.
-# Replacing the path with one that exists at that tree silently restores the
-# blind spot and this fixture goes green while testing nothing.
+# One-line-diff partner of invalid-r17-absence-contradicts-row.yaml: the same
+# absence record, and T1 does NOT claim the channel. Every row is accounted for
+# on `ghcr` — 1 row = 0 carry it + 0 not_applicable + 1 recorded absent + 0
+# unaccounted — which is the state the rule exists to require, and the half a
+# fixture set proving only failure would never witness.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
@@ -44,6 +28,13 @@ meta:
     reason: A git tag in go-sdk; there is no publish step to find.
   - channel: not_applicable
     reason: Not a channel; the value a row uses when the question does not apply.
+  channel_absences:
+  - channel: ghcr
+    status: not_published
+    ids:
+    - T1
+    probe: 'GET https://ghcr.io/token?scope=repository:ai-agent-assembly/aa-proxy:pull issues no token.'
+    reason: The artifact delivering this row is in no published image.
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
     protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
@@ -93,6 +84,6 @@ capabilities:
   - anything that does not traverse the proxy
   evidence:
   - kind: test
-    path: scripts/validate_capability_manifest.py
+    path: aa-integration-tests/tests/e2e_mcp_interceptor.rs
   evidence_runs_on_main: standing
   target_level: hold
