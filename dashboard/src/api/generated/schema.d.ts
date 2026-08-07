@@ -2174,6 +2174,11 @@ export interface paths {
          *     window. Only kinds that actually fired appear, so an idle window returns an
          *     empty list rather than zero-filled fabricated rows. The alert read is
          *     bounded by [`MAX_SCRUB_ALERTS`] and confined to the caller's tenant.
+         *
+         *     **`hits` counts alerts, not findings, and only the alert's first kind** —
+         *     see [`PatternCount::hits`] for exactly what that loses and why it is
+         *     recorded rather than repaired here. `GET /api/v1/sensitive-data/breakdown`
+         *     is the finding-accurate surface.
          */
         get: operations["get_pattern_counts"];
         put?: never;
@@ -2230,6 +2235,178 @@ export interface paths {
          *     tenant and bounded by [`MAX_SCRUB_ALERTS`].
          */
         get: operations["get_posture"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/breakdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/breakdown` — findings grouped by one bounded
+         *     dimension.
+         * @description Read scope, tenant-confined. `group_by` admits only ADR 0032 §9's six
+         *     permitted labels; `agent_id`, `destination`, `session_id`, `trace_id` and any
+         *     fingerprint are refused with 400 and named in the message, because those are
+         *     event-store dimensions and grouping a series by one is unbounded cardinality.
+         */
+        get: operations["get_breakdown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/events` — the drill-down list behind an aggregate.
+         * @description Read scope, tenant-confined. `total` is the true count for the filter, not
+         *     the length of the page — the storage layer documents that pairing a capped
+         *     list with an uncapped count is deliberate, and the field names say which is
+         *     which.
+         */
+        get: operations["list_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/events/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/events/{event_id}` — one event and its findings.
+         * @description Read scope, tenant-confined: the lookup runs inside the caller's scope, so an
+         *     event id belonging to another tenant is a 404 rather than a cross-tenant
+         *     read. That the id exists elsewhere is itself not something to disclose.
+         */
+        get: operations["get_event"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/export` — the compliance export.
+         * @description **Authorisation**: `Scope::Admin` *and* an explicit `acknowledge_export=true`.
+         *     The scope says who may export; the acknowledgement says that this particular
+         *     export was intended, so a link followed by accident does not release a
+         *     tenant's whole governance record.
+         *
+         *     **Access logging**: the export is recorded in
+         *     [`AppState::sensitive_data_export_log`] **before** the body is produced, and
+         *     a record that cannot be written is a 503 with nothing released. An export
+         *     nobody can attribute is the outcome this ordering exists to prevent.
+         *
+         *     Tenant-confined by [`resolve_scope`] like every other endpoint here: admin
+         *     scope authorises the *act*, it does not widen the *rows* — a cross-tenant
+         *     admin still names the organisation it is exporting.
+         */
+        get: operations["export_compliance_records"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/summary` — the ADR 0032 §8 metric dictionary
+         *     over a window.
+         * @description Read scope, tenant-confined by [`resolve_scope`]. Every counter is derived
+         *     from the durable projection; see [`metrics`] for why two of them deliberately
+         *     do not read the column that shares their name.
+         */
+        get: operations["get_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/timeseries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/timeseries` — the counters, bucketed.
+         * @description Read scope, tenant-confined. Empty buckets are emitted with zeroed counters
+         *     so a chart renders a gap rather than interpolating across one.
+         */
+        get: operations["get_timeseries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/top-offenders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/top-offenders` — the worst agents, tools or
+         *     destinations, with a trend against the preceding window.
+         * @description Read scope, tenant-confined.
+         *
+         *     **This ranks the event store, not a metric series.** ADR 0032 §9 forbids
+         *     `agent_id` and `destination` as *metric labels* because a label multiplies
+         *     series; a ranked list over a queryable store is exactly what §9 sends those
+         *     dimensions to instead, and it returns a bounded number of rows by
+         *     construction.
+         */
+        get: operations["get_top_offenders"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3774,6 +3951,17 @@ export interface components {
          * @enum {string}
          */
         ColdActionDto: "drop" | "archive";
+        /** @description Response for `GET /api/v1/sensitive-data/export`. */
+        ComplianceExportResponse: {
+            /** @description The access record written **before** this body was produced. */
+            access_record: components["schemas"]["ExportAccessRecord"];
+            /** @description Every matching event in the window. */
+            events: components["schemas"]["SensitiveDataEventSummary"][];
+            /** @description Their findings, keyed by `event_id`. */
+            findings: components["schemas"]["ExportedFindings"][];
+            /** @description What was exported. */
+            scope: components["schemas"]["QueryScope"];
+        };
         /** @description Response body for a failed test-fire (502). */
         ConnectorFailedBody: {
             /**
@@ -3992,6 +4180,22 @@ export interface components {
             name: string;
             /** @description RFC 3339 last-mutation timestamp. */
             updated_at: string;
+        };
+        /** @description One group of a breakdown, counted both ways. */
+        DimensionBucket: {
+            /**
+             * Format: int64
+             * @description How many distinct **events** carried at least one. Frequently smaller
+             *     than `finding_count`, and never the same measure.
+             */
+            event_count: number;
+            /**
+             * Format: int64
+             * @description How many **findings** fell in this group.
+             */
+            finding_count: number;
+            /** @description The dimension value this group is keyed by. */
+            value: string;
         };
         /** @description Request body for `POST /api/v1/dispatch_tool`. */
         DispatchToolRequest: {
@@ -4236,6 +4440,44 @@ export interface components {
          * @enum {string}
          */
         EventType: "violation" | "approval" | "budget" | "ops_change";
+        /** @description One recorded compliance-export access. */
+        ExportAccessRecord: {
+            /** @description When the export was authorised, RFC 3339. */
+            at: string;
+            /**
+             * Format: int64
+             * @description How many event rows were released.
+             */
+            event_count: number;
+            /**
+             * Format: int64
+             * @description How many finding rows were released.
+             */
+            finding_count: number;
+            /**
+             * Format: int64
+             * @description Inclusive lower bound of the exported window, epoch nanoseconds.
+             */
+            from_ns: number;
+            /** @description The organisation whose records were exported. */
+            org_id: string;
+            /** @description The authenticated caller's key id or JWT subject. Never a credential. */
+            principal: string;
+            /** @description The tenant within it. */
+            tenant_id: string;
+            /**
+             * Format: int64
+             * @description Exclusive upper bound, epoch nanoseconds.
+             */
+            to_ns: number;
+        };
+        /** @description One event's findings, in the export. */
+        ExportedFindings: {
+            /** @description The event these belong to. */
+            event_id: string;
+            /** @description Its findings, in ordinal order. */
+            findings: components["schemas"]["SensitiveDataFindingDetail"][];
+        };
         /**
          * @description A currently-open agent session in the fleet-wide active-sessions listing
          *     (AAASM-5038).
@@ -4504,6 +4746,25 @@ export interface components {
             /** @description When true, the refresh session is issued with an extended lifetime. */
             remember_me?: boolean;
         };
+        /**
+         * @description A dimension a breakdown may group by.
+         *
+         *     **This enum is ADR 0032 §9's bounded label set, spelled as a type.** The
+         *     permitted names are exactly
+         *     [`SensitiveDataMetricLabels::LABEL_NAMES`], and
+         *     [`PERMITTED_NAMES_MATCH_THE_ADR`](Self::names) is asserted against that
+         *     constant rather than against a second hand-written list, so the two cannot
+         *     drift.
+         *
+         *     The forbidden dimensions — `agent_id`, `destination`, `session_id`,
+         *     `trace_id`, any fingerprint — have no variant, so `?group_by=agent_id`
+         *     cannot deserialize and the request is refused rather than answered with an
+         *     unbounded series. They remain available as **filters** and as drill-down
+         *     columns on the event surface, which is the queryable event store §9 sends
+         *     them to.
+         * @enum {string}
+         */
+        MetricDimension: "category" | "severity" | "confidence_band" | "outcome" | "detection_method" | "provider_id";
         /**
          * @description Per-agent daily budget projection for a topology node (AAASM-5045).
          *
@@ -4907,12 +5168,30 @@ export interface components {
         PatternCount: {
             /**
              * Format: int64
-             * @description Number of `secret_detected` alerts of this kind in the window.
+             * @description Number of `secret_detected` **alerts** whose first detected kind was this
+             *     one — an *action* count, not a finding count.
+             *
+             *     **This is not "how many secrets of this kind were found."** One alert is
+             *     raised per inspected action, `SecretAlert::primary_kind` takes the first
+             *     entry of its `kinds` list, and this tally increments that single bucket
+             *     by one. An action carrying one AWS key and three email addresses adds 1
+             *     to `AwsAccessKey` and **0** to the email kind — the three emails are not
+             *     represented anywhere in this response.
+             *
+             *     Recorded here rather than fixed, because a fix is a contract change:
+             *     `StoredAlert.detected_pattern_type` is a single `Option<String>` and is
+             *     published on `/api/v1/alerts` as well, so carrying every kind and its
+             *     finding count means widening a shipped, dashboard-consumed shape
+             *     (AAASM-5359 follow-up). The finding-accurate surface is
+             *     `GET /api/v1/sensitive-data/breakdown?group_by=category`, which reports
+             *     `finding_count` and `event_count` separately and never collapses them
+             *     (ADR 0032 forbidden design #11).
              */
             hits: number;
             /**
              * @description Detected credential kind, e.g. `"AwsAccessKey"`. This is the
-             *     `detected_pattern_type` recorded on each `secret_detected` alert.
+             *     `detected_pattern_type` recorded on each `secret_detected` alert, which
+             *     is the alert's **first** kind — see [`hits`](Self::hits).
              */
             kind: string;
         };
@@ -5182,6 +5461,23 @@ export interface components {
             title: string;
             /** @description URI reference identifying the problem type. */
             type: string;
+        };
+        /** @description The window and tenant a response describes. */
+        QueryScope: {
+            /**
+             * Format: int64
+             * @description Inclusive lower bound, epoch nanoseconds.
+             */
+            from_ns: number;
+            /** @description Organisation read. */
+            org_id: string;
+            /** @description Tenant read. */
+            tenant_id: string;
+            /**
+             * Format: int64
+             * @description Exclusive upper bound, epoch nanoseconds.
+             */
+            to_ns: number;
         };
         /** @description Response state of a single approver in a multi-approver quorum (AAASM-5095). */
         QuorumApproverStatus: {
@@ -5786,6 +6082,105 @@ export interface components {
             /** @description Fixed leak severity: `critical` | `high` | `medium` | `low`. */
             severity: string;
         };
+        /** @description Response for `GET /api/v1/sensitive-data/breakdown`. */
+        SensitiveDataBreakdownResponse: {
+            /** @description Groups, highest finding count first. */
+            buckets: components["schemas"]["DimensionBucket"][];
+            /** @description The dimension grouped by. */
+            group_by: components["schemas"]["MetricDimension"];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+        };
+        /**
+         * @description The counters of the ADR 0032 §8 dictionary, over one filtered set of events.
+         *
+         *     All `u64`: an aggregate over a window can exceed `u32` where a single
+         *     event's tallies cannot.
+         */
+        SensitiveDataCounters: {
+            /**
+             * Format: int64
+             * @description **Events** whose action was refused outright (verdict `deny`).
+             *     Denominator: `event_count`.
+             */
+            blocked_event_count: number;
+            /**
+             * Format: int64
+             * @description **Findings** carried by the events that were refused — the whole finding
+             *     set of each blocked action, per ADR 0032 §8's worked example.
+             *     Denominator: `finding_count`.
+             */
+            blocked_finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** inspected that carried at least one finding, within the
+             *     filter. The denominator for every event-level rate below.
+             */
+            event_count: number;
+            /**
+             * Format: int64
+             * @description **Findings** those events carried in total. The denominator for every
+             *     finding-level share below. Never interchangeable with `event_count`.
+             */
+            finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** whose detection pass did not run to completion — failed open,
+             *     failed closed, or answered from a reduced path. Never folded into a
+             *     "clean" count (ADR 0032 forbidden design #2). Denominator: `event_count`.
+             */
+            inspection_incomplete_event_count: number;
+            /**
+             * Format: int64
+             * @description **Events** meeting all four ADR 0032 §8 prevention conditions.
+             *     Denominator: `event_count`.
+             */
+            prevented_event_count: number;
+            /**
+             * Format: int64
+             * @description **Findings** carried by those events. Denominator: `finding_count`.
+             */
+            prevented_finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** whose payload was rewritten and then forwarded (verdict
+             *     `scrub`). A redacted action is a transformed transmission, so a blocked
+             *     action never contributes here however many of its findings were
+             *     rewritten first. Denominator: `event_count`.
+             */
+            redacted_event_count: number;
+            /**
+             * Format: int64
+             * @description **Transformation operations performed**, across every matching event
+             *     including blocked ones. Not "findings whose redacted form was
+             *     transmitted" — see the module doc. Denominator: `finding_count`.
+             */
+            redacted_finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** for which no transmission evidence was recorded at all, so
+             *     they could not satisfy the prevention test whatever actually happened
+             *     to the payload. Denominator: `event_count`.
+             *
+             *     # Why this counter exists next to `prevented_event_count`
+             *
+             *     Without it, `prevention_rate = 0` has two completely different meanings
+             *     and renders identically: *"we prevented nothing"* and *"nothing measured
+             *     whether we prevented anything."* That is the same distinction AAASM-5660
+             *     drew for the proxy's evidence sink, arriving here.
+             *
+             *     It is load-bearing right now, not hypothetical. The gateway producer
+             *     writes `TransmissionEvidence::NotRecorded` unconditionally
+             *     (`aa-gateway/src/engine/sensitive_data.rs`) — it decides, it does not
+             *     observe the bytes — so **every** row this build can read has no
+             *     transmission evidence, and `prevention_rate` is structurally `0`. A
+             *     reader who cannot see that reads a truthful zero as a measured one.
+             *
+             *     When this equals `event_count`, `prevention_rate` carries no information
+             *     about prevention and must not be presented as though it does.
+             */
+            unmeasured_transmission_event_count: number;
+        };
         /**
          * @description What the sensitive-data pipeline did to an action's payload and to the
          *     approval of the action, at a granularity the 5-way runtime verdict
@@ -5806,6 +6201,213 @@ export interface components {
          * @enum {string}
          */
         SensitiveDataDisposition: "redact" | "mask" | "tokenize" | "require_approval" | "approval_granted" | "approval_denied" | "shadow_only" | "none";
+        /** @description Response for `GET /api/v1/sensitive-data/events/{event_id}`. */
+        SensitiveDataEventDetailResponse: {
+            /** @description The event. */
+            event: components["schemas"]["SensitiveDataEventSummary"];
+            /** @description Its normalized findings, in ordinal order. */
+            findings: components["schemas"]["SensitiveDataFindingDetail"][];
+        };
+        /**
+         * @description One event on the drill-down list.
+         *
+         *     Built field-by-field from the projection row. No offsets, no lengths, no
+         *     payload — see the module doc.
+         */
+        SensitiveDataEventSummary: {
+            /** @description The agent that acted. */
+            acting_agent_id: string;
+            /**
+             * Format: int32
+             * @description Delegation hops from the root.
+             */
+            delegation_depth: number;
+            /** @description The destination's name. */
+            destination_id: string;
+            /** @description What kind of thing the destination is. */
+            destination_kind: string;
+            /** @description Which way the payload was travelling. */
+            direction: string;
+            /** @description Whether enforcement was applied or merely computed. Prevention condition 4. */
+            enforcement_mode: string;
+            /** @description Where the decision was applied. Prevention condition 1. */
+            enforcement_point: string;
+            /** @description The event's identity, and the key for the detail endpoint. */
+            event_id: string;
+            /**
+             * Format: int32
+             * @description How many findings this action carried.
+             */
+            finding_count: number;
+            /** @description Names of the inspected fields — the §9 drill-down granularity. */
+            inspected_field_paths: string[];
+            /** @description How the detection pass terminated. Never a synonym for "found nothing". */
+            inspection_failure_path: string;
+            /** @description Rules that matched. */
+            matched_rule_ids: string[];
+            /**
+             * Format: int64
+             * @description When the action was inspected, epoch nanoseconds.
+             */
+            occurred_at_ns: number;
+            /** @description What kind of operation it was. */
+            operation: string;
+            /** @description The agent that delegated, if any. */
+            parent_agent_id?: string | null;
+            /** @description Policy document in force, when attributed. */
+            policy_document_id?: string | null;
+            /**
+             * @description Whether this event meets all four §8 prevention conditions. Derived from
+             *     the three evidence columns on read, never stored.
+             */
+            prevented_transmission: boolean;
+            /** @description Machine-aggregatable reasons for the decision. */
+            reason_codes: string[];
+            /** @description The agent at the root of the delegation chain. */
+            root_agent_id: string;
+            /** @description Agent session, when recorded. A correlation id, not a value. */
+            session_id?: string | null;
+            /** @description Owning team, when attributable. */
+            team_id?: string | null;
+            /** @description Distributed-trace id, when recorded. */
+            trace_id?: string | null;
+            /**
+             * Format: int32
+             * @description How many of them were rewritten before the decision was applied.
+             */
+            transformed_finding_count: number;
+            /** @description What was observed about the forwarded bytes. Prevention condition 3. */
+            transmission_evidence: string;
+            /** @description How far outside the boundary the destination sits. */
+            trust_zone: string;
+            /** @description The enforcement outcome (ADR 0018's frozen verdict). */
+            verdict: string;
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/events`. */
+        SensitiveDataEventsResponse: {
+            /** @description The page, newest first. */
+            events: components["schemas"]["SensitiveDataEventSummary"][];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+            /**
+             * Format: int64
+             * @description **Every** matching event in the window, not the length of `events`. A UI
+             *     pairing the two must label this as the total.
+             */
+            total: number;
+        };
+        /** @description One finding on the drill-down detail. */
+        SensitiveDataFindingDetail: {
+            /** @description What was found, in provider-neutral terms. */
+            category: string;
+            /** @description How much the recognizer trusted it. Never an authorisation input. */
+            confidence: string;
+            /**
+             * @description The inspected field's **name**. §9's drill-down granularity, in place of
+             *     an offset.
+             */
+            field_path: string;
+            /**
+             * Format: int32
+             * @description Position within its event.
+             */
+            finding_ordinal: number;
+            /** @description The technique that produced it. */
+            method: string;
+            /** @description Which recognizer claims to have produced it. */
+            recognizer: string;
+            /** @description That recognizer's version. Descriptive, not a trust signal. */
+            recognizer_version: string;
+            /** @description The `[REDACTED:…]` label this finding redacts to. A label, not a value. */
+            redaction_label: string;
+            /** @description How damaging exposure would be. */
+            severity: string;
+            /** @description Its triage state. Nothing in this vocabulary means "clean". */
+            status: string;
+        };
+        /**
+         * @description The derived ratios, each `null` when its denominator is zero.
+         *
+         *     An absent rate is reported rather than `0.0`: over an empty window "we
+         *     blocked nothing" and "nothing happened" are different answers, and the
+         *     second one rendered as 0% is a fabricated posture.
+         */
+        SensitiveDataRates: {
+            /**
+             * Format: double
+             * @description `blocked_event_count / event_count`.
+             */
+            block_rate?: number | null;
+            /**
+             * Format: double
+             * @description `blocked_finding_count / finding_count`.
+             */
+            blocked_finding_share?: number | null;
+            /**
+             * Format: double
+             * @description `finding_count / event_count` — how much sensitive data an average
+             *     inspected action carried. The one figure that makes the event/finding
+             *     distinction visible on a dashboard.
+             */
+            findings_per_event?: number | null;
+            /**
+             * Format: double
+             * @description `inspection_incomplete_event_count / event_count`.
+             */
+            inspection_incomplete_rate?: number | null;
+            /**
+             * Format: double
+             * @description `prevented_event_count / event_count`. Never increments without
+             *     execution evidence.
+             */
+            prevention_rate?: number | null;
+            /**
+             * Format: double
+             * @description `redacted_finding_count / finding_count`.
+             */
+            redacted_finding_share?: number | null;
+            /**
+             * Format: double
+             * @description `redacted_event_count / event_count`.
+             */
+            redaction_rate?: number | null;
+            /**
+             * Format: double
+             * @description `unmeasured_transmission_event_count / event_count` — the share of the
+             *     window over which `prevention_rate` could not have been measured at all.
+             *
+             *     At `1.0`, `prevention_rate` is a rate over an unmeasured denominator and
+             *     says nothing about prevention. A consumer must read the two together;
+             *     this field exists so it cannot fail to notice.
+             */
+            unmeasured_transmission_rate?: number | null;
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/summary`. */
+        SensitiveDataSummaryResponse: {
+            /** @description Findings grouped by category, highest first. */
+            by_category: components["schemas"]["DimensionBucket"][];
+            /** @description The ADR 0032 §8 counters. */
+            counters: components["schemas"]["SensitiveDataCounters"];
+            /** @description The derived ratios. Absent rather than zero where undefined. */
+            rates: components["schemas"]["SensitiveDataRates"];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/timeseries`. */
+        SensitiveDataTimeseriesResponse: {
+            /**
+             * Format: int64
+             * @description Bucket width in seconds.
+             */
+            bucket_seconds: number;
+            /**
+             * @description Buckets in ascending time order. Empty buckets are present with zeroed
+             *     counters so a chart shows a gap rather than joining across it.
+             */
+            points: components["schemas"]["TimeseriesPoint"][];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+        };
         /** @description A single time-series point: `t` is epoch milliseconds, `value` the count. */
         SeriesPoint: {
             /**
@@ -6111,6 +6713,21 @@ export interface components {
             /** @description RFC 3339 timestamp when the connector reported success. */
             delivered_at: string;
         };
+        /** @description One bucket of the timeseries. */
+        TimeseriesPoint: {
+            /** @description The counters for the events in this bucket. */
+            counters: components["schemas"]["SensitiveDataCounters"];
+            /**
+             * Format: int64
+             * @description Bucket end (exclusive), epoch nanoseconds.
+             */
+            end_ns: number;
+            /**
+             * Format: int64
+             * @description Bucket start, epoch nanoseconds.
+             */
+            start_ns: number;
+        };
         /** @description Request body for `POST /auth/token`. */
         TokenRequest: {
             /**
@@ -6165,6 +6782,41 @@ export interface components {
         ToolUsageResponse: {
             /** @description Per-tool statistics (empty when no tool events carried a tool name). */
             tools: components["schemas"]["ToolStat"][];
+        };
+        /** @description One ranked offender, with its comparison against the preceding window. */
+        TopOffenderEntry: {
+            /** @description Counters over the requested window. */
+            counters: components["schemas"]["SensitiveDataCounters"];
+            /**
+             * Format: int64
+             * @description `finding_count` minus the previous window's, as a signed change.
+             */
+            finding_count_delta: number;
+            /** @description The agent id, tool name or destination this row ranks. */
+            key: string;
+            /** @description Counters over the window of the same length immediately before it. */
+            previous: components["schemas"]["SensitiveDataCounters"];
+            /** @description Which way it moved. */
+            trend: components["schemas"]["TrendDirection"];
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/top-offenders`. */
+        TopOffendersResponse: {
+            /**
+             * Format: int64
+             * @description The preceding window the trend compares against.
+             */
+            comparison_from_ns: number;
+            /**
+             * Format: int64
+             * @description Its exclusive upper bound — equal to `scope.from_ns`.
+             */
+            comparison_to_ns: number;
+            /** @description Which drill-down dimension was ranked. */
+            dimension: string;
+            /** @description Entries, highest current finding count first. */
+            entries: components["schemas"]["TopOffenderEntry"][];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
         };
         /** @description All edges in the topology graph, optionally filtered by team membership. */
         TopologyEdgeListResponse: {
@@ -6421,6 +7073,11 @@ export interface components {
             /** @description Start time of the span (ISO 8601). */
             start_time: string;
         };
+        /**
+         * @description Which way a top-offender entry moved against the preceding window.
+         * @enum {string}
+         */
+        TrendDirection: "up" | "down" | "flat" | "new";
         /** @description Response for `GET /api/v1/analytics/trust` (AAASM-5083, ADR 0019 Option D). */
         TrustResponse: {
             /**
@@ -10337,6 +10994,703 @@ export interface operations {
             };
             /** @description Missing or invalid credentials */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_breakdown: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /**
+                 * @description Which bounded dimension to group by. Defaults to `category`. Only ADR
+                 *     0032 §9's six labels are accepted — anything else is a 400.
+                 */
+                group_by?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Findings grouped by a bounded dimension */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataBreakdownResponse"];
+                };
+            };
+            /** @description `group_by` is not one of the six ADR 0032 §9 labels */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_events: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matching events, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataEventsResponse"];
+                };
+            };
+            /** @description Malformed window, or a cross-tenant caller that named no organisation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_event: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The event's identity */
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The event and its findings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataEventDetailResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such event within the caller's tenant and window */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    export_compliance_records: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /**
+                 * @description Must be `true`. An export is a deliberate act with a recorded principal,
+                 *     so it is not something a caller performs by navigating to a URL — the
+                 *     admin scope says *who may*, this says *this one, on purpose*.
+                 */
+                acknowledge_export?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The exported events and findings, plus the access record written for them */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComplianceExportResponse"];
+                };
+            };
+            /** @description `acknowledge_export=true` was not supplied, or the window is malformed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks admin scope, or may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The projection is not enabled, or the export could not be recorded */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_summary: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sensitive-data counters and rates over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataSummaryResponse"];
+                };
+            };
+            /** @description Malformed window, or a cross-tenant caller that named no organisation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_timeseries: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /** @description Bucket width: `1h`, `6h`, `1d` or `7d`. Defaults to `1d`. */
+                bucket?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bucketed sensitive-data counters */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataTimeseriesResponse"];
+                };
+            };
+            /** @description Unknown bucket width, malformed window, or too many buckets */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_top_offenders: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /** @description Rank by `agent`, `tool` or `destination`. Defaults to `agent`. */
+                dimension?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ranked offenders with trend comparison */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopOffendersResponse"];
+                };
+            };
+            /** @description `dimension` is not `agent`, `root_agent`, `tool` or `destination` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

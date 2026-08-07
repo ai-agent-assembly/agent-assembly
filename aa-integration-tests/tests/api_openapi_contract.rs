@@ -104,9 +104,13 @@ fn openapi_spec_loads_without_errors() {
     // /api/v1/agents/{id}/enforcement-mode/preview (the cascade dry-run — the
     // affected subtree, root + descendants, for a subtree-wide enforcement-mode
     // change; the apply path echoes this set back), bringing it to 93.
+    // AAASM-5359 added the ADR 0032 §8 sensitive-data analytics surface over the
+    // durable projection: /api/v1/sensitive-data/summary, /timeseries,
+    // /breakdown, /events, /events/{event_id}, /top-offenders and /export —
+    // seven paths, bringing it to 100.
     assert_eq!(
-        path_count, 93,
-        "openapi/v1.yaml must declare exactly 93 paths, found {path_count}"
+        path_count, 100,
+        "openapi/v1.yaml must declare exactly 100 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -232,6 +236,16 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/scrub/pattern-counts",
         "/api/v1/scrub/patterns",
         "/api/v1/scrub/posture",
+        // AAASM-5359 — sensitive-data analytics over the ADR 0032 §8 projection.
+        // Read-scoped and tenant-confined; /export additionally requires Admin
+        // plus an explicit acknowledgement and is access-logged.
+        "/api/v1/sensitive-data/breakdown",
+        "/api/v1/sensitive-data/events",
+        "/api/v1/sensitive-data/events/{event_id}",
+        "/api/v1/sensitive-data/export",
+        "/api/v1/sensitive-data/summary",
+        "/api/v1/sensitive-data/timeseries",
+        "/api/v1/sensitive-data/top-offenders",
         "/api/v1/topology",
         "/api/v1/topology/edges",
         "/api/v1/topology/lineage/{agent_id}",

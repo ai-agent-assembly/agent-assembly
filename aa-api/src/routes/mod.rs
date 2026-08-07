@@ -33,6 +33,9 @@ pub(crate) mod over_permission;
 pub mod policies;
 pub mod policy_hits;
 pub mod scrub;
+/// Sensitive-data analytics, drill-down and compliance export over the durable
+/// projection (AAASM-5359, ADR 0032 §8/§9).
+pub mod sensitive_data;
 pub mod tools;
 pub mod topology;
 pub mod traces;
@@ -277,6 +280,17 @@ fn protected_router() -> Router {
         .route("/scrub/patterns", get(scrub::get_patterns))
         .route("/scrub/pattern-counts", get(scrub::get_pattern_counts))
         .route("/scrub/posture", get(scrub::get_posture))
+        // Sensitive-data analytics over the durable ADR 0032 §8 projection
+        // (AAASM-5359). Read-scoped and tenant-confined; the compliance export
+        // additionally requires Admin plus an explicit acknowledgement and is
+        // access-logged before it releases anything.
+        .route("/sensitive-data/summary", get(sensitive_data::get_summary))
+        .route("/sensitive-data/timeseries", get(sensitive_data::get_timeseries))
+        .route("/sensitive-data/breakdown", get(sensitive_data::get_breakdown))
+        .route("/sensitive-data/top-offenders", get(sensitive_data::get_top_offenders))
+        .route("/sensitive-data/events", get(sensitive_data::list_events))
+        .route("/sensitive-data/events/{event_id}", get(sensitive_data::get_event))
+        .route("/sensitive-data/export", get(sensitive_data::export_compliance_records))
         // Deny-by-default auth gate over every protected route (AAASM-3125).
         .route_layer(axum::middleware::from_fn(crate::auth::gate::require_authentication))
 }
