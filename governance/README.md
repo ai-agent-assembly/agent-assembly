@@ -517,15 +517,16 @@ manifest reads as the broadest admissible value.
    the **72** paths this manifest cites that are tracked at the evidence tree,
    **10 are absent** at `v0.0.1-rc.6` (what R15 sees), **29 are present with
    different content** (what it cannot see) and 33 are byte-identical, so it
-   catches the sharpest cases and not all of them; the
-   sentence it forces is author-declared, exactly as R14's `pins` is; and it
+   catches the sharpest cases and not all of them; the sentence it forces is
+   author-declared, exactly as R14's `pins` is; and it
    retires itself once a tag containing the evidence tree is cut. Where no
    `v*` tag resolves it **warns** rather than passing — a shallow clone and a
    repository with no releases are indistinguishable from inside the validator.
 7. **Five rows were weakened — two for measured absence, three for
    unverifiability.** The distinction is the point, so the heading has to carry
-   it. N4 and G8 have no located test in this repo, measured. S6, S9 and G5 assert tests in
-   the `node-sdk`, `go-sdk` and all three SDK repositories respectively, and
+   it. N4 and G8 have no located test in this repo, measured. S6, S9 and G5
+   assert tests in the `node-sdk`, `go-sdk` and all three SDK repositories
+   respectively, and
    rule R5 resolves paths only against *this* repo's evidence tree, so they
    cannot be checked here at all. All five now read `evaluated` rather than
    `denied_before_execution`. Recording *why* matters: for the three SDK rows
