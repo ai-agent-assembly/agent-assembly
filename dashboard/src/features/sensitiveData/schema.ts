@@ -296,3 +296,35 @@ export const decodeTopOffenders: Decoder<TopOffendersResponse> = decoderFor(
   'The sensitive-data offender ranking',
   topOffendersSchema,
 )
+
+export type ExportAccessRecord = components['schemas']['ExportAccessRecord']
+
+/**
+ * The record the gateway wrote to its export access log, echoed in the body.
+ *
+ * The export summary shown to the operator is built from **this**, not from the
+ * lengths of the arrays beside it. The record is what the audit trail contains;
+ * a summary derived from the payload could disagree with it, and a disagreement
+ * between what the screen says was released and what the log says was released
+ * is worse than no summary at all.
+ */
+const exportAccessRecordSchema = z.object({
+  at: z.string(),
+  principal: z.string(),
+  org_id: z.string(),
+  tenant_id: z.string(),
+  from_ns: z.number(),
+  to_ns: z.number(),
+  event_count: z.number(),
+  finding_count: z.number(),
+}) satisfies z.ZodType<ExportAccessRecord>
+
+const complianceExportSchema = z.object({
+  scope: queryScopeSchema,
+  access_record: exportAccessRecordSchema,
+}) satisfies z.ZodType<{ scope: QueryScope; access_record: ExportAccessRecord }>
+
+export const decodeExportAccessRecord: Decoder<{
+  scope: QueryScope
+  access_record: ExportAccessRecord
+}> = decoderFor('The compliance export’s access record', complianceExportSchema)
