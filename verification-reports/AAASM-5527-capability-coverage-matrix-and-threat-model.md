@@ -103,6 +103,56 @@ text. Where a code comment and the code it describes disagreed, the code won —
 and the disagreement is recorded as a finding, because a comment that contradicts
 its own code is a defect in its own right, not merely a stale note.
 
+### Which half is authoritative (AAASM-5666)
+
+This artifact is two files, and they disagreed. Per ADR 0034's
+one-canonical-source-per-fact rule, the split is by *kind of fact*, and it is
+settled by evidence rather than by preference — on every mechanical field checked,
+the seed YAML and `governance/capability-manifest.yaml` agree **exactly**
+(reachability 41/21/10/7/1; the same nine `coverage_qualifiers` rows; `M9` and `C4`
+both `B3`), and this Markdown was the lone outlier each time.
+
+| Kind of fact | Authoritative half | Why |
+|---|---|---|
+| Per-row structured values, enums, and any count derived from them | **`AAASM-5527-capability-coverage-matrix.yaml`** | Machine-validated by `scripts/validate_capability_manifest.py`; the manifest agrees with it; the prose counts here are hand-maintained and had drifted in four places |
+| Retractions — that a claim was withdrawn, and what the row must say instead | **this Markdown** | The YAML records no retraction history at all. A retraction exists only here, so the YAML can never be checked against itself |
+
+Consequence: a disagreement about *a value* is a defect in this Markdown; a
+disagreement about *whether something was withdrawn* is a defect in the YAML.
+Neither half may be edited to match the other without settling the fact from
+source first.
+
+### Re-running the retraction comparison
+
+The method is published at [`governance/README.md`](../governance/README.md)
+(AAASM-5531) and is not restated here. AAASM-5666 re-ran it against **this
+artifact pair** rather than the manifest, and the re-run is recorded because it
+moved the population.
+
+- **Marker enumeration reproduces exactly**: 26 line-hits at 18 distinct lines,
+  positive control `AAASM` = 109.
+- **The population is 16, not 15**, and the extra unit is not the `:913`
+  disagreement the published grouping rule 3 already settles. It is `:730-748` —
+  the withdrawal of the inherited citation
+  `aa-cli/src/commands/integrations/model.rs:1200,1204`, which governs **P3**.
+  With it: **41 (row, retraction) pairs over 33 distinct rows.**
+- **Why every per-line probe missed it, and this is a third limit the published
+  list does not name.** The phrase is `Earlier revisions`, hard-wrapped across
+  `:730`/`:731`. `grep` is line-oriented, so the phrase exists in the document
+  and on **no line**: a per-line search for `Earlier revision` returns **0**,
+  case-sensitively *or* insensitively, while the same search over the
+  blockquote-unwrapped text returns **1**. Capitalisation alone would not have
+  hidden it; the line wrap does. A marker list must be run against unwrapped text.
+- **One apparent second wrapped hit is not a new retraction.** `:441`-`:442`
+  (*"not what an earlier revision claimed"*) sits in the same blockquote,
+  `:441-463`, as the published `:455-459` unit — one blockquote, one withdrawal,
+  per the published grouping rule 1. Recorded so the count is checkable rather
+  than merely asserted.
+- **The `WITHDRAWN:` exclusion is phrase-scoped, not field-scoped.** The published
+  rule exempts `evidence[].reason`; applied literally it re-flags a fix recorded in
+  `notes`, reporting the audit trail as the defect. The predicate that works is
+  *"is this occurrence inside a withdrawal record"*, wherever it lives.
+
 ## Claim vocabulary
 
 This artifact does **not** define its own vocabulary. The `Coverage` column takes
