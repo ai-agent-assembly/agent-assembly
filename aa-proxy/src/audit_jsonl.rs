@@ -396,6 +396,20 @@ pub fn write_failures() -> u64 {
     WRITE_FAILURES.load(Ordering::Relaxed)
 }
 
+/// Count of export attempts that failed (AAASM-5660).
+///
+/// The point of counting rather than retrying silently: an exporter that fails
+/// without saying so is **worse than no exporter**, because it converts a
+/// known-lossy local ring into an assumed-complete remote record. A non-zero
+/// figure here means at least one segment was not handed off and the ring is
+/// still the only copy.
+static EXPORT_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// Export attempts that failed since process start.
+pub fn export_failures() -> u64 {
+    EXPORT_FAILURES.load(Ordering::Relaxed)
+}
+
 /// Record one failed write, returning the new running total.
 fn record_write_failure() -> u64 {
     WRITE_FAILURES.fetch_add(1, Ordering::Relaxed) + 1
@@ -518,6 +532,104 @@ impl RotationPolicy {
     }
 }
 
+/// Where sealed segments are handed off so the evidence can outlive the local
+/// ring (AAASM-5660).
+///
+/// # What this is, and what it deliberately is not
+///
+/// This is a **spool-and-forward seam**, not a remote client. The proxy seals a
+/// rotated segment into a directory the operator chose, atomically, at `0600`;
+/// what happens beyond that directory belongs to whatever the operator points
+/// at it — a mounted volume, a collector that tails the directory, or the SaaS
+/// control plane. Durable replication that outlives the host is a SaaS
+/// capability; the open-source proxy owns getting the evidence out of the ring
+/// and saying whether that succeeded.
+///
+/// # Why not the alternatives
+///
+/// * **An object-store client (S3/GCS) in the proxy.** A new heavyweight
+///   dependency, and it would put long-lived cloud credentials inside the
+///   process that [`crate::hardening`] deliberately makes non-dumpable
+///   *because* it already holds more than it should. Widening that blast radius
+///   to gain a copy the operator can obtain by pointing a collector at a
+///   directory is a bad trade.
+/// * **The `StorageBackend` tier.** It would make a sidecar depend on a
+///   database. The proxy runs beside the agent, frequently on a laptop, and
+///   frequently with nothing reachable; a sink that only works when a database
+///   is up is a sink that is missing when it matters. (Redis is separately
+///   barred from backing audit at all.)
+/// * **syslog or OTLP.** UDP syslog cannot acknowledge, so "at-least-once with
+///   observable failure" is unachievable on it — the failure is precisely what
+///   is invisible, which is the exact defect this seam exists to avoid. TCP
+///   syslog and OTLP both mean a new dependency and an in-band network client
+///   on the enforcement host.
+/// * **Streaming each entry as it is written.** It couples the sink to network
+///   latency and needs its own unbounded buffer. Segment granularity bounds the
+///   work and leaves the data path untouched.
+/// * **`logrotate` and friends.** Already rejected in [`RotationPolicy`]: this
+///   writer never reopens its descriptor, so external rotation leaves the proxy
+///   appending to an unlinked inode.
+///
+/// # Delivery semantics
+///
+/// At-least-once, by construction rather than by claim. Export is idempotent —
+/// the target name is derived from the segment's own content (first record
+/// timestamp, last-write time, length), so re-exporting a segment the previous
+/// process already handed off is a no-op rather than a duplicate. Every segment
+/// still in the ring is re-offered on every sweep and at every rotation,
+/// including after a restart, so a failure retries by itself.
+///
+/// What is **not** promised: that every segment is exported before the ring
+/// discards it. Guaranteeing that would mean blocking rotation on the exporter,
+/// and rotation is what keeps the disk from filling. A segment discarded while
+/// still un-exported leaves [`export_failures`] non-zero and the window lossy,
+/// which is the honest reading and the one a consumer can act on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ExportTarget {
+    /// No handoff: the bounded local ring is the only copy of this evidence,
+    /// and it does not survive loss of this host.
+    ///
+    /// This is the open-source default, and it is a **stated position** rather
+    /// than an absent setting — see [`ExportStatus::LocalRingOnly`], which is
+    /// published in the sidecar so a consumer reads "the evidence lives only in
+    /// the ring" instead of inferring "probably fine".
+    #[default]
+    LocalRingOnly,
+    /// Seal rotated segments into this directory. Created at `0700` if absent.
+    Directory(PathBuf),
+}
+
+impl ExportTarget {
+    /// How this target renders in [`SinkCompleteness::export`].
+    pub fn status(&self) -> ExportStatus {
+        match self {
+            Self::LocalRingOnly => ExportStatus::LocalRingOnly,
+            Self::Directory(_) => ExportStatus::Directory,
+        }
+    }
+}
+
+/// What a consumer is told about where this evidence lives, beside the counts
+/// of what was lost.
+///
+/// It is a named state on every snapshot, never an omitted field. "No exporter
+/// configured" and "retention is fine" are not the same fact, and an operator
+/// who reads an absence as reassurance is exactly the failure this sink exists
+/// to stop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportStatus {
+    /// The bounded ring on this host is the only copy. Rotation deletes
+    /// evidence permanently and nothing replicates it; durable retention that
+    /// outlives the host is a SaaS capability and is not present here.
+    #[default]
+    LocalRingOnly,
+    /// Sealed segments are being handed to an operator-configured directory.
+    /// Whether they then reach durable storage is that collector's contract,
+    /// not this sink's.
+    Directory,
+}
+
 /// Path of rotated segment `n` (1 = most recent).
 fn segment_path(path: &Path, n: usize) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -567,6 +679,49 @@ async fn first_record_ms(path: &Path) -> Option<i64> {
     let line_end = head.iter().position(|b| *b == b'\n')?;
     let line = std::str::from_utf8(&head[..line_end]).ok()?;
     serde_json::from_str::<ProxyAuditEntry>(line).ok().map(|e| e.ts_ms)
+}
+
+/// Name a segment is exported under.
+///
+/// Derived entirely from the segment's own content and metadata so that the
+/// same segment always maps to the same name. That is what makes export
+/// idempotent, and idempotence is what turns "offer every segment on every
+/// sweep" into at-least-once delivery instead of an ever-growing pile of
+/// duplicates.
+///
+/// `first_ms` is the timestamp of the segment's first record (`0` when it could
+/// not be read), `mtime_ms` dates its last, and `len` disambiguates the rest.
+fn export_name(sink: &Path, first_ms: i64, mtime_ms: i64, len: u64) -> String {
+    let stem = sink
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "proxy-audit".to_owned());
+    format!("{stem}.{first_ms}-{mtime_ms}-{len}")
+}
+
+/// Copy `segment` to `target`, atomically and at `0600`.
+///
+/// Staged through a dotted `.part` sibling and renamed, for the same reason the
+/// completeness snapshot is: a collector watching the directory must never read
+/// a half-copied segment and treat a truncated window as the whole one.
+async fn publish_segment(segment: &Path, target: &Path) -> io::Result<()> {
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(target.file_name().unwrap_or_default());
+    tmp_name.push(".part");
+    let tmp = target.with_file_name(tmp_name);
+    tokio::fs::copy(segment, &tmp).await?;
+    // `copy` carries the source's mode on Unix, but the guarantee is asserted
+    // rather than inherited — an exported segment holds the same per-agent
+    // behavioural trail as the sink and must not become readable to every local
+    // account because of a platform detail.
+    tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
+    tokio::fs::rename(&tmp, target).await
+}
+
+/// Last-write time of `path` in milliseconds since the Unix epoch.
+async fn mtime_ms(path: &Path) -> Option<i64> {
+    let modified = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
+    Some(modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64)
 }
 
 /// Age of the newest record in `path`, derived from its modification time.
@@ -637,6 +792,28 @@ pub struct SinkCompleteness {
     /// stops a full disk from being a silent drop.
     #[serde(default)]
     pub write_failures: u64,
+    /// Where this evidence lives beyond the local ring, as a named state.
+    ///
+    /// [`ExportStatus::LocalRingOnly`] is a statement, not a gap: it says the
+    /// bounded ring on this host is the only copy. A consumer that finds no
+    /// exporter must read that rather than infer that retention is fine.
+    #[serde(default)]
+    pub export: ExportStatus,
+    /// Export attempts that failed.
+    ///
+    /// Non-zero means at least one segment was not handed off, so the ring is
+    /// still the only copy of it — the case in which an assumed-complete remote
+    /// record would be wrong.
+    #[serde(default)]
+    pub export_failures: u64,
+    /// Segments currently in the ring that the exporter has not yet accepted.
+    ///
+    /// A gauge, not a running total: it is what is outstanding right now, and
+    /// it falls back to zero when the backlog clears. Zero with
+    /// [`Self::export`] set to [`ExportStatus::LocalRingOnly`] means nothing is
+    /// outstanding because nothing is being exported at all.
+    #[serde(default)]
+    pub pending_exports: u64,
 }
 
 /// Read the completeness published beside `path`, if any.
@@ -682,6 +859,12 @@ pub struct JsonlWriter {
     expired_at_open: u64,
     shortfalls_at_open: u64,
     write_failures_at_open: u64,
+    export_failures_at_open: u64,
+    /// Where sealed segments are handed off, if anywhere.
+    export: ExportTarget,
+    /// Segments in the ring the exporter has not accepted, as of the last
+    /// attempt.
+    pending_exports: u64,
     /// Last snapshot written, so an unchanged sidecar is not rewritten on
     /// every line.
     published: SinkCompleteness,
@@ -709,12 +892,32 @@ impl JsonlWriter {
         Self::with_rotation(path, receiver, RotationPolicy::default()).await
     }
 
-    /// [`Self::new`] with an explicit [`RotationPolicy`].
+    /// [`Self::new`] with an explicit [`RotationPolicy`] and no export.
     pub async fn with_rotation(
         path: &Path,
         receiver: mpsc::Receiver<ProxyAuditEntry>,
         rotation: RotationPolicy,
     ) -> io::Result<Self> {
+        Self::with_retention(path, receiver, rotation, ExportTarget::LocalRingOnly).await
+    }
+
+    /// [`Self::new`] with an explicit retention policy and export target.
+    ///
+    /// A configured export directory is created at `0700` if absent, and a
+    /// failure to create it is propagated rather than degraded to "no export".
+    /// An operator who configured a handoff and silently got none would believe
+    /// the evidence outlives the host when it does not, which is the single
+    /// misconception this whole surface exists to prevent.
+    pub async fn with_retention(
+        path: &Path,
+        receiver: mpsc::Receiver<ProxyAuditEntry>,
+        rotation: RotationPolicy,
+        export: ExportTarget,
+    ) -> io::Result<Self> {
+        if let ExportTarget::Directory(dir) = &export {
+            tokio::fs::create_dir_all(dir).await?;
+            tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await?;
+        }
         let file = Self::open_segment(path).await?;
         let segment_bytes = file.metadata().await?.len();
         // Loss recorded against this file by an earlier run. Without carrying
@@ -727,6 +930,9 @@ impl JsonlWriter {
             expired_segments: 0,
             retention_shortfalls: 0,
             write_failures: 0,
+            export: export.status(),
+            export_failures: 0,
+            pending_exports: 0,
         });
         // The live segment may already hold records from an earlier process, so
         // its age is read back rather than assumed to start now — a proxy
@@ -746,6 +952,9 @@ impl JsonlWriter {
             expired_at_open: expired_segments(),
             shortfalls_at_open: retention_shortfalls(),
             write_failures_at_open: write_failures(),
+            export_failures_at_open: export_failures(),
+            export,
+            pending_exports: 0,
             published: baseline,
         })
     }
@@ -860,6 +1069,10 @@ impl JsonlWriter {
     /// Failures are logged rather than propagated: a sweep that cannot delete a
     /// segment must not stop the writer from recording the next refusal.
     async fn sweep_retention(&mut self) {
+        // Export first and unconditionally: the handoff is not gated on an age
+        // bound being configured, and a segment must never be deleted that
+        // could still have been exported.
+        self.export_segments().await;
         if self.rotation.max_age.is_none() {
             return;
         }
@@ -874,6 +1087,60 @@ impl JsonlWriter {
             }
         }
         self.expire_aged_segments().await;
+    }
+
+    /// Offer every rotated segment to the exporter.
+    ///
+    /// Runs in the writer task, never on the enforcement path: the data path's
+    /// only interaction with this sink is a `try_send` on a bounded channel, so
+    /// a slow or wedged exporter costs audit latency and nothing else. That is
+    /// the same constraint `emit_rule_refusal` already lives under.
+    ///
+    /// Every segment is re-offered every time. Export is idempotent by name
+    /// (see [`export_name`]), so an already-delivered segment costs one
+    /// `try_exists` and a failed one retries by itself — which is what makes
+    /// delivery at-least-once across a restart without any persisted cursor.
+    async fn export_segments(&mut self) {
+        let ExportTarget::Directory(dir) = self.export.clone() else {
+            self.pending_exports = 0;
+            return;
+        };
+        let mut pending = 0u64;
+        for n in 1..=self.rotation.retained_segments {
+            let segment = segment_path(&self.path, n);
+            let Ok(meta) = tokio::fs::metadata(&segment).await else {
+                continue;
+            };
+            if meta.len() == 0 {
+                continue;
+            }
+            let first = first_record_ms(&segment).await.unwrap_or(0);
+            let mtime = mtime_ms(&segment).await.unwrap_or(0);
+            let target = dir.join(export_name(&self.path, first, mtime, meta.len()));
+            if tokio::fs::try_exists(&target).await.unwrap_or(false) {
+                continue;
+            }
+            match publish_segment(&segment, &target).await {
+                Ok(()) => tracing::info!(
+                    segment = %segment.display(),
+                    target = %target.display(),
+                    "proxy audit jsonl segment exported",
+                ),
+                Err(e) => {
+                    pending += 1;
+                    let total = EXPORT_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+                    tracing::error!(
+                        error = %e,
+                        segment = %segment.display(),
+                        target = %target.display(),
+                        export_failures = total,
+                        "proxy audit jsonl segment export failed — the local ring is still the \
+                         only copy of this evidence",
+                    );
+                }
+            }
+        }
+        self.pending_exports = pending;
     }
 
     /// Whether the oldest record in the live segment has reached the age bound.
@@ -926,6 +1193,9 @@ impl JsonlWriter {
     /// records would turn every long-running proxy into a silent under-count.
     async fn rotate(&mut self) -> io::Result<()> {
         self.file.flush().await?;
+        // Before the discard below, which is the last moment the oldest segment
+        // exists. Waiting for the next timed sweep would lose it.
+        self.export_segments().await;
         let oldest = segment_path(&self.path, self.rotation.retained_segments);
         if tokio::fs::metadata(&oldest).await.is_ok() {
             // Read the age *before* the unlink: this is the one moment the two
@@ -985,6 +1255,13 @@ impl JsonlWriter {
             retention_shortfalls: self.baseline.retention_shortfalls
                 + retention_shortfalls().saturating_sub(self.shortfalls_at_open),
             write_failures: self.baseline.write_failures + write_failures().saturating_sub(self.write_failures_at_open),
+            // The status is what this process is doing, not what an earlier one
+            // did: an operator who removed the export directory must see the
+            // sink say so now rather than inherit yesterday's reassurance.
+            export: self.export.status(),
+            export_failures: self.baseline.export_failures
+                + export_failures().saturating_sub(self.export_failures_at_open),
+            pending_exports: self.pending_exports,
         }
     }
 
@@ -1001,6 +1278,8 @@ impl JsonlWriter {
             && current.expired_segments == self.published.expired_segments
             && current.retention_shortfalls == self.published.retention_shortfalls
             && current.write_failures == self.published.write_failures
+            && current.export_failures == self.published.export_failures
+            && current.pending_exports == self.published.pending_exports
         {
             return;
         }
@@ -2090,6 +2369,229 @@ mod retention_tests {
             tokio::fs::metadata(segment_path(&path, 1)).await.is_ok(),
             "the fixture never rotated, so it does not control for the failing case"
         );
+    }
+
+    // ── durable export seam (AAASM-5660) ───────────────────────────────────
+
+    async fn drain_with_export(path: &Path, policy: RotationPolicy, export: ExportTarget, count: usize) {
+        let (tx, rx) = mpsc::channel(8);
+        let writer = JsonlWriter::with_retention(path, rx, policy, export).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+        for i in 0..count {
+            tx.send(entry(&format!("h{i}.example"))).await.unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap();
+    }
+
+    fn exported_files(dir: &Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                // `.part` stages are not published segments.
+                !p.file_name()
+                    .map(|n| n.to_string_lossy().starts_with('.'))
+                    .unwrap_or(false)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The seam itself: a rotated segment leaves the ring, whole, before the
+    /// ring can discard it. What happens beyond the directory is the
+    /// collector's contract; getting it out and saying so is this sink's.
+    #[tokio::test]
+    async fn a_rotated_segment_is_exported_out_of_the_ring() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let out = tmp.path().join("spool");
+
+        let before = export_failures();
+        drain_with_export(&path, tiny(), ExportTarget::Directory(out.clone()), 200).await;
+
+        let exported = exported_files(&out);
+        assert!(
+            !exported.is_empty(),
+            "nothing left the ring, so the export seam does not exist"
+        );
+        assert_eq!(export_failures(), before, "a clean export reported a failure");
+
+        // Every exported byte is a parseable record: the handoff copies whole
+        // lines, not a truncated tail.
+        let mut lines = 0usize;
+        for file in &exported {
+            let body = tokio::fs::read_to_string(file).await.unwrap();
+            assert!(!body.is_empty(), "{} is empty", file.display());
+            for line in body.lines() {
+                serde_json::from_str::<ProxyAuditEntry>(line)
+                    .unwrap_or_else(|e| panic!("exported line does not parse: {e}: {line}"));
+                lines += 1;
+            }
+        }
+        assert!(lines > 0);
+
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert_eq!(published.export, ExportStatus::Directory);
+        assert_eq!(published.export_failures, 0);
+        assert_eq!(published.pending_exports, 0);
+    }
+
+    /// An exported segment carries the same per-agent behavioural trail as the
+    /// sink, so it gets the same mode — and the directory holding it is not
+    /// world-traversable either.
+    #[tokio::test]
+    async fn an_exported_segment_is_not_world_readable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let out = tmp.path().join("spool");
+        drain_with_export(&path, tiny(), ExportTarget::Directory(out.clone()), 200).await;
+
+        let dir_mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "export directory mode was {dir_mode:o}");
+        for file in exported_files(&out) {
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "exported segment {} mode was {mode:o}", file.display());
+        }
+    }
+
+    /// A silently-failing exporter is worse than none: it converts a
+    /// known-lossy local ring into an assumed-complete remote record. The
+    /// failure is therefore counted, published, and left outstanding as
+    /// `pending_exports` rather than reported as delivered.
+    #[tokio::test]
+    async fn an_export_that_cannot_be_written_is_counted_never_assumed_delivered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let out = tmp.path().join("spool");
+
+        let (tx, rx) = mpsc::channel(8);
+        let writer = JsonlWriter::with_retention(&path, rx, tiny(), ExportTarget::Directory(out.clone()))
+            .await
+            .unwrap();
+        // The directory exists and is writable at open, then becomes
+        // unwritable — a real `EACCES` from the real filesystem at the same
+        // call an exhausted or read-only volume would fail at.
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let before = export_failures();
+        let handle = tokio::spawn(writer.run());
+        for i in 0..200 {
+            tx.send(entry(&format!("h{i}.example"))).await.unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap();
+
+        let failures = export_failures() - before;
+        assert!(failures > 0, "an export that could not be written reported success");
+        assert!(
+            exported_files(&out).is_empty(),
+            "the fixture did not actually block the export, so it proves nothing"
+        );
+
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert_eq!(
+            published.export_failures, failures,
+            "the export failure never reached the file a consumer reads: {published:?}"
+        );
+        assert!(
+            published.pending_exports > 0,
+            "a segment nobody accepted must stay outstanding: {published:?}"
+        );
+
+        // Leave the directory writable so the tempdir can be cleaned up.
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// At-least-once without a persisted cursor: every segment still in the
+    /// ring is re-offered on every rotation and every sweep, and the target
+    /// name is derived from the segment's own content, so a second process
+    /// re-exporting what the first already delivered is a no-op rather than a
+    /// duplicate.
+    #[tokio::test]
+    async fn export_is_idempotent_and_retried_after_a_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let out = tmp.path().join("spool");
+
+        // Run 1 exports nothing: no target is configured at all.
+        drain(&path, tiny(), 200).await;
+        assert!(
+            tokio::fs::metadata(segment_path(&path, 1)).await.is_ok(),
+            "the fixture must leave segments in the ring for run 2 to retry"
+        );
+
+        // Run 2 configures the directory and must pick up what run 1 left.
+        drain_with_export(&path, tiny(), ExportTarget::Directory(out.clone()), 1).await;
+        let after_second = exported_files(&out);
+        assert!(
+            !after_second.is_empty(),
+            "a restart did not retry the segments already sitting in the ring"
+        );
+
+        // Run 3 re-offers the very same segments and must not duplicate them.
+        drain_with_export(&path, tiny(), ExportTarget::Directory(out.clone()), 1).await;
+        let after_third = exported_files(&out);
+        let carried_over: Vec<_> = after_third
+            .iter()
+            .filter(|p| after_second.contains(p))
+            .cloned()
+            .collect();
+        assert_eq!(
+            carried_over.len(),
+            after_second.len(),
+            "an already-exported segment was renamed or re-copied under a new name"
+        );
+    }
+
+    /// The open-source default is a **stated position**, not an absent
+    /// setting. "No exporter configured" and "retention is fine" are different
+    /// facts, and the sidecar has to say which one this is.
+    #[tokio::test]
+    async fn the_default_states_that_the_ring_is_the_only_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        drain(&path, RotationPolicy::default(), 3).await;
+
+        let published = read_completeness(&path).await.expect("the sidecar must exist");
+        assert_eq!(
+            published.export,
+            ExportStatus::LocalRingOnly,
+            "the default must name itself rather than leave the field out"
+        );
+        // And it is spelled on the wire, so a non-Rust consumer sees it too.
+        let raw = tokio::fs::read_to_string(completeness_path(&path)).await.unwrap();
+        assert!(
+            raw.contains("\"local_ring_only\""),
+            "the on-disk snapshot never says where the evidence lives: {raw}"
+        );
+        // Non-vacuity: the two states really are distinguishable on the wire.
+        assert!(!raw.contains("\"directory\""));
+    }
+
+    /// An operator who configured a handoff and silently got none would believe
+    /// the evidence outlives the host when it does not.
+    #[tokio::test]
+    async fn an_unusable_export_directory_is_an_error_not_a_silent_downgrade() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        // A regular file where the export directory should be.
+        let blocked = tmp.path().join("spool");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+
+        let (_tx, rx) = mpsc::channel(1);
+        match JsonlWriter::with_retention(&path, rx, tiny(), ExportTarget::Directory(blocked)).await {
+            Ok(_) => panic!("a configured-but-unusable export directory must not degrade to no export"),
+            Err(e) => assert!(
+                matches!(
+                    e.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::NotADirectory | io::ErrorKind::Other
+                ),
+                "unexpected error kind {:?}",
+                e.kind()
+            ),
+        }
     }
 
     // ── completeness ───────────────────────────────────────────────────────
