@@ -2698,13 +2698,71 @@ mod tests {
         format!("leaking {EVIDENCE_TEST_SECRET} here")
     }
 
-    /// A body whose redaction re-inspects **dirty**: the scanner's generic
-    /// high-entropy recognizer matches the `[REDACTED:GenericHighEntropy]`
-    /// marker it just wrote. Whether that is a false positive is not this
-    /// ticket's question — what matters is that the evidence reports what
-    /// re-inspection actually said, not what the decision intended.
+    /// Synthetic JWT, pasted into a prompt the way a user pastes one for an
+    /// agent to decode. Not a real token — it is RFC 7519's own example.
+    const EVIDENCE_TEST_JWT: &str =
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+    /// The part of [`EVIDENCE_TEST_JWT`] the scrub leaves on the wire: header
+    /// and payload, up to and including the separator before the signature.
+    const EVIDENCE_TEST_JWT_RESIDUE: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.";
+
+    /// A body whose redaction re-inspects **dirty**, because the scrub only
+    /// partly holds.
+    ///
+    /// The request carries the caller's API key *and* a JWT pasted into the
+    /// prompt. The scanner removes the key, and removes the JWT's signature —
+    /// the one segment whose entropy clears the gate — but the header and
+    /// payload segments are each below it, so they travel on unredacted.
+    /// Re-inspecting the bytes that will go finds that residue and reports a
+    /// credential, which is the truthful answer: the material really is still
+    /// there. That is what makes this the *partial-scrub* case rather than a
+    /// successful one, and it is a property of the payload, not of the
+    /// decision.
+    ///
+    /// This deliberately does **not** rest on the scanner mistaking its own
+    /// `[REDACTED:…]` output for a secret — the defect AAASM-5441 fixed, and
+    /// what the previous fixture depended on. [`assert_fixture_reinspects_dirty`]
+    /// pins the residue itself, so a fixture that stops being dirty fails
+    /// loudly instead of quietly re-routing these tests onto the clean path.
     fn unscrubbable_body() -> String {
-        format!("{{\"token\":\"{EVIDENCE_TEST_SECRET}\"}}")
+        format!(
+            "{{\"model\":\"gpt-4\",\"api_key\":\"{EVIDENCE_TEST_SECRET}\",\"messages\":\
+             [{{\"role\":\"user\",\"content\":\"decode {EVIDENCE_TEST_JWT} please\"}}]}}"
+        )
+    }
+
+    /// Non-vacuity guard for [`unscrubbable_body`], asserted against the same
+    /// interceptor the data path uses.
+    ///
+    /// The two tests that drive that fixture assert what the proxy records for
+    /// bytes whose re-inspection came back dirty. Nothing in either test would
+    /// notice if the scanner started scrubbing this body completely — they
+    /// would keep passing against a case that no longer occurs. This fails
+    /// first, and names which half moved: the raw values must be gone, the
+    /// residue must still be on the wire, and re-inspection must say so.
+    fn assert_fixture_reinspects_dirty() {
+        let (tx, _rx) = broadcast::channel(4);
+        let interceptor = Interceptor::new(tx);
+        let body = unscrubbable_body();
+        let verdict = interceptor.intercept_request(body.as_bytes(), None, crate::config::CredentialAction::RedactOnly);
+        let redacted = verdict
+            .redacted_body
+            .expect("the fixture must carry a credential the scanner redacts");
+        let on_wire = String::from_utf8_lossy(&redacted).into_owned();
+        assert!(
+            !on_wire.contains(EVIDENCE_TEST_SECRET),
+            "the scrub must still remove the API key, else this is not the partial-scrub case: {on_wire}"
+        );
+        assert!(
+            on_wire.contains(EVIDENCE_TEST_JWT_RESIDUE),
+            "the fixture is dirty only while the JWT header and payload survive the scrub: {on_wire}"
+        );
+        assert_eq!(
+            interceptor.forwarded_payload_is_clean(&redacted),
+            Some(false),
+            "the forwarded bytes must re-inspect dirty, else the tests below assert nothing: {on_wire}"
+        );
     }
 
     /// Take the one decision record a forwarded request must leave, asserting
@@ -2834,6 +2892,7 @@ mod tests {
     #[tokio::test]
     async fn a_redaction_whose_bytes_still_reinspect_dirty_says_so() {
         use tokio::io::AsyncReadExt as _;
+        assert_fixture_reinspects_dirty();
         let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let upstream_addr = upstream.local_addr().unwrap();
         let upstream_task = tokio::spawn(async move {
@@ -3030,6 +3089,7 @@ mod tests {
     #[tokio::test]
     async fn a_body_that_reinspects_dirty_is_not_persisted() {
         use tokio::io::AsyncReadExt as _;
+        assert_fixture_reinspects_dirty();
         let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let upstream_addr = upstream.local_addr().unwrap();
         let upstream_task = tokio::spawn(async move {
