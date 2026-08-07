@@ -468,6 +468,28 @@ def _audit_exempt_block(
     """
     findings: list[Finding] = []
 
+    # Every exempted line must be visibly *carried* rather than said: a blockquote,
+    # a table row, or a fenced region (fences never reach `body` — they are skipped
+    # upstream). Bare prose inside a marker is the page speaking in its own voice
+    # with the label attached, which is what bound 2 forbids, and it is the one
+    # bypass the class restriction below cannot reach: `historical-withdrawn` may
+    # legitimately carry a rule-statement, so only the *form* can distinguish a
+    # quoted withdrawn claim from a live one.
+    for offset, line in enumerate(body):
+        stripped = line.strip()
+        if not stripped or stripped.startswith((">", "|")):
+            continue
+        findings.append(
+            Finding(
+                path,
+                open_line + 1 + offset,
+                f"bare prose inside the truth-exempt ({cls}) block opened at line {open_line}; "
+                "exempted text must be quoted, tabulated or fenced so the page is not stating it",
+                _excerpt(line),
+            )
+        )
+        break
+
     if len(body) > MAX_EXEMPT_BLOCK_LINES:
         findings.append(
             Finding(
@@ -606,6 +628,12 @@ _MUST_FAIL = [
         "<!-- /truth-exempt -->\n",
     ),
     (
+        "bare prose inside a class that may carry a rule-statement",
+        "<!-- truth-exempt: historical-withdrawn - an old rule we are recording -->\n"
+        "A banned absolute may be waived by any waiver-approver for ninety days.\n"
+        "<!-- /truth-exempt -->\n",
+    ),
+    (
         "marker stretched over a document",
         "<!-- truth-exempt: negative-example - a demonstration of banned wording -->\n"
         + "filler line\n" * (MAX_EXEMPT_BLOCK_LINES + 1)
@@ -650,7 +678,7 @@ _MUST_PASS = [
     (
         "non-licensing class labelling text that states no rule",
         "<!-- truth-exempt: external-term - a vendor product name we cannot paraphrase -->\n"
-        "The product is marketed as Immutable Audit Vault.\n"
+        "> The product is marketed as Immutable Audit Vault.\n"
         "<!-- /truth-exempt -->\n",
     ),
     # Heading slugs carry this check's vocabulary with the spaces removed; a

@@ -869,11 +869,14 @@ back to being a product claim:
 
    The class is one of the six above and the reason is required. An unknown class,
    a missing reason or an unclosed fence is an error, not a lenient pass —
-   otherwise the marker becomes the general bypass this decision just removed. Two
-   further bounds follow from the same worry: the first three classes describe
-   *someone else's* words or a fixed form of words, so none of them can license a
-   statement about what these rules permit, and a marked block is capped in length
-   because a marker labels a passage rather than switching off a document.
+   otherwise the marker becomes the general bypass this decision just removed. Three
+   further bounds follow from the same worry. The exempted text must be **carried,
+   not said** — a blockquote, a table row or a fenced region, never bare prose,
+   because bare prose inside a marker is the page speaking in its own voice with a
+   label attached. The first three classes describe *someone else's* words or a
+   fixed form of words, so none of them can license a statement about what these
+   rules permit. And a marked block is capped in length, because a marker labels a
+   passage rather than switching off a document.
 2. **Never in the product's own voice.** The surrounding text must not adopt the
    statement, agree with it, or use it as a premise.
 3. **Never in a heading, a summary, page metadata, SEO text, marketing copy, or a
