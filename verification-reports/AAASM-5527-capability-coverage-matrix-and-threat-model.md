@@ -213,7 +213,9 @@ beneath it in this very file — see the closing note.
   *"is this occurrence inside a withdrawal record"*, wherever it lives.
 
 **This section invalidates line references into this file.** Adding it shifts
-everything below by 50 lines, which breaks all 15 Markdown line references in the
+everything below it by **116** lines — measured, not estimated: base `:106`
+(`## Claim vocabulary`) is head `:222`, and each of the 15 refs below resolves to
+its base content at base+116. That breaks all 15 Markdown line references in the
 population table in `governance/README.md`. Those are outside AAASM-5666's
 ownership and are reported to AAASM-5531/5600 rather than edited here. The
 underlying fragility is that the published method keys a reproducible population
