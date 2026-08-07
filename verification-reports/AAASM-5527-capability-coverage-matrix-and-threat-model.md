@@ -382,7 +382,7 @@ fields individually split for machine consumption (AAASM-5531).
 
 Column conventions:
 
-- **Coverage** is **one primary** [ADR 0033 §6](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) term, optionally followed by **named qualifiers** where a single row genuinely covers two aspects — connection versus payload, E3 versus E4, one SDK versus the others. Eight rows need this (`H4`, `N3`, `N8`, `N13`, `C4`, `G5`, `P1`, `P3`); `G5` is the pattern the others follow — *primary* **· qualifier: term**. The YAML models it as `coverage: <primary>` plus `coverage_qualifiers: {aspect: term}`, and the guard validates every qualifier against the same closed enum. A bare list of two terms with no aspect named is a defect, not a style.
+- **Coverage** is **one primary** [ADR 0033 §6](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) term, optionally followed by **named qualifiers** where a single row genuinely covers two aspects — connection versus payload, E3 versus E4, one SDK versus the others. Nine rows need this (`H4`, `N3`, `N5`, `N8`, `N13`, `C4`, `G5`, `P1`, `P3`); `G5` is the pattern the others follow — *primary* **· qualifier: term**. The YAML models it as `coverage: <primary>` plus `coverage_qualifiers: {aspect: term}`, and the guard validates every qualifier against the same closed enum. A bare list of two terms with no aspect named is a defect, not a style.
 - **Timing** is relative to the action taking effect: `pre` (decision precedes the
   effect), `in-line` (decision precedes egress but the caller has already
   committed), `post` (after the effect), `none`.
