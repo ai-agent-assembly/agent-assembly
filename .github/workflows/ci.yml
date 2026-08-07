@@ -896,8 +896,28 @@ jobs:
           node-version: '22'
       - name: Install ajv-cli
         run: npm install -g ajv-cli
-      - name: Validate schema is self-consistent (ajv --strict)
-        run: ajv compile --strict -s schemas/policy/v1/policy-document.schema.json
+      - name: Validate every schema is self-consistent (ajv --strict)
+        # AAASM-5531: this step used to name policy-document.schema.json alone,
+        # so schemas/simulation/ and schemas/capability-manifest/ were never
+        # compiled here and a new schemas/<domain>/v1/ directory silently got no
+        # coverage from the job whose name implies it. Globbing means the next
+        # one is picked up without anyone remembering to add a line.
+        run: |
+          shopt -s nullglob
+          found=0
+          for schema in schemas/*/v1/*.schema.json; do
+            echo "::group::ajv compile --strict $schema"
+            ajv compile --strict -s "$schema"
+            echo "::endgroup::"
+            found=$((found + 1))
+          done
+          # A glob that matches nothing would otherwise pass silently — the
+          # exact shape of a gate that looks green because it ran on nothing.
+          if [ "$found" -eq 0 ]; then
+            echo "no schemas matched schemas/*/v1/*.schema.json — the glob is wrong" >&2
+            exit 1
+          fi
+          echo "compiled $found schema(s)"
       - name: Validate example policy documents against schema
         run: |
           ajv validate \

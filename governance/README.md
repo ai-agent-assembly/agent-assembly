@@ -160,7 +160,7 @@ kinds:
 
 | Kind | Required keys | Checked how |
 |---|---|---|
-| `test` | `path` | `git ls-files --with-tree=<evidence_tree> --error-unmatch -- <path>` must exit 0 |
+| `test` | `path` | `git cat-file -t <evidence_tree>:<path>` must exit 0 and report `blob` |
 | `test_unlocated` | `describes` | Not machine-checkable. A test asserted to exist with no path cited |
 | `gap` | `reason` (`control` where an absence was probed) | Nothing to check; the honest statement that no test exists |
 
@@ -174,9 +174,18 @@ kind and each is a candidate for promotion to `test` once someone locates it.
 Two rules about the tree the evidence names:
 
 - **Existence is not tracked-ness** (ADR 0034 §6.4). A generated, gitignored
-  file passed one audit on a dirty tree and failed the next on a clean one; the
-  `--error-unmatch` exit code is the discriminator and a file-existence test is
-  not. `testdata/invalid-r5-untracked-evidence.yaml` is that exact file.
+  file passed one audit on a dirty tree and failed the next on a clean one.
+  `testdata/invalid-r5-untracked-evidence.yaml` is that exact file.
+- **Nor is "tracked somewhere" the same as "in this tree."** Round 1 used
+  `git ls-files --with-tree=<tree> --error-unmatch`, which reads like "tracked
+  in this tree" and in fact queries **index ∪ tree** — so a test written today
+  could be cited as evidence at a tree from before it existed, and the gate
+  certified it. A real command and a real exit code were not enough; the
+  predicate was wrong. When a gate shells out, **fixture the command's
+  semantics, not merely its failure**: list the predicates the command might
+  plausibly implement and pick an input on which they disagree.
+  `testdata/invalid-r5-evidence-newer-than-tree.yaml` is that input, and its
+  header explains why its path must not be "tidied".
 - **Evidence derived on a branch does not describe a published ref**
   (ADR 0034 §6.3). `main`, `master` and `HEAD` are hard errors in
   `evidence_tree`. Set `meta.describes_ref` when the manifest is asserted to
@@ -187,16 +196,31 @@ Two rules about the tree the evidence names:
 
 An environment fact has exactly one home: `preconditions[]`.
 
-- **R8** — an `AA_*` token in any prose field must be declared in this row's
-  `preconditions[].name`.
-- **R8b** — an `AA_*=value` **assignment** in any prose field is rejected. The
-  value a variable must hold belongs in `preconditions[].required_value` and
-  nowhere else.
+- **R8** — an environment token in any prose field must be declared in this
+  row's `preconditions[].name`. The namespace is `AA_*` **plus** a short
+  allow-list of externally-owned variables our own claims turn on:
+  `NODE_EXTRA_CA_CERTS`, `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`,
+  `SSL_CERT_FILE`, `NODE_TLS_REJECT_UNAUTHORIZED`. `NODE_EXTRA_CA_CERTS` is
+  the reason L1 can intercept TLS and its absence is the reason L2 and L3
+  cannot, so leaving it outside the namespace left the load-bearing fact in
+  prose with nothing checking it.
+- **R8b** — the `NAME=value` **assignment** spelling in a prose field is
+  rejected. The value belongs in `preconditions[].required_value`.
 
 This is not a style rule. The AAASM-5527 YAML's M1 `notes` said the only
 supported route "forces `AA_PROXY_LLM_ONLY=false`", which the companion
 Markdown retracts in bold and which finding F7 contradicts — one fact, two
-homes, and they disagreed (AAASM-5666). R8b makes that unstatable.
+homes, and they disagreed (AAASM-5666).
+
+**What R8b does and does not do.** It blocks one spelling. A sentence phrased
+"set to 0" or "forces false" still passes, and a regex chasing English always
+will. R8 is the durable half: forcing the token into `preconditions[]` is what
+puts prose and structure side by side where a reviewer can compare them.
+
+Where a variable is named because it is **absent** — L2, L3 and L8 all turn on
+something not being injected — still declare it, with `optional: true` and the
+polarity in `note`. An absence that matters is a fact, and facts live in the
+structure.
 
 Where two routes reach the same capability, write **two optional
 preconditions**, each carrying its own consequence in `note`. M1 is the worked
@@ -265,14 +289,71 @@ Field-by-field, what changed and why:
 | `transport`, `language`, `identity_source`, `released_channels`, … mixed scalar/list | consistent types | Consumers could not rely on a shape |
 | `coverage` enum (already ADR 0033 §6) | unchanged | The survey got this right; it is kept verbatim |
 
-Rows corrected on content, not shape:
+### Rows corrected on content, and how they were found
 
-- **M1** — the `notes`/Markdown divergence about `AA_PROXY_LLM_ONLY`
-  (AAASM-5666), plus `AA_PROXY_MITM_HOSTS` promoted to a first-class optional
-  route. **C2** and **G3** — assignments moved out of prose into
-  `required_value`.
-- **L1, L2, L3** — `AA_TEAM_ID` was mentioned in `transport` and declared
-  nowhere; rule R8 caught it on its first run.
+An earlier revision of this page named **M1** as the only row where the seed
+YAML and the companion Markdown disagreed. That was wrong, and the way it was
+wrong matters more than the row it missed: it came from grepping for one
+retracted phrase, finding M1, and stopping — proving a positive without ever
+bounding the population. Two rows had escaped.
+
+The claim is replaced by a repeatable method. **Enumerate the retractions
+first, then attribute them to rows**, so the population is bounded before any
+conclusion is drawn:
+
+1. Grep the Markdown for a *list* of retraction markers, recording the hit
+   count for each — **including the zeros**, since a silent zero and a broken
+   probe look identical. At the pinned commit: `Correction` 3, `corrected` 3,
+   `withdrawn` 2, `inverted` 2, `Withdrawn` 1, `on re-reading` 1,
+   `that is false` 1, `earlier revision` 11; and `Retract`, `retracted`,
+   `Superseded`, `no longer`, `revised`, `Amended`, `mistake` all **0**.
+   18 hits at 18 distinct lines.
+2. Read each hit in context and map it to the row ids it governs — a Markdown
+   table groups rows (`**I1** · **I2** · **I3**`), so one retraction can bind
+   several. 38 of 80 rows are governed by at least one.
+3. For each row compare seed, manifest and Markdown across `notes`,
+   `known_bypasses[]`, `evidence[].reason`, `target_level`,
+   `interception_component` and `released_note` — not `notes` alone. I1's
+   defect was in `notes`; S13's was `known_bypasses` against `evidence[].reason`
+   **inside one row**.
+4. Sweep every retracted phrase across **all 80 rows**, not only the attributed
+   ones, since an escape that landed on an unattributed row is exactly what the
+   attribution would miss. Scope the sweep to *claim-bearing* fields: an
+   `evidence[].reason` recording `WITHDRAWN: "<phrase>"` is the audit trail of
+   a retraction being honoured, and flagging it would report the fix as the
+   defect.
+5. Where the two documents disagree, **settle it from source**, not by assuming
+   the later document wins, and cite the file:line that settled it.
+
+Result, every row in exactly one bucket:
+
+| Bucket | Count | Rows |
+|---|---|---|
+| **Corrected** — manifest follows the retraction | 38 | C2 C3 C4 C5 C6 G3 G6 G7 G10 G11 H2 H3 H4 I1 I2 I3 I4 I7 L1 L5 L6 L7 L8 M1 N3 N5 N13 P1 P2 P3 S1 S2 S4 S5 S6 S8 S9 S13 |
+| **Divergent** — still carries a retracted claim | 0 | — |
+| **Self-contradictory** — two fields of one row disagree | 0 | — |
+| **Not applicable** — no retraction touches the row | 42 | the remainder |
+
+The two rows that failed the first pass, and how source settled them:
+
+- **I1** recorded a *closed* vulnerability as partly open, citing
+  `run_registration.rs:583,668` as a residual smell. Read at the evidence tree,
+  both call sites are inside that module's test block (opens at `:462`): `:583`
+  mints a deliberately foreign key to assert the binding check refuses it, and
+  `:668` **is** the AAASM-5332 regression assertion. Both prove the
+  vulnerability is closed, so the citation inverted their meaning. Understatement
+  is a defect in the same table as overstatement.
+- **S13** asserted refusal "lives in the out-of-repo FFI shims" in
+  `known_bypasses` while its own `evidence[].reason` recorded that as withdrawn,
+  the Node shim being hard-coded fail-open. `known_bypasses[]` is AAASM-5588's
+  publication surface, so it was one generator away from being published.
+
+Also corrected on content: **M1** (the `AA_PROXY_LLM_ONLY` divergence, plus
+`AA_PROXY_MITM_HOSTS` promoted to a first-class optional route), **C2** and
+**G3** (assignments moved into `required_value`), **L1/L2/L3** (`AA_TEAM_ID`
+named in `transport` and declared nowhere — R8 caught it on its first run),
+**N2** (a locatable test found), **N4/G8/S6/S9/G5** (coverage weakened), and
+**L7** (moved off `host_enforced`).
 
 ## Known gaps
 
@@ -293,9 +374,36 @@ manifest reads as the broadest admissible value.
    and I7 (`evaluated`), M9 (`redacted`). The validator warns rather than
    fails, because the survey may legitimately have derived those from reading
    code. Each needs either a located test or a weaker term.
-4. **Twelve `test_unlocated` items** name a test suite without a path.
+4. **Eleven `test_unlocated` items** name a test suite without a path.
 5. **`public_wording` is unset on every row.** Consumers must generate from the
    structured fields until a row carries approved prose.
+6. **The evidence describes `main`, not a release.** `meta.evidence_tree`
+   `299de3883` is **2788 commits** ahead of `v0.0.1-rc.6` and is an ancestor of
+   no released tag, so ADR 0034 §6.3's own command
+   `git merge-base --is-ancestor 299de3883 v0.0.1-rc.6` exits 1 (rc.5 and rc.4
+   likewise). Every row is therefore `Unmeasured` **for any released ref** until
+   re-derived. `meta.describes_ref` is deliberately unset for exactly this
+   reason — setting it to rc.6 would correctly turn the gate red — which also
+   means **rule R4 does not execute on the real manifest** and fires only in its
+   fixture. A consumer publishing a release-scoped surface (AAASM-5609's "What
+   Ships Today" especially) must either re-derive at the tag or label the
+   surface as describing `main`.
+7. **Five rows were weakened for unverifiability, not for absence.** N4 and G8
+   have no located test in this repo, measured. S6, S9 and G5 assert tests in
+   the `node-sdk`, `go-sdk` and all three SDK repositories respectively, and
+   rule R5 resolves paths only against *this* repo's evidence tree, so they
+   cannot be checked here at all. All five now read `evaluated` rather than
+   `denied_before_execution`. Recording *why* matters: for the three SDK rows
+   this weakening may itself be an understatement, and cross-repo evidence has
+   no mechanism yet.
+8. **P3 sits at `host_enforced` with `coverage: unsupported`, and is escalated
+   rather than mechanically fixed.** Its two cited tests are Claude Code launch
+   tests, and its own `interception_component` says of macOS host enforcement
+   "NO TEST PINS IT ... a pass-through tautology". R14 clause 1 passes it
+   because the tests are locatable, and clause 2 passes because
+   `protection_state_scope: tool_governance_only` is set — but a rung that ADR
+   0030 §4.1 reserves for bypass resistance, on a row whose coverage is
+   `unsupported`, needs a human decision about which of the two is wrong.
 
 ## Interfaces this manifest provides
 
@@ -309,6 +417,18 @@ is provided is the interface:
   column. `reachability` and `default_state` must be visible wherever
   distribution is, or the table asserts a capability is available that nothing
   reaches.
+
+  **`protection_state_scope` must render in the same cell as the rung** — never
+  omitted, never relegated to a separate column a layout can drop. A row at
+  `host_enforced` whose scope is `tool_governance_only` reached that rung by
+  writing a tool's own settings file and carries **no data-path claim**;
+  published as a bare "Host Enforced" it reads as ADR 0030 §4.1's bypass-resistance
+  guarantee. The schema and rule R14 both require the field wherever `coverage`
+  is not itself an enforcement term, so a row that needs the qualifier cannot
+  reach a generator without one — but rendering it is the generator's half.
+
+  A row whose evidence is entirely `gap` must be presented as a gap, on **every**
+  surface and not only AAASM-5588's.
 - **AAASM-5588** (Trust, Evidence and Known Limitations) — `evidence[]`,
   `known_bypasses[]`, `boundary_class` and `boundary_attained` are the
   limitations surface. A row whose evidence is entirely `gap` must be presented
