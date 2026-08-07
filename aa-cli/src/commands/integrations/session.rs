@@ -200,6 +200,16 @@ impl Default for SessionOptions {
 /// `Debug` reports only the negotiated facts. The client itself holds the
 /// capability token, and a derived `Debug` would put it into any panic message
 /// that formatted a `Result<Session, _>`.
+///
+/// # `#[non_exhaustive]` (AAASM-5669)
+///
+/// `aa-cli` ships a library target as well as the `aasm` binary, so this `pub`
+/// struct with `pub` fields is reachable from outside the crate and every field
+/// added to it is a source break for a struct literal — `provenance` and
+/// `multiplicity` already were. It is constructed only by [`connect_with`],
+/// which is the supported way in; marking it non-exhaustive says so in the type
+/// system and makes the next field additive.
+#[non_exhaustive]
 pub struct Session {
     /// The negotiated client.
     pub client: DevIntClient,
