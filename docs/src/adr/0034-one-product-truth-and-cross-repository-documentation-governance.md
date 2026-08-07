@@ -869,7 +869,11 @@ back to being a product claim:
 
    The class is one of the six above and the reason is required. An unknown class,
    a missing reason or an unclosed fence is an error, not a lenient pass —
-   otherwise the marker becomes the general bypass this decision just removed.
+   otherwise the marker becomes the general bypass this decision just removed. Two
+   further bounds follow from the same worry: the first three classes describe
+   *someone else's* words or a fixed form of words, so none of them can license a
+   statement about what these rules permit, and a marked block is capped in length
+   because a marker labels a passage rather than switching off a document.
 2. **Never in the product's own voice.** The surrounding text must not adopt the
    statement, agree with it, or use it as a premise.
 3. **Never in a heading, a summary, page metadata, SEO text, marketing copy, or a
@@ -1350,7 +1354,7 @@ ADR does not claim coverage it does not have.**
 | W7 | The capability/evidence manifest is machine-validated and CI-enforced, with per-row evidence trees | **Not yet automated** — owned by [AAASM-5531](https://lightning-dust-mite.atlassian.net/browse/AAASM-5531). The manifest's own schema comment records that its links, anchors, YAML and Markdown lint are run by hand today (`evidence_runs_on_main: path_gated_no_backstop`) |
 | W8 | ADR 0033's banned-absolutes list is checked in CI across docs | **Not yet automated** — owned by [AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536). Banned absolutes are **unwaivable** ([Decision 10](#10-waivers-and-exceptions)), so this ADR supplies no waiver route over that check — only the six non-claim exemption classes the gate must honour |
 | W9 | This ADR's `**Revision**` header matches its last `## Update —` heading, and every adoption record's `adr_revision` matches that header | **Not yet automated** — owned by [AAASM-5601](https://lightning-dust-mite.atlassian.net/browse/AAASM-5601); grammar fixed in [Revisions](#revisions-and-supersession) |
-| W10 | An ADR or governance page that names a banned absolute alongside a waiver states that it is **unwaivable**; and every `truth-exempt` marker names one of Decision 10's six classes, carries a reason, is closed, and contains no heading | **Automated** — `scripts/check_absolutes_unwaivable.py`, run on every docs pull request and main push by the `Docs` workflow's `metadata-drift` job |
+| W10 | An ADR or governance page that names a banned absolute alongside a waiver states that it is **unwaivable** — in prose, in a table cell, and in a heading; and every `truth-exempt` marker names one of Decision 10's six classes, carries a reason, is closed, is within the length cap, contains no heading, and does not use a non-licensing class to carry a rule-statement | **Automated** — `scripts/check_absolutes_unwaivable.py`, run on every docs pull request and main push by the `Docs` workflow's `metadata-drift` job |
 
 Two of these are worth stating plainly rather than leaving to the table: **W10 is
 the only requirement in this table enforced by a check in this repository today**,
