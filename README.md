@@ -123,10 +123,12 @@ brew uninstall aasm            # plus aasm-runtime / aasm-proxy if installed
 
 ## Overview
 
-`agent-assembly` brings governance to AI agents at scale. It intercepts what an
-agent tries to do — call a tool, reach the network, spend budget — at three
-independent layers, sends each action to a central **gateway** for a
-**policy** decision, and records the outcome in an immutable audit trail.
+`agent-assembly` brings governance to AI agents at scale. An action on a governed
+path — a tool call, a network request, a budget spend — is checked against your
+**policy**, by a central **gateway** or by the sidecar proxy's local egress rules,
+and the outcome is recorded in a hash-chained, **tamper-evident** audit trail that
+`aasm audit verify-chain` re-verifies offline. An action that never reaches a
+checkpoint is reported as *unmeasured*, never as allowed.
 
 The three interception layers, lowest-latency first:
 
