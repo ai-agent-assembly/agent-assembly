@@ -48,11 +48,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Rule R5 runs `git ls-files --with-tree=<evidence_tree>` and rule R4
+          # Rule R5 runs `git cat-file -t <evidence_tree>:<path>` and rule R4
           # runs `git merge-base --is-ancestor`. Both need the commit the
           # evidence names to be present, and the default shallow fetch does not
           # have it — the checks would fail for the wrong reason.
           fetch-depth: 0
+          # Rule R15 compares each row's citations against the newest `v*` tag.
+          # `fetch-depth: 0` already fetches tags today, but stated explicitly
+          # because R15's no-tag path can only WARN: a shallow clone with no
+          # tags and a repository with no releases are indistinguishable from
+          # inside the validator, so the gate must not depend on a default.
+          fetch-tags: true
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
