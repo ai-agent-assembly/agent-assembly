@@ -16,6 +16,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`install` reports the ratified outcome, over DI-API 5** (AAASM-5674) — the
+  runtime now *states* whether an apply modified the host, so `aasm
+  integrations install` answers *did the world change?* alongside `repair` and
+  `remove` (AAASM-5499). `ApplyView` gains an optional `ApplyOutcomeView`
+  (`proto/devint.proto`, field 7) and `DI_API_MAX_SUPPORTED` becomes **5**
+  (`DI_API_APPLY_OUTCOME_SINCE`); like v3 and v4 it adds **no verb**, so a
+  v1–v4 peer keeps the whole verb space and is never sent the new field.
+  **Deliberately not a `bool`.** proto3 gives a scalar no presence, so a `bool
+  mutated` would decode to `false` for every runtime older than the field,
+  `false` means "nothing was modified", and that is a **success claim** — every
+  pre-v5 runtime would have silently announced `unchanged` for every install it
+  ever performed. The field is an enum inside a message instead, preserving five
+  states — `changed`, `unchanged`, `failed`, `unsupported`, and *unspecified /
+  not reported* — with the zero value being the non-committal one. A client may
+  consume it only on a connection that negotiated v5 or newer; below that the
+  answer is **not reported**, never `unchanged`. `aasm` reports `"outcome":
+  null` with an `outcome_unknown` string naming the reason, and still exits `0`
+  because the apply itself succeeded — which is exactly why the exit code
+  cannot answer this question. Nothing is inferred from the receipt id (reused
+  across a no-op reapply), from `applied_at_unix_secs` (second-granularity and
+  cross-process), from a status read before the apply, or from the exit code.
+  **Source break for out-of-tree implementors:**
+  `IntegrationLifecycle::apply` now returns `AppliedIntegration { receipt,
+  mutation }`. Documented at `docs/src/devtools/developer-integration-api.md`,
+  `docs/src/cli/integrations.md`, ADR 0030 §5.4b and `docs/src/compatibility.md`.
 - **`changed`/`unchanged`/`refused`/`failed` outcome on `aasm integrations`**
   (AAASM-5499) — the ratified public contract for telling a no-op from a
   mutation. The exit code answers *did the command succeed?*; a new, separately
@@ -34,11 +59,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   markers this replaces — `repair`'s `nothing_to_repair` (AAASM-5455) and
   `remove`'s `plan_id: null` (AAASM-5629) — are unchanged in JSON and now set
   by the same constructor call as the outcome, so they cannot contradict it.
-  **`install` does not report the outcome yet**: the runtime computes whether an
-  apply mutated anything but the DI-API's `ApplyView` does not carry it, and
-  inferring it from a receipt timestamp would produce a wrong `unchanged`.
-  Documented at `docs/src/cli/integrations.md` and in `aasm integrations
-  --help`.
+  `install` joined the contract in AAASM-5674 below, which is what the wire
+  change it needed cost. Documented at `docs/src/cli/integrations.md` and in
+  `aasm integrations --help`.
 - **`aasm integrations` lifecycle** (AAASM-5280) — seven subcommands (`list`,
   `plan`, `install`, `status`, `verify`, `repair`, `remove`) covering the whole
   journey for an AI dev tool, with an **eleven-value exit-code vocabulary** so a
