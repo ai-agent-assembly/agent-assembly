@@ -14,6 +14,21 @@
 //! boot was configured with, read through a connection the gateway does not
 //! own.
 //!
+//! # The two kills are disjoint, and that was executed
+//!
+//! Both mutations were run against the full `cargo nextest run -p aa-gateway`
+//! suite (1257 tests, `--no-fail-fast`), each replacing one transport's
+//! `attach_sensitive_data_projection` call with `let projection = None;`:
+//!
+//! | Mutation | Failing tests | Suite |
+//! | --- | --- | --- |
+//! | `serve_uds` stops attaching | this file's test, and only it | 1256 passed, 1 failed |
+//! | `serve_tcp` stops attaching | `serve_tcp_persists_a_finding_…`, and only it | 1256 passed, 1 failed |
+//!
+//! Each transport's test survives the *other* transport's mutation, which is
+//! the property that makes either kill attributable. Recorded here rather than
+//! in a commit message because the next person to edit these files needs it.
+//!
 //! # No new dependency was needed
 //!
 //! AAASM-5440 recorded a Unix-socket tonic client as needing a `hyper_util`
