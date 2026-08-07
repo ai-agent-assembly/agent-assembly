@@ -568,9 +568,12 @@ def check_row_release_scope(
 
     * The rule is one-directional. It fires on a MISSING citation, which is
       cheap and exact to detect; it cannot see a path that exists at both refs
-      with different content, which is the larger population. `git diff` counts
-      say 51 of 93 cited-and-tracked files changed between the two refs, so the
-      rule catches the sharpest cases, not all of them.
+      with different content, which is the larger population. Re-derived over
+      this manifest's own citations by comparing blob oids at the two refs: of
+      the 72 cited paths tracked at the evidence tree, 10 are absent at
+      v0.0.1-rc.6 (what this rule sees), 29 are present with different content
+      (what it cannot see) and 33 are byte-identical. So it catches the sharpest
+      cases, not all of them.
     * The scope statement is author-declared, exactly as R14 clause 1's `pins`
       is. Nothing machine-checks what the sentence says. What the gate buys is
       that a row cannot silently omit it.
@@ -592,7 +595,7 @@ def check_row_release_scope(
     # Accept the tag verbatim, without its leading `v`, or by its pre-release
     # suffix alone — `still live in rc.6` is how the rows that already carry
     # this statement write it.
-    spellings = {tag, tag.lstrip("v")}
+    spellings = {tag, tag.removeprefix("v")}
     if "-" in tag:
         spellings.add(tag.rsplit("-", 1)[1])
     if any(re.search(re.escape(s), haystack, re.IGNORECASE) for s in spellings):
@@ -767,9 +770,6 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
         rep.error("capabilities", "R1", "manifest holds no rows")
         return
 
-    # R2 — ids are stable public claim identifiers. AAASM-5588, AAASM-5600 and
-    # AAASM-5609 cite them, so a duplicate or a reissued id silently repoints a
-    # published claim at a different capability.
     # R15 needs the newest release tag, and only where the evidence tree is not
     # already inside it. Resolved once: the answer is a property of the
     # repository, not of a row, and `git tag --list` is not free per row.
@@ -789,6 +789,9 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
             # cite something the release lacks. The rule retires itself.
             scope_tag = None
 
+    # R2 — ids are stable public claim identifiers. AAASM-5588, AAASM-5600 and
+    # AAASM-5609 cite them, so a duplicate or a reissued id silently repoints a
+    # published claim at a different capability.
     seen: dict[str, int] = {}
     retired = set(meta.get("retired_ids") or [])
     for index, row in enumerate(rows):

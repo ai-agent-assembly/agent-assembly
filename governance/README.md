@@ -513,8 +513,11 @@ manifest reads as the broadest admissible value.
    **Rule R15** requires the tag to be named on any row citing a path that
    exists at the evidence tree and not at the newest `v*` tag. Its limits,
    stated rather than left to be discovered: it fires on a *missing* citation,
-   not a *changed* one (51 of the 93 cited-and-tracked files changed between
-   the two refs, so it catches the sharpest cases and not all of them); the
+   not a *changed* one — re-derived by comparing blob oids at the two refs, of
+   the **72** paths this manifest cites that are tracked at the evidence tree,
+   **10 are absent** at `v0.0.1-rc.6` (what R15 sees), **29 are present with
+   different content** (what it cannot see) and 33 are byte-identical, so it
+   catches the sharpest cases and not all of them; the
    sentence it forces is author-declared, exactly as R14's `pins` is; and it
    retires itself once a tag containing the evidence tree is cut. Where no
    `v*` tag resolves it **warns** rather than passing — a shallow clone and a
