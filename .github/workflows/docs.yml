@@ -25,6 +25,14 @@ on:
       - 'scripts/propagate_versions.py'
       # AAASM-4922: the metadata-drift lint (ADR 0014); re-run it when it changes.
       - '.ci/check-metadata-drift.sh'
+      # AAASM-5671: the banned-absolutes waiver-eligibility gate (ADR 0034 W10);
+      # a change to the gate itself must re-run it, or it is a dead trigger.
+      - 'scripts/check_absolutes_unwaivable.py'
+      # The gate also scans the root adoption record ADR 0034 Decision 4 requires of
+      # every repository. It does not exist here yet; listing it now means the first
+      # one committed is gated, rather than sitting outside the trigger unnoticed —
+      # the vacuous-pass guard cannot catch that, since the docs/ globs still match.
+      - 'TRUTH-ADOPTION.md'
   push:
     branches: [main]
     paths:
@@ -37,6 +45,8 @@ on:
       - 'Cargo.toml'
       - 'scripts/propagate_versions.py'
       - '.ci/check-metadata-drift.sh'
+      - 'scripts/check_absolutes_unwaivable.py'
+      - 'TRUTH-ADOPTION.md'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -385,6 +395,10 @@ jobs:
   # literals drifts back into the tree (e.g. a `.github/blob/main` governance link,
   # or a `/install.sh` path on the host-root `.dev` installer alt). Pure git/bash,
   # no toolchain — kept fast and independent of the book build like version-drift.
+  # NOTE: this job now runs two independent pure-script docs gates —
+  # check-metadata-drift.sh and check_absolutes_unwaivable.py (AAASM-5671). The
+  # display name still names only the first because it is a required status check
+  # and renaming it would break branch protection; the steps are the accurate list.
   metadata-drift:
     name: Metadata-drift gate (check-metadata-drift.sh)
     if: github.event_name != 'workflow_run'
@@ -394,6 +408,18 @@ jobs:
 
       - name: Fail if a registry-owned canonical value drifts
         run: bash .ci/check-metadata-drift.sh
+
+      # AAASM-5671 (ADR 0034 Decision 10, W10): banned absolutes are unwaivable.
+      # ADR 0034 shipped saying both things at once, in nine places, and no gate
+      # could see it. This rides in the existing pure-script docs job rather than
+      # a job of its own — same trigger set, same no-toolchain shape, and the job
+      # name is left alone because it is a required check. The selftest runs first
+      # so a detector that has stopped detecting fails loudly instead of passing
+      # everything.
+      - name: Fail if a governance page makes banned absolutes waiver-eligible
+        run: |
+          python3 scripts/check_absolutes_unwaivable.py --selftest
+          python3 scripts/check_absolutes_unwaivable.py
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

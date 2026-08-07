@@ -60,7 +60,7 @@ reader can tell "considered and empty" from "forgotten".
 ---
 adr: "0034"
 adr_url: "https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md"
-adr_revision: "AAASM-5621"
+adr_revision: "AAASM-5671"
 repository: "ai-agent-assembly/<repo>"
 truth_layers: []          # e.g. ["T1", "T4"] — ADR 0034 Decision 1
 content_layers: []        # e.g. ["L3", "L5"] — content-ownership.md
@@ -136,7 +136,7 @@ not restate or redefine global precedence.
 
 ## Last reviewed
 
-Against ADR 0034 revision `AAASM-5621`, at `<version>`, on `<YYYY-MM-DD>`.
+Against ADR 0034 revision `AAASM-5671`, at `<version>`, on `<YYYY-MM-DD>`.
 
 [adr]: https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md
 ````
@@ -151,7 +151,8 @@ form rather than a branch name, per the *Linking to another repository* rule in
 — a rename's redirect does not cover every link form.
 
 `adr_revision` is the ticket of the most recent `## Update — AAASM-NNNN` section
-in the ADR, or `AAASM-5621` when there is none. It is what makes a record's
+in the ADR, or the publishing ticket `AAASM-5621` when there is none. It is
+`AAASM-5671` as of this writing. It is what makes a record's
 staleness detectable: a record naming an older revision has not been reviewed
 against the current decision.
 
@@ -201,9 +202,12 @@ constraints are easy to get wrong:
 - Renewal is a **new approval with fresh evidence**, not an edited `expires`.
   Editing the date is forbidden design 9.
 
-Three things may not be waived at all: an ADR 0033 forbidden design, evidence
-freshness or tracked-ness, and the absence of any resolvable row for a governed
-claim.
+Four things may not be waived at all: factual truthfulness; an ADR 0033 forbidden
+design, including forbidden design 7's banned absolutes, which are **unwaivable**
+in the product's own voice and have no approver; evidence freshness or
+tracked-ness; and the absence of any resolvable row for a governed claim. A
+waiver reaches process, timing and review sequencing — never whether a statement
+is true.
 
 ### `local_adrs`
 
@@ -247,7 +251,7 @@ what fixes that it may only restate.
 ```yaml
 adr: "0034"
 adr_url: "https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md"
-adr_revision: "AAASM-5621"
+adr_revision: "AAASM-5671"
 repository: "ai-agent-assembly/examples"
 truth_layers: []                      # restates only; authors no truth layer
 content_layers: ["L4", "L5"]
