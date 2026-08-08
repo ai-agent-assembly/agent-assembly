@@ -41,7 +41,7 @@ python3 scripts/validate_capability_manifest.py
 bash governance/testdata/run-validator-tests.sh
 ```
 
-Step 3 also runs two probes the fixture files cannot express:
+Step 3 also runs three probes the fixture files cannot express:
 
 * **`real_manifest_probes.py`** — mutates *this* manifest in place, asserts the
   gate goes red, and restores it (sha256-verified, refuses on a dirty tree).
@@ -50,11 +50,23 @@ Step 3 also runs two probes the fixture files cannot express:
   document, and every instance lived in the input class *"the canonical
   document, minus one key"*. A suite blind to an input class is silent about it,
   and silence reads as green.
+* **`input_shape_probes.py`** — asserts the validator never answers a question
+  it did not understand. Every fixture in this directory *is* a manifest, so no
+  fixture can state either half: that a document which is not one
+  (the AAASM-5527 seed, an **input** to the manifest via `meta.sources.seed`,
+  not a subject of it) is refused with **exit 2** and a reason, and that exit 2
+  stays a different number from **exit 1**, "the document is invalid". Before
+  AAASM-5692 the seed raised `AttributeError` — which exits 1, so a wrapper
+  reading only `$?` would have recorded "the seed fails validation", a
+  different and false statement. It also puts a bare string in each of the
+  schema's five array-of-object fields; four of the five raised the identical
+  crash, and one fixture each would be four near-identical files whose shared
+  denominator nothing asserts.
 * **`readme_counts_probe.py`** — asserts every `count:` line pasted into *this
   page* is the live one, by value. The counts below were shipped stale once, in
   the document whose thesis is that they are printed on every run; correcting
   them was not a mechanism, so this is one. It also cross-checks the harness's
-  own asserted total, **68 checks**, against `EXPECTED_TOTAL` in
+  own asserted total, **79 checks**, against `EXPECTED_TOTAL` in
   `run-validator-tests.sh` — that constant is the only thing standing between a
   silently-dropped check and a green run, and a single uncorroborated number is
   defended by nothing but the visible diff.
