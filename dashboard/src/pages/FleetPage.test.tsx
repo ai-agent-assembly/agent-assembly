@@ -297,6 +297,80 @@ describe('FleetPage table interactions', () => {
     expect(sortIndicator).toHaveClass('fleet-table__sort--inactive')
   })
 
+  it('defaults to trust ascending (least-trusted agent first) — AAASM-5069 / characterization AAASM-5697', async () => {
+    const trust: Map<string, number> = new Map([
+      ['low', 12],
+      ['high', 95],
+      ['mid', 60],
+    ])
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'high', name: 'high-trust' }),
+          makeAgent({ id: 'low', name: 'low-trust' }),
+          makeAgent({ id: 'mid', name: 'mid-trust' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useTrustQuery').mockReturnValue(
+      mockQuery<Map<string, number>>({ data: trust, isLoading: false, isError: false }),
+    )
+    renderFleet()
+    const rows = await screen.findAllByTestId('agent-row')
+    // Ascending trust: 12 < 60 < 95 → low, mid, high.
+    expect(rows[0]).toHaveTextContent('low-trust')
+    expect(rows[1]).toHaveTextContent('mid-trust')
+    expect(rows[2]).toHaveTextContent('high-trust')
+    // The trust header shows the active ascending indicator by default.
+    expect(screen.getByTestId('fleet-sort-trust').textContent).toBe('▲')
+    expect(screen.getByTestId('fleet-sort-trust')).not.toHaveClass('fleet-table__sort--inactive')
+  })
+
+  it('preserves row selection across a sort toggle (characterization AAASM-5697)', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a', name: 'zeta' }),
+          makeAgent({ id: 'b', name: 'alpha' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-a'))
+    await waitFor(() => expect(screen.getByTestId('fleet-select-a')).toBeChecked())
+    // Sorting by name must not drop the existing selection.
+    fireEvent.click(screen.getByRole('columnheader', { name: /Agent/ }))
+    await waitFor(() => expect(screen.getByTestId('fleet-sort-name')).not.toHaveClass('fleet-table__sort--inactive'))
+    expect(screen.getByTestId('fleet-select-a')).toBeChecked()
+    expect(screen.getByTestId('fleet-select-b')).not.toBeChecked()
+  })
+
+  it('keeps the select/mode/actions columns non-sortable (characterization AAASM-5697)', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: 'a' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+    await screen.findByTestId('agent-row')
+    // Non-sortable columns render no sort indicator element.
+    expect(screen.queryByTestId('fleet-sort-select')).toBeNull()
+    expect(screen.queryByTestId('fleet-sort-mode')).toBeNull()
+    expect(screen.queryByTestId('fleet-sort-actions')).toBeNull()
+    // Sortable ones do.
+    expect(screen.getByTestId('fleet-sort-name')).toBeInTheDocument()
+    expect(screen.getByTestId('fleet-sort-trust')).toBeInTheDocument()
+  })
+
   it('navigates to /agents/:id when a row body is clicked', async () => {
     let lastPath = ''
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
