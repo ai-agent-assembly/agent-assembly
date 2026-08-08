@@ -41,6 +41,21 @@ gate shells out, fixture the command's SEMANTICS, not merely its failure. See
 `governance/testdata/invalid-r5-evidence-newer-than-tree.yaml`, which is the
 input on which the two candidate predicates disagree.
 
+EXIT CODES
+----------
+Two failures that must never be collapsed, because a caller reading only `$?`
+turns one into the other (AAASM-5692):
+
+* **1** — the document was validated and is INVALID. Findings on stderr.
+* **2** — it could not be validated at all: unreadable, not YAML, not a
+  mapping, or not a capability manifest. A statement about the run, not about
+  the document's contents.
+
+A traceback is neither, and is always a defect in this script: it exits 1
+having formed no opinion, which reads to every caller as "the document failed"
+— the wrong-reason failure the fixtures in `governance/testdata` exist to make
+impossible.
+
 Only PyYAML is required beyond the standard library, so the script runs in CI
 without a resolver step.
 """
@@ -1667,6 +1682,27 @@ def main() -> int:
         return 2
     if not isinstance(doc, dict):
         sys.stderr.write(f"validate_capability_manifest: {args.manifest} is not a mapping\n")
+        return 2
+    # Identity, not validity. `manifest_version` PRESENT means the document
+    # claims to be a capability manifest, and only then do these rules describe
+    # it; whether the version is one this schema directory serves is rule R1's
+    # question and an exit 1.
+    #
+    # AAASM-5692. Without this, the AAASM-5527 seed — an INPUT to the manifest,
+    # read by rule R16 via meta.sources.seed, and never required to satisfy the
+    # manifest's contract — was validated as though it were a manifest. It
+    # crashed; had it not, a wall of findings about a document these rules do
+    # not govern would have been just as false and harder to spot.
+    if "manifest_version" not in doc:
+        sys.stderr.write(
+            f"validate_capability_manifest: {args.manifest} declares no `manifest_version`, "
+            "so it does not claim to be a capability manifest and these rules do not "
+            "describe it. Refusing to validate it.\n"
+            "  The AAASM-5527 coverage matrix is the common case: it is an INPUT to the "
+            "manifest (rule R16 reads it via meta.sources.seed), not a subject of it.\n"
+            "  Exit 2 means the tool did not validate; exit 1 means the document is "
+            "invalid. Do not collapse them.\n"
+        )
         return 2
 
     use_git = not args.no_git
