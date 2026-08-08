@@ -4,7 +4,8 @@
 > services, and spend money to get a job done. Agent Assembly is the set of
 > guardrails around them: for each action that reaches it, it checks the action
 > against rules you define, allows or blocks it *before* it happens, and keeps a
-> permanent record of what was decided. Think of it as a security checkpoint on
+> tamper-*evident* record of what was decided — one you can check for alteration,
+> kept for a bounded time rather than forever. Think of it as a security checkpoint on
 > the paths you route through it — which means the paths you leave unrouted
 > still need their own controls. Which actions reach the checkpoint depends on
 > how the agent is wired up; the [three-layer
