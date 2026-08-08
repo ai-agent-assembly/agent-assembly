@@ -1,7 +1,11 @@
-# INVALID FIXTURE — expects rule R13.
+# Rule R17, AAASM-5680: a channel this repository publishes to is not surveyed.
 #
-# The row claims enforcement with launch_path `unknown`. An enforcement claim
-# that does not name how the process was launched is unfalsifiable.
+# `ghcr` moves to channels_not_surveyed with a plausible reason — which is
+# exactly the state governance/capability-manifest.yaml was in before this
+# ticket, while .github/workflows/docker.yml had been pushing five image
+# repositories to ghcr.io since AAASM-4480. The reason is not the problem; the
+# fact that a live channel could sit outside the vocabulary with nothing
+# objecting is.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
@@ -13,8 +17,9 @@ meta:
   - crates_io
   - github_release
   - homebrew
-  - ghcr
   channels_not_surveyed:
+  - channel: ghcr
+    reason: The survey did not enumerate the container channel.
   - channel: install_script
     reason: Not a registry; the script is served from the release assets.
   - channel: npm
@@ -45,7 +50,7 @@ capabilities:
   - any
   platform:
   - linux
-  launch_path: unknown
+  launch_path: routed through aa-proxy with the gateway endpoint configured
   preconditions:
   - kind: env
     name: AA_PROXY_GATEWAY_ENDPOINT
@@ -65,7 +70,6 @@ capabilities:
   boundary_class: B3
   released_channels:
   - crates_io
-  - ghcr
   released_platforms:
   - linux_x86_64
   buildable: packaging_gated
