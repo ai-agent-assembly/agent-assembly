@@ -20,5 +20,27 @@ fail_text = "cargo-deny check failed. Review license or advisory violations."
 parallel = true
 
 [pre-push.commands.doc]
+# AAASM-5695: unfiltered, this full-workspace rustdoc build ran on every push,
+# whatever the diff — 3046 s (50m46s) measured here on a branch whose only
+# changed file is this one. A wait that long on a docs-only change is what
+# pressures people into --no-verify. Rustdoc output can only change when Rust
+# sources or the dependency graph do, so gate on those; CI's Rustdoc job is
+# gated the same way (ci.yml `changes.rust`).
+#
+# `files` is required, not decorative: lefthook's built-in push_files runs
+# `git diff HEAD @{push}`, and with the default push.default=simple that is
+# unresolvable on any branch whose name differs from its upstream's — i.e. every
+# ticket branch before its first push. lefthook then falls back to the whole
+# tree (measured: 3932 files, 1089 of them *.rs), so a bare glob would match on
+# every push and never filter anything. Diffing against the upstream merge-base
+# gives the set this push actually adds. If that cannot be resolved (no upstream
+# configured) we fail open to the whole tree, keeping the old always-run
+# behaviour rather than silently dropping the gate.
+#
+# The patterns are matched against the whole path, and a wildcard-free pattern
+# is an exact path match — plain `Cargo.toml` would catch the root manifest and
+# miss all 35 crate manifests under `aa-*/`. Hence the leading `*`.
+files = 'git diff --name-only --merge-base @{u} HEAD 2>/dev/null || git ls-files'
+glob = ["*.rs", "*Cargo.toml", "*Cargo.lock"]
 run = "cargo doc --workspace --no-deps"
 fail_text = "Documentation build failed. Fix rustdoc errors before pushing."
