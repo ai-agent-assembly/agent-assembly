@@ -437,9 +437,33 @@ unilaterally.
 | `sees everything` | `catch everything` | `blocking` |
 | `every request` | `every action` / `every tool call` | `finding` |
 | `tamper-proof` | `immutable audit` | `blocking` |
+| `permanent record` | `immutable audit` | `blocking` |
+| `immutable <GOV-NOUN>` (e.g. *immutable governance trail*) | `immutable audit` | `blocking` |
 
 Owner: an amendment to ADR 0033, tracked with the banned-absolutes CI gate
 ([AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536)).
+
+**These are not hypothetical, and the gap they leave is now measured.**
+[AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679) corrected
+three shipped claims — *"the proxy captures **every intercepted request**"*
+(`claude-code.md:28`), *"keeps a **permanent record** of what was decided"*
+(`overview.md:7`) and *"**Immutable governance trail**"* (`design/v2/hi-fi/audit-log.jsx`,
+authoritative under ADR 0025). Run through the implementation of this rule set,
+all three together produce **0 blocking, 0 finding, 0 info**:
+
+```
+$ python3 scripts/check_claim_vocabulary.py <the three original lines>
+check_claim_vocabulary: 1 file(s) scanned; 0 blocking, 0 finding, 0 info.
+exit=0
+```
+
+So the regression those corrections address is **not machine-enforced today**. The
+checker is not defective — it enforces the list ADR 0033 actually bans, and
+[§5.2](#52-what-counts-as-the-same-list-member) puts a different lemma outside that
+list on purpose. Recording it here rather than quietly widening the patterns is the
+whole point of [§5.4](#54-proposed-extensions-that-require-an-adr-0033-amendment):
+a checker whose configuration may grow by itself is a second, undocumented ban list.
+Until the amendment lands, these three phrasings are prevented by review only.
 
 ### 5.5 Undifferentiated verbs, and the noun-collision trap
 
