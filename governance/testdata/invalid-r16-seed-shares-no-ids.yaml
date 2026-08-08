@@ -1,9 +1,15 @@
-# Positive control for rule R16, AAASM-5678.
+# Rule R16, AAASM-5678/5680: the contract names a seed that shares no row id.
 #
-# One-line-diff partner of invalid-r16-undeclared-divergence.yaml: identical
-# except that this file declares the divergence. A rule nobody has watched PASS
-# for the right reason is no better evidenced than one nobody has watched fail,
-# and the whole point of R16 is that a declared divergence is let through.
+# One-line-diff partner of valid-r16-declared-divergence.yaml: only
+# meta.sources.seed changes. Round 1 returned early on an empty intersection and
+# printed "no id is shared" as if it were a measurement, so repointing that one
+# line switched the entire cross-representation comparison off from inside the
+# artifact it gates — exit 0, no error.
+#
+# Found by sweeping the hazard the R17 clause-3 review finding named, rather than
+# fixing it only at the site where it was reported. A document that declares the
+# contract asserts the two representations describe the same rows; an empty
+# intersection contradicts that and must fail.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
@@ -31,7 +37,7 @@ meta:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
     protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
     governance: docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md
-    seed: governance/testdata/seed-r16.yaml
+    seed: governance/testdata/seed-r16-disjoint.yaml
     seed_companion: governance/testdata/seed-r16-companion.md
   cross_representation:
     seed:
