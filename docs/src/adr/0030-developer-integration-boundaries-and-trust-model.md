@@ -6,6 +6,19 @@
 
 ---
 
+> **Amendment ([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679), 2026-08)**
+> — **rationale correction in §2 row 13; the responsibility assignment is unchanged.**
+> Row 13's rationale read "One audit trail, one retention policy, one redaction
+> contract." As a constraint on the integration layers that is still exactly right:
+> L-A receives a projection and L-B keeps no event store. As a description of the
+> core it was never true after
+> [AAASM-5449](https://lightning-dust-mite.atlassian.net/browse/AAASM-5449) —
+> **L-D holds two sinks under different retention bounds**, the gateway's
+> hash-chained tamper-evident trail and the proxy's bounded, lossy-by-design
+> prevention-evidence sink. Read as a core-level guarantee it would promise an
+> operator a single retention policy that does not exist, so the rationale now
+> says which layers it binds. No responsibility moves.
+>
 > **Amendment (AAASM-5325, 2026-08)** — **citations only; no decision changes.**
 > This ADR quoted `docs/src/devtools/plugins.md` in two places, and
 > [AAASM-5322](https://lightning-dust-mite.atlassian.net/browse/AAASM-5322)
@@ -302,7 +315,7 @@ split into two rows rather than shared — a shared responsibility is an unowned
 | 10 | **Drift detection and repair** | **L-B service** | L-C (supplies the fingerprint recipe, not the comparison), L-A | Drift is "receipt vs. reality"; only the receipt owner can compute it, and repair must be constrained to AASM-owned keys, which only the receipt enumerates. |
 | 11 | **Approval decision authority** | **L-D core** | L-A, L-B | An approval is a policy outcome. |
 | 12 | **Notification and approval presentation / user-input relay** | **L-A thin client** | L-D (does not render UI) | The client is where the human is. It relays a decision it did not make, over a narrowly scoped DI-API verb, and only when its token carries that scope. |
-| 13 | **Audit storage and event retrieval** | **L-D core** | L-A (receives only a data-minimized, integration-scoped projection), L-B (does not keep a second event store) | One audit trail, one retention policy, one redaction contract. |
+| 13 | **Audit storage and event retrieval** | **L-D core** | L-A (receives only a data-minimized, integration-scoped projection), L-B (does not keep a second event store) | No integration layer keeps its own event store, and retrieval goes through one redaction contract. This binds L-A and L-B; it is **not** a claim that the core has a single sink. L-D holds two under different retention bounds — the gateway's hash-chained tamper-evident trail and the proxy's bounded prevention-evidence sink ([AAASM-5449](https://lightning-dust-mite.atlassian.net/browse/AAASM-5449) / [AAASM-5660](https://lightning-dust-mite.atlassian.net/browse/AAASM-5660)). See [`audit-assurance.md`](../security/audit-assurance.md) for what each retains and deletes. |
 | 14 | **Protection-state derivation** — turning evidence into a reported state | **L-B service** | L-A (must never compute or upgrade a state locally) | Decision 4. A client-computed state is a claim, not a measurement. |
 
 Two derived rules make the matrix enforceable rather than aspirational:
