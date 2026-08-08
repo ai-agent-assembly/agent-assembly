@@ -71,6 +71,47 @@ type and metadata-only redaction, is what makes the record **non-repudiable**:
 the governed action and its decision are recorded by trusted components, with no
 path for the agent to alter or suppress its own history.
 
+## What is retained, and what is deleted
+
+Tamper-*evident* is not immutable, and neither tier keeps everything forever. An
+audit guarantee that does not say what it loses is not a guarantee, so this is
+the complete picture as of the defaults in code.
+
+There are **two** sinks, under different bounds. They are not interchangeable,
+and neither is a backup of the other.
+
+| | Gateway trail (`audit_logs`) | Proxy prevention-evidence sink |
+| --- | --- | --- |
+| What it holds | The decision record — governed action, verdict, attribution | Per-request refusal evidence held by the layer that sees the bytes |
+| Bound | Time: `hot_days` then `warm_days`, then `cold_action` | Size: `DEFAULT_MAX_SEGMENT_BYTES` × `DEFAULT_RETAINED_SEGMENTS` |
+| Defaults | 30 days hot, 90 days warm, then **`Drop`** | 32 MiB × 3 segments; `max_age` unset |
+| How records leave | Retention pruning deletes rows past `warm_days` | Oldest segment deleted on rotation; entries dropped when the channel is full |
+| Loss is counted | — | `dropped_entries`, `discarded_segments`, `expired_segments`, `retention_shortfalls` |
+
+Three consequences worth stating plainly, because each one breaks an assumption
+an operator can reasonably arrive at from the sections above:
+
+- **The default gateway `cold_action` is `Drop`.** Records older than
+  `warm_days` are deleted, not archived. Archiving is opt-in and requires an
+  `archive_url`.
+- **On the proxy sink, size wins over age.** `max_age` is a *maximum* age, never
+  a minimum guarantee — a busy proxy rotates a segment away before its age is up.
+  That case is not silent: it increments `retention_shortfalls`, so an operator
+  who configured 90 days and is actually getting three can tell.
+- **A count taken from the proxy sink file is a lower bound**, never a total. Use
+  the `SinkCompleteness` sidecar to find out whether the window you are reading
+  is complete. `SinkCompleteness::sealed` is true only when every loss counter is
+  zero.
+
+Request and response bodies are additionally truncated at
+`MAX_PERSISTED_BODY_BYTES` (8 KiB), so a persisted body is evidence that a
+request occurred and what it began with — not a full transcript of it.
+
+This is why the front-page and overview copy says **tamper-evident** rather than
+immutable or permanent: the chain lets you detect alteration, and says nothing
+about deletion under a retention policy you control
+([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679)).
+
 ## End-to-end audit data flow
 
 ```mermaid
