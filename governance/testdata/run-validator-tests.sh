@@ -127,7 +127,8 @@ for name in \
   invalid-r7-ticket-coined-term.yaml \
   invalid-r7-ceiling-as-state.yaml \
   invalid-r10-collapsed-boolean.yaml \
-  invalid-r3-branch-evidence-tree.yaml
+  invalid-r3-branch-evidence-tree.yaml \
+  invalid-r1-string-evidence-item.yaml
 do
   if npx --yes ajv-cli@5 validate --strict -s "${schema}" -d "${here}/${name}" >/dev/null 2>&1; then
     bad "${name}" "ajv accepted it; the schema should reject this too"
@@ -156,13 +157,13 @@ printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
 # Bump this deliberately when adding or removing a fixture or a probe. The
 # breakdown is here so the next person can see WHICH part moved:
 #   4  valid-*.yaml through the validator
-#  34  invalid-*.yaml through the validator
+#  35  invalid-*.yaml through the validator
 #   4  r15_branch_probes.py    (one per R15 repository-state branch)
 #   8  real_manifest_probes.py   (5 mutations + 1 attribution control + positive + restore)
 #   8  readme_counts_probe.py    (one per quoted count: line + the EXPECTED_TOTAL cross-check)
-#   6  schema negative controls through ajv
+#   7  schema negative controls through ajv
 #   4  valid-*.yaml through ajv
-EXPECTED_TOTAL=68
+EXPECTED_TOTAL=70
 if [ "$((pass + fail))" -ne "${EXPECTED_TOTAL}" ]; then
   printf 'FAIL  the harness ran %d checks, expected %d. A check that stops running is
 ' \
