@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
+  useTable,
+  tableFeatures,
+  rowSortingFeature,
+  columnVisibilityFeature,
+  createSortedRowModel,
   flexRender,
   createColumnHelper,
   type SortingState,
-  type SortingFn,
+  type SortFn,
 } from '@tanstack/react-table'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
@@ -18,6 +20,19 @@ interface AlertListProps {
   /** When true, render skeleton placeholder rows instead of `rows`. */
   loading?: boolean
 }
+
+// v9 requires the table's feature set to be declared explicitly and passed on
+// the `features` option. This table only sorts (client-side), so it registers
+// the row-sorting feature and its sorted row model. Declared at module scope
+// per the TanStack guidance so it is created once, not per render.
+const alertTableFeatures = tableFeatures({
+  rowSortingFeature,
+  // `row.getVisibleCells()` (used in the body render) is provided by the
+  // column-visibility feature in v9; no column is ever hidden, so this
+  // preserves the v8 "render every cell" behavior exactly.
+  columnVisibilityFeature,
+  sortedRowModel: createSortedRowModel(),
+})
 
 // CRITICAL > WARNING > INFO (descending = most severe first).
 const SEVERITY_RANK: Record<AlertSeverity, number> = Object.fromEntries(
@@ -34,13 +49,13 @@ const STATUS_RANK: Record<AlertStatus, number> = {
   RESOLVED: 1,
 }
 
-const sortSeverity: SortingFn<Alert> = (a, b) =>
+const sortSeverity: SortFn<typeof alertTableFeatures, Alert> = (a, b) =>
   SEVERITY_RANK[a.original.severity] - SEVERITY_RANK[b.original.severity]
 
-const sortStatus: SortingFn<Alert> = (a, b) =>
+const sortStatus: SortFn<typeof alertTableFeatures, Alert> = (a, b) =>
   STATUS_RANK[a.original.status] - STATUS_RANK[b.original.status]
 
-const sortDuration: SortingFn<Alert> = (a, b) =>
+const sortDuration: SortFn<typeof alertTableFeatures, Alert> = (a, b) =>
   Date.parse(a.original.firstFiredAt) - Date.parse(b.original.firstFiredAt)
 
 function formatDuration(firstFiredAt: string, resolvedAt: string | null): string {
@@ -63,13 +78,16 @@ function formatFirstFired(iso: string): string {
   return new Date(ts).toISOString().replace('T', ' ').slice(0, 16)
 }
 
-const columnHelper = createColumnHelper<Alert>()
+const columnHelper = createColumnHelper<typeof alertTableFeatures, Alert>()
 
-const columns = [
+// `columnHelper.columns([...])` preserves each column's individual TValue via
+// variadic tuple inference, so the mixed accessor value types (AlertSeverity,
+// string, number) do not widen and the array types as a valid ColumnDef list.
+const columns = columnHelper.columns([
   columnHelper.accessor('severity', {
     header: 'Severity',
     cell: (info) => <SeverityBadge severity={info.getValue()} />,
-    sortingFn: sortSeverity,
+    sortFn: sortSeverity,
   }),
   columnHelper.accessor('ruleName', {
     header: 'Alert',
@@ -84,7 +102,7 @@ const columns = [
   columnHelper.accessor('status', {
     header: 'Status',
     cell: (info) => <StatusBadge status={info.getValue()} />,
-    sortingFn: sortStatus,
+    sortFn: sortStatus,
   }),
   columnHelper.accessor('firstFiredAt', {
     header: 'First fired',
@@ -97,7 +115,7 @@ const columns = [
       id: 'duration',
       header: 'Duration',
       cell: (info) => formatDuration(info.row.original.firstFiredAt, info.row.original.resolvedAt),
-      sortingFn: sortDuration,
+      sortFn: sortDuration,
     },
   ),
   columnHelper.accessor((row) => row.destinationIds.join(', ') || '—', {
@@ -105,7 +123,7 @@ const columns = [
     header: 'Destination',
     enableSorting: false,
   }),
-]
+])
 
 const SKELETON_ROW_KEYS = ['sk-r0', 'sk-r1', 'sk-r2', 'sk-r3', 'sk-r4']
 
@@ -140,14 +158,13 @@ export function AlertList({ rows, onSelect, loading = false }: Readonly<AlertLis
   ])
 
   // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
+  const table = useTable({
+    features: alertTableFeatures,
     data: rows as Alert[],
     columns,
     state: { sorting },
     onSortingChange: setSorting,
     enableSortingRemoval: false,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
   })
 
   return (
