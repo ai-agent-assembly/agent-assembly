@@ -1,7 +1,10 @@
-# INVALID FIXTURE — expects rule R13.
+# Rule R17, AAASM-5680: a channel the schema admits is classified nowhere.
 #
-# The row claims enforcement with launch_path `unknown`. An enforcement claim
-# that does not name how the process was launched is unfalsifiable.
+# `go_modules` is dropped from both channels_surveyed and channels_not_surveyed.
+# Nothing else changes and every row still validates — which is the point: a
+# channel in the vocabulary that no row may claim and no record explains is a
+# gap, and a gap in a generated matrix reads as "not distributed there". This
+# is the shape ghcr sat in until this ticket.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
@@ -21,8 +24,6 @@ meta:
     reason: Published from node-sdk; nothing in this repository uploads to it.
   - channel: pypi
     reason: Published from python-sdk; nothing in this repository uploads to it.
-  - channel: go_modules
-    reason: A git tag in go-sdk; there is no publish step to find.
   - channel: not_applicable
     reason: Not a channel; the value a row uses when the question does not apply.
   sources:
@@ -45,7 +46,7 @@ capabilities:
   - any
   platform:
   - linux
-  launch_path: unknown
+  launch_path: routed through aa-proxy with the gateway endpoint configured
   preconditions:
   - kind: env
     name: AA_PROXY_GATEWAY_ENDPOINT

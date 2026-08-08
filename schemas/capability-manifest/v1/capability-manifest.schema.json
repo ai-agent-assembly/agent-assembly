@@ -130,6 +130,53 @@
             }
           }
         },
+        "channel_absences": {
+          "description": "AAASM-5680. For a surveyed channel, the rows that do NOT ship on it, each with the reason and the probe behind it. A surveyed channel makes a row's silence ambiguous — `not shipped there` and `nobody looked` read identically — so validator rule R17 requires every row to be exactly one of: naming the channel in released_channels, carrying released_channels: [not_applicable] because the question does not apply, or listed here. Absence from a list is then never the only way to say `not shipped there` (ADR 0034 forbidden design 8).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "channel",
+              "status",
+              "ids",
+              "probe",
+              "reason"
+            ],
+            "properties": {
+              "channel": {
+                "$ref": "#/definitions/channel"
+              },
+              "status": {
+                "description": "`not_published` — the artifact that delivers these rows is in no published artifact on this channel, measured. `not_surveyed` — it IS present but this row's capability was never measured against it, so the honest reading of the silence is unmeasured, not unsupported.",
+                "type": "string",
+                "enum": [
+                  "not_published",
+                  "not_surveyed"
+                ]
+              },
+              "ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/definitions/rowid"
+                }
+              },
+              "probe": {
+                "description": "What was actually run or read to establish the absence, quoted precisely enough to re-run.",
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ticket": {
+                "$ref": "#/definitions/ticket"
+              }
+            }
+          }
+        },
         "cross_representation": {
           "$ref": "#/definitions/crossrepresentation"
         },

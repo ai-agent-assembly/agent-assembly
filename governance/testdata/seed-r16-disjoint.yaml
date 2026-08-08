@@ -1,0 +1,18 @@
+# Comparison input for invalid-r16-seed-shares-no-ids.yaml.
+#
+# A structurally valid seed — real `schema` block, one real row — that simply
+# describes a different capability than the fixture does. That is the whole
+# point: nothing here is malformed, so only the id intersection can catch it.
+meta:
+  ticket: AAASM-5527
+  base_commit: 299de3883
+schema:
+  required_fields:
+  - id
+  recommended_additions: []
+  enums:
+    coverage:
+    - unmeasured
+capabilities:
+- id: Z9
+  coverage: unmeasured

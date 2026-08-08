@@ -1,7 +1,10 @@
-# INVALID FIXTURE — expects rule R13.
+# Rule R17, AAASM-5680: a row says nothing about a surveyed channel.
 #
-# The row claims enforcement with launch_path `unknown`. An enforcement claim
-# that does not name how the process was launched is unfalsifiable.
+# An absence record exists for `ghcr` but names T9 rather than the row actually
+# present, so T1 neither claims the channel, nor declares the question
+# inapplicable, nor appears in the record. Its silence is then ambiguous between
+# "not shipped there" and "nobody looked" — and the orphaned T9 shows the other
+# half of the same clause: a record naming a row that does not exist.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
@@ -25,6 +28,13 @@ meta:
     reason: A git tag in go-sdk; there is no publish step to find.
   - channel: not_applicable
     reason: Not a channel; the value a row uses when the question does not apply.
+  channel_absences:
+  - channel: ghcr
+    status: not_published
+    ids:
+    - T9
+    probe: 'GET https://ghcr.io/token?scope=repository:ai-agent-assembly/aa-proxy:pull issues no token.'
+    reason: The artifact delivering this row is in no published image.
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
     protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
@@ -45,7 +55,7 @@ capabilities:
   - any
   platform:
   - linux
-  launch_path: unknown
+  launch_path: routed through aa-proxy with the gateway endpoint configured
   preconditions:
   - kind: env
     name: AA_PROXY_GATEWAY_ENDPOINT
@@ -65,7 +75,6 @@ capabilities:
   boundary_class: B3
   released_channels:
   - crates_io
-  - ghcr
   released_platforms:
   - linux_x86_64
   buildable: packaging_gated
