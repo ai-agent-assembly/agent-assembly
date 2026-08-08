@@ -157,7 +157,6 @@ export function AlertList({ rows, onSelect, loading = false }: Readonly<AlertLis
     { id: 'severity', desc: true },
   ])
 
-  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useTable({
     features: alertTableFeatures,
     data: rows as Alert[],

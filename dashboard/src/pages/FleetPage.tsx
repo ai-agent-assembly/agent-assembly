@@ -557,9 +557,20 @@ export function FleetPage() {
   const [bulkSuspendPending, setBulkSuspendPending] = useState(false)
   const [bulkResumePending, setBulkResumePending] = useState(false)
   const knownIds = useRef<Set<string>>(new Set())
+  // Pre-existing selection-pruning effect: drop selected ids for agents that
+  // left the data source. The react-hooks/set-state-in-effect rule only began
+  // flagging it after the react-table v9 migration removed the useReactTable
+  // call that the plugin treated as an incompatible library — which suppressed
+  // hook analysis for this whole component under react-hooks v7. The updater
+  // already returns `prev` unchanged when nothing was pruned, so it does not
+  // cascade renders in the common case. Refactoring it to the set-during-render
+  // pattern is out of scope for a dependency migration (and this behavior is
+  // pinned by the "preserves row selection across a sort toggle" test);
+  // tracked in AAASM-5720.
   useEffect(() => {
     const next = new Set(fleetAgents.map((a) => a.id))
     knownIds.current = next
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelected((prev) => {
       let changed = false
       const filtered = new Set<string>()
@@ -604,7 +615,6 @@ export function FleetPage() {
     [selected, allSelected, someSelected, toggleAll, toggleSelect],
   )
 
-  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useTable({
     features: fleetTableFeatures,
     data: filteredFleet,
