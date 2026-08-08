@@ -1302,9 +1302,11 @@ impl PolicyServiceImpl {
             "claimed_agent_id": &proto_agent.agent_id,
             "claimed_org_id": &proto_agent.org_id,
             "credential_token_present": !req.credential_token.is_empty(),
-            // AAASM-5665 — same key as `record_audit` so one query over the
-            // audit trail answers "how was this identity established?" for
-            // every decision, refusals included.
+            // AAASM-5665 — same key name as `record_audit` uses, so one query
+            // over the entries this service emits answers "how was this
+            // identity established?" for its refusals as well as its verdicts.
+            // Scoped to this service: other audit producers in the gateway do
+            // not write the key.
             "agent_identity_assurance": self.agent_identity_attribution(req).assurance().as_str(),
         })
         .to_string();
