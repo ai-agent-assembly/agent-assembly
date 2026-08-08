@@ -54,13 +54,24 @@ def run(module, doc, use_git=True):
     return report
 
 
+# R4-F1. This file's summary used to be the literal `print("R15 branch probes:
+# 4 passed")`, and the harness credited it a flat `ok` — so deleting one of the
+# four branch assertions left "4 passed", a green harness and an unmoved total.
+# That is the same operation as emptying PROBES, which was in scope one round
+# ago; `credit()` had been wired into two of the three call sites and not this
+# one. The count is now what actually ran, and the floor is asserted.
+EXPECTED_BRANCHES = 4
+
+
 def main() -> int:
     module = load_validator()
     real_git = module.git
     failures: list[str] = []
+    ran: list[str] = []
 
     def check(name: str, ok: bool, detail: str) -> None:
         print(f"  {'ok   ' if ok else 'FAIL '} R15 branch {name} — {detail}")
+        ran.append(name)
         if not ok:
             failures.append(name)
 
@@ -124,10 +135,20 @@ def main() -> int:
             f"{len(hits)} findings (want exactly 1, on L1)",
         )
 
+    if len(ran) != EXPECTED_BRANCHES:
+        print(
+            f"\nR15 branch probes: ran {len(ran)} branches {sorted(ran)}, expected "
+            f"{EXPECTED_BRANCHES}. A branch that stops being checked is indistinguishable "
+            "from one that passes unless the count is asserted."
+        )
+        print(f"HARNESS_COUNTS passed={len(ran) - len(failures)} failed={len(failures) + 1}")
+        return 1
     if failures:
         print(f"\nR15 branch probes: {len(failures)} FAILED — {failures}")
+        print(f"HARNESS_COUNTS passed={len(ran) - len(failures)} failed={len(failures)}")
         return 1
-    print("\nR15 branch probes: 4 passed")
+    print(f"\nR15 branch probes: {len(ran)} passed")
+    print(f"HARNESS_COUNTS passed={len(ran)} failed=0")
     return 0
 
 

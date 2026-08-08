@@ -941,10 +941,38 @@ def _declaration_matches(entry: dict, manifest_value, other_value) -> bool:
     return manifest_set - other_set == adds and other_set - manifest_set == omits
 
 
-def check_cross_representation(doc: dict, rep: Report) -> None:
+def _id_map(items, where: str, rep: Report) -> dict:
+    """id -> row, counting the entries that are not mappings instead of crashing.
+
+    R2-F3. `{row.get("id"): row for row in …}` raises `AttributeError` on a
+    non-mapping entry, which exits non-zero with a stack trace and no `[R16]`
+    finding — a gate failing for the wrong reason, and the same crash shape
+    AAASM-5678's own description recorded against the seed (tracked as
+    AAASM-5692). It also made the `skipped` branch below unreachable, because
+    nothing survived to be counted as unparseable.
+    """
+    out = {}
+    malformed = 0
+    for index, item in enumerate(items or []):
+        if not isinstance(item, dict):
+            malformed += 1
+            rep.error(
+                f"{where}[{index}]",
+                "R16",
+                f"entry is a {type(item).__name__}, not a mapping, so it has no id and "
+                "cannot be compared",
+            )
+            continue
+        out[item.get("id")] = item
+    if malformed:
+        rep.count("R16", f"{where}: {malformed} entr(ies) are not mappings and were not indexed")
+    return out
+
+
+def check_cross_representation(doc: dict, rep: Report, is_canonical: bool) -> None:
     """R16. The three representations agree, or the disagreement is declared."""
     meta = doc.get("meta") or {}
-    rows = {row.get("id"): row for row in (doc.get("capabilities") or [])}
+    rows = _id_map(doc.get("capabilities"), "capabilities", rep)
 
     seed_path = ((meta.get("sources") or {}).get("seed")) or ""
     if not seed_path:
@@ -955,7 +983,7 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
     except (OSError, yaml.YAMLError) as exc:
         rep.error("meta.sources.seed", "R16", f"{seed_path} could not be read as YAML: {exc}")
         return
-    seed_rows = {row.get("id"): row for row in ((seed_doc or {}).get("capabilities") or [])}
+    seed_rows = _id_map((seed_doc or {}).get("capabilities"), f"{seed_path}:capabilities", rep)
 
     shared = sorted(set(rows) & set(seed_rows))
     only_manifest = sorted(set(rows) - set(seed_rows))
@@ -965,15 +993,44 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
         f"ids: {len(rows)} in the manifest, {len(seed_rows)} in {seed_path}, "
         f"{len(shared)} shared, {len(only_manifest)} manifest-only, {len(only_seed)} seed-only",
     )
+    contract = meta.get("cross_representation")
     if not shared:
-        rep.count(
-            "R16",
-            "no id is shared with the seed, so the two documents describe different "
-            "populations and no field pair was compared",
-        )
+        # The same hazard, third instance. Round 2 guarded this only inside
+        # `if contract:`, so the bypass survived with one extra edit: repoint
+        # `meta.sources.seed` AND delete `meta.cross_representation` and R16 went
+        # entirely quiet at exit 0 — while printing the "no id is shared" line,
+        # which reads like a measurement. A gate that narrates its own bypass
+        # manufactures the evidence that nothing is wrong.
+        #
+        # The skip is load-bearing for fixtures: 30 of the 38 in
+        # governance/testdata point at the real 80-row seed, share no id with it,
+        # and declare no contract. So the discriminator is not the contract, and
+        # not "the seed must have rows" (a one-row seed defeats that) — it is
+        # WHICH DOCUMENT is being validated. The repository's own manifest must
+        # always compare; a fixture may legitimately not.
+        if contract or is_canonical:
+            why = (
+                "declares meta.cross_representation"
+                if contract
+                else "is the repository's own capability manifest"
+            )
+            rep.error(
+                "meta.sources.seed",
+                "R16",
+                f"this document {why} but shares no row id with {seed_path}, so nothing was "
+                "compared. Either the seed is the wrong file or the contract describes a "
+                "comparison that cannot happen. R16 is not switchable off from inside the "
+                "artifact it gates",
+            )
+        else:
+            rep.count(
+                "R16",
+                "no id is shared with the seed, this is not the canonical manifest, and no "
+                "contract is declared, so the two documents describe different populations "
+                "and no field pair was compared",
+            )
         return
 
-    contract = meta.get("cross_representation")
     if not contract:
         rep.error(
             "meta",
@@ -1070,12 +1127,23 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
 
     # The comparison itself.
     divergences: list[tuple[str, str, str, object, object]] = []
-    pairs = agree = differ = silent = 0
+    pairs = agree = differ = silent = skipped = 0
     for row_id in shared:
-        seed_row = {renames.get(k, k): v for k, v in (seed_rows[row_id] or {}).items()}
+        manifest_row = rows[row_id]
+        raw_seed_row = seed_rows[row_id]
+        # `skipped` is COMPUTED, not printed as a constant. A row either side
+        # cannot parse as a mapping is a pair nobody compared, and a denominator
+        # that hardcodes its own zero cannot report that — which is the failure
+        # this block exists to make visible.
+        comparable = isinstance(manifest_row, dict) and isinstance(raw_seed_row, dict)
+        seed_row = {renames.get(k, k): v for k, v in (raw_seed_row or {}).items()} if comparable \
+            else {}
         for field in sorted(compared):
             pairs += 1
-            left = _cross_norm(rows[row_id].get(field))
+            if not comparable:
+                skipped += 1
+                continue
+            left = _cross_norm(manifest_row.get(field))
             right = _cross_norm(seed_row.get(field))
             if left is None or right is None:
                 silent += 1
@@ -1084,19 +1152,26 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
             else:
                 differ += 1
                 divergences.append(
-                    ("seed", row_id, field, rows[row_id].get(field), seed_row.get(field))
+                    ("seed", row_id, field, manifest_row.get(field), seed_row.get(field))
                 )
-    if agree + differ + silent != pairs:
+        if not comparable:
+            rep.error(
+                f"capabilities({row_id})",
+                "R16",
+                "this row does not parse as a mapping on one side, so none of its fields "
+                "could be compared",
+            )
+    if agree + differ + silent + skipped != pairs:
         rep.error(
             "meta.cross_representation.seed",
             "R16",
-            f"{agree} + {differ} + {silent} does not equal {pairs} compared pairs, so a pair "
-            "was counted twice or dropped",
+            f"{agree} + {differ} + {silent} + {skipped} does not equal {pairs} compared pairs, "
+            "so a pair was counted twice or dropped",
         )
     rep.count(
         "R16",
         f"seed: {len(shared)} ids x {len(compared)} fields = {pairs} pairs; {agree} agree, "
-        f"{differ} diverge, {silent} one-side-silent; 0 skipped",
+        f"{differ} diverge, {silent} one-side-silent; {skipped} skipped",
     )
 
     # The Markdown companion, on coverage alone.
@@ -1222,7 +1297,273 @@ def check_cross_representation(doc: dict, rep: Report) -> None:
     )
 
 
-def validate(doc: dict, rep: Report, use_git: bool) -> None:
+# ── R17. The channel vocabulary covers what actually publishes ───────────────
+#
+# AAASM-5680. `released_channels` had no value for the container channel while
+# GHCR published five image repositories, so a matrix generated faithfully from
+# the manifest shipped without a GHCR column — and the omission read as a
+# deliberate "not distributed there" rather than a vocabulary gap. It had
+# already caused one downstream error: AAASM-5591's audiences page dropped
+# Docker/GHCR by hand, was corrected in review, and the fix replaced the hand
+# list with a reference to this vocabulary — deferring to a source that omitted
+# the very channel the review had just restored.
+#
+# The markers live HERE and not in the manifest on purpose. A rule whose
+# evidence sits inside the artifact it gates can be switched off by editing the
+# artifact, which is the same reason CLAIM_TERMS is a constant in this file.
+#
+# `None` means "nothing in THIS repository publishes it", and the reason is
+# stated rather than left as an absent key — the table is keyed by the schema's
+# whole channel enum and the enum is asserted against it, so adding a sixth
+# channel forces a decision instead of a silent omission.
+CHANNEL_PUBLISH_MARKERS: dict[str, str | None] = {
+    "ghcr": r"ghcr\.io/",
+    "crates_io": r"cargo (?:workspaces )?publish",
+    "github_release": r"softprops/action-gh-release|gh release (?:create|upload)",
+    "homebrew": r"homebrew",
+    # Published from the SDK repositories, which have their own release
+    # workflows; nothing in this repository uploads to them.
+    "npm": None,
+    "pypi": None,
+    # A git tag in go-sdk. There is no publish step to find, here or anywhere.
+    "go_modules": None,
+    # `scripts/install-cli.sh` is served from the GitHub Release assets rather
+    # than pushed to a registry of its own.
+    "install_script": None,
+    # Not a channel; the value a row uses when the question does not apply.
+    "not_applicable": None,
+}
+
+WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+
+# AAASM-5680, round 2. Which surveyed channels have an EXHAUSTIVE per-row
+# classification — every row naming the channel, carrying
+# `released_channels: [not_applicable]`, or listed in `meta.channel_absences`.
+#
+# This table exists because round 1 drove clause 3 off the channels appearing
+# IN `meta.channel_absences`, so deleting that one key from the manifest deleted
+# the check with it: exit 0, no error, and the denominator line that would have
+# shown fifty rows going silent vanished too. That is the exact property the
+# comment above CHANNEL_PUBLISH_MARKERS warns about, written for clause 2 and
+# then not applied to the clause written next. A hazard you have named is one to
+# sweep for everywhere, not to fix only where you noticed it.
+#
+# `None` means exhaustive and enforced. A string is the reason exhaustive
+# classification has NOT been established for that channel, and it is a reason
+# rather than an omission because the honest scope has to be legible: AAASM-5527
+# surveyed the other channels at document level, so 23 to 60 rows per channel say
+# nothing about them. Asserting a measured absence for those rows here would
+# invent a measurement nobody performed — the over-claim this programme removes.
+#
+# Keyed by the whole channel enum and asserted against it, like the markers
+# above, so a sixth channel forces this decision instead of defaulting to unchecked.
+EXHAUSTIVE_ROW_CLASSIFICATION: dict[str, str | None] = {
+    "ghcr": None,
+    "github_release": "AAASM-5527 surveyed this at document level; 23 rows are silent about it",
+    "homebrew": "AAASM-5527 surveyed this at document level; 23 rows are silent about it",
+    "install_script": "AAASM-5527 surveyed this at document level; 23 rows are silent about it",
+    "crates_io": (
+        "no row is silent today, but the absence records that would keep it that way were "
+        "never derived, so enforcing it would gate on an accident"
+    ),
+    "pypi": "AAASM-5527 surveyed this at document level; 60 rows are silent about it",
+    "npm": "AAASM-5527 surveyed this at document level; 60 rows are silent about it",
+    "go_modules": "AAASM-5527 surveyed this at document level; 60 rows are silent about it",
+    "not_applicable": "not a channel; the value a row uses when the question does not apply",
+}
+
+
+def check_channel_vocabulary(doc: dict, rep: Report) -> None:
+    """R17. Three clauses, each closing a different way a channel goes missing."""
+    meta = doc.get("meta") or {}
+    surveyed = list(meta.get("channels_surveyed") or [])
+    not_surveyed = [entry.get("channel") for entry in (meta.get("channels_not_surveyed") or [])]
+
+    schema_fields = _schema_row_fields()  # proves the schema is readable at all
+    enum: set[str] = set()
+    if schema_fields is not None:
+        try:
+            schema = json.loads(
+                (SCHEMA_DIR / "capability-manifest.schema.json").read_text(encoding="utf-8")
+            )
+            enum = set(schema["definitions"]["channel"]["enum"])
+        except (OSError, ValueError, KeyError):
+            enum = set()
+    if not enum:
+        rep.error(
+            "meta",
+            "R17",
+            "the schema's channel enum could not be read, so the vocabulary cannot be "
+            "checked for completeness",
+        )
+        return
+
+    # Clause 1 — the vocabulary is partitioned. Every value the schema admits is
+    # either surveyed or explicitly not, and never both. Silence about a channel
+    # is what let ghcr sit outside the manifest with nothing objecting.
+    unclassified = sorted(enum - set(surveyed) - set(not_surveyed))
+    if unclassified:
+        rep.error(
+            "meta",
+            "R17",
+            f"the schema admits {unclassified} but neither channels_surveyed nor "
+            "channels_not_surveyed names them. A channel in the vocabulary that no row "
+            "may claim and no record explains is a gap that reads as an answer",
+        )
+    both = sorted(set(surveyed) & set(not_surveyed))
+    if both:
+        rep.error("meta", "R17", f"{both} are recorded as surveyed AND not surveyed")
+
+    # Clause 2 — a channel this repository publishes to must be surveyed. This is
+    # the clause that would have failed before this ticket: docker.yml has pushed
+    # to ghcr.io since AAASM-4480 while `ghcr` was in channels_not_surveyed.
+    missing_markers = sorted(enum - set(CHANNEL_PUBLISH_MARKERS))
+    if missing_markers:
+        rep.error(
+            "validator",
+            "R17",
+            f"CHANNEL_PUBLISH_MARKERS has no entry for {missing_markers}. A channel added "
+            "to the vocabulary without deciding what publishes it is how the gap this rule "
+            "closes was created",
+        )
+    stale_markers = sorted(set(CHANNEL_PUBLISH_MARKERS) - enum)
+    if stale_markers:
+        rep.error(
+            "validator", "R17", f"CHANNEL_PUBLISH_MARKERS names {stale_markers}, not in the enum"
+        )
+
+    workflows = sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml"))
+    if not workflows:
+        rep.error(
+            "validator",
+            "R17",
+            f"no workflow file was found under {WORKFLOW_DIR}, so 'what publishes' was not "
+            "measured. An empty scan is not a clean scan",
+        )
+    text = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in workflows)
+    publishing = sorted(
+        channel
+        for channel, pattern in CHANNEL_PUBLISH_MARKERS.items()
+        if pattern and re.search(pattern, text)
+    )
+    for channel in publishing:
+        if channel not in surveyed:
+            rep.error(
+                "meta.channels_surveyed",
+                "R17",
+                f"a workflow in {WORKFLOW_DIR.name}/ publishes to {channel!r} and the manifest "
+                "does not survey it, so no row may claim it and a generated matrix ships "
+                "without the column. Its omission then reads as 'not distributed there'",
+            )
+    rep.count(
+        "R17",
+        f"vocabulary: {len(enum)} channels = {len(surveyed)} surveyed + {len(not_surveyed)} "
+        f"not surveyed + {len(unclassified)} unclassified; {len(workflows)} workflow files "
+        f"scanned, {len(publishing)} publish here ({publishing})",
+    )
+
+    # Clause 3 — no row is silent about a channel whose classification is
+    # exhaustive. Once such a channel is surveyed, a row saying nothing about it
+    # is ambiguous between "not shipped there" and "nobody looked", so every row
+    # must be exactly one of three things.
+    #
+    # Driven by EXHAUSTIVE_ROW_CLASSIFICATION, never by the manifest's own
+    # `channel_absences` keys: deleting that block must make the check FAIL, not
+    # disappear.
+    missing_decisions = sorted(enum - set(EXHAUSTIVE_ROW_CLASSIFICATION))
+    if missing_decisions:
+        rep.error(
+            "validator",
+            "R17",
+            f"EXHAUSTIVE_ROW_CLASSIFICATION has no entry for {missing_decisions}. A channel "
+            "added to the vocabulary without deciding whether its rows are classified "
+            "exhaustively defaults to unchecked, which is how clause 3 was silenceable",
+        )
+    stale_decisions = sorted(set(EXHAUSTIVE_ROW_CLASSIFICATION) - enum)
+    if stale_decisions:
+        rep.error(
+            "validator",
+            "R17",
+            f"EXHAUSTIVE_ROW_CLASSIFICATION names {stale_decisions}, not in the enum",
+        )
+    exhaustive = {
+        channel
+        for channel, why in EXHAUSTIVE_ROW_CLASSIFICATION.items()
+        if why is None and channel in enum
+    }
+    for channel in sorted(exhaustive - set(surveyed)):
+        rep.error(
+            "meta.channels_surveyed",
+            "R17",
+            f"{channel!r} is classified exhaustively per row but is not surveyed, so no row "
+            "may claim it and the per-row check would pass vacuously",
+        )
+    rows = doc.get("capabilities") or []
+    for channel in sorted(exhaustive & set(surveyed)):
+        listed: dict[str, int] = {}
+        for index, entry in enumerate(meta.get("channel_absences") or []):
+            if entry.get("channel") != channel:
+                continue
+            for row_id in entry.get("ids") or []:
+                if row_id in listed:
+                    rep.error(
+                        "meta.channel_absences",
+                        "R17",
+                        f"{row_id} is listed twice for {channel!r}, in groups {listed[row_id]} "
+                        f"and {index}, so it carries two reasons",
+                    )
+                listed[row_id] = index
+        carries = na = absent = 0
+        for row in rows:
+            row_id = row.get("id")
+            channels = row.get("released_channels") or []
+            in_list = row_id in listed
+            if channel in channels:
+                carries += 1
+                if in_list:
+                    rep.error(
+                        f"capabilities({row_id})",
+                        "R17",
+                        f"names {channel!r} in released_channels and is also listed as absent "
+                        "from it. The two records contradict each other",
+                    )
+            elif channels == ["not_applicable"]:
+                na += 1
+                if in_list:
+                    rep.error(
+                        f"capabilities({row_id})",
+                        "R17",
+                        f"is released_channels: [not_applicable] and also listed as absent from "
+                        f"{channel!r}. 'The question does not apply' and 'measured absent' are "
+                        "different statements and a row may make only one",
+                    )
+            elif in_list:
+                absent += 1
+            else:
+                rep.error(
+                    f"capabilities({row_id})",
+                    "R17",
+                    f"says nothing about {channel!r}, which meta.channels_surveyed covers. "
+                    "Silence is ambiguous between 'not shipped there' and 'nobody looked': "
+                    "name the channel, use released_channels: [not_applicable], or list the "
+                    "row under meta.channel_absences with the probe behind it",
+                )
+        orphans = sorted(set(listed) - {row.get("id") for row in rows})
+        if orphans:
+            rep.error(
+                "meta.channel_absences",
+                "R17",
+                f"{orphans} are listed as absent from {channel!r} and are not rows here",
+            )
+        total = carries + na + absent
+        rep.count(
+            "R17",
+            f"{channel}: {len(rows)} rows = {carries} carry it + {na} not_applicable + "
+            f"{absent} recorded absent + {len(rows) - total} unaccounted",
+        )
+
+
+def validate(doc: dict, rep: Report, use_git: bool, is_canonical: bool = False) -> None:
     check_vocabulary_constants(rep)
 
     version = str(doc.get("manifest_version", ""))
@@ -1288,9 +1629,16 @@ def validate(doc: dict, rep: Report, use_git: bool) -> None:
         if tree and scope_tag:
             check_row_release_scope(row, tree, scope_tag, where, rep)
 
-    # R16 reads two files off disk rather than the row in hand, so it runs once
-    # per document and outside the row loop. It needs no git.
-    check_cross_representation(doc, rep)
+    # R16 and R17 read files off disk rather than the row in hand, so they run
+    # once per document and outside the row loop. Neither needs git.
+    #
+    # `is_canonical` says whether the document under test IS
+    # governance/capability-manifest.yaml. R16's empty-intersection case is an
+    # error for that document and a skip for a fixture, which is what keeps the
+    # rule un-switchable-off without breaking the 30 fixtures that legitimately
+    # share no id with the seed they name.
+    check_cross_representation(doc, rep, is_canonical)
+    check_channel_vocabulary(doc, rep)
 
 
 def main() -> int:
@@ -1330,7 +1678,11 @@ def main() -> int:
         return 2
 
     rep = Report()
-    validate(doc, rep, use_git)
+    try:
+        is_canonical = args.manifest.resolve() == MANIFEST.resolve()
+    except OSError:
+        is_canonical = False
+    validate(doc, rep, use_git, is_canonical)
 
     for line in rep.counts:
         print(f"count: {line}")

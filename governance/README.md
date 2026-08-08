@@ -41,6 +41,24 @@ python3 scripts/validate_capability_manifest.py
 bash governance/testdata/run-validator-tests.sh
 ```
 
+Step 3 also runs two probes the fixture files cannot express:
+
+* **`real_manifest_probes.py`** — mutates *this* manifest in place, asserts the
+  gate goes red, and restores it (sha256-verified, refuses on a dirty tree).
+  Three instances of one hazard — a rule whose driver lives inside the artifact
+  it gates — reached review because every fixture is a one- or two-row synthetic
+  document, and every instance lived in the input class *"the canonical
+  document, minus one key"*. A suite blind to an input class is silent about it,
+  and silence reads as green.
+* **`readme_counts_probe.py`** — asserts every `count:` line pasted into *this
+  page* is the live one, by value. The counts below were shipped stale once, in
+  the document whose thesis is that they are printed on every run; correcting
+  them was not a mechanism, so this is one. It also cross-checks the harness's
+  own asserted total, **68 checks**, against `EXPECTED_TOTAL` in
+  `run-validator-tests.sh` — that constant is the only thing standing between a
+  silently-dropped check and a green run, and a single uncorroborated number is
+  defended by nothing but the visible diff.
+
 All three run in CI on every PR touching this area, on every push to `main`,
 and weekly. The weekly run is not decoration: a PR-only gate never runs on the
 merge that breaks it, and evidence ages past the freshness limit with nobody
@@ -126,6 +144,111 @@ third spelling never appears:
 The manifest additionally carries `pypi`, `npm` and `go_modules`, because the
 SDK rows ship through those registries and the core's five channels do not
 cover them.
+
+### The container channel, and rule R17 (AAASM-5680)
+
+`ghcr` was in the schema's enum and in `meta.channels_not_surveyed`, so **no row
+could claim it** while `.github/workflows/docker.yml` had been pushing to
+ghcr.io since AAASM-4480. A matrix generated faithfully from the manifest
+therefore shipped without a GHCR column, and its omission read as a deliberate
+"not distributed there". It had already cost something: AAASM-5591's audiences
+page dropped Docker/GHCR by hand, was corrected in review, and the fix replaced
+the hand-written list with a reference to *this* vocabulary — deferring to a
+source that omitted the channel the review had just restored.
+
+**Surveyed against the registry, not the workflow** (`GET
+https://ghcr.io/v2/ai-agent-assembly/<name>/tags/list`, 2026-08-07). Five
+repositories answer and two do not:
+
+| Image | Delivers | Built by |
+|---|---|---|
+| `aa-gateway` | the `aa-gateway` binary | `aa-gateway/Dockerfile:61,67`, pushed `docker.yml:160-161` |
+| `aa-runtime` | the `aa-runtime` binary | `aa-runtime/Dockerfile:58,64`, pushed `docker.yml:111-112` |
+| `python` ×3 | `agent-assembly` **and** `aasm` | `Dockerfile.python-3.14-slim:79,81-82` + `:89`, asserted `:93`,`:96` |
+| `node` ×3 | `@agent-assembly/sdk` **and** `aasm` | `Dockerfile.node-24-slim:69,74` + `:52`, asserted `:84`,`:85` |
+| `go` ×3 | `go-sdk` **and** `aasm` | `Dockerfile.go-1.26-alpine:73,75` + `:61`, asserted `:87`; the module is in the image's module cache |
+| `aa-proxy` | — | no pull token issued |
+| `aasm` | — | no pull token issued, **but the binary ships inside all nine language images** |
+
+> On `go:88`. `RUN go list -m …@latest` is a GOPROXY query, and it resolves a
+> *different* version than `:73` installs — the published layer
+> `sha256:0c89b228fea4a…` holds both `go-sdk/@v/v0.0.1-beta.3.zip` (installed)
+> and `v0.0.1-rc.5.info` (what `@latest` resolved). The module zip and
+> `go/bin/minimal` genuinely are in the image; `:88` is not what proves it.
+
+24 rows carry the channel: 5 `aa-gateway`, 3 `aa-runtime` (G1, G2, G11), 2
+`aa-cli` (L8, C5), the 13 SDK rows, and `I3`. Linkage is deliberately *not* the
+predicate: `aa-cli` links `aa-proxy` as a library, yet `aasm proxy start` spawns
+the separate `aa-proxy` binary (`aa-cli/src/commands/proxy/start.rs:85-114`), so
+a linkage rule would have put `ghcr` on 17 proxy rows that ship in no image.
+
+**`I3` was added in review round 2.** Its `owner.component` is `aa-core`, but
+its capability is *derived server-side* at
+`aa-gateway/src/service/lifecycle_service.rs:477-497` — gateway code in the
+published gateway image, exactly like I5/I7/G8/G9/G10. Round 1 filed it under
+`owner.component`, which is not the predicate this page states; where the two
+disagree, the delivering artifact wins.
+
+**`G6` and `G7` do not carry it, and round 1 recorded the wrong reason.** They
+were filed `not_published` on the premise that "their subject is the eBPF loader
+daemon". Their own fields say otherwise: `G7` carries no `aa-ebpf` in
+`framework_or_tool`, and both rows' cited code (`ebpf_control.rs:204-213` and
+`:190-201`, the latter a plain `std::fs::read_to_string`) is compiled into every
+`aa-runtime` binary — `aa-runtime/src/lib.rs:15` has no `#[cfg]` — and shipped in
+the image. They are now `not_surveyed`: what is absent is the loader daemon their
+*degradation trigger* concerns, and nobody measured these two rows from inside
+the image.
+
+**What `released_channels` means, stated because the addition must not inherit a
+looser reading.** It is read as *the channels through which the artifact that
+delivers this row's capability is obtained*. On the SDK family the field does
+not already hold to that: all 13 rows carrying `pypi`/`npm`/`go_modules` carry
+the same four values regardless of their own `language`, so `S1`
+(`language: [python]`) claims `npm` and `go_modules` while `S8`
+(`language: [go]`) claims `pypi` — a product-family union, wrong in both
+directions per row. **That predates this ticket and is not fixed here; it needs
+its own.** `ghcr` is true under both readings, because each language image
+installs its own language's SDK and asserts it at build time, so no row's claim
+is broadened by adding it.
+
+**Rule R17** has three clauses:
+
+| Clause | What fails |
+|---|---|
+| Vocabulary partitioned | A channel the schema admits that is neither surveyed nor explicitly not surveyed, or one recorded as both |
+| Publishing implies surveyed | A channel a workflow in `.github/workflows/` publishes to that `channels_surveyed` omits — the clause that fails on the pre-ticket state |
+| No silent row | For a channel classified exhaustively, a row that neither names it, nor is `released_channels: [not_applicable]`, nor appears in `meta.channel_absences` |
+
+**Both of R17's tables are constants in the validator, not manifest fields**: a
+rule whose evidence lives in the artifact it gates can be switched off by editing
+the artifact. Each is keyed by the whole channel enum and asserted against it, so
+a sixth channel forces a decision instead of a silent omission.
+
+Round 1 got that right for the publish markers and wrong for clause 3, which
+iterated the channels appearing *in* `meta.channel_absences` — so deleting that
+one key deleted the check, exit 0, with the denominator vanishing alongside it.
+`EXHAUSTIVE_ROW_CLASSIFICATION` now drives it. Only `ghcr` is enforced there, and
+the other eight channels carry a written reason rather than an omission: AAASM-5527
+surveyed them at document level, so enforcing exhaustiveness across all of them
+raises **249 errors** — 23 rows silent on each of `github_release`, `homebrew`
+and `install_script`, 60 on each of `pypi`, `npm` and `go_modules`, and 0 on
+`crates_io`, which no row is silent about only by accident. Every one of the 249
+would demand a measured absence nobody derived. **A rule must not be satisfiable
+only by inventing a measurement**, so the scope is written down instead.
+
+`meta.channel_absences` carries a `status` separating the two kinds of absence.
+`not_published` (32 rows: 26 aa-proxy-subject, 5 owned by `aa-ebpf`/`aa-ebpf-probes`
+and delivered by the crates.io-only `aa-ebpf-loaderd`, and `C3`, whose `aa-api`
+crate no published binary depends on) means the delivering artifact is in no
+image, measured. `not_surveyed` (17 rows: 15 library and devtool rows whose code
+*is* inside the `aasm` binary the language images carry, plus `G6`/`G7`) means the
+code is on the channel and nobody measured the capability against a container.
+The second is `unmeasured`, never `unsupported` — ADR 0034 forbidden design 8.
+
+```
+count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 16 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
+count: [R17] ghcr: 80 rows = 24 carry it + 7 not_applicable + 49 recorded absent + 0 unaccounted
+```
 
 ## The three questions
 
@@ -338,6 +461,7 @@ written anywhere a machine could read.
 | Clause | What fails |
 |---|---|
 | Contract present | A document sharing an id with its seed and declaring no `meta.cross_representation` |
+| Comparison happens | A document that declares the contract and shares **no** id with the seed it names — repointing `meta.sources.seed` must not switch the comparison off |
 | Populations match | A row in one representation and not the other |
 | Partition total | A field the schema allows that is neither compared nor named as excluded, or one named twice |
 | Per-field agreement | Any divergence with no declaration naming that row, that field and that exact pair of values |
@@ -357,18 +481,34 @@ population smaller than the one claimed shows up as a sum that does not close:
 ```
 count: [R16] ids: 80 in the manifest, 80 in …-matrix.yaml, 80 shared, 0 manifest-only, 0 seed-only
 count: [R16] fields: 51 in the union of the two schemas = 29 compared + 22 excluded with a named reason + 0 unclassified
-count: [R16] seed: 80 ids x 29 fields = 2320 pairs; 1381 agree, 8 diverge, 931 one-side-silent; 0 skipped
+count: [R16] seed: 80 ids x 29 fields = 2320 pairs; 1357 agree, 32 diverge, 931 one-side-silent; 0 skipped
 count: [R16] seed_companion: 80 coverage cells read, 0 ragged rows skipped; 80 of 80 shared ids compared, 75 agree, 5 diverge
-count: [R16] divergences: 13 found; declarations claim 13 (row, representation) pair(s) across 3 entries, 13 matched
+count: [R16] divergences: 37 found; declarations claim 37 (row, representation) pair(s) across 4 entries, 37 matched
 ```
 
-The eight seed divergences are the five `coverage` rows above, plus `L7` and
-`P3` demoted off `host_enforced` by R14, plus `L5`, where the seed's
+The 32 seed divergences are 8 + 24. The 8: the five `coverage` rows above, plus
+`L7` and `P3` demoted off `host_enforced` by R14, plus `L5`, where the seed's
 `current_level` enum admitted the GovernanceLevel `l1_observe` on the
-ProtectionState axis and R7 rejects it. **All eight name the rule that forces
-them**, which is what makes conservatism distinguishable from drift: the
-manifest could not hold the other representation's value without a different
-rule failing.
+ProtectionState axis and R7 rejects it. **Each names the rule that forces it**,
+which is what makes conservatism distinguishable from drift: the manifest could
+not hold the other representation's value without a different rule failing.
+
+The other 24 are the `released_channels` rows AAASM-5680 added `ghcr` to. They
+are declared with `manifest_adds: [ghcr]` rather than a value pair, because the
+full list differs per row while the delta does not, and the AAASM-5527 survey
+never enumerated the channel — its own `schema.enums` has eight channel values
+and `ghcr` is not among them. R16 flagged all of them as undeclared on the first
+run of that change, which is the rule doing its job on work written after it.
+
+**Two rules, one hazard, swept rather than patched.** R16 and R17 each had a
+clause whose driver lived in the manifest they gate, so one edit to the artifact
+retired the check and the denominator that would have shown it. R17 clause 3
+iterated the channels appearing *in* `meta.channel_absences`; R16 returned early
+whenever `meta.sources.seed` named a document sharing no row id, printing "no id
+is shared" as though it were a measurement. Both were exit 0. The review found
+the first; the second came from asking where else the same shape occurs, which
+is the only way that question gets answered — a hazard you have named is one to
+sweep for, not to fix where you happened to notice it.
 
 **Scope, stated rather than overclaimed.**
 
