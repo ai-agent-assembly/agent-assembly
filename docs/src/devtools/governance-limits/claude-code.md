@@ -25,7 +25,7 @@
 | prompt redaction | Yes | Proxy intercepts all outbound API traffic and applies redaction rules |
 | response redaction | Yes | Proxy intercepts all inbound API responses |
 | budget enforcement | Yes | Gateway tracks spend from proxy-observed request/response pairs for the managed launch — no SDK is embedded to emit cost events directly |
-| audit ingestion | Yes | The managed launch injects `AA_AGENT_ID` and the proxy captures every intercepted request for that process (measured: two `/v1/messages` POSTs, an MCP-registry GET and a telemetry POST for one headless run — `AAASM-5276`); there is no SDK-level semantic event stream |
+| audit ingestion | Yes | The managed launch injects `AA_AGENT_ID` and the proxy records the requests it intercepts for that process (measured: two `/v1/messages` POSTs, an MCP-registry GET and a telemetry POST for one headless run — `AAASM-5276`). It is not a complete record: the prevention-evidence sink is bounded and lossy by design — it drops on a full channel and deletes on rotation, counting both in its `SinkCompleteness` sidecar (`AAASM-5449`). There is no SDK-level semantic event stream |
 
 ## Notes
 
