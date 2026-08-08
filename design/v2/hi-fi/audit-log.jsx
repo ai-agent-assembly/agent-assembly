@@ -3,7 +3,9 @@ const { useState: useAuditSt } = React;
 
 /* ============================================================
    Audit Log page  —  GET /api/v1/logs
-   Immutable governance trail across all agents and sessions.
+   Tamper-evident governance trail across the agents and sessions routed
+   through the runtime. Tamper-evident is not immutable: the hash chain is
+   checkable for alteration, and retention pruning deletes rows.
    ============================================================ */
 
 const EVENT_META = {
@@ -70,7 +72,7 @@ function AuditLogPage({ goAgent, toast }) {
         <div>
           <div className="page-title">Audit Log</div>
           <div className="page-sub">
-            Immutable governance trail — LLM calls, tool invocations, file ops, network requests, policy verdicts, and approval decisions across all agents.
+            Tamper-evident governance trail — LLM calls, tool invocations, file ops, network requests, policy verdicts, and approval decisions, for the agents routed through the runtime.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
