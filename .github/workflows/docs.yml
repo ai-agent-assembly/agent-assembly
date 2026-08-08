@@ -421,6 +421,52 @@ jobs:
           python3 scripts/check_absolutes_unwaivable.py --selftest
           python3 scripts/check_absolutes_unwaivable.py
 
+      # AAASM-5679: enforce the CLAIM-ABS-* / CLAIM-VERB-* claim vocabulary
+      # against *product copy*. The check above is a different property — it asks
+      # whether a governance page declares a banned absolute waivable, and its
+      # globs never reach README.md or docs/src/introduction/. Pointed straight at
+      # README.md it exits 0, so a green run of it was never evidence that no
+      # banned absolute shipped. That is how an already-classified blocking
+      # CLAIM-ABS-09 violation survived on the front page.
+      #
+      # Adoption follows claim-vocabulary.md §6.6: the tree's blocking baseline is
+      # not yet empty, so blocking rules gate the PR's own added/modified lines
+      # while the full tree runs in report mode. Deliberately NOT a suppression
+      # list — a file of exempted strings is a permanent unexpiring waiver, which
+      # is forbidden design 9 arriving by another route. Flip the last step to a
+      # bare invocation once the baseline reaches zero.
+      - name: Claim vocabulary — selftest, then enforce
+        env:
+          # Via env rather than inlined into `run:` — a `${{ }}` expansion is
+          # substituted into the script text before the shell sees it, so any
+          # event-controlled field becomes shell source. This one is a SHA, but
+          # the pattern is the point.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_claim_vocabulary.py --selftest
+
+          echo "::group::Full-tree report (non-gating while the baseline is non-empty)"
+          python3 scripts/check_claim_vocabulary.py --report-only
+          echo "::endgroup::"
+
+          base="${BASE_SHA:-}"
+          if [ -z "$base" ]; then
+            echo "not a pull request — full-tree report above is the whole check"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
+          changed=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD -- \
+            '*.md' '*.markdown' '*.mdx' '*.html' '*.txt' '*.jsx' '*.tsx' || true)
+          if [ -z "$changed" ]; then
+            echo "no in-scope files changed"
+            exit 0
+          fi
+          echo "gating these changed files:"
+          echo "$changed"
+          # shellcheck disable=SC2086
+          python3 scripts/check_claim_vocabulary.py $changed
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
