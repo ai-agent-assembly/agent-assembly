@@ -1,7 +1,8 @@
-# INVALID FIXTURE — expects rule R13.
+# Rule R17, AAASM-5680: a row claims a channel and is recorded absent from it.
 #
-# The row claims enforcement with launch_path `unknown`. An enforcement claim
-# that does not name how the process was launched is unfalsifiable.
+# T1 names `ghcr` in released_channels and is also listed under
+# meta.channel_absences for `ghcr`. Both records are machine-readable, both
+# will be read by a generator, and they say opposite things.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
@@ -25,6 +26,13 @@ meta:
     reason: A git tag in go-sdk; there is no publish step to find.
   - channel: not_applicable
     reason: Not a channel; the value a row uses when the question does not apply.
+  channel_absences:
+  - channel: ghcr
+    status: not_published
+    ids:
+    - T1
+    probe: 'GET https://ghcr.io/token?scope=repository:ai-agent-assembly/aa-proxy:pull issues no token.'
+    reason: The artifact delivering this row is in no published image.
   sources:
     canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
     protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
@@ -45,7 +53,7 @@ capabilities:
   - any
   platform:
   - linux
-  launch_path: unknown
+  launch_path: routed through aa-proxy with the gateway endpoint configured
   preconditions:
   - kind: env
     name: AA_PROXY_GATEWAY_ENDPOINT
