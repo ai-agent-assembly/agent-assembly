@@ -28,7 +28,7 @@ importers:
         specifier: ^5.101.4
         version: 5.101.4(react@19.2.8)
       '@tanstack/react-table':
-        specifier: ^9.1.0
+        specifier: ^9.1.1
         version: 9.1.2(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@types/d3-hierarchy':
         specifier: ^3.1.7
