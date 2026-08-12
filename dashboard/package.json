@@ -34,7 +34,7 @@
     "openapi-fetch": "^0.17.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.5",
-    "react-hook-form": "^7.83.0",
+    "react-hook-form": "^7.85.0",
     "react-router": "^8.3.0",
     "recharts": "^3.10.1",
     "use-debounce": "^10.1.1",
