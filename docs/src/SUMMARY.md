@@ -193,6 +193,7 @@
   - [0032 - Local-First Sensitive-Data Provider Architecture](adr/0032-local-first-sensitive-data-provider-architecture.md)
   - [0033 - Canonical Governance & Enforcement Architecture](adr/0033-canonical-governance-and-enforcement-architecture.md)
   - [0034 - One Product Truth & Cross-Repository Documentation Governance](adr/0034-one-product-truth-and-cross-repository-documentation-governance.md)
+  - [0035 - Agent Execution Isolation & Pluggable Enforcement Backends](adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
 
 # Research
 
