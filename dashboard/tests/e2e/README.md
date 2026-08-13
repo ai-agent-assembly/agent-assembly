@@ -123,6 +123,33 @@ overclaiming gate is how "green CI" quietly stops meaning anything.
   otherwise watches; excluding `hitl-approval` takes an entire *category* of
   verification to zero, and no amount of working AAASM-5195 down will restore
   it. Recovering it needs a Rust-side e2e lane, not a shorter quarantine list.
+
+  **That lane now exists (AAASM-5694), and the figure above is scoped to this
+  job rather than to the suite.** `dashboard-e2e`'s own real-backend coverage is
+  still exactly zero, and deliberately so — it provisions no backend. The new
+  `dashboard-e2e-real-backend` job builds and boots a real `aa-api-server` and
+  runs the three specs that need one: `hitl-approval`, `verify-aaasm-5360` and
+  `real-backend-contract`. Read the two jobs together, not either alone:
+
+  | | `dashboard-e2e` | `dashboard-e2e-real-backend` |
+  | --- | --- | --- |
+  | Network surface | hand-written mocks, all 44 specs | live `aa-api-server` |
+  | Can see backend contract drift | no | yes — `real-backend-contract.spec.ts` asserts the AAASM-4892 envelope |
+  | Quarantine list applied | yes | **no** — absence is the failure being fixed |
+  | Passes if its specs skip | n/a | **no** — `scripts/assert-e2e-actually-ran.mjs` fails the job |
+
+  The last row is the one that took a defect to learn. `verify-aaasm-5360` skips
+  when nothing is listening, which is correct for a spec that also runs on a
+  laptop — but Playwright then exits **0** with "4 skipped", so an
+  exit-code-only lane records real-backend verification as having happened while
+  running nothing. The guard reads the JSON report and asserts the *population*,
+  and it was proven by watching it go red on a skipped run before it was
+  trusted.
+
+  What is still not covered: the **populated** sensitive-data state. Producing
+  one means driving real policy evaluations through a gateway configured with
+  `AA_SENSITIVE_DATA_PROJECTION_DB` so the projection has rows. That is a
+  Rust-side fixture, and no lane builds one today.
 - **It does not enforce the `design/v2` visual spec.** Ten gated specs pin values
   sourced from `design/v1/`. Exactly one — `review-aaasm-5149` — cites
   `design/v2/`, and even that asserts three literal RGB constants committed in

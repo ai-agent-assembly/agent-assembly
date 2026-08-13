@@ -118,10 +118,28 @@ or hit the health endpoint directly: `curl http://127.0.0.1:7391/healthz`.
 ## A dashboard page loads but its tables stay empty / skeleton
 
 **Cause.** The dashboard SPA served by the local-mode gateway can render its
-chrome and page shells, but its data endpoints (`/api/v1/fleet`,
-`/api/v1/policies`, …) are served by the **SaaS/cloud control plane on port
-8080**, which is not part of the open-source local runtime. With only the local
-gateway running, data panels stay empty or in their loading state.
+chrome and page shells, but `aa-gateway --mode local` wires only two REST routes
+— `/api/v1/health` and `/api/v1/admin/status`. It cannot mount the full `aa-api`
+router, because that router needs an `aa_api::AppState` local mode deliberately
+does not construct (`aa-gateway/src/local_mode.rs:269-277`). Every other
+`/api/v1/*` path therefore falls through to the SPA catch-all and comes back as
+`text/html`, which reads to a caller as "the endpoint is missing".
+
+**Fix — run `aa-api-server`, which is the binary that serves the REST surface.**
+This is not discoverable from the gateway's own output, and assuming the local
+REST surface does not exist is the wrong conclusion to draw from it
+([AAASM-5694](https://lightning-dust-mite.atlassian.net/browse/AAASM-5694)):
+
+```console
+$ cargo build -p aa-api --bin aa-api-server
+$ AASM_API_AUTH=off AA_API_ADDR=127.0.0.1:7700 ./target/debug/aa-api-server
+$ curl -s http://127.0.0.1:7700/api/v1/health
+```
+
+This is the same binary the `dashboard-e2e-real-backend` CI lane boots, so a
+page verified this way is verified against what CI checks. Endpoints backed by
+the SaaS/cloud control plane remain unavailable locally; a panel still empty
+after this is either one of those or genuinely has no rows.
 
 **Fix.** Connect a control plane that serves the `/api/v1/*` data routes (the
 hosted backend), or use the CLI (`aasm agent list`, `aasm policy list`,
