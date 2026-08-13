@@ -69,6 +69,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 
 try:
     import yaml
@@ -79,6 +80,7 @@ except ImportError:  # pragma: no cover - environment problem, not a manifest pr
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = REPO_ROOT / "governance" / "capability-manifest.yaml"
 SCHEMA_DIR = REPO_ROOT / "schemas" / "capability-manifest" / "v1"
+SCHEMA_FILE = SCHEMA_DIR / "capability-manifest.schema.json"
 
 # ── The three vocabulary axes. Hand-off 7 of ADR 0034 fixes three axes with
 # three owners; forbidden design 12 forbids coining a term on the claim axis
@@ -282,33 +284,123 @@ def prose_values(row: dict):
 # ── Rules ────────────────────────────────────────────────────────────────────
 
 
-# The five array-of-object fields in schemas/capability-manifest/v1, plus the
-# containers that hold them. Enumerated here because every rule in this file
-# reads these lists by calling `.get()` on each item — see check_document_shape.
-SHAPE_LIST_FIELDS = 5
+# Every field schemas/capability-manifest/v1 declares as a mapping or a list of
+# mappings. DERIVED from the schema, never transcribed: the first version of
+# this gate carried a hand-written list of five, the schema declares seven
+# array-of-mapping fields and nine mapping fields, and two of the missed ones
+# (`meta.cross_representation.seed.excluded_fields` and
+# `.declared_divergences`) were live AttributeErrors sitting behind a
+# self-referential cross-check that compared the wrong literal to a copy of
+# itself. A count that is read from the schema moves when the schema moves.
 
 
-def shape_lists(doc: dict):
-    """Yield (label, value) for every field the schema declares as a list of mappings.
+def _schema_shape_paths() -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str, ...], ...]]:
+    """(array-of-mapping paths, mapping paths), read out of the JSON Schema.
 
-    Yields the raw value, including a wrong-typed one: deciding what it is, is
-    check_document_shape's job, and skipping a malformed value here would hide
-    exactly what the caller needs told.
+    Paths are tuples of key names with `[]` marking "descend into every element",
+    so `("capabilities", "[]", "evidence")` reads `capabilities[i].evidence`.
+
+    Only fields whose declared type is *exactly* object are treated as mappings.
+    `capabilities[].policy_context` is `oneOf[array, object]` — a list there is
+    legal, and asserting a mapping would be this script inventing a rule the
+    schema does not state. The gate's job is to guarantee the precondition the
+    rules below rely on, not to re-implement ajv.
     """
-    meta = doc.get("meta")
-    if isinstance(meta, dict):
-        for key in ("channels_not_surveyed", "channel_absences"):
-            yield f"meta.{key}", meta.get(key)
-    rows = doc.get("capabilities")
-    yield "capabilities", rows
-    if isinstance(rows, list):
-        for i, row in enumerate(rows):
-            if isinstance(row, dict):
-                for key in ("preconditions", "evidence"):
-                    yield f"capabilities[{i}].{key}", row.get(key)
+    defs: dict[str, object] = {}
+
+    def resolve(node: object, depth: int = 0) -> dict[str, object]:
+        while isinstance(node, dict) and "$ref" in node and depth < 20:
+            node = defs.get(str(node["$ref"]).split("/")[-1], {})
+            depth += 1
+        return node if isinstance(node, dict) else {}
+
+    def types(node: object, depth: int = 0) -> set[str]:
+        resolved = resolve(node)
+        if depth > 20:
+            return set()
+        out = set()
+        declared = resolved.get("type")
+        if isinstance(declared, str):
+            out.add(declared)
+        elif isinstance(declared, list):
+            out.update(declared)
+        for key in ("oneOf", "anyOf", "allOf"):
+            options = resolved.get(key)
+            if isinstance(options, list):
+                for option in options:
+                    out |= types(option, depth + 1)
+        if not out and "properties" in resolved:
+            out.add("object")
+        return out
+
+    arrays: list[tuple[str, ...]] = []
+    objects: list[tuple[str, ...]] = []
+
+    def walk(node: object, path: tuple[str, ...], depth: int = 0) -> None:
+        if depth > 10:
+            return
+        properties = resolve(node).get("properties")
+        if not isinstance(properties, dict):
+            return
+        for name, sub in properties.items():
+            here = (*path, name)
+            declared = types(sub)
+            if declared == {"object"}:
+                objects.append(here)
+                walk(sub, here, depth + 1)
+            elif "array" in declared:
+                item = resolve(resolve(sub).get("items") or {})
+                if types(item) == {"object"}:
+                    arrays.append(here)
+                    walk(item, (*here, "[]"), depth + 1)
+
+    try:
+        schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # pragma: no cover - environment problem
+        sys.stderr.write(
+            f"validate_capability_manifest: cannot read {SCHEMA_FILE}: {exc}. The structural "
+            "gate is derived from it, and a gate that silently covers nothing is worse than "
+            "no gate.\n"
+        )
+        raise SystemExit(2) from exc
+    defs = schema.get("definitions") or {}
+    walk(schema, ())
+    if not arrays or not objects:
+        sys.stderr.write(
+            f"validate_capability_manifest: derived {len(arrays)} array-of-mapping and "
+            f"{len(objects)} mapping fields from {SCHEMA_FILE.name}. Both must be non-empty; "
+            "an empty derivation would gate nothing while reporting success.\n"
+        )
+        raise SystemExit(2)
+    return tuple(arrays), tuple(objects)
 
 
-def check_document_shape(doc: dict, rep: Report) -> bool:
+ARRAY_OF_MAPPING_PATHS, MAPPING_PATHS = _schema_shape_paths()
+
+
+def _at_path(
+    doc: object, parts: tuple[str, ...], label: str = ""
+) -> Iterator[tuple[str, object]]:
+    """Yield (label, value) for each concrete instance of a schema path.
+
+    Descent stops at a container that is not the shape it should be. That
+    container has its own entry in MAPPING_PATHS and is reported there, so the
+    reader gets the outermost cause once rather than a cascade beneath it.
+    """
+    if not parts:
+        yield label, doc
+        return
+    head, rest = parts[0], parts[1:]
+    if head == "[]":
+        if isinstance(doc, list):
+            for i, item in enumerate(doc):
+                yield from _at_path(item, rest, f"{label}[{i}]")
+        return
+    if isinstance(doc, dict) and head in doc:
+        yield from _at_path(doc[head], rest, f"{label}.{head}" if label else head)
+
+
+def check_document_shape(doc: dict[str, object], rep: Report) -> bool:
     """R1. Structure before semantics. Returns False to stop the run.
 
     AAASM-5692. Pointing the validator at the AAASM-5527 seed raised
@@ -321,47 +413,66 @@ def check_document_shape(doc: dict, rep: Report) -> bool:
     failure, and a wrapper reading only `$?` records "this document is invalid"
     — a different and false statement.
 
-    Two things make this a gate rather than four `isinstance` guards:
+    Three things make this a gate rather than an `isinstance` guard per read
+    site:
 
-    * The bug was reported against `evidence`. FOUR of the schema's five
-      array-of-object fields raise the same AttributeError, so patching the
-      reported one would have left three, and a fifth would arrive with the
-      next field added. A guard per read site is the shape of a defect that
-      keeps coming back; a precondition every rule may rely on is not.
+    * The bug was reported against `evidence`. The schema declares seven
+      array-of-mapping fields and nine mapping fields, and — measured against
+      the canonical manifest before this gate existed — FIFTEEN of those
+      sixteen raised the same AttributeError. Patching the reported one leaves
+      fourteen, and the next field added to the schema arrives uncovered. The
+      sixteenth, `capabilities[].owner`, was read without crashing and is
+      tracked separately: a silent misread, which is the worse half.
     * A structural finding makes the semantic ones meaningless, not merely
       incomplete. A rule that reads past a shape it cannot read either crashes
       or — worse — reports a confident finding derived from a misread.
+    * The field list is DERIVED from the schema, not transcribed from it. Round
+      one of this fix transcribed five field names and asserted the count
+      against a copy of the same transcription, so the two fields it had missed
+      were invisible to the check written to catch exactly that. A hand-copied
+      denominator is not a denominator.
 
     ajv enforces the same precondition and does not always run: `--no-git`, a
-    direct invocation and the fixture harness all reach this script without it.
-    A rule whose only enforcement lives in another tool is enforced only where
-    that tool runs.
+    direct invocation and the fixture harness all reach this script without it,
+    and `governance/README.md` documents the bare `python3 scripts/…` call as
+    the developer command. A rule whose only enforcement lives in another tool
+    is enforced only where that tool runs.
     """
-    meta = doc.get("meta")
     ok = True
-    if meta is not None and not isinstance(meta, dict):
-        rep.error("meta", "R1", f"is {type(meta).__name__}, not a mapping")
-        ok = False
-
-    for label, value in shape_lists(doc):
-        if value is None:
-            continue
-        if not isinstance(value, list):
-            rep.error(label, "R1", f"is {type(value).__name__}, not a list")
-            ok = False
-            continue
-        for i, item in enumerate(value):
-            if isinstance(item, dict):
+    # Mappings first. A container reported here stops the descent into the
+    # paths beneath it, so the reader gets one outermost cause, not a cascade.
+    for parts in MAPPING_PATHS:
+        for label, value in _at_path(doc, parts):
+            if value is None or isinstance(value, dict):
                 continue
             rep.error(
-                f"{label}[{i}]",
+                label,
                 "R1",
-                f"is {type(item).__name__}, not a mapping. Every item in this field is a "
-                "mapping (schemas/capability-manifest/v1); a bare string — the AAASM-5527 "
-                "seed's spelling for `evidence` — carries none of the keys the rules read, "
-                "so no rule can weigh it",
+                f"is {type(value).__name__}, not a mapping. The schema declares this field an "
+                "object, and the rules below read it with `.get()`",
             )
             ok = False
+
+    for parts in ARRAY_OF_MAPPING_PATHS:
+        for label, value in _at_path(doc, parts):
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                rep.error(label, "R1", f"is {type(value).__name__}, not a list")
+                ok = False
+                continue
+            for i, item in enumerate(value):
+                if isinstance(item, dict):
+                    continue
+                rep.error(
+                    f"{label}[{i}]",
+                    "R1",
+                    f"is {type(item).__name__}, not a mapping. Every item in this field is a "
+                    "mapping (schemas/capability-manifest/v1); a bare string — the AAASM-5527 "
+                    "seed's spelling for `evidence` — carries none of the keys the rules read, "
+                    "so no rule can weigh it",
+                )
+                ok = False
     return ok
 
 

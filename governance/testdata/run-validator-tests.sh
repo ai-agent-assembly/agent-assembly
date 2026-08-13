@@ -174,12 +174,16 @@ printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
 #  35  invalid-*.yaml through the validator
 #   4  r15_branch_probes.py    (one per R15 repository-state branch)
 #   8  real_manifest_probes.py   (5 mutations + 1 attribution control + positive + restore)
-#   9  input_shape_probes.py     (positive + seed scope + exit-code discrimination
-#                                 + 5 array-of-object fields + the field-count cross-check)
+#  20  input_shape_probes.py     (positive + seed scope + exit-code discrimination
+#                                 + the derivation floor + one bare-string mutation per
+#                                 field the SCHEMA declares a mapping or list-of-mappings:
+#                                 7 + 9 today. This one MOVES WITH THE SCHEMA by design —
+#                                 adding such a field makes the probe emit one more check
+#                                 and turns this total red until it is bumped on purpose.)
 #   8  readme_counts_probe.py    (one per quoted count: line + the EXPECTED_TOTAL cross-check)
 #   7  schema negative controls through ajv
 #   4  valid-*.yaml through ajv
-EXPECTED_TOTAL=79
+EXPECTED_TOTAL=90
 if [ "$((pass + fail))" -ne "${EXPECTED_TOTAL}" ]; then
   printf 'FAIL  the harness ran %d checks, expected %d. A check that stops running is
 ' \
