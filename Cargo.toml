@@ -18,6 +18,7 @@ members = [
     "aa-wasm",
     "aa-sandbox",
     "aa-isolation",
+    "aa-isolation-sandlock",
     "aa-policy",
     "aa-gateway",
     "aa-api",

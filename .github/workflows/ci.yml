@@ -36,6 +36,13 @@ on:
       # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
       - ".ci/verify-range-builds.sh"
       - ".ci/check-compatibility-matrix.sh"
+      # AAASM-5708: the evidence-ledger summary and the nextest profile that
+      # produces its denominator. Paired with the `isolation_backend` router
+      # filter below — a router filter without a matching `on.*.paths` entry is
+      # a dead trigger (ADR 0028), and this lane's whole purpose is to fail when
+      # it measures nothing, which it cannot do if it never runs.
+      - ".ci/test-evidence-summary.sh"
+      - ".config/nextest.toml"
       - "openapi/v1.yaml"
       - "schemas/**/*.json"
       - "schemas/**/*.yaml"
@@ -153,6 +160,7 @@ jobs:
       conformance: ${{ steps.filter.outputs.conformance }}
       devint_client: ${{ steps.filter.outputs.devint_client }}
       backend_license: ${{ steps.filter.outputs.backend_license }}
+      isolation_backend: ${{ steps.filter.outputs.isolation_backend }}
       governance: ${{ steps.filter.outputs.governance }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -291,6 +299,22 @@ jobs:
               - 'scripts/install.sh'
               - 'metadata/versions.rb'
               - 'scripts/check-release-completeness.sh'
+            # AAASM-5708: the Linux process-isolation backend and the contract it
+            # implements. Narrower than `rust` on purpose — this lane installs a
+            # third-party confinement binary and runs eight confined processes
+            # per discovery, so it should not ride on every Rust change. Every
+            # path here has a matching `on.*.paths` entry above, so it is a live
+            # trigger; `schedule` and `workflow_dispatch` back it up so a change
+            # elsewhere cannot leave the backend unmeasured on main indefinitely.
+            isolation_backend:
+              - 'aa-isolation/**/*.rs'
+              - 'aa-isolation/**/Cargo.toml'
+              - 'aa-isolation-sandlock/**/*.rs'
+              - 'aa-isolation-sandlock/**/Cargo.toml'
+              - 'aa-integration-tests/tests/evidence/mod.rs'
+              - '.ci/test-evidence-summary.sh'
+              - '.config/nextest.toml'
+              - '.github/workflows/ci.yml'
             # AAASM-5677: the governance surface. Before this filter existed, a
             # change to `governance/capability-manifest.yaml` selected NO job in
             # this workflow — every `needs` of `ci-success` skipped, and the
@@ -1879,6 +1903,132 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
+  isolation-backend-linux:
+    needs: [changes]
+    # Path-gated like the eBPF lanes, with the same two backstops: a weekly
+    # schedule and manual dispatch. Without them a lane that only fires on its
+    # own files would leave `main` claiming a measured boundary long after an
+    # unrelated change broke it.
+    if: needs.changes.outputs.isolation_backend == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # AAASM-5708 — the only place any claim this backend makes is measured.
+    #
+    # Nothing about process confinement can be established on macOS or in a
+    # unit test: the backend's capability reports are gated on a live probe that
+    # watches a real denial happen, and that probe needs a Linux kernel with the
+    # mechanism installed. Every scenario that cannot run here declines *and
+    # records the decline*, and the final step fails the job when the whole lane
+    # declined — because `ci-success` treats a skipped job as a pass, so a lane
+    # that silently measured nothing would read as a green boundary.
+    name: Isolation backend confinement (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.isolation-outcomes
+      # Pinned to the exact release whose provenance is recorded in
+      # metadata/isolation-backends.json. The digest below is the one that file
+      # records; verifying it here is what makes that record a checkable claim
+      # rather than a note, and a drifted upstream artifact fails this step
+      # instead of silently changing what the lane measured.
+      SANDLOCK_VERSION: "0.8.6"
+      SANDLOCK_SHA256: "86e89e5bdb2da748e683cda6908a95504ae6751f73d9dadf79cf0fc6843873fb"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Record the host this lane measured
+        # First, and unconditionally. When a scenario declines because the
+        # kernel is too old, this is the number that says so, and reconstructing
+        # it afterwards from a skip message is guesswork.
+        run: |
+          echo "kernel: $(uname -r)"
+          echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo '<securityfs not readable>')"
+      - name: Install the confinement mechanism
+        # Downloaded and digest-verified rather than built from source: the
+        # digest is the provenance record's whole point, and a source build
+        # would measure a binary nobody recorded. `sha256sum -c` fails the job
+        # on a mismatch, which is the fail-closed direction.
+        env:
+          SANDLOCK_URL: https://github.com/multikernel/sandlock/releases/download/v${{ env.SANDLOCK_VERSION }}/sandlock-x86_64-unknown-linux-gnu.tar.gz
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o sandlock.tar.gz "$SANDLOCK_URL"
+          echo "${SANDLOCK_SHA256}  sandlock.tar.gz" | sha256sum -c -
+          mkdir -p sandlock-dist
+          tar -xzf sandlock.tar.gz -C sandlock-dist
+          sudo install -m 0755 sandlock-dist/sandlock /usr/local/bin/sandlock
+          sandlock --version
+      - name: Record what the mechanism says it can do here
+        # `sandlock check` exits zero even when it reports the host as
+        # unsupported, so its exit status is not a gate and is deliberately not
+        # treated as one. It is captured because it names the ABI version that
+        # explains every decline this lane can produce.
+        run: sandlock check || true
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: isolation-backend-linux
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Run the confinement suite
+        # `--no-capture` so a `SKIP [...]` line is visible in the log; without
+        # it a declining scenario reads exactly like a measuring one.
+        # `--profile evidence` writes the JUnit report the summary step needs
+        # for its denominator: the ledger says which cases declined, and only
+        # the runner knows how many there were.
+        run: cargo nextest run --profile evidence -p aa-isolation-sandlock --no-capture
+      - name: Report what this lane measured
+        # `always()`: a lane that failed still has an outcome worth reading, and
+        # the ledger is most useful exactly when something went wrong.
+        #
+        # `--require-evidence`: this lane exists to take a measurement. Every
+        # scenario declining means the runner could not confine anything, which
+        # is a broken lane rather than an honest opt-out — and the one failure
+        # mode `ci-success` cannot see on its own.
+        if: always()
+        run: |
+          .ci/test-evidence-summary.sh \
+            --lane "isolation backend (Linux)" \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${AA_CONFORMANCE_OUTCOME_DIR}" \
+            --require-evidence
+      - name: Fail on any decline, not merely on a lane that declined everything
+        # `--require-evidence` fails only when the substantive count reaches
+        # zero, and this suite contains one scenario that needs no kernel and no
+        # mechanism (an absent backend must refuse before launch). That single
+        # portable case would hold the count at one while every measurement
+        # scenario declined — a green lane over a suite that measured nothing
+        # about confinement, which is the exact reading this lane exists to
+        # prevent.
+        #
+        # On *this* runner both decline reasons are defects rather than honest
+        # opt-outs: the job provisions the mechanism itself, so `tool_absent`
+        # means the install step is broken, and it selects the runner, so
+        # `unsupported_platform` means the image's kernel no longer meets the
+        # mechanism's protection floor. Either is a lane to fix, not a result to
+        # accept.
+        if: always()
+        run: |
+          set -euo pipefail
+          # `|| true` on every grep: zero matches is the expected, healthy
+          # answer here and grep reports it as exit 1, which `pipefail` would
+          # otherwise turn into a step failure — a check that fails precisely
+          # when it has nothing to report.
+          declined_records() {
+            grep -l '"outcome": "\(unsupported_platform\|tool_absent\)"' \
+              "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true
+          }
+          declines=$(declined_records | grep -c . || true)
+          measured=$({ grep -l '"outcome": "measured"' \
+            "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true; } | grep -c . || true)
+          echo "measured=${measured} declined=${declines}"
+          if [ "${declines}" -ne 0 ]; then
+            echo "::error title=Isolation lane declined a measurement::${declines} scenario(s) declined on a runner that provisions the mechanism and selects the kernel. Records:"
+            declined_records | while IFS= read -r record; do cat "$record" >&2; done
+            exit 1
+          fi
+          if [ "${measured}" -lt 9 ]; then
+            echo "::error title=Isolation lane measured too little::only ${measured} scenario(s) recorded a measurement; the suite has 10 and expects at least 9 to measure here."
+            exit 1
+          fi
+
   # AAASM-2599: single aggregate gate that succeeds only when every functional
   # CI job passed or was intentionally skipped (path-routed). This is the one
   # status to make a required check in branch protection — it stays green for
@@ -1949,6 +2099,13 @@ jobs:
       - compat-matrix-check
       - ebpf-build
       - e2e-ebpf-linux
+      # AAASM-5708: blocks. It asserts behaviour — that the process-isolation
+      # boundary still denies what it reports it denies — and it is the only
+      # job in this workflow that can. Note the interaction it is written
+      # around: this aggregator counts a *skipped* need as a pass, so the lane
+      # carries `--require-evidence` and fails itself when it measured nothing,
+      # rather than relying on a green here to mean anything.
+      - isolation-backend-linux
       - benchmark
       - conformance
       - conformance-python
