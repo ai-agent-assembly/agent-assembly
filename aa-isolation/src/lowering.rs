@@ -687,3 +687,437 @@ fn unrepresentable(detail: &str) -> DomainCoverage {
         detail: detail.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use aa_security::policy::{CapabilitySet, NetworkPolicy, SyscallAllowlist, ToolRule};
+
+    use super::*;
+    use crate::spec::{DescendantRequirement, IdentityRef, RequirementIntent};
+
+    fn empty() -> PolicyDocument {
+        PolicyDocument::default()
+    }
+
+    fn with_denies(denied: &[Capability]) -> PolicyDocument {
+        let mut set = CapabilitySet::default();
+        for capability in denied {
+            set.deny.insert(capability.clone());
+        }
+        PolicyDocument {
+            capabilities: Some(set),
+            ..PolicyDocument::default()
+        }
+    }
+
+    fn with_allows(allowed: &[Capability]) -> PolicyDocument {
+        let mut set = CapabilitySet::default();
+        for capability in allowed {
+            set.allow.insert(capability.clone());
+        }
+        PolicyDocument {
+            capabilities: Some(set),
+            ..PolicyDocument::default()
+        }
+    }
+
+    fn lower(policy: &PolicyDocument) -> PolicyLowering {
+        lower_policy(policy, &LoweringOptions::strict())
+    }
+
+    fn coverage_of(lowering: &PolicyLowering, domain: CapabilityDomain) -> &DomainCoverage {
+        &lowering
+            .coverage(domain)
+            .expect("every domain in CapabilityDomain::ALL has a lowering")
+            .coverage
+    }
+
+    fn requirement_for(lowering: &PolicyLowering, domain: CapabilityDomain) -> Option<&ControlRequirement> {
+        lowering.requirements().iter().find(|r| r.domain() == domain)
+    }
+
+    // -----------------------------------------------------------------------
+    // Exhaustiveness: a domain can never go missing from the report.
+    // -----------------------------------------------------------------------
+
+    /// A domain absent from the output would be indistinguishable from one
+    /// considered and found unrepresentable, which is the exact confusion the
+    /// module is shaped against. Order is pinned too, because the requirement
+    /// list is claimed to be deterministic.
+    #[test]
+    fn every_capability_domain_gets_a_lowering_in_a_fixed_order() {
+        let lowering = lower(&empty());
+        let reported: Vec<CapabilityDomain> = lowering.domains().iter().map(|d| d.domain).collect();
+        assert_eq!(reported, CapabilityDomain::ALL.to_vec());
+    }
+
+    #[test]
+    fn lowering_is_deterministic() {
+        let mut policy = with_denies(&[Capability::FileWrite, Capability::AgentSpawn]);
+        policy.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string(), "b.example".to_string()],
+        });
+        policy.syscall_allowlist = Some(SyscallAllowlist::from_names(["write", "read"]).unwrap());
+        assert_eq!(lower(&policy), lower(&policy));
+    }
+
+    // -----------------------------------------------------------------------
+    // Syscall — the one domain policy can enumerate cleanly.
+    // -----------------------------------------------------------------------
+
+    /// Both directions. A stated allowlist lowers to enumerated selectors; an
+    /// absent one lowers to nothing and says the document was silent. Asserting
+    /// only the first would pass for a function that emits selectors
+    /// unconditionally.
+    #[test]
+    fn syscall_allowlist_lowers_to_permitted_selectors_and_absence_does_not() {
+        let mut policy = empty();
+        policy.syscall_allowlist = Some(SyscallAllowlist::from_names(["read", "write"]).unwrap());
+        let stated = lower(&policy);
+
+        let requirement = requirement_for(&stated, CapabilityDomain::Syscall).expect("a stated allowlist lowers");
+        assert_eq!(
+            requirement.scope(),
+            &RequirementScope::Selectors(vec!["permit-only:read".to_string(), "permit-only:write".to_string()])
+        );
+        assert!(matches!(
+            coverage_of(&stated, CapabilityDomain::Syscall),
+            DomainCoverage::Lowered {
+                granularity: ScopeGranularity::Enumerated,
+                ..
+            }
+        ));
+
+        let silent = lower(&empty());
+        assert!(requirement_for(&silent, CapabilityDomain::Syscall).is_none());
+        assert!(matches!(
+            coverage_of(&silent, CapabilityDomain::Syscall),
+            DomainCoverage::NotStated { .. }
+        ));
+    }
+
+    /// The selector polarity is the whole reason the prefix exists: a backend
+    /// reading `read` alone would have no way to tell "permit only these" from
+    /// "stop these", and the two are exact opposites.
+    #[test]
+    fn permitted_selectors_round_trip_and_a_bare_name_is_not_one() {
+        assert_eq!(permitted_selector(&permit_only_selector("read")), Some("read"));
+        assert_eq!(permitted_selector("read"), None);
+        assert_eq!(permitted_selector("deny:read"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Network egress — enumerated, but only by host.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn network_allowlist_lowers_to_permitted_hosts_and_absence_does_not() {
+        let mut policy = empty();
+        policy.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        let stated = lower(&policy);
+        assert_eq!(
+            requirement_for(&stated, CapabilityDomain::NetworkEgress)
+                .expect("a stated allowlist lowers")
+                .scope(),
+            &RequirementScope::Selectors(vec!["permit-only:api.openai.com".to_string()])
+        );
+
+        let silent = lower(&empty());
+        assert!(requirement_for(&silent, CapabilityDomain::NetworkEgress).is_none());
+        assert!(matches!(
+            coverage_of(&silent, CapabilityDomain::NetworkEgress),
+            DomainCoverage::NotStated { .. }
+        ));
+    }
+
+    /// An empty `allowlist:` is documented as "no egress restriction", so it is
+    /// the document saying nothing rather than the document permitting nothing.
+    /// Lowering it to an empty permitted set would invert its meaning into
+    /// deny-all.
+    #[test]
+    fn an_empty_allowlist_is_silence_not_a_deny_all() {
+        let mut policy = empty();
+        policy.network = Some(NetworkPolicy { allowlist: Vec::new() });
+        let lowering = lower(&policy);
+        assert!(requirement_for(&lowering, CapabilityDomain::NetworkEgress).is_none());
+        assert!(matches!(
+            coverage_of(&lowering, CapabilityDomain::NetworkEgress),
+            DomainCoverage::NotStated { .. }
+        ));
+    }
+
+    /// A document carrying both means "none of these either". Lowering the
+    /// allowlist would emit a requirement permitting hosts the same document
+    /// denies outright.
+    #[test]
+    fn a_network_outbound_deny_outranks_the_allowlist() {
+        let mut policy = with_denies(&[Capability::NetworkOutbound]);
+        policy.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        let requirement = requirement_for(&lower(&policy), CapabilityDomain::NetworkEgress)
+            .expect("a deny lowers")
+            .clone();
+        assert_eq!(requirement.scope(), &RequirementScope::Whole);
+    }
+
+    // -----------------------------------------------------------------------
+    // Filesystem and process creation — booleans, and only booleans.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn file_read_deny_lowers_whole_domain_only_and_records_the_missing_path_scope() {
+        let lowering = lower(&with_denies(&[Capability::FileRead]));
+        let requirement = requirement_for(&lowering, CapabilityDomain::FilesystemRead).expect("a deny lowers");
+        assert_eq!(requirement.scope(), &RequirementScope::Whole);
+        assert!(matches!(
+            coverage_of(&lowering, CapabilityDomain::FilesystemRead),
+            DomainCoverage::Lowered {
+                granularity: ScopeGranularity::WholeDomainOnly,
+                ..
+            }
+        ));
+
+        // Lowered is not complete: the domain is expressed, its path scope is
+        // not. Collapsing those two would be the over-read this field exists to
+        // stop.
+        let entry = lowering.coverage(CapabilityDomain::FilesystemRead).unwrap();
+        assert!(!entry.residual_gaps.is_empty());
+        assert!(!entry.is_complete());
+    }
+
+    /// Write and delete are separate policy verbs and one execution domain, so
+    /// either alone must produce the requirement.
+    #[test]
+    fn file_write_and_file_delete_each_reach_filesystem_write() {
+        for capability in [Capability::FileWrite, Capability::FileDelete] {
+            let lowering = lower(&with_denies(std::slice::from_ref(&capability)));
+            assert!(
+                requirement_for(&lowering, CapabilityDomain::FilesystemWrite).is_some(),
+                "{capability} did not reach FilesystemWrite"
+            );
+        }
+        // The control: neither verb denied, no requirement.
+        assert!(requirement_for(&lower(&empty()), CapabilityDomain::FilesystemWrite).is_none());
+    }
+
+    #[test]
+    fn agent_spawn_and_terminal_exec_each_reach_process_creation() {
+        for capability in [Capability::AgentSpawn, Capability::TerminalExec] {
+            let lowering = lower(&with_denies(std::slice::from_ref(&capability)));
+            assert!(
+                requirement_for(&lowering, CapabilityDomain::ProcessCreation).is_some(),
+                "{capability} did not reach ProcessCreation"
+            );
+        }
+        assert!(requirement_for(&lower(&empty()), CapabilityDomain::ProcessCreation).is_none());
+    }
+
+    /// The same two-sided reading the gateway applies at L7: an in-force
+    /// allow-list restricts what it omits. Both halves are asserted, so the
+    /// test cannot pass against a function that restricts everything or
+    /// nothing.
+    #[test]
+    fn an_in_force_allow_list_restricts_the_capabilities_it_omits() {
+        let lowering = lower(&with_allows(&[Capability::FileRead]));
+        assert!(
+            requirement_for(&lowering, CapabilityDomain::FilesystemRead).is_none(),
+            "file_read is in the allow-list and must not be restricted"
+        );
+        assert!(
+            requirement_for(&lowering, CapabilityDomain::FilesystemWrite).is_some(),
+            "file_write is omitted from an in-force allow-list and must be restricted"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The property the ticket exists for.
+    // -----------------------------------------------------------------------
+
+    /// Four domains have no policy node at all. Each must produce no
+    /// requirement *and* say why — an absent requirement alone is what a reader
+    /// mistakes for "nothing to restrict here".
+    #[test]
+    fn domains_with_no_policy_node_are_reported_rather_than_left_absent() {
+        let lowering = lower(&empty());
+        for domain in [
+            CapabilityDomain::NameResolution,
+            CapabilityDomain::Ipc,
+            CapabilityDomain::Credential,
+            CapabilityDomain::Resource,
+        ] {
+            assert!(
+                requirement_for(&lowering, domain).is_none(),
+                "{domain} lowered a requirement"
+            );
+            let entry = lowering.coverage(domain).unwrap();
+            assert!(
+                entry.coverage.is_unrepresentable(),
+                "{domain} is not reported as a policy gap"
+            );
+            let DomainCoverage::PolicyCannotExpress { detail } = &entry.coverage else {
+                unreachable!("checked immediately above");
+            };
+            assert!(!detail.is_empty(), "{domain} states no reason");
+        }
+        assert_eq!(lowering.unrepresentable().count(), 4);
+    }
+
+    /// "Policy cannot express it" and "this document did not say" are both
+    /// zero requirements, and they are not the same fact. The control is that
+    /// the first stays put while the second moves: adding an egress allowlist
+    /// turns `NetworkEgress` from `NotStated` into `Lowered` and leaves `Ipc`
+    /// exactly where it was.
+    #[test]
+    fn a_policy_gap_is_distinct_from_a_silent_document_and_only_one_moves() {
+        let silent = lower(&empty());
+        assert_eq!(
+            coverage_of(&silent, CapabilityDomain::NetworkEgress).as_str(),
+            "not_stated"
+        );
+        assert_eq!(
+            coverage_of(&silent, CapabilityDomain::Ipc).as_str(),
+            "policy_cannot_express"
+        );
+
+        let mut policy = empty();
+        policy.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        let stated = lower(&policy);
+        assert_eq!(
+            coverage_of(&stated, CapabilityDomain::NetworkEgress).as_str(),
+            "lowered"
+        );
+        assert_eq!(
+            coverage_of(&stated, CapabilityDomain::Ipc).as_str(),
+            "policy_cannot_express"
+        );
+    }
+
+    /// A document that restricts nothing this boundary can carry must not
+    /// produce a spec. An empty requirement list negotiates to a Ready posture
+    /// against any backend, including one that enforces nothing.
+    #[test]
+    fn a_policy_that_lowers_to_nothing_cannot_produce_an_execution_spec() {
+        let spec = ExecutionSpec::new("python", IdentityRef::root("agent-1"));
+        let refusal = lower(&empty())
+            .apply_to(spec.clone())
+            .expect_err("a policy expressing no restriction must not yield a spec");
+        assert_eq!(refusal.unrepresentable().count(), 4);
+        assert!(refusal.to_string().contains("no execution requirement"));
+
+        // The control: one expressible restriction and the same call succeeds,
+        // so the refusal is attributable to the empty lowering and not to
+        // `apply_to` refusing unconditionally.
+        let attached = lower(&with_denies(&[Capability::FileWrite]))
+            .apply_to(spec)
+            .expect("an expressible restriction yields a spec");
+        assert_eq!(attached.requirements().len(), 1);
+    }
+
+    #[test]
+    fn apply_to_attaches_every_lowered_requirement() {
+        let mut policy = with_denies(&[Capability::FileWrite]);
+        policy.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        policy.syscall_allowlist = Some(SyscallAllowlist::from_names(["read"]).unwrap());
+        let lowering = lower(&policy);
+        let spec = lowering
+            .apply_to(ExecutionSpec::new("python", IdentityRef::root("agent-1")))
+            .expect("three restrictions lower");
+        assert_eq!(spec.requirements().len(), lowering.requirements().len());
+        assert_eq!(spec.requirements(), lowering.requirements());
+    }
+
+    /// Restrictions the operator wrote that no execution domain carries are a
+    /// silent loss of intent unless something prints them.
+    #[test]
+    fn restrictions_no_domain_can_carry_are_named_rather_than_dropped() {
+        let policy = with_denies(&[Capability::NetworkInbound, Capability::McpTool("git".to_string())]);
+        let lowering = lower(&policy);
+        assert_eq!(lowering.unmapped().len(), 2);
+        assert!(lowering.unmapped().iter().any(|s| s.contains("network_inbound")));
+        assert!(lowering.unmapped().iter().any(|s| s.contains("mcp_tool:git")));
+
+        // The control: a capability that does map is not reported as unmapped.
+        assert!(lower(&with_denies(&[Capability::FileWrite])).unmapped().is_empty());
+    }
+
+    #[test]
+    fn a_denied_tool_rule_is_reported_as_unmapped() {
+        let policy = PolicyDocument {
+            tools: vec![ToolRule {
+                name: "write_file".to_string(),
+                allow: false,
+                requires_approval_if: None,
+            }],
+            ..PolicyDocument::default()
+        };
+        assert_eq!(lower(&policy).unmapped().len(), 1);
+
+        let permitted = PolicyDocument {
+            tools: vec![ToolRule {
+                name: "write_file".to_string(),
+                allow: true,
+                requires_approval_if: None,
+            }],
+            ..PolicyDocument::default()
+        };
+        assert!(lower(&permitted).unmapped().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Posture and intent.
+    // -----------------------------------------------------------------------
+
+    /// The policy schema has no posture node, so a lowered requirement is
+    /// `Required` — ADR 0035 §4's default. A weaker posture is an operator
+    /// selection, and it has to be selected.
+    #[test]
+    fn posture_defaults_to_required_and_a_weaker_one_must_be_selected() {
+        let policy = with_denies(&[Capability::FileWrite]);
+        let strict = lower(&policy);
+        assert_eq!(
+            requirement_for(&strict, CapabilityDomain::FilesystemWrite)
+                .unwrap()
+                .posture(),
+            RequirementPosture::Required
+        );
+
+        let relaxed = lower_policy(
+            &policy,
+            &LoweringOptions::strict().with_posture(
+                CapabilityDomain::FilesystemWrite,
+                RequirementPosture::DegradeIfUnavailable,
+            ),
+        );
+        assert_eq!(
+            requirement_for(&relaxed, CapabilityDomain::FilesystemWrite)
+                .unwrap()
+                .posture(),
+            RequirementPosture::DegradeIfUnavailable
+        );
+    }
+
+    /// Every policy node read here states what must not happen. Nothing in the
+    /// schema asks only to be told about something, so nothing may lower to an
+    /// observe-only intent — that would silently downgrade a denial.
+    #[test]
+    fn every_lowered_requirement_prevents_before_effect_across_the_process_tree() {
+        let mut policy = with_denies(&[Capability::FileRead, Capability::FileWrite, Capability::AgentSpawn]);
+        policy.network = Some(NetworkPolicy {
+            allowlist: vec!["api.openai.com".to_string()],
+        });
+        policy.syscall_allowlist = Some(SyscallAllowlist::from_names(["read"]).unwrap());
+        let lowering = lower(&policy);
+        assert_eq!(lowering.requirements().len(), 5);
+        for requirement in lowering.requirements() {
+            assert_eq!(requirement.intent(), RequirementIntent::PreventBeforeEffect);
+            assert_eq!(requirement.descendants(), DescendantRequirement::ProcessTree);
+        }
+    }
+}
