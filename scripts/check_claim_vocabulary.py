@@ -110,6 +110,10 @@ CFG_NOUN_PATTERN = re.compile(
 # "exempt the span, not the sentence around it" means.
 _FILLER = "\x00"
 
+# Stands in for a hard newline during matching. Unlike `_FILLER` it MUST be a
+# clause boundary, so the `NEG` window still stops at the end of a line.
+_NEWLINE_FILLER = "."
+
 
 @dataclass(frozen=True)
 class Rule:
@@ -239,7 +243,17 @@ def _changed_lines(root: Path, base: str, targets: list[str]) -> dict[str, set[i
     this whole ticket is about.
     """
     result = subprocess.run(
-        ["git", "diff", "-U0", "--no-color", f"{base}...HEAD", "--", *targets],
+        # `--merge-base <base>` gives merge-base..WORKING TREE. Three-dot
+        # against HEAD compared only committed work, so an uncommitted new
+        # violation was labelled `pre-existing` and the tool exited 0 — the
+        # silent pass its own docstring warns about, in the local pre-commit
+        # use it is most likely to be reached from.
+        #
+        # `core.quotepath=false` because git otherwise emits `+++ "b/\303\251.md"`
+        # for a non-ASCII path, which the `+++ b/` parse below misses, silently
+        # crediting that file's hunks to the previous one.
+        ["git", "-c", "core.quotepath=false", "diff", "-U0", "--no-color",
+         "--merge-base", base, "--", *targets],
         cwd=root,
         capture_output=True,
         text=True,
@@ -306,9 +320,21 @@ def _blockquote_depth(line: str) -> tuple[int, str]:
 # structural because that row *discusses* `<meta description>` — promoting a
 # correctly-quoted negative example to a blocking violation. Requiring the
 # closing `>` and marking only the tag's own span fixes both halves.
-_META_TAG = re.compile(r"<meta\s[^>]*>", re.IGNORECASE)
+_META_TAG = re.compile(r"<meta\s[^>]*>", re.IGNORECASE | re.DOTALL)
+_SETEXT_UNDERLINE = re.compile(r"^\s{0,3}(?:=+|-+)\s*$")
 _TITLE_DESC_LINE = re.compile(r"^\s*(?:title|description)\s*:", re.IGNORECASE)
 _ATX_HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
+
+
+def _opens_front_matter(lines: list[str]) -> bool:
+    """True when a leading `---` is YAML front matter rather than a thematic break."""
+    key = re.compile(r"^\s*[A-Za-z_][\w.-]*\s*:")
+    for line in lines[1:]:
+        if line.strip() in {"---", "..."}:
+            return True
+        if line.strip() and not key.match(line):
+            return False
+    return False
 
 
 def _structural_ranges(text: str) -> list[tuple[int, int]]:
@@ -330,16 +356,29 @@ def _structural_ranges(text: str) -> list[tuple[int, int]]:
     ranges: list[tuple[int, int]] = []
     offset = 0
     lines = text.split("\n")
+    offsets: list[int] = []
+    running = 0
+    for line in lines:
+        offsets.append(running)
+        running += len(line) + 1
     in_front_matter = False
+    front_matter_lines: set[int] = set()
     for index, line in enumerate(lines):
         start, end = offset, offset + len(line)
         offset = end + 1
 
-        # YAML front matter: a leading `---` on the very first line opens it.
-        if index == 0 and line.strip() == "---":
+        # YAML front matter: a leading `---` on the very first line opens it —
+        # but ONLY if what follows actually looks like YAML. mdBook does not
+        # support front matter, so in `docs/src/**` a leading `---` is a thematic
+        # break, and treating it as front matter marked everything to the next
+        # `---` structural, turning quoted and backticked mentions into blocking,
+        # unwaivable false positives.
+        if index == 0 and line.strip() == "---" and _opens_front_matter(lines):
             in_front_matter = True
+            front_matter_lines.add(index)
             continue
         if in_front_matter:
+            front_matter_lines.add(index)
             if line.strip() in {"---", "..."}:
                 in_front_matter = False
             else:
@@ -357,10 +396,31 @@ def _structural_ranges(text: str) -> list[tuple[int, int]]:
             ranges.append((start + m.end(), end))
             continue
 
-        # A `<meta …>` element marks only its own span, so prose that merely
-        # mentions one is untouched.
-        for m in _META_TAG.finditer(line):
-            ranges.append((start + m.start(), start + m.end()))
+    # Setext headings (`text` underlined by `===` or `---`) are headings too.
+    # §6.3.1 says "in a heading line" with no syntax restriction, and covering
+    # only ATX left the headline bypass open: an H1 written as
+    # `Agent Assembly <backtick>catches everything<backtick>` over `=====`
+    # scored 0 blocking, 0 finding, 0 info.
+    for index in range(len(lines) - 1):
+        # A front-matter delimiter is not a setext underline. Without this the
+        # closing `---` made every front-matter key look like a heading, so the
+        # front-matter branch above became untestable — two different code paths
+        # producing the same answer for the same input.
+        if index in front_matter_lines or (index + 1) in front_matter_lines:
+            continue
+        if not _SETEXT_UNDERLINE.match(lines[index + 1]):
+            continue
+        body = lines[index]
+        if not body.strip() or _BLOCK_START.match(body):
+            continue
+        start = offsets[index]
+        ranges.append((start, start + len(body)))
+
+    # `<meta …>` marks only its own span, so prose that merely mentions one is
+    # untouched. Scanned over the whole text rather than per line, because an
+    # attribute list may wrap.
+    for m in _META_TAG.finditer(text):
+        ranges.append((m.start(), m.end()))
     return ranges
 
 
@@ -507,6 +567,7 @@ class Diagnostic:
     path: str
     line: int
     col: int
+    end_line: int
     rule_id: str
     severity: str
     message: str
@@ -525,11 +586,17 @@ def scan_text(path: str, original: str, markdown: bool = True) -> list[Diagnosti
     # matching too. `SEP` expands to `[-‑_\s]+`, which includes `\n`, so without
     # this substitution `immutable\naudit` matches even where §6.2 step 2
     # deliberately refused to join — making the join's block-start test dead
-    # code. The specification's own worked example depends on the opposite:
-    # CHANGELOG.md:25 begins with a list marker, the join is forbidden, and
-    # `immutable audit` is therefore NOT reassembled. Replacing with `_FILLER`
-    # keeps every offset intact and reuses the filler's clause-boundary role.
-    match_text = normalised.replace("\n", _FILLER)
+    # code.
+    #
+    # `_NEWLINE_FILLER`, **not** `_FILLER`. They must differ, and conflating them
+    # was a one-character bypass of every blocking rule: `_FILLER` is NUL, which
+    # is deliberately not in `CLAUSE_BOUNDARIES`, so substituting it for newlines
+    # left `_neg_fires` unable to see a line boundary at all. A negation anywhere
+    # in the preceding 70 characters — including on a *previous line* — then
+    # suppressed the match, and whether it did depended on something as arbitrary
+    # as the previous line ending in a full stop. §5.6's `clamp_to_clause` exists
+    # precisely to stop a guard reaching into a neighbouring block.
+    match_text = normalised.replace("\n", _NEWLINE_FILLER)
 
     line_starts = [0]
     for i, ch in enumerate(original):
@@ -557,6 +624,7 @@ def scan_text(path: str, original: str, markdown: bool = True) -> list[Diagnosti
                 continue
 
             line, col = position(m.start())
+            end_line, _ = position(max(m.start(), m.end() - 1))
             matched = re.sub(r"\s+", " ", original[m.start() : m.end()]).strip()
 
             start, end = _logical_line_bounds(normalised, m.start())
@@ -571,6 +639,7 @@ def scan_text(path: str, original: str, markdown: bool = True) -> list[Diagnosti
                         path,
                         line,
                         col,
+                        end_line,
                         QUOTE_RULE_ID,
                         "info",
                         f"{rule.rule_id} phrase inside a quoted span (negative example)",
@@ -583,6 +652,7 @@ def scan_text(path: str, original: str, markdown: bool = True) -> list[Diagnosti
                         path,
                         line,
                         col,
+                        end_line,
                         rule.rule_id,
                         rule.severity,
                         f"banned claim wording ({rule.rule_id})",
@@ -590,6 +660,17 @@ def scan_text(path: str, original: str, markdown: bool = True) -> list[Diagnosti
                     )
                 )
     return sorted(diagnostics, key=lambda d: (d.path, d.line, d.col, d.rule_id))
+
+
+def _introduced(d: Diagnostic, touched: set[int]) -> bool:
+    """Whether this diagnostic sits on any line the change added or modified.
+
+    Every line the match SPANS counts, not just the line it starts on. §6.2's
+    soft-wrap join makes one logical line out of several physical ones, so a
+    violation created entirely by a change can begin on an untouched line — and
+    testing only the start line let exactly that escape the gate.
+    """
+    return any(line in touched for line in range(d.line, d.end_line + 1))
 
 
 def scan_file(root: Path, rel: str) -> list[Diagnostic]:
@@ -662,13 +743,15 @@ def main(argv: list[str]) -> int:
             # whole-file gate would fail an author on someone else's
             # pre-existing violation, which is not the adoption sequence the
             # specification describes.
-            if (
-                changed_lines is not None
-                and d.severity == "blocking"
-                and d.line not in changed_lines.get(d.path, set())
-            ):
+            # Every line the match SPANS is tested, not just the line it
+            # starts on. §6.2's soft-wrap join makes one logical line out of
+            # several physical ones, so a violation created entirely by this
+            # change can begin on an untouched line — and testing only the start
+            # let exactly that escape the gate.
+            touched = changed_lines.get(d.path, set()) if changed_lines is not None else set()
+            if changed_lines is not None and d.severity == "blocking" and not _introduced(d, touched):
                 d = Diagnostic(
-                    d.path, d.line, d.col, d.rule_id, "pre-existing",
+                    d.path, d.line, d.col, d.end_line, d.rule_id, "pre-existing",
                     d.message + " (pre-existing; not introduced by this change)",
                     d.matched,
                 )
@@ -734,7 +817,10 @@ SELFTEST_CASES: tuple[tuple[str, str, str | None], ...] = (
     ("## Agent Assembly `catches everything` on your fleet", "md", "CLAIM-ABS-01"),
     ('## The "immutable audit" trail', "md", "CLAIM-ABS-09"),
     ('<meta name="description" content="an immutable audit trail">', "md", "CLAIM-ABS-09"),
-    ("---\ntitle: An immutable audit trail\n---\n", "md", "CLAIM-ABS-09"),
+    ("---\ntitle: An `immutable audit` trail\n---\n", "md", "CLAIM-ABS-09"),
+    # A bare `description:` OUTSIDE front matter, so the title/description
+    # branch is exercised on its own rather than doubling the case above.
+    ("description: keeps an `immutable audit` trail\n", "md", "CLAIM-ABS-09"),
     # ...but the same phrase backticked in body prose is still exempt.
     ("The phrase `catches everything` is banned in body copy.", "md", None),
     # The mask filler must not truncate the NEG window. With `.` as filler these
@@ -745,6 +831,29 @@ SELFTEST_CASES: tuple[tuple[str, str, str | None], ...] = (
     ("It does not, per `RFC-1`, catch everything.", "md", None),
     ("It does not, per RFC-1, catch everything.", "md", None),
     ("This is not a claim of `verified` complete coverage.", "md", None),
+    # E3's blank-line bound (§6.3). Without it one stray backtick pairs with
+    # another lines away and masks everything between, deleting whatever
+    # violations lived in the gap. Nothing covered this, so reverting the bound
+    # was a mutation the suite could not see.
+    ("a don`t\nkept in an immutable audit trail\na won`t\n", "md", "CLAIM-ABS-09"),
+    # DOC-NOUN, with a GOV-NOUN present. The previous control was
+    # "a complete reference for operators", which contains no GOV-NOUN and so
+    # yielded nothing with OR without the guard — a control that could not move.
+    ("a complete guide to coverage", "md", None),
+    ("complete mediation of agent traffic", "md", "CLAIM-ABS-11"),
+    # Front matter, WITHOUT a `title:`/`description:` key, so this case depends
+    # on the front-matter branch alone. The earlier fixture used `title:` inside
+    # front matter and was therefore covered twice over, leaving neither branch
+    # independently tested.
+    ("---\nsummary: kept in an `immutable audit` trail\nowner: platform\n---\n", "md", "CLAIM-ABS-09"),
+    # Setext heading — §6.3.1 bound 3 is about heading *position*, not ATX syntax.
+    ("Agent Assembly `catches everything`\n=====\n", "md", "CLAIM-ABS-01"),
+    # ...and a leading `---` that is a thematic break, not front matter. The
+    # body line must NOT be followed by another `---`, because `text` over `---`
+    # is a setext h2 in CommonMark and bound 3 then applies correctly.
+    ("---\n\nIt is not an `immutable audit` trail.\n", "md", None),
+    # The setext reading itself, asserted so the distinction above is pinned.
+    ("It keeps an `immutable audit` trail\n---\n", "md", "CLAIM-ABS-09"),
 )
 
 
@@ -830,14 +939,72 @@ def selftest() -> int:
     if not any(d.rule_id == "CLAIM-ABS-01" for d in scan_text("<c>", clamped)):
         failures.append("NEG window was not clamped to the clause; a true positive was lost")
 
+    # The same case with NO trailing full stop on the first line. The version
+    # above passes even when the clamp is broken, because the `.` at the end of
+    # line 1 stops the window by itself — a control that does not move with the
+    # variable under test. Without the period, only a working clamp keeps the
+    # `without` on line 1 from suppressing line 2's violation.
+    clamped_no_period = (
+        "- **Sidecar proxy** — intercepts outbound HTTPS without code changes\n"
+        "- **eBPF** — catches everything else, including bypass attempts.\n"
+    )
+    if not any(d.rule_id == "CLAIM-ABS-01" for d in scan_text("<c2>", clamped_no_period)):
+        failures.append(
+            "NEG window leaked across a newline: a negation on the PREVIOUS line "
+            "suppressed a blocking violation"
+        )
+
+    # Exit status depends only on `blocking`, so a mutation that returns 0
+    # unconditionally disables the gate. Assert the mapping the exit code uses.
+    blocking_case = scan_text("<x>", "Recorded in an immutable audit trail.\n")
+    if not any(d.severity == "blocking" for d in blocking_case):
+        failures.append("no blocking severity emitted; exit status would always be 0")
+
+    # §6.6's exit-status contract is decided in `main()`, not in `scan_text`, so
+    # asserting a blocking diagnostic exists does not cover it: a mutation that
+    # returns 0 unconditionally disables the gate while every case above still
+    # passes. Drive the real entry point over a temporary file.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = Path(tmp) / "known-bad.md"
+        bad.write_text("Recorded in an immutable audit trail.\n", encoding="utf-8")
+        good = Path(tmp) / "clean.md"
+        good.write_text("Recorded in a tamper-evident audit trail.\n", encoding="utf-8")
+
+        import contextlib
+        import io
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            bad_rc = main([str(bad)])
+            good_rc = main([str(good)])
+            report_rc = main(["--report-only", str(bad)])
+
+        if bad_rc != 1:
+            failures.append(f"a blocking diagnostic must exit 1, got {bad_rc}")
+        if good_rc != 0:
+            failures.append(f"a clean file must exit 0, got {good_rc}")
+        if report_rc != 0:
+            failures.append(f"--report-only must never gate, got {report_rc}")
+
+    # §6.6 gating, without needing a git repository: a violation whose match
+    # spans a joined soft wrap may START on an untouched line.
+    spanning = Diagnostic("f.md", 10, 5, 11, "CLAIM-ABS-09", "blocking", "m", "immutable audit")
+    if not _introduced(spanning, {11}):
+        failures.append("a match spanning into a changed line must count as introduced")
+    if _introduced(spanning, {99}):
+        failures.append("a match touching no changed line must not count as introduced")
+    if not _introduced(spanning, {10}):
+        failures.append("a match starting on a changed line must count as introduced")
+
     for failure in failures:
         print(f"selftest FAIL: {failure}")
     if failures:
         print(f"\ncheck_claim_vocabulary --selftest: {len(failures)} failure(s).")
         return 1
     print(
-        f"check_claim_vocabulary --selftest: {len(SELFTEST_CASES) + 3} table case(s) "
-        f"+ 3 inline check(s) passed; {len(RULES)} rule(s) have positive coverage."
+        f"check_claim_vocabulary --selftest: {len(SELFTEST_CASES)} table case(s) "
+        f"+ 11 inline check(s) passed; {len(RULES)} rule(s) have positive coverage."
     )
     return 0
 

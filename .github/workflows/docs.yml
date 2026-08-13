@@ -58,6 +58,15 @@ on:
       - '.ci/check-metadata-drift.sh'
       - 'scripts/check_absolutes_unwaivable.py'
       - 'TRUTH-ADOPTION.md'
+      # AAASM-5679: mirrored from `pull_request` above. Without these, neither
+      # the checker's `--selftest` nor its full-tree report runs on `main` for
+      # the scopes it claims to cover — the "a PR-only gate lets main go
+      # silently red" shape this repository has already been bitten by.
+      - 'design/**'
+      - '.claude/**'
+      - '**/README.md'
+      - 'governance/**'
+      - 'scripts/check_claim_vocabulary.py'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a

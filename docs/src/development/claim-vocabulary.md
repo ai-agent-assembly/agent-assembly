@@ -1227,7 +1227,7 @@ mixing a head count with a base count is how the two rows stop adding up.
 > ([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679)).**
 > The figures above are the authoring-time measurement and are retained for the
 > record; they no longer describe the tree. Over §6.5's scope plus that ticket's
-> `design/**` extension: **281 files, 4 blocking, 12 finding, 31 info.**
+> `design/**` extension: **281 files, 4 blocking, 12 finding, 32 info.**
 >
 > Three of the six blocking rows below have since been fixed on `main` —
 > `README.md:129`, `README.md:135` and `aa-proxy/README.md:11-12` all measure
