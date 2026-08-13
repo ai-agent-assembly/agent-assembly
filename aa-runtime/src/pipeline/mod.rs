@@ -946,6 +946,7 @@ mod tests {
             redact: None,
             // Gateway reports microseconds; expect 12000us → 12ms after the /1000 conversion.
             decision_latency_us: 12_000,
+            ..Default::default()
         };
 
         emit_gateway_violation(&req, &resp, 99, &tx, &seq);
@@ -993,6 +994,7 @@ mod tests {
             redact: None,
             // 0.5 ms == 500 us — integer division truncates to 0 ms.
             decision_latency_us: 500,
+            ..Default::default()
         };
 
         emit_gateway_violation(&req, &resp, 1, &tx, &seq);

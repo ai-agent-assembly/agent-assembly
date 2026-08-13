@@ -93,6 +93,7 @@ fn main() {
             approval_id: String::new(),
             redact: None,
             decision_latency_us: 312,
+            ..Default::default()
         },
     );
 
@@ -110,6 +111,7 @@ fn main() {
                 }],
             }),
             decision_latency_us: 520,
+            ..Default::default()
         },
     );
 
