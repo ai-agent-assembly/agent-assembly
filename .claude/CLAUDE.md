@@ -92,7 +92,7 @@ cargo nextest run -p aa-gateway budget::types::tests::provider_variants_are_dist
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo deny check
-cargo doc --workspace --no-deps        # checked on push by hooks
+cargo doc --workspace --no-deps        # checked on push by hooks, Rust-affecting diffs only
 ```
 
 - Some setups need `RUSTUP_TOOLCHAIN=stable` + an explicit toolchain path (normal on
@@ -116,10 +116,18 @@ cargo doc --workspace --no-deps        # checked on push by hooks
 - **Push remote is `remote`** (→ `ai-agent-assembly/agent-assembly`, canonical), not
   `origin` (a personal fork). Scope changes against `remote/main`, which is often
   far ahead of a fork checkout.
-- **Pre-push runs `cargo doc` with no path glob**, so it fails on eBPF/macOS even for
-  docs-only changes. For Markdown/`.claude`-only branches that can't satisfy it,
-  publish granular history via the GitHub Git Data API replay rather than `git push`.
-  **Never `--no-verify`; never force-push.**
+- **Pre-push `cargo doc` is filtered to Rust-affecting diffs** (AAASM-5695): the
+  `pre-push.commands.doc` entry in `lefthook.toml` carries a `files` command
+  (`git diff --name-only --merge-base @{u} HEAD`) plus
+  `glob = ["*.rs", "*Cargo.toml", "*Cargo.lock"]`, so a Markdown/`.claude`-only push
+  skips the build in seconds instead of costing the 3046 s (50m46s) full-workspace
+  rustdoc build it used to. Two gaps are **tracked, not covered**: pushing a ref that
+  is not `HEAD` (`git push remote <branch>` from elsewhere, `git push --all`) computes
+  an empty file set and skips (**AAASM-5726**), and `.proto`-only or deletion-only
+  diffs skip here with **no workspace rustdoc gate anywhere in CI**. The measurements
+  behind both live in the `lefthook.toml` comment block — read it before changing that
+  command. **Never `--no-verify`; never force-push; don't route commits around the
+  hook by other means either.**
 - **Org GitHub Actions is billing-blocked** on private repos and intermittently
   org-wide — jobs abort in ~2–11s with a payments message. Check run **annotations**
   before triaging as a code bug; **validate locally** instead of waiting on CI.
