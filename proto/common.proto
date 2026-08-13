@@ -37,6 +37,14 @@ enum AgentIdentityAssurance {
   // The claimed identity equalled an authoritative identity the receiver
   // resolved without reference to the claim. A claim that disagrees with an
   // authoritative identity is never reported as BOUND.
+  //
+  // BOUND is a corroboration, NOT a verification, and must never be rendered
+  // as "identity verified". Its strength is only that of whatever produced the
+  // receiver's authoritative identity, which this enum does not bound. In the
+  // gateway today that is possession of a UUID-v4 bearer registration token:
+  // a replayed token yields BOUND while proving nothing about the caller being
+  // that agent's process. It is not a cryptographic proof of identity and is
+  // not the Ed25519 / did:key machinery.
   AGENT_IDENTITY_ASSURANCE_BOUND = 3;
 }
 

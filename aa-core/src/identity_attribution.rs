@@ -62,11 +62,21 @@ impl AgentIdentityAssurance {
         }
     }
 
-    /// Whether the identity may be described as authenticated.
+    /// Whether the claim agreed with an identity the receiver resolved
+    /// independently of it.
     ///
-    /// True only for [`Self::Bound`]. Exists so callers writing evidence or
-    /// documentation ask this question instead of testing `!= Unattributed`,
-    /// which would silently promote an asserted claim.
+    /// True only for [`Self::Bound`]. Exists so callers asking "is this
+    /// identity corroborated?" test this rather than `!= Unattributed`, which
+    /// would silently promote an asserted claim.
+    ///
+    /// **This is not a test for authenticated identity, and `Bound` must never
+    /// be rendered as *verified*.** Its strength is only that of whatever
+    /// produced the authoritative identity, which this type does not know and
+    /// cannot bound. For the gateway that is possession of a UUID-v4 bearer
+    /// registration token: a replayed token yields `Bound` while proving
+    /// nothing about the caller being that agent's process. A surface that
+    /// renders `Bound` as "identity verified" overstates every deployment whose
+    /// authoritative identity is a bearer credential.
     #[must_use]
     pub const fn is_bound(self) -> bool {
         matches!(self, Self::Bound)
