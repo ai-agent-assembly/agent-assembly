@@ -41,7 +41,7 @@ python3 scripts/validate_capability_manifest.py
 bash governance/testdata/run-validator-tests.sh
 ```
 
-Step 3 also runs two probes the fixture files cannot express:
+Step 3 also runs three probes the fixture files cannot express:
 
 * **`real_manifest_probes.py`** — mutates *this* manifest in place, asserts the
   gate goes red, and restores it (sha256-verified, refuses on a dirty tree).
@@ -50,11 +50,49 @@ Step 3 also runs two probes the fixture files cannot express:
   document, and every instance lived in the input class *"the canonical
   document, minus one key"*. A suite blind to an input class is silent about it,
   and silence reads as green.
+* **`input_shape_probes.py`** — asserts the validator never answers a question
+  it did not understand. Every fixture in this directory *is* a manifest, so no
+  fixture can state either half: that a document which is not one
+  (the AAASM-5527 seed, an **input** to the manifest via `meta.sources.seed`,
+  not a subject of it) is refused with **exit 2** and a reason, and that exit 2
+  stays a different number from **exit 1**, "the document is invalid". Before
+  AAASM-5692 the seed raised `AttributeError` — which exits 1, so a wrapper
+  reading only `$?` would have recorded "the seed fails validation", a
+  different and false statement. It also puts a bare string in **every field
+  the schema declares as a mapping or a list of mappings** — seven and nine
+  respectively — of which **fifteen of the sixteen** raised the identical crash
+  against this manifest before the gate existed. The gate *derives* that list
+  by walking the schema, and the probe **imports the same list** rather than
+  keeping a copy, so a field added as a top-level `properties` entry is covered
+  without anyone remembering to update a literal.
+  AAASM-5729 extended the same walk to the **twenty-two remaining array
+  fields**, whose items are scalars. That half never crashed, which is how it
+  survived the fix for the first: a string is *iterable*, so
+  `known_bypasses: one string` walked its ten characters, R8/R8b matched
+  environment-token regexes against single letters, and the document validated
+  at **exit 0** having examined nothing — a rule reporting clean on a field it
+  never read. Where it did fail it failed for the wrong reason:
+  `released_channels: crates_io` exited 1 with nine R9 findings naming the
+  letters `c`, `r`, `a`, `t`, `e`, `s`, `_`, `i`, `o` as unsurveyed
+  distribution channels. Each path carries its own declared type set, so
+  `policy_context` — `oneOf[array, object]` — is admitted as either and refused
+  only as a scalar, which is what the schema says and not a rule this validator
+  invented.
+  What that buys is bounded, and the bound is stated rather than implied: this
+  is a **behavioural probe of one derivation**. It catches divergence between
+  the derivation and the gate that consumes it — a skipped path kind, a wrong
+  finding label — and it cannot confirm the derivation is complete against the
+  schema. Round one hand-copied five names and asserted the count against a
+  copy of the same transcription; round two shipped a *second walk* here and
+  called the pair independent, when the two traversals were line-for-line
+  identical. Both are the same error: a control that cannot move when the thing
+  under test is wrong. Importing makes the single derivation visible instead of
+  dressing it as two.
 * **`readme_counts_probe.py`** — asserts every `count:` line pasted into *this
   page* is the live one, by value. The counts below were shipped stale once, in
   the document whose thesis is that they are printed on every run; correcting
   them was not a mechanism, so this is one. It also cross-checks the harness's
-  own asserted total, **68 checks**, against `EXPECTED_TOTAL` in
+  own asserted total, **114 checks**, against `EXPECTED_TOTAL` in
   `run-validator-tests.sh` — that constant is the only thing standing between a
   silently-dropped check and a green run, and a single uncorroborated number is
   defended by nothing but the visible diff.

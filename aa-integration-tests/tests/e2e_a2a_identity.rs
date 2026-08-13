@@ -232,7 +232,7 @@ async fn st_x_2_impersonation_with_wrong_token_is_rejected_and_audited() {
     let entry = &audit_entries[0];
     assert_eq!(entry.event_type(), AuditEventType::A2AImpersonationAttempted);
     let payload: serde_json::Value = serde_json::from_str(entry.payload()).expect("audit payload is JSON");
-    assert_eq!(payload["claimed_agent_id"], "agent-a");
+    assert_eq!(payload["agent_id_claimed"], "agent-a");
     assert_eq!(payload["credential_token_present"], true);
     assert_eq!(payload["reason"], "credential token mismatch");
 }
@@ -264,6 +264,6 @@ async fn st_x_3_missing_credential_token_is_rejected_pre_evaluation() {
     let entry = &audit_entries[0];
     assert_eq!(entry.event_type(), AuditEventType::A2AImpersonationAttempted);
     let payload: serde_json::Value = serde_json::from_str(entry.payload()).expect("audit payload is JSON");
-    assert_eq!(payload["claimed_agent_id"], "agent-d");
+    assert_eq!(payload["agent_id_claimed"], "agent-d");
     assert_eq!(payload["credential_token_present"], false);
 }
