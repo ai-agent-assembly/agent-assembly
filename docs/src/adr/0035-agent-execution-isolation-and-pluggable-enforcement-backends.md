@@ -49,8 +49,11 @@ around the whole native process tree. A child that is not mediated by an SDK or 
 still exercise capabilities exposed by its host identity unless another host mechanism
 constrains them. Linux eBPF improves evidence and detection, but ADR 0033 records that its
 current file/TLS/exec probes are observational and its opt-in syscall guard terminates
-asynchronously after the triggering syscall can execute once. That authority is not
-interchangeable with pre-effect denial.
+asynchronously. The source says so in-code: *"`bpf_send_signal` is asynchronous; the
+SIGKILL lands at the next signal-check point, so **this** syscall still runs once before
+the task dies"* (`aa-ebpf-probes/src/syscall_guard.rs:189-192`). Under ADR 0033 §6 that
+mechanism reaches **Detected**, not **Denied before execution**, and the two are not
+interchangeable.
 
 The security requirement is therefore not "put the agent in another process". A parent
 process is not a security boundary by itself. The requirement is that a **trusted
@@ -356,9 +359,12 @@ environments. The backend interface exists to preserve that product contract.
 
 ### Treat current eBPF enforcement as equivalent to a process sandbox
 
-Rejected. ADR 0033 explicitly distinguishes observation and asynchronous termination from
-synchronous pre-effect denial. Evidence from one authority level cannot be relabelled as a
-stronger one.
+Rejected. ADR 0033 §6 places the eBPF syscall guard at **Detected** plus asynchronous
+termination, and explicitly not at **Denied before execution**; the guard's own source
+records that the offending syscall runs once before the SIGKILL lands
+(`aa-ebpf-probes/src/syscall_guard.rs:189-192`). A pre-effect confinement requirement is
+therefore not satisfied by enabling the syscall guard, and evidence from one term of the
+§6 vocabulary cannot be relabelled as a stronger one.
 
 ### Create `aasm sandbox run`
 
