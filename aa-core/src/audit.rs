@@ -57,17 +57,27 @@ pub enum AuditEventType {
     /// recorded. (AAASM-1920 / Secret Injection.)
     ToolDispatched = 13,
     /// An agent-to-agent (A2A) call was intercepted. The audit `payload`
-    /// carries both `caller_agent_id` (the originating agent) and
-    /// `callee_agent_id` (the agent performing the action), so reviewers
-    /// can reconstruct cross-agent delegation graphs even when the call
-    /// was allowed. Emitted only when the request's `caller_agent_id` is
-    /// populated and differs from `agent_id`. (AAASM-1944 / Zero-trust A2A.)
+    /// carries `caller_agent_id` (the originating agent) and
+    /// `callee_agent_id` (the agent performing the action). Emitted only when
+    /// the request's `caller_agent_id` is populated and differs from
+    /// `agent_id`. (AAASM-1944 / Zero-trust A2A.)
+    ///
+    /// AAASM-5665 — **`callee_agent_id` is nullable, so a delegation graph
+    /// cannot always be reconstructed from these entries.** It is the *claimed*
+    /// subject, and a caller may name none: an A2A call whose `agent_id` is
+    /// blank or omitted is recorded with `callee_agent_id: null` and the
+    /// reserved unattributed id on the entry. Read `agent_identity_assurance`
+    /// alongside it — a populated callee is a claim, corroborated only when
+    /// that field says `bound`. Consumers must handle null rather than assume
+    /// an edge exists for every entry.
     A2ACallIntercepted = 14,
     /// An impersonation attempt was rejected: the request claimed an
     /// `agent_id` whose registered `credential_token` does not match the
-    /// token supplied. The audit `payload` carries `claimed_agent_id` and
-    /// the agent whose `credential_token` was actually presented (when
-    /// resolvable). The action is denied before policy evaluation runs.
+    /// token supplied, or presented a token owning a registered agent while
+    /// claiming no subject at all. The audit `payload` carries
+    /// `agent_id_claimed` (null when nothing was claimed) and the agent whose
+    /// `credential_token` was actually presented (when resolvable). The action
+    /// is denied before policy evaluation runs.
     /// (AAASM-1944 / Zero-trust A2A.)
     A2AImpersonationAttempted = 15,
     /// A sandboxed (WASM/WASI) tool invocation has begun. Emitted by

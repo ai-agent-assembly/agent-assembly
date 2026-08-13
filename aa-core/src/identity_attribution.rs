@@ -48,6 +48,12 @@ pub enum AgentIdentityAssurance {
     ///
     /// The strength of this state is exactly the strength of whatever produced
     /// the authoritative identity; see the caller that supplies it.
+    ///
+    /// A corroboration, **not** a verification — never render it as "identity
+    /// verified". In the gateway the authoritative identity comes from
+    /// possession of a UUID-v4 bearer registration token, so a replayed token
+    /// yields `Bound` while proving nothing about the caller being that agent's
+    /// process. It is not the Ed25519 / `did:key` machinery.
     Bound,
 }
 
