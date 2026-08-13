@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0.0",
+  "contract": "sh <script> <scratch_dir> <repo_root>; exit 0 on success. The scratch dir is created fresh per repetition and removed outside the timed region.",
+  "families": [
+    {
+      "name": "startup_nop",
+      "script": "startup_nop.sh",
+      "requires": ["sh"],
+      "dimension_tag": "startup",
+      "default": true,
+      "description": "Empty payload. Isolates the launcher's fixed per-invocation cost: sandbox construction plus teardown, paid once for every command an agent shells out to."
+    },
+    {
+      "name": "repo_traversal",
+      "script": "repo_traversal.sh",
+      "requires": ["sh", "rg", "git"],
+      "dimension_tag": "fs",
+      "default": true,
+      "description": "rg --files over the workspace, an rg content search, git status and git diff --stat. The read-heavy path a coding agent walks before it changes anything."
+    },
+    {
+      "name": "many_small_files",
+      "script": "many_small_files.sh",
+      "requires": ["sh"],
+      "dimension_tag": "fs",
+      "default": true,
+      "description": "Create, stat, read and delete 2000 small files. Concentrates path resolution and metadata operations, which is where a Landlock-style boundary does its work."
+    },
+    {
+      "name": "process_spawn",
+      "script": "process_spawn.sh",
+      "requires": ["sh"],
+      "dimension_tag": "process",
+      "default": true,
+      "description": "200 sequential execve plus reap cycles. Every tool an agent runs pays this once."
+    },
+    {
+      "name": "python_pkg_test",
+      "script": "python_pkg_test.sh",
+      "requires": ["sh", "python3"],
+      "dimension_tag": "general",
+      "default": true,
+      "description": "Generate a small Python package, byte-compile it, then discover and run its unittest suite. Interpreter startup, import machinery and test discovery."
+    },
+    {
+      "name": "node_pkg_test",
+      "script": "node_pkg_test.sh",
+      "requires": ["sh", "node", "pnpm"],
+      "dimension_tag": "general",
+      "default": true,
+      "description": "pnpm install of a dependency-free package into a run-local store, then a node test run. Package-manager filesystem churn plus runtime startup."
+    },
+    {
+      "name": "rust_cargo_metadata",
+      "script": "rust_cargo_metadata.sh",
+      "requires": ["sh", "cargo"],
+      "dimension_tag": "general",
+      "default": true,
+      "description": "cargo metadata --no-deps --offline over the workspace manifest. Manifest parsing and workspace resolution without a compile."
+    },
+    {
+      "name": "rust_cargo_check",
+      "script": "rust_cargo_check.sh",
+      "requires": ["sh", "cargo"],
+      "dimension_tag": "general",
+      "default": false,
+      "description": "cargo check -p aa-core. Real toolchain use. Off by default because a cold run costs minutes and dominates a session; enable with --heavy."
+    },
+    {
+      "name": "https_loopback",
+      "script": "https_loopback.sh",
+      "requires": ["sh", "python3"],
+      "dimension_tag": "network",
+      "default": true,
+      "description": "200 sequential HTTPS requests against a TLS server the harness runs on loopback. Measures the socket and TLS cost of confinement, isolated from WAN variance. Whether a backend can express AASM egress policy at all is a compatibility question, not this one."
+    }
+  ]
+}
