@@ -122,6 +122,755 @@ impl RunArgs {
     }
 }
 
+/// Planning for `aasm run`: what a launch resolves to, before anything runs.
+///
+/// # The seam
+///
+/// Everything a launch depends on is resolved **once**, here, into a
+/// [`ResolvedRunPlan`]. Execution consumes that plan rather than re-deriving any
+/// part of it. `--dry-run` and a live launch then differ in exactly the two
+/// places they legitimately must, both named by [`PlanPosture`]: whether an
+/// unmet precondition refuses or is merely reported, and whether the identity is
+/// registered or synthesized. Every other input — the proxy endpoint, the
+/// effective policy, the adapter's launch command, the child environment — is
+/// computed by the same code for both.
+///
+/// That convergence is the whole point. Before it the preview built its own
+/// command and its own environment, and the two drifted twice: AAASM-5327
+/// dropped the adapter's environment from the *live* launch, AAASM-5329 dropped
+/// the adapter entirely from the *preview*. Each time, one side reported a
+/// session as protected that the other would not have protected.
+///
+/// # Why this is a module inside `run.rs` rather than a `run_plan.rs`
+///
+/// `.ci/strip-for-publish.sh` removes the `aasm run` surface from the published
+/// crate by deleting an explicit list of files (`DELETED_FILES`). A sibling
+/// `run_plan.rs` would consume `aa-devtool` and `aa-isolation` — both
+/// `publish = false` — so it would have to be added to that list or the
+/// published build would fail on dependencies its manifest no longer declares.
+/// Living inside `run.rs` means this seam ships, and strips, with the command it
+/// belongs to and needs no packaging edit at all. Extraction later is
+/// mechanical: move this module body to `run_plan.rs` and add one line to
+/// `DELETED_FILES`.
+mod plan {
+    use std::collections::HashMap;
+
+    use uuid::Uuid;
+
+    use aa_core::{DevToolAdapter, DevToolInfo};
+    use aa_isolation::{ControlRequirement, CredentialPosture, ExecutionSpec, IdentityRef};
+    use aa_policy::resolve as run_policy;
+
+    use super::{run_registration, RegistrationHandle, RunArgs};
+
+    /// What a launch is pointed at.
+    ///
+    /// One variant today. A *generic command* target — a launch with no dev-tool
+    /// adapter behind it — is AAASM-5706. The enum exists now so that ticket adds
+    /// a variant rather than a parallel code path, and so every `match` on it
+    /// fails to compile until it has accounted for the new case.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) enum RunTarget {
+        /// A supported developer tool, named by its canonical registry token.
+        ///
+        /// Canonical, not as-typed: [`super::canonical_tool_id`] has already
+        /// resolved whichever accepted alias the operator used, so nothing
+        /// downstream has to know which spelling arrived (AAASM-5503).
+        DevTool {
+            /// The canonical `aa_devtool::registry` token.
+            tool: String,
+        },
+    }
+
+    impl RunTarget {
+        /// A launch of the supported developer tool named by `tool`.
+        pub(super) fn dev_tool(tool: impl Into<String>) -> Self {
+            Self::DevTool { tool: tool.into() }
+        }
+
+        /// The name this target is announced and refused under.
+        ///
+        /// Also the executable a degraded preview falls back to, which is why it
+        /// has to be the canonical token rather than a display string.
+        pub(super) fn label(&self) -> &str {
+            match self {
+                Self::DevTool { tool } => tool,
+            }
+        }
+    }
+
+    /// Whether a plan is being resolved in order to *launch*, or in order to
+    /// *describe a launch*.
+    ///
+    /// The only two things it changes are the two that legitimately differ:
+    ///
+    /// * an unmet precondition **refuses** under [`Launch`](Self::Launch) and is
+    ///   **reported** under [`Preview`](Self::Preview) — a preview exists to tell
+    ///   the operator what a live run would do, and "it would refuse" is the most
+    ///   useful thing it can say;
+    /// * a *minted* agent id is prefixed `dry-run-` under `Preview`, so nothing
+    ///   downstream can mistake a previewed identity for a registered one.
+    ///
+    /// Nothing else branches on it. Every protection-critical value is derived
+    /// the same way under both, which is what stops a preview from describing a
+    /// launch that is not the launch.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum PlanPosture {
+        /// Resolving in order to start a child process.
+        Launch,
+        /// Resolving in order to print `--dry-run` output.
+        Preview,
+    }
+
+    /// Who the launch will be attributed to — the operator's intent, before any
+    /// gateway has accepted it.
+    ///
+    /// Holds intent rather than an identity because at planning time no identity
+    /// exists yet: a live launch obtains one by registering, a preview
+    /// synthesizes one. Both derive it from *this*, so the identity a preview
+    /// prints is the identity a live run would have submitted.
+    #[derive(Debug, Clone)]
+    pub(super) struct IdentityPlan {
+        agent_id: Option<String>,
+        team_id: Option<String>,
+        root_agent: Option<String>,
+    }
+
+    impl IdentityPlan {
+        /// The identity intent carried by `args`.
+        pub(super) fn of(args: &RunArgs) -> Self {
+            Self {
+                agent_id: args.agent_id.clone(),
+                team_id: args.team_id.clone(),
+                root_agent: args.root_agent.clone(),
+            }
+        }
+
+        /// The agent id this launch presents.
+        ///
+        /// An operator-supplied `--agent-id` is honored verbatim under both
+        /// postures, so a preview shows the id a live run would submit rather
+        /// than a stand-in. Only a *minted* id differs, and deliberately: the
+        /// `dry-run-` prefix makes it obvious in the printed plan that no
+        /// registration occurred.
+        pub(super) fn agent_id(&self, posture: PlanPosture) -> String {
+            self.agent_id.clone().unwrap_or_else(|| match posture {
+                PlanPosture::Launch => Uuid::new_v4().to_string(),
+                PlanPosture::Preview => format!("dry-run-{}", Uuid::new_v4()),
+            })
+        }
+
+        /// The owning team, when the operator named one.
+        pub(super) fn team_id(&self) -> Option<&str> {
+            self.team_id.as_deref()
+        }
+
+        /// The lineage root, when the operator named one.
+        pub(super) fn root_agent(&self) -> Option<&str> {
+            self.root_agent.as_deref()
+        }
+
+        /// The identity a `--dry-run` preview presents, without contacting the
+        /// gateway.
+        ///
+        /// Used by the preview so planning works in CI runners where no AI dev
+        /// tool is installed and no gateway is reachable.
+        ///
+        /// The locally-minted correlation ids are prefixed `dry-run-` for the
+        /// same reason a minted agent id is. `registration_did` and
+        /// `registration_id`, by contrast, are **not** faked: both are pure
+        /// derivations of the identity a live run would present, so the preview
+        /// can show the DID that would be registered and the registry key it
+        /// would occupy. A `dry-run-` placeholder there would hide the one thing
+        /// about the identity worth previewing.
+        pub(super) fn preview_handle(&self) -> RegistrationHandle {
+            let agent_id = self.agent_id(PlanPosture::Preview);
+            let registration_did = run_registration::registration_did(&agent_id);
+            RegistrationHandle {
+                registration_id: run_registration::registry_id(self.team_id(), &registration_did),
+                agent_id,
+                registration_did,
+                trace_id: format!("dry-run-{}", Uuid::new_v4()),
+                session_id: format!("dry-run-{}", Uuid::new_v4()),
+                team_id: self.team_id.clone(),
+            }
+        }
+
+        /// The backend-neutral identity reference an [`ExecutionSpec`] is built
+        /// against.
+        ///
+        /// `--root-agent` becomes an *ancestor* rather than a flat parent field:
+        /// ADR 0035 §6 needs lineage in order to check that sub-agent identity
+        /// narrows while OS authority does not widen, and a single parent string
+        /// cannot express depth.
+        ///
+        /// `agent_id` is a parameter rather than re-derived so the reference
+        /// names the identity this launch actually presented — under `Launch`
+        /// that is the one the gateway accepted, which [`Self::agent_id`] cannot
+        /// know. The reference is **asserted, not verified**; nothing in
+        /// `aa-isolation` authenticates it and no claim derived from it may
+        /// present it as verified.
+        pub(super) fn identity_ref(&self, agent_id: &str) -> IdentityRef {
+            let mut identity = IdentityRef::root(agent_id);
+            if let Some(team) = self.team_id() {
+                identity = identity.with_team(team);
+            }
+            if let Some(root) = self.root_agent() {
+                identity = identity.with_ancestor(root);
+            }
+            identity
+        }
+    }
+
+    /// Where this launch's traffic goes.
+    #[derive(Debug, Clone)]
+    pub(super) struct NetworkPlan {
+        endpoint: Option<String>,
+        no_proxy: bool,
+    }
+
+    impl NetworkPlan {
+        /// The proxy origin [`crate::commands::proxy::trust`] vouched for, or
+        /// `None`.
+        ///
+        /// `None` means one of exactly two things, and the distinction is
+        /// [`Self::no_proxy`]: the operator opted out, or nothing could be
+        /// vouched for. It never means "use whatever the shell had" — an
+        /// environment-supplied proxy address is the class of input this
+        /// feature exists to stop treating as authoritative (AAASM-5323).
+        pub(super) fn endpoint(&self) -> Option<&str> {
+            self.endpoint.as_deref()
+        }
+
+        /// Whether the operator explicitly opted out of interception.
+        pub(super) fn no_proxy(&self) -> bool {
+            self.no_proxy
+        }
+    }
+
+    /// The effective policy this session runs under.
+    ///
+    /// Carries the whole four-state [`run_policy::PolicyResolution`] rather than
+    /// a boolean: the two states that launch (`enforced`, `permissive`) and the
+    /// two that refuse (`unconfigured`, `load_failed`) all have to survive as far
+    /// as the receipt an operator reads.
+    pub(super) struct PolicyPlan {
+        resolution: run_policy::PolicyResolution,
+        document: Option<aa_core::PolicyDocument>,
+    }
+
+    impl PolicyPlan {
+        /// The resolution, including the states that would refuse a launch.
+        pub(super) fn resolution(&self) -> &run_policy::PolicyResolution {
+            &self.resolution
+        }
+    }
+
+    /// The managed dev-tool integration this launch depends on.
+    pub(super) struct IntegrationPlan<'a> {
+        adapter: &'a dyn DevToolAdapter,
+        detected: Option<DevToolInfo>,
+    }
+
+    impl<'a> IntegrationPlan<'a> {
+        /// An integration plan for `adapter`, probing this host for whether the
+        /// tool is installed.
+        ///
+        /// `detect()` inspects the host and starts nothing, which is why both a
+        /// live launch and a preview can call it.
+        pub(super) fn probe(adapter: &'a dyn DevToolAdapter) -> Self {
+            Self {
+                detected: adapter.detect(),
+                adapter,
+            }
+        }
+
+        /// What `detect()` found on this host, or `None` when the tool is not
+        /// installed.
+        ///
+        /// Always `Some` for a plan resolved under [`PlanPosture::Launch`], which
+        /// refuses without it. A preview keeps the `None` and degrades visibly.
+        pub(super) fn detected(&self) -> Option<&DevToolInfo> {
+            self.detected.as_ref()
+        }
+
+        /// Ask the adapter for the command this launch runs.
+        ///
+        /// The **single** implementation, used by the live launch and by
+        /// `--dry-run` alike. Splitting it was the AAASM-5329 defect: the preview
+        /// built its own `Command` and so omitted `NODE_EXTRA_CA_CERTS` and the
+        /// normalised proxy URL — the two variables whose absence is what makes a
+        /// session ungoverned — while reporting the launch as governed.
+        ///
+        /// Returns three things because the two callers dispose of failure
+        /// differently and both dispositions are correct:
+        ///
+        /// * the command — the adapter's, or a bare fallback naming `label`;
+        /// * the [`PreviewFidelity`], which is what a preview prints;
+        /// * the adapter's own error, which is what a live launch fails on.
+        ///
+        /// `--dry-run` deliberately still works when the tool is not installed
+        /// (AAASM-5329 AC 3). Requiring installation would be the tidier
+        /// contract, but it would break previewing a launch from CI or from a
+        /// machine being set up — the case the flag is most useful for. What is
+        /// not acceptable is the old behaviour of silently printing a preview
+        /// missing the adapter's contribution, so an un-derivable command is
+        /// reported as degraded rather than passed off as faithful.
+        ///
+        /// Nothing here starts, writes or applies anything: `detect()` inspects
+        /// the host and `build_launch_command` constructs a `Command` without
+        /// running it.
+        pub(super) fn launch_command(
+            &self,
+            args: &RunArgs,
+            label: &str,
+            handle: &RegistrationHandle,
+            proxy: Option<&str>,
+        ) -> (std::process::Command, super::PreviewFidelity, Option<String>) {
+            let fallback = || {
+                let mut cmd = std::process::Command::new(label);
+                cmd.args(&args.tool_args);
+                cmd
+            };
+
+            if self.detected.is_none() {
+                return (
+                    fallback(),
+                    super::PreviewFidelity::Degraded(format!(
+                        "{label} is not installed on this host, so the adapter could not be asked \
+                         what it would run. The command and environment below omit everything the \
+                         adapter contributes — including NODE_EXTRA_CA_CERTS and the normalised \
+                         proxy URL, whose absence is what makes a session ungoverned. Install the \
+                         tool and re-run to preview the real launch."
+                    )),
+                    None,
+                );
+            }
+
+            match self
+                .adapter
+                .build_launch_command(&args.tool_args, &handle.agent_id, handle.team_id.as_deref(), proxy)
+            {
+                Ok(cmd) => (cmd, super::PreviewFidelity::FromAdapter, None),
+                Err(e) => (
+                    fallback(),
+                    super::PreviewFidelity::Degraded(format!(
+                        "the {label} adapter could not build a launch command ({e}), so the command \
+                         and environment below omit everything it contributes. A live `aasm run` \
+                         with these flags would fail here."
+                    )),
+                    Some(e.to_string()),
+                ),
+            }
+        }
+    }
+
+    /// What the execution boundary is required to provide.
+    ///
+    /// Backend-neutral by construction: it names no backend, selects none, and
+    /// nothing in this Story negotiates it against one. `aa-isolation` keeps
+    /// [`BackendIdentity`](aa_isolation::BackendIdentity) out of
+    /// [`ControlRequirement`] and [`ExecutionSpec`] for exactly this reason, so
+    /// carrying requirements here cannot make policy depend on which backend
+    /// answers them (ADR 0035 §3).
+    ///
+    /// The requirement list is **empty**, and that is the honest state rather
+    /// than a placeholder: no policy surface lowers to an isolation requirement
+    /// yet and no backend is selected, so a populated list would describe demands
+    /// nothing was asked to meet. The remaining tickets under Epic AAASM-5702
+    /// populate it.
+    #[derive(Debug, Default, Clone)]
+    pub(super) struct IsolationPlan {
+        requirements: Vec<ControlRequirement>,
+    }
+
+    impl IsolationPlan {
+        /// The backend-neutral statement of what this launch runs and what it
+        /// must run inside.
+        ///
+        /// `None` when the program or any argument is not valid UTF-8.
+        /// [`ExecutionSpec`] is explicit that a launch it cannot describe
+        /// faithfully must be rejected at the CLI boundary rather than lossily
+        /// converted — "losing the launch is better than logging an argv that
+        /// differs from the one that ran". This Story does not yet gate a launch
+        /// on having a spec, so the honest answer here is to carry none rather
+        /// than one built from a lossy conversion.
+        fn spec(
+            &self,
+            identity: &IdentityPlan,
+            handle: &RegistrationHandle,
+            command: &std::process::Command,
+            credentials: CredentialPosture,
+        ) -> Option<ExecutionSpec> {
+            let program = command.get_program().to_str()?.to_string();
+            let args: Vec<String> = command
+                .get_args()
+                .map(|arg| arg.to_str().map(str::to_string))
+                .collect::<Option<_>>()?;
+
+            let mut spec = ExecutionSpec::new(program, identity.identity_ref(&handle.agent_id))
+                .with_args(args)
+                .with_credentials(credentials);
+            if let Some(dir) = command.get_current_dir() {
+                spec = spec.with_working_dir(dir);
+            }
+            for requirement in &self.requirements {
+                spec = spec.with_requirement(requirement.clone());
+            }
+            Some(spec)
+        }
+    }
+
+    /// How this launch treats the authority the child would otherwise inherit.
+    ///
+    /// Three fields, three separate factual claims. ADR 0035 §9 requires the
+    /// distinction because "the child has this credential because we handed it
+    /// one" and "the child has this credential because we could not take it
+    /// away" are different security postures with the same observable outcome.
+    ///
+    /// * `removed` — names the adapter asked to have unset. A fact: the spawn
+    ///   path calls `env_remove` for exactly these, and `--dry-run` prints them
+    ///   as removals.
+    /// * `delegated` — **empty, and that is correct rather than unfinished**.
+    ///   `aasm run` deliberately hands the launched tool no credential of its
+    ///   own: the gateway's token authenticates *as the registered agent*, and
+    ///   the launched tool is the software registration exists to govern (see
+    ///   [`RegistrationHandle`]).
+    /// * `ambient_unremoved` — inherited names that look like they carry
+    ///   credential material and reach the child anyway. `build_child_env` seeds
+    ///   the child from the operator's whole environment, so on a real host this
+    ///   is normally non-empty — and it must be. An empty list would make
+    ///   [`CredentialPosture::has_unremoved_ambient_authority`] answer `false`,
+    ///   which reads as a least-authority run, which this is not.
+    ///
+    /// That last list is a name-shaped **lower bound** — see
+    /// [`super::looks_like_credential_name`]. Its emptiness is never evidence
+    /// that no ambient authority reached the child.
+    fn credential_posture(
+        effective: &std::collections::BTreeMap<String, String>,
+        removed: &[String],
+    ) -> CredentialPosture {
+        let ambient_unremoved: Vec<String> = std::env::vars()
+            .map(|(name, _)| name)
+            .filter(|name| super::looks_like_credential_name(name))
+            // Still present after the adapter's own removals were applied.
+            .filter(|name| effective.contains_key(name))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        CredentialPosture {
+            removed: removed.to_vec(),
+            delegated: Vec::new(),
+            ambient_unremoved,
+        }
+    }
+
+    /// The exact command and environment a child will receive under one identity.
+    ///
+    /// Produced only by [`ResolvedRunPlan::bind`], so there is no way to obtain
+    /// one without having gone through the plan.
+    pub(super) struct BoundLaunch {
+        command: std::process::Command,
+        child_env: HashMap<String, String>,
+        fidelity: super::PreviewFidelity,
+        adapter_error: Option<String>,
+        spec: Option<ExecutionSpec>,
+    }
+
+    impl BoundLaunch {
+        /// The command as the adapter built it, environment included.
+        pub(super) fn command(&self) -> &std::process::Command {
+            &self.command
+        }
+
+        /// This session's governance identity and proxy variables, before the
+        /// adapter's own environment is merged over the top of it.
+        pub(super) fn child_env(&self) -> &HashMap<String, String> {
+            &self.child_env
+        }
+
+        /// How faithfully this reflects the launch it describes.
+        pub(super) fn fidelity(&self) -> &super::PreviewFidelity {
+            &self.fidelity
+        }
+
+        /// The adapter's own error, when it could not build a launch command.
+        ///
+        /// Carried rather than raised so each caller keeps its own disposition: a
+        /// preview degrades visibly and still prints, a live launch fails.
+        pub(super) fn adapter_error(&self) -> Option<&str> {
+            self.adapter_error.as_deref()
+        }
+
+        /// The backend-neutral [`ExecutionSpec`] this launch corresponds to.
+        ///
+        /// Constructed but not yet consumed. AC 4 of AAASM-5705 is that the plan
+        /// can *carry* a spec without depending on a concrete backend, and the
+        /// ticket is explicit that no isolation backend is activated here.
+        /// Negotiating it — [`aa_isolation::negotiate`] — belongs to the next
+        /// ticket under Epic AAASM-5702. Making it change anything now would be
+        /// the new protection claim AC 9 rules out.
+        #[allow(dead_code)]
+        pub(super) fn spec(&self) -> Option<&ExecutionSpec> {
+            self.spec.as_ref()
+        }
+
+        /// Consume this into the two values `spawn_and_wait` needs.
+        pub(super) fn into_spawn_parts(self) -> (std::process::Command, HashMap<String, String>) {
+            (self.command, self.child_env)
+        }
+    }
+
+    /// The values a live launch is entitled to assume resolved.
+    ///
+    /// Exists so `execute_with_adapters` does not have to re-check preconditions
+    /// [`PlanPosture::Launch`] already refused without. Absent for a preview,
+    /// which by design carries unmet preconditions rather than refusing on them.
+    pub(super) struct Launchable<'a> {
+        /// The detected tool this launch registers as.
+        pub(super) info: &'a DevToolInfo,
+        /// The policy document managed settings are generated from.
+        pub(super) policy: &'a aa_core::PolicyDocument,
+    }
+
+    /// Everything one `aasm run` invocation resolved to, before any child exists.
+    pub(super) struct ResolvedRunPlan<'a> {
+        args: &'a RunArgs,
+        posture: PlanPosture,
+        target: RunTarget,
+        identity: IdentityPlan,
+        integration: IntegrationPlan<'a>,
+        network: NetworkPlan,
+        policy: PolicyPlan,
+        isolation: IsolationPlan,
+        enforcement_mode: aa_core::EnforcementMode,
+    }
+
+    impl<'a> ResolvedRunPlan<'a> {
+        /// Who the launch is attributed to.
+        pub(super) fn identity(&self) -> &IdentityPlan {
+            &self.identity
+        }
+
+        /// Where this launch's traffic goes.
+        pub(super) fn network(&self) -> &NetworkPlan {
+            &self.network
+        }
+
+        /// The effective policy.
+        pub(super) fn policy(&self) -> &PolicyPlan {
+            &self.policy
+        }
+
+        /// The exact command and environment a child will receive under
+        /// `handle`.
+        ///
+        /// This is the convergence AAASM-5705 exists for: the **only** place
+        /// protection-critical launch state is constructed. `--dry-run` binds a
+        /// synthesized identity and renders the result; a live launch binds the
+        /// registered one and spawns it. Neither builds a command or an
+        /// environment of its own, so the two cannot drift — which they did
+        /// twice before, AAASM-5327 dropping the adapter's environment from the
+        /// live launch and AAASM-5329 dropping the adapter entirely from the
+        /// preview. Each time one side reported a protection the other did not
+        /// have.
+        ///
+        /// Identity is a parameter rather than a field because it is the one
+        /// thing the plan legitimately cannot know: a live launch obtains it by
+        /// registering, which must happen *after* every refusal here has passed.
+        ///
+        /// The environment layers lowest to highest — inherited environment,
+        /// governance identity, proxy variables, `AA_ENFORCEMENT_MODE`, policy
+        /// annotations — and the adapter's own environment is applied last, at
+        /// spawn time, so it wins on a collision. It is the layer that knows what
+        /// the launched tool actually needs.
+        pub(super) fn bind(&self, handle: &RegistrationHandle) -> BoundLaunch {
+            let mut child_env = super::build_child_env(
+                handle,
+                self.network.endpoint(),
+                self.network.no_proxy(),
+                self.enforcement_mode,
+            );
+            self.policy.resolution.annotate_env(&mut child_env);
+
+            let (command, fidelity, adapter_error) =
+                self.integration
+                    .launch_command(self.args, self.target.label(), handle, self.network.endpoint());
+
+            // Derived through the same merge `spawn_and_wait` applies, so the
+            // spec describes the environment the child actually receives —
+            // including the names the adapter removes, which a naive union of the
+            // two sources would still show as present.
+            let (effective, removed) = super::effective_child_env(&command, &child_env);
+            let spec = self.isolation.spec(
+                &self.identity,
+                handle,
+                &command,
+                credential_posture(&effective, &removed),
+            );
+
+            BoundLaunch {
+                command,
+                child_env,
+                fidelity,
+                adapter_error,
+                spec,
+            }
+        }
+
+        /// The launch-only view of this plan, or `None` for a preview.
+        pub(super) fn launchable(&self) -> Option<Launchable<'_>> {
+            match self.posture {
+                PlanPosture::Preview => None,
+                PlanPosture::Launch => Some(Launchable {
+                    info: self
+                        .integration
+                        .detected
+                        .as_ref()
+                        .expect("a Launch-posture plan refuses when the tool is not installed"),
+                    policy: self
+                        .policy
+                        .document
+                        .as_ref()
+                        .expect("a Launch-posture plan refuses when no policy is enforceable"),
+                }),
+            }
+        }
+    }
+
+    /// Resolves one `aasm run` invocation into a [`ResolvedRunPlan`].
+    pub(super) struct RunPlanner<'a> {
+        args: &'a RunArgs,
+        target: RunTarget,
+        adapter: &'a dyn DevToolAdapter,
+    }
+
+    impl<'a> RunPlanner<'a> {
+        /// A planner for `args`, launching `target` through `adapter`.
+        pub(super) fn new(args: &'a RunArgs, target: RunTarget, adapter: &'a dyn DevToolAdapter) -> Self {
+            Self { args, target, adapter }
+        }
+
+        /// Resolve every input this launch depends on, in the order the launch
+        /// commits to them.
+        ///
+        /// The order is load-bearing and unchanged: **detect → proxy →
+        /// `--no-proxy` guard → policy**, all of it before the caller registers
+        /// anything. A launch that is going to be refused must not first create a
+        /// gateway registration it then abandons, and a refusal issued after a
+        /// child has started is not a refusal at all.
+        ///
+        /// Each stage announces itself on stderr where it resolves, so the
+        /// operator sees the same trace, in the same order, as before this was
+        /// one function. That is also why the planner is not pure: the trace is
+        /// interleaved with the refusals, and hoisting it would either reorder
+        /// the output or print a `policy=` line for a launch the proxy stage had
+        /// already refused.
+        ///
+        /// Returns `Err` only under [`PlanPosture::Launch`]. A preview resolves
+        /// infallibly by construction — every refusal it meets is reported and
+        /// recorded rather than raised.
+        pub(super) fn resolve(self, posture: PlanPosture) -> anyhow::Result<ResolvedRunPlan<'a>> {
+            let enforcement_mode = self.args.resolved_enforcement_mode();
+
+            // 1. Integration. A live launch of a tool that is not installed stops
+            //    here. A preview does not: previewing a launch from CI, or from a
+            //    machine still being set up, is the case `--dry-run` is most
+            //    useful for, so it continues and degrades visibly instead
+            //    (AAASM-5329 AC 3).
+            let integration = IntegrationPlan::probe(self.adapter);
+            if posture == PlanPosture::Launch {
+                let info = integration
+                    .detected()
+                    .ok_or_else(|| anyhow::anyhow!("{} is not installed", self.target.label()))?;
+                eprintln!(
+                    "tool={} version={} path={} governance_level={}",
+                    self.target.label(),
+                    info.version.as_deref().unwrap_or("unknown"),
+                    info.install_path.display(),
+                    info.governance_level,
+                );
+            }
+
+            // 2. Network. Resolved before registration on purpose.
+            let endpoint = match super::resolve_launch_proxy(self.args.no_proxy) {
+                Ok(endpoint) => endpoint,
+                Err(e) => {
+                    posture.refuse(e)?;
+                    None
+                }
+            };
+
+            // 3. AAASM-5350 AC 1: `--no-proxy` is refused where a party other
+            //    than the invoking user has already decided this host runs
+            //    managed. Checked before the policy resolves and before anything
+            //    is registered or started, for the same reason the policy refusal
+            //    is: refusing after a launch has begun is not refusing.
+            //
+            //    Launch-only, and that asymmetry is inherited rather than
+            //    introduced here — the preview has never run this guard. It is
+            //    now at least visible in one place instead of being an absence,
+            //    and extending it to the preview is a behaviour change this
+            //    refactor deliberately does not make.
+            if self.args.no_proxy && posture == PlanPosture::Launch {
+                if let Some(refusal) = super::no_proxy_refusal(self.target.label()) {
+                    anyhow::bail!("{refusal}");
+                }
+            }
+
+            // 4. Policy. A session with no effective policy is refused here,
+            //    before any registration exists: a registered session that never
+            //    launched is a governed identity with no process behind it, and
+            //    an absent policy is not permission (AAASM-5349).
+            let resolution = super::resolve_policy(self.args);
+            let document = match resolution.clone().into_enforceable() {
+                Ok(document) => Some(document),
+                Err(e) => {
+                    posture.refuse(e)?;
+                    None
+                }
+            };
+
+            Ok(ResolvedRunPlan {
+                args: self.args,
+                posture,
+                target: self.target,
+                identity: IdentityPlan::of(self.args),
+                integration,
+                network: NetworkPlan {
+                    endpoint,
+                    no_proxy: self.args.no_proxy,
+                },
+                policy: PolicyPlan { resolution, document },
+                // Empty until a policy surface lowers to isolation requirements;
+                // see `IsolationPlan`.
+                isolation: IsolationPlan::default(),
+                enforcement_mode,
+            })
+        }
+    }
+
+    impl PlanPosture {
+        /// Apply this posture's disposition to an unmet precondition: a live
+        /// launch stops, a preview reports it and carries on.
+        ///
+        /// The preview wording is deliberate and unchanged — an operator ran
+        /// `--dry-run` to find out what a live run would do, and "it would
+        /// refuse" is the most useful answer it can give.
+        fn refuse(self, error: anyhow::Error) -> anyhow::Result<()> {
+            match self {
+                Self::Launch => Err(error),
+                Self::Preview => {
+                    eprintln!("warning: {error}");
+                    eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
 /// Stable string form of an [`aa_core::EnforcementMode`] used on the wire to
 /// the gateway and inside the `AA_ENFORCEMENT_MODE` child env var. Matches the
 /// `serde(rename_all = "snake_case")` encoding so a round-trip via YAML/JSON
@@ -249,17 +998,25 @@ impl Drop for RegistrationGuard {
 /// CLI-shaped shortcut around it: the gateway applies its `did:key`↔`public_key`
 /// binding and its possession-proof check to this request exactly as it does to
 /// an SDK's.
-async fn register_with_gateway(info: &DevToolInfo, args: &RunArgs) -> Result<GovernedRegistration> {
-    let agent_id = args.agent_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+/// `identity` supplies the agent id, team and lineage. It is the same
+/// [`plan::IdentityPlan`] a `--dry-run` preview derives its printed identity
+/// from, so the preview cannot advertise an identity the live run would not have
+/// submitted.
+async fn register_with_gateway(
+    info: &DevToolInfo,
+    identity: &plan::IdentityPlan,
+    mode: aa_core::EnforcementMode,
+) -> Result<GovernedRegistration> {
+    let agent_id = identity.agent_id(plan::PlanPosture::Launch);
     let governance_level = info.governance_level.to_string();
 
     run_registration::register(run_registration::SessionDescriptor {
         agent_id: &agent_id,
         name: &dev_tool_kind_str(&info.kind),
         version: info.version.as_deref().unwrap_or("unknown"),
-        team_id: args.team_id.as_deref(),
-        parent_agent_id: args.root_agent.as_deref(),
-        enforcement_mode: args.resolved_enforcement_mode(),
+        team_id: identity.team_id(),
+        parent_agent_id: identity.root_agent(),
+        enforcement_mode: mode,
         governance_level: &governance_level,
     })
     .await
@@ -388,36 +1145,6 @@ fn resolve_launch_proxy(no_proxy: bool) -> Result<Option<String>> {
     )))
 }
 
-/// Synthesize a `RegistrationHandle` for `--dry-run` without contacting the
-/// gateway. Used by the dry-run short-circuit so the planning preview works
-/// in CI runners where no AI dev tool is installed and no gateway is reachable.
-///
-/// The locally-minted correlation ids are prefixed `dry-run-` to make it obvious
-/// in stdout that no real registration occurred. The caller-supplied
-/// `--agent-id` / `--team-id` overrides are honored verbatim so the printed plan
-/// reflects what the live run *would* have submitted.
-///
-/// `registration_did` and `registration_id`, by contrast, are **not** faked: both
-/// are pure derivations of the identity the live run would present, so the
-/// preview can show the DID that would be registered and the registry key it
-/// would occupy. Substituting a `dry-run-` placeholder there would hide the one
-/// thing about the identity worth previewing.
-fn dry_run_handle(args: &RunArgs) -> RegistrationHandle {
-    let agent_id = args
-        .agent_id
-        .clone()
-        .unwrap_or_else(|| format!("dry-run-{}", Uuid::new_v4()));
-    let registration_did = run_registration::registration_did(&agent_id);
-    RegistrationHandle {
-        registration_id: run_registration::registry_id(args.team_id.as_deref(), &registration_did),
-        agent_id,
-        registration_did,
-        trace_id: format!("dry-run-{}", Uuid::new_v4()),
-        session_id: format!("dry-run-{}", Uuid::new_v4()),
-        team_id: args.team_id.clone(),
-    }
-}
-
 /// Resolve the effective policy for this launch, and announce which of the four
 /// states it landed in.
 ///
@@ -461,14 +1188,39 @@ fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
 /// non-secret in a diagnostic preview is harmless, a leaked secret is not.
 fn mask_value(key: &str, value: &str) -> String {
     let upper = key.to_uppercase();
-    if upper.ends_with("_URL") || upper.ends_with("_DSN") || upper.ends_with("_URI") {
+    if is_connection_string_name(&upper) {
         return redact_database_url(value);
     }
-    const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASS", "CREDENTIAL", "AUTH"];
     if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
         return "***MASKED***".into();
     }
     redact_database_url(value)
+}
+
+/// Name fragments that signal an opaque secret, case-insensitive.
+const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASS", "CREDENTIAL", "AUTH"];
+
+/// Whether an already-uppercased name is a connection string — the shapes that
+/// carry `user:pass@host` userinfo (AAASM-4936).
+fn is_connection_string_name(upper: &str) -> bool {
+    upper.ends_with("_URL") || upper.ends_with("_DSN") || upper.ends_with("_URI")
+}
+
+/// Whether an environment variable *name* suggests it carries credential
+/// material.
+///
+/// A **name-shaped lower bound**, not a detector. It cannot see a secret in a
+/// blandly-named variable, so a name that fails this test is not evidence that
+/// its value is harmless, and an empty result is never evidence that no
+/// credential is present.
+///
+/// Both callers want that bias and both err toward over-inclusion: one masks a
+/// value before printing it in the `--dry-run` preview, the other records which
+/// inherited authority reaches the launched child unvetted. Over-masking a
+/// non-secret is harmless; under-recording ambient authority is not.
+fn looks_like_credential_name(key: &str) -> bool {
+    let upper = key.to_uppercase();
+    is_connection_string_name(&upper) || SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle))
 }
 
 /// How faithfully a preview reflects the launch it describes.
@@ -483,58 +1235,6 @@ enum PreviewFidelity {
     FromAdapter,
     /// The adapter could not supply one; the preview is missing whatever it sets.
     Degraded(String),
-}
-
-/// Ask the adapter for the command this launch would run, for preview purposes.
-///
-/// **`--dry-run` deliberately still works when the tool is not installed**
-/// (AAASM-5329 AC 3). Requiring installation would be the tidier contract, but it
-/// would break previewing a launch from CI or from a machine being set up — the
-/// case the flag is most useful for — and `--dry-run` has been safe to run
-/// anywhere since it was introduced. What is *not* acceptable is the old
-/// behaviour of silently printing a preview missing the adapter's contribution,
-/// so an un-derivable command is reported in the output as degraded.
-///
-/// Nothing here starts, writes or applies anything: `detect()` inspects the host
-/// and `build_launch_command` constructs a `Command` without running it.
-fn dry_run_launch_command(
-    adapter: &dyn DevToolAdapter,
-    args: &RunArgs,
-    handle: &RegistrationHandle,
-    proxy: Option<&str>,
-) -> (std::process::Command, PreviewFidelity) {
-    let fallback = || {
-        let mut cmd = std::process::Command::new(&args.tool);
-        cmd.args(&args.tool_args);
-        cmd
-    };
-
-    if adapter.detect().is_none() {
-        return (
-            fallback(),
-            PreviewFidelity::Degraded(format!(
-                "{} is not installed on this host, so the adapter could not be asked what it \
-                 would run. The command and environment below omit everything the adapter \
-                 contributes — including NODE_EXTRA_CA_CERTS and the normalised proxy URL, \
-                 whose absence is what makes a session ungoverned. Install the tool and \
-                 re-run to preview the real launch.",
-                args.tool
-            )),
-        );
-    }
-
-    match adapter.build_launch_command(&args.tool_args, &handle.agent_id, handle.team_id.as_deref(), proxy) {
-        Ok(cmd) => (cmd, PreviewFidelity::FromAdapter),
-        Err(e) => (
-            fallback(),
-            PreviewFidelity::Degraded(format!(
-                "the {} adapter could not build a launch command ({e}), so the command and \
-                 environment below omit everything it contributes. A live `aasm run` with \
-                 these flags would fail here.",
-                args.tool
-            )),
-        ),
-    }
 }
 
 /// Build the structured dry-run output string.
@@ -788,50 +1488,42 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
 /// `execute_with_adapters`, reverting it to build its own command would have left
 /// every test passing, because nothing could observe what the branch produced.
 ///
-/// Nothing here launches, registers, or writes: `resolve_launch_proxy` and
-/// `resolve_policy` report rather than refuse, since the operator ran this to
-/// find out what a live run *would* do — and "it would refuse" is only useful if
-/// they are shown it.
-fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs, mode: aa_core::EnforcementMode) -> String {
-    let handle = dry_run_handle(args);
+/// Nothing here launches, registers, or writes: under
+/// [`plan::PlanPosture::Preview`] the planner reports refusals rather than
+/// raising them, since the operator ran this to find out what a live run *would*
+/// do — and "it would refuse" is only useful if they are shown it.
+///
+/// The enforcement mode is no longer a parameter. It is derived from `args` by
+/// the planner, which is the only way to guarantee a preview and a live launch
+/// cannot be handed different postures for the same flags.
+fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs) -> String {
+    // Every refusal a preview meets is reported by the planner and recorded in
+    // the plan, so `Preview` resolution cannot fail.
+    let resolved = plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), adapter)
+        .resolve(plan::PlanPosture::Preview)
+        .expect("a preview reports refusals rather than raising them");
 
-    // A preview launches nothing, so an unresolvable endpoint is reported rather
-    // than fatal — but it *is* reported, because a preview that silently omits
-    // the proxy reads exactly like a governed one.
-    let proxy = match resolve_launch_proxy(args.no_proxy) {
-        Ok(proxy) => proxy,
-        Err(e) => {
-            eprintln!("warning: {e}");
-            eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
-            None
-        }
-    };
+    let handle = resolved.identity().preview_handle();
 
-    let resolution = resolve_policy(args);
-    if let Err(e) = resolution.clone().into_enforceable() {
-        eprintln!("warning: {e}");
-        eprintln!("warning: a live `aasm run` with these flags would refuse to launch.");
-    }
+    // The same bind the live launch performs, against a synthesized identity
+    // instead of a registered one. Nothing about the command or the environment
+    // below is computed here.
+    let bound = resolved.bind(&handle);
 
-    let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
-    resolution.annotate_env(&mut child_env);
+    // Managed settings are the one thing a preview does not derive: generating
+    // them is harmless, but it needs an enforceable policy the preview may not
+    // have, and the honest placeholder says so rather than implying the live run
+    // would apply nothing.
     let settings = "<dry-run: managed settings not generated>".to_string();
-
-    // The whole point of a preview is to answer "will this launch be protected",
-    // and the two variables that decide it — `NODE_EXTRA_CA_CERTS` and the
-    // normalised proxy URL — come from the adapter, not from here. Building our
-    // own command, as this did before AAASM-5329, previewed a launch that was not
-    // the launch (AAASM-5327 fixed the same omission on the live path).
-    let (cmd, fidelity) = dry_run_launch_command(adapter, args, &handle, proxy.as_deref());
 
     format_dry_run_output(
         &handle,
-        &resolution,
-        args.no_proxy,
+        resolved.policy().resolution(),
+        resolved.network().no_proxy(),
         &settings,
-        &cmd,
-        &child_env,
-        &fidelity,
+        bound.command(),
+        bound.child_env(),
+        bound.fidelity(),
     )
 }
 
@@ -871,49 +1563,24 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     }
 
     if args.dry_run {
-        print!("{}", dry_run_preview(adapter.as_ref(), args, mode));
+        print!("{}", dry_run_preview(adapter.as_ref(), args));
         return Ok(0);
     }
 
-    let info = adapter
-        .detect()
-        .ok_or_else(|| anyhow::anyhow!("{} is not installed", args.tool))?;
-
-    eprintln!(
-        "tool={} version={} path={} governance_level={}",
-        args.tool,
-        info.version.as_deref().unwrap_or("unknown"),
-        info.install_path.display(),
-        info.governance_level,
-    );
-
-    // Resolved before registration on purpose: a launch that is going to be
-    // refused should not first create a gateway registration it then abandons.
-    let proxy = resolve_launch_proxy(args.no_proxy)?;
-
-    // AAASM-5350 AC 1: `--no-proxy` is refused where a party other than the
-    // invoking user has already decided this host runs managed. Checked here,
-    // before the policy resolves and before anything is registered or started,
-    // for the same reason the policy refusal is: refusing after a launch has
-    // begun is not refusing.
-    if args.no_proxy {
-        if let Some(refusal) = no_proxy_refusal(&args.tool) {
-            anyhow::bail!("{refusal}");
-        }
-    }
-
-    // Same reason, and the same ordering rule: a session with no effective
-    // policy is refused here, before any registration exists, because a
-    // registered session that never launched is a governed identity with no
-    // process behind it — and because there is nothing to govern a tool with.
-    // An absent policy is not permission (AAASM-5349).
-    let resolution = resolve_policy(args);
-    let policy = resolution.clone().into_enforceable()?;
+    // Every precondition this launch depends on, resolved in one place and in
+    // the order the launch commits to them: detect → proxy → `--no-proxy` guard
+    // → policy. `Launch` posture makes each one fatal, so reaching the next line
+    // means all four passed and nothing has been registered or started yet.
+    let resolved = plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), adapter.as_ref())
+        .resolve(plan::PlanPosture::Launch)?;
+    let launchable = resolved
+        .launchable()
+        .expect("a Launch-posture plan resolves every precondition or refuses");
 
     // Fatal on failure, and fatal *before* anything is launched: a session the
     // gateway did not accept has no governed identity, and a tool started under
     // no identity is an ungoverned process wearing a governed launch's name.
-    let registration = register_with_gateway(&info, args).await?;
+    let registration = register_with_gateway(launchable.info, resolved.identity(), mode).await?;
     let handle = RegistrationHandle::of(&registration);
 
     // Recorded now, not at exit: an audit trail that only learns about a session
@@ -927,15 +1594,21 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         &handle.session_id,
         &args.tool,
         &args.tool_args,
-        &resolution.posture(),
+        &resolved.policy().resolution().posture(),
         args.no_proxy,
     )
     .await;
-    let mut child_env = build_child_env(&handle, proxy.as_deref(), args.no_proxy, mode);
-    resolution.annotate_env(&mut child_env);
+
+    // The same bind `--dry-run` renders, against the identity the gateway just
+    // accepted. No `cmd.envs(&child_env)` anywhere: `spawn_and_wait` applies both
+    // sources with the adapter's on top, and overlaying `child_env` onto the
+    // command first would overwrite the adapter's values inside `cmd` — the merge
+    // would then faithfully carry forward the very values it is meant to
+    // override.
+    let bound = resolved.bind(&handle);
 
     let settings = adapter
-        .generate_managed_settings(&policy)
+        .generate_managed_settings(launchable.policy)
         .await
         .map_err(|e| anyhow::anyhow!("failed to generate managed settings: {e}"))?;
 
@@ -944,24 +1617,18 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         .await
         .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
 
-    let cmd = adapter
-        .build_launch_command(
-            &args.tool_args,
-            &handle.agent_id,
-            handle.team_id.as_deref(),
-            proxy.as_deref(),
-        )
-        .map_err(|e| anyhow::anyhow!("failed to build launch command: {e}"))?;
-    // No `cmd.envs(&child_env)` here: `spawn_and_wait` applies both sources with
-    // the adapter's on top, and overlaying `child_env` onto the command first
-    // would overwrite the adapter's values inside `cmd` — the merge would then
-    // faithfully carry forward the very values it is meant to override.
+    // Raised here rather than at bind time so the failure still lands where it
+    // always has: after the managed settings have been applied, not before.
+    if let Some(e) = bound.adapter_error() {
+        anyhow::bail!("failed to build launch command: {e}");
+    }
 
     let mut guard = RegistrationGuard {
         registration: registration.clone(),
         deregistered: false,
     };
 
+    let (cmd, child_env) = bound.into_spawn_parts();
     let code = spawn_and_wait(cmd, &child_env).await?;
 
     // Primary deregistration path — async, reliable. Mark the guard first so its
@@ -2046,7 +2713,8 @@ mod tests {
             a
         };
         let handle = stub_handle(None);
-        let (cmd, fidelity) = dry_run_launch_command(&StubNotInstalled, &args, &handle, None);
+        let (cmd, fidelity, _) =
+            plan::IntegrationPlan::probe(&StubNotInstalled).launch_command(&args, "claude", &handle, None);
 
         assert!(
             matches!(fidelity, PreviewFidelity::Degraded(_)),
@@ -2084,7 +2752,7 @@ mod tests {
         args.dry_run = true;
         args.no_proxy = true; // keeps the preview off any real proxy resolution
 
-        let output = dry_run_preview(&StubEnvContributing, &args, aa_core::EnforcementMode::Enforce);
+        let output = dry_run_preview(&StubEnvContributing, &args);
 
         assert!(
             output.contains("claude-real-binary"),
@@ -2114,8 +2782,14 @@ mod tests {
             a
         };
         let handle = stub_handle(None);
-        let (_, fidelity) = dry_run_launch_command(&StubEnvContributing, &args, &handle, Some("127.0.0.1:8080"));
+        let (_, fidelity, error) = plan::IntegrationPlan::probe(&StubEnvContributing).launch_command(
+            &args,
+            "claude",
+            &handle,
+            Some("127.0.0.1:8080"),
+        );
         assert!(matches!(fidelity, PreviewFidelity::FromAdapter));
+        assert!(error.is_none(), "a faithful command carries no adapter error");
     }
 
     #[tokio::test]
@@ -2470,6 +3144,277 @@ mod tests {
         match prior {
             Some(v) => std::env::set_var("HTTPS_PROXY", v),
             None => std::env::remove_var("HTTPS_PROXY"),
+        }
+    }
+
+    // --- launch planning (AAASM-5705) ---
+
+    /// A plan resolved the way `--dry-run` resolves one.
+    ///
+    /// `--no-proxy` keeps the resolution off any real proxy trust check, so this
+    /// is the same construction the preview performs without depending on what
+    /// is running on the host.
+    fn preview_plan<'a>(adapter: &'a dyn DevToolAdapter, args: &'a RunArgs) -> plan::ResolvedRunPlan<'a> {
+        plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), adapter)
+            .resolve(plan::PlanPosture::Preview)
+            .expect("preview resolution reports refusals rather than raising them")
+    }
+
+    fn planning_args(tool: &str) -> RunArgs {
+        let mut args = run_args(tool);
+        args.no_proxy = true;
+        args
+    }
+
+    /// AC 8: every supported tool plans a launch, and the plan's two failure
+    /// signals agree.
+    ///
+    /// Driven from the registry rather than a hand-written list of four, so a
+    /// tool added to `SUPPORTED_TOOLS` is covered here without an edit — the same
+    /// discipline the tool-id agreement tests above use.
+    ///
+    /// The invariant is the one that matters now that a single `launch_command`
+    /// serves both callers: `PreviewFidelity` is what a preview prints and the
+    /// adapter error is what a live launch fails on, so a result that is
+    /// `FromAdapter` must carry no error, and one that carries an error must not
+    /// present itself as faithful. If those two ever disagree, one of the paths
+    /// is reporting a launch the other would not perform.
+    ///
+    /// Copilot is the load-bearing case: its `build_launch_command` always
+    /// errors by design, so on a host where it is detected this exercises the
+    /// degraded-with-error arm rather than only the happy one.
+    #[test]
+    fn every_supported_tool_plans_a_launch_with_agreeing_failure_signals() {
+        for tool in aa_devtool::registry::SUPPORTED_TOOLS {
+            let adapter = resolve_adapter(tool).expect("registered tool must resolve");
+            let args = planning_args(tool);
+            let handle = stub_handle(None);
+
+            let integration = plan::IntegrationPlan::probe(adapter.as_ref());
+            let detected = integration.detected().is_some();
+            let (cmd, fidelity, error) = integration.launch_command(&args, tool, &handle, None);
+
+            match (&fidelity, &error) {
+                (PreviewFidelity::FromAdapter, Some(e)) => {
+                    panic!("{tool}: a faithful command must carry no adapter error, got {e}")
+                }
+                (PreviewFidelity::Degraded(_), None) if detected => {
+                    // The tool is installed but the adapter declined to build a
+                    // command and said nothing about why — a live launch would
+                    // then fail with no message to fail on.
+                    panic!("{tool}: a degraded command from an installed tool must name the error")
+                }
+                _ => {}
+            }
+
+            if !detected {
+                assert!(
+                    matches!(fidelity, PreviewFidelity::Degraded(_)),
+                    "{tool}: an uninstalled tool must degrade rather than claim fidelity"
+                );
+                assert_eq!(
+                    cmd.get_program().to_string_lossy(),
+                    *tool,
+                    "{tool}: the fallback command must name the tool the operator asked for"
+                );
+                assert!(
+                    error.is_none(),
+                    "{tool}: 'not installed' is a detection fact, not an adapter error"
+                );
+            }
+        }
+    }
+
+    /// The bound launch composes both layers: what the *plan* contributes (this
+    /// session's governance identity) and what the *adapter* contributes (the CA
+    /// path and the normalised proxy URL).
+    ///
+    /// Before AAASM-5705 the preview built these separately from the live launch,
+    /// and each drifted in turn — AAASM-5327 lost the adapter's half on the live
+    /// path, AAASM-5329 lost it in the preview. Asserting both halves are present
+    /// in one bound result is what makes losing either a test failure rather than
+    /// a silently ungoverned session.
+    #[test]
+    fn the_bound_launch_carries_both_the_session_identity_and_the_adapter_environment() {
+        let adapter = StubEnvContributing;
+        let args = planning_args("claude");
+        let resolved = preview_plan(&adapter, &args);
+        let handle = stub_handle(Some("team-a"));
+
+        let bound = resolved.bind(&handle);
+        let (effective, removed) = effective_child_env(bound.command(), bound.child_env());
+
+        assert_eq!(
+            effective.get("AA_AGENT_DID").map(String::as_str),
+            Some(run_registration::registration_did("test-agent").as_str()),
+            "the plan's governance identity must reach the child"
+        );
+        assert_eq!(
+            effective.get("AA_TEAM_ID").map(String::as_str),
+            Some("team-a"),
+            "the plan's team must reach the child"
+        );
+        assert_eq!(
+            effective.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some("/tmp/aasm-ca.pem"),
+            "the adapter's CA path must reach the child"
+        );
+        assert_eq!(
+            removed,
+            vec!["ANTHROPIC_API_KEY".to_string()],
+            "the adapter's removal must survive the bind"
+        );
+    }
+
+    /// The spec describes the command that will actually run, not a
+    /// reconstruction of it.
+    #[test]
+    fn the_execution_spec_describes_the_command_that_will_run() {
+        let adapter = StubEnvContributing;
+        let mut args = planning_args("claude");
+        args.tool_args = vec!["--resume".into(), "session-7".into()];
+        let resolved = preview_plan(&adapter, &args);
+        let handle = stub_handle(None);
+
+        let bound = resolved.bind(&handle);
+        let spec = bound.spec().expect("a UTF-8 argv must yield a spec");
+
+        assert_eq!(spec.program(), "claude-real-binary");
+        assert_eq!(spec.args(), ["--resume", "session-7"]);
+        assert_eq!(
+            spec.program(),
+            bound.command().get_program().to_string_lossy(),
+            "the spec must name the same program the launch will spawn"
+        );
+    }
+
+    /// AC 9: this refactor adds no protection claim.
+    ///
+    /// The spec carries no requirement, because nothing lowers policy into an
+    /// isolation requirement yet and no backend is selected. A requirement
+    /// appearing here without a backend asked to meet it is exactly the
+    /// "planned but never enforced" shape ADR 0035 exists to prevent, so this
+    /// fails the moment one is added ahead of the ticket that negotiates it.
+    #[test]
+    fn the_execution_spec_states_no_isolation_requirement_yet() {
+        let adapter = StubEnvContributing;
+        let args = planning_args("claude");
+        let resolved = preview_plan(&adapter, &args);
+        let bound = resolved.bind(&stub_handle(None));
+        let spec = bound.spec().expect("spec");
+
+        assert!(
+            spec.requirements().is_empty(),
+            "no backend is active, so a requirement here would be one nothing was asked to meet: {:?}",
+            spec.requirements()
+        );
+        assert_eq!(spec.required().count(), 0);
+    }
+
+    /// The identity a spec is built against is the one the launch presented,
+    /// with `--root-agent` recorded as lineage rather than flattened away.
+    ///
+    /// ADR 0035 §6 needs the ancestry in order to check later that sub-agent
+    /// identity narrows; a single parent string cannot express depth.
+    #[test]
+    fn the_execution_spec_identity_carries_the_team_and_the_lineage() {
+        let adapter = StubEnvContributing;
+        let mut args = planning_args("claude");
+        args.team_id = Some("team-a".into());
+        args.root_agent = Some("root-agent-1".into());
+        let resolved = preview_plan(&adapter, &args);
+
+        let bound = resolved.bind(&stub_handle(Some("team-a")));
+        let identity = bound.spec().expect("spec").identity();
+
+        assert_eq!(identity.agent_id, "test-agent", "the identity the launch presented");
+        assert_eq!(identity.team_id.as_deref(), Some("team-a"));
+        assert_eq!(identity.lineage, vec!["root-agent-1".to_string()]);
+        assert_eq!(identity.depth(), 1);
+    }
+
+    /// The credential posture has to distinguish authority we *removed* from
+    /// authority we merely *inherited* — ADR 0035 §9, and the difference between
+    /// a least-authority run and one that only looks like one.
+    ///
+    /// Both halves are asserted against a variable this test plants, so the
+    /// assertion does not depend on what the developer's shell happens to carry:
+    /// `ANTHROPIC_API_KEY` is credential-shaped *and* removed by the adapter, so
+    /// it must be recorded as removed and must not appear as ambient; the planted
+    /// token is credential-shaped and not removed, so it must appear as ambient.
+    #[test]
+    fn the_credential_posture_separates_removed_authority_from_inherited_authority() {
+        let _guard = crate::test_support::env_guard();
+        let prior_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let prior_token = std::env::var("AASM_TEST_PLANTED_TOKEN").ok();
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-inherited");
+        std::env::set_var("AASM_TEST_PLANTED_TOKEN", "planted");
+
+        let adapter = StubEnvContributing;
+        let args = planning_args("claude");
+        let resolved = preview_plan(&adapter, &args);
+        let bound = resolved.bind(&stub_handle(None));
+        let credentials = bound.spec().expect("spec").credentials().clone();
+
+        match prior_key {
+            Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v),
+            None => std::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+        match prior_token {
+            Some(v) => std::env::set_var("AASM_TEST_PLANTED_TOKEN", v),
+            None => std::env::remove_var("AASM_TEST_PLANTED_TOKEN"),
+        }
+
+        assert!(
+            credentials.removed.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "a variable the adapter unsets must be recorded as removed: {credentials:?}"
+        );
+        assert!(
+            !credentials.ambient_unremoved.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "a removed variable must not also be reported as reaching the child: {credentials:?}"
+        );
+        assert!(
+            credentials
+                .ambient_unremoved
+                .contains(&"AASM_TEST_PLANTED_TOKEN".to_string()),
+            "an inherited credential-shaped variable reaches the child and must be recorded: \
+             {credentials:?}"
+        );
+        assert!(
+            credentials.has_unremoved_ambient_authority(),
+            "the child inherits the operator's environment, so this run is not least-authority \
+             and must not report itself as one"
+        );
+        assert!(
+            credentials.delegated.is_empty(),
+            "`aasm run` hands the launched tool no credential of its own: {credentials:?}"
+        );
+    }
+
+    /// The name heuristic is a lower bound, and its two callers depend on that
+    /// bias in opposite directions — over-masking a preview, over-recording
+    /// ambient authority. Pins the shapes it must catch, and that an ordinary
+    /// name is not swept in.
+    #[test]
+    fn the_credential_name_heuristic_catches_secrets_and_connection_strings() {
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "AA_JWT_SECRET",
+            "DB_PASSWORD",
+            "GITHUB_TOKEN",
+            "AWS_SESSION_TOKEN",
+            "DATABASE_URL",
+            "MONGODB_URI",
+            "PG_DSN",
+            "some_lowercase_token",
+        ] {
+            assert!(
+                looks_like_credential_name(name),
+                "{name} must be treated as credential-shaped"
+            );
+        }
+        for name in ["LOG_LEVEL", "HOME", "PATH", "AA_TRACE_ID"] {
+            assert!(!looks_like_credential_name(name), "{name} must not be swept in");
         }
     }
 }
