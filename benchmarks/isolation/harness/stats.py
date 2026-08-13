@@ -8,7 +8,7 @@ noisy-host case that makes a comparison meaningless.
 from __future__ import annotations
 
 import statistics
-from typing import Sequence
+from collections.abc import Sequence
 
 from thresholds import MAX_REL_IQR, MIN_REPETITIONS
 
