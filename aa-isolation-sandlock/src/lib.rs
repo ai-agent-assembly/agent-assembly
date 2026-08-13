@@ -61,6 +61,8 @@
 
 pub mod host;
 pub mod lower;
+pub mod probe;
 
 pub use host::{BackendLookupError, HostFacts, KernelVersion, BACKEND_PATH_ENV, BACKEND_PROGRAM};
 pub use lower::{Argv, LoweringGap};
+pub use probe::{ConfinementProbe, Observation};
