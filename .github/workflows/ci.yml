@@ -1014,21 +1014,46 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: aa-ebpf-probes
+      - name: Resolve pinned bpf-linker version
+        # AAASM-5735: read the version from scripts/build-ebpf-probes.sh rather
+        # than repeating it here. The cache key and the install MUST come from
+        # one literal — when they were separate, the key stayed at 0.10.3 while
+        # an unpinned `cargo install` drifted to 0.11.0, so a cache hit passed
+        # and a cache miss failed on the very same commit.
+        id: bpf-linker-version
+        working-directory: .
+        run: |
+          v="$(bash scripts/build-ebpf-probes.sh --print-version)"
+          test -n "$v" || { echo "::error::could not resolve pinned bpf-linker version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Cache bpf-linker binary
         # Cache the compiled bpf-linker binary so subsequent CI runs skip the
-        # slow bundled-LLVM compile (~5-10 min). Key includes the version so a
-        # version bump automatically invalidates the cache.
+        # slow bundled-LLVM compile (~5-10 min). The key carries the resolved
+        # version, so bumping the pin in the script invalidates the cache.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-bpf-linker
         with:
           path: ~/.cargo/bin/bpf-linker
-          key: bpf-linker-${{ runner.os }}-0.10.3
+          # AAASM-5735: `-r2` is a one-time key-generation bump. Without it the
+          # resolved version is unchanged (0.10.3), the old cache still hits, and
+          # the corrected `cargo install --version` line would never execute — the
+          # PR would go green having proved nothing, since the cache-hit path was
+          # never the broken one. Bumping forces one real cold install.
+          key: bpf-linker-r2-${{ runner.os }}-${{ steps.bpf-linker-version.outputs.version }}
       - name: Install bpf-linker
         # bpf-linker is the custom linker required for the bpfel-unknown-none target.
         # Using the bundled-LLVM default (no --no-default-features) avoids fragile
         # system-LLVM package discovery. Only runs on cache miss.
+        # `--version` is load-bearing: `--locked` alone pins bpf-linker's
+        # dependency tree, not bpf-linker itself.
+        # The version goes through `env:` rather than `${{ }}` inside `run:` —
+        # on a fork `pull_request` the script it is read from is attacker-
+        # controlled, and interpolating that straight into a shell command is
+        # the workflow-injection pattern.
         if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
-        run: cargo install bpf-linker
+        env:
+          BPF_LINKER_VERSION: ${{ steps.bpf-linker-version.outputs.version }}
+        run: cargo install bpf-linker --version "$BPF_LINKER_VERSION" --locked
       - name: Build eBPF probes
         # AAASM-3712: build via the shared script — the SINGLE SOURCE OF TRUTH
         # also used by release.yml's AAASM-3601 step, so the two recipes can
@@ -1126,15 +1151,34 @@ jobs:
           # `-Zbuild-std=core` which needs rust-src on nightly.
           components: rust-src,clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve pinned bpf-linker version
+        # AAASM-5735: same single-literal rule as the ebpf-build job — the
+        # version comes from scripts/build-ebpf-probes.sh, never from a second
+        # copy maintained here.
+        id: bpf-linker-version
+        run: |
+          v="$(bash scripts/build-ebpf-probes.sh --print-version)"
+          test -n "$v" || { echo "::error::could not resolve pinned bpf-linker version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Cache bpf-linker binary
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-bpf-linker
         with:
           path: ~/.cargo/bin/bpf-linker
-          key: bpf-linker-${{ runner.os }}-0.10.3
+          # AAASM-5735: `-r2` is a one-time key-generation bump. Without it the
+          # resolved version is unchanged (0.10.3), the old cache still hits, and
+          # the corrected `cargo install --version` line would never execute — the
+          # PR would go green having proved nothing, since the cache-hit path was
+          # never the broken one. Bumping forces one real cold install.
+          key: bpf-linker-r2-${{ runner.os }}-${{ steps.bpf-linker-version.outputs.version }}
       - name: Install bpf-linker
+        # See the ebpf-build job: `--version` pins bpf-linker, `--locked` only
+        # pins its dependency tree. The value goes via `env:` to keep untrusted
+        # fork content out of the shell command.
         if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
-        run: cargo install bpf-linker
+        env:
+          BPF_LINKER_VERSION: ${{ steps.bpf-linker-version.outputs.version }}
+        run: cargo install bpf-linker --version "$BPF_LINKER_VERSION" --locked
       - name: Build BPF probes
         # Pre-builds the BPF ELF objects that `aa-ebpf`'s build.rs embeds
         # via `include_bytes_aligned!`. Doing it explicitly here surfaces
