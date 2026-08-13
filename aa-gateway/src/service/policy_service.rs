@@ -1300,10 +1300,22 @@ impl PolicyServiceImpl {
     /// rejected credential validation in `validate_credential_token`. Mirrors
     /// the chain-bookkeeping shape of [`PolicyServiceImpl::record_audit`].
     async fn record_impersonation_audit(&self, req: &CheckActionRequest, response: &CheckActionResponse) {
-        let Some(proto_agent) = req.agent_id.as_ref() else {
-            return;
-        };
-        let agent_id = AgentId::from_bytes(convert::hash_to_16(&proto_agent.agent_id));
+        // AAASM-5665 (R1) — this used to return early when the `agent_id`
+        // message was absent. That was harmless while an absent `agent_id`
+        // could not be refused; it is not harmless now that it can, because a
+        // refusal that records nothing is precisely the defect `record_audit`
+        // was already fixed for. Absent and blank are the same claim — none —
+        // so both produce an entry, and `claimed_agent_id` is the single
+        // predicate deciding what it says.
+        let proto_agent = req.agent_id.clone().unwrap_or_default();
+        let claimed = convert::claimed_agent_id(req);
+        // Unclaimed refusals are recorded under the reserved id, matching what
+        // `request_to_core` deposits for the same request rather than
+        // `hash_to_16("")`, which is a distinct and guessable subject.
+        let agent_id = AgentId::from_bytes(match claimed {
+            Some(id) => convert::hash_to_16(id),
+            None => convert::UNATTRIBUTED_AGENT_ID,
+        });
         let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
