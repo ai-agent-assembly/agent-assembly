@@ -289,7 +289,22 @@ fn empty_metadata_fields_are_omitted() {
         caller_agent_id: None,
     };
     let (ctx, _) = request_to_core(&req).unwrap();
-    assert!(ctx.metadata.is_empty());
+    // AAASM-5665 — the claimed `agent_id` is now deposited into the evaluation
+    // context, so a populated one is legitimately present. The property this
+    // test exists for is unchanged: a field that is EMPTY on the wire is
+    // omitted rather than deposited as an empty string.
+    assert_eq!(
+        ctx.metadata
+            .get(aa_gateway::service::convert::CLAIMED_AGENT_ID_KEY)
+            .map(String::as_str),
+        Some("a")
+    );
+    for empty_on_the_wire in ["org_id", "team_id", "credential_token", "span_id"] {
+        assert!(
+            !ctx.metadata.contains_key(empty_on_the_wire),
+            "{empty_on_the_wire} was empty on the wire and must not be deposited"
+        );
+    }
 }
 
 // ── Outbound conversion tests ────────────────────────────────────────────────
