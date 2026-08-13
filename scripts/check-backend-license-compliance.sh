@@ -30,11 +30,20 @@
 # Usage:
 #   scripts/check-backend-license-compliance.sh
 #   scripts/check-backend-license-compliance.sh --manifest PATH --notices PATH
+#   scripts/check-backend-license-compliance.sh --self-test
+#
+# `--self-test` is the NEGATIVE CONTROL. A gate that has only ever been run
+# against a manifest it accepts has not been shown to reject anything — it
+# could be passing vacuously. The self-test builds one known-good baseline,
+# asserts the gate accepts it, then applies exactly ONE mutation at a time and
+# asserts the gate rejects each with the expected message.
 #
 # Exit codes: 0 = all checks pass, 1 = at least one violation, 2 = bad usage.
 set -euo pipefail
 
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SELF_TEST=0
 MANIFEST="$REPO_ROOT/metadata/isolation-backends.json"
 NOTICES="$REPO_ROOT/THIRD_PARTY_NOTICES.md"
 
@@ -55,7 +64,7 @@ fail=0
 err() { echo "::error::$*" >&2; fail=1; }
 
 usage() {
-  echo "usage: $0 [--manifest PATH] [--notices PATH]" >&2
+  echo "usage: $0 [--manifest PATH] [--notices PATH] [--self-test]" >&2
   exit 2
 }
 
@@ -63,6 +72,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --manifest) [ $# -ge 2 ] || usage; MANIFEST="$2"; shift 2 ;;
     --notices)  [ $# -ge 2 ] || usage; NOTICES="$2";  shift 2 ;;
+    --self-test) SELF_TEST=1; shift ;;
     -h|--help) usage ;;
     *) echo "::error::unknown argument '$1'" >&2; usage ;;
   esac
@@ -380,7 +390,256 @@ check_bundled_obligations() {
 }
 
 # ---------------------------------------------------------------------------
+# Self-test — the negative control.
+#
+# Design note: every case below is ONE mutation of a single shared baseline
+# that the gate is first proven to accept. That is deliberate. If each case
+# built its own manifest from scratch, a case could "fail" for a reason
+# unrelated to the property under test and still look like evidence. Mutating
+# a known-good baseline means the only thing that changed is the variable
+# being tested, so the rejection is attributable to it.
+#
+# The mpl_* pair is the discriminating control: the SAME license produces
+# opposite verdicts, differing only in whether the channel carrying it is
+# classified proprietary. A gate that ignored channel classification would
+# pass both, so this pair is what distinguishes a working two-tier allowlist
+# from one that merely looks like it.
+# ---------------------------------------------------------------------------
+ST_PASS=0
+ST_FAIL=0
+
+# run_case <name> <expect: pass|fail> <expected-substring> <manifest> [notices]
+run_case() {
+  local name="$1" expect="$2" want="$3" manifest="$4" notices="${5:-}"
+  local out rc
+  [ -n "$notices" ] || notices="$ST_TMP/NOTICES.md"
+
+  set +e
+  out="$(bash "$SELF" --manifest "$manifest" --notices "$notices" 2>&1)"
+  rc=$?
+  set -e
+
+  if [ "$expect" = "pass" ]; then
+    if [ "$rc" -eq 0 ]; then
+      echo "  ok   $name (exit 0, as expected)"
+      ST_PASS=$((ST_PASS + 1))
+    else
+      echo "  FAIL $name: expected the gate to ACCEPT this manifest, got exit $rc" >&2
+      echo "$out" | sed 's/^/       | /' >&2
+      ST_FAIL=$((ST_FAIL + 1))
+    fi
+    return 0
+  fi
+
+  if [ "$rc" -eq 0 ]; then
+    echo "  FAIL $name: gate ACCEPTED a manifest it must reject (exit 0)." >&2
+    ST_FAIL=$((ST_FAIL + 1))
+  elif ! printf '%s' "$out" | grep -qF -- "$want"; then
+    # Rejected, but not for the reason under test — that is a wrong-reason
+    # pass, which is not evidence the property is enforced.
+    echo "  FAIL $name: rejected (exit $rc) but not for the expected reason." >&2
+    echo "       wanted substring: $want" >&2
+    echo "$out" | sed 's/^/       | /' >&2
+    ST_FAIL=$((ST_FAIL + 1))
+  else
+    echo "  ok   $name (exit $rc, expected rejection)"
+    ST_PASS=$((ST_PASS + 1))
+  fi
+  return 0
+}
+
+# Write a mutated copy of the baseline. `$1` = case name, `$2` = jq program.
+mutate() {
+  local name="$1" program="$2" out="$ST_TMP/$1.json"
+  jq "$program" "$ST_TMP/baseline.json" > "$out"
+  printf '%s' "$out"
+}
+
+run_self_test() {
+  ST_TMP="$(mktemp -d)"
+  trap 'rm -rf "$ST_TMP"' EXIT
+
+  local hex="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+  cat > "$ST_TMP/NOTICES.md" <<'NOTICES'
+# Third-party notices (self-test fixture)
+
+### fixture-backend
+
+Fixture notice section.
+NOTICES
+
+  # A notices file whose ONLY mention of the backend is a "Pending" heading.
+  # Used to prove a pending placeholder cannot satisfy a shipped backend's
+  # notice requirement.
+  cat > "$ST_TMP/NOTICES-pending-only.md" <<'NOTICES'
+# Third-party notices (self-test fixture)
+
+### Pending: fixture-backend (AAASM-5708)
+
+No notice written yet.
+NOTICES
+
+  cat > "$ST_TMP/baseline.json" <<BASELINE
+{
+  "schema_version": 1,
+  "license_policy": {
+    "oss_allowed_spdx": ["Apache-2.0", "MIT", "MPL-2.0"],
+    "proprietary_allowed_spdx": ["Apache-2.0", "MIT"],
+    "known_incompatible_spdx": {
+      "AGPL-3.0-only": "Network-use source-disclosure obligation reaches hosted deployment."
+    }
+  },
+  "channels": [
+    { "id": "oss-chan",  "distribution": "oss" },
+    { "id": "prop-chan", "distribution": "proprietary" }
+  ],
+  "backends": [
+    {
+      "id": "fixture-backend",
+      "status": "active",
+      "upstream_name": "Fixture Backend",
+      "version": "1.2.3",
+      "source_url": "https://example.invalid/fixture-1.2.3.tar.gz",
+      "release_sha256": "$hex",
+      "spdx_license": "Apache-2.0",
+      "modifications": { "modified": false },
+      "review": {
+        "ticket": "AAASM-5714",
+        "reviewed_at": "2026-08-13",
+        "capability_evidence": "docs/release/isolation-backend-licensing.md"
+      },
+      "sbom": { "covered_by": "self-test fixture" },
+      "channels": { "oss-chan": "bundled", "prop-chan": "not-distributed" }
+    },
+    {
+      "id": "fixture-pending",
+      "status": "pending",
+      "tracking_ticket": "AAASM-5708"
+    }
+  ]
+}
+BASELINE
+
+  echo "isolation-backend gate self-test"
+  echo
+
+  # --- positive control -----------------------------------------------------
+  # Establishes that the baseline is otherwise valid, so every rejection below
+  # is attributable to that case's single mutation and nothing else.
+  run_case "baseline_is_accepted" pass "" "$ST_TMP/baseline.json"
+
+  echo '{ this is not json' > "$ST_TMP/malformed.json"
+  run_case "malformed_json" fail "is not valid JSON" "$ST_TMP/malformed.json"
+
+  run_case "unsupported_schema_version" fail "schema_version" \
+    "$(mutate unsupported_schema_version '.schema_version = 2')"
+
+  # --- the fabrication guard ------------------------------------------------
+  run_case "pending_without_tracking_ticket" fail "tracking_ticket" \
+    "$(mutate pending_without_tracking_ticket 'del(.backends[1].tracking_ticket)')"
+
+  run_case "pending_carries_provenance" fail "carries provenance field" \
+    "$(mutate pending_carries_provenance '.backends[1].version = "0.1.0"')"
+
+  run_case "pending_carries_license" fail "carries provenance field" \
+    "$(mutate pending_carries_license '.backends[1].spdx_license = "Apache-2.0"')"
+
+  # --- the license allowlist, fail-closed -----------------------------------
+  run_case "agpl_on_oss_channel" fail "oss_allowed_spdx" \
+    "$(mutate agpl_on_oss_channel '.backends[0].spdx_license = "AGPL-3.0-only"')"
+
+  run_case "unrecognised_license_denied_by_default" fail "allowlist with implicit deny" \
+    "$(mutate unrecognised_license_denied_by_default '.backends[0].spdx_license = "Totally-Made-Up-1.0"')"
+
+  # --- discriminating pair: same license, verdict decided by channel tier ----
+  run_case "mpl_on_oss_channel_is_allowed" pass "" \
+    "$(mutate mpl_on_oss_channel_is_allowed '.backends[0].spdx_license = "MPL-2.0"')"
+
+  run_case "mpl_on_proprietary_channel_is_denied" fail "proprietary_allowed_spdx" \
+    "$(mutate mpl_on_proprietary_channel_is_denied \
+       '.backends[0].spdx_license = "MPL-2.0"
+        | .backends[0].channels["prop-chan"] = "bundled"')"
+
+  # A non-distributing channel must NOT be gated — otherwise the gate would
+  # block backends nobody ships, and the "denied" result above would be
+  # unfalsifiable rather than meaningful.
+  run_case "proprietary_channel_not_distributing_is_ungated" pass "" \
+    "$(mutate proprietary_channel_not_distributing_is_ungated \
+       '.backends[0].spdx_license = "MPL-2.0"
+        | .backends[0].channels["prop-chan"] = "system"')"
+
+  # --- provenance completeness ----------------------------------------------
+  run_case "checksum_not_sha256" fail "64 lowercase hex" \
+    "$(mutate checksum_not_sha256 '.backends[0].release_sha256 = "deadbeef"')"
+
+  run_case "source_url_not_https" fail "source_url" \
+    "$(mutate source_url_not_https '.backends[0].source_url = "git@example.invalid:x.git"')"
+
+  run_case "missing_version" fail "no 'version'" \
+    "$(mutate missing_version 'del(.backends[0].version)')"
+
+  # --- modification notice --------------------------------------------------
+  run_case "modified_without_notice_path" fail "notice_path" \
+    "$(mutate modified_without_notice_path '.backends[0].modifications.modified = true')"
+
+  run_case "modified_notice_path_missing_on_disk" fail "does not exist in the repository" \
+    "$(mutate modified_notice_path_missing_on_disk \
+       '.backends[0].modifications = {"modified": true, "notice_path": "docs/nope/absent.md"}')"
+
+  run_case "modification_state_not_boolean" fail "must be the boolean" \
+    "$(mutate modification_state_not_boolean '.backends[0].modifications.modified = "unknown"')"
+
+  # --- review, not just a version bump --------------------------------------
+  run_case "no_capability_evidence" fail "capability_evidence" \
+    "$(mutate no_capability_evidence 'del(.backends[0].review.capability_evidence)')"
+
+  run_case "no_review_block" fail "review.ticket" \
+    "$(mutate no_review_block 'del(.backends[0].review)')"
+
+  # --- channel matrix completeness ------------------------------------------
+  run_case "channel_strategy_missing" fail "does not state a strategy" \
+    "$(mutate channel_strategy_missing 'del(.backends[0].channels["prop-chan"])')"
+
+  run_case "channel_strategy_unknown" fail "must be one of" \
+    "$(mutate channel_strategy_unknown '.backends[0].channels["oss-chan"] = "vendored"')"
+
+  run_case "channel_not_declared" fail "not declared in the manifest" \
+    "$(mutate channel_not_declared '.backends[0].channels["ghost-chan"] = "bundled"')"
+
+  run_case "channel_unclassified" fail "must be 'oss' or 'proprietary'" \
+    "$(mutate channel_unclassified 'del(.channels[0].distribution)')"
+
+  # --- notices + SBOM obligations on bundled bytes --------------------------
+  run_case "bundled_without_sbom_statement" fail "sbom.covered_by" \
+    "$(mutate bundled_without_sbom_statement 'del(.backends[0].sbom)')"
+
+  run_case "bundled_without_notice_section" fail "has no '### fixture-backend' section" \
+    "$ST_TMP/baseline.json" "$ST_TMP/NOTICES-pending-only.md"
+
+  # --- policy coherence -----------------------------------------------------
+  run_case "proprietary_list_wider_than_oss" fail "must be a subset" \
+    "$(mutate proprietary_list_wider_than_oss \
+       '.license_policy.proprietary_allowed_spdx += ["GPL-3.0-only"]')"
+
+  run_case "license_both_allowed_and_incompatible" fail "BOTH an allowlist" \
+    "$(mutate license_both_allowed_and_incompatible \
+       '.license_policy.oss_allowed_spdx += ["AGPL-3.0-only"]')"
+
+  echo
+  echo "self-test: $ST_PASS passed, $ST_FAIL failed"
+  if [ "$ST_FAIL" -ne 0 ]; then
+    echo "::error::isolation-backend gate self-test FAILED — the gate does not enforce what it claims." >&2
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 main() {
+  if [ "$SELF_TEST" -eq 1 ]; then
+    run_self_test
+    exit 0
+  fi
   check_manifest
   if [ "$fail" -ne 0 ]; then
     echo "isolation-backend license/provenance gate: FAILED" >&2
