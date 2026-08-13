@@ -86,7 +86,7 @@ and neither is a backup of the other.
 | Bound | Time: `hot_days` then `warm_days`, then `cold_action` | Size: `DEFAULT_MAX_SEGMENT_BYTES` × `DEFAULT_RETAINED_SEGMENTS` |
 | Defaults | 30 days hot, 90 days warm, then **`Drop`** | 32 MiB × 3 segments; `max_age` unset |
 | How records leave | Retention pruning deletes rows past `warm_days` | Oldest segment deleted on rotation; entries dropped when the channel is full |
-| Loss is counted | — | `dropped_entries`, `discarded_segments`, `expired_segments`, `retention_shortfalls` |
+| Loss is counted | — | six counters: `dropped_entries`, `discarded_segments`, `expired_segments`, `retention_shortfalls`, `write_failures`, `export_failures` |
 
 Three consequences worth stating plainly, because each one breaks an assumption
 an operator can reasonably arrive at from the sections above:
@@ -100,8 +100,10 @@ an operator can reasonably arrive at from the sections above:
   who configured 90 days and is actually getting three can tell.
 - **A count taken from the proxy sink file is a lower bound**, never a total. Use
   the `SinkCompleteness` sidecar to find out whether the window you are reading
-  is complete. `SinkCompleteness::sealed` is true only when every loss counter is
-  zero.
+  is complete. The consumer-visible signal is its `window` field: `sealed()` sets
+  it to `WindowCompleteness::Complete` only when `is_lossless()` holds — all six
+  counters above at zero — and to `Lossy` otherwise. A rate computed over a
+  `Lossy` window is a rate over an unknown denominator.
 
 Request and response bodies are additionally truncated at
 `MAX_PERSISTED_BODY_BYTES` (8 KiB), so a persisted body is evidence that a

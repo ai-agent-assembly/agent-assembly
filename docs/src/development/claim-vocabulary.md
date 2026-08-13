@@ -1223,6 +1223,29 @@ mixing a head count with a base count is how the two rows stop adding up.
 | `docs/src/**` only | 143 | 3 | 10 |
 | **Full [§6.5](#65-file-scope) scope** | **198** | **6** | **13** |
 
+> **Re-measured 2026-08 by the implementation
+> ([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679)).**
+> The figures above are the authoring-time measurement and are retained for the
+> record; they no longer describe the tree. Over §6.5's scope plus that ticket's
+> `design/**` extension: **281 files, 4 blocking, 12 finding, 31 info.**
+>
+> Three of the six blocking rows below have since been fixed on `main` —
+> `README.md:129`, `README.md:135` and `aa-proxy/README.md:11-12` all measure
+> zero now, and `README.md:129` is the row [AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528)
+> closed. One new row appeared that this table never listed,
+> `governance/README.md:844`, and it is a **false positive**: the sentence reads
+> *"a capability cannot be bypass-resistant for something it does not provide"*,
+> and `CLAIM-ABS-03`'s pattern has no trailing boundary after `bypass(?:ed)?`.
+> The implementation is faithful to the pattern, so that is a defect in this
+> page's rule, not in the checker — and it is the tree's only novel blocking hit.
+>
+> Two of the four remaining are `docs/src/protocol/CHANGELOG.md:25,75`, which
+> `verification-reports/AAASM-5528-public-claim-inventory.md` records as a
+> deliberate decision (*"a changelog records what was said at the time"*). §7.4
+> makes them unwaivable and §6.6 forbids a suppression list, so **the adoption
+> sequence's "baseline reaches zero" condition cannot currently be met** without
+> reopening that decision. Recorded rather than worked around.
+
 The wider corpus is the narrower one plus 55 files: 43 `README.md` at any depth,
 15 under `.claude/`, and `CONTRIBUTING.md`, less the READMEs already inside
 `docs/src/**`. A reader who reproduces a different total should check the README
