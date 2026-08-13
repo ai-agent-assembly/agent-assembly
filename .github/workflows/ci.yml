@@ -74,6 +74,19 @@ on:
       - "metadata/isolation-backends.json"
       - "THIRD_PARTY_NOTICES.md"
       - "scripts/check-backend-license-compliance.sh"
+      # AAASM-5714: the files that actually DECIDE what each channel ships.
+      # These matter more than the manifest itself. Without them the gate fires
+      # only when someone edits the manifest — i.e. only when they are already
+      # doing the right thing — while a PR that bundles a backend binary by
+      # editing the release pipeline alone never triggers this workflow at all,
+      # so the job never runs and `ci-success` counts the skip as a pass.
+      # Listed by exact filename, never a bare `dir/**` (CONTRIBUTING.md).
+      - ".github/workflows/release.yml"
+      - ".github/workflows/docker.yml"
+      - "scripts/install-cli.sh"
+      - "scripts/install.sh"
+      - "metadata/versions.rb"
+      - "scripts/check-release-completeness.sh"
   pull_request:
     branches: [main]
     paths:
@@ -140,6 +153,12 @@ on:
       - "metadata/isolation-backends.json"
       - "THIRD_PARTY_NOTICES.md"
       - "scripts/check-backend-license-compliance.sh"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/docker.yml"
+      - "scripts/install-cli.sh"
+      - "scripts/install.sh"
+      - "metadata/versions.rb"
+      - "scripts/check-release-completeness.sh"
   # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
   # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
   # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
@@ -298,6 +317,17 @@ jobs:
               - 'scripts/check-backend-license-compliance.sh'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
+              # The channel-deciding files. A backend enters a distribution
+              # channel by a change to one of THESE, not to the manifest — the
+              # manifest is only where an honest author records it. Gating on
+              # the manifest alone would mean the gate fires exclusively for
+              # people already doing the right thing.
+              - '.github/workflows/release.yml'
+              - '.github/workflows/docker.yml'
+              - 'scripts/install-cli.sh'
+              - 'scripts/install.sh'
+              - 'metadata/versions.rb'
+              - 'scripts/check-release-completeness.sh'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
