@@ -12,4 +12,4 @@ repo="$2"
 CARGO_TARGET_DIR="$scratch/target"
 export CARGO_TARGET_DIR
 
-cargo check -p aa-core --offline --manifest-path "$repo/Cargo.toml" >/dev/null 2>&1
+cargo check -p aa-core --offline --manifest-path "$repo/Cargo.toml" >/dev/null

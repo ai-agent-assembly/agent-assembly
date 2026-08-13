@@ -49,4 +49,4 @@ done
 
 cd "$scratch"
 python3 -m compileall -q aabench_pkg >/dev/null
-python3 -m unittest discover -s . -p 'test_*.py' >/dev/null 2>&1
+python3 -m unittest discover -s . -p 'test_*.py' >/dev/null

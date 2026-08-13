@@ -6,6 +6,9 @@
 # family's cost a function of registry latency rather than of the sandbox. The
 # store lives inside the scratch dir so repetitions do not warm each other, and
 # so the workload never touches the operator's global pnpm store.
+#
+# Only stdout is discarded: stderr reaches the harness's per-repetition log, so a
+# failure is diagnosable rather than just a non-zero exit code.
 set -eu
 scratch="$1"
 
@@ -35,5 +38,7 @@ test('strings', () => {
 });
 JSEOF
 
-pnpm install --ignore-scripts --offline --store-dir "$scratch/.pnpm-store" >/dev/null 2>&1
-node --test test/ >/dev/null 2>&1
+pnpm install --ignore-scripts --offline --store-dir "$scratch/.pnpm-store" >/dev/null
+# `node --test test/` resolves the trailing-slash directory as a module name on
+# Node 23 and dies with MODULE_NOT_FOUND. Name the file explicitly.
+node --test test/basic.test.mjs >/dev/null

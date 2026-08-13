@@ -6,6 +6,6 @@ set -eu
 repo="$2"
 
 rg --files --hidden --glob '!.git' "$repo" >/dev/null
-rg --count-matches --no-messages 'fn ' "$repo" >/dev/null 2>&1 || true
+rg --count-matches --no-messages 'fn ' "$repo" >/dev/null || true
 git -C "$repo" status --porcelain --untracked-files=no >/dev/null
 git -C "$repo" diff --stat HEAD~1 HEAD >/dev/null
