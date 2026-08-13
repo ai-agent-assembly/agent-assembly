@@ -1972,16 +1972,21 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          declines=$(grep -l '"outcome": "\(unsupported_platform\|tool_absent\)"' \
-            "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null | wc -l | tr -d ' ')
-          measured=$(grep -l '"outcome": "measured"' \
-            "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null | wc -l | tr -d ' ')
+          # `|| true` on every grep: zero matches is the expected, healthy
+          # answer here and grep reports it as exit 1, which `pipefail` would
+          # otherwise turn into a step failure — a check that fails precisely
+          # when it has nothing to report.
+          declined_records() {
+            grep -l '"outcome": "\(unsupported_platform\|tool_absent\)"' \
+              "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true
+          }
+          declines=$(declined_records | grep -c . || true)
+          measured=$({ grep -l '"outcome": "measured"' \
+            "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true; } | grep -c . || true)
           echo "measured=${measured} declined=${declines}"
           if [ "${declines}" -ne 0 ]; then
             echo "::error title=Isolation lane declined a measurement::${declines} scenario(s) declined on a runner that provisions the mechanism and selects the kernel. Records:"
-            grep -l '"outcome": "\(unsupported_platform\|tool_absent\)"' \
-              "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json \
-              | while IFS= read -r record; do cat "$record" >&2; done
+            declined_records | while IFS= read -r record; do cat "$record" >&2; done
             exit 1
           fi
           if [ "${measured}" -lt 9 ]; then
