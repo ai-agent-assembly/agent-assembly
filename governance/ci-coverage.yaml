@@ -41,10 +41,19 @@ version: 1
 
 # Trees whose contents are governance-bearing by construction. Every tracked
 # file under these must be matched by some entry's `paths` below.
+# A root may be a bare path (every tracked file under it must be covered) or a
+# mapping with `extensions`, which scopes C8 to the claim-bearing file types.
+# The scoped form exists for verification-reports/: 16 of its files are PNG
+# screenshots and one is a .gitkeep, which carry no claim. Demanding coverage
+# for those would force a bare `verification-reports/**` into the router, and
+# CONTRIBUTING forbids a directory wildcard with no type qualifier — it would
+# also re-run the docs gates on every screenshot.
 governance_roots:
   - governance/
   - schemas/capability-manifest/
   - docs/src/adr/
+  - path: verification-reports/
+    extensions: ['.md', '.yaml']
 
 coverage:
   - id: capability-manifest
@@ -111,6 +120,12 @@ coverage:
       - scripts/propagate_versions.py
       - .ci/check-metadata-drift.sh
       - scripts/check_absolutes_unwaivable.py
+      # AAASM-5677 AC3: "verification-reports/** ... is inside the path filters
+      # of the workflow that runs the governance gates". Closing it took two
+      # edits, not one — this router glob, and the matching entry in
+      # check_absolutes_unwaivable.py's DEFAULT_GLOBS, which is what decides
+      # the scan set once the job runs.
+      - verification-reports/**/*.md
 
   - id: release-completeness
     # AAASM-4456 / AAASM-5309 / AAASM-5315 / AAASM-5316. Each of these three

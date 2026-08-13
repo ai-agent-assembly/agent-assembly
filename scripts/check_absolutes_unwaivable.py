@@ -72,6 +72,16 @@ DEFAULT_GLOBS: tuple[str, ...] = (
     "docs/src/development/*.md",
     "TRUTH-ADOPTION.md",
     "docs/TRUTH-ADOPTION.md",
+    # AAASM-5677 AC3. These are capability, claim and evidence records — the
+    # capability coverage matrix and threat model live here — so they are
+    # exactly the pages a banned absolute must not be made waiver-eligible on.
+    # AAASM-5677 recorded that PR #1976 edited two of them and this gate never
+    # ran: not a failure, simply fewer check runs. Widening `docs.yml`'s router
+    # alone would not have fixed that — the job would have run and then scanned
+    # nothing, because this tuple is what decides the scan set. Measured at the
+    # time of adding: 96 files, all clean, so this closes the gap without
+    # importing a backlog.
+    "verification-reports/*.md",
 )
 
 # Naming a banned absolute. Lower-cased substring match after markup stripping.

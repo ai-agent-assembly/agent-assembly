@@ -35,6 +35,8 @@ on:
       - '.ci/check-metadata-drift.sh'
       - 'scripts/check_absolutes_unwaivable.py'
       - 'TRUTH-ADOPTION.md'
+      # AAASM-5677 AC3 — paired with the router filter below.
+      - 'verification-reports/**/*.md'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -50,7 +52,7 @@ jobs:
   # triggers keep their own filters and their existing behaviour, because they
   # are backstops (and `workflow_run` has no diff for a paths filter to read).
   changes:
-    name: Detect changed areas
+    name: Detect changed areas (Docs)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
@@ -87,6 +89,14 @@ jobs:
               # outside the trigger unnoticed — the vacuous-pass guard cannot catch
               # that, since the docs/ globs still match.
               - 'TRUTH-ADOPTION.md'
+              # AAASM-5677 AC3. Capability, claim and evidence records — the
+              # capability coverage matrix and threat model among them. The
+              # `metadata-drift` job carries scripts/check_absolutes_unwaivable.py,
+              # and Finding 2 was a pull request editing two of these that the
+              # job never ran on. Paired with the same entry in that script's
+              # DEFAULT_GLOBS: this glob alone would only make the job RUN, and
+              # it would then scan nothing.
+              - 'verification-reports/**/*.md'
 
   build:
     name: Build mdBook
