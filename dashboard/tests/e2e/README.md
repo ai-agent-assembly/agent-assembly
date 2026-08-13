@@ -104,14 +104,21 @@ Stating this precisely matters more than stating it flatteringly — an
 overclaiming gate is how "green CI" quietly stops meaning anything.
 
 - **It is not an API-contract check, and its real-backend coverage is exactly
-  zero.** **All 44** gated specs stub every network call — 43 via `page.route`
+  zero.** Every gated spec stubs its network calls — most via `page.route`
   directly, `violations-heatmap-design-fidelity` via the shared `mockApi()`
-  helper in `_fixtures/aaasm-1432`. The gate compares the frontend against *its
+  helper in `_fixtures/aaasm-1432`.
+
+  *(The counts in this section were written when the suite was smaller and are
+  re-measured here: **58 gated spec files, 330 gated tests, out of 101 spec files
+  in the tree** — `playwright test --config=playwright.ci.config.ts --list`,
+  2026-08. The earlier "44" and "86" no longer describe the suite. The claim they
+  supported is unaffected: the figure that matters is the **zero**, not the
+  denominator.)* The gate compares the frontend against *its
   own hand-written mocks*, so it cannot observe the real API and cannot detect
   backend contract drift. The pagination-envelope breakage (AAASM-4892) is the
   proof: the app had already been updated and the **mocks** were what went stale.
 
-  Of all 86 specs in the suite, exactly one asserts a genuine round-trip against
+  Of every spec in the suite, exactly one asserted a genuine round-trip against
   a live gateway: `hitl-approval` is the only spec that uses `route.fetch` to
   proxy `/api/v1/**` to a real server, and the only one that spawns a child
   process — `hitl-fixture.ts:43` runs `cargo test --test e2e_hitl_approval` to
@@ -133,7 +140,7 @@ overclaiming gate is how "green CI" quietly stops meaning anything.
 
   | | `dashboard-e2e` | `dashboard-e2e-real-backend` |
   | --- | --- | --- |
-  | Network surface | hand-written mocks, all 44 specs | live `aa-api-server` |
+  | Network surface | hand-written mocks, every gated spec | live `aa-api-server` |
   | Can see backend contract drift | no | yes — `real-backend-contract.spec.ts` asserts the AAASM-4892 envelope |
   | Quarantine list applied | yes | **no** — absence is the failure being fixed |
   | Passes if its specs skip | n/a | **no** — `scripts/assert-e2e-actually-ran.mjs` fails the job |

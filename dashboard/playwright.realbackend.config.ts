@@ -41,6 +41,20 @@ export default defineConfig({
   // report rather than paper over.
   retries: 0,
 
+  use: {
+    ...base.use,
+    // The base config uses `on-first-retry`, and with `retries: 0` there is
+    // never a first retry — so the slowest, most environment-dependent lane in
+    // the repository produced no trace at all. `retain-on-failure` is what makes
+    // a CI-only failure diagnosable from the artifact, which is the base
+    // config's own stated reason for enabling traces.
+    trace: 'retain-on-failure',
+  },
+
+  // NOTE: this budget is deliberately config-wide even though only
+  // `hitl-approval` needs it. A per-spec `test.setTimeout` would be tighter, but
+  // it lives in a file this PR does not own; revisit together.
+  //
   // `hitl-approval` spawns its own gateway through `cargo test`, and
   // `hitl-fixture.ts` budgets `READY_TIMEOUT_MS = 4 minutes` for a cold build.
   // A Playwright hook inherits the *test* timeout, so under the inherited 30s

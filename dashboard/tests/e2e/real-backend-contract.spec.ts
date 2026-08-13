@@ -91,16 +91,25 @@ test.describe('AAASM-5694 — real-backend contract', () => {
   for (const endpoint of PAGINATED_ENDPOINTS) {
     test(`${endpoint} returns the AAASM-4892 pagination envelope`, async () => {
       const response = await fetch(`${API}${endpoint}?page=1&per_page=5`)
-      expect(response.status, `${endpoint} should answer a paginated read`).toBeLessThan(500)
-      if (response.status !== 200) {
-        // A 400/403 is a scoping answer, not a shape answer — the envelope
-        // contract only binds a 200. Recorded rather than silently passed.
-        test.info().annotations.push({
-          type: 'not-asserted',
-          description: `${endpoint} answered ${response.status}; envelope not asserted`,
-        })
-        return
-      }
+
+      // 200 or nothing. An earlier version treated any non-500 as an acceptable
+      // "scoping answer", annotated it, and returned — so booting this lane's own
+      // server with auth left on produced five 401s, twelve green tests and an
+      // exit code of 0 while asserting nothing about any envelope. That is the
+      // defect this whole lane exists to remove, reappearing one level down: the
+      // skip-guard counts tests that RAN, not assertions that FIRED, so an
+      // annotation nothing reads is indistinguishable from a pass.
+      //
+      // This lane provisions an unauthenticated server by construction
+      // (`AASM_API_AUTH=off`), so a 401/403 means the harness is wrong and a
+      // 404 means the route moved. Both must be loud.
+      expect(
+        response.status,
+        `${endpoint} must answer 200 in this lane — the server is booted with ` +
+          `AASM_API_AUTH=off, so 401/403 means the harness is misconfigured and ` +
+          `404 means the route moved. Either way the envelope went unchecked.`
+      ).toBe(200)
+
       assertPaginatedEnvelope(await response.json(), endpoint)
     })
   }

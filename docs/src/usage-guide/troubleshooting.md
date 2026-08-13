@@ -141,10 +141,6 @@ page verified this way is verified against what CI checks. Endpoints backed by
 the SaaS/cloud control plane remain unavailable locally; a panel still empty
 after this is either one of those or genuinely has no rows.
 
-**Fix.** Connect a control plane that serves the `/api/v1/*` data routes (the
-hosted backend), or use the CLI (`aasm agent list`, `aasm policy list`,
-`aasm cost summary`) against the local API for the same data in the terminal.
-See [Observe in the dashboard](observe-in-dashboard.md).
 
 ## `policy validate` prints "Unknown key … will be ignored"
 
@@ -183,5 +179,5 @@ real block — see the caveat in
 | "--policy is required" | Use `aa-gateway --mode local`, not the default |
 | "unreachable" on every CLI call | Pass `--api-url http://127.0.0.1:7391` |
 | `gateway status` "not running" | Local mode ≠ legacy gRPC; use `status` / `/healthz` |
-| Empty dashboard tables | Data API (port 8080) not running locally |
+| Empty dashboard tables | `--mode local` serves no data routes — run `aa-api-server` |
 | `validate` warnings | Unknown keys ignored — move into a supported section |

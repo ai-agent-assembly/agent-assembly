@@ -1546,8 +1546,21 @@ jobs:
   # can break the contract and only one of them is watched today.
   dashboard-e2e-real-backend:
     name: Dashboard e2e (real backend)
-    needs: [changes, dashboard-build]
-    if: needs.changes.outputs.dashboard == 'true' || needs.changes.outputs.rust == 'true'
+    #
+    # `needs` both builders and `if: always()` so the job survives one of them
+    # skipping. An earlier version had `needs: [changes, dashboard-build]` with a
+    # dashboard-OR-rust condition, and `dashboard-build` is dashboard-only — so on
+    # a **Rust-only** pull request this lane either skipped (and `ci-success`
+    # treats a skipped need as passing) or ran and died on a missing artifact.
+    # Either way the one lane that can observe backend contract drift was absent
+    # on exactly the changes that cause it, which is AAASM-4892's shape again.
+    needs: [changes, dashboard-build, dashboard-assets]
+    if: >-
+      always() &&
+      needs.changes.result == 'success' &&
+      (needs.changes.outputs.dashboard == 'true' || needs.changes.outputs.rust == 'true') &&
+      needs.dashboard-build.result != 'failure' &&
+      needs.dashboard-assets.result != 'failure'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1567,6 +1580,8 @@ jobs:
         # locally, where protoc happened to be installed.
         run: sudo apt-get install -y protobuf-compiler
 
+      # NOTE ordering: this must come AFTER `Build aa-api-server`, because that
+      # build re-invalidates `aa-integration-tests`' fingerprint.
       - name: Pre-build the hitl-approval fixture
         # `hitl-approval` spawns its own gateway via `cargo test --test
         # e2e_hitl_approval`, and `hitl-fixture.ts` waits up to 4 minutes for it
@@ -1578,7 +1593,14 @@ jobs:
         # No Docker: this fixture's `TopologyTestEnv` is backed by in-memory
         # stores. The testcontainers dependency in `aa-integration-tests` belongs
         # to `audit_consumer_verify.rs`, a different target.
-        run: cargo test -p aa-integration-tests --no-run --test e2e_hitl_approval
+        #
+        # Command must match `hitl-fixture.ts`'s spawn EXACTLY — it runs
+        # `cargo test --test e2e_hitl_approval` from the workspace root with no
+        # `-p`. An earlier version pre-built with `-p aa-integration-tests`,
+        # which is a different package selection, therefore a different feature
+        # unification, therefore a different binary hash — so the fixture still
+        # compiled inside its own 4-minute window and cleared it by ~13 s.
+        run: cargo test --no-run --test e2e_hitl_approval
 
       - name: Build aa-api-server
         # `aa-gateway --mode local` deliberately does not construct
@@ -1605,11 +1627,28 @@ jobs:
         working-directory: dashboard
         run: pnpm generate:api
 
-      - name: Download dashboard dist artifact
+      # `dashboard-build` publishes `dashboard-dist`; `dashboard-assets` (the
+      # rust-gated builder) publishes `dashboard-dist-rust`. Exactly one of them
+      # ran, so both downloads are `continue-on-error` and the presence check
+      # below is what actually decides.
+      - name: Download dashboard dist (dashboard-gated build)
+        if: needs.changes.outputs.dashboard == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dashboard-dist
           path: dashboard/dist/
+
+      - name: Download dashboard dist (rust-gated build)
+        if: needs.changes.outputs.dashboard != 'true' && needs.changes.outputs.rust == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dashboard-dist-rust
+          path: dashboard/dist/
+
+      - name: Fail loudly if no dashboard dist arrived
+        # Without this the preview server serves nothing and every spec fails
+        # with an unhelpful navigation error instead of naming the real cause.
+        run: test -f dashboard/dist/index.html
 
       - name: Install Playwright chromium + OS deps
         working-directory: dashboard
@@ -1622,7 +1661,6 @@ jobs:
         run: |
           set -euo pipefail
           ./target/debug/aa-api-server &
-          echo "AA_API_PID=$!" >> "$GITHUB_ENV"
           for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:7700/api/v1/health >/dev/null 2>&1; then
               echo "aa-api-server is up"
@@ -1646,7 +1684,7 @@ jobs:
       - name: Assert the real-backend specs actually ran
         if: always()
         working-directory: dashboard
-        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 8
+        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 12
 
       - name: Upload real-backend report
         if: always()
