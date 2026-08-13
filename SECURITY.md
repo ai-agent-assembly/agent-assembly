@@ -17,9 +17,9 @@ To report a security issue, use GitHub's private vulnerability reporting:
 3. Fill in the details and submit.
 
 <!-- BEGIN GENERATED: security_contact_email -->
-Alternatively, email **security@agent-assembly.com**
+Alternatively, email **aaasm5677-negative-control@example.invalid**
 
-> **Legacy address.** `security@agent-assembly.dev` remains a legacy compatibility alias. During the in-progress migration to the canonical `security@agent-assembly.com` identity, the legacy address continues to receive mail via Cloudflare Email Routing, so a report sent there still reaches us. The canonical mailbox is not yet live-sending.
+> **Legacy address.** `security@agent-assembly.dev` remains a legacy compatibility alias. During the in-progress migration to the canonical `aaasm5677-negative-control@example.invalid` identity, the legacy address continues to receive mail via Cloudflare Email Routing, so a report sent there still reaches us. The canonical mailbox is not yet live-sending.
 <!-- END GENERATED: security_contact_email -->
 with the subject line: `[SECURITY] agent-assembly — <brief description>`.
 

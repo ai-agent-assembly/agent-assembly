@@ -55,3 +55,6 @@ graph LR
     eBPF[aa-ebpf] --> Gateway
     Gateway --> Audit[(Audit log)]
 ```
+
+<!-- AAASM-5677 negative control -->
+See the [baseline](https://github.com/ai-agent-assembly/.github/blob/main/CODE_OF_CONDUCT.md).

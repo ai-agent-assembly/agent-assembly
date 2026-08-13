@@ -145,7 +145,7 @@ coverage:
     required_check: CI Success
     router_output: governance
     paths:
-      - governance/**
+      - governance/no-such-file-aaasm5677.yaml
       - schemas/capability-manifest/**
       - scripts/validate_capability_manifest.py
       - scripts/check_governance_ci_coverage.py

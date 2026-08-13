@@ -116,7 +116,7 @@ jobs:
         run: |
           set -euo pipefail
           PKGS=(-p aa-cli -p aa-gateway -p aa-runtime -p aa-api)
-          if [ "$RUNNER_OS" = "Linux" ]; then PKGS+=(-p aa-proxy); fi
+          if [ "$RUNNER_OS" = "Linux" ]; then PKGS+=(); fi
           cargo build --release --target "$TARGET" "${PKGS[@]}"
 
       - name: Install Rosetta 2 (x86_64-apple-darwin smoke test)

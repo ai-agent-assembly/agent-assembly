@@ -5475,3 +5475,5 @@ capabilities:
       blocks that do exist cannot compile as written'
   evidence_runs_on_main: none
   target_level: state as Unsupported
+
+aaasm_5677_negative_control: true
