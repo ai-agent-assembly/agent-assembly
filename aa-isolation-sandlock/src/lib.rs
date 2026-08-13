@@ -59,11 +59,13 @@
 
 #![warn(missing_docs)]
 
+pub mod backend;
 pub mod capability;
 pub mod host;
 pub mod lower;
 pub mod probe;
 
+pub use backend::{CompletedRun, SandlockBackend, BACKEND_ID, SOURCE_URL, SPDX_LICENSE};
 pub use host::{BackendLookupError, HostFacts, KernelVersion, BACKEND_PATH_ENV, BACKEND_PROGRAM};
 pub use lower::{Argv, LoweringGap};
 pub use probe::{ConfinementProbe, Observation};
