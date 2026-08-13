@@ -92,7 +92,7 @@ cargo nextest run -p aa-gateway budget::types::tests::provider_variants_are_dist
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo deny check
-cargo doc --workspace --no-deps        # checked on push by hooks
+cargo doc --workspace --no-deps        # checked on push by hooks, Rust-affecting diffs only
 ```
 
 - Some setups need `RUSTUP_TOOLCHAIN=stable` + an explicit toolchain path (normal on
