@@ -59,6 +59,7 @@
 
 #![warn(missing_docs)]
 
+pub mod capability;
 pub mod host;
 pub mod lower;
 pub mod probe;
