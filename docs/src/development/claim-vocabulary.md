@@ -1176,11 +1176,22 @@ Two things had to be true before this page could be published, and both were
 measured rather than assumed.
 
 **This page does not violate its own rules.** Running the rule set over this file
-produces **0 blocking, 0 finding, 6 info**. Every prohibited phrase it *names*
-sits in an inline code span (E3) and is silent; the six `info` diagnostics are
-the six real violations quoted verbatim in
+produces **0 blocking, 1 finding, 7 info** (re-measured 2026-08 by the
+implementation — the figure was `0 / 0 / 6` when this section was written).
+Every prohibited phrase it *names* sits in an inline code span (E3) and is
+silent. Six of the seven `info` diagnostics are the real violations quoted
+verbatim in
 [§8.1](#81-two-corpora-and-why-the-baseline-must-cover-the-larger-one)'s table,
-each attributed to a file and line. That is `CLAIM-QUOTE-01` behaving exactly as
+each attributed to a file and line; the seventh is the `cannot be bypass`
+quotation inside §8.1's own re-measurement note, which reports a false positive
+of `CLAIM-ABS-03` rather than a violation. The one `finding` is
+`CLAIM-ABS-06` (`every action`) at §5.5.1, and it pre-dates this
+implementation — it is present on `main` under the same rule set.
+
+**The first number is the one that must stay zero**, and it has. `finding` and
+`info` do not gate; a page whose job is to enumerate banned phrases will
+accumulate both as it grows, which is why the count is re-measured here rather
+than asserted once. That is `CLAIM-QUOTE-01` behaving exactly as
 designed — a `negative-example`, visible in the checker's output and
 gating nothing. The convention that keeps the first number at zero is simple: *a
 banned phrase named in a specification is a literal, so it goes in backticks; a

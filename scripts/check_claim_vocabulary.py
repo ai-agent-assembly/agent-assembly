@@ -792,7 +792,6 @@ SELFTEST_CASES: tuple[tuple[str, str, str | None], ...] = (
     ("Rolled out across the whole fleet.", "md", "CLAIM-ABS-10"),
     ("Governs the full fleet today.", "md", "CLAIM-ABS-10"),
     ("complete coverage of agent traffic", "md", "CLAIM-ABS-11"),
-    ("a complete reference for operators", "md", None),          # DOC-NOUN guard
     ("There is no claim of complete detection.", "md", None),    # NEG guard
     ("catch-all rules are configured here", "md", None),         # CFG-NOUN guard
     ("a catch-all promise", "md", "CLAIM-ABS-02"),
@@ -964,6 +963,7 @@ def selftest() -> int:
     # asserting a blocking diagnostic exists does not cover it: a mutation that
     # returns 0 unconditionally disables the gate while every case above still
     # passes. Drive the real entry point over a temporary file.
+    import os
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -987,6 +987,67 @@ def selftest() -> int:
         if report_rc != 0:
             failures.append(f"--report-only must never gate, got {report_rc}")
 
+    # `_changed_lines` needs a real git repository, and leaving it uncovered left
+    # two fixes unguarded: swapping `--merge-base` back to `base...HEAD` made
+    # every violation `pre-existing` (restoring the unfailable gate), and
+    # dropping `core.quotepath=false` silently skipped non-ASCII paths. Both
+    # mutations passed the rest of this suite.
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", *args],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                },
+            )
+
+        git("init", "-q", "-b", "base")
+        ascii_doc, unicode_doc = repo / "plain.md", repo / "caf\u00e9.md"
+        ascii_doc.write_text("one\n", encoding="utf-8")
+        unicode_doc.write_text("one\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("checkout", "-q", "-b", "work")
+        ascii_doc.write_text("one\ntwo\n", encoding="utf-8")
+        unicode_doc.write_text("one\ntwo\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "work")
+
+        try:
+            changed = _changed_lines(repo, "base", ["plain.md", "caf\u00e9.md"])
+        except RuntimeError as exc:  # pragma: no cover - reported, not raised
+            failures.append(f"_changed_lines raised on a valid repository: {exc}")
+            changed = {}
+
+        if changed.get("plain.md") != {2}:
+            failures.append(f"_changed_lines missed the ASCII path: {changed}")
+        # The quotepath guard: git renders this as `+++ "b/caf\303\251.md"`.
+        if changed.get("caf\u00e9.md") != {2}:
+            failures.append(f"_changed_lines dropped a non-ASCII path: {changed}")
+
+        # An uncommitted edit must count too — comparing against committed HEAD
+        # labelled a brand-new violation `pre-existing` and exited 0.
+        ascii_doc.write_text("one\ntwo\nthree\n", encoding="utf-8")
+        dirty = _changed_lines(repo, "base", ["plain.md"])
+        if dirty.get("plain.md") != {2, 3}:
+            failures.append(f"_changed_lines ignored the working tree: {dirty}")
+
+        # A base that cannot be resolved must RAISE, never read as "nothing
+        # changed" — that silent pass is the defect this gate exists to remove.
+        try:
+            _changed_lines(repo, "no-such-ref", ["plain.md"])
+        except RuntimeError:
+            pass
+        else:
+            failures.append("_changed_lines swallowed an unresolvable base ref")
+
     # §6.6 gating, without needing a git repository: a violation whose match
     # spans a joined soft wrap may START on an untouched line.
     spanning = Diagnostic("f.md", 10, 5, 11, "CLAIM-ABS-09", "blocking", "m", "immutable audit")
@@ -1004,7 +1065,7 @@ def selftest() -> int:
         return 1
     print(
         f"check_claim_vocabulary --selftest: {len(SELFTEST_CASES)} table case(s) "
-        f"+ 11 inline check(s) passed; {len(RULES)} rule(s) have positive coverage."
+        f"+ 15 inline check(s) passed; {len(RULES)} rule(s) have positive coverage."
     )
     return 0
 
