@@ -40,9 +40,17 @@ message CheckActionRequest {
   // `CheckActionResponse.agent_identity_assurance`.
   //
   // Optional and additive-compatible: a client that omits it is evaluated with
-  // UNATTRIBUTED identity — no agent-scoped rule matches, tenancy is
-  // neutralised, and evidence records the absence. It is never replaced with a
-  // placeholder subject.
+  // UNATTRIBUTED identity — tenancy is neutralised and evidence records the
+  // absence, and the id is never replaced with a placeholder subject.
+  //
+  // What that does NOT mean: unattributed checks carry the reserved all-zero
+  // agent id, and an agent-scoped policy CAN be written against it. Agent
+  // scopes parse as `agent:<uuid>`, so a document scoped to the nil UUID
+  // `agent:00000000-0000-0000-0000-000000000000` becomes the narrowest, highest
+  // precedence cascade tier for every unattributed check. What is proven is
+  // narrower: no *registered* agent's id can hash to the reserved value, so an
+  // unattributed request cannot land in a registered agent's scope. Operators
+  // must not use the nil UUID as an "unassigned" placeholder scope.
   assembly.common.v1.AgentId    agent_id         = 1;
   // Credential token issued at registration; validated on every call.
   string                        credential_token = 2;

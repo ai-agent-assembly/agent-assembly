@@ -50,6 +50,11 @@ pub fn hash_to_16(s: &str) -> [u8; 16] {
 /// and be audited — as the same subject, and an agent registered under that
 /// value would collect their decisions. The zero id is reserved for the absence
 /// of identity; `hash_to_16` is not known to produce it for any input.
+///
+/// It is **not** unreachable as a policy scope. `agent:<uuid>` scopes parse
+/// through `Uuid::parse_str`, so the nil UUID resolves to exactly this value
+/// and a document scoped there would apply to every unattributed check. The
+/// guarantee is only that no *registered* agent's id hashes to it.
 pub const UNATTRIBUTED_AGENT_ID: [u8; 16] = [0u8; 16];
 
 /// [`AgentContext::metadata`] key carrying the raw `agentId` string the caller
@@ -88,9 +93,16 @@ pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, Govern
     // client that predates the field previously got `InvalidArgument` here,
     // which under an enforce-posture SDK reads as a deny. It is now evaluated
     // like any other request carrying no authoritative identity: global,
-    // default and tool-scoped rules still apply, tenancy is neutralised by
-    // `apply_authoritative_tenancy`, and no agent-scoped rule can match the
-    // reserved unattributed id.
+    // default and tool-scoped rules still apply, and tenancy is neutralised by
+    // `apply_authoritative_tenancy`.
+    //
+    // The reserved id is NOT outside the agent-scope key space. `PolicyScope`
+    // parses `agent:<uuid>` (`aa-policy/src/scope.rs`), so a document scoped to
+    // the nil UUID resolves to exactly `UNATTRIBUTED_AGENT_ID` and would apply
+    // to every unattributed check as the narrowest cascade tier. What the
+    // reserved value guarantees is only that no *registered* agent's id hashes
+    // to it, so an unattributed request never lands in a registered agent's
+    // scope.
     let claimed = claimed_agent_id(req);
     let agent_id = AgentId::from_bytes(match claimed {
         Some(id) => hash_to_16(id),
