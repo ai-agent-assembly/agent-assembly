@@ -89,82 +89,25 @@ on:
       - "scripts/check-release-completeness.sh"
   pull_request:
     branches: [main]
-    paths:
-      - "aa-*/**/*.rs"
-      - "aa-*/**/*.sql"
-      - "aa-*/**/*.toml"
-      - "aa-*/**/*.py"
-      - "aa-*/**/*.ts"
-      - "aa-*/**/*.js"
-      - "aa-*/**/*.mjs"
-      - "aa-*/**/*.go"
-      - "aa-*/**/*.wat"
-      - "aa-*/**/*.sh"
-      - "aa-*/**/*.json"
-      - "aa-*/**/*.jsonl"
-      - "proto/**/*.proto"
-      - "conformance/**/*.rs"
-      - "conformance/**/*.json"
-      - "conformance/**/*.bin"
-      - "conformance/**/*.toml"
-      - "conformance/**/*.py"
-      - "conformance/runner/requirements.txt"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      # AAASM-5385: the Rust jobs' own shell implementations, by exact filename.
-      # Without these, editing a gate's script does not re-run the gate that the
-      # script IS. Named individually rather than `.ci/*.sh` because the other
-      # four scripts in `.ci/` belong to docs.yml, release.yml and
-      # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
-      - ".ci/verify-range-builds.sh"
-      - ".ci/check-compatibility-matrix.sh"
-      - "openapi/v1.yaml"
-      - "schemas/**/*.json"
-      - "schemas/**/*.yaml"
-      - ".spectral.yaml"
-      - ".github/workflows/ci.yml"
-      - "dashboard/**/*.ts"
-      - "dashboard/**/*.tsx"
-      - "dashboard/**/*.css"
-      - "dashboard/**/*.js"
-      - "dashboard/**/*.mjs"
-      - "dashboard/**/*.cjs"
-      - "dashboard/package.json"
-      - "dashboard/tsconfig.json"
-      - "dashboard/.npmrc"
-      - "dashboard/pnpm-lock.yaml"
-      - "dashboard/index.html"
-      - "sonar-project.properties"
-      # AAASM-5282: the DI-API TypeScript reference client and its Rust
-      # contract-test harness. Paired with the `devint_client` router filter
-      # below — a router filter without a matching `on.*.paths` entry is a dead
-      # trigger, and a trigger that looks like coverage but is not is worse than
-      # no trigger at all (ADR 0028).
-      - "examples/aa-devint-reference-client/**/*.ts"
-      - "examples/aa-devint-reference-client/**/*.mjs"
-      - "examples/aa-devint-reference-client/**/*.rs"
-      - "examples/aa-devint-reference-client/**/*.json"
-      - "examples/aa-devint-reference-client/**/*.yaml"
-      - "examples/aa-devint-reference-client/**/*.cjs"
-      - "examples/aa-devint-reference-client/**/*.toml"
-      - "examples/aa-devint-reference-client/.npmrc"
-      # AAASM-5714: see the matching comment on the push trigger above.
-      - "metadata/isolation-backends.json"
-      - "THIRD_PARTY_NOTICES.md"
-      - "scripts/check-backend-license-compliance.sh"
-      - ".github/workflows/release.yml"
-      - ".github/workflows/docker.yml"
-      - "scripts/install-cli.sh"
-      - "scripts/install.sh"
-      - "metadata/versions.rb"
-      - "scripts/check-release-completeness.sh"
-  # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
-  # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
-  # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
-  # main. A weekly schedule + on-demand dispatch restores standing main
-  # coverage for the AAASM-1520/1522/1523 suites at ~1 run/week without
-  # adding per-PR eBPF cost. The eBPF jobs' `if:` opt in to these events.
+    # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
+    #
+    # `main` carried no required status checks at all, so a pull request could
+    # merge with every check red. Requiring the `CI Success` aggregator is the
+    # fix, and it only works if that check reliably reports: a workflow that
+    # never triggers produces no check run, and a required check that never
+    # arrives leaves the pull request waiting forever. A docs-only or
+    # governance-only change hits exactly that.
+    #
+    # Job selection does not live in this filter — it lives in the `changes`
+    # router below. But it was NOT the only thing gating every job:
+    # `commit-range-build` has no router condition and never has, and this
+    # filter was what kept it off unrelated pull requests. It deliberately
+    # stays ungated (see the comment on that job for why a net-diff router
+    # would reopen the AAASM-5385 hole), so it now runs on every pull request
+    # and the cost is disclosed there rather than hidden.
+    #
+    # **If you add a job here, gate it on `needs.changes.outputs.*`** — this
+    # filter is no longer a backstop.
   schedule:
     - cron: "0 3 * * 1" # Mondays 03:00 UTC
   workflow_dispatch:
@@ -415,6 +358,37 @@ jobs:
   # are merges (`HEAD^1..HEAD` would walk fine on push), but every commit in that
   # range was already walked by this job on the PR that introduced it.
   commit-range-build:
+    # AAASM-5675 — COST DISCLOSURE, deliberately not a router gate.
+    #
+    # Removing `on.pull_request.paths` removed this job's only gating: it has
+    # never carried a `needs.changes.outputs.*` condition. So it now runs on
+    # every pull request, including a one-line README fix. That cost is real and
+    # is stated here rather than left to be discovered:
+    #
+    #   * ~1m07s of `cargo check` on a warm cache — the FLOOR for any pull
+    #     request, because `is_skippable()` never skips a merge commit and the
+    #     synthetic `refs/pull/N/merge` head is always the last element of the
+    #     range. Every PR builds at least that one commit.
+    #   * 6m43s measured on this branch's own head run (2 build-relevant commits).
+    #   * ~5m for a cold first commit, per this job's own env comment.
+    #
+    # A first review asked for either a gate or an explicit justification of the
+    # cost. **The gate is not available**, and the paragraph directly above says
+    # why: `needs.changes.outputs.rust` is a `dorny/paths-filter` over the PR's
+    # NET three-dot diff, and this job exists precisely because intermediate
+    # commits differ from that diff. An earlier revision of this PR added exactly
+    # that gate; it would have reopened the AAASM-5385 hole (break -> revert ->
+    # dashboard work lands an unbuildable commit with every check green) and it
+    # also silently dropped coverage of `schemas/**` and the two `examples/`
+    # workspace members, which `.ci/verify-range-builds.sh` classifies MUST BUILD.
+    #
+    # `CONTRIBUTING.md` "No filter at all" is satisfied by the `pull_request`
+    # condition below; `CONTRIBUTING.md` (`ci-success` treats a skipped need as
+    # passing — "if your job can be broken by a change outside its own filter, it
+    # needs a different guard") is what rules the net-diff router out. A
+    # range-aware guard would be the real answer and does not exist yet; until it
+    # does, paying the floor cost is the correct trade against landing an
+    # unbuildable commit on `main`.
     if: github.event_name == 'pull_request'
     name: Every commit in the range builds
     runs-on: ubuntu-latest
