@@ -6,8 +6,9 @@
 # AttributeError instead of a finding: exit 1, no opinion formed, and by exit
 # code alone indistinguishable from a validation failure.
 #
-# R1 rather than R5 because the gate is structural and covers all five of the
-# schema's array-of-object fields at once. The other four are exercised by
+# R1 rather than R5 because the gate is structural: it covers every field the
+# schema declares as a mapping or a list of mappings, derived by walking the
+# schema rather than transcribed. The other fifteen are exercised by
 # input_shape_probes.py, which no single fixture file can express.
 manifest_version: 1.0.0
 meta:

@@ -58,10 +58,15 @@ Step 3 also runs three probes the fixture files cannot express:
   stays a different number from **exit 1**, "the document is invalid". Before
   AAASM-5692 the seed raised `AttributeError` — which exits 1, so a wrapper
   reading only `$?` would have recorded "the seed fails validation", a
-  different and false statement. It also puts a bare string in each of the
-  schema's five array-of-object fields; four of the five raised the identical
-  crash, and one fixture each would be four near-identical files whose shared
-  denominator nothing asserts.
+  different and false statement. It also puts a bare string in **every field
+  the schema declares as a mapping or a list of mappings** — seven and nine
+  respectively — of which **fifteen of the sixteen** raised the identical crash
+  against this manifest before the gate existed. Both the probe and the gate
+  *derive* that list by walking the schema, with separate implementations, so
+  a field added to the schema is covered without anyone remembering to update a
+  literal. The first version of this fix hand-copied five names and asserted
+  the count against a copy of the same transcription — a control that cannot
+  move when the thing under test is wrong.
 * **`readme_counts_probe.py`** — asserts every `count:` line pasted into *this
   page* is the live one, by value. The counts below were shipped stale once, in
   the document whose thesis is that they are printed on every run; correcting
