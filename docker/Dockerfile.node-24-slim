@@ -7,7 +7,7 @@
 # governance on first run with no extra install step.
 #
 # Use:
-#   FROM ghcr.io/agent-assembly/node:24-slim
+#   FROM ghcr.io/ai-agent-assembly/node:24-slim
 #
 # Transitional install paths (will simplify once these Stories ship):
 #   * `aasm` is built from source until AAASM-1201 publishes a curl|sh
@@ -30,9 +30,9 @@ RUN apk add --no-cache musl-dev protobuf-dev openssl-dev pkgconfig
 WORKDIR /build
 
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=aasm-builder-cargo-registry-node-24,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,id=aasm-builder-cargo-git-node-24,sharing=locked \
+    --mount=type=cache,target=/build/target,id=aasm-builder-target-node-24,sharing=locked \
     cargo build --release -p aa-cli --bin aasm \
  && cp /build/target/release/aasm /usr/local/bin/aasm
 
@@ -51,9 +51,33 @@ RUN apt-get update \
 # Drop the prebuilt `aasm` binary into the image PATH.
 COPY --from=aasm-builder /usr/local/bin/aasm /usr/local/bin/aasm
 
-# Install the AAASM Node SDK. Transitional git source; switches to
-# `npm install @agent-assembly/sdk` once AAASM-1203 lands.
-RUN npm install -g 'github:ai-agent-assembly/node-sdk'
+# Install the AAASM Node SDK from the npm registry (AAASM-1203 published
+# `@agent-assembly/sdk`). The `beta` dist-tag tracks the current pre-release
+# line, mirroring how the Python image installs its SDK from the canonical
+# source. The previous `github:` shorthand made npm git-clone over SSH, which
+# fails in the build image (no ssh) with exit code 128.
+# SDK_VERSION is optional. When set, install that exact released SDK for a
+# reproducible, version-tagged image. When unset, default to the latest STABLE
+# release, falling back to the latest pre-release when no stable exists yet — the
+# same "stable-else-latest" rule across all three SDK images (and install-cli.sh),
+# so the default is uniform and predictable (ADR 0009). docker.yml passes the
+# manifest pin; a bare `docker build` gets the smart default.
+# Node resolves the default explicitly (highest non-pre-release, else highest
+# overall) rather than trusting npm's `latest` dist-tag, which is unreliable here.
+ARG SDK_VERSION=""
+RUN if [ -n "$SDK_VERSION" ]; then \
+        npm install -g "@agent-assembly/sdk@${SDK_VERSION}"; \
+    else \
+        ver="$(npm view @agent-assembly/sdk versions --json \
+            | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const vs=Array.isArray(d)?d:[d];const s=vs.filter(v=>!v.includes("-"));const p=s.length?s:vs;process.stdout.write(p[p.length-1]||"")')"; \
+        [ -n "$ver" ] || { echo "error: could not resolve an @agent-assembly/sdk version" >&2; exit 1; }; \
+        npm install -g "@agent-assembly/sdk@${ver}"; \
+    fi
+
+# Make the globally-installed SDK resolvable to bare `require()` /`import`
+# from arbitrary scripts (a `-g` package is not on the default module
+# resolution path). Points at `npm root -g`.
+ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Build-time smoke tests — fail the image build (not a runtime surprise)
 # if either side of the install ends up broken.
@@ -64,6 +88,13 @@ RUN node -e "require('@agent-assembly/sdk')"
 RUN apt-get purge -y git \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
+
+# Run as an unprivileged user (AAASM-4761). The node base image ships a
+# built-in non-root `node` user (uid 1000); mirror aa-gateway/aa-runtime running
+# on distroless-nonroot. The globally-installed SDK under $NODE_PATH is
+# world-readable, so it stays require()-able after the switch.
+WORKDIR /home/node
+USER node
 
 LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="AAASM governed Node.js 24 agent base image" \

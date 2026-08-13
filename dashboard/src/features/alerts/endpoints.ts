@@ -11,6 +11,16 @@ export const alertsEndpoints = {
   rules: '/api/v1/alerts/rules',
   rule: (id: string) => `/api/v1/alerts/rules/${encodeURIComponent(id)}`,
   silence: '/api/v1/alerts/silence',
+  /**
+   * `POST /api/v1/alerts/:id/resolve` — the acknowledge path (AAASM-5121).
+   *
+   * Unlike the rest of this table this one *is* in `openapi/v1.yaml` today
+   * (`operationId: resolve_alert`), and it is idempotent: resolving an
+   * already-resolved alert returns the same record. It shipped without any UI
+   * affordance, which is why `applyResolve` could only ever be driven by an
+   * externally-resolved alert arriving over the WebSocket.
+   */
+  resolve: (id: string) => `/api/v1/alerts/${encodeURIComponent(id)}/resolve`,
   destinations: '/api/v1/alerts/destinations',
   destination: (id: string) => `/api/v1/alerts/destinations/${encodeURIComponent(id)}`,
   destinationTest: (id: string) =>
@@ -25,3 +35,22 @@ export const alertsQueryKeys = {
   alertRules: 'alert-rules',
   destinations: 'alert-destinations',
 } as const
+
+/**
+ * Cache key for the paginated `GET /api/v1/alerts` envelope.
+ *
+ * Carries a `'list'` discriminator because the WebSocket sync helpers reach for
+ * every cache under the `alerts` root with `setQueriesData`, and that prefix
+ * also matches the single-alert detail caches. Without the discriminator a
+ * `fire` event ran a list-shaped updater over an `AlertDetail` object.
+ *
+ * Deliberately carries no filter state: `list_alerts` in `openapi/v1.yaml`
+ * declares only `page` and `per_page`, so two different filter selections
+ * produce byte-identical requests and must share one cache entry (AAASM-5122).
+ */
+export const ALERTS_LIST_KEY = [alertsQueryKeys.alerts, 'list'] as const
+
+/** Cache key for one alert's detail payload. */
+export function alertDetailKey(id: string): readonly [string, string, string] {
+  return [alertsQueryKeys.alerts, 'detail', id]
+}

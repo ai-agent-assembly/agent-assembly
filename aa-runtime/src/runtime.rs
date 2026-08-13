@@ -8,6 +8,188 @@ use tokio_util::task::TaskTracker;
 use crate::config::RuntimeConfig;
 use crate::lifecycle::wait_for_shutdown_signal;
 
+// strip-for-publish:begin devtool
+/// Bring up the Developer Integration API alongside the enforcement pipeline
+/// (ADR 0030 Decision 5; AAASM-5279 shipped the server, AAASM-5280 starts it).
+///
+/// Three properties this function is written to have:
+///
+/// 1. **Opt-in.** It is called only when `AA_DEVINT_ENABLED` asked for it. A
+///    runtime enforcing policy for one containerised agent has no lifecycle
+///    surface to serve and must not open a socket for it.
+/// 2. **Never fatal.** A DI-API that cannot bind — a stale socket owned by
+///    another user, a home directory that is not writable — is logged and
+///    skipped. The enforcement path does not depend on it, and taking the
+///    runtime down for a developer-convenience surface would trade the thing
+///    that matters for the thing that does not.
+/// 3. **Enrolled before it listens.** The token file is written first, so a
+///    `aasm integrations` invocation that races the socket's appearance finds a
+///    live token rather than an enrolment prompt it cannot satisfy.
+///
+/// This whole region is removed by `.ci/strip-for-publish.sh`: it constructs
+/// the built-in adapters from `aa-devtool` (`publish = false`), and a runtime
+/// with no adapters would serve a DI-API that can answer nothing.
+fn spawn_devint(tracker: &TaskTracker, token: &CancellationToken, config: &RuntimeConfig) {
+    use std::sync::Arc;
+
+    let server_config = match crate::devint::DevIntServerConfig::from_convention() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "DI-API socket path unresolved — continuing without the Developer Integration API");
+            return;
+        }
+    };
+
+    let tokens = crate::devint::TokenStore::new();
+    match crate::devint::enrol_local_client(&tokens, "aasm", aa_core::integration::now_unix_secs()) {
+        Ok((path, record)) => tracing::info!(
+            path = %path.display(),
+            token_id = %record.token_id,
+            "enrolled the local Agent Assembly CLI with the DI-API"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "DI-API enrolment failed — continuing without the Developer Integration API");
+            return;
+        }
+    }
+
+    let store = match aa_core::integration::ReceiptStore::default_location() {
+        Ok(store) => store,
+        Err(e) => {
+            tracing::warn!(error = %e, "no integration receipt store — continuing without the Developer Integration API");
+            return;
+        }
+    };
+
+    // Resolving a *policy profile* into a document happens inside the trusted
+    // layers and never crosses the DI-API (ADR 0030 matrix row 6). That
+    // resolution does not exist yet, so the shim renders from an empty document
+    // named after this runtime — enough to author and review a plan, and
+    // honest about carrying no rules.
+    let policy = aa_core::policy::PolicyDocument {
+        version: 1,
+        name: format!("aa-runtime:{}", config.agent_id),
+        rules: Vec::new(),
+        enforcement_mode: aa_core::policy::EnforcementMode::Enforce,
+    };
+
+    let services = crate::devint::DevIntServices::new(
+        Arc::new(crate::devint::EngineLifecycle::new(
+            crate::devint::adapters::built_in_integrations(policy),
+            store,
+        )),
+        tokens,
+        Arc::new(crate::devint::audit::TracingAuditSink),
+    );
+
+    match crate::devint::DevIntServer::bind(server_config) {
+        Ok(server) => {
+            tracing::info!(path = %server.socket_path().display(), "DI-API bound");
+            let devint_tracker = tracker.clone();
+            let devint_token = token.clone();
+            tracker.spawn(async move {
+                server.run(devint_tracker, devint_token, services).await;
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to bind the DI-API socket — continuing without the Developer Integration API");
+        }
+    }
+}
+
+#[cfg(test)]
+mod devint_wiring_tests {
+    use super::*;
+
+    /// Build the config the way the binary does, so the test also pins that
+    /// `AA_DEVINT_ENABLED` is what turns the surface on.
+    fn config_with_devint(enabled: bool) -> RuntimeConfig {
+        std::env::set_var("AA_AGENT_ID", "devint-wiring-test");
+        std::env::set_var("AA_DEVINT_ENABLED", if enabled { "1" } else { "0" });
+        let config = RuntimeConfig::from_env().expect("config");
+        assert_eq!(config.devint_enabled, enabled);
+        config
+    }
+
+    /// Redirect every path the DI-API touches into `dir`, so no test ever reads
+    /// or writes the developer's real `~/.aa` or `~/.aasm`.
+    fn redirect_into(dir: &std::path::Path) {
+        std::env::set_var("AA_DEVINT_SOCKET", dir.join("run/devint.sock"));
+        std::env::set_var("AA_DEVINT_TOKEN_FILE", dir.join("run/devint.token"));
+        std::env::set_var("AASM_STATE_DIR", dir.join("state"));
+    }
+
+    /// The wiring, end to end: a runtime asked for the DI-API enrols the CLI,
+    /// binds the socket, and answers a real client over it.
+    #[tokio::test]
+    async fn an_enabled_runtime_serves_the_di_api_to_a_real_client() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        redirect_into(dir.path());
+
+        let tracker = TaskTracker::new();
+        let token = CancellationToken::new();
+        spawn_devint(&tracker, &token, &config_with_devint(true));
+
+        let socket = crate::devint::devint_socket_path().expect("socket path");
+        let token_file = crate::devint::enrolment_path().expect("token path");
+        let secret = crate::devint::read_local_token(&token_file).expect("the runtime must enrol the CLI");
+
+        let mut client =
+            crate::devint::DevIntClient::connect(&socket, "aasm", "test", Some(secret.expose().to_string()))
+                .await
+                .expect("connect");
+        assert!(!client.negotiated().degraded);
+        let tools = client.list_tools().await.expect("list_tools");
+        assert!(
+            tools.tools.iter().any(|t| t.tool_id == "claude-code"),
+            "the runtime served no built-in adapters: {tools:?}"
+        );
+
+        token.cancel();
+        tracker.close();
+        tracker.wait().await;
+    }
+
+    /// The other half of "additive": a runtime that did not ask for the DI-API
+    /// opens no socket and writes no token, so nothing about it changed.
+    #[tokio::test]
+    async fn a_runtime_that_does_not_want_the_di_api_binds_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        redirect_into(dir.path());
+
+        let tracker = TaskTracker::new();
+        let token = CancellationToken::new();
+        let config = config_with_devint(false);
+        if config.devint_enabled {
+            spawn_devint(&tracker, &token, &config);
+        }
+
+        assert!(!crate::devint::devint_socket_path().expect("path").exists());
+        assert!(!crate::devint::enrolment_path().expect("path").exists());
+        tracker.close();
+        tracker.wait().await;
+    }
+
+    /// A DI-API that cannot bind must not take the runtime down with it: the
+    /// enforcement path does not depend on the lifecycle surface.
+    #[tokio::test]
+    async fn an_unbindable_di_api_is_skipped_rather_than_fatal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        redirect_into(dir.path());
+        // A socket path whose parent cannot be created.
+        std::env::set_var("AA_DEVINT_SOCKET", dir.path().join("not-a-dir/run/devint.sock"));
+        std::fs::write(dir.path().join("not-a-dir"), b"file").expect("seed");
+
+        let tracker = TaskTracker::new();
+        let token = CancellationToken::new();
+        spawn_devint(&tracker, &token, &config_with_devint(true));
+
+        tracker.close();
+        tracker.wait().await;
+    }
+}
+// strip-for-publish:end devtool
+
 /// Load policy rules from `config.policy_path`, or return empty rules if disabled.
 ///
 /// Exits the process with code 1 if the file exists but cannot be parsed —
@@ -46,6 +228,7 @@ fn spawn_proxy(
     tracker: &TaskTracker,
     broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
     active_layers: crate::layer::LayerSet,
+    gateway_endpoint: Option<&str>,
     degraded_layers: &mut Vec<String>,
 ) {
     let proxy_bin = match which::which("aa-proxy") {
@@ -60,11 +243,21 @@ fn spawn_proxy(
 
     let proxy_broadcast_tx = broadcast_tx.clone();
     let proxy_bin_display = proxy_bin.display().to_string();
+    // AAASM-4127: forward the runtime's gateway endpoint to the child proxy so
+    // its MCP `tools/call` enforcement activates. The proxy reads
+    // `AA_PROXY_GATEWAY_ENDPOINT`; without it the spawned proxy runs in
+    // raw-passthrough with MCP enforcement silently OFF. When an endpoint is
+    // configured we also disable `llm_only` so non-LLM MCP hosts are intercepted
+    // and routed to the gateway rather than transparently tunnelled.
+    let proxy_gateway_endpoint = gateway_endpoint.map(str::to_owned);
     tracker.spawn(async move {
-        let result = tokio::process::Command::new(&proxy_bin)
-            .kill_on_drop(true)
-            .status()
-            .await;
+        let mut command = tokio::process::Command::new(&proxy_bin);
+        command.kill_on_drop(true);
+        if let Some(endpoint) = &proxy_gateway_endpoint {
+            command.env("AA_PROXY_GATEWAY_ENDPOINT", endpoint);
+            command.env("AA_PROXY_LLM_ONLY", "false");
+        }
+        let result = command.status().await;
         match result {
             Ok(status) if status.success() => {
                 tracing::info!("proxy subsystem exited normally");
@@ -91,7 +284,7 @@ fn spawn_proxy(
 /// from `active_layers` minus the full EBPF flag — the caller decides whether
 /// the top-level EBPF layer should be removed based on how many sub-layers
 /// have degraded.
-fn emit_ebpf_degradation(
+pub(crate) fn emit_ebpf_degradation(
     broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
     sub_layer: &str,
     reason: String,
@@ -152,7 +345,7 @@ fn spawn_ebpf_tls(
         loop {
             match reader.next().await {
                 Ok(Some(event)) => {
-                    tracing::debug!(?event, "TLS ring buffer event");
+                    log_ebpf_tls_event(&event);
                     let _ = &tls_broadcast_tx; // keep broadcast_tx alive for future forwarding
                 }
                 Ok(None) => {
@@ -168,6 +361,33 @@ fn spawn_ebpf_tls(
         }
     });
     tracing::info!("ebpf/tls sub-layer task spawned");
+}
+
+/// Log a ring-buffer event at DEBUG using **only scalar metadata**.
+///
+/// SECURITY (AAASM-3128): a `TlsCaptureEvent` carries up to
+/// [`aa_ebpf_common::tls::MAX_PAYLOAD_LEN`] bytes of decrypted-TLS plaintext —
+/// the credentials, tokens, and request bodies this layer exists to govern.
+/// Its derived `Debug` impl renders that payload, so logging the event with
+/// `?event` would dump raw secrets straight to the log sink, bypassing the
+/// credential scanner. This function deliberately emits only the scalar
+/// header fields (pid/tid/lengths/sequence/direction/timestamp) and never the
+/// `payload`.
+#[cfg(target_os = "linux")]
+fn log_ebpf_tls_event(event: &aa_ebpf::ringbuf::EbpfEvent) {
+    if let aa_ebpf::ringbuf::EbpfEvent::Tls(tls) = event {
+        tracing::debug!(
+            pid = tls.pid,
+            tid = tls.tid,
+            data_len = tls.data_len,
+            seq = tls.seq,
+            direction = tls.direction,
+            timestamp_ns = tls.timestamp_ns,
+            "TLS ring buffer event"
+        );
+    } else {
+        tracing::debug!("non-TLS ring buffer event on TLS reader");
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -217,7 +437,31 @@ fn spawn_ebpf_file_io(
         return;
     }
 
-    let mut rx = match loader.start_event_reader() {
+    // AAASM-4012: seed the in-kernel PATH_BLOCKLIST from the detector's
+    // exact-file rules so the kretprobe sets the sensitive-path flag (bit 0)
+    // in-kernel, and drive event reading through the userspace detector so
+    // `is_sensitive` is also set for the prefix/canonical rules the kernel's
+    // exact-match map cannot express (see `aa_ebpf::maps::PathPattern`). Without
+    // this the events carried no sensitivity signal at all.
+    let detector = aa_ebpf::SensitivePathDetector::with_defaults();
+    let blocklist: Vec<aa_ebpf::PathPattern> = detector
+        .prefixes()
+        .iter()
+        .filter(|p| !p.ends_with('/'))
+        .map(|p| aa_ebpf::PathPattern {
+            pattern: p.clone(),
+            verdict: aa_ebpf::PathVerdict::Deny,
+        })
+        .collect();
+    if let Err(e) = loader.update_path_filter(&blocklist) {
+        let reason = format!("file I/O path blocklist update failed: {e}");
+        tracing::warn!(%reason, "degrading ebpf/file_io sub-layer");
+        emit_ebpf_degradation(broadcast_tx, "ebpf/file_io", reason);
+        degraded_layers.push("ebpf/file_io".to_string());
+        return;
+    }
+
+    let mut rx = match loader.start_event_reader_with_alerts(detector) {
         Ok(r) => r,
         Err(e) => {
             let reason = format!("file I/O event reader failed: {e}");
@@ -420,6 +664,325 @@ fn spawn_audit_drain(
     });
 }
 
+/// Spawn (into `tracker`) the task that converts pipeline `PipelineEvent::Audit`
+/// interception events to governance `AuditEntry`s and publishes them to NATS via
+/// the same fire-and-forget [`AuditPublisher`](crate::audit_publisher::AuditPublisher)
+/// (AAASM-2610).
+///
+/// This subscriber runs *alongside* the correlation-engine subscriber — both
+/// read the same broadcast channel, but only this task converts and publishes.
+/// `LayerDegradation` events are not audit events and are ignored here.
+///
+/// ## No double-publish vs the approval stream
+///
+/// The approval audit stream (`spawn_audit_drain`) publishes `AuditEntry`s
+/// produced by the `ApprovalQueue` for approval *decisions* (requested /
+/// granted / denied / timed-out). This task publishes `AuditEntry`s converted
+/// from `PipelineEvent::Audit` *interception* events (SDK / eBPF / proxy tool,
+/// file, network, process calls). The two are disjoint sources carried on
+/// different channels — an approval decision never travels on the pipeline
+/// broadcast as a `PipelineEvent::Audit`, so each logical audit event reaches
+/// NATS exactly once.
+///
+/// Publish failures are absorbed by the publisher (buffered to SQLite), so a
+/// NATS outage never crashes or blocks the pipeline.
+fn spawn_pipeline_audit_publisher(
+    tracker: &TaskTracker,
+    mut rx: tokio::sync::broadcast::Receiver<crate::pipeline::PipelineEvent>,
+    publisher: std::sync::Arc<crate::audit_publisher::AuditPublisher>,
+    token: CancellationToken,
+) {
+    tracker.spawn(async move {
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    tracing::info!("pipeline audit publisher shutting down");
+                    break;
+                }
+                result = rx.recv() => match result {
+                    Ok(crate::pipeline::PipelineEvent::Audit(enriched)) => {
+                        let entry = crate::audit_publisher::enriched_to_audit_entry(&enriched);
+                        publisher.publish(entry).await;
+                    }
+                    Ok(crate::pipeline::PipelineEvent::LayerDegradation(_)) => {
+                        // Layer degradation is an operational event, not an audit event.
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(dropped = n, "pipeline audit publisher lagged — audit events lost");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::info!("broadcast channel closed — pipeline audit publisher exiting");
+                        break;
+                    }
+                },
+            }
+        }
+        tracing::info!("pipeline audit publisher task exiting");
+    });
+}
+
+/// AAASM-3430: build the gateway client used to forward per-tool policy checks
+/// to the authoritative governance gateway.
+///
+/// Returns `None` only when no endpoint is configured (the pipeline then
+/// evaluates policy locally). A configured-but-unreachable endpoint yields a
+/// lazy client so the pipeline's fail-closed path (AAASM-3110) governs the
+/// unreachable case at check time — a connect failure must never silently
+/// degrade to a permissive local allow.
+async fn build_gateway_client(
+    config: &RuntimeConfig,
+) -> Option<std::sync::Arc<tokio::sync::Mutex<crate::gateway_client::GatewayClient>>> {
+    let Some(endpoint) = &config.gateway_endpoint else {
+        tracing::info!("no gateway endpoint configured — policy checks evaluated locally");
+        return None;
+    };
+    match crate::gateway_client::GatewayClient::connect(endpoint).await {
+        Ok(client) => {
+            tracing::info!(endpoint, "gateway client connected — forwarding policy checks");
+            Some(std::sync::Arc::new(tokio::sync::Mutex::new(client)))
+        }
+        Err(e) => {
+            tracing::warn!(
+                endpoint,
+                error = %e,
+                "gateway client initial connect failed — using lazy channel (checks fail-closed when unreachable)"
+            );
+            crate::gateway_client::GatewayClient::connect_lazy_owned(endpoint)
+                .map(|client| std::sync::Arc::new(tokio::sync::Mutex::new(client)))
+        }
+    }
+}
+
+/// AAASM-3491: start the op-control subscriber when a gateway endpoint is
+/// configured, so the gateway's pause/resume/terminate signals reach the shared
+/// [`OpControlStore`]. Without an endpoint there is no kill-switch channel, so
+/// the store stays empty and this is a no-op.
+fn spawn_op_control(tracker: &TaskTracker, config: &RuntimeConfig, op_control: &crate::op_control::OpControlStore) {
+    let Some(endpoint) = &config.gateway_endpoint else {
+        tracing::info!("no gateway endpoint configured — op-control kill switch inactive");
+        return;
+    };
+    let subscriber_agent = aa_proto::assembly::common::v1::AgentId {
+        org_id: config.agent_org_id.clone(),
+        team_id: config.agent_team_id.clone(),
+        agent_id: config.agent_id.clone(),
+    };
+    let handle = crate::op_control::OpControlClient::start(endpoint.clone(), subscriber_agent, op_control.clone());
+    tracker.spawn(async move {
+        let _ = handle.await;
+    });
+    tracing::info!(endpoint, "op-control subscriber spawned — live kill switch active");
+}
+
+/// Log a single correlation outcome.
+fn log_correlation_outcome(outcome: &crate::correlation::CorrelationOutcome) {
+    match outcome {
+        crate::correlation::CorrelationOutcome::Matched(c) => {
+            tracing::info!(
+                intent = %c.intent_event_id,
+                action = %c.action_event_id,
+                strength = c.correlation_strength,
+                delta_ms = c.time_delta_ms,
+                "correlation matched"
+            );
+        }
+        crate::correlation::CorrelationOutcome::UnexpectedAction { action_event_id } => {
+            tracing::warn!(
+                action = %action_event_id,
+                "unexpected action — no matching intent"
+            );
+        }
+        crate::correlation::CorrelationOutcome::IntentWithoutAction { intent_event_id } => {
+            tracing::info!(
+                intent = %intent_event_id,
+                "intent without observed action"
+            );
+        }
+    }
+}
+
+/// Spawn the correlation engine subscriber task.
+fn spawn_correlation_subscriber(
+    tracker: &TaskTracker,
+    config: &RuntimeConfig,
+    token: CancellationToken,
+    correlation_rx: tokio::sync::broadcast::Receiver<crate::pipeline::PipelineEvent>,
+) {
+    let corr_config = crate::correlation::CorrelationConfig::from_runtime_config(config);
+    let corr_interval = Duration::from_millis(corr_config.eviction_interval_ms);
+    let mut engine = crate::correlation::CorrelationEngine::new(corr_config);
+    let mut corr_rx = correlation_rx;
+
+    tracker.spawn(async move {
+        let mut ticker = tokio::time::interval(corr_interval);
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    tracing::info!("correlation subscriber shutting down");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    for outcome in engine.correlate() {
+                        log_correlation_outcome(&outcome);
+                    }
+                    engine.evict(now_ms);
+                }
+                result = corr_rx.recv() => {
+                    handle_correlation_event(&mut engine, result);
+                }
+            }
+        }
+    });
+    tracing::info!("correlation subscriber task spawned");
+}
+
+/// Handle a single event from the correlation broadcast channel.
+fn handle_correlation_event(
+    engine: &mut crate::correlation::CorrelationEngine,
+    result: Result<crate::pipeline::PipelineEvent, tokio::sync::broadcast::error::RecvError>,
+) -> bool {
+    match result {
+        Ok(crate::pipeline::PipelineEvent::Audit(enriched)) => {
+            if let Some(corr_event) = crate::correlation::try_from_enriched(&enriched) {
+                engine.ingest(corr_event);
+            }
+            true
+        }
+        Ok(crate::pipeline::PipelineEvent::LayerDegradation(_)) => true,
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+            tracing::warn!(dropped = n, "correlation subscriber lagged — events lost");
+            true
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+            tracing::info!("broadcast channel closed — correlation subscriber exiting");
+            false
+        }
+    }
+}
+
+/// Check layer availability and record any degradations.
+fn check_layer_availability(active_layers: crate::layer::LayerSet, degraded_layers: &mut Vec<String>) {
+    if !active_layers.contains(crate::layer::LayerSet::EBPF) {
+        tracing::warn!(
+            remaining = %active_layers,
+            "eBPF layer unavailable — requires Linux >= 5.8, BTF, and CAP_BPF"
+        );
+        degraded_layers.push("ebpf".to_string());
+    }
+    if !active_layers.contains(crate::layer::LayerSet::PROXY) {
+        tracing::warn!(
+            remaining = %active_layers,
+            "proxy layer unavailable — aa-proxy binary not found in PATH"
+        );
+        degraded_layers.push("proxy".to_string());
+    }
+}
+
+/// Bring up the eBPF interception layer.
+///
+/// The default path drives the privileged `aa-ebpf-loaderd` daemon; the legacy
+/// in-process spawns are retained ONLY for the privileged in-process
+/// dev/integration scenario, behind the off-by-default `AA_EBPF_INPROCESS_LOAD`
+/// opt-in (AAASM-4011).
+async fn bring_up_ebpf_layer(
+    tracker: &TaskTracker,
+    broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
+    token: &CancellationToken,
+    seq: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    config: &RuntimeConfig,
+    degraded_layers: &mut Vec<String>,
+) {
+    if crate::ebpf_control::use_inprocess_load() {
+        tracing::warn!(
+            "AA_EBPF_INPROCESS_LOAD set — using legacy in-process eBPF load path \
+             (requires CAP_BPF; NOT the production posture)"
+        );
+        spawn_ebpf_tls(tracker, broadcast_tx, degraded_layers);
+        spawn_ebpf_file_io(tracker, broadcast_tx, seq, &config.agent_id, degraded_layers);
+        spawn_ebpf_exec_tracepoints(tracker, broadcast_tx, token, degraded_layers);
+    } else {
+        crate::ebpf_control::drive_ebpf_layer(broadcast_tx, degraded_layers).await;
+    }
+}
+
+/// Spawn the IPC server task, signalling readiness once the socket binds. A bind
+/// failure is logged and the runtime continues without IPC — dropping
+/// `inbound_tx` lets the pipeline see the channel close and exit cleanly.
+#[allow(clippy::too_many_arguments)]
+fn spawn_ipc_server(
+    tracker: &TaskTracker,
+    config: &RuntimeConfig,
+    token: &CancellationToken,
+    ready_tx: &tokio::sync::watch::Sender<bool>,
+    inbound_tx: tokio::sync::mpsc::Sender<(u64, crate::ipc::IpcFrame)>,
+    active_connections: &std::sync::Arc<std::sync::atomic::AtomicI64>,
+    response_router: &crate::ipc::ResponseRouter,
+    verified_identities: &crate::ipc::VerifiedIdentityStore,
+) {
+    let ipc_config = crate::ipc::server::IpcServerConfig::from_runtime_config(config);
+    let ipc_server = match crate::ipc::server::IpcServer::bind(ipc_config) {
+        Ok(ipc_server) => ipc_server,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to bind IPC socket — continuing without IPC");
+            // Without an IPC server the inbound_tx is dropped here;
+            // the pipeline will see the channel closed and exit cleanly.
+            return;
+        }
+    };
+    let _ = ready_tx.send(true);
+    let ipc_tracker = tracker.clone();
+    let ipc_token = token.clone();
+    let ipc_active_connections = std::sync::Arc::clone(active_connections);
+    let ipc_router = std::sync::Arc::clone(response_router);
+    let ipc_verified = std::sync::Arc::clone(verified_identities);
+    tracker.spawn(async move {
+        ipc_server
+            .run(
+                ipc_tracker,
+                ipc_token,
+                inbound_tx,
+                ipc_active_connections,
+                ipc_router,
+                ipc_verified,
+            )
+            .await;
+    });
+    tracing::info!("IPC server task spawned");
+}
+
+/// Spawn the health/metrics HTTP server task, binding to the configured
+/// `metrics_addr` and serving until the cancellation token fires.
+fn spawn_health_server(
+    tracker: &TaskTracker,
+    config: &RuntimeConfig,
+    token: CancellationToken,
+    health_state: crate::health::HealthState,
+) {
+    let addr: std::net::SocketAddr = config
+        .metrics_addr
+        .parse()
+        .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
+    tracker.spawn(async move {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                tracing::info!(%addr, "health server bound");
+                axum::serve(listener, crate::health::router(health_state))
+                    .with_graceful_shutdown(async move { token.cancelled().await })
+                    .await
+                    .ok();
+            }
+            Err(e) => {
+                tracing::error!(error = %e, %addr, "failed to bind health server");
+            }
+        }
+    });
+    tracing::info!(%addr, "health server task spawned");
+}
+
 /// Start the runtime and block until graceful shutdown completes.
 ///
 /// This is the main async entry point called from `main()`. It creates the
@@ -457,20 +1020,16 @@ pub async fn run(config: RuntimeConfig) {
     tracing::info!(layers = %active_layers, "active interception layers");
 
     let mut degraded_layers: Vec<String> = Vec::new();
-    if !active_layers.contains(crate::layer::LayerSet::EBPF) {
-        tracing::warn!(
-            remaining = %active_layers,
-            "eBPF layer unavailable — requires Linux >= 5.8, BTF, and CAP_BPF"
-        );
-        degraded_layers.push("ebpf".to_string());
-    }
-    if !active_layers.contains(crate::layer::LayerSet::PROXY) {
-        tracing::warn!(
-            remaining = %active_layers,
-            "proxy layer unavailable — aa-proxy binary not found in PATH"
-        );
-        degraded_layers.push("proxy".to_string());
-    }
+    check_layer_availability(active_layers, &mut degraded_layers);
+
+    // AAASM-5535: the honest reading of the same probes. `active_layers` says
+    // which components are *present*; this says what each may claim, and is
+    // what `GET /health` publishes as `protection`.
+    let protection = crate::layer::LayerDetector::attest(crate::health::now_unix_secs());
+    tracing::info!(
+        claims = ?protection.verified_states_at(protection.generated_at_unix_secs),
+        "protection attestation"
+    );
 
     // Build pipeline config and create the inbound channel at the configured depth.
     let pipeline_config = crate::pipeline::PipelineConfig::from_runtime_config(&config);
@@ -483,7 +1042,13 @@ pub async fn run(config: RuntimeConfig) {
 
     // Spawn the proxy subsystem if the PROXY layer is active.
     if active_layers.contains(crate::layer::LayerSet::PROXY) {
-        spawn_proxy(&tracker, &broadcast_tx, active_layers, &mut degraded_layers);
+        spawn_proxy(
+            &tracker,
+            &broadcast_tx,
+            active_layers,
+            config.gateway_endpoint.as_deref(),
+            &mut degraded_layers,
+        );
     }
 
     // Shared metrics — future health/metrics endpoints will receive an Arc clone.
@@ -494,6 +1059,9 @@ pub async fn run(config: RuntimeConfig) {
 
     // Shared response router — maps connection_id → per-connection IpcResponse sender.
     let response_router = crate::ipc::new_response_router();
+    // Shared verified-identity store (AAASM-3640) — maps connection_id → the SDK
+    // identity the AAASM-3569 handshake authenticated for that connection.
+    let verified_identities = crate::ipc::new_verified_identity_store();
 
     // Audit publisher (AAASM-2547): when [gateway.nats] is configured, the
     // approval queue's governance AuditEntry stream is drained to NATS; when
@@ -513,42 +1081,76 @@ pub async fn run(config: RuntimeConfig) {
         None => crate::approval::ApprovalQueue::new(),
     };
 
+    // AAASM-2610: when audit publishing is enabled, convert pipeline
+    // interception events (PipelineEvent::Audit from SDK/eBPF/proxy) to
+    // governance AuditEntry and publish them to NATS. Subscribe before
+    // `broadcast_tx` is moved into the pipeline task. This runs alongside the
+    // correlation subscriber and is disjoint from the approval audit drain, so
+    // each logical audit event is published exactly once.
+    if let Some(publisher) = &audit_publisher {
+        spawn_pipeline_audit_publisher(
+            &tracker,
+            broadcast_tx.subscribe(),
+            std::sync::Arc::clone(publisher),
+            token.clone(),
+        );
+    }
+
     // Clone inbound_tx for the health/metrics handler before IpcServer consumes it.
     let inbound_tx_health = inbound_tx.clone();
 
     // Spawn the IPC server task.
-    let ipc_config = crate::ipc::server::IpcServerConfig::from_runtime_config(&config);
-    match crate::ipc::server::IpcServer::bind(ipc_config) {
-        Ok(ipc_server) => {
-            let _ = ready_tx.send(true);
-            let ipc_tracker = tracker.clone();
-            let ipc_token = token.clone();
-            let ipc_active_connections = std::sync::Arc::clone(&active_connections);
-            let ipc_router = std::sync::Arc::clone(&response_router);
-            tracker.spawn(async move {
-                ipc_server
-                    .run(ipc_tracker, ipc_token, inbound_tx, ipc_active_connections, ipc_router)
-                    .await;
-            });
-            tracing::info!("IPC server task spawned");
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to bind IPC socket — continuing without IPC");
-            // Without an IPC server the inbound_tx is dropped here;
-            // the pipeline will see the channel closed and exit cleanly.
-        }
+    spawn_ipc_server(
+        &tracker,
+        &config,
+        &token,
+        &ready_tx,
+        inbound_tx,
+        &active_connections,
+        &response_router,
+        &verified_identities,
+    );
+
+    // strip-for-publish:begin devtool
+    // The Developer Integration API, when this runtime was asked to serve one.
+    // Deliberately after the IPC server: the enforcement path is what the
+    // runtime exists for, and the lifecycle surface must never delay or block
+    // it coming up.
+    if config.devint_enabled {
+        spawn_devint(&tracker, &token, &config);
     }
+    // strip-for-publish:end devtool
 
     // Shared monotonic sequence counter — used by the pipeline and the
     // eBPF bridge so all events share a single ordering.
     let seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    // Spawn eBPF sub-layer tasks if the EBPF layer is active.
+    // Bring up the eBPF layer if it is active.
+    //
+    // AAASM-4011: the unprivileged runtime dropped CAP_BPF (privilege.rs), so it
+    // can no longer load probes in-process — that path could only EPERM-degrade,
+    // masking a dormant Layer 3 as a soft degradation, and it never loaded the
+    // SIGKILL-capable syscall guard at all. The default path now drives the
+    // privileged aa-ebpf-loaderd daemon over its control socket. The legacy
+    // in-process spawns are retained ONLY for the privileged in-process
+    // dev/integration scenario, behind the off-by-default AA_EBPF_INPROCESS_LOAD
+    // opt-in, so they can never silently mask a failure in production.
     if active_layers.contains(crate::layer::LayerSet::EBPF) {
-        spawn_ebpf_tls(&tracker, &broadcast_tx, &mut degraded_layers);
-        spawn_ebpf_file_io(&tracker, &broadcast_tx, &seq, &config.agent_id, &mut degraded_layers);
-        spawn_ebpf_exec_tracepoints(&tracker, &broadcast_tx, &token, &mut degraded_layers);
+        bring_up_ebpf_layer(&tracker, &broadcast_tx, &token, &seq, &config, &mut degraded_layers).await;
     }
+
+    // AAASM-3430: build the gateway client when an endpoint is configured so
+    // policy checks are forwarded to the authoritative governance gateway. When
+    // no endpoint is set the pipeline falls back to local evaluation.
+    let gateway_client = build_gateway_client(&config).await;
+
+    // AAASM-3491: shared op-control store + subscriber. The store records the
+    // gateway's pause/resume/terminate signals; the pipeline consults it on
+    // every per-tool check so a terminate fast-fails and a pause blocks the
+    // running agent. Without a configured gateway there is no kill-switch
+    // channel to subscribe to, so the store simply stays empty (no op control).
+    let op_control = crate::op_control::OpControlStore::new();
+    spawn_op_control(&tracker, &config, &op_control);
 
     // Spawn the event aggregation pipeline task.
     {
@@ -558,6 +1160,8 @@ pub async fn run(config: RuntimeConfig) {
         let pipeline_router = std::sync::Arc::clone(&response_router);
         let pipeline_approval_queue = std::sync::Arc::clone(&approval_queue);
         let pipeline_seq = std::sync::Arc::clone(&seq);
+        let pipeline_op_control = op_control.clone();
+        let pipeline_verified = std::sync::Arc::clone(&verified_identities);
         tracker.spawn(async move {
             crate::pipeline::run(
                 inbound_rx,
@@ -568,8 +1172,10 @@ pub async fn run(config: RuntimeConfig) {
                 pipeline_policy,
                 pipeline_router,
                 pipeline_approval_queue,
-                None,
+                gateway_client,
+                pipeline_op_control,
                 pipeline_seq,
+                pipeline_verified,
             )
             .await;
         });
@@ -577,111 +1183,21 @@ pub async fn run(config: RuntimeConfig) {
     }
 
     // Spawn the correlation engine subscriber task.
-    {
-        let corr_config = crate::correlation::CorrelationConfig::from_runtime_config(&config);
-        let corr_interval = Duration::from_millis(corr_config.eviction_interval_ms);
-        let mut engine = crate::correlation::CorrelationEngine::new(corr_config);
-        let corr_token = token.clone();
-        let mut corr_rx = correlation_rx;
-        tracker.spawn(async move {
-            let mut ticker = tokio::time::interval(corr_interval);
-            loop {
-                tokio::select! {
-                    _ = corr_token.cancelled() => {
-                        tracing::info!("correlation subscriber shutting down");
-                        break;
-                    }
-                    _ = ticker.tick() => {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-                        let outcomes = engine.correlate();
-                        for outcome in &outcomes {
-                            match outcome {
-                                crate::correlation::CorrelationOutcome::Matched(c) => {
-                                    tracing::info!(
-                                        intent = %c.intent_event_id,
-                                        action = %c.action_event_id,
-                                        strength = c.correlation_strength,
-                                        delta_ms = c.time_delta_ms,
-                                        "correlation matched"
-                                    );
-                                }
-                                crate::correlation::CorrelationOutcome::UnexpectedAction { action_event_id } => {
-                                    tracing::warn!(
-                                        action = %action_event_id,
-                                        "unexpected action — no matching intent"
-                                    );
-                                }
-                                crate::correlation::CorrelationOutcome::IntentWithoutAction { intent_event_id } => {
-                                    tracing::info!(
-                                        intent = %intent_event_id,
-                                        "intent without observed action"
-                                    );
-                                }
-                            }
-                        }
-                        engine.evict(now_ms);
-                    }
-                    result = corr_rx.recv() => {
-                        match result {
-                            Ok(crate::pipeline::PipelineEvent::Audit(enriched)) => {
-                                if let Some(corr_event) = crate::correlation::try_from_enriched(&enriched) {
-                                    engine.ingest(corr_event);
-                                }
-                            }
-                            Ok(crate::pipeline::PipelineEvent::LayerDegradation(_)) => {
-                                // Layer degradation events are not correlated.
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!(dropped = n, "correlation subscriber lagged — events lost");
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                tracing::info!("broadcast channel closed — correlation subscriber exiting");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        tracing::info!("correlation subscriber task spawned");
-    }
+    spawn_correlation_subscriber(&tracker, &config, token.clone(), correlation_rx);
 
     // Spawn the health/metrics HTTP server task.
-    {
-        let health_state = crate::health::HealthState {
-            start_time: std::time::Instant::now(),
-            pipeline_metrics: std::sync::Arc::clone(&pipeline_metrics),
-            ready_rx,
-            prometheus_handle,
-            active_connections: std::sync::Arc::clone(&active_connections),
-            inbound_tx: inbound_tx_health,
-            active_layers,
-            degraded_layers,
-        };
-        let addr: std::net::SocketAddr = config
-            .metrics_addr
-            .parse()
-            .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
-        let health_token = token.clone();
-        tracker.spawn(async move {
-            match tokio::net::TcpListener::bind(addr).await {
-                Ok(listener) => {
-                    tracing::info!(%addr, "health server bound");
-                    axum::serve(listener, crate::health::router(health_state))
-                        .with_graceful_shutdown(async move { health_token.cancelled().await })
-                        .await
-                        .ok();
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, %addr, "failed to bind health server");
-                }
-            }
-        });
-        tracing::info!(%addr, "health server task spawned");
-    }
+    let health_state = crate::health::HealthState {
+        start_time: std::time::Instant::now(),
+        pipeline_metrics: std::sync::Arc::clone(&pipeline_metrics),
+        ready_rx,
+        prometheus_handle,
+        active_connections: std::sync::Arc::clone(&active_connections),
+        inbound_tx: inbound_tx_health,
+        active_layers,
+        degraded_layers,
+        protection,
+    };
+    spawn_health_server(&tracker, &config, token.clone(), health_state);
 
     // Wait for an OS shutdown signal.
     wait_for_shutdown_signal().await;
@@ -836,6 +1352,8 @@ mod tests {
             agent_id: "test".to_string(),
             connection_id: 1,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         // Build an eBPF/FILE_OPERATION action event.
@@ -850,6 +1368,8 @@ mod tests {
             agent_id: "test".to_string(),
             connection_id: 1,
             sequence_number: 1,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         // Simulate the subscriber loop: convert and ingest.
@@ -897,7 +1417,7 @@ mod tests {
         let active_layers = crate::layer::LayerSet::PROXY | crate::layer::LayerSet::SDK;
         let mut degraded = Vec::new();
 
-        super::spawn_proxy(&tracker, &tx, active_layers, &mut degraded);
+        super::spawn_proxy(&tracker, &tx, active_layers, None, &mut degraded);
 
         std::env::set_var("PATH", &orig_path);
 
@@ -940,7 +1460,7 @@ mod tests {
         let active_layers = crate::layer::LayerSet::PROXY | crate::layer::LayerSet::SDK;
         let mut degraded = Vec::new();
 
-        super::spawn_proxy(&tracker, &tx, active_layers, &mut degraded);
+        super::spawn_proxy(&tracker, &tx, active_layers, None, &mut degraded);
 
         // Binary found, so no immediate degradation.
         assert!(!degraded.contains(&"proxy".to_string()));
@@ -986,6 +1506,8 @@ mod tests {
             agent_id: "test".to_string(),
             connection_id: 1,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         tx.send(PipelineEvent::Audit(Box::new(enriched))).unwrap();
@@ -1114,6 +1636,8 @@ mod tests {
     fn audit_test_config(nats_config_path: Option<std::path::PathBuf>) -> crate::config::RuntimeConfig {
         crate::config::RuntimeConfig {
             agent_id: "audit-test".to_string(),
+            agent_team_id: String::new(),
+            agent_org_id: String::new(),
             worker_threads: 0,
             shutdown_timeout_secs: 30,
             ipc_max_connections: 64,
@@ -1129,6 +1653,9 @@ mod tests {
             nats_config_path,
             audit_buffer_path: std::env::temp_dir().join("aa-audit-buffer-audit-test.db"),
             enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
+            gateway_fail_closed: true,
+            gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
+            devint_enabled: false,
         }
     }
 
@@ -1142,6 +1669,285 @@ mod tests {
         assert!(super::build_audit_publisher(&audit_test_config(Some(missing)))
             .await
             .is_none());
+    }
+
+    /// A NATS config path that exists but holds malformed TOML must disable the
+    /// audit publisher (fail-soft), never abort startup (AAASM-2547).
+    #[tokio::test]
+    async fn build_audit_publisher_disabled_on_invalid_nats_config() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        writeln!(tmp, "this is = not valid [gateway.nats] toml = = =").unwrap();
+        tmp.flush().unwrap();
+        assert!(
+            super::build_audit_publisher(&audit_test_config(Some(tmp.path().to_path_buf())))
+                .await
+                .is_none(),
+            "malformed NATS config must disable audit publishing, not crash startup"
+        );
+    }
+
+    // ── build_gateway_client tests (AAASM-3430) ──────────────────────────────
+
+    #[tokio::test]
+    async fn build_gateway_client_none_when_unconfigured() {
+        // No endpoint ⇒ no client; the pipeline evaluates policy locally.
+        let config = audit_test_config(None);
+        assert!(config.gateway_endpoint.is_none());
+        assert!(super::build_gateway_client(&config).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_gateway_client_lazy_when_initial_connect_fails() {
+        // A configured-but-unreachable endpoint must NOT yield None (which the
+        // pipeline would treat as "evaluate locally / allow"). The eager connect
+        // fails, so build_gateway_client falls back to a lazy channel — a Some
+        // whose checks fail-closed at call time (AAASM-3110 + AAASM-3430).
+        let mut config = audit_test_config(None);
+        // Port chosen to be almost certainly closed so the eager connect fails fast.
+        config.gateway_endpoint = Some("http://127.0.0.1:1".to_string());
+        assert!(
+            super::build_gateway_client(&config).await.is_some(),
+            "unreachable gateway must yield a lazy client, never None (no permissive local fallback)"
+        );
+    }
+
+    // ── spawn_op_control tests (AAASM-3491) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn spawn_op_control_noop_without_endpoint() {
+        // Without a gateway endpoint there is no kill-switch channel, so no
+        // subscriber task is spawned.
+        let tracker = TaskTracker::new();
+        let store = crate::op_control::OpControlStore::new();
+        let config = audit_test_config(None);
+        assert!(config.gateway_endpoint.is_none());
+
+        super::spawn_op_control(&tracker, &config, &store);
+
+        assert_eq!(
+            tracker.len(),
+            0,
+            "no op-control task should be spawned without an endpoint"
+        );
+        tracker.close();
+    }
+
+    #[tokio::test]
+    async fn spawn_op_control_spawns_subscriber_with_endpoint() {
+        // With an endpoint configured, the op-control subscriber is spawned onto
+        // the tracker (it reconnects in the background; we only assert it was
+        // registered, not that it connects).
+        let tracker = TaskTracker::new();
+        let store = crate::op_control::OpControlStore::new();
+        let mut config = audit_test_config(None);
+        config.gateway_endpoint = Some("http://127.0.0.1:1".to_string());
+
+        super::spawn_op_control(&tracker, &config, &store);
+
+        assert_eq!(tracker.len(), 1, "an op-control subscriber task should be spawned");
+        // Don't await — the subscriber reconnect-loops forever by design; the
+        // detached task is dropped when the test runtime shuts down.
+        tracker.close();
+    }
+
+    // ── spawn_pipeline_audit_publisher tests (AAASM-2610) ────────────────────
+
+    use aa_core::storage::{AuditEntry, AuditSink, Result as StorageResult};
+
+    /// An [`AuditSink`] that records every published entry's payload so tests
+    /// can assert what reached NATS.
+    struct RecordingSink {
+        published: std::sync::Mutex<Vec<AuditEntry>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                published: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn payloads(&self) -> Vec<String> {
+            self.published
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|e| e.payload().to_string())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuditSink for RecordingSink {
+        async fn emit(&self, event: AuditEntry) -> StorageResult<()> {
+            self.published.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    /// Build an [`AuditPublisher`] over the given recording sink with a fresh
+    /// on-disk fallback buffer (returned `TempDir` keeps it alive).
+    fn publisher_over(
+        sink: std::sync::Arc<RecordingSink>,
+    ) -> (
+        std::sync::Arc<crate::audit_publisher::AuditPublisher>,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let buffer = std::sync::Arc::new(
+            aa_storage_sqlite_buffer::EventBuffer::new(tmp.path().join("buffer.db"), 1_024).expect("buffer"),
+        );
+        let sink: std::sync::Arc<dyn AuditSink> = sink;
+        let publisher = std::sync::Arc::new(crate::audit_publisher::AuditPublisher::new(sink, buffer));
+        (publisher, tmp)
+    }
+
+    /// Build a `PipelineEvent::Audit` carrying a TOOL_CALL interception event.
+    fn pipeline_tool_call(event_id: &str, seq: u64) -> crate::pipeline::PipelineEvent {
+        use crate::pipeline::event::{EnrichedEvent, EventSource};
+        use aa_proto::assembly::audit::v1::AuditEvent;
+        use aa_proto::assembly::common::v1::ActionType;
+
+        crate::pipeline::PipelineEvent::Audit(Box::new(EnrichedEvent {
+            inner: AuditEvent {
+                event_id: event_id.to_string(),
+                action_type: ActionType::ToolCall as i32,
+                ..AuditEvent::default()
+            },
+            received_at_ms: 1_000,
+            source: EventSource::Sdk,
+            agent_id: "pipe-agent".to_string(),
+            connection_id: 1,
+            sequence_number: seq,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
+        }))
+    }
+
+    /// The subscriber converts and publishes each pipeline `Audit` event, and
+    /// ignores `LayerDegradation` operational events.
+    #[tokio::test]
+    async fn pipeline_audit_publisher_publishes_converted_events() {
+        let sink = RecordingSink::new();
+        let (publisher, _tmp) = publisher_over(std::sync::Arc::clone(&sink));
+        let token = CancellationToken::new();
+        let tracker = TaskTracker::new();
+
+        let (tx, rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
+        super::spawn_pipeline_audit_publisher(&tracker, rx, std::sync::Arc::clone(&publisher), token.clone());
+
+        // Two audit events plus one degradation event that must be ignored.
+        tx.send(pipeline_tool_call("550e8400-e29b-41d4-a716-446655440010", 0))
+            .unwrap();
+        tx.send(crate::pipeline::PipelineEvent::LayerDegradation(
+            crate::pipeline::LayerDegradationInfo {
+                layer: "proxy".to_string(),
+                reason: "test".to_string(),
+                remaining_layers: vec![],
+            },
+        ))
+        .unwrap();
+        tx.send(pipeline_tool_call("550e8400-e29b-41d4-a716-446655440011", 1))
+            .unwrap();
+
+        // Wait until both audit events have been published (poll briefly).
+        for _ in 0..50 {
+            if sink.payloads().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let payloads = sink.payloads();
+        assert_eq!(payloads.len(), 2, "exactly the two Audit events should be published");
+        assert!(payloads.iter().all(|p| p.contains("\"action_type\":\"TOOL_CALL\"")));
+        assert!(payloads.iter().any(|p| p.contains("446655440010")));
+        assert!(payloads.iter().any(|p| p.contains("446655440011")));
+
+        token.cancel();
+        tracker.close();
+        let _ = tokio::time::timeout(Duration::from_secs(2), tracker.wait()).await;
+    }
+
+    /// The pipeline-audit publisher and the approval audit drain are disjoint:
+    /// approval-decision entries flow only through the approval queue's mpsc
+    /// drain, and pipeline interception entries flow only through the broadcast
+    /// subscriber. Driving both with a shared publisher must publish each
+    /// logical event exactly once — never the same event twice.
+    #[tokio::test]
+    async fn pipeline_and_approval_paths_do_not_double_publish() {
+        let sink = RecordingSink::new();
+        let (publisher, _tmp) = publisher_over(std::sync::Arc::clone(&sink));
+        let token = CancellationToken::new();
+        let tracker = TaskTracker::new();
+
+        // Approval path: an mpsc drain feeding the same publisher.
+        let (audit_tx, audit_rx) = tokio::sync::mpsc::channel::<AuditEntry>(16);
+        super::spawn_audit_drain(&tracker, audit_rx, std::sync::Arc::clone(&publisher), token.clone());
+        let approval_queue = crate::approval::ApprovalQueue::with_audit(audit_tx, [0u8; 32]);
+
+        // Pipeline path: the broadcast subscriber feeding the same publisher.
+        let (tx, rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
+        super::spawn_pipeline_audit_publisher(&tracker, rx, std::sync::Arc::clone(&publisher), token.clone());
+
+        // Drive one approval lifecycle (submit + approve ⇒ 2 approval entries:
+        // ApprovalRequested + ApprovalGranted).
+        let req = crate::approval::ApprovalRequest {
+            request_id: uuid::Uuid::new_v4(),
+            agent_id: "approval-agent".to_string(),
+            action: "read_file".to_string(),
+            condition_triggered: "sensitive".to_string(),
+            submitted_at: 1_700_000_000,
+            timeout_secs: 60,
+            fallback: aa_core::PolicyResult::Deny {
+                reason: "x".to_string(),
+            },
+            team_id: None,
+            timeout_override_secs: None,
+            escalation_role_override: None,
+        };
+        let id = req.request_id;
+        let (_rid, _fut) = approval_queue.submit(req);
+        approval_queue
+            .decide(
+                id,
+                crate::approval::ApprovalDecision::Approved {
+                    by: "alice".to_string(),
+                    reason: None,
+                    conditions: vec![],
+                },
+            )
+            .expect("decide");
+
+        // Drive one pipeline interception event.
+        tx.send(pipeline_tool_call("550e8400-e29b-41d4-a716-446655440020", 0))
+            .unwrap();
+
+        // Expect exactly 3 published entries total: 2 approval + 1 pipeline.
+        for _ in 0..50 {
+            if sink.published.lock().unwrap().len() == 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let payloads = sink.payloads();
+        assert_eq!(
+            payloads.len(),
+            3,
+            "exactly 2 approval + 1 pipeline entries; no double-publish. got: {payloads:?}"
+        );
+        // The single pipeline interception event appears exactly once.
+        let pipeline_hits = payloads.iter().filter(|p| p.contains("446655440020")).count();
+        assert_eq!(pipeline_hits, 1, "pipeline event must be published exactly once");
+        // Approval entries carry the request/agent context, not the pipeline action_type.
+        let approval_hits = payloads.iter().filter(|p| p.contains("approval-agent")).count();
+        assert_eq!(approval_hits, 2, "both approval lifecycle entries present exactly once");
+
+        token.cancel();
+        tracker.close();
+        let _ = tokio::time::timeout(Duration::from_secs(2), tracker.wait()).await;
     }
 }
 
@@ -1224,20 +2030,35 @@ mod layer_integration {
         // Give the perf reader tasks time to start their polling loops.
         // They are spawned via tokio::spawn inside start_event_reader and
         // need at least one poll cycle before they can receive events.
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Trigger file I/O events repeatedly so the kprobes capture at
-        // least one, even if the first trigger races with reader startup.
+        // Poll-until-event instead of a fixed collect window: a fixed 3s
+        // window races the kernel perf-capture path (kprobe -> perf-buffer ->
+        // reader -> broadcast), which is inherently best-effort and can lag on
+        // loaded CI runners, producing intermittent "got none" failures. Each
+        // iteration triggers one file I/O event AND drains whatever has been
+        // captured so far (so the broadcast(64) can't overflow), accumulating
+        // into `events`, and breaks as soon as an eBPF audit event is seen or a
+        // generous overall deadline elapses. This removes the timing race
+        // without weakening the assertion — a real eBPF event is still required.
+        const EBPF_CAPTURE_DEADLINE: Duration = Duration::from_secs(30);
         let trigger_path = "/tmp/aa-integration-test-trigger";
-        for _ in 0..5 {
+        let mut events: Vec<PipelineEvent> = Vec::new();
+        let deadline = tokio::time::Instant::now() + EBPF_CAPTURE_DEADLINE;
+        loop {
             std::fs::write(trigger_path, b"integration-test").expect("write trigger file");
             let _ = std::fs::read_to_string(trigger_path);
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            let mut batch = collect_events(&mut rx, Duration::from_millis(500)).await;
+            events.append(&mut batch);
+
+            let have_ebpf = events
+                .iter()
+                .any(|e| matches!(e, PipelineEvent::Audit(ref a) if a.source == EventSource::EBpf));
+            if have_ebpf || tokio::time::Instant::now() >= deadline {
+                break;
+            }
         }
         let _ = std::fs::remove_file(trigger_path);
-
-        // Collect events.
-        let events = collect_events(&mut rx, Duration::from_secs(3)).await;
 
         // Assert at least one eBPF-sourced audit event arrived.
         let ebpf_events: Vec<_> = events
@@ -1311,6 +2132,7 @@ mod layer_integration {
             &tracker,
             &tx,
             crate::layer::LayerSet::EBPF | crate::layer::LayerSet::PROXY,
+            None,
             &mut degraded,
         );
 
@@ -1392,6 +2214,7 @@ mod layer_integration {
             &tracker,
             &tx,
             crate::layer::LayerSet::EBPF | crate::layer::LayerSet::PROXY,
+            None,
             &mut degraded,
         );
 
@@ -1440,5 +2263,76 @@ mod layer_integration {
         token.cancel();
         tracker.close();
         let _ = tokio::time::timeout(Duration::from_secs(1), tracker.wait()).await;
+    }
+
+    /// Regression for AAASM-3128: the DEBUG-level TLS ring-buffer log must
+    /// never contain the decrypted-TLS `payload` bytes. Captures the tracing
+    /// output of [`super::log_ebpf_tls_event`] for an event whose payload holds
+    /// a known secret, and asserts the secret is absent while the scalar
+    /// metadata is present.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tls_event_log_omits_payload_plaintext() {
+        use std::sync::{Arc, Mutex};
+
+        use aa_ebpf::ringbuf::EbpfEvent;
+        use aa_ebpf_common::tls::{TlsCaptureEvent, MAX_PAYLOAD_LEN};
+        use tracing::subscriber;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        // Shared in-memory sink the fmt layer writes into.
+        #[derive(Clone, Default)]
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for BufWriter {
+            type Writer = BufWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        const SECRET: &[u8] = b"Authorization: Bearer sk-super-secret-token-value";
+        let mut payload = [0u8; MAX_PAYLOAD_LEN];
+        payload[..SECRET.len()].copy_from_slice(SECRET);
+        let event = EbpfEvent::Tls(Box::new(TlsCaptureEvent {
+            timestamp_ns: 42,
+            pid: 1234,
+            tid: 5678,
+            data_len: SECRET.len() as u32,
+            seq: 0,
+            direction: 0,
+            _pad: [0u8; 7],
+            payload,
+        }));
+
+        let sink = BufWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(sink.clone())
+            .finish();
+
+        subscriber::with_default(subscriber, || super::log_ebpf_tls_event(&event));
+
+        let out = String::from_utf8_lossy(&sink.0.lock().unwrap()).to_string();
+        assert!(
+            !out.contains("super-secret-token-value"),
+            "TLS log must not contain decrypted payload bytes; got: {out}"
+        );
+        assert!(
+            out.contains("1234"),
+            "scalar pid metadata should still be logged: {out}"
+        );
+        assert!(
+            out.contains("data_len"),
+            "scalar metadata should still be logged: {out}"
+        );
     }
 }

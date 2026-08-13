@@ -56,6 +56,15 @@ export function ConfirmDialog({
       onClick={(e) => {
         if (e.target === e.currentTarget) onCancel()
       }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        onCancel()
+      }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close dialog"
     >
       <div className="confirm-dialog" role="alertdialog" aria-modal="true" data-testid="confirm-dialog">
         <h2 className="confirm-dialog__title">{title}</h2>

@@ -62,11 +62,25 @@ body {
   --rail-bg:           #0e0e0e;
   --rail-fg:           #c8c5b8;
   --rail-fg-dim:       #8a8880;
-  --rail-fg-muted:     #6a6a60;
+  /* ACCESSIBILITY CORRECTION (AAASM-5134, ADR-0027) — was #6a6a60.
+     Rail section headings render at 11px, and #6a6a60 on the #0e0e0e rail
+     measures 3.53:1, below the WCAG 2.1 AA floor of 4.5:1 for normal text.
+     #7b7b71 is the smallest step along the same warm-grey ramp that clears
+     it: 4.52:1 here, 4.66:1 against the darker #0a0907 dark-mode rail below.
+     The spec is corrected at source rather than deviated from downstream, so
+     the next surface built from this file does not reintroduce the failure.
+     ADR-0027 records that the accessibility floor overrides this spec
+     wherever the two conflict. */
+  --rail-fg-muted:     #7b7b71;
   --rail-divider:      #2a2a2a;
   --rail-item-hover:   #1f1f1f;
   --rail-item-active-bg: #ffffff;
   --rail-item-active-fg: #0e0e0e;
+  /* NOT corrected — see ADR-0027 "Accepted risks". Route numbers are 11px at
+     3.53:1 like the headings were, but they also sit on the --rail-item-hover
+     fill, where even the corrected grey reaches only 3.86:1. Clearing AA here
+     needs a hover-state decision, not a one-value bump; tracked on AAASM-5134
+     rather than guessed at. */
   --rail-num:          #6a6a60;
 }
 
@@ -1025,7 +1039,21 @@ body, .main, .topbar, .page, .page-head, .card,
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  color: var(--ink-4);
+  /* ACCESSIBILITY CORRECTION (AAASM-5130, ADR-0027) — was var(--ink-4).
+     .empty renders at 11px, and --ink-4 against the --paper page ground
+     measures 3.14:1 (light, #8a8a8a on #f5f4f0) and 4.10:1 (dark, #7a766c on
+     #14130f) — below the WCAG 2.1 AA floor of 4.5:1 for normal text, with no
+     large-text exemption available at 11px. --ink-3 is the smallest step along
+     the same grey ramp that clears it: 6.27:1 light, 7.57:1 dark, and 6.90:1 /
+     7.07:1 on the lighter --paper-2 ground some surfaces place it on.
+     Corrected at source rather than only downstream, so the next surface built
+     from this file does not reintroduce the failure — which is exactly how it
+     reached the shipped Fleet page. Unlike the AAASM-5134 rail correction this
+     edits a per-component rule rather than a token: ADR-0027's forbidden-designs
+     clause binds "the failing value", not only failing tokens.
+     Shared by alerts, costs, live-ops, fleet, policy and teams — all six were
+     specifying the same failing value. */
+  color: var(--ink-3);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   text-transform: uppercase;

@@ -476,7 +476,22 @@
                 }
 
                 select.addEventListener("change", function () {
-                    window.location.href = siteRoot + select.value + "/";
+                    // select.value comes from versions.json (a fetched, hence
+                    // untrusted, document). Constrain it to a safe version-subpath
+                    // shape as defense-in-depth — legitimate ids/targets (e.g.
+                    // "latest", "v0.0.1-alpha.5", "v0.1.0") only use these chars.
+                    var subpath = select.value;
+                    if (!/^[A-Za-z0-9._-]+$/.test(subpath)) { return; }
+                    // Navigate by *path only*, never by concatenating the value into
+                    // a URL string. We resolve a same-origin URL from siteRoot and
+                    // append the subpath to its pathname component; assigning to
+                    // URL.pathname cannot introduce a "javascript:" scheme or a
+                    // "//host" authority, so the untrusted value is structurally
+                    // confined to the path and can never reach the navigation sink
+                    // as a raw concatenated string.
+                    var dest = new URL(siteRoot, window.location.href);
+                    dest.pathname = dest.pathname.replace(/\/+$/, "") + "/" + subpath + "/";
+                    window.location.assign(dest.href);
                 });
                 label.classList.remove("hidden");
             }
@@ -495,10 +510,10 @@
 
                 if (currentChannel && currentChannel.id === "latest") {
                     if (stable) {
-                        html = '⚠️ You’re viewing the in-development docs (master) — content may change. '
+                        html = '⚠️ You’re viewing the in-development docs (main) — content may change. '
                              + '<a href="' + stableHref + '">Go to the latest stable release →</a>';
                     } else {
-                        html = 'ℹ️ You’re viewing the in-development docs (master). '
+                        html = 'ℹ️ You’re viewing the in-development docs (main). '
                              + 'There is no stable release yet.';
                     }
                 } else if (stable) {

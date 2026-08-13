@@ -4,38 +4,85 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Control plane — policy enforcement engine and agent registry for Agent Assembly"
+description = "Control plane — policy evaluation engine and agent registry for Agent Assembly"
+
+# AAASM-5315: `src/approval/sqlite_repo.rs` and
+# `src/approval/db_escalation_scheduler.rs` expand `sqlx::query!` at COMPILE
+# time. Both are un-feature-gated `pub mod`s reached from `src/server.rs` and
+# both gRPC services, so every consumer of a default `cargo add aa-gateway`
+# compiles them. With no live DATABASE_URL the macros fall back to the offline
+# cache, which lives at the WORKSPACE root `.sqlx/` — outside this package, so
+# no tarball up to v0.0.1-rc.6 carried it and the published crate could not
+# build for anyone.
+#
+# `include` paths cannot escape the package directory, hence the staged
+# `aa-gateway/.sqlx/` mirror (gitignored; see .gitignore) that release.yml
+# copies in before publishing. Adding `include` at all means every other shipped
+# path must be listed explicitly — cargo ignores the git-aware default once this
+# key is present.
+include = [
+    "src/**",
+    "tests/**",
+    "benches/**",
+    "migrations/**",
+    "Cargo.toml",
+    "Dockerfile",
+    "README.md",
+    ".sqlx/**",
+]
 
 [dependencies]
-aa-core      = { path = "../aa-core", version = "0.0.1-beta.1", features = ["serde"] }
-aa-security  = { path = "../aa-security", version = "0.0.1-beta.1", features = ["serde"] }
-aa-proto     = { path = "../aa-proto", version = "0.0.1-beta.1" }
-aa-runtime   = { path = "../aa-runtime", version = "0.0.1-beta.1" }
+aa-core      = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
+aa-policy    = { path = "../aa-policy", version = "0.0.1-rc.6" }
+# AAASM-3907: the shared HTTP auth framework (AuthConfig / ApiKeyStore /
+# JwtVerifier / RateLimiter / RequireAdmin) extracted to a leaf crate by
+# AAASM-3899. aa-gateway IS in the crates.io publish set, so this path-dep MUST
+# carry a version — crates.io rejects a version-less path-dep on a published
+# crate (broke the v0.0.1-rc.3 publish). Keep this pin realigned to the workspace
+# version on every release cut, like the other internal deps below.
+aa-auth      = { path = "../aa-auth", version = "0.0.1-rc.6" }
+aa-security  = { path = "../aa-security", version = "0.0.1-rc.6", features = ["serde"] }
+aa-proto     = { path = "../aa-proto", version = "0.0.1-rc.6" }
+aa-runtime   = { path = "../aa-runtime", version = "0.0.1-rc.6" }
 tokio        = { workspace = true, features = ["full"] }
 regex        = "1"
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 serde_yaml   = { workspace = true }
 arc-swap     = "1"
+bs58         = "0.5"
 dashmap      = { workspace = true }
-ed25519-dalek = { version = "2", features = ["std"] }
+ed25519-dalek = "3"
+# CSPRNG for server-issued, single-use registration-challenge nonces
+# (AAASM-3866). `rand::random` draws from an OS-seeded ChaCha thread CSPRNG, so
+# the nonce is unpredictable and the possession proof cannot be precomputed.
+# Same major version aa-runtime / aa-sdk-client already use for handshake nonces.
+rand         = "0.10"
 hex          = { workspace = true }
 notify       = { version = "8", features = [] }
 chrono       = { workspace = true, features = ["clock", "serde"] }
 chrono-tz    = { workspace = true, features = ["serde"] }
-cron         = "0.16"
+cron         = "0.17"
 rust_decimal = { workspace = true, features = ["serde-str"] }
 thiserror    = { workspace = true }
 dirs         = { workspace = true }
 async-stream = "0.3"
 async-trait  = { workspace = true }
 sha2         = { workspace = true }
+# AAASM-3922: constant-time byte comparison for credential-token validation
+# (defence-in-depth against a timing side-channel). Tiny, BSD-licensed, already
+# present in the dependency graph via the ed25519/curve crates.
+subtle       = "2"
 similar      = "3"
 tokio-stream = { workspace = true }
 tonic        = { workspace = true }
+# Standard gRPC Health Checking Protocol service (grpc.health.v1.Health) so the
+# published gateway container answers `Health/Check` instead of Unimplemented,
+# making it probeable by orchestrators/liveness checks (AAASM-4759).
+tonic-health = { workspace = true }
 tracing      = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-reqwest      = { workspace = true, features = ["json", "rustls-tls"] }
+reqwest      = { workspace = true, features = ["json", "rustls"] }
 uuid         = { workspace = true, features = ["v4", "v5", "v7", "serde"] }
 clap         = { workspace = true, features = ["derive"] }
 moka         = { workspace = true, features = ["sync"] }
@@ -52,12 +99,19 @@ axum-server  = { version = "0.8", features = ["tls-rustls"] }
 tower-http   = { workspace = true, features = ["fs"] }
 x509-parser  = "0.18"
 redis        = { workspace = true, features = ["tokio-comp", "connection-manager"], optional = true }
+# AAASM-3883: cross-process op-control delivery over a NATS subject (ADR 0011).
+# async-nats is a regular (non-optional) dependency here because it is already a
+# non-optional transitive dependency via aa-runtime's audit publisher — so it is
+# in the crates.io publish set regardless. The op-control bridge/publisher is
+# therefore always compiled and activated at runtime by AA_OPCONTROL_NATS_URL,
+# matching the always-on runtime audit publisher rather than the feature-gated
+# audit consumer.
+async-nats   = { workspace = true }
 # strip-for-publish:begin audit-consumer
 # AAASM-2388: gateway-side NATS JetStream audit consumer. Held back from the
 # crates.io publish set — aa-storage-postgres is `publish = false`, so cargo
 # would reject the published gateway for depending on it. This whole block is
 # removed by .ci/strip-for-publish.sh before `cargo workspaces publish`.
-async-nats   = { workspace = true, optional = true }
 aa-storage-postgres = { path = "../aa-storage-postgres", optional = true }
 # strip-for-publish:end audit-consumer
 
@@ -66,6 +120,10 @@ aa-storage-postgres = { path = "../aa-storage-postgres", optional = true }
 # driver's own embedded MIGRATOR so the gateway can never drift from the
 # canonical MVP schema (AAASM-2389).
 aa-storage-postgres = { path = "../aa-storage-postgres" }
+# End-to-end proof that an SDK-derived did:key identity is accepted by the
+# live AgentLifecycleService.Register RPC (AAASM-3387). Default features off
+# to avoid pulling the advisory-preflight (aa-security) dependency.
+aa-sdk-client = { path = "../aa-sdk-client", default-features = false }
 criterion    = { workspace = true, features = ["async_tokio"] }
 proptest     = { workspace = true }
 tempfile     = { workspace = true }
@@ -87,7 +145,15 @@ redis-cache = ["dep:redis"]
 # strip-for-publish:begin audit-consumer
 # AAASM-2388: gateway-internal NATS->Postgres audit consumer worker. Default
 # OFF; enabled in dev/CI via `--all-features`. Stripped before crates.io publish.
-audit-consumer = ["dep:async-nats", "dep:aa-storage-postgres"]
+#
+# AAASM-3919 guardrail: do NOT enable this feature for a multi-tenant SaaS
+# Postgres deployment. The consumer persists every tenant's audit rows through
+# `PgAuditSink::insert_audit_logs`, which hardcodes the reserved `SYSTEM_ORG`
+# (see `audit_consumer.rs`) — all tenants' rows co-mingle under one org_id and
+# the 0006/0007 RLS migrations cannot isolate them. The tenant must first be
+# threaded from the `assembly.audit.<tenant>.<agent>` NATS subject into
+# `insert_audit_log_for_tenant`. Single-tenant/self-hosted use is unaffected.
+audit-consumer = ["dep:aa-storage-postgres"]
 # strip-for-publish:end audit-consumer
 
 [[bin]]

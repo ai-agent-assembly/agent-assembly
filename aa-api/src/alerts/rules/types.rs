@@ -109,6 +109,19 @@ pub struct AlertRule {
     pub created_at: String,
     /// RFC 3339 timestamp of the last mutation.
     pub updated_at: String,
+    /// AAASM-3911: owning team, stamped from the creating caller's tenant.
+    ///
+    /// Internal-only: `#[serde(skip)]` keeps it off the wire and out of the
+    /// OpenAPI schema, so the public alert-rule DTO is unchanged. It confines
+    /// list/get/update/delete to the rule's tenant (an admin sees every
+    /// tenant). `None` for rules created by an admin / bypass caller with no
+    /// tenant scope — such rules are untagged and admin-only.
+    #[serde(skip)]
+    pub team_id: Option<String>,
+    /// AAASM-3911: owning org, stamped from the creating caller's tenant.
+    /// Internal-only — see [`Self::team_id`].
+    #[serde(skip)]
+    pub org_id: Option<String>,
 }
 
 /// Validation failure surfaced from [`AlertRule::validate`].
@@ -323,6 +336,8 @@ mod tests {
             enabled: true,
             created_at: "2026-05-13T09:00:00Z".to_string(),
             updated_at: "2026-05-13T09:00:00Z".to_string(),
+            team_id: None,
+            org_id: None,
         }
     }
 
@@ -488,5 +503,66 @@ mod tests {
             v.get("suppression_labels").is_none(),
             "empty suppression_labels should be omitted, got {v}",
         );
+    }
+
+    #[test]
+    fn negative_threshold_rejected_for_every_non_budget_metric() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        for metric in [
+            RuleMetric::AnomalyScore,
+            RuleMetric::ApprovalPendingAge,
+            RuleMetric::PolicyViolationCount,
+        ] {
+            let rule = AlertRule {
+                metric,
+                threshold: -1.0,
+                ..valid_rule()
+            };
+            let err = rule.validate(&registry).expect_err("negative threshold must fail");
+            assert!(
+                matches!(err, AlertRuleValidationError::InvalidThreshold { .. }),
+                "metric {metric:?} should reject a negative threshold",
+            );
+        }
+    }
+
+    #[test]
+    fn non_negative_threshold_accepted_for_every_non_budget_metric() {
+        let registry = TestRegistry::with(&["slack-ops"]);
+        for metric in [
+            RuleMetric::AnomalyScore,
+            RuleMetric::ApprovalPendingAge,
+            RuleMetric::PolicyViolationCount,
+        ] {
+            let rule = AlertRule {
+                metric,
+                threshold: 5.0,
+                ..valid_rule()
+            };
+            assert_eq!(rule.validate(&registry), Ok(()), "metric {metric:?} should accept 5.0");
+        }
+    }
+
+    #[test]
+    fn validation_error_display_covers_every_variant() {
+        let cases = [
+            AlertRuleValidationError::InvalidName {
+                reason: "bad".to_string(),
+            },
+            AlertRuleValidationError::InvalidThreshold {
+                metric: RuleMetric::BudgetSpentPct,
+                value: 200.0,
+                reason: "too big".to_string(),
+            },
+            AlertRuleValidationError::InvalidEvaluationWindow { value: 7 },
+            AlertRuleValidationError::EmptyDestinations,
+            AlertRuleValidationError::UnknownDestination {
+                id: "ghost".to_string(),
+            },
+        ];
+        for case in cases {
+            // Every variant must render a non-empty Display string.
+            assert!(!case.to_string().is_empty());
+        }
     }
 }

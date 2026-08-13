@@ -2,34 +2,13 @@
 
 use chrono::Datelike;
 
-/// LLM provider identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Provider {
-    /// OpenAI (GPT-* models).
-    OpenAi,
-    /// Anthropic (Claude models).
-    Anthropic,
-    /// Cohere (Command models).
-    Cohere,
-}
-
-/// LLM model identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Model {
-    // OpenAI
-    Gpt4o,
-    Gpt4,
-    Gpt35Turbo,
-    // Anthropic
-    Claude3Opus,
-    Claude3Sonnet,
-    Claude3Haiku,
-    // Cohere
-    CommandRPlus,
-    CommandR,
-}
+// The LLM `Provider`/`Model` enums and the model-name → `(Provider, Model)`
+// inference (`Model::infer_from_name`) were relocated to `aa-core::llm`
+// (AAASM-3362) so SDKs and other crates can reuse them without depending on
+// `aa-gateway`. They are re-exported here so existing `budget::types::{Provider,
+// Model}` call sites (pricing table, engine accrual) keep working unchanged.
+// Pricing tables remain in `aa-gateway` (see `super::pricing`).
+pub use aa_core::llm::{Model, Provider};
 
 /// Discriminates which budget window a limit or check applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,7 +41,7 @@ pub enum BudgetWindow {
     Duration(std::time::Duration),
 }
 
-/// Error returned by [`super::tracker::BudgetTracker::check_and_decrement`].
+/// Error returned by `super::tracker::BudgetTracker::check_and_decrement`.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum BudgetError {
     /// An ancestor agent's budget is exhausted; the spend was not applied to any node.
@@ -71,6 +50,30 @@ pub enum BudgetError {
         /// The ancestor agent whose budget was exceeded.
         ancestor_id: [u8; 16],
         /// Which window (daily/monthly/global) was exhausted.
+        kind: BudgetKind,
+    },
+    /// AAASM-3986 — the agent's *own* budget would be exceeded by the reserved
+    /// spend; nothing was committed. Distinct from
+    /// [`Self::AncestorBudgetExhausted`] so the caller can report the correct
+    /// deny reason (per-agent daily / monthly limit) for the atomic
+    /// [`super::tracker::BudgetTracker::reserve_spend`] path.
+    #[error("agent budget exhausted ({kind:?})")]
+    SelfBudgetExhausted {
+        /// Which window (daily/monthly) was exhausted.
+        kind: BudgetKind,
+    },
+    /// AAASM-4124 — a team- or org-tier cap the reservation rolls up into is at
+    /// or over its configured limit; nothing was committed. Distinct from
+    /// [`Self::SelfBudgetExhausted`] because the tripped cap belongs to the
+    /// tenant envelope (shared across the tenant's agents), not the calling
+    /// agent's own budget. `reserve_spend` previously discarded `record_cost`'s
+    /// tier verdict, so a configured org/team daily or monthly cap silently
+    /// failed open.
+    #[error("{tier} budget exhausted ({kind:?})")]
+    TenantBudgetExhausted {
+        /// Which tenant tier tripped: `"team"` or `"org"`.
+        tier: &'static str,
+        /// Which window (daily/monthly) was exhausted.
         kind: BudgetKind,
     },
 }
@@ -104,7 +107,7 @@ pub struct BudgetState {
     ///
     /// `None` preserves the historical date-only reset path (and the
     /// back-compat for `budget.json` files written before AAASM-1600);
-    /// `Some(t)` is populated by [`maybe_reset_window`] when the tracker
+    /// `Some(t)` is populated by `maybe_reset_window` when the tracker
     /// is configured with [`BudgetWindow::Duration`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_reset_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -154,7 +157,7 @@ impl BudgetState {
 
     /// Window-aware reset.
     ///
-    /// For [`BudgetWindow::Daily`] this is equivalent to [`maybe_reset`] using
+    /// For [`BudgetWindow::Daily`] this is equivalent to `maybe_reset` using
     /// the calendar date of `now` in the supplied timezone.
     ///
     /// For [`BudgetWindow::Duration`] the daily accumulator is zeroed each time
@@ -227,22 +230,6 @@ pub struct BudgetAlert {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn provider_variants_are_distinct() {
-        assert_eq!(Provider::OpenAi, Provider::OpenAi);
-        assert_ne!(Provider::OpenAi, Provider::Anthropic);
-        assert_ne!(Provider::OpenAi, Provider::Cohere);
-        assert_ne!(Provider::Anthropic, Provider::Cohere);
-    }
-
-    #[test]
-    fn model_variants_are_distinct() {
-        assert_eq!(Model::Gpt4o, Model::Gpt4o);
-        assert_ne!(Model::Gpt4o, Model::Gpt4);
-        assert_ne!(Model::Claude3Opus, Model::Claude3Haiku);
-        assert_ne!(Model::CommandRPlus, Model::CommandR);
-    }
 
     #[test]
     fn budget_status_within_budget_holds_values() {

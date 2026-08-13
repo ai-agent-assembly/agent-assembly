@@ -1,6 +1,9 @@
 import { useState } from 'react'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { useApiKeysQuery, useRevokeApiKeyMutation, useRotateApiKeyMutation } from './apiKeys'
 import { useToast } from '../../components/Toast'
+import { Tooltip } from '../../components/Tooltip'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import type { ApiKey, GeneratedApiKey } from './types'
 import './ApiKeyList.css'
 
@@ -15,11 +18,11 @@ function formatDate(value: string | null): string {
   return d.toISOString().slice(0, 16).replace('T', ' ')
 }
 
-function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: {
+function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: Readonly<{
   keyRecord: ApiKey
   onCancel: () => void
   onConfirm: () => void
-}) {
+}>) {
   return (
     <div className="iam-dialog__backdrop" role="dialog" aria-modal="true" data-testid="confirm-revoke-key">
       <div className="iam-dialog">
@@ -45,12 +48,12 @@ function ConfirmRevoke({ keyRecord, onCancel, onConfirm }: {
   )
 }
 
-function ConfirmRotate({ keyRecord, onCancel, onConfirm, isPending }: {
+function ConfirmRotate({ keyRecord, onCancel, onConfirm, isPending }: Readonly<{
   keyRecord: ApiKey
   onCancel: () => void
   onConfirm: () => void
   isPending: boolean
-}) {
+}>) {
   return (
     <div className="iam-dialog__backdrop" role="dialog" aria-modal="true" data-testid="confirm-rotate-key">
       <div className="iam-dialog">
@@ -102,6 +105,7 @@ export function ApiKeyList({ selectedKeyId = null, onSelect, onRotated }: ApiKey
   const { data, isLoading, isError, refetch } = useApiKeysQuery()
   const revoke = useRevokeApiKeyMutation()
   const rotate = useRotateApiKeyMutation()
+  const { canWrite } = usePermissions()
   const { toast } = useToast()
   const [pendingRevoke, setPendingRevoke] = useState<ApiKey | null>(null)
   const [pendingRotate, setPendingRotate] = useState<ApiKey | null>(null)
@@ -110,7 +114,7 @@ export function ApiKeyList({ selectedKeyId = null, onSelect, onRotated }: ApiKey
     return (
       <div className="iam-api-key-list__error" data-testid="api-key-list-error">
         <span>Failed to load API keys.</span>
-        <button type="button" onClick={() => void refetch()}>Retry</button>
+        <button type="button" onClick={() => ignorePromise(refetch())}>Retry</button>
       </div>
     )
   }
@@ -232,33 +236,37 @@ export function ApiKeyList({ selectedKeyId = null, onSelect, onRotated }: ApiKey
                 </td>
                 <td>
                   {!revoked && (
-                    <div className="iam-api-key-list__row-actions">
-                      <button
-                        type="button"
-                        className="iam-api-key-list__rotate-btn"
-                        data-testid={`api-key-rotate-${k.id}`}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setPendingRotate(k)
-                        }}
-                        disabled={rotate.isPending}
-                      >
-                        Rotate
-                      </button>
-                      <button
-                        type="button"
-                        className="iam-api-key-list__revoke-btn"
-                        data-testid={`api-key-revoke-${k.id}`}
-                        onClick={(e) => {
-                          // Don't bubble to the row's onClick selection handler.
-                          e.stopPropagation()
-                          setPendingRevoke(k)
-                        }}
-                        disabled={revoke.isPending}
-                      >
-                        Revoke
-                      </button>
-                    </div>
+                    <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+                      <div className="iam-api-key-list__row-actions">
+                        <button
+                          type="button"
+                          className="iam-api-key-list__rotate-btn"
+                          data-testid={`api-key-rotate-${k.id}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setPendingRotate(k)
+                          }}
+                          disabled={rotate.isPending || !canWrite}
+                          title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+                        >
+                          Rotate
+                        </button>
+                        <button
+                          type="button"
+                          className="iam-api-key-list__revoke-btn"
+                          data-testid={`api-key-revoke-${k.id}`}
+                          onClick={(e) => {
+                            // Don't bubble to the row's onClick selection handler.
+                            e.stopPropagation()
+                            setPendingRevoke(k)
+                          }}
+                          disabled={revoke.isPending || !canWrite}
+                          title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+                        >
+                          Revoke
+                        </button>
+                      </div>
+                    </Tooltip>
                   )}
                 </td>
               </tr>

@@ -23,6 +23,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     active_sessions: [],
     session_count: 0,
     policy_violations_count: 0,
+    is_flagged: false,
     tool_names: [],
     metadata: {},
     pid: null,
@@ -62,8 +63,8 @@ describe('applyFleetFilters', () => {
 
   it('filters out non-flagged agents when flaggedOnly is true', () => {
     const list = makeFleet(
-      { policy_violations_count: 0 },
-      { policy_violations_count: 100 },
+      { is_flagged: false },
+      { is_flagged: true },
     )
     expect(applyFleetFilters(list, { ...DEFAULT_FLEET_FILTERS, flaggedOnly: true })).toHaveLength(1)
   })

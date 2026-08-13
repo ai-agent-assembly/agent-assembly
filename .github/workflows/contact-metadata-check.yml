@@ -1,0 +1,94 @@
+name: Contact Metadata Drift Check
+
+# AAASM-5520: the security reporting address and shared response-target SLAs in
+# SECURITY.md and README.md are owned by the canonical org metadata registry in
+# ai-agent-assembly/.github (ADR 0014 / AAASM-5519).
+# scripts/check_contact_metadata.py syncs/audits them against the pinned
+# canonical facts. This gate fails closed if either drifts, so a stale contact
+# literal can never merge. Repo-specific security prose is untouched.
+
+on:
+  pull_request:
+    # AAASM-5677: deliberately NOT path-filtered — selection moved to the
+    # `changes` router below. This gate is governance-bearing (CONTRIBUTING,
+    # "Which CI checks are governance-bearing"): its failure means a published
+    # statement about how to reach us for a vulnerability is false, and nothing
+    # else in the tree reads those literals. It therefore has to be a required
+    # status check, and a required check only works if it reliably reports —
+    # a path-filtered workflow that does not trigger produces no check run at
+    # all, and a required check that never arrives blocks the PR forever.
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # AAASM-5677: consulted for `pull_request` only. The `push` backstop stays
+  # unconditional so the gate still runs on the merge that breaks it.
+  changes:
+    name: Detect changed areas (Contact Metadata)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      contact: ${{ steps.filter.outputs.contact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4.0.3
+        id: filter
+        with:
+          filters: |
+            contact:
+              - 'SECURITY.md'
+              - 'README.md'
+              - 'scripts/check_contact_metadata.py'
+              - '.github/workflows/contact-metadata-check.yml'
+
+  contact-drift:
+    name: contact metadata drift
+    needs: [changes]
+    # `!cancelled()` stops a skipped `changes` (every non-PR event) from
+    # force-skipping this job. A failed `changes` leaves the condition false,
+    # so this skips and the aggregate below turns red: fail closed.
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.contact == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Audit contact literals against the pinned registry
+        run: python scripts/check_contact_metadata.py --check
+
+  # AAASM-5677: the stable required context. Named separately from the job it
+  # aggregates so renaming an internal job cannot silently drop the branch
+  # protection requirement.
+  contact-metadata-success:
+    name: Contact Metadata Success
+    needs: [changes, contact-drift]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A required Contact Metadata job concluded with '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required Contact Metadata jobs passed or were intentionally skipped."

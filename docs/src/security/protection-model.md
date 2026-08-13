@@ -6,7 +6,7 @@ on* and, where necessary, *blocked or scrubbed*. This page covers the
 enforcement machinery: policy evaluation, fail-closed behavior, network-egress
 control, credential scanning & redaction, and budgets as a control. Every claim
 below is grounded in the gateway, runtime, and security crates; for the broader
-component picture see [Architecture](../architecture/README.md).
+component picture see [Architecture](../architecture/index.md).
 
 ## Policy evaluation
 
@@ -57,6 +57,15 @@ examples:
   forwarded raw — `OversizedPolicy::RedactWhole`, the sole and default variant
   (`aa-runtime/src/pipeline/enforcement.rs`). The doc comment is explicit: *"The
   runtime is a security gate, so the policy is fail-closed."*
+- **Undecodable field with a finding → redact whole.** A `bytes` field that is
+  not valid UTF-8 is still scanned — the *decision* is never skipped — but a
+  detected secret cannot be spliced out faithfully, because the finding's offsets
+  index the lossy decoding rather than the payload. So it is replaced wholesale
+  with `UNDECODABLE_MARKER = "[REDACTED:UNDECODABLE]"` and counted in
+  `EnforcementOutcome::undecodable_fields`. Leaving it untouched would forward a
+  detected secret in the clear; this is the same rule as ADR 0015 §1's
+  "caller text ≠ scanned text ⇒ opaque whole-value redaction". A **clean**
+  undecodable field is forwarded byte-identical (AAASM-5346).
 
 > **Null-as-no-match nuance.** Inside a single policy document, an *unresolvable*
 > graph variable contributes nothing to the decision — a `deny` condition that

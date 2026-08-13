@@ -17,15 +17,27 @@
   flex-direction: column;
 }
 
+/* `--trace-depth` is the span's `parent_span_id` nesting depth, set per row by
+   TraceTimeline.tsx and already clamped to MAX_INDENT_DEPTH. Indenting with
+   margin rather than padding keeps the card's own padding uniform, so a nested
+   row is offset as a whole card instead of having its text pushed inward.
+   Defaulted here so a row rendered without the variable sits at the root. */
 .trace-event {
+  --trace-depth: 0;
   display: flex;
   gap: 12px;
   padding: 0.5rem 0.75rem;
+  margin-left: calc(var(--trace-depth) * 1.25rem);
   border: 1px solid var(--line);
   border-radius: 6px;
   font-size: 0.875rem;
   background: var(--paper-2);
   color: var(--ink);
+}
+
+/* A nested row reads as subordinate to the row above it, not merely offset. */
+.trace-event[data-depth]:not([data-depth='0']) {
+  border-left: 2px solid var(--line-2, var(--line));
 }
 
 .trace-event + .trace-event {

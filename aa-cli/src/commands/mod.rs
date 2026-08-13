@@ -21,6 +21,11 @@ pub mod dashboard;
 pub mod docs;
 pub mod gateway;
 pub mod gw_probe;
+// strip-for-publish:begin devtool
+pub mod integrations;
+// strip-for-publish:end devtool
+pub mod login;
+pub mod logout;
 pub mod logs;
 pub mod permissions;
 pub mod pidfile;
@@ -28,6 +33,9 @@ pub mod policy;
 pub mod proxy;
 // strip-for-publish:begin devtool
 pub mod run;
+pub mod run_audit;
+pub mod run_no_proxy_guard;
+pub mod run_registration;
 // strip-for-publish:end devtool
 pub mod sandbox;
 pub mod start;
@@ -38,11 +46,19 @@ pub mod tools;
 // strip-for-publish:end devtool
 pub mod topology;
 pub mod trace;
+pub mod uninstall;
 pub mod version;
+pub mod whoami;
 
 /// Top-level subcommands for the `aasm` CLI.
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Log in: exchange an API key for a short-lived scoped session token.
+    Login(login::LoginArgs),
+    /// Log out: end the local session for the active context.
+    Logout(logout::LogoutArgs),
+    /// Show the active session identity, scopes, and expiry.
+    Whoami(whoami::WhoamiArgs),
     /// Gateway administrative operations.
     Admin(admin::AdminArgs),
     /// Manage monitored agent processes.
@@ -57,7 +73,7 @@ pub enum Commands {
     Policy(policy::PolicyArgs),
     /// Manage named API contexts (connection profiles).
     Context(context::ContextArgs),
-    /// Validate an `agent-assembly.toml` runtime configuration file.
+    /// Work with `agent-assembly.toml` runtime config (see `validate` and `boot` subcommands).
     Config(config::ConfigArgs),
     /// Generate shell completion scripts.
     Completion(completion::CompletionArgs),
@@ -78,6 +94,8 @@ pub enum Commands {
     /// Manage the aa-gateway governance daemon — agent registry, policy engine, audit log.
     Gateway(gateway::GatewayArgs),
     // strip-for-publish:begin devtool
+    /// Install, verify, repair and remove Developer Integrations for AI dev tools.
+    Integrations(integrations::IntegrationsArgs),
     /// Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring.
     Run(run::RunArgs),
     // strip-for-publish:end devtool
@@ -95,11 +113,17 @@ pub enum Commands {
     Start(start::StartArgs),
     /// Stop the locally-managed Agent Assembly gateway process.
     Stop(stop::StopArgs),
+    /// Uninstall Agent Assembly tools installed via the curl installer (safe by
+    /// default; `--purge` also removes local data; Homebrew installs redirected).
+    Uninstall(uninstall::UninstallArgs),
 }
 
 /// Dispatch the parsed CLI command to the appropriate handler.
 pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
     match cmd {
+        Commands::Login(args) => login::run(args, ctx),
+        Commands::Logout(args) => logout::run(args, ctx),
+        Commands::Whoami(args) => whoami::run(args, ctx, output),
         Commands::Admin(args) => admin::dispatch(args, ctx, output),
         Commands::Agent(args) => agent::dispatch(args, ctx, output),
         Commands::Alerts(args) => alerts::dispatch(args, ctx, output),
@@ -118,6 +142,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Dashboard(args) => dashboard::dispatch(args, ctx),
         Commands::Gateway(args) => gateway::dispatch(args),
         // strip-for-publish:begin devtool
+        Commands::Integrations(args) => integrations::dispatch(args, output),
         Commands::Run(args) => run::dispatch(args, ctx, output),
         // strip-for-publish:end devtool
         Commands::Sandbox(args) => sandbox::dispatch(args),
@@ -128,5 +153,6 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Proxy(args) => proxy::dispatch(args),
         Commands::Start(args) => start::run(args),
         Commands::Stop(args) => stop::run(args),
+        Commands::Uninstall(args) => uninstall::dispatch(args),
     }
 }

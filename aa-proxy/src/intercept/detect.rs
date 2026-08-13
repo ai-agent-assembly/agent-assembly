@@ -19,9 +19,14 @@ pub enum LlmApiPattern {
 /// Classify `host` (the CONNECT tunnel target hostname) as an [`LlmApiPattern`].
 ///
 /// Comparison is case-insensitive. A host like `api.openai.com:443` is
-/// normalised by stripping the port before matching.
+/// normalised by stripping the port before matching. A single trailing dot is
+/// also stripped (AAASM-3983): `api.openai.com.` is a valid, equivalent FQDN
+/// for `api.openai.com`, so without this it would classify as `Unknown` and —
+/// under `llm_only` — take the transparent raw-tunnel path, reaching the
+/// provider with no scan/redact/audit.
 pub fn detect_api(host: &str) -> LlmApiPattern {
     let hostname = host.split(':').next().unwrap_or(host);
+    let hostname = hostname.strip_suffix('.').unwrap_or(hostname);
     match hostname.to_ascii_lowercase().as_str() {
         "api.openai.com" => LlmApiPattern::OpenAi,
         "api.anthropic.com" => LlmApiPattern::Anthropic,
@@ -68,5 +73,21 @@ mod tests {
     #[test]
     fn subdomain_does_not_match() {
         assert_eq!(detect_api("cdn.api.openai.com"), LlmApiPattern::Unknown);
+    }
+
+    #[test]
+    fn trailing_dot_fqdn_is_normalized() {
+        // AAASM-3983: a trailing-dot FQDN is equivalent to the dotless host and
+        // must classify identically — otherwise it slips through as Unknown and
+        // takes the transparent raw-tunnel path under llm_only.
+        assert_eq!(detect_api("api.openai.com."), LlmApiPattern::OpenAi);
+        assert_eq!(detect_api("api.anthropic.com."), LlmApiPattern::Anthropic);
+        assert_eq!(detect_api("api.cohere.com."), LlmApiPattern::Cohere);
+    }
+
+    #[test]
+    fn trailing_dot_with_port_and_mixed_case_is_normalized() {
+        // Port strip + trailing-dot strip + case-fold all compose.
+        assert_eq!(detect_api("API.OpenAI.CoM.:443"), LlmApiPattern::OpenAi);
     }
 }

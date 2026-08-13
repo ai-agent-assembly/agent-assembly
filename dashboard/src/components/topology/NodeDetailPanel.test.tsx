@@ -1,12 +1,15 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NodeDetailPanel } from './NodeDetailPanel'
 import * as topologyApi from '../../features/topology/api'
-import type { RecentEvent } from '../../features/topology/api'
-import type { TopologyNode } from '../../features/topology/types'
+import * as agentMutations from '../../features/agents/mutations'
+import type { AgentLineage, RecentEvent } from '../../features/topology/api'
+import type { TopologyEdge, TopologyNode } from '../../features/topology/types'
+import { GrantScopes } from '../../auth/GrantScopes'
+import type { Scope } from '../../auth/AuthContext'
 
 const NODE: TopologyNode = {
   id: 'agent-001',
@@ -169,13 +172,514 @@ describe('NodeDetailPanel', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('renders the governance stub buttons (Apply policy / Shadow / Suspend)', () => {
+  it('renders the governance buttons (Apply policy / Suspend); Shadow is Admin-gated', () => {
     vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
       mockRecent({ data: [], isLoading: false, isError: false }),
     )
     renderPanel(NODE)
     expect(screen.getByTestId('node-detail-apply-policy')).toBeInTheDocument()
-    expect(screen.getByTestId('node-detail-shadow-mode')).toBeInTheDocument()
     expect(screen.getByTestId('node-detail-suspend')).toBeInTheDocument()
+    // No provider ⇒ scopes fail closed (AAASM-5180): a non-Admin caller sees no
+    // shadow action, only the reason hint.
+    expect(screen.queryByTestId('node-detail-shadow-mode')).toBeNull()
+    expect(screen.getByTestId('node-detail-shadow-admin-hint')).toBeInTheDocument()
+  })
+
+  // AAASM-5140. Apply-team-policy still has no write endpoint, so it stays a
+  // disabled control that says why — an enabled no-op reads as broken product.
+  describe('team-policy apply with no production path', () => {
+    beforeEach(() => {
+      vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+        mockRecent({ data: [], isLoading: false, isError: false }),
+      )
+    })
+
+    it('node-detail-apply-policy is disabled and says why', () => {
+      renderPanel(NODE)
+      const button = screen.getByTestId('node-detail-apply-policy')
+      expect(button).toBeDisabled()
+      expect(button.getAttribute('title')).toMatch(/not available yet/i)
+    })
+
+    it('node-detail-apply-policy cannot be activated by click or keyboard', async () => {
+      renderPanel(NODE)
+      const button = screen.getByTestId('node-detail-apply-policy')
+      await userEvent.click(button)
+      button.focus()
+      expect(button).not.toHaveFocus()
+    })
+
+    it('leaves the real actions alongside it usable', () => {
+      renderPanel(NODE)
+      expect(screen.getByTestId('node-detail-suspend')).toBeEnabled()
+      expect(screen.getByTestId('node-detail-view-trace')).toBeEnabled()
+    })
+  })
+
+  // AAASM-5135. `budgetLimit: null` means no ceiling is configured. It used to
+  // render `$4.10 / $0.00` at `aria-valuenow=0` — an unknown budget presented as
+  // a measured, wholly-unburnt one.
+  describe('with no configured budget limit', () => {
+    const NO_LIMIT: TopologyNode = { ...NODE, budgetLimit: null }
+
+    beforeEach(() => {
+      vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+        mockRecent({ data: [], isLoading: false, isError: false }),
+      )
+    })
+
+    it('never renders a $0 limit or a 0% burn', () => {
+      renderPanel(NO_LIMIT)
+      const budget = screen.getByTestId('node-detail-budget')
+      expect(budget).toHaveTextContent('$4.10')
+      expect(budget).not.toHaveTextContent('$0.00')
+      expect(budget).not.toHaveTextContent('0%')
+    })
+
+    it('never renders aria-valuenow=0 on the progress bar', () => {
+      renderPanel(NO_LIMIT)
+      const progress = screen.getByTestId('node-detail-progress')
+      expect(progress).not.toHaveAttribute('aria-valuenow')
+      expect(progress).toHaveAttribute('data-truth-state', 'unconfigured')
+    })
+
+    it('marks the limit and the percentage as unconfigured, not merely blank', () => {
+      renderPanel(NO_LIMIT)
+      // A bare `—` with nothing behind it would leave assistive tech with a
+      // stray dash; the shared marker carries the announcement.
+      expect(screen.getByTestId('node-detail-budget-limit')).toHaveAttribute('data-truth-state', 'unconfigured')
+      expect(screen.getByTestId('node-detail-budget-percent-absent')).toBeInTheDocument()
+    })
+
+    it('draws no progress fill, since a zero-width fill still measures zero', () => {
+      renderPanel(NO_LIMIT)
+      expect(document.querySelector('.node-detail-panel__progress-fill')).toBeNull()
+    })
+
+    it('still reports the spend, which is a real measurement', () => {
+      // Only the ceiling is absent. Blanking the spend too would discard a fact
+      // the budget tracker does have.
+      renderPanel(NO_LIMIT)
+      expect(screen.getByTestId('node-detail-budget-amount')).toHaveTextContent('$4.10')
+    })
+  })
+
+  it('treats a configured $0 limit as a measurement, not an absence', () => {
+    vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+      mockRecent({ data: [], isLoading: false, isError: false }),
+    )
+    renderPanel({ ...NODE, budgetSpend: 0, budgetLimit: 0 })
+    const progress = screen.getByTestId('node-detail-progress')
+    expect(progress).toHaveAttribute('aria-valuenow', '0')
+    expect(progress).not.toHaveAttribute('data-truth-state')
+  })
+})
+
+// ── Lineage / cross-team / suspend-resume (AAASM-5071) ───────────────────────
+describe('NodeDetailPanel — lineage, cross-team, suspend/resume', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function mockLineage(partial: Partial<UseQueryResult<AgentLineage, Error>>): UseQueryResult<AgentLineage, Error> {
+    return partial as unknown as UseQueryResult<AgentLineage, Error>
+  }
+
+  function stubBaseQueries() {
+    vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+      mockRecent({ data: [], isLoading: false, isError: false }),
+    )
+  }
+
+  function renderWith(node: TopologyNode, extra: Partial<Parameters<typeof NodeDetailPanel>[0]> = {}) {
+    return render(
+      <QueryClientProvider client={makeClient()}>
+        <NodeDetailPanel node={node} onClose={vi.fn()} onViewTrace={vi.fn()} {...extra} />
+      </QueryClientProvider>,
+    )
+  }
+
+  // ── Policy inheritance (AAASM-5099) ────────────────────────────────────
+
+  const PERMS = {
+    chain: [
+      { tier: 'global', scope: 'global', policies: ['baseline'] },
+      { tier: 'team', scope: 'team:support', policies: [] },
+      { tier: 'agent', scope: 'agent:agent-001', policies: ['agent-override'] },
+    ],
+    allow: ['file_read'],
+    deny: ['terminal_exec'],
+    allowRestricted: true,
+    cascadeLoaded: true,
+  } as const
+
+  function stubLineageOnly() {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({ data: undefined, isLoading: false, isError: false }),
+    )
+  }
+
+  it('renders one row per cascade tier with its policies', () => {
+    stubLineageOnly()
+    renderWith({ ...NODE, effectivePermissions: PERMS })
+
+    const rows = screen.getAllByTestId('node-detail-inheritance-tier')
+    expect(rows.map((r) => r.dataset.tier)).toEqual(['global', 'team', 'agent'])
+    expect(rows[0]).toHaveTextContent('baseline')
+    // A tier the agent has but with no document reads "none" — real state,
+    // distinct from the no-data affordance below.
+    expect(rows[1]).toHaveTextContent('team (support)')
+    expect(rows[1]).toHaveTextContent('none')
+    // The agent tier's selector is this agent's own id — already in Identity,
+    // so the label stays a bare "agent" rather than repeating a UUID.
+    expect(rows[2]).toHaveTextContent('agent-override')
+    expect(rows[2].textContent).toContain('agent')
+    expect(rows[2].textContent).not.toContain('agent:agent-001')
+  })
+
+  it('summarises the merged capability set in the effective row', () => {
+    stubLineageOnly()
+    renderWith({ ...NODE, effectivePermissions: PERMS })
+
+    const effective = screen.getByTestId('node-detail-inheritance-effective')
+    expect(effective).toHaveTextContent('allow-list enforced')
+    expect(effective).toHaveTextContent('1 denied')
+    expect(effective).toHaveTextContent('1 allowed')
+  })
+
+  it('reads an unconstrained cascade as baseline, not as an empty deny-all', () => {
+    stubLineageOnly()
+    renderWith({
+      ...NODE,
+      effectivePermissions: {
+        chain: [{ tier: 'global', scope: 'global', policies: [] }],
+        allow: [],
+        deny: [],
+        allowRestricted: false,
+        cascadeLoaded: true,
+      },
+    })
+    expect(screen.getByTestId('node-detail-inheritance-effective')).toHaveTextContent('baseline')
+  })
+
+  it('calls out a restriction even when the merged allow-list is empty', () => {
+    stubLineageOnly()
+    renderWith({
+      ...NODE,
+      effectivePermissions: {
+        chain: [{ tier: 'global', scope: 'global', policies: ['strict'] }],
+        allow: [],
+        deny: [],
+        allowRestricted: true,
+        cascadeLoaded: true,
+      },
+    })
+    // An empty allow-list with the flag set is deny-all (AAASM-4154); reading it
+    // as "baseline" would invert what the gateway enforces.
+    const effective = screen.getByTestId('node-detail-inheritance-effective')
+    expect(effective).toHaveTextContent('allow-list enforced')
+    expect(effective).not.toHaveTextContent('baseline')
+  })
+
+  it('folds an absent chain to the no-data affordance', () => {
+    stubLineageOnly()
+    renderWith(NODE)
+
+    expect(screen.queryByTestId('node-detail-inheritance-chain')).toBeNull()
+    expect(screen.getByTestId('node-detail-inheritance-empty')).toHaveTextContent('—')
+  })
+
+  it('renders the chain and policy count as unknown when the cascade is unloaded', () => {
+    // AAASM-5106 / ADR 0024 — with no cascade loaded, the empty chain and zero
+    // policy count are the fall-through of missing data, not a real "no policies
+    // apply". Both render as an "unknown" state rather than a confident answer.
+    stubLineageOnly()
+    renderWith({
+      ...NODE,
+      policyCount: null,
+      effectivePermissions: {
+        chain: [{ tier: 'global', scope: 'global', policies: [] }],
+        allow: [],
+        deny: [],
+        allowRestricted: false,
+        cascadeLoaded: false,
+      },
+    })
+
+    // The chain collapses to a single "unknown" marker — not a stack of "none"
+    // rows, which would read as an authored absence of policy.
+    expect(screen.getByTestId('node-detail-inheritance-unloaded')).toBeInTheDocument()
+    expect(screen.queryByTestId('node-detail-inheritance-chain')).toBeNull()
+    // The policy count is unknown, never a fabricated "0 policies".
+    expect(screen.getByTestId('node-detail-policy-count-absent')).toBeInTheDocument()
+    expect(screen.queryByTestId('node-detail-policy-count')).toBeNull()
+  })
+
+  it('renders the delegation lineage chain from the lineage query', () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({
+        data: {
+          agent_id: 'agent-001',
+          ancestor_count: 2,
+          ancestors: [
+            { id: 'root-1', name: 'orchestrator', depth: 0 },
+            { id: 'agent-001', name: 'support-agent', depth: 1 },
+          ],
+        },
+        isLoading: false,
+        isError: false,
+      }),
+    )
+    renderWith(NODE)
+    const steps = screen.getAllByTestId('node-detail-lineage-step')
+    expect(steps).toHaveLength(2)
+    expect(steps[0]).toHaveTextContent('orchestrator')
+    expect(steps[1]).toHaveTextContent('support-agent')
+    expect(steps[1]).toHaveTextContent('← here')
+  })
+
+  it('shows the root-only lineage hint for a single-node chain', () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({
+        data: { agent_id: 'agent-001', ancestor_count: 1, ancestors: [{ id: 'agent-001', name: 'support-agent', depth: 0 }] },
+        isLoading: false,
+        isError: false,
+      }),
+    )
+    renderWith(NODE)
+    expect(screen.getByTestId('node-detail-lineage-root')).toBeInTheDocument()
+    expect(screen.queryByTestId('node-detail-lineage-chain')).toBeNull()
+  })
+
+  it('lists cross-team edges to peers on other teams', () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(mockLineage({ data: undefined, isLoading: false, isError: false }))
+    const nodes: TopologyNode[] = [
+      NODE,
+      { id: 'peer-x', name: 'x-caller', status: 'active', team: 'growth', owner: 'b', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+      { id: 'peer-same', name: 'same-team', status: 'active', team: 'support', owner: 'a', policyCount: 1, budgetSpend: 1, budgetLimit: 10 },
+    ]
+    const edges: TopologyEdge[] = [
+      { source: 'agent-001', target: 'peer-x', kind: 'call' }, // cross-team
+      { source: 'agent-001', target: 'peer-same', kind: 'delegation' }, // same team — excluded
+    ]
+    renderWith(NODE, { nodes, edges })
+    const rows = screen.getAllByTestId('node-detail-crossteam-edge')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('x-caller')
+    expect(rows[0]).toHaveTextContent('(growth)')
+  })
+
+  it('opens the reason dialog and suspends an active agent', async () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(mockLineage({ data: undefined, isLoading: false, isError: false }))
+    const suspend = vi.fn((_v, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    vi.spyOn(agentMutations, 'useSuspendAgent').mockReturnValue(
+      { mutate: suspend, isPending: false, isError: false } as unknown as ReturnType<typeof agentMutations.useSuspendAgent>,
+    )
+    const onAgentMutated = vi.fn()
+    renderWith(NODE, { onAgentMutated })
+
+    await userEvent.click(screen.getByTestId('node-detail-suspend'))
+    expect(screen.getByTestId('suspend-dialog')).toBeInTheDocument()
+    await userEvent.type(screen.getByTestId('suspend-dialog-input'), 'over budget')
+    await userEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    expect(suspend).toHaveBeenCalledWith(
+      { id: 'agent-001', reason: 'over budget' },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    )
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes a suspended agent without a reason dialog', async () => {
+    stubBaseQueries()
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(mockLineage({ data: undefined, isLoading: false, isError: false }))
+    const resume = vi.fn((_v, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    vi.spyOn(agentMutations, 'useResumeAgent').mockReturnValue(
+      { mutate: resume, isPending: false, isError: false } as unknown as ReturnType<typeof agentMutations.useResumeAgent>,
+    )
+    const onAgentMutated = vi.fn()
+    const suspendedNode: TopologyNode = { ...NODE, status: 'suspended' }
+    renderWith(suspendedNode, { onAgentMutated })
+
+    const btn = screen.getByTestId('node-detail-suspend')
+    expect(btn).toHaveTextContent('Resume agent')
+    await userEvent.click(btn)
+    expect(resume).toHaveBeenCalledWith({ id: 'agent-001' }, expect.objectContaining({ onSuccess: expect.any(Function) }))
+    expect(screen.queryByTestId('suspend-dialog')).toBeNull()
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── Enforcement-mode toggle + weaken form + cascade (AAASM-5341) ──────────────
+describe('NodeDetailPanel — enforcement-mode toggle', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  function mockLineage(partial: Partial<UseQueryResult<AgentLineage, Error>>): UseQueryResult<AgentLineage, Error> {
+    return partial as unknown as UseQueryResult<AgentLineage, Error>
+  }
+
+  function stubBaseQueries() {
+    vi.spyOn(topologyApi, 'useTopologyNodeRecentEvents').mockReturnValue(
+      mockRecent({ data: [], isLoading: false, isError: false }),
+    )
+    vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+      mockLineage({ data: undefined, isLoading: false, isError: false }),
+    )
+  }
+
+  type SetInput = Parameters<ReturnType<typeof agentMutations.useSetEnforcementMode>['mutate']>[0]
+  type SetOpts = { onSuccess?: () => void }
+
+  /** Stub the two enforcement hooks; returns the two spies plus a preview result. */
+  function stubEnforcement(opts: {
+    setImpl?: (v: SetInput, o?: SetOpts) => void
+    previewResult?: { affected_ids: string[]; count: number }
+    setError?: Error | null
+  } = {}) {
+    const set = vi.fn(opts.setImpl ?? ((_v: SetInput, o?: SetOpts) => o?.onSuccess?.()))
+    const reset = vi.fn()
+    vi.spyOn(agentMutations, 'useSetEnforcementMode').mockReturnValue(
+      { mutate: set, reset, isPending: false, isError: !!opts.setError, error: opts.setError ?? null } as unknown as ReturnType<typeof agentMutations.useSetEnforcementMode>,
+    )
+    const previewResult = opts.previewResult ?? { affected_ids: ['agent-001', 'child-a', 'child-b'], count: 3 }
+    const mutateAsync = vi.fn(async () => previewResult)
+    vi.spyOn(agentMutations, 'usePreviewEnforcementCascade').mockReturnValue(
+      { mutateAsync, reset: vi.fn(), isPending: false, isError: false, error: null } as unknown as ReturnType<typeof agentMutations.usePreviewEnforcementCascade>,
+    )
+    return { set, mutateAsync }
+  }
+
+  function renderAs(scopes: Scope[], node: TopologyNode, extra: Partial<Parameters<typeof NodeDetailPanel>[0]> = {}) {
+    return render(
+      <QueryClientProvider client={makeClient()}>
+        <GrantScopes scopes={scopes}>
+          <NodeDetailPanel node={node} onClose={vi.fn()} onViewTrace={vi.fn()} {...extra} />
+        </GrantScopes>
+      </QueryClientProvider>,
+    )
+  }
+
+  const ENFORCE_NODE: TopologyNode = { ...NODE, mode: 'enforce' }
+  const SHADOW_NODE: TopologyNode = { ...NODE, mode: 'shadow' }
+
+  /**
+   * `datetime-local` reads its value as wall-clock local time. Build a value an
+   * hour ahead in *local* time (not UTC) so `toIso` in the dialog treats it as
+   * future-and-within-window, and set it via `fireEvent.change` — `userEvent`
+   * does not reliably drive a native date picker.
+   */
+  function setExpiryOneHourAhead() {
+    const d = new Date(Date.now() + 3_600_000)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    fireEvent.change(screen.getByTestId('shadow-dialog-expiry'), { target: { value: local } })
+  }
+
+  it('strengthen calls the mutation with mode="enforce" (no reason/expiry)', async () => {
+    stubBaseQueries()
+    const { set } = stubEnforcement()
+    const onAgentMutated = vi.fn()
+    renderAs(['read', 'write'], SHADOW_NODE, { onAgentMutated })
+
+    const btn = screen.getByTestId('node-detail-shadow-mode')
+    expect(btn).toHaveTextContent('Return to enforce')
+    await userEvent.click(btn)
+    expect(set).toHaveBeenCalledWith(
+      { id: 'agent-001', mode: 'enforce' },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    )
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+
+  it('non-admin does not see the shadow action on an enforce node', () => {
+    stubBaseQueries()
+    stubEnforcement()
+    renderAs(['read', 'write'], ENFORCE_NODE)
+    expect(screen.queryByTestId('node-detail-shadow-mode')).toBeNull()
+    expect(screen.getByTestId('node-detail-shadow-admin-hint')).toBeInTheDocument()
+  })
+
+  it('an admin sees the shadow action and it opens the weaken form', async () => {
+    stubBaseQueries()
+    stubEnforcement()
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+    expect(screen.getByTestId('shadow-dialog')).toBeInTheDocument()
+  })
+
+  it('weaken requires reason + expiry before the confirm is enabled', async () => {
+    stubBaseQueries()
+    stubEnforcement()
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+
+    const confirm = screen.getByTestId('shadow-dialog-confirm')
+    expect(confirm).toBeDisabled()
+
+    // Reason alone is not enough — the expiry is still empty.
+    await userEvent.type(screen.getByTestId('shadow-dialog-reason'), 'debugging a false positive')
+    expect(confirm).toBeDisabled()
+
+    // A future expiry within the window enables it.
+    setExpiryOneHourAhead()
+    expect(confirm).toBeEnabled()
+  })
+
+  it('single-agent weaken submits mode="observe" with reason + expiry, no cascade', async () => {
+    stubBaseQueries()
+    const { set } = stubEnforcement()
+    const onAgentMutated = vi.fn()
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE, { onAgentMutated })
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+
+    await userEvent.type(screen.getByTestId('shadow-dialog-reason'), 'incident triage')
+    setExpiryOneHourAhead()
+    await userEvent.click(screen.getByTestId('shadow-dialog-confirm'))
+
+    expect(set).toHaveBeenCalledTimes(1)
+    const [payload] = set.mock.calls[0]
+    expect(payload).toMatchObject({ id: 'agent-001', mode: 'observe', reason: 'incident triage' })
+    expect((payload as SetInput).cascade).toBeUndefined()
+    expect((payload as SetInput).expiresAt).toBeTruthy()
+    expect(onAgentMutated).toHaveBeenCalledTimes(1)
+  })
+
+  it('cascade confirm echoes back the previewed ids + count', async () => {
+    stubBaseQueries()
+    const { set, mutateAsync } = stubEnforcement({
+      previewResult: { affected_ids: ['agent-001', 'child-a', 'child-b'], count: 3 },
+    })
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+
+    await userEvent.type(screen.getByTestId('shadow-dialog-reason'), 'temporary observe window')
+    setExpiryOneHourAhead()
+    await userEvent.click(screen.getByTestId('shadow-dialog-cascade-toggle'))
+
+    // With cascade chosen the primary button previews rather than submits.
+    await userEvent.click(screen.getByTestId('shadow-dialog-preview-btn'))
+    expect(mutateAsync).toHaveBeenCalledWith({ id: 'agent-001' })
+    expect(screen.getByTestId('shadow-dialog-preview-count')).toHaveTextContent('shadow these 3 agents')
+    expect(screen.getAllByTestId('shadow-dialog-preview-id')).toHaveLength(3)
+
+    // Confirm now echoes the previewed set back verbatim.
+    await userEvent.click(screen.getByTestId('shadow-dialog-confirm'))
+    const [payload] = set.mock.calls[0]
+    expect(payload).toMatchObject({
+      id: 'agent-001',
+      mode: 'observe',
+      cascade: { expected_ids: ['agent-001', 'child-a', 'child-b'], expected_count: 3 },
+    })
+  })
+
+  it('surfaces a server rejection in the dialog', async () => {
+    stubBaseQueries()
+    stubEnforcement({ setError: new Error('Rejected — the reason or expiry is invalid.') })
+    renderAs(['read', 'write', 'admin'], ENFORCE_NODE)
+    await userEvent.click(screen.getByTestId('node-detail-shadow-mode'))
+    expect(screen.getByTestId('shadow-dialog-server-error')).toHaveTextContent('Rejected')
   })
 })

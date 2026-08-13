@@ -23,13 +23,13 @@ tools:
   code_interpreter:
     allow: true
     limit_per_hour: 10
-    requires_approval_if: "estimated_cost_usd > 0.10"
+    requires_approval_if: "governance_level >= L2"
   file_read:
     allow: true
     limit_per_hour: 50
   file_write:
     allow: true
-    requires_approval_if: "path starts_with /etc or path starts_with /usr"
+    requires_approval_if: 'path starts_with "/etc" OR path starts_with "/usr"'
   shell:
     allow: false
 

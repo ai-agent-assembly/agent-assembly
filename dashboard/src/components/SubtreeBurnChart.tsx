@@ -11,6 +11,7 @@
  * paid up front by callers that never open the Overview tab.
  */
 import { useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import {
   Area,
   CartesianGrid,
@@ -36,7 +37,7 @@ type ChartRow = {
   [childId: string]: string | number
 }
 
-export function SubtreeBurnChart({ agentId }: { agentId: string }) {
+export function SubtreeBurnChart({ agentId }: Readonly<{ agentId: string }>) {
   const [period, setPeriod] = useState<BurnPeriod>('7d')
   const { data, isLoading, isError, refetch } = useAgentSubtreeBurnQuery(agentId, period)
 
@@ -53,7 +54,7 @@ export function SubtreeBurnChart({ agentId }: { agentId: string }) {
   if (isError || !data) {
     return (
       <div className="sbc" data-testid="subtree-burn-error">
-        <ErrorState onRetry={() => void refetch()} />
+        <ErrorState onRetry={() => ignorePromise(refetch())} />
       </div>
     )
   }
@@ -131,7 +132,13 @@ export function SubtreeBurnChart({ agentId }: { agentId: string }) {
   )
 }
 
-function transform(data: SubtreeBurn | undefined): {
+// Exported for tests: recharts does not render `<Area>` paths under jsdom, so the
+// per-child row contract (including retaining a `__proto__` child id) is exercised
+// directly against the transformed rows rather than the mounted SVG. This pure
+// helper is not a component, so react-refresh's component-only-export rule is
+// disabled for this single export.
+// eslint-disable-next-line react-refresh/only-export-components
+export function transform(data: SubtreeBurn | undefined): {
   rows: ChartRow[]
   childIds: string[]
   childName: Map<string, string>
@@ -150,10 +157,16 @@ function transform(data: SubtreeBurn | undefined): {
   const sortedChildIds = Array.from(childIds).sort((a, b) => a.localeCompare(b))
 
   const rows: ChartRow[] = (data?.points ?? []).map((point) => {
-    const row: ChartRow = { date: point.date, total: parseFloat(point.total_usd) || 0 }
+    // Build on a null-prototype object so a `__proto__` child agent id is stored
+    // as a real own property. A plain `{}` would treat `row['__proto__'] = n` as a
+    // no-op prototype assignment, silently dropping that child's burn from the row.
+    const row = Object.assign(Object.create(null) as ChartRow, {
+      date: point.date,
+      total: Number.parseFloat(point.total_usd) || 0,
+    })
     for (const cid of sortedChildIds) {
       const match = point.per_child.find((c) => c.child_agent_id === cid)
-      row[cid] = match ? parseFloat(match.spent_usd) || 0 : 0
+      row[cid] = match ? Number.parseFloat(match.spent_usd) || 0 : 0
     }
     return row
   })

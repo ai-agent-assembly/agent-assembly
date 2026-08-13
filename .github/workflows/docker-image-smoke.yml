@@ -1,0 +1,132 @@
+name: Docker image smoke (per-language base images)
+
+# AAASM-3524 — per-language Docker base-image smoke verification.
+#
+# Goes beyond docker.yml's build-time `aasm --version` + bare-import smoke: for
+# EACH of the 9 published base images (3 langs x 3 versions) it builds the image,
+# runs a minimal agent ON the image with no manual config against a real
+# aa-runtime sidecar, and asserts the agent runs clean (Tier A) plus the policy
+# fixture genuinely denies the restricted action. The deny-enforcement-from-image
+# assertion is a known product gap (AAASM-3000 / AAASM-3021), pending AAASM-3172 —
+# the harness records it honestly rather than failing or faking green.
+#
+# Matrix is read from docker/smoke/images.json (single source of truth, shared
+# with the local runner). Pre-publish path: build from docker/. A post-publish
+# pull-smoke against real GHCR tags is the AAASM-1226 follow-up (still missing in
+# docker.yml) and intentionally NOT wired here.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "aa-runtime/**"
+      - "docker/**"
+      - ".github/workflows/docker-image-smoke.yml"
+      - "!**/*.md"
+      - "!**/LICENSE"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate-sdk-pins:
+    name: Validate SDK version pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      # docker/sdk-versions.json is the pin source of truth consumed by
+      # docker.yml's per-language build (build-arg SDK_VERSION). Fail fast if it
+      # is malformed or any language pin is missing/empty before the (much more
+      # expensive) image-build matrix runs. jq is preinstalled on ubuntu-latest.
+      - name: Assert docker/sdk-versions.json is valid and fully pinned
+        run: |
+          jq -e . docker/sdk-versions.json > /dev/null
+          for lang in python node go; do
+            v=$(jq -r --arg l "$lang" '.sdk[$l] // empty' docker/sdk-versions.json)
+            if [ -z "$v" ]; then
+              echo "::error::docker/sdk-versions.json: .sdk.$lang is missing or empty" >&2
+              exit 1
+            fi
+            echo "pinned $lang SDK = $v"
+          done
+
+  prep:
+    name: Resolve smoke matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - id: set
+        # Read the 9-image matrix from the shared manifest so CI and the local
+        # runner never drift.
+        run: |
+          matrix=$(jq -c '{include: .images}' docker/smoke/images.json)
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+
+  build-runtime:
+    name: Build aa-runtime sidecar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build aa-runtime image and export as artifact
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: aa-runtime/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: false
+          tags: aa-runtime:smoke
+          outputs: type=docker,dest=/tmp/aa-runtime-smoke.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Upload aa-runtime image artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: aa-runtime-smoke-image
+          path: /tmp/aa-runtime-smoke.tar
+          retention-days: 1
+
+  smoke:
+    name: Smoke ${{ matrix.lang }}:${{ matrix.version }}
+    runs-on: ubuntu-latest
+    needs: [prep, build-runtime]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prep.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      # Deliberately NO docker/setup-buildx-action here. That action installs a
+      # `docker-container` driver builder and makes it the default; a container
+      # builder resolves a Dockerfile `FROM` only against registries, so the
+      # agent overlay's `FROM aaasm-smoke/<lang>-<ver>:local` (a local-only tag
+      # the harness `docker build`s into the engine image store) is not found and
+      # buildx tries to PULL it: "pull access denied ... aaasm-smoke/...:local"
+      # — failing all 9 legs. The default `docker` driver (BuildKit-backed) used
+      # without this action resolves `FROM` from the engine image store, where
+      # both the base image and the loaded aa-runtime:smoke tag live.
+      - name: Download aa-runtime image artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: aa-runtime-smoke-image
+          path: /tmp
+      - name: Load aa-runtime image
+        # Pre-loading the artifact populates the `aa-runtime:smoke` tag the runner
+        # expects. The runner still issues `docker build` for aa-runtime in build
+        # mode, but with cache-from: type=gha it is a cache hit, not a rebuild.
+        run: docker load -i /tmp/aa-runtime-smoke.tar
+      - name: Run base-image smoke
+        env:
+          IMAGE_MODE: build
+        run: |
+          docker/smoke/run-smoke.sh \
+            --lang "${{ matrix.lang }}" \
+            --version "${{ matrix.version }}"

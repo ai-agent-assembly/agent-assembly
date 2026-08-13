@@ -31,12 +31,17 @@ fn proxy_config(ca_dir: &std::path::Path, denied_hosts: Vec<String>) -> ProxyCon
         ca_dir: ca_dir.to_path_buf(),
         cert_cache_capacity: 10,
         llm_only: false,
+        mitm_hosts: Vec::new(),
         denied_hosts,
         network_allowlist: Vec::new(),
         skip_upstream_tls_verify: true,
         credential_action: CredentialAction::default(),
         upstream_override: None,
         gateway_endpoint: None,
+        mcp_fail_open: false,
+        // These tests use a loopback CONNECT target as the "allowed host"
+        // stand-in, which the AAASM-3130 SSRF guard blocks in production.
+        allow_private_connect_targets: true,
     }
 }
 

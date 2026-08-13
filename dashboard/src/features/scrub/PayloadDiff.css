@@ -1,9 +1,23 @@
 .scrub-diff {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: auto 1fr;
+  /* header row · caveat row · panes. The caveat spans both columns: it
+     qualifies the whole panel, so it must not read as a note on one side. */
+  grid-template-rows: auto auto 1fr;
   flex: 1;
   min-height: 0;
+}
+
+.scrub-diff-caveat {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 6px 14px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-4);
 }
 
 .scrub-diff-headrow {
@@ -54,9 +68,12 @@
   color: var(--danger);
 }
 
-.scrub-diff-chip--ok {
-  background: var(--ok-bg);
-  color: var(--ok);
+/* Deliberately not an "ok" chip. The scrubbed pane used to carry a green
+   "safe to forward" badge over text nothing had scanned; the neutral tone is
+   the point — this chip names the pane's scope, it does not bless its content. */
+.scrub-diff-chip--neutral {
+  background: var(--paper-3);
+  color: var(--ink-3);
 }
 
 .scrub-diff-body {
@@ -112,7 +129,7 @@
 .scrub-diff-pre {
   margin: 0;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
   font-size: 11px;
   line-height: 1.55;
   font-family: 'JetBrains Mono', monospace;
@@ -124,7 +141,7 @@
   padding: 0 2px;
   border-radius: 2px;
   text-decoration: line-through;
-  text-decoration-color: rgba(184, 41, 30, 0.6);
+  text-decoration-color: color-mix(in srgb, var(--danger) 60%, transparent);
 }
 
 .scrub-diff-redacted {
@@ -168,11 +185,15 @@
   color: var(--ink-3);
 }
 
-.scrub-diff-sev {
+.scrub-diff-cat {
   margin-right: 6px;
 }
 
-.scrub-diff-sev--critical { color: var(--danger); }
-.scrub-diff-sev--high { color: var(--warn); }
-.scrub-diff-sev--medium { color: var(--info); }
-.scrub-diff-sev--low { color: var(--ink-3); }
+.scrub-diff-cat--api-key,
+.scrub-diff-cat--private-key { color: var(--danger); }
+.scrub-diff-cat--auth-token,
+.scrub-diff-cat--cloud-credential { color: var(--warn); }
+.scrub-diff-cat--database-url,
+.scrub-diff-cat--pii { color: var(--info); }
+.scrub-diff-cat--generic,
+.scrub-diff-cat--policy-defined { color: var(--ink-3); }

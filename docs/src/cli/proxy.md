@@ -24,11 +24,16 @@ aasm proxy <SUBCOMMAND> [OPTIONS]
 ## aasm proxy start
 
 Spawn `aa-proxy` in the background (or foreground with `--no-detach`). The
-binary is resolved from `$PATH`, then `~/.cargo/bin`, then `./target/release`.
+binary is resolved from `$PATH`, then `~/.cargo/bin` — trusted, absolute
+locations only. A cwd-relative `./target/release` fallback was deliberately
+removed as a security fix (AAASM-4020): resolving relative to the current
+working directory would let whoever controls where `aasm` runs substitute an
+attacker-planted `aa-proxy`.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--listen <LISTEN>` | string | `127.0.0.1:8899` (env `AA_PROXY_ADDR`) | Address the proxy listens on. |
+| `--listen <LISTEN>` | string | `127.0.0.1:8899` (env `AA_PROXY_ADDR`) | Address the proxy listens on. **Must be loopback with a named port** — see below. |
+| `--allow-remote-clients` | flag | off | State that a non-loopback `--listen` is intended. Does not currently permit one — see below. |
 | `--gateway <GATEWAY>` | string | env `AA_GATEWAY_URL` | Gateway URL to forward policy decisions to. |
 | `--ca-dir <CA_DIR>` | path | env `AA_CA_DIR` | Directory for CA certificate and key storage. |
 | `--no-detach` | flag | off | Run in the foreground instead of daemonizing. |
@@ -37,6 +42,52 @@ binary is resolved from `$PATH`, then `~/.cargo/bin`, then `./target/release`.
 ```bash
 aasm proxy start --listen 127.0.0.1:8899 --gateway http://localhost:50051
 ```
+
+### The listen address must be loopback, and must name its port
+
+`--listen` is checked before anything is spawned and before a state file is
+written, so a refused start leaves nothing behind (AAASM-5348). Two addresses
+that used to start a proxy no longer do:
+
+* **A non-loopback address** — `0.0.0.0`, a LAN address, `[::]`. The proxy reads
+  intercepted traffic under a CA this machine trusts and injects your provider
+  credentials into forwarded requests, so anything that can reach the listener
+  can do both.
+* **Port `0`** — it asks the OS for any free port, but the recorded endpoint
+  would still say `0`. The proxy would bind a real port that nothing can name:
+  `aasm run` refuses a port-0 endpoint, `aasm proxy stop` could not reach the
+  process, and the start would report failure while the proxy kept running.
+
+Both previously succeeded and produced an endpoint `aasm run` would then refuse
+to route a governed tool at — a proxy that worked for everything except the one
+job it exists to do. `aasm proxy start` and `aasm run` now apply the same test,
+so an address one accepts is an address the other trusts.
+
+### `--allow-remote-clients` states intent, and still refuses
+
+Intent is not authorization. A proxy reachable from other hosts also needs TLS
+on its listener and client authentication — **`aa-proxy` implements neither**,
+so the flag currently changes only which refusal you get:
+
+```console
+$ aasm proxy start --listen 0.0.0.0:8899 --allow-remote-clients
+error: refusing to listen on 0.0.0.0:8899: --allow-remote-clients was given, but
+a proxy reachable from other hosts also requires protection aa-proxy does not
+implement: TLS on the proxy listener, client authentication and authorization.
+Being reachable is not being trusted — without those, every host that can route
+to 0.0.0.0:8899 is an authorized client of an interception endpoint that holds
+CA material and provider credentials. Listen on a loopback address instead.
+```
+
+The flag exists rather than being omitted because a refusal that names the two
+missing protections is more useful than one that says only "not supported", and
+because the guard relaxes on its own once either protection is implemented. To
+reach another machine's proxy today, forward the loopback port over SSH.
+
+> **`AA_PROXY_ADDR` is not covered by this check.** The guard lives in
+> `aasm proxy start`; running the `aa-proxy` binary directly with a non-loopback
+> `AA_PROXY_ADDR` — which is what the container image and the self-hosting
+> example do — still binds it. Tracked as AAASM-5370.
 
 ---
 

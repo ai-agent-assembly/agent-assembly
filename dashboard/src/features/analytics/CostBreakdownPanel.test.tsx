@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
 import { CostBreakdownPanel } from './CostBreakdownPanel'
 import {
@@ -13,9 +13,15 @@ import type { CostBucket } from './useCostBreakdownQuery'
 
 // recharts uses ResizeObserver
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub
 
@@ -25,7 +31,7 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeQC()}>
       <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>
@@ -37,7 +43,7 @@ function mockFetch(buckets: CostBucket[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ buckets }),
-  } as Response)
+  })
 }
 
 const TWO_SEGMENT_BUCKETS: CostBucket[] = [
@@ -95,11 +101,46 @@ describe('transformBuckets', () => {
     expect(rows[0]).toEqual({ label: 'Jan', 'agent-a': 120, 'agent-b': 80 })
     expect(rows[1]).toEqual({ label: 'Feb', 'agent-a': 200, 'agent-b': 60 })
   })
+
+  it('retains a "__proto__" segment as an own property instead of silently dropping it', () => {
+    // With a plain-object row, `row['__proto__'] = value` is a silent no-op:
+    // it reassigns the prototype slot rather than creating an own property, so
+    // the segment vanishes from the chart with no crash and no wrong value.
+    const rows = transformBuckets([
+      {
+        label: 'Jan',
+        segments: [{ key: '__proto__', name: 'Sneaky', value: 42 }],
+      },
+    ])
+    expect(Object.prototype.hasOwnProperty.call(rows[0], '__proto__')).toBe(true)
+    expect(rows[0]['__proto__']).toBe(42)
+  })
 })
 
 describe('formatUsd', () => {
   it('formats value as USD currency string', () => {
     expect(formatUsd(1234)).toBe('$1,234')
+  })
+
+  it('returns em dash for non-finite values', () => {
+    expect(formatUsd(NaN)).toBe('—')
+    expect(formatUsd(Infinity)).toBe('—')
+    expect(formatUsd(-Infinity)).toBe('—')
+  })
+
+  it('clamps extreme magnitudes to a bounded compact string, never a raw one', () => {
+    // ±Number.MAX_VALUE is finite, so compact notation alone would still print a
+    // ~300-digit "T"-suffixed string; clampChartValue caps it at ±$1T.
+    expect(formatUsd(-Number.MAX_VALUE)).toBe('-$1.0T')
+    expect(formatUsd(Number.MAX_VALUE)).toBe('$1.0T')
+    expect(formatUsd(-Number.MAX_VALUE)).not.toMatch(/\d{6}/)
+    expect(formatUsd(1e12)).toBe('$1.0T')
+    expect(formatUsd(5e9)).toBe('$5.0B')
+  })
+
+  it('formats normal finite values with plain currency notation', () => {
+    expect(formatUsd(320)).toBe('$320')
+    expect(formatUsd(-140)).toBe('-$140')
   })
 })
 
@@ -136,7 +177,7 @@ describe('CostBreakdownPanel', () => {
   })
 
   it('renders error message when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<CostBreakdownPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load cost data/)).toBeInTheDocument()
   })

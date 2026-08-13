@@ -9,7 +9,7 @@ import {
 import { EMPTY_STATE, type WizardState } from '../types'
 
 class MemoryStorage implements Storage {
-  private store = new Map<string, string>()
+  private readonly store = new Map<string, string>()
   get length() { return this.store.size }
   clear() { this.store.clear() }
   getItem(k: string) { return this.store.has(k) ? this.store.get(k)! : null }
@@ -20,8 +20,7 @@ class MemoryStorage implements Storage {
 
 const FILLED_STATE: WizardState = {
   framework: 'langchain',
-  installVerified: true,
-  identity: { did: 'did:aa:abc', alg: 'Ed25519', fingerprint: 'AA:BB', issuedAt: 'x' },
+  gatewayHealthy: true,
   policyPreset: 'read-only',
   enrolled: false,
 }
@@ -29,7 +28,7 @@ const FILLED_STATE: WizardState = {
 describe('useWizardSession storage helpers', () => {
   it('returns null when no session is persisted', () => {
     const s = new MemoryStorage()
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('round-trips step + state through save / load', () => {
@@ -43,13 +42,13 @@ describe('useWizardSession storage helpers', () => {
     const s = new MemoryStorage()
     saveWizardSession({ step: 'install', state: EMPTY_STATE }, s)
     clearWizardSession(s)
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('returns null for malformed JSON', () => {
     const s = new MemoryStorage()
     s.setItem(ONBOARDING_SESSION_KEY, '{not json')
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('returns null when the persisted step id is unknown', () => {
@@ -58,7 +57,7 @@ describe('useWizardSession storage helpers', () => {
       ONBOARDING_SESSION_KEY,
       JSON.stringify({ step: 'unknown-step', state: EMPTY_STATE }),
     )
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
   })
 
   it('returns null when state is missing required slice keys', () => {
@@ -67,7 +66,68 @@ describe('useWizardSession storage helpers', () => {
       ONBOARDING_SESSION_KEY,
       JSON.stringify({ step: 'framework', state: { framework: 'langchain' } }),
     )
-    expect(loadWizardSession(s)).toBe(null)
+    expect(loadWizardSession(s)).toBeNull()
+  })
+
+  it('rejects a state that is an array rather than an object', () => {
+    const s = new MemoryStorage()
+    s.setItem(ONBOARDING_SESSION_KEY, JSON.stringify({ step: 'framework', state: [] }))
+    expect(loadWizardSession(s)).toBeNull()
+  })
+
+  it('rejects a payload whose keys are present but the wrong shape', () => {
+    // Presence alone let `{ framework: 42, enrolled: 'yes' }` through as a
+    // WizardState the type system then believed.
+    const s = new MemoryStorage()
+    s.setItem(
+      ONBOARDING_SESSION_KEY,
+      JSON.stringify({
+        step: 'framework',
+        state: { framework: 42, gatewayHealthy: 'yes', policyPreset: null, enrolled: 'no' },
+      }),
+    )
+    expect(loadWizardSession(s)).toBeNull()
+  })
+
+  for (const withdrawn of ['identity', 'installVerified', 'gatewayReachable']) {
+    it(`rejects a payload still carrying the withdrawn "${withdrawn}" key`, () => {
+      // Inert on its own — nothing reads it — but a payload carrying it is by
+      // definition one this build did not write, so the progress it records was
+      // taken against claims since withdrawn.
+      const s = new MemoryStorage()
+      s.setItem(
+        ONBOARDING_SESSION_KEY,
+        JSON.stringify({
+          step: 'policy',
+          state: { ...FILLED_STATE, [withdrawn]: 'smuggled' },
+        }),
+      )
+      expect(loadWizardSession(s)).toBeNull()
+    })
+  }
+
+  it('reports nothing discarded when storage itself is unreadable', () => {
+    // Private browsing throws on access; the wizard starts clean and stays
+    // quiet rather than blaming a session it could not even look at.
+    const throwing = new MemoryStorage()
+    throwing.getItem = () => {
+      throw new Error('SecurityError')
+    }
+
+    expect(resolveInitialSession(throwing)).toEqual({
+      step: 'framework',
+      state: EMPTY_STATE,
+      discarded: false,
+    })
+  })
+
+  it('reports a rejected payload as discarded, distinctly from nothing stored', () => {
+    const s = new MemoryStorage()
+    s.setItem(ONBOARDING_SESSION_KEY, JSON.stringify({ step: 'policy', state: { identity: {} } }))
+
+    const resolved = resolveInitialSession(s)
+
+    expect(resolved).toEqual({ step: 'framework', state: EMPTY_STATE, discarded: true })
   })
 
   it('resolveInitialSession falls back to step framework + EMPTY_STATE when nothing persisted', () => {
@@ -75,6 +135,7 @@ describe('useWizardSession storage helpers', () => {
     expect(resolveInitialSession(s)).toEqual({
       step: 'framework',
       state: EMPTY_STATE,
+      discarded: false,
     })
   })
 
@@ -84,6 +145,7 @@ describe('useWizardSession storage helpers', () => {
     expect(resolveInitialSession(s)).toEqual({
       step: 'policy',
       state: FILLED_STATE,
+      discarded: false,
     })
   })
 })

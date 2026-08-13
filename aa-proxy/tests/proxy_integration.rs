@@ -18,12 +18,21 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         ca_dir: ca_dir.to_path_buf(),
         cert_cache_capacity: 10,
         llm_only: false,
+        mitm_hosts: Vec::new(),
         denied_hosts: Vec::new(),
         network_allowlist: Vec::new(),
         skip_upstream_tls_verify: false,
         credential_action: CredentialAction::default(),
         upstream_override: None,
         gateway_endpoint: None,
+        mcp_fail_open: false,
+        // Integration tests dial loopback mock upstreams over both the CONNECT
+        // and the plain-HTTP forward paths. The plain-HTTP path now re-validates
+        // resolved IPs against the SSRF denylist (AAASM-3140), which blocks
+        // loopback — so the test-only escape hatch must be enabled here, exactly
+        // as the CONNECT/tunnel paths already require for their loopback mocks.
+        // Production `from_env` keeps this false.
+        allow_private_connect_targets: true,
     }
 }
 
@@ -171,6 +180,135 @@ async fn plain_http_request_is_forwarded_to_upstream() {
 }
 
 #[tokio::test]
+async fn plain_http_request_to_denied_host_is_rejected_with_403() {
+    // AAASM-3864 (b): the plain-HTTP forward path must enforce the egress
+    // denylist that the CONNECT path applies. A request to a denied host is
+    // refused with 403 before any upstream dial, so an `http://` scheme
+    // downgrade cannot bypass denied_hosts.
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+    let mut config = test_config(dir.path());
+    config.denied_hosts = vec!["denied.example.com".to_string()];
+    let (proxy_addr, _handle) = start_proxy(config, ca).await;
+
+    let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
+    stream
+        .write_all(b"GET http://denied.example.com/secret HTTP/1.1\r\nHost: denied.example.com\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response).await.unwrap();
+    assert!(
+        response.contains("403"),
+        "plain-HTTP request to a denied host must be refused with 403, got: {response}"
+    );
+}
+
+/// Start a mock HTTP upstream that records *every* byte it receives on the first
+/// accepted connection, so a test can assert whether a second, pipelined request
+/// was relayed upstream. It responds once the request head is seen, then keeps
+/// reading (to capture any wrongly-forwarded follow-up) until the connection
+/// falls quiet, then closes.
+async fn start_recording_upstream() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let received_task = std::sync::Arc::clone(&received);
+
+    tokio::spawn(async move {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 16384];
+        let mut responded = false;
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), stream.read(&mut buf)).await {
+                // EOF or read error: connection done.
+                Ok(Ok(0)) | Ok(Err(_)) => break,
+                Ok(Ok(n)) => {
+                    received_task.lock().unwrap().extend_from_slice(&buf[..n]);
+                    // Respond as soon as the request head is complete so the
+                    // proxy's response relay (and the client) can make progress.
+                    if !responded && received_task.lock().unwrap().windows(4).any(|w| w == b"\r\n\r\n") {
+                        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+                        let _ = stream.write_all(resp).await;
+                        responded = true;
+                    }
+                }
+                // Quiet period: no further bytes are coming — stop recording.
+                Err(_) => break,
+            }
+        }
+        let _ = stream.shutdown().await;
+    });
+
+    (addr, received)
+}
+
+#[tokio::test]
+async fn plain_http_second_keepalive_request_is_not_forwarded_uninspected() {
+    // AAASM-4934: the plain-HTTP path scans only the first request body. It must
+    // force `Connection: close` and relay a single request/response, so a second
+    // request pipelined on the same keep-alive connection can never reach
+    // upstream un-inspected. Before the fix, the bidirectional copy forwarded the
+    // pipelined request #2 (carrying a secret) straight upstream with no scan.
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+    let config = test_config(dir.path());
+    let (proxy_addr, _handle) = start_proxy(config, ca).await;
+
+    let (upstream_addr, received) = start_recording_upstream().await;
+
+    // The secret rides in request #2, placed at the end of a large body so its
+    // bytes are NOT swallowed by the proxy's BufReader read-ahead on the buggy
+    // path — they sit in the socket and (pre-fix) get copied upstream verbatim.
+    const SECRET: &str = "SECOND-REQUEST-SECRET-sk-live-DEADBEEFCAFE";
+    let padding = "x".repeat(64 * 1024);
+    let body2 = format!("{padding}{SECRET}");
+
+    let req1 = format!(
+        "POST http://{upstream_addr}/one HTTP/1.1\r\nHost: {upstream_addr}\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nHELLO"
+    );
+    let req2 = format!(
+        "POST http://{upstream_addr}/two HTTP/1.1\r\nHost: {upstream_addr}\r\nContent-Length: {}\r\n\r\n{}",
+        body2.len(),
+        body2
+    );
+
+    // Pipeline both requests in one write on a single connection.
+    let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
+    stream.write_all(format!("{req1}{req2}").as_bytes()).await.unwrap();
+
+    // Read the (single) response the proxy relays for request #1.
+    let mut response = String::new();
+    let mut reader = BufReader::new(stream);
+    reader.read_line(&mut response).await.unwrap();
+    assert!(response.contains("200"), "expected 200 for request #1, got: {response}");
+
+    // Let the recording upstream reach its quiet-period cutoff.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+    let got = received.lock().unwrap().clone();
+    let got_str = String::from_utf8_lossy(&got);
+
+    // Request #1 must have been forwarded (proves the path still works)...
+    assert!(got_str.contains("HELLO"), "request #1 body should reach upstream");
+    // ...with `Connection: close` forced, not the client's `keep-alive`.
+    assert!(
+        got_str.contains("Connection: close"),
+        "forwarded request must force Connection: close, got head:\n{}",
+        got_str.get(..got_str.find("\r\n\r\n").unwrap_or(0)).unwrap_or("")
+    );
+    // The pipelined request #2's secret must NEVER reach upstream un-inspected.
+    assert!(
+        !got_str.contains(SECRET),
+        "request #2 secret was forwarded upstream un-inspected (keep-alive DLP bypass)"
+    );
+}
+
+#[tokio::test]
 async fn connect_to_llm_host_triggers_interception_without_crash() {
     // This test verifies that a CONNECT to a known LLM API host
     // (api.openai.com) goes through the detect_api → Interceptor path
@@ -198,4 +336,454 @@ async fn connect_to_llm_host_triggers_interception_without_crash() {
         !handle.is_finished(),
         "server should still be running after LLM host CONNECT"
     );
+}
+
+/// AAASM-3588: adversarial attacker tests turning the Story's three acceptance
+/// criteria into executable, regression-proof checks against the real proxy
+/// data path (CONNECT → TLS MitM → in-tunnel HTTP → upstream dial).
+mod attacker {
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
+    use rustls::{DigitallySignedStruct, ServerConfig, SignatureScheme};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::broadcast;
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+    use aa_proxy::config::{CredentialAction, ProxyConfig};
+    use aa_proxy::credentials::CredentialStore;
+    use aa_proxy::proxy::http::read_http_request;
+    use aa_proxy::tls::CaStore;
+    use aa_runtime::pipeline::PipelineEvent;
+
+    const REAL_KEY: &str = "sk-REAL-PROVIDER-KEY-do-not-leak";
+    const ALLOWED_HOST: &str = "api.openai.com";
+    const EVIL_HOST: &str = "evil.attacker.com";
+
+    /// A TLS `ServerCertVerifier` that accepts any cert — the test client trusts
+    /// whatever the proxy's MitM presents (cert validity is not under test here).
+    #[derive(Debug)]
+    struct AcceptAnyCert;
+    impl ServerCertVerifier for AcceptAnyCert {
+        fn verify_server_cert(
+            &self,
+            _e: &CertificateDer<'_>,
+            _i: &[CertificateDer<'_>],
+            _n: &ServerName<'_>,
+            _o: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _m: &[u8],
+            _c: &CertificateDer<'_>,
+            _d: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _m: &[u8],
+            _c: &CertificateDer<'_>,
+            _d: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    fn install_crypto() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+
+    /// What a single upstream request observed, shared back to the test.
+    #[derive(Default)]
+    struct UpstreamLog {
+        authorization: Option<String>,
+        saw_request: bool,
+    }
+
+    /// Start a TLS mock upstream on loopback. Records the inbound request's
+    /// Authorization header, returns a fixed JSON body, and reports its address.
+    async fn start_tls_upstream(body: &'static str) -> (SocketAddr, Arc<Mutex<UpstreamLog>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let log = Arc::new(Mutex::new(UpstreamLog::default()));
+        let log_task = Arc::clone(&log);
+
+        // Self-signed leaf for the upstream; the proxy dials it with
+        // skip_upstream_tls_verify so the cert is accepted.
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+        let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let acceptor = acceptor.clone();
+                let log = Arc::clone(&log_task);
+                tokio::spawn(async move {
+                    let Ok(tls) = acceptor.accept(stream).await else { return };
+                    let mut reader = BufReader::new(tls);
+                    if let Ok(Some(req)) = read_http_request(&mut reader).await {
+                        let mut g = log.lock().unwrap();
+                        g.saw_request = true;
+                        g.authorization = req.header("authorization").map(|s| s.to_string());
+                    }
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let mut tls = reader.into_inner();
+                    let _ = tls.write_all(resp.as_bytes()).await;
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        (addr, log)
+    }
+
+    /// Start a TLS mock upstream that counts every HTTP request it receives
+    /// across all connections. Each upstream connection is read in a loop, so a
+    /// (buggy) second request pipelined onto the same upstream connection would
+    /// be counted too. Returns the address and the shared request counter.
+    async fn start_counting_tls_upstream(body: &'static str) -> (SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_task = Arc::clone(&count);
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+        let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let acceptor = acceptor.clone();
+                let count = Arc::clone(&count_task);
+                tokio::spawn(async move {
+                    let Ok(tls) = acceptor.accept(stream).await else { return };
+                    let mut reader = BufReader::new(tls);
+                    // Count every request that arrives on this upstream connection.
+                    while let Ok(Some(_req)) = read_http_request(&mut reader).await {
+                        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = reader.get_mut().write_all(resp.as_bytes()).await;
+                    }
+                    let mut tls = reader.into_inner();
+                    let _ = tls.shutdown().await;
+                });
+            }
+        });
+        (addr, count)
+    }
+
+    /// Build a proxy config whose upstream dial is redirected to `upstream`,
+    /// with `allowlist` enforced and the given provider credentials injected.
+    fn proxy_config(ca_dir: &std::path::Path, upstream: SocketAddr, allowlist: Vec<String>) -> ProxyConfig {
+        ProxyConfig {
+            bind_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            ca_dir: ca_dir.to_path_buf(),
+            cert_cache_capacity: 10,
+            llm_only: false,
+            mitm_hosts: Vec::new(),
+            denied_hosts: Vec::new(),
+            network_allowlist: allowlist,
+            // Accept the mock upstream's self-signed cert.
+            skip_upstream_tls_verify: true,
+            credential_action: CredentialAction::AlertOnly,
+            upstream_override: Some(upstream),
+            gateway_endpoint: None,
+            mcp_fail_open: false,
+            allow_private_connect_targets: true,
+        }
+    }
+
+    async fn start_proxy_with_creds(
+        config: ProxyConfig,
+        ca: CaStore,
+        creds: CredentialStore,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(config.bind_addr).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let cfg = ProxyConfig {
+            bind_addr: addr,
+            ..config
+        };
+        let (tx, _rx) = broadcast::channel::<PipelineEvent>(16);
+        let server = aa_proxy::proxy::ProxyServer::new(cfg, ca, tx).with_credentials(creds);
+        let handle = tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        (addr, handle)
+    }
+
+    /// Open a CONNECT tunnel through the proxy for `connect_host`, complete the
+    /// TLS MitM handshake (SNI = `sni_host`), send `request`, and return the raw
+    /// client-visible response bytes.
+    async fn mitm_roundtrip(proxy: SocketAddr, connect_host: &str, sni_host: &str, request: &[u8]) -> Vec<u8> {
+        let mut stream = TcpStream::connect(proxy).await.unwrap();
+        let connect = format!("CONNECT {connect_host}:443 HTTP/1.1\r\nHost: {connect_host}:443\r\n\r\n");
+        stream.write_all(connect.as_bytes()).await.unwrap();
+
+        // Read the "200 Connection Established" line + blank line.
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        use tokio::io::AsyncBufReadExt;
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.contains("200"), "tunnel not established: {line}");
+        loop {
+            let mut hl = String::new();
+            reader.read_line(&mut hl).await.unwrap();
+            if hl.trim().is_empty() {
+                break;
+            }
+        }
+        let stream = reader.into_inner();
+
+        // TLS handshake as the agent would, against the proxy's MitM cert.
+        let client_config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let server_name = ServerName::try_from(sni_host.to_string()).unwrap();
+        let mut tls = connector.connect(server_name, stream).await.unwrap();
+
+        tls.write_all(request).await.unwrap();
+        let mut out = Vec::new();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), tls.read_to_end(&mut out)).await;
+        out
+    }
+
+    #[tokio::test]
+    async fn credential_heist_agent_never_sees_real_key_and_upstream_gets_injected() {
+        // AC1: an agent request with a bogus Authorization reaches the mock
+        // upstream carrying the INJECTED real key (agent's own header stripped),
+        // and the real key never appears in the client-visible response bytes.
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, log) = start_tls_upstream("{\"ok\":true}").await;
+        let config = proxy_config(dir.path(), upstream, vec![ALLOWED_HOST.to_string()]);
+        let creds = CredentialStore::from_pairs([(ALLOWED_HOST.to_string(), REAL_KEY.as_bytes().to_vec())]);
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        let req = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: {ALLOWED_HOST}\r\n\
+             Authorization: Bearer agent-bogus\r\nContent-Length: 2\r\n\r\nhi"
+        );
+        let response = mitm_roundtrip(proxy, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+
+        // (a) upstream received the injected real key, not the agent's.
+        let g = log.lock().unwrap();
+        assert!(g.saw_request, "upstream never received the request");
+        assert_eq!(
+            g.authorization.as_deref(),
+            Some(&format!("Bearer {REAL_KEY}")[..]),
+            "upstream must receive the injected real provider key"
+        );
+
+        // (b) the real key never appears in the client-visible response stream.
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            !response_str.contains(REAL_KEY),
+            "real provider key leaked back to the agent: {response_str}"
+        );
+        assert!(
+            response_str.contains("200"),
+            "expected a 200 relayed to the agent: {response_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn forged_in_tunnel_host_is_rejected_and_evil_host_never_dialed() {
+        // AC2: CONNECT an allowlisted host, then forge `Host: evil.attacker.com`
+        // inside the tunnel. The proxy must reject with 403 and never dial the
+        // evil host (upstream_override points at the mock, which must see no
+        // request because the deny happens before any dial).
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, log) = start_tls_upstream("{\"ok\":true}").await;
+        let config = proxy_config(dir.path(), upstream, vec![ALLOWED_HOST.to_string()]);
+        let creds = CredentialStore::from_pairs([(ALLOWED_HOST.to_string(), REAL_KEY.as_bytes().to_vec())]);
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        let req = format!("POST /v1/chat/completions HTTP/1.1\r\nHost: {EVIL_HOST}\r\nContent-Length: 2\r\n\r\nhi");
+        // CONNECT to the allowlisted host (tunnel opens) but forge the inner Host.
+        let response = mitm_roundtrip(proxy, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.contains("403"),
+            "forged in-tunnel host must be rejected with 403, got: {response_str}"
+        );
+        // Give any (erroneous) dial a moment, then assert the upstream saw nothing.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !log.lock().unwrap().saw_request,
+            "evil host must never be dialed when the in-tunnel host is rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_never_echoes_configured_key_to_the_client() {
+        // AC3 (framing): even on a normal allowed request, the proxy must never
+        // emit its configured provider key into any client-visible byte stream.
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        // Upstream deliberately echoes a benign body; the key must not appear.
+        let (upstream, _log) = start_tls_upstream("{\"choices\":[]}").await;
+        let config = proxy_config(dir.path(), upstream, vec![ALLOWED_HOST.to_string()]);
+        let creds = CredentialStore::from_pairs([(ALLOWED_HOST.to_string(), REAL_KEY.as_bytes().to_vec())]);
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        let req = format!("POST /v1/x HTTP/1.1\r\nHost: {ALLOWED_HOST}\r\nContent-Length: 2\r\n\r\nhi");
+        let response = mitm_roundtrip(proxy, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            !response_str.contains(REAL_KEY),
+            "proxy echoed its configured provider key to the client: {response_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn keep_alive_second_request_is_not_forwarded_uninspected() {
+        // AAASM-3864 (a): after the proxy inspects and forwards the FIRST request
+        // on a MitM tunnel it forces the exchange closed (Connection: close +
+        // single-direction relay). A second request pipelined onto the same
+        // tunnel must NOT reach upstream un-inspected — the counting upstream
+        // must observe exactly one request.
+        use tokio::io::AsyncBufReadExt;
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, count) = start_counting_tls_upstream("{\"ok\":true}").await;
+        let config = proxy_config(dir.path(), upstream, vec![ALLOWED_HOST.to_string()]);
+        let creds = CredentialStore::from_pairs(Vec::<(String, Vec<u8>)>::new());
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        // Manual CONNECT + MitM handshake so we can keep the TLS stream open and
+        // attempt to pipeline a second request on it.
+        let mut stream = TcpStream::connect(proxy).await.unwrap();
+        let connect = format!("CONNECT {ALLOWED_HOST}:443 HTTP/1.1\r\nHost: {ALLOWED_HOST}:443\r\n\r\n");
+        stream.write_all(connect.as_bytes()).await.unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.contains("200"), "tunnel not established: {line}");
+        loop {
+            let mut hl = String::new();
+            reader.read_line(&mut hl).await.unwrap();
+            if hl.trim().is_empty() {
+                break;
+            }
+        }
+        let stream = reader.into_inner();
+        let client_config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let server_name = ServerName::try_from(ALLOWED_HOST.to_string()).unwrap();
+        let mut tls = connector.connect(server_name, stream).await.unwrap();
+
+        let req1 = format!("POST /v1/chat/completions HTTP/1.1\r\nHost: {ALLOWED_HOST}\r\nContent-Length: 2\r\n\r\nhi");
+        tls.write_all(req1.as_bytes()).await.unwrap();
+        // Immediately attempt to pipeline a second request onto the same tunnel.
+        let req2 = format!("POST /v1/chat/completions HTTP/1.1\r\nHost: {ALLOWED_HOST}\r\nContent-Length: 2\r\n\r\nby");
+        let _ = tls.write_all(req2.as_bytes()).await;
+
+        // Drain whatever the proxy relays; the connection then closes.
+        let mut out = Vec::new();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), tls.read_to_end(&mut out)).await;
+
+        // Settle, then assert the upstream saw exactly one (inspected) request.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the pipelined second request must not be forwarded; upstream must see exactly one request"
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_dlp_blocks_secret_to_non_llm_mitm_host() {
+        // AAASM-4126: a secret in a request body to a MitM'd host that is NOT one
+        // of the three built-in providers (openai/anthropic/cohere) must still be
+        // scanned and refused before any byte reaches upstream. The host is
+        // brought under MitM via the operator-configurable `mitm_hosts` set while
+        // `llm_only` stays true (the default posture), exercising both halves of
+        // the fix: the extra provider is intercepted, and body-DLP no longer
+        // depends on `detect_api`.
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, log) = start_tls_upstream("{\"ok\":true}").await;
+
+        // A provider outside the built-in detect_api set (Google Gemini).
+        const EXTRA_HOST: &str = "generativelanguage.googleapis.com";
+        let mut config = proxy_config(dir.path(), upstream, Vec::new());
+        config.llm_only = true;
+        config.mitm_hosts = vec![EXTRA_HOST.to_string()];
+        config.credential_action = CredentialAction::Block;
+        let creds = CredentialStore::from_pairs(Vec::<(String, Vec<u8>)>::new());
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        // Synthetic OpenAI-shaped key the default scanner detects (never real).
+        let secret = "sk-TESTONLY-NOT-REAL-1234567890abcdef1234567890ab";
+        let body = format!("{{\"exfil\":\"{secret}\"}}");
+        let req = format!(
+            "POST /v1beta/models HTTP/1.1\r\nHost: {EXTRA_HOST}\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let response = mitm_roundtrip(proxy, EXTRA_HOST, EXTRA_HOST, req.as_bytes()).await;
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.contains("403"),
+            "a secret to a non-LLM MitM host must be blocked with 403, got: {response_str}"
+        );
+        // Give any (erroneous) dial a moment, then assert the upstream saw nothing.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !log.lock().unwrap().saw_request,
+            "the blocked secret must never reach upstream"
+        );
+    }
 }

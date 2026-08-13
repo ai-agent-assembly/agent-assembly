@@ -1,0 +1,59 @@
+import { render, screen } from '@testing-library/react'
+import { LoadingState } from './LoadingState'
+
+describe('LoadingState', () => {
+  it('renders the generic skeleton by default', () => {
+    render(<LoadingState />)
+    const region = screen.getByTestId('loading-state-generic')
+    expect(region).toBeInTheDocument()
+    expect(region).toHaveAttribute('aria-busy')
+  })
+
+  it('renders the capability matrix skeleton with one cell per grid slot', () => {
+    const { container } = render(<LoadingState page="capability" />)
+    expect(screen.getByTestId('loading-state-capability')).toBeInTheDocument()
+    expect(container.querySelectorAll('.sk-matrix-cell')).toHaveLength(9 * 7)
+  })
+
+  it('renders the fleet table skeleton with one row per placeholder', () => {
+    const { container } = render(<LoadingState page="fleet" />)
+    expect(screen.getByTestId('loading-state-fleet')).toBeInTheDocument()
+    expect(container.querySelectorAll('.sk-table-row')).toHaveLength(8)
+  })
+
+  it('renders the overview skeleton variant', () => {
+    const { container } = render(<LoadingState page="overview" />)
+    expect(screen.getByTestId('loading-state-overview')).toBeInTheDocument()
+    // Overview shows a single large block, not matrix/table skeletons.
+    expect(container.querySelectorAll('.sk-matrix-cell')).toHaveLength(0)
+    expect(container.querySelectorAll('.sk-table-row')).toHaveLength(0)
+  })
+
+  // Regression for AAASM-5062: policy/live/scrub/agent scenes were missing.
+  it('renders the policy split-pane scene', () => {
+    const { container } = render(<LoadingState page="policy" />)
+    expect(screen.getByTestId('loading-state-policy')).toBeInTheDocument()
+    expect(container.querySelector('.sk-policy')).not.toBeNull()
+    expect(container.querySelectorAll('.sk-card')).toHaveLength(2)
+  })
+
+  it('renders the live three-column scene', () => {
+    const { container } = render(<LoadingState page="live" />)
+    expect(screen.getByTestId('loading-state-live')).toBeInTheDocument()
+    expect(container.querySelector('.sk-live')).not.toBeNull()
+    expect(container.querySelectorAll('.sk-card')).toHaveLength(4)
+  })
+
+  it('renders the scrub split-pane scene', () => {
+    const { container } = render(<LoadingState page="scrub" />)
+    expect(screen.getByTestId('loading-state-scrub')).toBeInTheDocument()
+    expect(container.querySelector('.sk-scrub')).not.toBeNull()
+    expect(container.querySelectorAll('.sk-card')).toHaveLength(2)
+  })
+
+  it('renders the agent detail scene', () => {
+    const { container } = render(<LoadingState page="agent" />)
+    expect(screen.getByTestId('loading-state-agent')).toBeInTheDocument()
+    expect(container.querySelectorAll('.sk-card')).toHaveLength(3)
+  })
+})

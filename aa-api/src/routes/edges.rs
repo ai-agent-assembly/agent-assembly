@@ -18,21 +18,85 @@ use utoipa::{IntoParams, ToSchema};
 use aa_core::identity::AgentId;
 use aa_core::topology::{Edge, EdgeType, NewEdge};
 
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
+
+/// Owning team of an agent via the registry, if any.
+fn agent_team_id(state: &AppState, agent: AgentId) -> Option<String> {
+    state
+        .agent_registry
+        .get(agent.as_bytes())
+        .and_then(|r| r.team_id.clone())
+}
+
+/// Enforce tenant ownership of an agent for a caller that already cleared the
+/// scope gate (AAASM-3790).
+///
+/// Mirrors `agents::authorize_agent_access`: an admin may act on any agent; a
+/// tenant-scoped caller may act only on agents in its own team; a caller with
+/// neither admin scope nor a team scope is denied up front. Agents with no team
+/// are admin-only.
+fn authorize_agent_team_access(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    agent: AgentId,
+) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope".to_string()));
+    }
+    let authorized = match agent_team_id(state, agent) {
+        Some(team) => caller.can_access_team(&team),
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the agent's team".to_string()));
+    }
+    Ok(())
+}
+
+/// Reject an edge whose **target** is another team's agent (AAASM-4133).
+///
+/// `report_edge` already authorizes ownership of the *source* (reporting) agent
+/// (AAASM-3790). Without this check a caller could still insert an edge whose
+/// target is an agent owned by a different team, polluting that team's
+/// inbound-topology view. An admin may target any agent; a team-scoped caller
+/// may target only agents in a team it can access. A **team-less** target is
+/// not "another team's agent", so it stays allowed — SDK emitters legitimately
+/// record edges to as-yet-unregistered or shared/team-less peers.
+fn authorize_edge_target(caller: &AuthenticatedCaller, state: &AppState, target: AgentId) -> Result<(), ProblemDetail> {
+    if caller.scopes.contains(&Scope::Admin) {
+        return Ok(());
+    }
+    if let Some(team) = agent_team_id(state, target) {
+        if !caller.can_access_team(&team) {
+            return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+                .with_detail("Edge target agent belongs to another team".to_string()));
+        }
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Parse a hex-encoded agent ID string into an [`AgentId`].
+///
+/// Decodes via [`hex::decode`] rather than slicing the input by byte index: the
+/// previous `&id[i..i + 2]` implementation panicked on an odd-length id (index
+/// past the end) or a multibyte path segment (a non-char-boundary slice),
+/// turning a malformed `{id}` path parameter into a request-thread panic
+/// (AAASM-4018 / AAASM-4150). `hex::decode` rejects odd-length and non-hex input
+/// with a clean `Err`, so every malformed id now surfaces as a `400` instead.
 fn parse_agent_id(id: &str) -> Result<AgentId, ProblemDetail> {
-    let bytes: Vec<u8> = (0..id.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&id[i..i + 2], 16))
-        .collect::<Result<Vec<u8>, _>>()
-        .map_err(|_| {
-            ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
-        })?;
+    let bytes = hex::decode(id).map_err(|_| {
+        ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid agent ID format: {id}"))
+    })?;
     let arr: [u8; 16] = bytes.try_into().map_err(|_| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST)
             .with_detail(format!("Agent ID must be 32 hex characters: {id}"))
@@ -164,12 +228,20 @@ pub struct ReportEdgeResponse {
     tag = "topology"
 )]
 pub async fn report_edge(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Json(body): Json<ReportEdgeRequest>,
 ) -> Result<(StatusCode, Json<ReportEdgeResponse>), ProblemDetail> {
     let source = parse_agent_id(&body.source_agent_id)?;
     let target = parse_agent_id(&body.target_agent_id)?;
     let edge_type = parse_edge_type(&body.edge_type)?;
+
+    // AAASM-3790: write-scope + ownership of the source (reporting) agent so a
+    // caller cannot poison another team's topology with fabricated edges.
+    authorize_agent_team_access(&caller, &state, source)?;
+    // AAASM-4133: also authorize the target so a caller cannot pollute another
+    // team's inbound topology with an edge pointing at that team's agent.
+    authorize_edge_target(&caller, &state, target)?;
 
     let metadata = if let Some(json_str) = body.metadata_json {
         if json_str.is_empty() {
@@ -195,7 +267,13 @@ pub async fn report_edge(
         })
         .await
         .map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+            // AAASM-4950 (L3): log the underlying store error server-side, but
+            // return a generic 500 body — the internal error string may reveal
+            // storage paths or implementation detail and must not cross the API
+            // boundary to the caller.
+            tracing::error!(error = %e, "failed to insert topology edge");
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+                .with_detail("Failed to record topology edge".to_string())
         })?;
 
     Ok((StatusCode::CREATED, Json(ReportEdgeResponse { id })))
@@ -253,11 +331,16 @@ pub struct EdgeListResponse {
     tag = "agents"
 )]
 pub async fn list_agent_edges(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     Query(params): Query<EdgeListParams>,
 ) -> Result<(StatusCode, Json<EdgeListResponse>), ProblemDetail> {
     let agent_id = parse_agent_id(&id)?;
+
+    // AAASM-3790: read-scope + tenant ownership of the agent before exposing its
+    // topology edges.
+    authorize_agent_team_access(&caller, &state, agent_id)?;
 
     let edge_type: Option<EdgeType> = params.r#type.as_deref().map(parse_edge_type).transpose()?;
 
@@ -280,7 +363,11 @@ pub async fn list_agent_edges(
         _ => state.edge_repo.list_outgoing(agent_id, edge_type, limit).await,
     }
     .map_err(|e| {
-        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+        // AAASM-4950 (L3): log server-side, return a generic 500 body so the
+        // internal store error never crosses the API boundary.
+        tracing::error!(error = %e, "failed to list agent edges");
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            .with_detail("Failed to list topology edges".to_string())
     })?;
 
     // Apply optional `before` cursor (best-effort for in-memory store)
@@ -338,6 +425,64 @@ pub struct GraphResponse {
     pub edges: Vec<EdgeResponse>,
 }
 
+/// `edge_repo.list_outgoing` with the route's uniform 500 mapping.
+///
+/// Factored out so the BFS traversal and the edge-collection pass share one
+/// error-mapping site instead of duplicating it.
+async fn list_outgoing_or_500(state: &AppState, node: AgentId) -> Result<Vec<Edge>, ProblemDetail> {
+    state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
+        // AAASM-4950 (L3): log server-side, return a generic 500 body so the
+        // internal store error never crosses the API boundary.
+        tracing::error!(error = %e, "failed to list outgoing edges");
+        ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            .with_detail("Failed to list topology edges".to_string())
+    })
+}
+
+/// BFS outward from `root` up to `depth` hops, returning the set of reachable
+/// nodes. A neighbour is admitted only when `node_authorized` returns true, so
+/// the walk never crosses a tenant boundary (AAASM-3825). `root` is always
+/// included.
+async fn collect_reachable_nodes(
+    state: &AppState,
+    root: AgentId,
+    depth: u32,
+    node_authorized: impl Fn(AgentId) -> bool,
+) -> Result<HashSet<AgentId>, ProblemDetail> {
+    let mut visited: HashSet<AgentId> = HashSet::new();
+    let mut queue: VecDeque<(AgentId, u32)> = VecDeque::new();
+    queue.push_back((root, 0));
+    visited.insert(root);
+
+    while let Some((node, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+        for edge in list_outgoing_or_500(state, node).await? {
+            // Never traverse into another tenant's agent; short-circuit keeps
+            // an unauthorized target out of `visited`.
+            if node_authorized(edge.target) && visited.insert(edge.target) {
+                queue.push_back((edge.target, d + 1));
+            }
+        }
+    }
+    Ok(visited)
+}
+
+/// Collect every edge whose source and target both lie within `nodes`, i.e.
+/// the edges internal to the already-authorized subgraph.
+async fn collect_internal_edges(state: &AppState, nodes: &HashSet<AgentId>) -> Result<Vec<Edge>, ProblemDetail> {
+    let mut all_edges: Vec<Edge> = Vec::new();
+    for &node in nodes {
+        for edge in list_outgoing_or_500(state, node).await? {
+            if nodes.contains(&edge.target) {
+                all_edges.push(edge);
+            }
+        }
+    }
+    Ok(all_edges)
+}
+
 /// Return the topology subgraph reachable from an agent.
 ///
 /// Performs BFS outward from `id` up to `depth` hops (default 2, max 5).
@@ -358,46 +503,36 @@ pub struct GraphResponse {
     tag = "agents"
 )]
 pub async fn get_agent_graph(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     Query(params): Query<GraphParams>,
 ) -> Result<(StatusCode, Json<GraphResponse>), ProblemDetail> {
     let root_id = parse_agent_id(&id)?;
+
+    // AAASM-3790: read-scope + tenant ownership of the root agent before walking
+    // its reachable subgraph.
+    authorize_agent_team_access(&caller, &state, root_id)?;
+
     let depth = params.depth.unwrap_or(2).min(5);
 
-    // BFS: collect unique node IDs within `depth` hops
-    let mut visited: HashSet<AgentId> = HashSet::new();
-    let mut queue: VecDeque<(AgentId, u32)> = VecDeque::new();
-    queue.push_back((root_id, 0));
-    visited.insert(root_id);
+    // AAASM-3825: the BFS must not cross a tenant boundary. The root is already
+    // authorized; every other node is admitted to the subgraph only if the
+    // caller is authorized for its owning team (admins see all; a team-scoped
+    // caller sees only its own team; team-less nodes are admin-only). This keeps
+    // both the returned node set and the inter-node edges within the caller's
+    // tenant, mirroring `authorize_agent_team_access`.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let node_authorized = |node: AgentId| -> bool {
+        match agent_team_id(&state, node) {
+            Some(team) => caller.can_access_team(&team),
+            None => is_admin,
+        }
+    };
 
-    while let Some((node, d)) = queue.pop_front() {
-        if d >= depth {
-            continue;
-        }
-        let outgoing = state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
-        })?;
-        for edge in outgoing {
-            if visited.insert(edge.target) {
-                queue.push_back((edge.target, d + 1));
-            }
-        }
-    }
-
-    // Batch-fetch all edges where source is in the visited set
-    let mut all_edges: Vec<Edge> = Vec::new();
-    for &node in &visited {
-        let outgoing = state.edge_repo.list_outgoing(node, None, 1000).await.map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
-        })?;
-        // Keep only edges whose target is also in the subgraph
-        for edge in outgoing {
-            if visited.contains(&edge.target) {
-                all_edges.push(edge);
-            }
-        }
-    }
+    // BFS the tenant-bounded subgraph, then collect the edges internal to it.
+    let visited = collect_reachable_nodes(&state, root_id, depth, node_authorized).await?;
+    let all_edges = collect_internal_edges(&state, &visited).await?;
 
     let cross_team_flags = compute_cross_team(&all_edges, &state);
     let edge_responses: Vec<EdgeResponse> = all_edges
@@ -463,6 +598,7 @@ pub struct TopologyEdgeListResponse {
     tag = "topology"
 )]
 pub async fn list_topology_edges(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Query(params): Query<TopologyEdgeListParams>,
 ) -> Result<(StatusCode, Json<TopologyEdgeListResponse>), ProblemDetail> {
@@ -473,22 +609,40 @@ pub async fn list_topology_edges(
     let mut all_edges: Vec<Edge> = Vec::new();
     for &et in EdgeType::ALL {
         let batch = state.edge_repo.list_by_type(et, epoch, 1000).await.map_err(|e| {
-            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!("Edge store error: {e}"))
+            // AAASM-4950 (L3): log server-side, return a generic 500 body so the
+            // internal store error never crosses the API boundary.
+            tracing::error!(error = %e, "failed to list topology edges by type");
+            ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+                .with_detail("Failed to list topology edges".to_string())
         })?;
         all_edges.extend(batch);
     }
 
-    // Optional team filter: keep edges where source or target belongs to the team.
-    let filtered: Vec<Edge> = match &params.team_id {
-        Some(tid) => all_edges
-            .into_iter()
-            .filter(|e| {
-                let src_team = state.agent_registry.get(e.source.as_bytes()).and_then(|r| r.team_id);
-                let tgt_team = state.agent_registry.get(e.target.as_bytes()).and_then(|r| r.team_id);
-                src_team.as_deref() == Some(tid.as_str()) || tgt_team.as_deref() == Some(tid.as_str())
-            })
-            .collect(),
-        None => all_edges,
+    // AAASM-3790: confine the listing to the caller's tenant. An admin may use
+    // the optional `?team_id` filter (or see every team when omitted); a
+    // tenant-scoped caller is forced to its own team regardless of `?team_id`,
+    // so it cannot dump the whole cross-team topology; a caller with no team
+    // scope (and no admin) sees nothing.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let effective_team: Option<String> = if is_admin {
+        params.team_id.clone()
+    } else {
+        caller.tenant.team_id.clone()
+    };
+
+    // Keep edges where source or target belongs to the effective team.
+    let team_filter = |state: &AppState, e: &Edge, tid: &str| {
+        let src_team = state.agent_registry.get(e.source.as_bytes()).and_then(|r| r.team_id);
+        let tgt_team = state.agent_registry.get(e.target.as_bytes()).and_then(|r| r.team_id);
+        src_team.as_deref() == Some(tid) || tgt_team.as_deref() == Some(tid)
+    };
+    let filtered: Vec<Edge> = match (is_admin, effective_team.as_deref()) {
+        // Admin with no filter — every edge.
+        (true, None) => all_edges,
+        // Either an admin's explicit filter or a tenant caller's forced team.
+        (_, Some(tid)) => all_edges.into_iter().filter(|e| team_filter(&state, e, tid)).collect(),
+        // Non-admin caller with no team scope — sees nothing.
+        (false, None) => Vec::new(),
     };
 
     // Stable newest-first order across types.
@@ -505,4 +659,27 @@ pub async fn list_topology_edges(
 
     let count = edges.len();
     Ok((StatusCode::OK, Json(TopologyEdgeListResponse { edges, count })))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_id_rejects_odd_length() {
+        // AAASM-4150: an odd-length id previously sliced past the end of the
+        // string and panicked; hex::decode must reject it as a clean error.
+        assert!(parse_agent_id("abc").is_err());
+    }
+
+    #[test]
+    fn parse_agent_id_rejects_multibyte() {
+        // AAASM-4150: a multibyte segment previously sliced a non-char-boundary
+        // and panicked; hex::decode must reject it as a clean error.
+        assert!(parse_agent_id("€0").is_err());
+    }
 }

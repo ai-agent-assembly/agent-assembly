@@ -34,9 +34,11 @@ test.describe('Approvals — AAASM-1571 ST-P-5: HITL gate via real gateway', () 
     const baseUrl = fixture!.baseUrl
 
     // Project-wide auth shim: the dashboard reads `aa_token` from
-    // localStorage for the bearer header.
+    // sessionStorage for the bearer header (AAASM-4322 moved it off
+    // localStorage as XSS hardening; believing otherwise is what killed 31
+    // specs for 19 days in AAASM-5191).
     await page.addInitScript(() => {
-      localStorage.setItem('aa_token', 'e2e-test-token')
+      sessionStorage.setItem('aa_token', 'e2e-test-token')
     })
 
     // The fixture has no event broadcast plumbing; abort the WS so the

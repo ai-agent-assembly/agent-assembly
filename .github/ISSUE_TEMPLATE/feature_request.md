@@ -6,6 +6,9 @@ labels: ["✨ enhancement"]
 assignees: ""
 ---
 
+> No Jira ticket required — the `AAASM` tracker is private. Just file this issue;
+> a maintainer will create and link an `AAASM` tracking ticket during triage.
+
 ## Motivation
 
 Why is this feature needed? What problem does it solve, or what value does it add?

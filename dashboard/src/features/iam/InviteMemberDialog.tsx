@@ -10,7 +10,7 @@ export interface InviteMemberDialogProps {
   isSubmitting?: boolean
 }
 
-export function InviteMemberDialog({ open, onClose, onSubmit, isSubmitting }: InviteMemberDialogProps) {
+export function InviteMemberDialog({ open, onClose, onSubmit, isSubmitting }: Readonly<InviteMemberDialogProps>) {
   if (!open) return null
   return (
     <InviteMemberDialogBody
@@ -21,9 +21,9 @@ export function InviteMemberDialog({ open, onClose, onSubmit, isSubmitting }: In
   )
 }
 
-function InviteMemberDialogBody({ onClose, onSubmit, isSubmitting }: Omit<InviteMemberDialogProps, 'open'>) {
+function InviteMemberDialogBody({ onClose, onSubmit, isSubmitting }: Readonly<Omit<InviteMemberDialogProps, 'open'>>) {
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<Role>('Member')
+  const [role, setRole] = useState<Role>('developer')
   const [touched, setTouched] = useState(false)
   const emailId = useId()
   const roleId = useId()
@@ -32,7 +32,7 @@ function InviteMemberDialogBody({ onClose, onSubmit, isSubmitting }: Omit<Invite
   const emailValid = isValidEmail(trimmed)
   const showError = touched && !emailValid
 
-  function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
     setTouched(true)
     if (!emailValid) return

@@ -59,6 +59,23 @@ pub enum EbpfError {
         detail: String,
     },
 
+    /// The embedded BPF bytecode did not match the digest baked in at build
+    /// time (AAASM-3602). This is a hard, fail-closed error: a probe whose
+    /// embedded bytecode has been corrupted in-binary — or is an empty stub —
+    /// is refused, never loaded blindly. Note this detects post-build
+    /// corruption only; the baked digest is derived from the same embedded
+    /// object, so it is not a supply-chain guarantee against a tampered build
+    /// (see the `integrity` module docs / TODO(AAASM-3601)).
+    #[error("eBPF bytecode integrity check failed for `{object}`: expected sha256 {expected}, got {actual}")]
+    IntegrityMismatch {
+        /// The probe object whose digest mismatched.
+        object: String,
+        /// The pinned digest baked in at build time.
+        expected: String,
+        /// The digest actually computed over the embedded bytes.
+        actual: String,
+    },
+
     /// OpenSSL shared library could not be located for the target process.
     #[error("could not find OpenSSL library for pid {pid:?}")]
     OpenSslNotFound {

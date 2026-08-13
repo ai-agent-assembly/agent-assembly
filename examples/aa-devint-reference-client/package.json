@@ -1,0 +1,50 @@
+{
+  "name": "@agent-assembly/devint-reference-client",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@10.9.0",
+  "description": "Thin reference client for the Developer Integration API \u2014 a template for VS Code / JetBrains / marketplace plugins",
+  "bin": {
+    "aa-devint-demo": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "generate": "buf generate",
+    "generate:check": "node scripts/check-bindings-drift.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test scripts --ext ts,mjs --max-warnings 0",
+    "build": "tsc -p tsconfig.build.json",
+    "harness:build": "cargo build -p aa-devint-harness",
+    "test": "vitest run",
+    "test:contract": "vitest run test/contract"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.13.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.72.0",
+    "@bufbuild/protoc-gen-es": "^2.13.0",
+    "@types/node": "^22.10.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.5.3",
+    "vitest": "^4.1.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@bufbuild/buf",
+      "esbuild"
+    ],
+    "overrides": {
+      "js-yaml": "^4.3.1",
+      "brace-expansion@1": "^1.1.18",
+      "brace-expansion@2": "^2.1.4",
+      "nanoid": "^3.3.17"
+    }
+  }
+}

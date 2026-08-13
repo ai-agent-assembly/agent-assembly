@@ -2,26 +2,33 @@
 
 > **In plain terms.** AI agents act on their own — they run tools, call
 > services, and spend money to get a job done. Agent Assembly is the set of
-> guardrails around them: it checks every action an agent tries to take against
-> rules you define, allows or blocks it *before* it happens, and keeps a
-> permanent record of what was decided. Think of it as a security checkpoint
-> that an AI agent cannot walk around.
+> guardrails around them: for each action that reaches it, it checks the action
+> against rules you define, allows or blocks it *before* it happens, and keeps a
+> permanent record of what was decided. Think of it as a security checkpoint on
+> the paths you route through it — which means the paths you leave unrouted
+> still need their own controls. Which actions reach the checkpoint depends on
+> how the agent is wired up; the [three-layer
+> model](three-layer-model.md) explains what each layer does and does not see,
+> and [Limitations and known bypasses](../devtools/limitations.md) states the
+> gaps that remain today.
 >
 > It is for the people responsible for those agents — **developers** wiring them
 > up, **security and operations** teams keeping them safe, and the **planners**
 > who need to know the controls exist. With it you can decide which tools an
 > agent may use, stop it from leaking data or overspending, and review exactly
-> what every agent did and why.
+> what was observed and decided.
 
 ## What it is
 
 `agent-assembly` is a **governance-native runtime for AI agents**. An AI agent —
 an LLM wired up to tools, APIs, shells, and network access — is given a goal and
 then decides, on its own, which actions to take to reach it. Agent Assembly
-governs those actions. Every time an agent tries to call a tool, reach the
-network, or spend money on a model call, the runtime evaluates that action
-against a **policy** and a **budget**, returns *allow* or *deny* before the
-action runs, and writes an immutable **audit** record of the decision.
+governs those actions. Each time a governed action reaches the runtime — a tool
+call the SDK wraps, an outbound request routed through the proxy, a model call
+on an inspected host — the runtime evaluates that action against a **policy** and
+a **budget**, returns *allow* or *deny* before the action runs, and writes a
+hash-chained **audit** record of the decision. Actions that reach none of those
+interception points are neither evaluated nor recorded.
 
 A governing gateway, pointed at a reference policy, is one command away:
 
@@ -66,23 +73,31 @@ Agent Assembly turns "trust the agent to behave" into "the runtime enforces what
 the agent may do." It provides:
 
 - **Policy enforcement at the action boundary.** Allow/deny decisions are made by
-  a central [gateway](../architecture/README.md) *before* an action executes,
+  a central [gateway](../architecture/index.md) *before* an action executes,
   driven by declarative policy rather than agent cooperation.
 - **Budget control.** Per-team spend is tracked and enforced; a request that
   would breach the budget is denied, so a runaway loop is stopped, not just
   reported after the fact.
-- **An immutable audit trail.** Every decision — allow and deny alike — is
-  recorded, giving teams a complete, tamper-evident account of agent behavior for
-  debugging, incident response, and compliance.
-- **Defense that does not depend on the agent.** Enforcement is layered across
-  three independent interception points (see [the three-layer
-  model](three-layer-model.md)), so governance holds even when an agent skips its
-  SDK or actively tries to evade it.
+- **A hash-chained audit trail.** Every decision the runtime makes — allow and
+  deny alike — is recorded, giving teams a tamper-*evident* account of the agent
+  behavior that was observed, for debugging, incident response, and compliance.
+  Tamper-evident is not immutable: the SHA-256 chain is unkeyed, covers the JSONL
+  sink only, and retention pruning deletes rows. See
+  [Audit](concepts.md#audit).
+- **Defense that does not depend on the agent's cooperation.** Enforcement is
+  layered across three independent interception points (see [the three-layer
+  model](three-layer-model.md)), so governance can still hold when an agent skips
+  its SDK. Each layer has its own precondition, so the layers narrow the gap
+  rather than eliminating it.
 
-Crucially, the agent does not have to cooperate. The whole point is that
+Crucially, the agent does not have to cooperate on the paths that are wired up:
 governance is enforced *around* the agent, by infrastructure the agent does not
-control. The [Security Model](../security/overview.md) section makes the trust
-boundaries explicit.
+control. What that does **not** mean is universal mediation — an action on a path
+no deployed layer observes is not governed, and a tool launched outside the
+managed path is a demonstrated example. The [Security
+Model](../security/overview.md) section makes the trust boundaries explicit, and
+[Limitations and known bypasses](../devtools/limitations.md) states what is
+unmeasured or unsupported today.
 
 ## Who this book is for
 
@@ -90,6 +105,6 @@ This book is the reference for **contributors and operators of the
 `agent-assembly` core** — people running the gateway, writing policy, and
 deploying the interception layers. If you are instead building an application
 *with* a language SDK, start from the per-SDK guides: [Python
-SDK](https://ai-agent-assembly.github.io/python-sdk/), [Node
-SDK](https://ai-agent-assembly.github.io/node-sdk/), [Go
-SDK](https://ai-agent-assembly.github.io/go-sdk/).
+SDK](https://docs.agent-assembly.com/python-sdk/stable/), [Node
+SDK](https://docs.agent-assembly.com/node-sdk/stable/), [Go
+SDK](https://docs.agent-assembly.com/go-sdk/stable/).

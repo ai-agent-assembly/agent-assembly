@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5353 negative: the same shape with a wrong check digit (8 instead of 3, weighted sum 25) and a checksum-valid number whose leading digit 3 belongs to no issued document class. Neither is reported. A recognizer that matched 'a letter followed by nine digits' would flag both.",
+  "input_text": "編號 A200000008 與 A300000002 皆非有效證號。",
+  "expected_findings": [],
+  "expected_redacted": "編號 A200000008 與 A300000002 皆非有效證號。"
+}

@@ -146,8 +146,12 @@ fn llm_call_converts_to_tool_call() {
     }
 }
 
+/// AAASM-5665 replaced the `MissingAgentId` rejection with explicit
+/// unattributed semantics: an old client that never sets `agent_id` used to get
+/// `InvalidArgument`, which an enforce-posture SDK reads as a deny. It is now
+/// converted and evaluated, carrying the reserved unattributed id and no claim.
 #[test]
-fn missing_agent_id_returns_error() {
+fn missing_agent_id_converts_as_unattributed_rather_than_erroring() {
     let req = CheckActionRequest {
         agent_id: None,
         context: Some(ActionContext {
@@ -158,8 +162,15 @@ fn missing_agent_id_returns_error() {
         }),
         ..Default::default()
     };
-    let err = request_to_core(&req).unwrap_err();
-    assert!(matches!(err, ConvertError::MissingAgentId));
+    let (ctx, _action) = request_to_core(&req).expect("an omitted agent_id is unattributed, not an error");
+    assert_eq!(
+        ctx.agent_id.as_bytes(),
+        &aa_gateway::service::convert::UNATTRIBUTED_AGENT_ID
+    );
+    assert_eq!(
+        ctx.metadata.get(aa_gateway::service::convert::CLAIMED_AGENT_ID_KEY),
+        None
+    );
 }
 
 #[test]
@@ -278,7 +289,22 @@ fn empty_metadata_fields_are_omitted() {
         caller_agent_id: None,
     };
     let (ctx, _) = request_to_core(&req).unwrap();
-    assert!(ctx.metadata.is_empty());
+    // AAASM-5665 — the claimed `agent_id` is now deposited into the evaluation
+    // context, so a populated one is legitimately present. The property this
+    // test exists for is unchanged: a field that is EMPTY on the wire is
+    // omitted rather than deposited as an empty string.
+    assert_eq!(
+        ctx.metadata
+            .get(aa_gateway::service::convert::CLAIMED_AGENT_ID_KEY)
+            .map(String::as_str),
+        Some("a")
+    );
+    for empty_on_the_wire in ["org_id", "team_id", "credential_token", "span_id"] {
+        assert!(
+            !ctx.metadata.contains_key(empty_on_the_wire),
+            "{empty_on_the_wire} was empty on the wire and must not be deposited"
+        );
+    }
 }
 
 // ── Outbound conversion tests ────────────────────────────────────────────────
@@ -289,7 +315,10 @@ fn eval_result_with_credential_findings_returns_redact() {
         decision: PolicyResult::Allow,
         redacted_payload: Some("redacted text".into()),
         credential_findings: vec![aa_security::CredentialFinding::from_regex_match(0, 10)],
+        canonical_findings: vec![],
         deny_action: None,
+        policy_doc_id: None,
+        narrowed: false,
     };
     let resp = eval_result_to_response(&eval, 77, "");
     assert_eq!(resp.decision, Decision::Redact as i32);
@@ -343,6 +372,7 @@ fn approved_decision_maps_to_allow() {
     let decision = ApprovalDecision::Approved {
         by: "alice".to_string(),
         reason: Some("looks good".to_string()),
+        conditions: vec![],
     };
     let resp = approval_decision_to_response(&decision, &id, 55, "requires_approval");
     assert_eq!(resp.decision, Decision::Allow as i32);

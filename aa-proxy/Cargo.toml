@@ -14,10 +14,11 @@ name = "aa-proxy"
 path = "src/main.rs"
 
 [dependencies]
-aa-core    = { path = "../aa-core", version = "0.0.1-beta.1", features = ["serde"] }
-aa-security = { path = "../aa-security", version = "0.0.1-beta.1", features = ["serde"] }
-aa-proto   = { path = "../aa-proto", version = "0.0.1-beta.1" }
-aa-runtime = { path = "../aa-runtime", version = "0.0.1-beta.1" }
+aa-core    = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
+aa-security = { path = "../aa-security", version = "0.0.1-rc.6", features = ["serde"] }
+aa-proto   = { path = "../aa-proto", version = "0.0.1-rc.6" }
+aa-runtime = { path = "../aa-runtime", version = "0.0.1-rc.6" }
+clap       = { workspace = true, features = ["derive"] }
 tokio      = { workspace = true, features = ["full"] }
 hyper      = { workspace = true, features = ["server", "http1"] }
 hyper-util   = { version = "0.1", features = ["tokio", "server"] }
@@ -29,10 +30,21 @@ time         = { workspace = true }
 lru          = "0.18"
 serde        = { workspace = true }
 serde_json   = { workspace = true }
+# AAASM-4156: decompress `Content-Encoding: gzip`/`deflate` MitM'd bodies so the
+# credential/DLP scanner inspects the plaintext instead of the opaque compressed
+# bytes (a gzip'd secret otherwise slips past). flate2 1.1.9 is already resolved
+# in the workspace lock (via tower-http/async-compression and zip), so this adds
+# no new crate to the tree. Default features use the pure-Rust miniz_oxide
+# backend — no C/zlib system dependency. `br` (brotli) is intentionally NOT
+# pulled in: it would be a genuinely new dependency, so the scanner fails closed
+# on brotli-encoded bodies rather than adding one (see decompress_content_encoding).
+flate2       = "1.1"
 anyhow       = { workspace = true }
 thiserror    = { workspace = true }
 dirs                = { workspace = true }
 bytes               = { workspace = true }
+zeroize             = { workspace = true }
+libc                = { workspace = true }
 tracing             = { workspace = true }
 tracing-subscriber  = { workspace = true, features = ["env-filter"] }
 
@@ -44,6 +56,13 @@ bytes = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+# AAASM-5449: the MCP `tools/call` refusal is only reachable through a real
+# gateway — `GatewayClient::connect` performs the h2 handshake eagerly and
+# `mcp_fail_open = false` makes the proxy refuse to start otherwise — so the
+# refusal test stands up a stub `PolicyService` that denies. Server-side tonic
+# is needed for that and for nothing else; it is already resolved in the
+# workspace lock via `aa-proto`, so this adds no crate to the tree.
+tonic = { workspace = true }
 
 [[bench]]
 name    = "intercept_bench"

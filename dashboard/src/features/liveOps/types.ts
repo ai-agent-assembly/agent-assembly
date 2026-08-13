@@ -4,7 +4,15 @@
  * `LiveOperation` is the row-level model for the event-stream zone of
  * the Live Ops page (parent AAASM-1282). Status variants mirror the
  * four states called out in the parent ticket's filter-bar spec.
+ *
+ * AAASM-5129: the three columns the wire does not always carry — `opType`,
+ * `resource` and `latencyMs` — are `Certain<T>`, not `T` with a default. They
+ * used to be coerced to `'unknown'`, `''` and `0` at the mapper, which meant
+ * every row asserted a sub-millisecond latency that was never measured. A
+ * `Certain<T>` cannot be read without narrowing, so there is no longer a
+ * shortcut back to "just render 0".
  */
+import type { Certain } from '../../lib/truthfulness'
 
 export type OperationStatus =
   | 'running'
@@ -46,16 +54,20 @@ export interface LiveOperation {
   agent: string
   /** Owning team id (the agent's team). Optional until the WS feed wires it. */
   team?: string
-  /** Operation verb — e.g. `read`, `write`, `delete`, `exec`. */
-  opType: string
-  /** Target resource — e.g. `gmail.send`, `pg.users`. */
-  resource: string
+  /** Operation verb — e.g. `read`, `write`, `delete`, `exec` — or why there is none. */
+  opType: Certain<string>
+  /** Target resource — e.g. `gmail.send`, `pg.users` — or why there is none. */
+  resource: Certain<string>
   /** Lifecycle phase. */
   status: OperationStatus
   /** ISO-8601 timestamp marking when the operation entered the pipeline. */
   startedAt: string
-  /** Wall-clock latency observed so far, in milliseconds. */
-  latencyMs: number
+  /**
+   * Wall-clock latency observed so far, in milliseconds — or why none was
+   * observed. Absent is the normal case today: see `certainLatency` in
+   * `useLiveOpsStream` for what each state means on this field.
+   */
+  latencyMs: Certain<number>
   /** Optional call-stack tree shown inline when the row is expanded. */
   callStack?: CallStackNode[]
 }

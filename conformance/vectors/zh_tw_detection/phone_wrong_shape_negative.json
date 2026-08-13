@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5353 negative: shapes that look like phone numbers and are not. 01 is not an issued area code; 02 takes eight local digits, not seven; an unseparated landline is a DOCUMENTED miss, because 0223456789 is shape-identical to a ten-digit account or reference number and there is no checksum to tell them apart.",
+  "input_text": "電話 01-23456789 與 02-2345678 與 0223456789 均非有效號碼。",
+  "expected_findings": [],
+  "expected_redacted": "電話 01-23456789 與 02-2345678 與 0223456789 均非有效號碼。"
+}

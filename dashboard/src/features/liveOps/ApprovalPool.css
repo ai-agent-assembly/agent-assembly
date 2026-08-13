@@ -11,17 +11,30 @@
   color: var(--ink-2);
 }
 
+/* The waiting count moved to the pane head (AAASM-5167), so all this row
+   still carries is the link across to the full Approvals view. */
 .approval-pool__head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
 }
 
-.approval-pool__count {
-  font-weight: 600;
-  letter-spacing: 0.3px;
+/* Retry for the `unavailable` body state. Matches the pane's monospace
+   register rather than importing a button token set the pane never uses. */
+.approval-pool__retry {
+  padding: 3px 10px;
+  font: inherit;
   color: var(--info);
+  background: none;
+  border: 1px solid var(--info);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.approval-pool__retry:hover,
+.approval-pool__retry:focus-visible {
+  background: var(--info-bg);
 }
 
 .approval-pool__link {
@@ -56,12 +69,19 @@
 
 .approval-pool__item {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 4px 8px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
   background: var(--paper-2);
   border: 1px solid var(--line-2);
   border-radius: 3px;
+}
+
+.approval-pool__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
 }
 
 .approval-pool__agent {

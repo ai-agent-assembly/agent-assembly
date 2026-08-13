@@ -2,6 +2,7 @@
 
 mod common;
 
+use aa_api::auth::scope::Scope;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
@@ -13,7 +14,8 @@ metadata:
   name: test-policy
   version: "1.0.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#;
 
 const ENVELOPE_POLICY_WITH_TOOLS: &str = r#"
@@ -78,6 +80,66 @@ async fn create_policy_returns_400_for_invalid_yaml() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_policies_forbidden_for_read_only_caller() {
+    // AAASM-3995(a): policy versions are cross-tenant governance documents, so a
+    // plain Read caller must not be able to enumerate the full policy set.
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_policies_allowed_for_admin_caller() {
+    let (token, entry) = common::generate_test_api_key("admin-key", vec![Scope::Read, Scope::Write, Scope::Admin]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_active_policy_forbidden_for_read_only_caller() {
+    // AAASM-3995(a): the active policy is the full cross-tenant document.
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies/active")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -207,4 +269,66 @@ async fn get_active_policy_reflects_applied_policy() {
     assert_eq!(json["rule_count"], 2);
     // policy_yaml is fetched from history (most-recent entry == active).
     assert_eq!(json["policy_yaml"], ENVELOPE_POLICY_WITH_TOOLS);
+}
+
+// ── Additional coverage tests (AAASM-3805) ────────────────────────────────────
+
+#[tokio::test]
+async fn list_policies_with_include_archived_true_returns_all_versions() {
+    let state = common::test_state();
+    // Apply two policies so history has two entries.
+    state
+        .policy_engine
+        .apply_yaml(VALID_POLICY_YAML, Some("test"), state.policy_history.as_ref())
+        .await
+        .unwrap();
+    state
+        .policy_engine
+        .apply_yaml(ENVELOPE_POLICY_WITH_TOOLS, Some("test"), state.policy_history.as_ref())
+        .await
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies?include_archived=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    // Both versions should appear when include_archived=true.
+    assert_eq!(json["total"].as_u64().unwrap(), 2);
+}
+
+// ── get_active_policy 404 (no named policy loaded) ────────────────────────────
+
+#[tokio::test]
+async fn get_active_policy_returns_404_when_no_named_policy_loaded() {
+    // `PolicyEngine::for_testing()` yields an engine whose
+    // `active_policy_info().name == None`, exercising the documented 404 path.
+    let mut state = common::test_state();
+    state.policy_engine = std::sync::Arc::new(aa_gateway::engine::PolicyEngine::for_testing());
+    let app = aa_api::server::build_app(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/policies/active")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("no active policy loaded"));
 }

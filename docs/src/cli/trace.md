@@ -36,13 +36,18 @@ aasm trace 7f3a1c2b
 ```
 
 ```text
-session 7f3a1c2b
-├─ 🧠 llm: gpt-4 (1200ms)
-│  ├─ 🔧 tool_call: search (340ms)
-│  │  └─ 📥 tool_result: search (12ms)
-│  └─ ⛔ deny: file_write — path outside allowlist
-└─ 🧠 llm: gpt-4 (800ms)
+Trace: 7f3a1c2b
+├─ ●  LLM gpt-4  1200ms
+│  ├─ ●  TOOL search  340ms
+│  │  └─ ←  RESULT search  12ms
+│  └─ ❌ DENY file_write  0ms  (path outside allowlist)
+└─ ●  LLM gpt-4  800ms
 ```
+
+Each event line is `<icon> <label>  <duration>`, where the icon encodes the
+event kind (`●  LLM`, `●  TOOL`, `←  RESULT`, `✅ ALLOW`, `❌ DENY`). Policy
+denials still carry a duration and are printed in red with the violation reason
+appended in parentheses.
 
 Timeline view:
 
@@ -50,8 +55,16 @@ Timeline view:
 aasm trace 7f3a1c2b --format timeline
 ```
 
+The timeline flattens every event (including nested ones) into one row each,
+prefixed with a `Timeline: <session_id>` header. Each row is a fixed-width
+uppercase kind tag and label, an ASCII bar sized relative to the longest event,
+and the duration:
+
 ```text
-llm: gpt-4        ████████████████████  1200ms
-tool_call: search ██████                 340ms
-llm: gpt-4        █████████████          800ms
+Timeline: 7f3a1c2b
+LLM    gpt-4                ████████████████████████████████████████  1200ms
+TOOL   search              ███████████                                340ms
+RESULT search              █                                          12ms
+DENY   file_write                                                     0ms
+LLM    gpt-4               ███████████████████████████                800ms
 ```

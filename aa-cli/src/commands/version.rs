@@ -7,12 +7,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
-/// Subset of the gateway health response used for version extraction.
+/// Subset of the configured REST API `/api/v1/health` response used for
+/// version extraction.
+///
+/// The REST API health endpoint reports both `version` and `api_version`.
+/// `api_version` stays optional so the same struct also parses a gateway
+/// `/healthz` body (which omits it), falling back to the served REST API
+/// major version.
 #[derive(Debug, Deserialize)]
 struct HealthInfo {
     version: String,
-    api_version: String,
+    #[serde(default)]
+    api_version: Option<String>,
 }
 
 /// A single row in the version output.
@@ -34,6 +42,10 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     let (gateway_row, api_row) = rt.block_on(async {
         let client = reqwest::Client::new();
+        // Probe the configured `--api-url`'s own health endpoint. The REST
+        // API serves `GET /api/v1/health` (carrying `version`/`api_version`);
+        // the gateway-daemon-only `/healthz` is NOT mounted by the REST API,
+        // so probing it reported a reachable api-url as "unreachable".
         let url = format!("{}/api/v1/health", ctx.api_url);
 
         let mut req = client.get(&url);
@@ -51,7 +63,7 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
                     },
                     VersionRow {
                         component: "api".to_string(),
-                        version: info.api_version,
+                        version: info.api_version.unwrap_or_else(|| "v1".to_string()),
                         status: "reachable".to_string(),
                     },
                 ),
@@ -85,7 +97,13 @@ fn render_table(rows: &[VersionRow]) {
     let mut table = Table::new();
     table.set_header(vec!["COMPONENT", "VERSION", "STATUS"]);
     for r in rows {
-        table.add_row(vec![&r.component, &r.version, &r.status]);
+        // version/status for the gateway/api rows come from the server health
+        // response; strip terminal escapes (component is a static label).
+        table.add_row(vec![
+            r.component.clone(),
+            sanitize_terminal(&r.version),
+            sanitize_terminal(&r.status),
+        ]);
     }
     println!("{table}");
 }
@@ -106,6 +124,8 @@ pub fn run(ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
         },
     }
 
+    // `version` degrades gracefully: an unreachable gateway/api is reported as
+    // "unreachable" rows but still exits 0, per the documented contract.
     ExitCode::SUCCESS
 }
 
@@ -177,6 +197,26 @@ mod tests {
         assert_eq!(arr[1]["version"], "0.3.2");
         assert_eq!(arr[2]["component"], "api");
         assert_eq!(arr[2]["version"], "v1");
+    }
+
+    #[test]
+    fn health_info_parses_api_health_body_with_api_version() {
+        // The configured REST API `/api/v1/health` body carries both
+        // `version` and `api_version`; deserialization must capture both.
+        let body = r#"{"status":"ok","version":"0.0.1","api_version":"v1","uptime_secs":3,"active_connections":0,"pipeline_lag_ms":0,"checks":{}}"#;
+        let info: HealthInfo = serde_json::from_str(body).expect("api health body must parse");
+        assert_eq!(info.version, "0.0.1");
+        assert_eq!(info.api_version.as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn health_info_parses_healthz_body_without_api_version() {
+        // A gateway `/healthz` body still parses (api_version absent) so a
+        // gateway-targeted `--api-url` continues to work via fallback.
+        let body = r#"{"mode":"local","version":"0.0.1","storage":"memory","uptime_secs":3}"#;
+        let info: HealthInfo = serde_json::from_str(body).expect("healthz body must parse");
+        assert_eq!(info.version, "0.0.1");
+        assert_eq!(info.api_version, None);
     }
 
     #[test]

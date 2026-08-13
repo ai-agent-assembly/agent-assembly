@@ -12,6 +12,9 @@ interface CopyEntry {
   secondary: string | null
 }
 
+// ErrorStateKind is a closed 2-member app union, not a raw wire string —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const COPY: Record<ErrorStateKind, CopyEntry> = {
   generic: {
     icon: '⚠',
@@ -20,7 +23,7 @@ const COPY: Record<ErrorStateKind, CopyEntry> = {
     msg: (
       <>
         Backend returned <code>503 service_unavailable</code>. This is usually transient — retry in a few seconds.
-        If it persists, check <code>status.agent-assembly.io</code>.
+        If it persists, check <code>status.agent-assembly.com</code>.
       </>
     ),
     cta: 'Retry',
@@ -47,10 +50,18 @@ export interface ErrorStateProps {
   onSecondary?: () => void
 }
 
-export function ErrorState({ kind = 'generic', onRetry, onSecondary }: ErrorStateProps) {
+export function ErrorState({ kind = 'generic', onRetry, onSecondary }: Readonly<ErrorStateProps>) {
   const c = COPY[kind] ?? COPY.generic
   return (
     <div className="state-page" role="alert" data-testid={`error-state-${kind}`}>
+      {kind === 'live' && (
+        <div className="runtime-down" data-testid="runtime-down-banner">
+          <span className="pulse" aria-hidden />
+          <b>RUNTIME DISCONNECTED</b>
+          <span style={{ color: 'var(--ink-3)' }}>· last heartbeat 47s ago · auto-retry in 8s</span>
+          <span style={{ marginLeft: 'auto' }}>severity: P1</span>
+        </div>
+      )}
       <div className="state-block">
         <div className="state-icon state-icon--err" aria-hidden>
           {c.icon}

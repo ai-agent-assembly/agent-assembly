@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353: 統一編號 valid ONLY under the post-2023-04-01 rule. Weights [1,2,1,2,1,2,4,1] over 10000004 give products 1 and 4, weighted digit-sum 5: divisible by 5, NOT by 10. Every mod-10-valid number is also mod-5-valid, so a legacy-only validator passes every pre-2023 test and misses every business registered since April 2023 - this vector is the only one that discriminates.",
+  "input_text": "營業人統一編號 10000004 已完成登記。",
+  "expected_findings": [
+    {
+      "category": "TAX_IDENTIFIER[zh-TW/business_id]",
+      "offset": 22,
+      "end": 30,
+      "confidence": "medium"
+    }
+  ],
+  "expected_redacted": "營業人統一編號 [REDACTED] 已完成登記。"
+}

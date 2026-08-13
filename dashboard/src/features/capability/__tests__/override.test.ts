@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { createMockCapabilityClient } from '../../../api/capability'
-import { applyOverrideLocal } from '../override'
+import { applyOverrideLocal, isOverridableDecision } from '../override'
 import { CAPABILITY_MATRIX_FIXTURE } from '../fixtures'
+
+describe('isOverridableDecision', () => {
+  it('admits what the endpoint accepts and refuses the rest', () => {
+    // The three the projection can produce, so the three an override may record.
+    expect(['allow', 'deny', 'na'].every(isOverridableDecision)).toBe(true)
+    // The two `apply_override` answers with a 400, plus a value that is not a
+    // decision at all — what a `<select>` yields when asked for a missing option.
+    expect(['narrow', 'approval', ''].some(isOverridableDecision)).toBe(false)
+  })
+})
 
 describe('applyOverrideLocal', () => {
   it('updates only the targeted (agent, resource, verb)', () => {
@@ -19,31 +28,14 @@ describe('applyOverrideLocal', () => {
     const other = next.agents.find((a) => a.id === 'finance-bot')!
     expect(other.caps.gmail.write).toBe('deny')
   })
-})
 
-describe('createMockCapabilityClient', () => {
-  it('returns updated rows on success and persists state across reads', async () => {
-    const client = createMockCapabilityClient({ latencyMs: 0 })
-    await client.applyOverride({
+  it('leaves an agent untouched when it has no cell for the resource', () => {
+    const next = applyOverrideLocal(CAPABILITY_MATRIX_FIXTURE, {
       agentIds: ['research-bot-04'],
-      resourceId: 'gmail',
+      resourceId: 'not-a-resource',
       verb: 'write',
       decision: 'deny',
     })
-    const after = await client.getMatrix()
-    const target = after.agents.find((a) => a.id === 'research-bot-04')!
-    expect(target.caps.gmail.write).toBe('deny')
-  })
-
-  it('rejects when failOverride is enabled (drives the rollback path)', async () => {
-    const client = createMockCapabilityClient({ latencyMs: 0, failOverride: true })
-    await expect(
-      client.applyOverride({
-        agentIds: ['research-bot-04'],
-        resourceId: 'gmail',
-        verb: 'write',
-        decision: 'deny',
-      }),
-    ).rejects.toThrow(/rejected/)
+    expect(next.agents).toEqual(CAPABILITY_MATRIX_FIXTURE.agents)
   })
 })

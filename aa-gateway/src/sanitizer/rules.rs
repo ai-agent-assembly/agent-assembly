@@ -51,11 +51,22 @@ pub(crate) const ALLOWED_TOP_LEVEL_KEYS: &[&str] = &[
 ];
 
 /// Returns `true` if `key` is on the recursive banned list.
+///
+/// AAASM-3136: the comparison is case-insensitive. A sender that emits
+/// `Prompt`, `TOOL_PAYLOAD`, or `Tool_Args` must not slip a secret past a
+/// case-sensitive `==` match — JSON keys are not case-normalized on the wire,
+/// so the banned list has to fold case to be a real control.
 pub(crate) fn is_banned(key: &str) -> bool {
-    BANNED_KEYS.contains(&key)
+    let lower = key.to_ascii_lowercase();
+    BANNED_KEYS.contains(&lower.as_str())
 }
 
 /// Returns `true` if `key` is an allowed top-level metadata key.
+///
+/// AAASM-3136: case-insensitive, for the same reason as [`is_banned`] — an
+/// unexpected field must not survive merely because its case differs from the
+/// allowlist entry.
 pub(crate) fn is_allowed_top_level(key: &str) -> bool {
-    ALLOWED_TOP_LEVEL_KEYS.contains(&key)
+    let lower = key.to_ascii_lowercase();
+    ALLOWED_TOP_LEVEL_KEYS.contains(&lower.as_str())
 }

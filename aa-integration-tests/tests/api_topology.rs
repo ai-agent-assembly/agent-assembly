@@ -1,7 +1,7 @@
 //! AAASM-1483 / F122 ST-B — Live-gateway HTTP integration tests for
 //! all `/api/v1/topology/*` endpoints.
 //!
-//! 13 tests, team scope `f122-topology-it`. All tests start a fresh
+//! 17 tests, team scope `f122-topology-it`. All tests start a fresh
 //! `TopologyTestEnv` (in-process axum server on a free port), seed state
 //! directly into the shared `Arc<AgentRegistry>`, and drive assertions via
 //! `reqwest` against the running server. No gateway mocking.
@@ -12,6 +12,7 @@
 //!  - Team (2)
 //!  - Lineage (2)
 //!  - Edges (2)
+//!  - Graph (4) — AAASM-5040 / AAASM-5099 `GET /api/v1/topology`
 //!  - Caching (1)
 //!
 //! Lineage ordering convention: `GET /topology/lineage/{id}` returns ancestors
@@ -64,7 +65,6 @@ fn make_agent(
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: vec![],
         recent_events: VecDeque::new(),
         recent_traces: vec![],
@@ -83,6 +83,7 @@ fn make_agent(
         children: vec![],
         parent_key,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }
@@ -539,6 +540,249 @@ async fn topology_edges_filter_by_team_only_returns_in_team_edges() {
     assert_eq!(edges.len(), 1, "only the in-team edge should be returned");
     assert_eq!(edges[0]["source_agent_id"], hex(&IN1), "source should be IN1");
     assert_eq!(edges[0]["target_agent_id"], hex(&IN2), "target should be IN2");
+}
+
+// ---------------------------------------------------------------------------
+// Graph (AAASM-5040 — GET /api/v1/topology)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_empty_registry_returns_empty_nodes_and_edges() {
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("{}/api/v1/topology", env.base_url());
+    let resp = reqwest::get(&url).await.expect("GET topology graph");
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let body: serde_json::Value = resp.json().await.expect("graph JSON");
+    assert!(body["nodes"].as_array().unwrap().is_empty(), "nodes should be []");
+    assert!(body["edges"].as_array().unwrap().is_empty(), "edges should be []");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_returns_nodes_with_badges_and_every_edge_kind() {
+    // One edge of each of the six stored kinds between three same-team agents.
+    // AAASM-5099 widened the projection from delegates_to/calls to all six, so
+    // every one of them has to reach the graph.
+    const A: [u8; 16] = [0x60; 16];
+    const B: [u8; 16] = [0x61; 16];
+    const C: [u8; 16] = [0x62; 16];
+
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+
+    // B carries enforcement_mode=Observe (the canonical shadow mode) and enough
+    // violations to be flagged, so the node projection's live mode/flagged
+    // badges (AAASM-5036) can be asserted. AAASM-5289: the mode badge derives
+    // from the canonical enforcement_mode, NOT metadata["mode"] — a DIVERGENT
+    // metadata.mode is set to prove the canonical field wins.
+    env.agent_registry
+        .register(root_agent(A, Some(TEAM)))
+        .expect("register A");
+    let mut b = root_agent(B, Some(TEAM));
+    b.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+    b.metadata.insert("mode".to_string(), "enforce".to_string());
+    env.agent_registry.register(b).expect("register B");
+    env.agent_registry
+        .register(root_agent(C, Some(TEAM)))
+        .expect("register C");
+
+    // AAASM-5103 — B is flagged because it has a recorded PolicyViolation audit
+    // event (count > 0), the canonical source the badge now derives from. The
+    // record no longer carries a violation counter, so seed the audit log
+    // directly in the dir the AuditReader reads.
+    {
+        use aa_core::audit::{AuditEntry, AuditEventType};
+        use aa_core::{AgentId, SessionId};
+        let entry = AuditEntry::new(
+            0,
+            1_000,
+            AuditEventType::PolicyViolation,
+            AgentId::from_bytes(B),
+            SessionId::from_bytes([0xEE; 16]),
+            "{}".to_string(),
+            [0u8; 32],
+        );
+        let line = serde_json::to_string(&entry).expect("serialize audit entry");
+        std::fs::write(env.audit_dir.join("seed.jsonl"), format!("{line}\n")).expect("write audit seed");
+    }
+
+    let client = Client::new();
+    let base = env.base_url();
+    let posted: [([u8; 16], [u8; 16], &str); 6] = [
+        (A, B, "delegates_to"),
+        (B, C, "calls"),
+        (A, C, "reads"),
+        (C, A, "writes"),
+        (B, A, "approves"),
+        (C, B, "messages"),
+    ];
+    for (src, tgt, et) in posted {
+        let resp = client
+            .post(format!("{base}/api/v1/topology/edges"))
+            .json(&serde_json::json!({
+                "source_agent_id": hex(&src),
+                "target_agent_id": hex(&tgt),
+                "edge_type": et
+            }))
+            .send()
+            .await
+            .expect("POST edge");
+        assert_eq!(resp.status(), reqwest::StatusCode::CREATED);
+    }
+
+    let body: serde_json::Value = reqwest::get(format!("{base}/api/v1/topology"))
+        .await
+        .expect("GET topology graph")
+        .json()
+        .await
+        .expect("graph JSON");
+
+    // Nodes: all three registered agents, each carrying the badge fields.
+    let nodes = body["nodes"].as_array().expect("nodes array");
+    assert_eq!(nodes.len(), 3, "three registered agents => three nodes");
+    for n in nodes {
+        assert!(n["id"].is_string(), "node has id");
+        assert!(n["name"].is_string(), "node has name");
+        assert!(n["status"].is_string(), "node has status");
+        assert!(n["mode"].is_string(), "node carries the enforcement-mode badge");
+        assert!(n["flagged"].is_boolean(), "node carries the flagged badge");
+        assert!(
+            n.get("trust").is_some(),
+            "node carries the trust field (null placeholder)"
+        );
+    }
+    // B's live badges flow through from the registry record.
+    let node_b = nodes.iter().find(|n| n["id"] == hex(&B)).expect("node B present");
+    assert_eq!(
+        node_b["mode"], "shadow",
+        "B's mode badge reflects the canonical enforcement_mode (Observe), not the divergent metadata.mode"
+    );
+    assert_eq!(node_b["flagged"], true, "B is flagged by its recorded PolicyViolation");
+
+    // Edges: every stored kind is graphed (AAASM-5099). The two structural kinds
+    // keep the graph vocabulary AAASM-5040 shipped; the other four pass their
+    // canonical wire string through.
+    let edges = body["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), posted.len(), "every stored edge kind is graphed");
+    let mut kinds: Vec<&str> = edges.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    kinds.sort_unstable();
+    assert_eq!(
+        kinds,
+        ["approves", "call", "delegation", "messages", "reads", "writes"],
+        "delegates_to/calls remap to delegation/call; the rest pass through"
+    );
+    for e in edges {
+        assert!(
+            e["source"].is_string() && e["target"].is_string(),
+            "edge has hex endpoints"
+        );
+        // All three agents share one team, so nothing crosses a boundary — the
+        // flag must be present and false, never absent.
+        assert_eq!(e["cross_team"], false, "same-team edge reports cross_team=false: {e}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_flags_cross_team_edges_and_carries_the_permission_chain() {
+    // AAASM-5099 — the two fields the widened projection adds beyond the kinds:
+    // a server-computed `cross_team` flag per edge, and the policy-inheritance
+    // chain per node.
+    const HOME: [u8; 16] = [0x80; 16];
+    const AWAY: [u8; 16] = [0x81; 16];
+
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    env.agent_registry
+        .register(root_agent(HOME, Some(TEAM)))
+        .expect("register HOME");
+    env.agent_registry
+        .register(root_agent(AWAY, Some("f122-other-team")))
+        .expect("register AWAY");
+
+    let client = Client::new();
+    let base = env.base_url();
+    client
+        .post(format!("{base}/api/v1/topology/edges"))
+        .json(&serde_json::json!({
+            "source_agent_id": hex(&HOME),
+            "target_agent_id": hex(&AWAY),
+            "edge_type": "approves"
+        }))
+        .send()
+        .await
+        .expect("POST cross-team edge");
+
+    let body: serde_json::Value = reqwest::get(format!("{base}/api/v1/topology"))
+        .await
+        .expect("GET topology graph")
+        .json()
+        .await
+        .expect("graph JSON");
+
+    let edges = body["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 1, "the one posted edge is graphed");
+    assert_eq!(edges[0]["kind"], "approves");
+    assert_eq!(
+        edges[0]["cross_team"], true,
+        "endpoints on different teams cross a boundary"
+    );
+
+    // Every node carries the chain, and it walks broadest -> narrowest. The
+    // team tier must be present: it is the tier that silently disappears if the
+    // cascade is resolved without an explicit registry lineage (AAASM-5102).
+    for n in body["nodes"].as_array().expect("nodes array") {
+        let chain = n["effective_permissions"]["chain"]
+            .as_array()
+            .expect("node carries the inheritance chain");
+        let tiers: Vec<&str> = chain.iter().map(|t| t["tier"].as_str().unwrap()).collect();
+        assert_eq!(tiers.first(), Some(&"global"), "chain starts at the broadest tier");
+        assert_eq!(tiers.last(), Some(&"agent"), "chain ends at the agent itself");
+        assert!(
+            tiers.contains(&"team"),
+            "a team-scoped agent has a team tier: {tiers:?}"
+        );
+        assert!(n["effective_permissions"]["allow"].is_array());
+        assert!(n["effective_permissions"]["deny"].is_array());
+        assert!(n["effective_permissions"]["allow_restricted"].is_boolean());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_graph_excludes_edges_to_unregistered_nodes() {
+    // A is registered; UNREG is not. An A → UNREG delegation edge must be
+    // dropped because UNREG is not a visible node — the graph never references
+    // a node the client wasn't given.
+    const A: [u8; 16] = [0x70; 16];
+    const UNREG: [u8; 16] = [0x71; 16];
+
+    let env = TopologyTestEnv::start().await.expect("harness should start");
+    env.agent_registry
+        .register(root_agent(A, Some(TEAM)))
+        .expect("register A");
+
+    let client = Client::new();
+    let base = env.base_url();
+    client
+        .post(format!("{base}/api/v1/topology/edges"))
+        .json(&serde_json::json!({
+            "source_agent_id": hex(&A),
+            "target_agent_id": hex(&UNREG),
+            "edge_type": "delegates_to"
+        }))
+        .send()
+        .await
+        .expect("POST edge");
+
+    let body: serde_json::Value = reqwest::get(format!("{base}/api/v1/topology"))
+        .await
+        .expect("GET topology graph")
+        .json()
+        .await
+        .expect("graph JSON");
+
+    assert_eq!(body["nodes"].as_array().unwrap().len(), 1, "only A is a node");
+    assert!(
+        body["edges"].as_array().unwrap().is_empty(),
+        "edge to the unregistered node is excluded"
+    );
 }
 
 // ---------------------------------------------------------------------------

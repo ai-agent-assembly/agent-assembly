@@ -47,7 +47,6 @@ fn make_agent(id: [u8; 16], name: &str, team: &str) -> AgentRecord {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: VecDeque::new(),
         recent_traces: Vec::new(),
@@ -62,6 +61,7 @@ fn make_agent(id: [u8; 16], name: &str, team: &str) -> AgentRecord {
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

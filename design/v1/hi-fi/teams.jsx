@@ -1,4 +1,21 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Teams (AAASM-5080 / AAASM-5077, ratified 2026-07-25) ───────
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative):
+ *   • Members-as-agents — shipped models team membership as AGENTS, not human users
+ *     (the OSS identity model; human directory is Cloud-only).
+ *   • Approval-routing — shipped shows approval-routing as a LIVE QUEUE driven by the
+ *     real approvals data, rather than a static mock of routing rules.
+ *
+ * NOT superseded: the FE-parity spec sections in this file remain the reference for
+ * in-flight FE work — do not delete them.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const { useState: useTeamSt } = React;
 
 /* ============================================================

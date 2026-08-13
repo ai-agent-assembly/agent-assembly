@@ -1,22 +1,24 @@
 //! Sample [`DevToolAdapter`] implementation for a fictional `MyEditor` IDE.
 //!
 //! This crate exists as a **reference for plugin authors** (see
-//! [`docs/devtools/plugins.md`]). It is intentionally hand-rolled — no
+//! [`docs/src/devtools/plugins.md`]). It is intentionally hand-rolled — no
 //! real `myeditor` binary exists. Detection succeeds when an env var
 //! pointing at a stub binary is set; MCP-server discovery reads a
 //! fixture JSON shipped under `fixtures/mcp_servers.json`. Concrete
 //! per-tool adapters (Claude Code, Codex, Copilot, Windsurf, SaaS) are
 //! tracked separately in AAASM-201..205 and AAASM-918.
 //!
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
-//! [`docs/devtools/plugins.md`]: https://github.com/ai-agent-assembly/agent-assembly/blob/master/docs/devtools/plugins.md
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
+//! [`docs/src/devtools/plugins.md`]: https://github.com/ai-agent-assembly/agent-assembly/blob/main/docs/src/devtools/plugins.md
 
 #![warn(missing_docs)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
+use aa_devtool_contract::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 

@@ -20,7 +20,8 @@ metadata:
   name: topology-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#;
 
 const ANOTHER_YAML: &str = r#"
@@ -30,7 +31,8 @@ metadata:
   name: another-policy
   version: "1.0.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -153,7 +155,7 @@ async fn policies_list_pagination_param_respected() {
     // Seed 5 policy versions with distinct content so they get unique SHA256 entries.
     for i in 1..=5u32 {
         let yaml = format!(
-            "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nmetadata:\n  name: pagination-policy\n  version: \"{i}.0.0\"\nspec:\n  rules: []\n"
+            "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nmetadata:\n  name: pagination-policy\n  version: \"{i}.0.0\"\nspec:\n  budget:\n    daily_limit_usd: 1000.0\n"
         );
         post_policy(&client, &env.base_url(), &yaml).await;
     }

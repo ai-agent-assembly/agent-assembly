@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { PoliciesPage } from './PoliciesPage'
+import { GrantScopes } from '../auth/GrantScopes'
+import { WRITE_SCOPES } from '../auth/testScopes'
 import { OverlayProvider } from '../components/OverlayProvider'
 import { ToastProvider } from '../components/ToastProvider'
 import * as policiesApi from '../features/policies/api'
@@ -17,18 +19,20 @@ function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeClient()}>
-      <ToastProvider>
-        <OverlayProvider>
-          {/* AppShell normally renders the overlay mount divs; in tests we
-              inline just the one this page uses so OverlayHost has a portal
-              target. */}
-          <div data-overlay="policy-editor" data-testid="overlay-mount-policy-editor" />
-          {children}
-        </OverlayProvider>
-      </ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>
+          <OverlayProvider>
+            {/* AppShell normally renders the overlay mount divs; in tests we
+                inline just the one this page uses so OverlayHost has a portal
+                target. */}
+            <div data-overlay="policy-editor" data-testid="overlay-mount-policy-editor" />
+            {children}
+          </OverlayProvider>
+        </ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
   )
 }
@@ -80,7 +84,7 @@ function mockSandboxSummary(
 ) {
   const base = { data: EMPTY_SUMMARY, isLoading: false, isError: false }
   return vi.spyOn(auditApi, 'useSandboxSummaryQuery').mockReturnValue(
-    mockQuery<SandboxSummaryResponse>(Object.assign({}, base, partial) as Partial<
+    mockQuery<SandboxSummaryResponse>({ ...base, ...partial } as Partial<
       UseQueryResult<SandboxSummaryResponse, Error>
     >),
   )
@@ -177,6 +181,29 @@ describe('PoliciesPage — list states', () => {
     expect(screen.getByText(/2 rules/)).toBeInTheDocument()
   })
 
+  it('renders a scope chip per row, read from policy_yaml (default "global")', () => {
+    const SCOPED_POLICY: Policy = {
+      name: 'research-narrowing',
+      version: '0.3.0',
+      rule_count: 1,
+      active: false,
+      policy_yaml: 'metadata:\n  name: research-narrowing\n  scope: agent:research-bot-04\nrules: []\n',
+    }
+    // ACTIVE_POLICY's YAML declares no scope → falls back to "global".
+    mockPolicies({
+      data: [ACTIVE_POLICY, SCOPED_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    const chips = screen.getAllByTestId('policy-row-scope')
+    expect(chips.map((c) => c.textContent)).toEqual([
+      'scope: global',
+      'scope: agent:research-bot-04',
+    ])
+  })
+
   it('shows the empty state with a "+ new policy" action when there are no policies', () => {
     mockPolicies({ data: [], isLoading: false, isError: false, refetch: vi.fn() })
     render(<PoliciesPage />, { wrapper: Wrapper })
@@ -235,6 +262,60 @@ describe('PoliciesPage — overlay wiring', () => {
     expect(chips).toHaveTextContent('v1.0.0')
   })
 
+  it('loads a proposed policy\'s real rules, scope, status + draft callout (AAASM-5059)', async () => {
+    const user = userEvent.setup()
+    const PROPOSED_WITH_RULES: Policy = {
+      name: 'research-bot',
+      version: '0.3.0',
+      rule_count: 2,
+      active: false,
+      policy_yaml: [
+        'apiVersion: agent-assembly/v1',
+        'kind: Policy',
+        'metadata:',
+        '  name: research-bot',
+        '  scope: team:research',
+        '  version: 0.3.0',
+        'spec:',
+        '  rules:',
+        '    - id: R1-gmail-allow',
+        '      match:',
+        '        actions:',
+        '          - gmail:read',
+        '      effect: allow',
+        '      audit: true',
+        '    - id: R2-s3-approval',
+        '      match:',
+        '        actions:',
+        '          - s3:write',
+        '      effect: require_approval',
+        '      approval:',
+        '        timeout_seconds: 1800',
+        '        approvers:',
+        '          - security-oncall',
+        '      audit: true',
+        '',
+      ].join('\n'),
+    }
+    mockPolicies({ data: [PROPOSED_WITH_RULES], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-row'))
+    await screen.findByTestId('policy-editor-overlay')
+
+    // Real status → draft callout shown, status chip "proposed".
+    expect(screen.getByTestId('editor-status-chip')).toHaveTextContent('proposed')
+    expect(screen.getByTestId('editor-draft-callout')).toBeInTheDocument()
+
+    // Real scope + rules, not a fabricated gmail/read/allow stub.
+    expect(screen.getByTestId('editor-scope-input')).toHaveValue('team:research')
+    expect(screen.getByTestId('editor-rule-0-resource')).toHaveValue('gmail')
+    expect(screen.getByTestId('editor-rule-1-resource')).toHaveValue('s3')
+
+    // The approval rule (R2) must not raise a false-positive error (AAASM-5060).
+    expect(screen.getByTestId('editor-validation-error-count')).toHaveTextContent('0 errors')
+    expect(screen.getByTestId('editor-save-btn')).not.toBeDisabled()
+  })
+
   it('closes the overlay when the editor Cancel button is clicked', async () => {
     const user = userEvent.setup()
     mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
@@ -256,6 +337,99 @@ describe('PoliciesPage — overlay wiring', () => {
   })
 })
 
+describe('PoliciesPage — editor Simulate wiring (AAASM-5142)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("opens the shipped simulator from the editor's footer button", async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+
+    // The real dry-run panel, not a toast telling the operator it is unbuilt.
+    expect(await screen.findByTestId('policy-simulate')).toBeInTheDocument()
+    expect(screen.getByTestId('simulate-run-btn')).toBeInTheDocument()
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the editor mounted underneath so the draft is not lost', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    await screen.findByTestId('policy-simulate')
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('policy-simulate-close'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument(),
+    )
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+  })
+
+  it('leaves the editor open when a dismiss lands while the simulator is up', async () => {
+    // The simulator is a top-layer <dialog>, but its Esc keydown still reaches
+    // the document listener OverlayHost installs. That dismiss belongs to the
+    // simulator alone — the editor behind it must survive.
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    await screen.findByTestId('policy-simulate')
+
+    await user.keyboard('{Escape}')
+
+    expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
+    expect(screen.queryByText('Discard unsaved changes?')).not.toBeInTheDocument()
+  })
+
+  it('still dismisses the editor on Escape once the simulator is closed', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    await screen.findByTestId('policy-simulate')
+    await user.click(screen.getByTestId('policy-simulate-close'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument(),
+    )
+
+    await user.keyboard('{Escape}')
+
+    await waitFor(() =>
+      expect(screen.queryByTestId('policy-editor-overlay')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('refuses to simulate an invalid draft and keeps the panel shut', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('new-policy-btn'))
+    await screen.findByTestId('policy-editor-overlay')
+    // Strip the only verb off R1 to force a validation error.
+    await user.click(screen.getByTestId('editor-rule-0-verb-read'))
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+
+    expect(
+      await screen.findByText(/Fix validation errors before simulating/),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('policy-simulate')).not.toBeInTheDocument()
+  })
+})
+
 describe('PoliciesPage — save flow', () => {
   afterEach(() => {
     vi.restoreAllMocks()
@@ -269,7 +443,11 @@ describe('PoliciesPage — save flow', () => {
     render(<PoliciesPage />, { wrapper: Wrapper })
     await user.click(screen.getByTestId('new-policy-btn'))
     await screen.findByTestId('policy-editor-overlay')
-    // emptyDraft has name === '' → validation error → Save disabled
+    // A fresh draft is valid, so drive it into an error state: deselect the
+    // only verb on R1 → "Select at least one verb" → Save disabled. (Name is
+    // no longer required after AAASM-5060.)
+    expect(screen.getByTestId('editor-save-btn')).not.toBeDisabled()
+    await user.click(screen.getByTestId('editor-rule-0-verb-read'))
     expect(screen.getByTestId('editor-save-btn')).toBeDisabled()
     await user.click(screen.getByTestId('editor-save-btn'))
     expect(mutateAsync).not.toHaveBeenCalled()
@@ -315,7 +493,7 @@ describe('PoliciesPage — save flow', () => {
     await screen.findByTestId('policy-editor-overlay')
     await user.click(screen.getByTestId('editor-save-btn'))
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(screen.getByText('Failed to save policy')).toBeInTheDocument())
+    expect(await screen.findByText('Failed to save policy')).toBeInTheDocument()
     // Overlay is still mounted
     expect(screen.getByTestId('policy-editor-overlay')).toBeInTheDocument()
   })
@@ -485,5 +663,164 @@ describe('PoliciesPage — sandbox summary banner', () => {
     expect(banner).toHaveTextContent('2')
     expect(banner).toHaveTextContent('1')
     expect(banner).toHaveTextContent('block-secrets')
+  })
+})
+
+describe('PoliciesPage — enable live enforcement dialog', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('opens the enable-live dialog from the banner and cancels it', async () => {
+    const user = userEvent.setup()
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+
+    await user.click(screen.getByRole('button', { name: /Enable live enforcement/ }))
+    expect(await screen.findByTestId('sandbox-enable-live-single')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('confirm-dialog-cancel'))
+    await waitFor(() =>
+      expect(screen.queryByTestId('sandbox-enable-live-single')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('confirming creates the policy and closes the dialog', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockResolvedValue(undefined)
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+
+    await user.click(screen.getByRole('button', { name: /Enable live enforcement/ }))
+    await screen.findByTestId('sandbox-enable-live-single')
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(screen.queryByTestId('sandbox-enable-live-single')).not.toBeInTheDocument(),
+    )
+  })
+
+  it('surfaces an error toast when enabling live enforcement fails', async () => {
+    const user = userEvent.setup()
+    const mutateAsync = vi.fn().mockRejectedValue(new Error('boom'))
+    mockPolicies({ data: [OBSERVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    mockCreatePolicy(mutateAsync)
+    render(<PoliciesPage />, { wrapper: Wrapper })
+
+    await user.click(screen.getByRole('button', { name: /Enable live enforcement/ }))
+    await screen.findByTestId('sandbox-enable-live-single')
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled())
+    expect(
+      await screen.findByText(/Failed to enable live enforcement for observed-policy/),
+    ).toBeInTheDocument()
+  })
+})
+
+// ── AAASM-5096: affects[] chips + 24h hit counter on the list row ───────────
+
+describe('PoliciesPage list-row reach and hits', () => {
+  it('renders one chip per affected agent', () => {
+    mockPolicies({
+      data: [{ ...ACTIVE_POLICY, affects: ['research-bot', 'support-triage'] }],
+      isLoading: false,
+      isError: false,
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    const affects = screen.getByTestId('policy-row-affects')
+    expect(affects).toHaveTextContent('research-bot')
+    expect(affects).toHaveTextContent('support-triage')
+    expect(screen.queryByTestId('policy-row-affects-overflow')).not.toBeInTheDocument()
+  })
+
+  it('collapses more than three affected agents into a +N chip', () => {
+    mockPolicies({
+      data: [{ ...ACTIVE_POLICY, affects: ['a', 'b', 'c', 'd', 'e'] }],
+      isLoading: false,
+      isError: false,
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-affects-overflow')).toHaveTextContent('+2')
+  })
+
+  it('folds absent reach to an em dash rather than claiming zero agents', () => {
+    // `affects` is omitted from the wire when the version is not in force —
+    // which is a different claim from "targets nobody".
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-affects-empty')).toHaveTextContent('—')
+    expect(screen.queryByTestId('policy-row-affects')).not.toBeInTheDocument()
+  })
+
+  it('renders an empty reach list as no chips, not as an em dash', () => {
+    mockPolicies({ data: [{ ...ACTIVE_POLICY, affects: [] }], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-affects')).toBeEmptyDOMElement()
+    expect(screen.queryByTestId('policy-row-affects-empty')).not.toBeInTheDocument()
+  })
+
+  it('folds an absent 24h hit count to an em dash, never to 0', () => {
+    mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    const hits = screen.getByTestId('policy-row-hits')
+    expect(hits).toHaveTextContent('—')
+    expect(hits).not.toHaveTextContent(/\b0\b/)
+  })
+
+  it('renders a real 24h hit count when one is present', () => {
+    mockPolicies({ data: [{ ...ACTIVE_POLICY, hits24h: 142 }], isLoading: false, isError: false })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(screen.getByTestId('policy-row-hits')).toHaveTextContent('142')
+  })
+})
+
+// ── AAASM-5143: history toggle for archived policy versions ─────────────────
+
+describe('PoliciesPage — history toggle', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('starts with history off — queries active-only versions', () => {
+    const spy = mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    expect(spy).toHaveBeenCalledWith({ includeArchived: false })
+    expect(screen.getByTestId('policy-history-toggle')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('re-runs the query with include_archived when the toggle is clicked', async () => {
+    const user = userEvent.setup()
+    const spy = mockPolicies({ data: [ACTIVE_POLICY], isLoading: false, isError: false, refetch: vi.fn() })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    await user.click(screen.getByTestId('policy-history-toggle'))
+    expect(spy).toHaveBeenLastCalledWith({ includeArchived: true })
+    expect(screen.getByTestId('policy-history-toggle')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('marks inactive rows as archived only once history is on', async () => {
+    const user = userEvent.setup()
+    // An active + an inactive (archived) version, as the endpoint returns them
+    // under include_archived.
+    mockPolicies({
+      data: [ACTIVE_POLICY, PROPOSED_POLICY],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    })
+    render(<PoliciesPage />, { wrapper: Wrapper })
+    // History off: no archived marker even though a row is inactive.
+    expect(screen.queryByTestId('policy-row-archived-tag')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('policy-history-toggle'))
+
+    // History on: exactly the inactive row carries the archived tag.
+    const tags = screen.getAllByTestId('policy-row-archived-tag')
+    expect(tags).toHaveLength(1)
+    const rows = screen.getAllByTestId('policy-row')
+    expect(rows[0]).not.toHaveAttribute('data-archived')
+    expect(rows[1]).toHaveAttribute('data-archived', 'true')
   })
 })

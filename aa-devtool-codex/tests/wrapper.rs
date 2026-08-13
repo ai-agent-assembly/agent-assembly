@@ -8,9 +8,9 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use aa_core::policy::{PolicyDecision, PolicyDocument, PolicyRule};
-use aa_core::{AdapterError, DevToolAdapter};
 use aa_devtool_codex::{BinaryLocator, CodexAdapter, VersionProbe};
+use aa_devtool_contract::{AdapterError, DevToolAdapter};
+use aa_devtool_contract::{PolicyDecision, PolicyDocument, PolicyRule};
 
 // ---------------------------------------------------------------------------
 // Shared stubs
@@ -60,7 +60,7 @@ fn fixture_policy() -> PolicyDocument {
                 decision: PolicyDecision::Allow,
             },
         ],
-        enforcement_mode: aa_core::EnforcementMode::default(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
     }
 }
 
@@ -115,7 +115,7 @@ async fn apply_settings_merges_preserving_user_managed_keys() {
     let allow_policy = PolicyDocument {
         version: 1,
         name: "allow-all".into(),
-        enforcement_mode: aa_core::EnforcementMode::default(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         rules: vec![PolicyRule {
             action_pattern: "*".into(),
             decision: PolicyDecision::Allow,

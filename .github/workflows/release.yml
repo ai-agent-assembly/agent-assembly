@@ -7,6 +7,17 @@ on:
   push:
     tags:
       - "v[0-9]*.[0-9]*.[0-9]*"
+  # Dry-run on PRs that can affect the release build (AAASM-3713). Every publish
+  # job is gated `if: github.event_name == 'push'`, so a pull_request only runs the
+  # build matrix + eBPF-integrity step and never publishes — surfacing release-build
+  # regressions (e.g. AAASM-3712) before tag time instead of at release.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/build-ebpf-probes.sh"
+      - "aa-ebpf*/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
   workflow_dispatch:
 
 env:
@@ -31,7 +42,7 @@ jobs:
             os: macos-14
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protobuf compiler (Linux)
         if: runner.os == 'Linux'
@@ -45,18 +56,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.target }}
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Build dashboard assets
@@ -64,8 +75,49 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Build aasm release binary
-        run: cargo build --release --target ${{ matrix.target }} -p aa-cli
+      - name: Stage dashboard/dist into aa-api/_embedded for the release binary
+        # AAASM-4517: aa-api embeds the dashboard SPA via include_dir! (like
+        # aa-cli) so the shipped `aa-api-server` serves the UI at GET / from a
+        # bare unpacked tarball — no adjacent dashboard/dist, no env var.
+        # include_dir! reads _embedded/ at COMPILE time, so the freshly-built
+        # dashboard/dist must be staged BEFORE `cargo build -p aa-api` below.
+        # Mirrors the crates.io leg that stages it into aa-cli/_embedded before
+        # `cargo publish`.
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf aa-api/_embedded
+          mkdir -p aa-api/_embedded/dashboard
+          cp -r dashboard/dist aa-api/_embedded/dashboard/dist
+          # Verify the SPA entry-point made it
+          test -f aa-api/_embedded/dashboard/dist/index.html
+          echo "✓ aa-api/_embedded/dashboard/dist/ staged ($(find aa-api/_embedded -type f | wc -l) files)"
+      - name: Build release binaries (cli/gateway/runtime/api, +proxy on Linux)
+        # aasm is the operator CLI; aa-gateway is the core daemon that
+        # `aasm gateway start` spawns. Both must ship in the CLI tarball
+        # (AAASM-2975) so a release / Homebrew install can launch a core —
+        # without aa-gateway, `aasm gateway start` fails with
+        # "aa-gateway binary not found". aa-gateway is a normal host binary
+        # (no eBPF / cross-target quirks), so it builds for every matrix target.
+        #
+        # AAASM-3951: also build the componentized daemons — aa-runtime (the
+        # local sidecar) on every target, and aa-proxy on Linux only (the proxy
+        # component artifact is Linux-only per ADR-014). They are packaged into
+        # their own component tarballs below.
+        #
+        # AAASM-4449: build aa-api's `aa-api-server` binary too. `aasm start
+        # --mode local` execs `aa-api-server` (it serves the dashboard SPA + the
+        # full /api/v1/* REST surface — AAASM-3382), so a GitHub-Release install
+        # that omits it can't run the documented quick-start. Like aa-gateway
+        # it's a normal host binary, so it builds for every matrix target.
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          PKGS=(-p aa-cli -p aa-gateway -p aa-runtime -p aa-api)
+          if [ "$RUNNER_OS" = "Linux" ]; then PKGS+=(-p aa-proxy); fi
+          cargo build --release --target "$TARGET" "${PKGS[@]}"
 
       - name: Install Rosetta 2 (x86_64-apple-darwin smoke test)
         if: matrix.target == 'x86_64-apple-darwin'
@@ -79,6 +131,29 @@ jobs:
           file "$BIN"
           "$BIN" --version
 
+      - name: Verify aa-gateway binary built (size + type)
+        # aa-gateway is the daemon `aasm gateway start` spawns; it ships in the
+        # same tarball (AAASM-2975). We don't execute it here (it would bind a
+        # listener); a presence + Mach-O/ELF type check is enough — the archive
+        # step hard-fails anyway if the binary is missing.
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/aa-gateway"
+          ls -lh "$BIN"
+          file "$BIN"
+
+      - name: Verify aa-api-server binary built (size + type)
+        # AAASM-4449: aa-api-server is the process `aasm start --mode local`
+        # execs to serve the dashboard + REST API; it ships in its own `api`
+        # component tarball below. As with aa-gateway we don't execute it here
+        # (it would bind a listener); a presence + Mach-O/ELF type check is
+        # enough — the archive step hard-fails anyway if the binary is missing.
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/aa-api-server"
+          ls -lh "$BIN"
+          file "$BIN"
+
       - name: Codesign + notarize aasm (macOS — gated on Apple Developer creds)
         # Dormant until the operator sets the MACOS_SIGNING_ENABLED repo variable
         # AND provisions the APPLE_* secrets; without them this step is skipped and
@@ -86,7 +161,10 @@ jobs:
         # the dist binary is Developer-ID-signed with a hardened runtime and
         # notarized so macOS Gatekeeper accepts it. (Bare CLI Mach-O binaries can't
         # be stapled; Gatekeeper verifies the notarization online on first run.)
-        if: ${{ runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' }}
+        # AAASM-4022: also gate on a tag push so PR dry-runs never touch the
+        # Apple signing keychain / notary credentials even if MACOS_SIGNING_ENABLED
+        # is set — codesigning + notarization only run when publishing a release.
+        if: ${{ github.event_name == 'push' && runner.os == 'macOS' && vars.MACOS_SIGNING_ENABLED == 'true' }}
         env:
           APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
@@ -118,17 +196,94 @@ jobs:
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/notary_key.p8" "$RUNNER_TEMP/aasm.zip"
           security delete-keychain "$KEYCHAIN"
 
-      - name: Archive binary
+      - name: Build + stage eBPF probe objects (Linux x86_64 — AAASM-3601)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         run: |
-          tar -czf "aasm-${{ matrix.target }}.tar.gz" \
-            -C "target/${{ matrix.target }}/release" aasm
+          # Compile the standalone BPF probe workspace so the three compiled
+          # objects (aa-file-io, aa-exec-probes, aa-tls-probes) can be hashed
+          # into a per-object integrity manifest. These objects are embedded by
+          # aa-ebpf via include_bytes_aligned!; today they are only covered
+          # transitively by the binary tarball checksum, so a swapped .o would
+          # still validate. The signed per-object manifest is the supply-chain
+          # anchor the load-time digest check (AAASM-3602) verifies against.
+          rustup toolchain install nightly --profile minimal
+          rustup component add rust-src --toolchain nightly
+          OUT="$GITHUB_WORKSPACE/ebpf-objects"
+          mkdir -p "$OUT"
+          # AAASM-3712: build + stage via the shared script (single source of
+          # truth with ci.yml's ebpf-build job). The script builds from inside
+          # aa-ebpf-probes/ so .cargo/config.toml (bpfel-unknown-none target +
+          # build-std=core) applies, and installs bpf-linker if missing.
+          bash scripts/build-ebpf-probes.sh "$OUT"
+          ls -l "$OUT"
+
+      - name: Upload eBPF probe objects (Linux x86_64 — AAASM-3601)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ebpf-objects
+          path: |
+            ebpf-objects/aa-file-io
+            ebpf-objects/aa-exec-probes
+            ebpf-objects/aa-tls-probes
+          retention-days: 1
+
+      - name: Archive binaries (legacy + component-aware — ADR-014)
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          REL="target/${TARGET}/release"
+
+          # os/arch token for component-aware artifact names (ADR-014).
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu)  OSARCH="linux-amd64" ;;
+            aarch64-unknown-linux-gnu) OSARCH="linux-arm64" ;;
+            aarch64-apple-darwin)      OSARCH="darwin-arm64" ;;
+            x86_64-apple-darwin)       OSARCH="darwin-amd64" ;;
+            *) echo "::error::unmapped target $TARGET"; exit 1 ;;
+          esac
+
+          # Version token: the tag on release pushes; a dev placeholder otherwise
+          # (component artifacts are only published on tag pushes).
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then VER="${GITHUB_REF_NAME}"; else VER="0.0.0-dev"; fi
+
+          # Legacy CLI tarball — backward-compat: the existing install-cli.sh `cli`
+          # path and the aasm.rb formula resolve this target-triple name. aasm +
+          # aa-gateway unpack side-by-side so `aasm gateway start` finds the core
+          # (AAASM-2975).
+          tar -czf "aasm-${TARGET}.tar.gz" -C "$REL" aasm aa-gateway
+
+          # Component-aware artifacts (AAASM-3951). The ARTIFACT is component-named
+          # but each binary keeps its REAL name — the aasm CLI execs aa-gateway /
+          # aa-proxy by those names, so renaming would break `aasm start` /
+          # `aasm proxy start` (AAASM-3952/3953 install these real-named binaries).
+          tar -czf "aasm-cli-${VER}-${OSARCH}.tar.gz"     -C "$REL" aasm aa-gateway
+          if [ -f "$REL/aa-runtime" ]; then
+            tar -czf "aasm-runtime-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-runtime
+          fi
+          # AAASM-4449: the `api` component ships aa-api-server, which
+          # `aasm start --mode local` execs to serve the dashboard + REST API.
+          # Built for every matrix target (normal host binary, no proxy/eBPF
+          # platform restriction), so it packages on all os/arch legs.
+          if [ -f "$REL/aa-api-server" ]; then
+            tar -czf "aasm-api-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-api-server
+          fi
+          # proxy is a Linux-only component (ADR-014); only built/packaged there.
+          if [ -f "$REL/aa-proxy" ]; then
+            tar -czf "aasm-proxy-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-proxy
+          fi
+          ls -lh aasm-*.tar.gz
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: aasm-${{ matrix.target }}
-          path: aasm-${{ matrix.target }}.tar.gz
+          # Legacy + component tarballs for this target (unique os/arch per matrix
+          # leg, so merge-multiple in the publish job flattens without collision).
+          path: aasm-*.tar.gz
           retention-days: 1
 
   publish:
@@ -141,10 +296,16 @@ jobs:
 
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts/
           merge-multiple: true
+
+      - name: Download eBPF probe objects (AAASM-3601)
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ebpf-objects
+          path: ebpf-objects/
 
       - name: Smoke-test dashboard (Linux x86_64)
         run: |
@@ -166,11 +327,101 @@ jobs:
           echo "Dashboard smoke test FAILED: server did not respond within 30s"
           exit 1
 
+      - name: Smoke-test local-mode dashboard SPA (Linux x86_64)
+        # AAASM-4517: `aasm start --mode local` execs `aa-api-server`, which must
+        # serve the embedded dashboard SPA at GET / (200 + HTML) — the flagship
+        # quick-start's final "see your agent in the dashboard" step. This is the
+        # exact gap rc.4 shipped: the api binary served REST-only because the SPA
+        # was never bundled into the tarball. The `aasm dashboard start` smoke
+        # above exercises a DIFFERENT (aa-cli-embedded) code path and never
+        # caught this, so this step covers the local-mode path explicitly.
+        #
+        # `aasm` is in the legacy CLI tarball; `aa-api-server` is in the `api`
+        # component tarball — unpack both onto PATH so `aasm start` can exec the
+        # api binary by name.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p local-bin
+          tar -xzf artifacts/aasm-x86_64-unknown-linux-gnu.tar.gz -C local-bin
+          api_tarball=$(ls artifacts/aasm-api-*-linux-amd64.tar.gz | head -n1)
+          echo "Using api component tarball: $api_tarball"
+          tar -xzf "$api_tarball" -C local-bin
+          chmod +x local-bin/aasm local-bin/aa-api-server
+          export PATH="$PWD/local-bin:$PATH"
+          aasm start --mode local --foreground &
+          AASM_PID=$!
+          echo "Started aasm start --mode local (PID $AASM_PID), waiting for :7391..."
+          ok=0
+          body=""
+          for i in $(seq 1 30); do
+            body=$(curl -sS http://127.0.0.1:7391/ 2>/dev/null || true)
+            if printf '%s' "$body" | grep -qi '<!doctype html\|<html'; then
+              echo "Local-mode SPA smoke test: GET / served HTML after ${i}s"
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" -eq 1 ]; then
+            # The REST surface must still coexist with the SPA on the same port
+            # (public health route needs no auth).
+            if curl -sf http://127.0.0.1:7391/api/v1/health -o /dev/null; then
+              echo "REST /api/v1/health reachable alongside the SPA"
+            else
+              echo "Local-mode smoke test FAILED: /api/v1/health not reachable"
+              ok=0
+            fi
+          fi
+          kill "$AASM_PID" 2>/dev/null || true
+          pkill -f aa-api-server 2>/dev/null || true
+          if [ "$ok" -ne 1 ]; then
+            echo "Local-mode SPA smoke test FAILED: GET / did not serve the dashboard SPA within 30s"
+            echo "Last GET / body was: $body"
+            exit 1
+          fi
+          echo "Local-mode dashboard SPA smoke test passed"
+
       - name: Generate SHA256SUMS
         run: |
           cd artifacts
           sha256sum aasm-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
+
+      - name: Generate component manifest (ADR-014 — AAASM-3951)
+        if: github.event_name == 'push'
+        working-directory: artifacts
+        env:
+          VER: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Machine-readable index of published component artifacts so installers
+          # can resolve {component, os_arch} -> file for a given version without
+          # guessing. The component-aware tarballs are aasm-<comp>-<VER>-<os>-<arch>.
+          {
+            printf '{\n  "version": "%s",\n  "components": [\n' "$VER"
+            first=1
+            for f in aasm-cli-*.tar.gz aasm-runtime-*.tar.gz aasm-proxy-*.tar.gz aasm-api-*.tar.gz; do
+              [ -e "$f" ] || continue
+              comp=$(printf '%s' "$f" | sed -E 's/^aasm-([a-z]+)-.*/\1/')
+              osarch=$(printf '%s' "$f" | sed -E 's/.*-([a-z0-9]+-[a-z0-9]+)\.tar\.gz$/\1/')
+              [ "$first" -eq 1 ] || printf ',\n'
+              first=0
+              printf '    {"component": "%s", "os_arch": "%s", "file": "%s"}' "$comp" "$osarch" "$f"
+            done
+            printf '\n  ]\n}\n'
+          } > components.json
+          cat components.json
+
+      - name: Generate EBPF_SHA256SUMS (AAASM-3601)
+        run: |
+          # Per-object integrity manifest over the three compiled BPF objects.
+          # This is a DEDICATED record (separate from the binary SHA256SUMS) so
+          # the bytecode embedded into aa-ebpf has an independent, signed digest
+          # the load-time check (AAASM-3602) can pin against.
+          cd ebpf-objects
+          sha256sum aa-file-io aa-exec-probes aa-tls-probes > ../artifacts/EBPF_SHA256SUMS
+          cat ../artifacts/EBPF_SHA256SUMS
 
       - name: Install cosign
         if: github.event_name == 'push'
@@ -192,18 +443,92 @@ jobs:
             --output-certificate SHA256SUMS.pem \
             SHA256SUMS
 
+      - name: Sign EBPF_SHA256SUMS with cosign (keyless — AAASM-3601)
+        if: github.event_name == 'push'
+        working-directory: artifacts
+        env:
+          COSIGN_YES: "true"
+        run: |
+          # Keyless OIDC signing of the eBPF per-object manifest, mirroring the
+          # binary SHA256SUMS flow. `cosign verify-blob` against the workflow
+          # identity is what proves the embedded bytecode was produced by this
+          # CI and not swapped by a compromised runner / build dependency.
+          cosign sign-blob \
+            --bundle EBPF_SHA256SUMS.cosign.bundle \
+            --output-signature EBPF_SHA256SUMS.sig \
+            --output-certificate EBPF_SHA256SUMS.pem \
+            EBPF_SHA256SUMS
+
       - name: Upload assets to GitHub Release
         if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v3
+        # AAASM-3135: pin to a full commit SHA (not the mutable v3 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # release-publishing job. SHA = tag v3.0.0.
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           files: |
             artifacts/aasm-*.tar.gz
+            artifacts/components.json
             artifacts/SHA256SUMS
             artifacts/SHA256SUMS.cosign.bundle
             artifacts/SHA256SUMS.sig
             artifacts/SHA256SUMS.pem
+            artifacts/EBPF_SHA256SUMS
+            artifacts/EBPF_SHA256SUMS.cosign.bundle
+            artifacts/EBPF_SHA256SUMS.sig
+            artifacts/EBPF_SHA256SUMS.pem
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  packaged-artifact-gate:
+    # AAASM-5315/5316: the LAST thing standing between a tag and crates.io.
+    #
+    # The same gate also runs on every PR (release-completeness.yml), which is
+    # where a packaging defect *should* be caught. This run exists because that
+    # one cannot be a precondition of publishing: it is path-filtered, it runs
+    # against a PR head rather than the merge result, and a tag can be cut from
+    # a commit whose PR never triggered it at all. Something that decides what
+    # ships has to have looked at the tree that ships.
+    #
+    # Publishing is irreversible — crates.io does not allow re-uploading a
+    # version — so the ~8 minutes this costs is bounded and the failure it
+    # prevents is not.
+    name: Packaged-artifact gate (pre-publish)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # aa-proto's build.rs (which stages _embedded/proto/) compiles protobuf.
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      # The gate asserts the real bundle ships, so it needs the same dashboard
+      # build publish-crates stages into aa-cli/_embedded.
+      - name: Build dashboard
+        working-directory: dashboard
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Run packaged-artifact gate
+        run: bash scripts/check-packaged-artifacts.sh
 
   publish-crates:
     # Publishes the workspace to crates.io in topological order via
@@ -221,9 +546,13 @@ jobs:
     #   * aa-devtool, aa-devtool-codex, aa-devtool-windsurf,
     #     aa-devtool-claude-code, aa-devtool-copilot, aa-devtool-saas
     #     — dev-tool subsystem held back from this alpha (user
-    #     directive: not feature-complete). aa-cli omits the related
-    #     `aasm run` / `aasm tools` subcommands accordingly; they
-    #     return once the subsystem is finished in a future PR.
+    #     directive: not feature-complete). aa-cli omits its whole
+    #     front door accordingly — `aasm run`, `aasm tools` AND
+    #     `aasm integrations` (AAASM-5309) — and aa-runtime omits the
+    #     Developer Integration API bring-up that `aasm integrations`
+    #     talks to, so nothing published advertises a surface nothing
+    #     published can serve. All of it returns together once the
+    #     subsystem is finished.
     #   * aa-api, conformance, aa-integration-tests, examples/* —
     #     cloud/enterprise consumers and workspace-internal tooling.
     #
@@ -235,28 +564,36 @@ jobs:
     # binary with only a stub "dashboard not built" page.
     name: Publish workspace to crates.io
     runs-on: ubuntu-latest
-    needs: publish
+    # AAASM-5315/5316: packaged-artifact-gate is a hard precondition, not
+    # advisory — nothing reaches crates.io that has not been packaged, had its
+    # tarball contents asserted, and been built back out of those tarballs.
+    needs: [publish, packaged-artifact-gate]
     if: github.event_name == 'push'
+    # AAASM-4016: gate this publish behind a protected GitHub Environment so a
+    # required-reviewer approval is needed before CRATES_IO_TOKEN is exposed and
+    # the workspace is pushed to crates.io. The environment (required reviewers +
+    # ref restriction to v* tags) must be created in repo Settings by an admin.
+    environment: release-crates
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
 
@@ -315,6 +652,22 @@ jobs:
              aa-ebpf/_embedded/aa-ebpf-probes/Cargo.toml.embedded
           echo "✓ aa-ebpf/_embedded/aa-ebpf-probes/ staged ($(find aa-ebpf/_embedded -type f | wc -l) files)"
 
+      - name: Stage .sqlx offline query cache into aa-gateway for crates.io publish
+        # AAASM-5315: aa-gateway expands `sqlx::query!` at compile time in
+        # `approval/sqlite_repo.rs` + `approval/db_escalation_scheduler.rs`.
+        # Without a DATABASE_URL those macros read the offline cache, which
+        # lives at the WORKSPACE root — outside the package, and cargo's
+        # `include` cannot escape the package directory. Mirror it in so the
+        # published crate compiles for a consumer who has no database at all.
+        # Kept as a staged copy (not a committed second copy) so the root
+        # `.sqlx/` stays the only thing `cargo sqlx prepare` has to regenerate.
+        run: |
+          set -euo pipefail
+          rm -rf aa-gateway/.sqlx
+          cp -r .sqlx aa-gateway/.sqlx
+          test -n "$(ls -A aa-gateway/.sqlx)"
+          echo "✓ aa-gateway/.sqlx/ staged ($(find aa-gateway/.sqlx -type f | wc -l) files)"
+
       - name: Strip held-back surface from aa-cli for crates.io publish
         # AAASM-2340: removes the `aa-devtool*` deps and the source files
         # that consume them (`aasm run` + `aasm tools` subcommands) before
@@ -334,6 +687,24 @@ jobs:
           # --no-git-push avoids creating/pushing tags (we already
           # have one from the upstream tag push), --yes skips
           # confirmation prompts.
+          #
+          # --no-verify (AAASM-2463, re-justified by AAASM-5315/5316):
+          # cargo's per-crate verify step unpacks each tarball and compiles it
+          # in isolation. It CANNOT be turned on here: aa-ebpf/build.rs's
+          # `restore_manifest_from_stage` renames `Cargo.toml.embedded` back
+          # during that compile, which trips cargo's "Source directory was
+          # modified by build.rs during cargo publish" guard and aborts the
+          # release. The flag's original rationale — "pre-tag CI already
+          # proves the workspace builds" — was false: a workspace build never
+          # separates a crate from its siblings, which is exactly the defect
+          # class verify exists to catch, and two such defects (5315, 5316)
+          # shipped through it. `scripts/check-packaged-artifacts.sh` now
+          # reconstructs what verify would have proved — package, assert
+          # tarball contents, then build the real binaries out of the unpacked
+          # tarballs — without re-entering the aa-ebpf failure. It runs on
+          # every PR for early feedback AND as the `packaged-artifact-gate`
+          # job this one `needs`, so it is a precondition of this publish and
+          # not merely something that ran earlier on some other tree.
           cargo workspaces publish \
             --from-git \
             --no-git-push \
@@ -349,28 +720,17 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before HOMEBREW_TAP_TOKEN is exposed and a formula PR is
+    # opened on the tap repo. Create the environment in repo Settings (admin).
+    environment: release-homebrew
 
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts/
           merge-multiple: true
-
-      - name: Extract per-platform sha256
-        id: shas
-        shell: bash
-        run: |
-          cd artifacts
-          if [ ! -f SHA256SUMS ]; then
-            sha256sum aasm-*.tar.gz > SHA256SUMS
-          fi
-          {
-            echo "darwin_arm=$(awk '$2=="aasm-aarch64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
-            echo "darwin_intel=$(awk '$2=="aasm-x86_64-apple-darwin.tar.gz"{print $1}' SHA256SUMS)"
-            echo "linux_arm=$(awk '$2=="aasm-aarch64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
-            echo "linux_intel=$(awk '$2=="aasm-x86_64-unknown-linux-gnu.tar.gz"{print $1}' SHA256SUMS)"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Extract release version from tag
         id: version
@@ -381,52 +741,122 @@ jobs:
           # github.ref_name is the tag (e.g. v0.0.1); strip the leading "v".
           echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout homebrew-agent-assembly tap
-        uses: actions/checkout@v6
+      - name: Checkout homebrew-tap tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ai-agent-assembly/homebrew-agent-assembly
+          # Renamed from homebrew-agent-assembly → homebrew-tap (AAASM-3950) so
+          # Homebrew resolves the tap as ai-agent-assembly/tap. The old name still
+          # redirects, but target the canonical repo directly.
+          repository: ai-agent-assembly/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
-      - name: Rewrite Formula/aasm.rb with new version + shas
+      - name: Bump metadata/versions.rb, regenerate formulas, refresh sha256
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          DARWIN_ARM: ${{ steps.shas.outputs.darwin_arm }}
-          DARWIN_INTEL: ${{ steps.shas.outputs.darwin_intel }}
-          LINUX_ARM: ${{ steps.shas.outputs.linux_arm }}
-          LINUX_INTEL: ${{ steps.shas.outputs.linux_intel }}
         run: |
+          # AAASM-4520: the tap moved to a generator model. metadata/versions.rb
+          # (VERSION + base URL) is the single source of truth; scripts/generate_formulas.rb
+          # rewrites the `version`/`url` literals inside every formula's `# BEGIN/END
+          # GENERATED: version` sentinels; and the tap's "Regenerate + assert clean diff"
+          # CI gate fails any hand-edit that disagrees with the SoT. The per-platform
+          # sha256 values live OUTSIDE those sentinels and are owned by this release
+          # automation (the generator refuses to touch them). So we drive the generator
+          # (never hand-edit Formula/*.rb version/url lines) and then refresh only the
+          # sha256 lines from the release SHA256SUMS. This makes the bot PR regen-clean
+          # AND complete (aasm + aa-gateway + aa-api-server), mirroring the manual rc.4
+          # repair in ai-agent-assembly/homebrew-tap#38.
+          SUMS="$GITHUB_WORKSPACE/artifacts/SHA256SUMS"
+          if [ ! -f "$SUMS" ]; then
+            # The release publishes SHA256SUMS as an artifact; reconstruct it if a
+            # future workflow change stops uploading it. The glob matches every
+            # component tarball (aasm-<target>, aasm-api-*, aasm-proxy-*, aasm-runtime-*).
+            ( cd "$GITHUB_WORKSPACE/artifacts" && sha256sum aasm-*.tar.gz > SHA256SUMS )
+          fi
+
           cd tap
-          sed -i "s|version \".*\"|version \"${VERSION}\"|" Formula/aasm.rb
-          sed -i "/aasm-aarch64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_ARM}\"|}" Formula/aasm.rb
-          sed -i "/aasm-x86_64-apple-darwin\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${DARWIN_INTEL}\"|}" Formula/aasm.rb
-          sed -i "/aasm-aarch64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_ARM}\"|}" Formula/aasm.rb
-          sed -i "/aasm-x86_64-unknown-linux-gnu\.tar\.gz/{n;s|sha256 \"[^\"]*\"|sha256 \"${LINUX_INTEL}\"|}" Formula/aasm.rb
-          git -C . diff -- Formula/aasm.rb || true
+
+          # 1. Bump the source of truth (version only — shas are not stored here).
+          sed -i "s|VERSION = \".*\"|VERSION = \"${VERSION}\"|" metadata/versions.rb
+
+          # 2. Regenerate the version/url literals so they agree with the SoT (this is
+          #    exactly what the tap's drift check re-runs and asserts a clean diff on).
+          ruby scripts/generate_formulas.rb
+
+          # 3. Refresh the sha256 lines from SHA256SUMS. In every formula a generated
+          #    `url "...<artifact>.tar.gz"` line is followed (after the END sentinel) by
+          #    the `sha256` line for that artifact; we key on the url's basename, look it
+          #    up in SHA256SUMS, and set the following sha256. Artifacts absent from
+          #    SHA256SUMS (the WIP aasm-ebpf / aasm-bundle placeholders) are left
+          #    untouched — exactly as homebrew-tap#38 did.
+          cat > "$RUNNER_TEMP/refresh_tap_shas.rb" <<'RUBY'
+          # frozen_string_literal: true
+          sums = {}
+          File.foreach(ENV.fetch("SUMS")) do |line|
+            sha, name = line.strip.split(/\s+/, 2)
+            next if name.nil? || sha.nil?
+            sums[name.strip] = sha.strip
+          end
+          Dir.glob("Formula/*.rb").sort.each do |path|
+            pending = nil
+            out = File.readlines(path).map do |l|
+              if (m = l.match(/\A\s*url\s+"([^"]+)"/))
+                pending = sums[File.basename(m[1])]
+                l
+              elsif pending && (sm = l.match(/\A(\s*sha256\s+")[^"]*(".*)\z/m))
+                replaced = "#{sm[1]}#{pending}#{sm[2]}"
+                pending = nil
+                replaced
+              else
+                l
+              end
+            end
+            File.write(path, out.join)
+          end
+          RUBY
+          SUMS="$SUMS" ruby "$RUNNER_TEMP/refresh_tap_shas.rb"
+
+          # 4. Re-run the generator: it must report no changes, proving the tap's drift
+          #    gate will pass on the PR we open below.
+          ruby scripts/generate_formulas.rb
+          git -C . diff --stat -- Formula/ metadata/versions.rb || true
 
       - name: Open tap PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v8
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           branch: bot/aasm-${{ steps.version.outputs.version }}
-          base: master
+          # AAASM-4955: every downstream repo (homebrew-tap + the three SDKs) has
+          # migrated master → main, so every bot-PR `base:` below is `main`. The
+          # downstream-base check in scripts/check-release-completeness.sh guards
+          # each of these against silently going stale.
+          base: main
           delete-branch: true
-          commit-message: "🤖 (formula): Update aasm to ${{ steps.version.outputs.version }}"
+          commit-message: "🤖 (formula): Update tap to ${{ steps.version.outputs.version }}"
           title: "🤖 (formula): aasm ${{ steps.version.outputs.version }}"
           body: |
             Auto-update from agent-assembly release `${{ github.ref_name }}`.
 
-            Bumps `version` and refreshes the four per-platform `sha256` values in
-            `Formula/aasm.rb` from the `SHA256SUMS` published with the release.
+            Bumps `metadata/versions.rb` to `${{ steps.version.outputs.version }}`,
+            regenerates every `Formula/*.rb` via `scripts/generate_formulas.rb`, and
+            refreshes each `sha256` from the release `SHA256SUMS` — for `aasm`
+            (incl. the `aa-api-server` `api` resource), `aasm-proxy`, and
+            `aasm-runtime`. WIP `aasm-ebpf` / `aasm-bundle` placeholder shas are left
+            untouched. This keeps the tap's "Regenerate + assert clean diff" gate green
+            and installs the full binary set (AAASM-4448/AAASM-4520).
 
             Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
   update-node-sdk-ffi-pin:
-    # AAASM-2883: after every tag push, open a PR on node-sdk that bumps
-    # native/aa-ffi-node/Cargo.toml's `aa-sdk-client` git-SHA pin to the
-    # exact commit this release was cut from. Without this, the SDK pin
+    # AAASM-2883 / AAASM-3468: after every tag push, open a PR on node-sdk
+    # that bumps every agent-assembly git-SHA pin (aa-sdk-client + aa-proto,
+    # + any future shared crate) in native/aa-ffi-node/Cargo.toml in lockstep
+    # to the exact commit this release was cut from. Without this, the SDK pin
     # drifts behind the published binaries (AAASM-2880 observed an 8-day
     # drift behind alpha-9) because the manual bump step on the SDK side
     # gets forgotten. The PR is opened by the bot and reviewed/merged on
@@ -437,60 +867,90 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before NODE_SDK_BOT_TOKEN is exposed and a pin-bump PR is
+    # opened on node-sdk. Create the environment in repo Settings (admin).
+    environment: release-node-sdk
 
     steps:
       - name: Checkout node-sdk
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ai-agent-assembly/node-sdk
           token: ${{ secrets.NODE_SDK_BOT_TOKEN }}
           path: sdk
 
-      - name: Rewrite native/aa-ffi-node/Cargo.toml aa-sdk-client rev
+      - name: Rewrite native/aa-ffi-node/Cargo.toml agent-assembly git pins
         shell: bash
         env:
           NEW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           cd sdk
-          # Match the literal `aa-sdk-client = { git = "...", rev = "<40-hex>"`
-          # prefix and rewrite only the rev value. We don't need to know the
-          # old SHA ahead of time; the regex anchors on the surrounding tokens.
-          sed -i -E 's|(aa-sdk-client = \{ git = "[^"]*", rev = )"[0-9a-f]{40}"|\1"'"${NEW_SHA}"'"|' \
+          # AAASM-3468: the shim Cargo.toml pins MORE than one agent-assembly
+          # crate (today aa-sdk-client + aa-proto; a future shared crate would
+          # add more). ADR 0003 lockstep (native-pin-consistency gate) requires
+          # EVERY aa-* git dep from the agent-assembly source to share one rev.
+          # Rewrite the rev on every line whose git URL points at the
+          # agent-assembly workspace, so new shared crates are covered without
+          # editing this workflow again. The casing of the host org has varied
+          # historically (canonical id is lowercase `ai-agent-assembly`), so the
+          # URL match tolerates `[^"]*`.
+          sed -i -E 's|(git = "[^"]*agent-assembly[^"]*", rev = )"[0-9a-f]{40}"|\1"'"${NEW_SHA}"'"|g' \
             native/aa-ffi-node/Cargo.toml
-          grep -q "rev = \"${NEW_SHA}\"" native/aa-ffi-node/Cargo.toml \
-            || { echo "::error::aa-sdk-client rev rewrite produced unexpected result"; exit 1; }
+          # Verify no agent-assembly git pin still carries a stale rev.
+          if grep -nE 'git = "[^"]*agent-assembly[^"]*", rev = "[0-9a-f]{40}"' native/aa-ffi-node/Cargo.toml \
+               | grep -v "${NEW_SHA}"; then
+            echo "::error::one or more agent-assembly git pins did not rewrite to NEW_SHA"
+            exit 1
+          fi
           git -C . diff -- native/aa-ffi-node/Cargo.toml || true
 
-      - name: Regenerate native/aa-ffi-node/Cargo.lock for the new pin
+      - name: Regenerate native/aa-ffi-node/Cargo.lock for the new pins
         shell: bash
         env:
           NEW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           cd sdk
-          # AAASM-2959: re-resolve the lock so it matches the just-rewritten
-          # Cargo.toml rev. node pins only aa-sdk-client; its transitive
-          # aa-core/aa-proto from the same git source update with it. This only
+          # AAASM-2959 + AAASM-3468: re-resolve the lock so it matches the
+          # just-rewritten Cargo.toml revs. The shim pins multiple direct
+          # agent-assembly crates, so update every one to NEW_SHA together (a
+          # single -p aa-sdk-client would leave aa-proto behind and break the
+          # lockstep gate). Discover the pinned crate names from the manifest so
+          # a future shared crate is handled automatically. This only
           # re-resolves the lock (no compile), so cargo alone suffices.
+          update_args=()
+          while IFS= read -r p; do
+            [ -n "$p" ] && update_args+=( -p "$p" )
+          done < <(grep -oE '^[a-z0-9_-]+ = \{ git = "[^"]*agent-assembly[^"]*"' \
+            native/aa-ffi-node/Cargo.toml | sed -E 's| =.*||')
           cargo update --manifest-path native/aa-ffi-node/Cargo.toml \
-            -p aa-sdk-client --precise "${NEW_SHA}"
+            "${update_args[@]}" --precise "${NEW_SHA}"
           git -C . diff -- native/aa-ffi-node/Cargo.lock || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v8
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: sdk
           token: ${{ secrets.NODE_SDK_BOT_TOKEN }}
           branch: bot/aa-ffi-pin-${{ github.ref_name }}
-          base: master
+          base: main
           delete-branch: true
-          commit-message: "🤖 (aa-ffi-node): Bump aa-sdk-client pin to ${{ github.ref_name }}"
-          title: "🤖 (aa-ffi-node): Bump aa-sdk-client pin to ${{ github.ref_name }}"
+          commit-message: "🤖 (aa-ffi-node): Bump agent-assembly git pins to ${{ github.ref_name }}"
+          title: "🤖 (aa-ffi-node): Bump agent-assembly git pins to ${{ github.ref_name }}"
           body: |
-            Auto-bump `aa-sdk-client` git-SHA pin in `native/aa-ffi-node/Cargo.toml`
-            to track agent-assembly release `${{ github.ref_name }}` (commit
-            `${{ github.sha }}`).
+            Auto-bump every agent-assembly git-SHA pin (`aa-sdk-client`,
+            `aa-proto`, and any other shared crate) in
+            `native/aa-ffi-node/Cargo.toml` to track agent-assembly release
+            `${{ github.ref_name }}` (commit `${{ github.sha }}`).
+
+            Per ADR 0003 all aa-* git deps must share one rev so cargo resolves
+            a single checkout of the agent-assembly workspace; this PR bumps them
+            in lockstep (AAASM-3468).
 
             Why: without this PR, the SDK source pin drifts behind the published
             agent-assembly binaries (AAASM-2880 observed an 8-day drift behind
@@ -514,10 +974,14 @@ jobs:
     if: github.event_name == 'push'
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before PYTHON_SDK_BOT_TOKEN is exposed and a pin-bump PR
+    # is opened on python-sdk. Create the environment in repo Settings (admin).
+    environment: release-python-sdk
 
     steps:
       - name: Checkout python-sdk
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ai-agent-assembly/python-sdk
           token: ${{ secrets.PYTHON_SDK_BOT_TOKEN }}
@@ -530,9 +994,10 @@ jobs:
         run: |
           set -euo pipefail
           cd sdk
-          # Rewrite the rev for each of the three shared crates. The host
-          # casing varies (`AI-agent-assembly` vs `ai-agent-assembly`) across
-          # historical edits, so the regex tolerates `[^"]*` for the URL.
+          # Rewrite the rev for each of the three shared crates. The host org
+          # casing has varied across historical edits (the canonical id is the
+          # lowercase `ai-agent-assembly`), so the regex tolerates `[^"]*` for
+          # the URL.
           for crate in aa-core aa-proto aa-sdk-client; do
             sed -i -E "s|(${crate} = \{ git = \"[^\"]*\", rev = )\"[0-9a-f]{40}\"|\\1\"${NEW_SHA}\"|" \
               native/aa-ffi-python/Cargo.toml
@@ -560,12 +1025,15 @@ jobs:
           git -C . diff -- native/aa-ffi-python/Cargo.lock || true
 
       - name: Open SDK pin-bump PR via peter-evans/create-pull-request
-        uses: peter-evans/create-pull-request@v8
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: sdk
           token: ${{ secrets.PYTHON_SDK_BOT_TOKEN }}
           branch: bot/aa-ffi-pin-${{ github.ref_name }}
-          base: master
+          base: main
           delete-branch: true
           commit-message: "🤖 (aa-ffi-python): Bump aa-core/aa-proto/aa-sdk-client pin to ${{ github.ref_name }}"
           title: "🤖 (aa-ffi-python): Bump aa-core/aa-proto/aa-sdk-client pin to ${{ github.ref_name }}"
@@ -582,6 +1050,121 @@ jobs:
             published agent-assembly binaries (AAASM-2880 observed an 8-day
             drift behind alpha-9). Merging this PR on `python-sdk` realigns
             the native shim with the matching upstream tag.
+
+            Upstream tag: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+            Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  update-go-sdk-ffi-pin:
+    # AAASM-3006: after every tag push, open a PR on go-sdk that bumps
+    # native/aa-ffi-go/Cargo.toml's `aa-sdk-client` git-SHA pin to the
+    # exact commit this release was cut from. Extends AAASM-2883's
+    # node-sdk + python-sdk fan-out to go-sdk, which had been doing the
+    # bump manually (AAASM-3005 closed the v0.0.1-beta.2 lag) — go-sdk
+    # consumes `aa-sdk-client` through the same Cargo git-SHA pin
+    # mechanism as node-sdk's aa-ffi-node and drifts the same way
+    # without this automation.
+    #
+    # AAASM-3468: bumps EVERY agent-assembly git pin in the shim in lockstep
+    # (aa-ffi-go's Cargo.toml carries direct `aa-sdk-client` AND `aa-proto`
+    # pins). The earlier single-pin path left aa-proto stale, breaking the
+    # ADR 0003 native-pin-consistency gate. Same generic shape as
+    # update-node-sdk-ffi-pin.
+    name: Update go-sdk aa-ffi-go pin
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before GO_SDK_BOT_TOKEN is exposed and a pin-bump PR is
+    # opened on go-sdk. Create the environment in repo Settings (admin).
+    environment: release-go-sdk
+
+    steps:
+      - name: Checkout go-sdk
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ai-agent-assembly/go-sdk
+          token: ${{ secrets.GO_SDK_BOT_TOKEN }}
+          path: sdk
+
+      - name: Rewrite native/aa-ffi-go/Cargo.toml agent-assembly git pins
+        shell: bash
+        env:
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd sdk
+          # AAASM-3468: the shim Cargo.toml pins MORE than one agent-assembly
+          # crate (today aa-sdk-client + aa-proto; a future shared crate would
+          # add more). ADR 0003 lockstep (native-pin-consistency gate) requires
+          # EVERY aa-* git dep from the agent-assembly source to share one rev.
+          # Rewrite the rev on every line whose git URL points at the
+          # agent-assembly workspace, so new shared crates are covered without
+          # editing this workflow again. The casing of the host org has varied
+          # historically (canonical id is lowercase `ai-agent-assembly`), so the
+          # URL match tolerates `[^"]*`.
+          sed -i -E 's|(git = "[^"]*agent-assembly[^"]*", rev = )"[0-9a-f]{40}"|\1"'"${NEW_SHA}"'"|g' \
+            native/aa-ffi-go/Cargo.toml
+          # Verify no agent-assembly git pin still carries a stale rev.
+          if grep -nE 'git = "[^"]*agent-assembly[^"]*", rev = "[0-9a-f]{40}"' native/aa-ffi-go/Cargo.toml \
+               | grep -v "${NEW_SHA}"; then
+            echo "::error::one or more agent-assembly git pins did not rewrite to NEW_SHA"
+            exit 1
+          fi
+          git -C . diff -- native/aa-ffi-go/Cargo.toml || true
+
+      - name: Regenerate native/aa-ffi-go/Cargo.lock for the new pins
+        shell: bash
+        env:
+          NEW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd sdk
+          # AAASM-2959 + AAASM-3468: re-resolve the lock so it matches the
+          # just-rewritten Cargo.toml revs. The shim pins multiple direct
+          # agent-assembly crates, so update every one to NEW_SHA together (a
+          # single -p aa-sdk-client would leave aa-proto behind and break the
+          # lockstep gate). Discover the pinned crate names from the manifest so
+          # a future shared crate is handled automatically. This only
+          # re-resolves the lock (no compile), so cargo alone suffices.
+          update_args=()
+          while IFS= read -r p; do
+            [ -n "$p" ] && update_args+=( -p "$p" )
+          done < <(grep -oE '^[a-z0-9_-]+ = \{ git = "[^"]*agent-assembly[^"]*"' \
+            native/aa-ffi-go/Cargo.toml | sed -E 's| =.*||')
+          cargo update --manifest-path native/aa-ffi-go/Cargo.toml \
+            "${update_args[@]}" --precise "${NEW_SHA}"
+          git -C . diff -- native/aa-ffi-go/Cargo.lock || true
+
+      - name: Open SDK pin-bump PR via peter-evans/create-pull-request
+        # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
+        # compromised upstream tag cannot inject code into this privileged
+        # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          path: sdk
+          token: ${{ secrets.GO_SDK_BOT_TOKEN }}
+          branch: bot/aa-ffi-pin-${{ github.ref_name }}
+          base: main
+          delete-branch: true
+          commit-message: "🤖 (aa-ffi-go): Bump agent-assembly git pins to ${{ github.ref_name }}"
+          title: "🤖 (aa-ffi-go): Bump agent-assembly git pins to ${{ github.ref_name }}"
+          body: |
+            Auto-bump every agent-assembly git-SHA pin (`aa-sdk-client`,
+            `aa-proto`, and any other shared crate) in
+            `native/aa-ffi-go/Cargo.toml` to track agent-assembly release
+            `${{ github.ref_name }}` (commit `${{ github.sha }}`).
+
+            Per ADR 0003 all aa-* git deps must share one rev so cargo resolves
+            a single checkout of the agent-assembly workspace; this PR bumps them
+            in lockstep (AAASM-3468).
+
+            Why: without this PR, the SDK source pin drifts behind the published
+            agent-assembly binaries (AAASM-2880 observed an 8-day drift behind
+            alpha-9; AAASM-3005 closed the equivalent lag on go-sdk for
+            v0.0.1-beta.2). Merging this PR on `go-sdk` realigns the native
+            shim with the matching upstream tag.
 
             Upstream tag: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
             Source workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -605,6 +1188,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # AAASM-4016: gate behind a protected GitHub Environment so a required
+    # reviewer approves before CROSS_REPO_DISPATCH_PAT is exposed and
+    # repository_dispatch events are fired at the downstream SDK repos. Create
+    # the environment in repo Settings (admin).
+    environment: release-notify
     steps:
       - name: Dispatch to node-sdk
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
@@ -629,11 +1217,16 @@ jobs:
           event-type: agent-assembly-release-published
           client-payload: '{"release_tag": "${{ github.ref_name }}"}'
 
-      # go-sdk intentionally NOT dispatched: pure-Go module, no aasm
-      # binary consumption in its release pipeline (`goreleaser.yaml`
-      # is a check-only workflow; Go module proxy auto-indexes from
-      # git tags directly). Add a dispatch step here if that ever
-      # changes.
+      # go-sdk intentionally NOT dispatched from this job: pure-Go
+      # module, no `aasm-*` binary consumption in its release pipeline
+      # (`goreleaser.yaml` is a check-only workflow; Go module proxy
+      # auto-indexes from git tags directly). Add a dispatch step here
+      # if that ever changes.
+      #
+      # NOTE: this exclusion is scoped to BINARY-PUBLISH RACE
+      # COORDINATION only. go-sdk's `aa-sdk-client` Cargo git-SHA pin
+      # is still kept in lockstep with each release via the dedicated
+      # `update-go-sdk-ffi-pin` job above (AAASM-3006).
 
   release-status-aggregator:
     permissions:
@@ -648,7 +1241,7 @@ jobs:
     if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run check-release.sh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

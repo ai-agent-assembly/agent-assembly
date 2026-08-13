@@ -139,6 +139,23 @@ describe("ViolationHeatmap", () => {
     expect(screen.queryByText("Top policies:")).not.toBeInTheDocument();
   });
 
+  it("themes the tooltip via CSS tokens instead of hardcoded white (AAASM-3506)", () => {
+    // Regression guard: the tooltip previously hardcoded `background: "white"`
+    // with no `color`, so in dark mode it inherited the light foreground and
+    // rendered light-on-white. It must use theme tokens that invert per theme.
+    const nodes = makeFiftyEntryNodes();
+    render(<ViolationHeatmap nodes={nodes} />);
+
+    const target = screen.getByTestId("heatmap-node-aaaa0000000000000000000000000001");
+    fireEvent.mouseEnter(target);
+
+    const tooltip = screen.getByTestId("heatmap-tooltip");
+    expect(tooltip.style.background).toBe("var(--paper-2)");
+    expect(tooltip.style.color).toBe("var(--ink)");
+    // Must not fall back to the hardcoded light-mode background.
+    expect(tooltip.style.background).not.toBe("white");
+  });
+
   it("hides team/depth/top-policies tooltip fields when not set", () => {
     const onlyAgent = makeNode({
       agent_id: "cccc0000000000000000000000000001",

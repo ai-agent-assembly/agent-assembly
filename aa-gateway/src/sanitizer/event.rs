@@ -59,6 +59,28 @@ impl SanitizedAuditEvent {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn raw_audit_event_from_value_wraps_without_mutation() {
+        // The `From<Value>` ergonomic constructor must wrap the value verbatim:
+        // wrapping is a trust-boundary marker only — it performs no sanitization,
+        // so the inner value is byte-for-byte the untrusted input.
+        let value = json!({ "event": "tool_call", "secret_field": "leak-me" });
+        let raw: RawAuditEvent = value.clone().into();
+        assert_eq!(raw.into_value(), value);
+    }
+
+    #[test]
+    fn raw_audit_event_new_and_from_are_equivalent() {
+        let value = json!({ "k": 1 });
+        assert_eq!(RawAuditEvent::from(value.clone()), RawAuditEvent::new(value));
+    }
+}
+
 /// A collapsed heartbeat. Per-beat records are never stored; instead a
 /// heartbeat event becomes a single "last seen at" update on the agent row.
 #[derive(Debug, Clone, PartialEq, Eq)]

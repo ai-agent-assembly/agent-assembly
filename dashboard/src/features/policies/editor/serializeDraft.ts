@@ -36,6 +36,10 @@ import type {
   RuleDraft,
 } from './types'
 
+// ApproverSla is a closed local union of the editor's own SLA picklist
+// (APPROVER_SLA_OPTS in ./constants.ts), not a raw wire string — narrow-union
+// Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const SLA_TO_SECONDS: Record<ApproverSla, number> = {
   '5m': 300,
   '15m': 900,
@@ -89,8 +93,7 @@ function deriveDescription(rule: RuleDraft): string {
   if (rule.exceptions && rule.exceptions.length > 0) {
     parts.push(`except [${rule.exceptions.join(', ')}]`)
   }
-  parts.push(`window: ${rule.timeWindow}`)
-  parts.push(`severity: ${rule.severity}`)
+  parts.push(`window: ${rule.timeWindow}`, `severity: ${rule.severity}`)
   return parts.join(' · ')
 }
 
@@ -146,7 +149,7 @@ export function serializeDraft(draft: PolicyDraft): string {
       version: draft.version,
     },
     spec: {
-      rules: draft.rules.map(serializeRule),
+      rules: draft.rules.map((rule, idx) => serializeRule(rule, idx)),
     },
   }
   return YAML.stringify(policy, { lineWidth: 0, indent: 2 })

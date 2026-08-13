@@ -1,11 +1,29 @@
+import { loader } from '@monaco-editor/react'
 import { Suspense, lazy } from 'react'
+import { useTheme } from '../../theme/useTheme'
 
-// Lazy-load Monaco so the editor JS is fetched only when the alert
-// detail drawer actually opens — keeps the first-paint of the Alerts
-// page slim (AAASM-1394).
-const Editor = lazy(() =>
-  import('@monaco-editor/react').then((m) => ({ default: m.default })),
-)
+// Monaco's runtime is imported dynamically, inside the same lazy boundary as
+// `@monaco-editor/react` itself, so it is fetched only when the alert detail
+// drawer actually opens — keeps the first-paint of the Alerts page slim
+// (AAASM-1394). A static top-level `import * as monaco from 'monaco-editor'`
+// pulled the whole Monaco module graph into every bundle that merely imports
+// this file, including jsdom test suites that never render it — and
+// Monaco's own module-init code calls `document.queryCommandSupported`,
+// which jsdom does not implement, breaking unrelated Alerts-feature tests.
+//
+// `loader.config` still points @monaco-editor/react at this npm-bundled
+// runtime instead of its default jsDelivr CDN fetch — index.html's
+// `script-src 'self'` CSP (AAASM-4322) blocks that fetch — but the config
+// call is deferred until Monaco is actually being loaded, before Editor
+// resolves.
+const Editor = lazy(async () => {
+  const [monaco, { default: MonacoEditor }] = await Promise.all([
+    import('monaco-editor'),
+    import('@monaco-editor/react'),
+  ])
+  loader.config({ monaco })
+  return { default: MonacoEditor }
+})
 
 const HEIGHT_PX = 200
 
@@ -23,7 +41,11 @@ interface RuleYamlViewerProps {
  * `<div>` is the only thing rendered synchronously; Monaco itself is
  * lazy-loaded inside a `<Suspense>` boundary.
  */
-export function RuleYamlViewer({ yaml }: RuleYamlViewerProps) {
+export function RuleYamlViewer({ yaml }: Readonly<RuleYamlViewerProps>) {
+  // Follow the dashboard's active theme so the editor doesn't render a dark
+  // box inside the otherwise-light UI in light mode (AAASM-3507). 'vs' is
+  // Monaco's built-in light theme; the repo registers no custom light theme.
+  const { theme } = useTheme()
   return (
     <div
       data-testid="alert-detail-rule-yaml"
@@ -53,7 +75,7 @@ export function RuleYamlViewer({ yaml }: RuleYamlViewerProps) {
           height={HEIGHT_PX}
           language="yaml"
           value={yaml}
-          theme="vs-dark"
+          theme={theme === 'dark' ? 'vs-dark' : 'vs'}
           options={{
             readOnly: true,
             domReadOnly: true,

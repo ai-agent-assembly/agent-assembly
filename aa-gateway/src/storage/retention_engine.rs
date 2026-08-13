@@ -26,7 +26,7 @@ pub struct RetentionEngine {
     /// without restarting the gateway, while concurrent `run_once` calls
     /// see a stable snapshot for the duration of one pass.
     config: Arc<ArcSwap<RetentionConfig>>,
-    /// Stats from the most recent successful [`run_once`]. `None` until
+    /// Stats from the most recent successful `run_once`. `None` until
     /// the engine has completed at least one pass. Surfaced by
     /// [`last_run_stats`](Self::last_run_stats) for the admin GET handler
     /// "Last retention run" panel.
@@ -61,7 +61,7 @@ impl RetentionEngine {
     /// Called by the admin REST `PUT /api/v1/admin/retention-policy` handler.
     /// The new config is validated first (delegating to
     /// [`RetentionConfig::validate`]); on validation failure the active
-    /// config is left untouched. On success, subsequent [`run_once`] calls
+    /// config is left untouched. On success, subsequent `run_once` calls
     /// observe the new thresholds; the cron schedule captured by
     /// [`start`](Self::start) is not affected — schedule changes still
     /// require a restart.
@@ -95,7 +95,7 @@ impl RetentionEngine {
     ///
     /// # Errors
     ///
-    /// Surfaces any [`StorageError`](super::StorageError) returned by
+    /// Surfaces any `StorageError` returned by
     /// [`apply_retention`](StorageBackend::apply_retention).
     pub async fn run_once(&self) -> StorageResult<RetentionStats> {
         let policy = self.config.load().to_policy();
@@ -114,7 +114,7 @@ impl RetentionEngine {
         Ok(stats)
     }
 
-    /// Stats from the most recent successful [`run_once`], or `None` if
+    /// Stats from the most recent successful `run_once`, or `None` if
     /// the engine has not completed a run yet.
     ///
     /// Powers the "Last retention run" panel on the dashboard admin UI
@@ -128,7 +128,7 @@ impl RetentionEngine {
     ///
     /// The task loops until `shutdown` is cancelled: on each iteration it
     /// waits until the next scheduled instant, invokes
-    /// [`run_once`](Self::run_once), logs any error and continues (one
+    /// `run_once`, logs any error and continues (one
     /// transient failure does not kill the loop).
     ///
     /// # Errors

@@ -10,8 +10,70 @@ use uuid::Uuid;
 use aa_runtime::approval::{ApprovalDecision, ApprovalError, ApprovalLookup, PendingApprovalRequest, ResolvedRecord};
 use utoipa::IntoParams;
 
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
+
+/// Owning team of an approval lookup result, if any.
+fn approval_team_id(lookup: &ApprovalLookup) -> Option<&str> {
+    match lookup {
+        ApprovalLookup::Pending(p) => p.team_id.as_deref(),
+        ApprovalLookup::Resolved(r) => r.team_id.as_deref(),
+    }
+}
+
+/// Enforce tenant ownership of a single approval for a caller that already
+/// cleared the scope gate (AAASM-3790).
+///
+/// Mirrors `agents::authorize_agent_access`: an admin may act on any approval; a
+/// tenant-scoped caller may act only on approvals in its own team; a caller with
+/// neither admin scope nor any team scope is denied up front so it cannot
+/// enumerate approvals via a 403-vs-404 oracle. On success returns the looked-up
+/// record so callers need not look it up twice. Returns 403 for an unauthorized
+/// caller, 404 when the approval is unknown to an authorized caller.
+fn authorize_approval_access(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    uuid: Uuid,
+    id: &str,
+) -> Result<ApprovalLookup, ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a team scope"));
+    }
+
+    let lookup = state.approval_queue.get_by_id(uuid).ok_or_else(|| {
+        ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
+    })?;
+
+    let authorized = match approval_team_id(&lookup) {
+        Some(team) => caller.can_access_team(team),
+        // The approval has no team — only an admin may act on it.
+        None => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the approval's team"));
+    }
+    Ok(lookup)
+}
+
+/// Parse the path `id` as a UUID and run the write-scope + tenant-ownership
+/// guard in one step, returning the parsed id alongside the resolved approval.
+/// The get / approve / reject / forward handlers share this exact preamble
+/// (AAASM-5095), so it lives here once rather than repeated per handler.
+fn parse_and_authorize(
+    caller: &AuthenticatedCaller,
+    state: &AppState,
+    id: &str,
+) -> Result<(Uuid, ApprovalLookup), ProblemDetail> {
+    let uuid = Uuid::parse_str(id)
+        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+    let lookup = authorize_approval_access(caller, state, uuid, id)?;
+    Ok((uuid, lookup))
+}
 
 /// Query parameters for `GET /api/v1/approvals` (AAASM-1477).
 ///
@@ -95,6 +157,42 @@ pub struct RoutingStatusInfo {
     pub history: Vec<RoutingHistoryEntry>,
 }
 
+/// Response state of a single approver in a multi-approver quorum (AAASM-5095).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct QuorumApproverStatus {
+    /// Approver identifier (user id or role) participating in the quorum.
+    pub approver: String,
+    /// This approver's response so far: `"pending"`, `"approved"`, or
+    /// `"rejected"`. Never fabricated — reflects the approver's real recorded
+    /// response.
+    pub status: String,
+}
+
+/// Multi-approver quorum status for an approval request (AAASM-5095).
+///
+/// Present **only** when the approval is a quorum approval (more than one
+/// approver is required). It carries a truthful "`responded` of `required`
+/// responded" tally plus the per-approver breakdown — the counts always
+/// reflect real approver responses and are never fabricated. Absent
+/// (serialized as omitted) for single-target approvals.
+///
+/// NOTE: full N-approver quorum *enforcement* (gateway-side routing that
+/// blocks resolution until the quorum is met) is scoped as a follow-up. This
+/// type is the wire contract; until the gateway can supply real per-approver
+/// responses the field is emitted as absent rather than with a fabricated
+/// count.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct QuorumStatus {
+    /// Number of approver responses required to satisfy the quorum (N).
+    pub required: u32,
+    /// Number of approvers that have responded so far — a real count of the
+    /// entries in `approvers` whose status is not `"pending"`. Never a
+    /// fabricated value.
+    pub responded: u32,
+    /// Per-approver response breakdown. Length is the quorum size.
+    pub approvers: Vec<QuorumApproverStatus>,
+}
+
 /// JSON representation of a pending approval request.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ApprovalResponse {
@@ -122,6 +220,12 @@ pub struct ApprovalResponse {
     /// Team the approval was routed to, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
+    /// Multi-approver quorum status (AAASM-5095). Present only when the
+    /// approval is a quorum approval; absent for single-target approvals. When
+    /// present the tally reflects real approver responses and is never
+    /// fabricated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quorum: Option<QuorumStatus>,
 }
 
 /// Render a `PendingApprovalRequest` (returned by `ApprovalQueue::list`)
@@ -160,6 +264,10 @@ fn pending_to_response(p: PendingApprovalRequest) -> ApprovalResponse {
             .unwrap_or_default(),
         routing_status,
         team_id: p.team_id,
+        // Quorum enforcement/routing is a documented AAASM-5095 follow-up; the
+        // queue does not yet track per-approver quorum responses, so emit the
+        // field as absent rather than fabricate a tally.
+        quorum: None,
     }
 }
 
@@ -180,6 +288,7 @@ fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
         expires_at: String::new(),
         routing_status: None,
         team_id: r.team_id,
+        quorum: None,
     }
 }
 
@@ -199,6 +308,7 @@ fn resolved_to_response(r: ResolvedRecord) -> ApprovalResponse {
     tag = "approvals"
 )]
 pub async fn list_approvals(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<ListApprovalsParams>,
 ) -> impl IntoResponse {
@@ -226,6 +336,18 @@ pub async fn list_approvals(
         // established CLI tolerance for typos in filter values.
         Some(_) => Vec::new(),
     };
+
+    // AAASM-3790: confine the listing to approvals the caller's tenant owns.
+    // An admin sees every team; a team-scoped caller sees only its own team's
+    // approvals; a caller with no team scope (and no admin) sees none. Untagged
+    // approvals (no team) are visible only to an admin.
+    let all: Vec<ApprovalResponse> = all
+        .into_iter()
+        .filter(|a| match a.team_id.as_deref() {
+            Some(team) => caller.can_access_team(team),
+            None => caller.scopes.contains(&Scope::Admin),
+        })
+        .collect();
 
     let total = all.len();
     let items: Vec<ApprovalResponse> = all
@@ -262,19 +384,14 @@ pub async fn list_approvals(
     tag = "approvals"
 )]
 pub async fn get_approval(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
-
-    let resp = match state.approval_queue.get_by_id(uuid) {
-        Some(ApprovalLookup::Pending(p)) => pending_to_response(p),
-        Some(ApprovalLookup::Resolved(r)) => resolved_to_response(r),
-        None => {
-            return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
-                .with_detail(format!("Approval request not found: {id}")));
-        }
+    // AAASM-3790: read-scope + tenant ownership before exposing the approval.
+    let resp = match parse_and_authorize(&caller, &state, &id)?.1 {
+        ApprovalLookup::Pending(p) => pending_to_response(p),
+        ApprovalLookup::Resolved(r) => resolved_to_response(r),
     };
 
     Ok((StatusCode::OK, Json(resp)))
@@ -294,16 +411,28 @@ pub async fn get_approval(
     tag = "approvals"
 )]
 pub async fn approve_action(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<DecideRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+    // AAASM-3790: write-scope + tenant ownership before resolving the approval.
+    let (uuid, _) = parse_and_authorize(&caller, &state, &id)?;
+
+    // Normalize conditions: drop empty/whitespace-only slugs so an empty or
+    // blank list is recorded as an unconditional approval (AAASM-5095).
+    let conditions: Vec<String> = body
+        .conditions
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
 
     let decision = ApprovalDecision::Approved {
         by: body.by.unwrap_or_else(|| "api".to_string()),
         reason: body.reason,
+        conditions,
     };
 
     state.approval_queue.decide(uuid, decision).map_err(|e| match e {
@@ -326,6 +455,7 @@ pub async fn approve_action(
             expires_at: String::new(),
             routing_status: None,
             team_id: None,
+            quorum: None,
         }),
     ))
 }
@@ -344,12 +474,13 @@ pub async fn approve_action(
     tag = "approvals"
 )]
 pub async fn reject_action(
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(body): Json<DecideRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
-    let uuid = Uuid::parse_str(&id)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail(format!("Invalid UUID: {id}")))?;
+    // AAASM-3790: write-scope + tenant ownership before resolving the approval.
+    let (uuid, _) = parse_and_authorize(&caller, &state, &id)?;
 
     let reason = body.reason.filter(|r| !r.trim().is_empty()).ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::BAD_REQUEST).with_detail("Rejection requires a non-empty reason")
@@ -380,8 +511,82 @@ pub async fn reject_action(
             expires_at: String::new(),
             routing_status: None,
             team_id: None,
+            quorum: None,
         }),
     ))
+}
+
+/// `POST /api/v1/approvals/:id/forward` — reassign a pending approval to a
+/// different approver (AAASM-5095).
+///
+/// Forwarding does **not** decide the request: it stays pending so the new
+/// target must still approve or reject it. This is a governance action and
+/// carries the *same* write-scope + tenant-ownership guard as approve/reject
+/// (an operator may only forward approvals in a team it can access, or any
+/// approval when it holds admin scope). Returns the still-pending approval on
+/// success, 404 when the id is unknown or already resolved (no pending request
+/// to forward), and 400 for a missing target or invalid UUID.
+#[utoipa::path(
+    post,
+    path = "/api/v1/approvals/{id}/forward",
+    params(("id" = String, Path, description = "Approval request identifier")),
+    responses(
+        (status = 200, description = "Approval reassigned; still pending", body = ApprovalResponse),
+        (status = 400, description = "Missing forward target or invalid UUID"),
+        (status = 404, description = "Approval request not found or already resolved")
+    ),
+    tag = "approvals"
+)]
+pub async fn forward_action(
+    RequireWrite(caller): RequireWrite,
+    Extension(state): Extension<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<ForwardRequest>,
+) -> Result<(StatusCode, Json<ApprovalResponse>), ProblemDetail> {
+    // Same guard as approve/reject: write scope + tenant ownership. Forwarding
+    // must not let a caller act on an approval outside its authority.
+    let (uuid, _) = parse_and_authorize(&caller, &state, &id)?;
+
+    let to = body.to.trim();
+    if to.is_empty() {
+        return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail("Forwarding requires a non-empty `to` approver target"));
+    }
+
+    // `forward` returns false when the request is unknown or already resolved
+    // (no pending request to reassign) — surface that as 404.
+    if !state.approval_queue.forward(uuid, to) {
+        return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
+            .with_detail(format!("No pending approval request to forward: {id}")));
+    }
+
+    // The request is still pending; return its current snapshot so the caller
+    // observes the updated routing target.
+    let resp = match state.approval_queue.get_by_id(uuid) {
+        Some(ApprovalLookup::Pending(p)) => pending_to_response(p),
+        // Raced to resolution between forward and lookup — report not found
+        // rather than a stale/misleading body.
+        _ => {
+            return Err(ProblemDetail::from_status(StatusCode::NOT_FOUND)
+                .with_detail(format!("No pending approval request to forward: {id}")))
+        }
+    };
+
+    Ok((StatusCode::OK, Json(resp)))
+}
+
+/// Request body for the forward/reassign action (AAASM-5095).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ForwardRequest {
+    /// Approver identifier (user id or role) to reassign the request to.
+    pub to: String,
+    /// Identity of the operator performing the forward. Optional; recorded for
+    /// audit context.
+    #[serde(default)]
+    pub by: Option<String>,
+    /// Optional reason for the reassignment.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// Request body for approval decide actions.
@@ -391,6 +596,12 @@ pub struct DecideRequest {
     pub by: Option<String>,
     /// Optional reason for the decision.
     pub reason: Option<String>,
+    /// Structured approval conditions attached to an approve decision
+    /// (AAASM-5095). Each entry is a condition slug such as `"this-once"`,
+    /// `"policy-exception"`, or `"time-boxed"`. Ignored on reject. Absent or
+    /// empty ⇒ an unconditional approval.
+    #[serde(default)]
+    pub conditions: Option<Vec<String>>,
 }
 
 /// Paginated wire-format envelope for `GET /api/v1/approvals`.

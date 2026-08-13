@@ -13,7 +13,7 @@ import {
  * AAASM-1340 — paired with `<TraceDrawer />` which subscribes to the
  * same context and renders the drawer body.
  */
-export function TraceDrawerProvider({ children }: { children: ReactNode }) {
+export function TraceDrawerProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [state, setState] = useState<TraceDrawerState>({ agentId: null, sessionId: null })
 
   const open = useCallback((agentId: string, sessionId: string) => {

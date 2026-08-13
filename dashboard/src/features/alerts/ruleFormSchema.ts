@@ -22,9 +22,9 @@ export const ruleFormSchema = z
     description: z.string().trim().max(500, 'description must be ≤ 500 chars'),
     metric: z.enum(METRICS, { message: 'select a metric' }),
     operator: z.enum(OPERATORS, { message: 'select an operator' }),
-    threshold: z
-      .number({ message: 'threshold must be a number' })
-      .finite('threshold must be a finite number'),
+    // z.number() already rejects non-finite values in zod v4, so the former
+    // .finite() check is a no-op and was dropped (its message never fired).
+    threshold: z.number({ message: 'threshold must be a number' }),
     evaluationWindowSeconds: z.union([z.literal(300), z.literal(900), z.literal(3600)]),
     severity: z.enum(SEVERITIES),
     destinationIds: z
@@ -49,14 +49,14 @@ export const ruleFormSchema = z
     const max = isPercentage ? 100 : Number.MAX_SAFE_INTEGER
     if (data.threshold < 0) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         path: ['threshold'],
         message: 'threshold must be ≥ 0',
       })
     }
     if (data.threshold > max) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         path: ['threshold'],
         message: `threshold must be ≤ ${max} for metric ${data.metric}`,
       })
@@ -67,9 +67,10 @@ export type RuleFormValues = z.infer<typeof ruleFormSchema>
 
 // Compile-time sanity: the literal arrays the schema relies on must match
 // the unions exported from `types.ts`.
-import type { AlertMetric, AlertOperator, Severity, EvaluationWindowSeconds } from './types'
-const _metricCheck: readonly AlertMetric[] = METRICS satisfies readonly AlertMetric[]
-const _operatorCheck: readonly AlertOperator[] = OPERATORS satisfies readonly AlertOperator[]
-const _severityCheck: readonly Severity[] = SEVERITIES satisfies readonly Severity[]
-const _windowCheck: readonly EvaluationWindowSeconds[] = EVAL_WINDOWS satisfies readonly EvaluationWindowSeconds[]
-void [_metricCheck, _operatorCheck, _severityCheck, _windowCheck]
+import type { AlertMetric, AlertOperator, RuleSeverity, EvaluationWindowSeconds } from './types'
+// `satisfies` performs the union/literal-array conformance check at compile
+// time without binding a runtime value, so no `void`-discard is needed.
+METRICS satisfies readonly AlertMetric[]
+OPERATORS satisfies readonly AlertOperator[]
+SEVERITIES satisfies readonly RuleSeverity[]
+EVAL_WINDOWS satisfies readonly EvaluationWindowSeconds[]

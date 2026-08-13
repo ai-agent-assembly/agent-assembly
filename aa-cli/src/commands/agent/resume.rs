@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::client;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm agent resume`.
 #[derive(Args)]
@@ -51,9 +52,10 @@ fn render(resp: &ResumeResponse, output: OutputFormat) {
 }
 
 fn render_table(resp: &ResumeResponse) {
-    println!("Agent {} resumed.", resp.agent_id);
-    println!("  Previous status: {}", resp.previous_status);
-    println!("  New status:      {}", resp.new_status);
+    // resp fields are echoed from the server response; strip terminal escapes.
+    println!("Agent {} resumed.", sanitize_terminal(&resp.agent_id));
+    println!("  Previous status: {}", sanitize_terminal(&resp.previous_status));
+    println!("  New status:      {}", sanitize_terminal(&resp.new_status));
 }
 
 fn render_json(resp: &ResumeResponse) {

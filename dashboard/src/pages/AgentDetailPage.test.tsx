@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
@@ -7,7 +7,51 @@ import { FleetPage } from './FleetPage'
 import { AgentDetailPage } from './AgentDetailPage'
 import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
+import * as agentsMutations from '../features/agents/mutations'
+import * as topologyApi from '../features/topology/api'
+import * as trafficApi from '../features/analytics/useAgentTrafficQuery'
+import * as decisionMixApi from '../features/analytics/useAgentDecisionMixQuery'
+import * as agentPoliciesApi from '../features/capability/useAgentPolicies'
+import { capabilityClient } from '../api/capability'
 import type { Agent, LogEntry } from '../features/agents/api'
+import type { CapabilityMatrix, Policy } from '../features/capability/types'
+
+// AAASM-5073: the Overview capability panel and the Capability tab both read
+// GET /api/v1/capability/matrix (via capabilityClient) scoped to this agent.
+// Keyed by the mock agent's id so the scoped-matrix hook resolves a row.
+const MATRIX_FIXTURE = {
+  resources: [{ id: 'pg', name: 'Postgres', group: 'data', paths: ['pg.public.*'] }],
+  policies: [
+    {
+      id: 'P-066',
+      name: 'narrow research-bot writes',
+      version: '3',
+      scope: 'tag:research',
+      status: 'proposed',
+      hits24h: 128,
+      affects: ['abc123'],
+      rules: [{ resource: 'pg', verb: ['write'], action: 'narrow', condition: '' }],
+    },
+  ],
+  sampleCalls: [],
+  agents: [
+    {
+      id: 'abc123',
+      name: 'alpha-agent',
+      framework: 'langgraph',
+      owner: 'alice',
+      trust: 72,
+      mode: 'enforce',
+      status: 'active',
+      lastSeen: '2m ago',
+      caps: { pg: { read: 'allow', write: 'deny', delete: 'na', exec: 'na', flag: true } },
+    },
+  ],
+} as unknown as CapabilityMatrix
+
+function mockCapabilityMatrix() {
+  vi.spyOn(capabilityClient, 'getMatrix').mockResolvedValue(MATRIX_FIXTURE)
+}
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -53,6 +97,7 @@ const MOCK_AGENT: Agent = {
   active_sessions: [],
   session_count: 10,
   policy_violations_count: 4,
+  is_flagged: true,
   tool_names: ['web_search'],
   metadata: { owner: 'alice' },
   pid: null,
@@ -67,7 +112,50 @@ const MOCK_LOG: LogEntry = {
   timestamp: '2026-05-12T00:00:00Z',
 }
 
+// AAASM-5041: the Traffic / Policies / Lineage tabs now mount live components
+// backed by their own hooks. Mock them to stable empty data so tab-switching
+// tests don't fire real fetches; dedicated unit tests cover each tab's states.
+function mockTabHooks() {
+  mockCapabilityMatrix()
+  vi.spyOn(topologyApi, 'useAgentLineageQuery').mockReturnValue(
+    mockQuery<topologyApi.AgentLineage>({
+      data: { agent_id: 'abc123', ancestor_count: 1, ancestors: [{ id: 'abc123', name: 'alpha-agent', depth: 0 }] },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  vi.spyOn(trafficApi, 'useAgentTrafficQuery').mockReturnValue(
+    mockQuery<trafficApi.AgentTraffic>({
+      data: { tools: [], totalActions: 0 },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  vi.spyOn(agentPoliciesApi, 'useAgentPoliciesQuery').mockReturnValue(
+    mockQuery<Policy[]>({
+      data: [],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  // AAASM-5085: the Overview traffic-mix bar reads the per-agent decision-mix
+  // endpoint. Default to `null` (agent has no tracked decision) so the bar hits
+  // its honest empty state; the dedicated mix-bar unit test covers populated data.
+  vi.spyOn(decisionMixApi, 'useAgentDecisionMixQuery').mockReturnValue(
+    mockQuery<decisionMixApi.AgentDecisionMix | null>({
+      data: null,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+}
+
 function mockHappyPath() {
+  mockTabHooks()
   vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
     mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
   )
@@ -85,6 +173,49 @@ function mockHappyPath() {
       data: { allow: [], deny: [], sources: [] },
       isLoading: false,
       isError: false,
+    }),
+  )
+}
+
+function mockSuspendedAgent() {
+  mockTabHooks()
+  vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+    mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+    mockQuery<Agent | undefined>({
+      data: { ...MOCK_AGENT, status: 'suspended' },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    }),
+  )
+  vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+    mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
+  )
+  vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+    mockQuery<agentsApi.EffectivePermissions>({
+      data: { allow: [], deny: [], sources: [] }, isLoading: false, isError: false,
+    }),
+  )
+}
+
+// AAASM-5163: mount the drawer for one specific agent (custom metadata /
+// last_event) so the flag-note and last-seen assertions control their inputs.
+function mockAgentDetail(agent: Agent) {
+  mockCapabilityMatrix()
+  vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+    mockQuery<Agent[]>({ data: [agent], isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(agentsApi, 'useAgentQuery').mockReturnValue(
+    mockQuery<Agent | undefined>({ data: agent, isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+  vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
+    mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
+  )
+  vi.spyOn(agentsApi, 'useAgentCapabilitiesQuery').mockReturnValue(
+    mockQuery<agentsApi.EffectivePermissions>({
+      data: { allow: [], deny: [], sources: [] }, isLoading: false, isError: false,
     }),
   )
 }
@@ -127,8 +258,66 @@ describe('AgentDetailPage deep link', () => {
     vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
       mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
     )
+    mockCapabilityMatrix()
     renderApp('/agents/abc123')
     expect(await screen.findByTestId('agent-detail-did')).toHaveTextContent('did:agent:agent-assembly:abc123')
+  })
+})
+
+describe('AgentDetailPage drawer head flag note (AAASM-5163)', () => {
+  it('renders the ⚠-prefixed note when metadata carries one', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, metadata: { owner: 'alice', note: 'quarantined pending review' } })
+    renderApp('/agents/abc123')
+    const note = await screen.findByTestId('agent-detail-note')
+    expect(note).toHaveTextContent('⚠ quarantined pending review')
+  })
+
+  it('omits the note sub-line when metadata carries no note', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, metadata: { owner: 'alice' } })
+    renderApp('/agents/abc123')
+    await screen.findByTestId('agent-detail')
+    expect(screen.queryByTestId('agent-detail-note')).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentDetailPage identity last-seen (AAASM-5163)', () => {
+  it('humanizes the last-seen ISO timestamp rather than printing it raw', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, last_event: '2026-05-12T00:00:00Z' })
+    renderApp('/agents/abc123')
+    const lastSeen = await screen.findByTestId('agent-detail-last-seen')
+    expect(lastSeen).toHaveTextContent(/last seen \d+[smhd] ago/)
+    expect(lastSeen).not.toHaveTextContent('2026-05-12T00:00:00Z')
+  })
+
+  it('renders an em-dash for last-seen when the agent has no last event', async () => {
+    mockAgentDetail({ ...MOCK_AGENT, last_event: null })
+    renderApp('/agents/abc123')
+    const lastSeen = await screen.findByTestId('agent-detail-last-seen')
+    expect(lastSeen).toHaveTextContent('last seen —')
+  })
+})
+
+describe('AgentDetailPage decision-mix empty state (AAASM-5164 / AAASM-5085)', () => {
+  it('renders an honest empty state when the agent has no tracked decisions', async () => {
+    // mockHappyPath defaults the decision-mix hook to `null` (no data for this
+    // agent), so the traffic-mix bar shows its empty state rather than the old
+    // "not available yet" placeholder now that the endpoint exists (AAASM-5085).
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    const empty = await screen.findByTestId('agent-detail-traffic-mix-empty')
+    expect(empty).toHaveTextContent('No decisions recorded in the last 24h')
+    expect(screen.queryByText(/not available yet/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentDetailPage tab labels (AAASM-5170)', () => {
+  it('renders the full Capability snapshot and Recent traffic tab labels', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    expect(await screen.findByTestId('agent-detail-tab-capability')).toHaveTextContent(
+      'Capability snapshot',
+    )
+    expect(screen.getByTestId('agent-detail-tab-traffic')).toHaveTextContent('Recent traffic')
   })
 })
 
@@ -170,33 +359,106 @@ describe('AgentDetailPage close behavior', () => {
 })
 
 describe('AgentDetailPage tab navigation', () => {
-  it('starts on the Overview tab with posture and recent-events panels', async () => {
+  it('starts on the Overview tab with posture, capability, and recent-events panels', async () => {
     mockHappyPath()
     renderApp('/agents/abc123')
     expect(await screen.findByTestId('agent-detail-posture')).toBeInTheDocument()
     expect(screen.getByTestId('agent-events')).toBeInTheDocument()
+    // AAASM-5073: Overview now carries a 3rd panel — the agent-scoped
+    // capability matrix — alongside (not replacing) the burn-chart + events.
+    expect(screen.getByTestId('agent-overview-capability')).toBeInTheDocument()
+    expect(await screen.findByTestId('agent-overview-capability-matrix')).toBeInTheDocument()
     expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('switches to the InheritedPermissionsPanel when the Capability tab is selected', async () => {
-    // AAASM-1053: Capability tab no longer renders the TabEmpty placeholder;
-    // it mounts the live InheritedPermissionsPanel. With mockHappyPath's
-    // empty cascade the panel renders its no-cascade-contribution empty
-    // state.
+  it('draws the posture summary from the capability matrix, not from the agent counters', async () => {
+    // AAASM-5131 wiring guard. This agent reports session_count 10 and
+    // policy_violations_count 4, which the old panel rendered as `Allow 6` /
+    // `Deny 4` — two counters with no arithmetic relationship. The matrix
+    // fixture grants one allow and one deny cell, so those are the only
+    // figures the panel may show, and neither `6` nor `4` may appear.
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    // Re-queried on every attempt: settling swaps the absence marker for a
+    // different element, so a captured node would stay detached at "unknown".
+    await waitFor(() =>
+      expect(screen.getByTestId('agent-posture-allow')).toHaveAttribute(
+        'data-truth-state',
+        'known',
+      ),
+    )
+    expect(screen.getByTestId('agent-posture-allow')).toHaveTextContent('1')
+    expect(screen.getByTestId('agent-posture-deny')).toHaveTextContent('1')
+    expect(screen.getByTestId('agent-detail-posture')).not.toHaveTextContent(/\b(6|4)\b/)
+
+    // AAASM-5197 (per ADR-0026 Decision 2, Accepted): the two figures the
+    // projection can never emit are unreachable by construction, so the panel
+    // carries no row for them at all rather than a permanent absence.
+    for (const row of ['agent-posture-narrow', 'agent-posture-approval']) {
+      expect(screen.queryByTestId(row)).toBeNull()
+    }
+  })
+
+  it('renders the agent-scoped capability matrix when the Capability tab is selected', async () => {
+    // AAASM-5073: Capability tab replaces InheritedPermissionsPanel with the
+    // agent-scoped resource×verb matrix (cascade provenance folded into the
+    // inspect drawer).
     mockHappyPath()
     renderApp('/agents/abc123')
     fireEvent.click(await screen.findByTestId('agent-detail-tab-capability'))
-    await waitFor(() => expect(screen.getByTestId('inherited-permissions-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('agent-capability-tab')).toBeInTheDocument()
+    expect(await screen.findByTestId('agent-capability-tab-matrix')).toBeInTheDocument()
     expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
   })
 
-  it('renders the other follow-up tabs each with their empty state', async () => {
+  it('opens on the Capability tab when ?tab=capability is present (AAASM-5162)', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123?tab=capability')
+    expect(await screen.findByTestId('agent-capability-tab')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-detail-tab-capability')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByTestId('agent-detail-posture')).not.toBeInTheDocument()
+  })
+
+  it('defaults to Overview when ?tab= is absent', async () => {
     mockHappyPath()
     renderApp('/agents/abc123')
-    for (const id of ['traffic', 'policies', 'lineage', 'config'] as const) {
-      fireEvent.click(screen.getByTestId(`agent-detail-tab-${id}`))
-      await waitFor(() => expect(screen.getByTestId(`ad-tab-empty-${id}`)).toBeInTheDocument())
-    }
+    await screen.findByTestId('agent-detail')
+    expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('agent-detail-tab-capability')).toHaveAttribute('aria-selected', 'false')
+  })
+
+  it('falls back to Overview when ?tab= names an unknown tab', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123?tab=bogus')
+    await screen.findByTestId('agent-detail')
+    expect(screen.getByTestId('agent-detail-tab-overview')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('mounts the live Traffic / Policies / Lineage tabs when selected', async () => {
+    mockHappyPath()
+    renderApp('/agents/abc123')
+
+    fireEvent.click(screen.getByTestId('agent-detail-tab-traffic'))
+    expect(await screen.findByTestId('agent-traffic-tab')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('agent-detail-tab-policies'))
+    expect(await screen.findByTestId('agent-policies-tab')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('agent-detail-tab-lineage'))
+    expect(await screen.findByTestId('agent-lineage-tab')).toBeInTheDocument()
+  })
+
+  it('renders the FE-derived Config YAML with backend-only keys marked pending', async () => {
+    // AAASM-5073: Config tab is no longer a placeholder — it renders YAML from
+    // the fields the dashboard has, marking keys that need the backend config
+    // endpoint (AAASM-5098) as pending rather than fabricating values.
+    mockHappyPath()
+    renderApp('/agents/abc123')
+    fireEvent.click(screen.getByTestId('agent-detail-tab-config'))
+    const yaml = await screen.findByTestId('agent-config-yaml')
+    expect(yaml).toHaveTextContent('did:agent:alice:abc123')
+    expect(yaml).toHaveTextContent('framework: langgraph')
+    expect(screen.getAllByTestId('agent-config-pending-line').length).toBeGreaterThan(0)
   })
 })
 
@@ -261,6 +523,7 @@ describe('AgentDetailPage drawer head action buttons', () => {
     vi.spyOn(agentsApi, 'useAgentEventsQuery').mockReturnValue(
       mockQuery<LogEntry[]>({ data: [MOCK_LOG], isLoading: false, isError: false }),
     )
+    mockCapabilityMatrix()
     renderApp('/agents/abc123')
     await screen.findByTestId('agent-detail')
     expect(screen.getByTestId('agent-detail-trace')).toBeInTheDocument()
@@ -298,6 +561,7 @@ describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
   }
 
   function mockWithMixedEvents() {
+    mockCapabilityMatrix()
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
       mockQuery<Agent[]>({ data: [MOCK_AGENT], isLoading: false, isError: false, refetch: vi.fn() }),
     )
@@ -328,7 +592,7 @@ describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
   it('filters the events table down to dry-run rows when the toggle is on', async () => {
     mockWithMixedEvents()
     renderApp('/agents/abc123')
-    expect((await screen.findAllByTestId('event-row')).length).toBe(2)
+    expect(await screen.findAllByTestId('event-row')).toHaveLength(2)
     fireEvent.click(screen.getByTestId('agent-events-sandbox-toggle'))
     const filtered = screen.getAllByTestId('event-row')
     expect(filtered).toHaveLength(1)
@@ -352,9 +616,106 @@ describe('AgentDetailPage — sandbox events toggle + amber badge', () => {
         isError: false,
       }),
     )
+    mockCapabilityMatrix()
 
     renderApp('/agents/abc123')
     await screen.findByTestId('agent-events')
     expect(screen.queryByTestId('agent-events-sandbox-bar')).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentDetailPage — suspend / resume actions', () => {
+  type Outcome = 'success' | 'error'
+
+  function mockSuspendMutation(outcome: Outcome) {
+    const mutate = vi.fn((_vars: { id: string; reason: string }, opts?: {
+      onSuccess?: () => void
+      onError?: (e: Error) => void
+    }) => {
+      if (outcome === 'success') opts?.onSuccess?.()
+      else opts?.onError?.(new Error('gateway down'))
+    })
+    vi.spyOn(agentsMutations, 'useSuspendAgent').mockReturnValue(
+      { mutate, isPending: false } as unknown as ReturnType<typeof agentsMutations.useSuspendAgent>,
+    )
+    return mutate
+  }
+
+  function mockResumeMutation(outcome: Outcome) {
+    const mutate = vi.fn((_vars: { id: string }, opts?: {
+      onSuccess?: () => void
+      onError?: (e: Error) => void
+    }) => {
+      if (outcome === 'success') opts?.onSuccess?.()
+      else opts?.onError?.(new Error('gateway down'))
+    })
+    vi.spyOn(agentsMutations, 'useResumeAgent').mockReturnValue(
+      { mutate, isPending: false } as unknown as ReturnType<typeof agentsMutations.useResumeAgent>,
+    )
+    return mutate
+  }
+
+  it('opens the suspend dialog and toasts on a successful suspend', async () => {
+    mockHappyPath()
+    const mutate = mockSuspendMutation('success')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-suspend'))
+    const input = await screen.findByTestId('suspend-dialog-input')
+    fireEvent.change(input, { target: { value: 'policy breach' } })
+    fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    expect(mutate).toHaveBeenCalledWith(
+      { id: 'abc123', reason: 'policy breach' },
+      expect.any(Object),
+    )
+    expect(await screen.findByText(/Suspended alpha-agent/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('suspend-dialog')).not.toBeInTheDocument())
+  })
+
+  it('toasts an error and closes the dialog when suspend fails', async () => {
+    mockHappyPath()
+    mockSuspendMutation('error')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-suspend'))
+    fireEvent.change(await screen.findByTestId('suspend-dialog-input'), {
+      target: { value: 'policy breach' },
+    })
+    fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
+
+    expect(await screen.findByText(/Failed to suspend alpha-agent: gateway down/)).toBeInTheDocument()
+  })
+
+  it('cancelling the suspend dialog closes it without calling the mutation', async () => {
+    mockHappyPath()
+    const mutate = mockSuspendMutation('success')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-suspend'))
+    await screen.findByTestId('suspend-dialog')
+    fireEvent.click(screen.getByTestId('suspend-dialog-cancel'))
+
+    await waitFor(() => expect(screen.queryByTestId('suspend-dialog')).not.toBeInTheDocument())
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it('resume toasts success for a suspended agent', async () => {
+    mockSuspendedAgent()
+    const mutate = mockResumeMutation('success')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-resume'))
+    expect(mutate).toHaveBeenCalledWith({ id: 'abc123' }, expect.any(Object))
+    expect(await screen.findByText(/Resumed alpha-agent/)).toBeInTheDocument()
+  })
+
+  it('resume toasts an error when the mutation fails', async () => {
+    mockSuspendedAgent()
+    mockResumeMutation('error')
+    renderApp('/agents/abc123')
+
+    fireEvent.click(await screen.findByTestId('agent-detail-resume'))
+    expect(await screen.findByText(/Failed to resume alpha-agent: gateway down/)).toBeInTheDocument()
   })
 })

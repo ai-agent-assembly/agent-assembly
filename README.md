@@ -2,12 +2,12 @@
 
 > Governance-native runtime for AI agents — open-source core.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/ci.yml?branch=master&logo=githubactions&logoColor=white&label=CI)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/docs.yml?branch=master&logo=githubactions&logoColor=white&label=docs)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/ci.yml?branch=main&logo=githubactions&logoColor=white&label=CI)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/docs.yml?branch=main&logo=githubactions&logoColor=white&label=docs)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
 [![GitHub release](https://img.shields.io/github/v/release/ai-agent-assembly/agent-assembly?include_prereleases&sort=semver&logo=github&label=release)](https://github.com/ai-agent-assembly/agent-assembly/releases)
 [![crates.io](https://img.shields.io/crates/v/aa-cli?logo=rust&label=crates.io)](https://crates.io/crates/aa-cli)
 [![Coverage](https://img.shields.io/codecov/c/github/ai-agent-assembly/agent-assembly?logo=codecov&logoColor=white)](https://codecov.io/gh/ai-agent-assembly/agent-assembly)
-[![Quality Gate](https://img.shields.io/sonar/quality_gate/AI-agent-assembly_agent-assembly?server=https%3A%2F%2Fsonarcloud.io&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=AI-agent-assembly_agent-assembly)
+[![Quality Gate](https://img.shields.io/sonar/quality_gate/ai-agent-assembly_agent-assembly?server=https%3A%2F%2Fsonarcloud.io&logo=sonarcloud)](https://sonarcloud.io/project/overview?id=ai-agent-assembly_agent-assembly)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-%E2%89%A51.75-orange?logo=rust)](https://www.rust-lang.org)
 [![Style](https://img.shields.io/badge/style-rustfmt-000?logo=rust)](https://github.com/rust-lang/rustfmt)
@@ -17,51 +17,171 @@
 ## Install the CLI
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+curl -fsSL https://agent-assembly.com/install.sh | sh
 ```
 
 This downloads and installs the `aasm` binary to `~/.local/bin`. Requires a
 [published release](https://github.com/ai-agent-assembly/agent-assembly/releases).
 The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh).
+The alternate host `https://tool.agent-assembly.dev` serves the same script.
 
 ```sh
 # Pin a specific version
-AASM_VERSION=v0.0.1-beta.1 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-rc.6 curl -sSf https://agent-assembly.com/install.sh | sh
 
 # Custom install directory
-AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
-> A short hosted alias (`https://install.ai-agent-assembly.dev`) is planned but
-> not yet live — use the `raw.githubusercontent.com` URL above for now.
+> The raw `raw.githubusercontent.com/.../install-cli.sh` URL also works if you
+> prefer to fetch the script directly from GitHub.
+
+The default install is **CLI-only** — it installs the `aasm` command and never
+starts a background service.
+
+### Install additional components
+
+`aasm` is the CLI. The runtime, proxy, and eBPF layers are separate components.
+Select them by passing options **to the script** via `sh -s --` (not to `curl`):
+
+```sh
+# CLI + local runtime
+curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --components cli,runtime
+
+# Full local profile (cli + runtime + proxy)
+curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --profile full
+```
+
+Installing `runtime` does **not** start it — start it yourself afterwards.
+
+### Review-first install
+
+Prefer to read the script before running it:
+
+```sh
+curl -fsSL https://agent-assembly.com/install.sh -o install.sh
+less install.sh
+sh install.sh --components cli,runtime
+```
 
 ### Homebrew (macOS / Linux)
 
 ```sh
-brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+brew install ai-agent-assembly/tap/aasm
+```
+
+Or tap once, then install by short name (add components as separate formulae):
+
+```sh
+brew tap ai-agent-assembly/tap
+brew install aasm            # CLI only
+brew install aasm-runtime    # runtime (start with: brew services start aasm-runtime)
 ```
 
 Installs the latest tagged `aasm` release from the
-[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-agent-assembly).
-During the `v0.0.1` alpha series the published releases are pre-releases — see
-[Project Status](#project-status).
+[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-tap). See the tap
+README for the full component matrix (`aasm-runtime`, `aasm-proxy`, `aasm-ebpf`,
+`aasm-bundle`). During the `v0.0.1` series the published releases are
+pre-releases — see [Project Status](#project-status).
+
+> [!NOTE]
+> **Deprecated command:** `brew install ai-agent-assembly/agent-assembly/aasm`
+> (repo `homebrew-agent-assembly`) still works via a GitHub redirect but is
+> deprecated — use `ai-agent-assembly/tap/aasm`.
+
+## Uninstall
+
+For **curl** installs, the default uninstall removes the tools and **keeps your
+local data** (config, policies, state, logs):
+
+```sh
+aasm uninstall                          # remove tools; preserve data
+aasm uninstall --components cli,runtime # remove only these components
+```
+
+To also remove Agent Assembly-owned local data, opt in explicitly (prompts for
+confirmation; preview with `--dry-run`):
+
+```sh
+aasm uninstall --all --purge            # remove tools + config + state
+aasm uninstall --all --purge --dry-run  # show what would be removed
+```
+
+If `aasm` is missing or broken, the installer provides the same uninstall engine
+as a fallback:
+
+```sh
+curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --uninstall
+```
+
+**Homebrew** installs are detected and left untouched by the above — remove them
+with Homebrew instead:
+
+```sh
+brew uninstall aasm            # plus aasm-runtime / aasm-proxy if installed
+```
 
 ## Overview
 
-`agent-assembly` brings governance to AI agents at scale. It intercepts what an
-agent tries to do — call a tool, reach the network, spend budget — at three
-independent layers, sends each action to a central **gateway** for a
-**policy** decision, and records the outcome in an immutable audit trail.
+`agent-assembly` brings governance to AI agents at scale. An action on a governed
+path — a tool call, a network request, a budget spend — is checked against your
+**policy**, by a central **gateway** or by the sidecar proxy's local egress rules,
+and the outcome is recorded in a hash-chained, **tamper-evident** audit trail that
+`aasm audit verify-chain` re-verifies offline. Where nothing inspected the payload,
+the honest state is *unmeasured* — the proxy's transparent-tunnel path records
+"forwarded, and nothing looked at it", never clean. One known defect qualifies that:
+the CONNECT-level event for the same connection is still written as an allow, which
+ADR 0033 §2 logs as a truthfulness bug awaiting a code fix.
 
-The three interception layers, lowest-latency first:
+Governance is assembled from independently-deployable mechanisms rather than a
+fixed pipeline, and each one holds a stated boundary — lowest-latency first:
 
-- **SDK shim** (in-process) — fastest path; requires the agent to adopt an SDK.
-- **Sidecar proxy** (`aa-proxy`) — intercepts outbound HTTPS without code changes.
-- **eBPF** (Linux kernel) — catches everything else, including bypass attempts.
+- **SDK shim** (in-process) — the fastest path, but it needs SDK adoption, an
+  explicit initializer call and a reachable runtime. In this repo it reaches
+  *Evaluated* (advisory); *denied before execution* depends on the out-of-repo
+  shim honouring the answer, and the SDK is not a security boundary (ADR 0002).
+- **Sidecar proxy** (`aa-proxy`) — refuses or redacts outbound HTTPS before it
+  leaves the machine, without changing the *agent's* own code. It must be
+  installed, started, routed to (`HTTPS_PROXY`) and have its CA trusted, and
+  `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
+  Linux and macOS. On macOS no prebuilt binary exists on any channel — not the
+  GitHub Release assets, not the Homebrew tap, not the `install.sh` component
+  installer, not GHCR — so a source build of the `aa-proxy` crate from crates.io
+  (`cargo install aa-proxy`) is the only route.
+- **eBPF** (`aa-ebpf*`) — **Linux only**; there is no macOS or Windows host
+  adapter. Its TLS, file and exec probes reach *observed* / *detected* and no
+  further — a blocked path sets an alert bit and the syscall still proceeds. Its
+  one program that terminates rather than observes, the syscall guard, reaches
+  *detected* plus asynchronous process termination — explicitly **not** *denied
+  before execution*. It is **off by default**, and the offending syscall runs once
+  before the `SIGKILL` lands. Its loader daemon has no prebuilt binary on any
+  channel either; a source build of the `aa-ebpf` crate from crates.io is the
+  only route.
 
-Each layer reports to the same gateway, so you get one unified view no matter
-which layers a deployment runs. See the [Architecture overview](docs/src/architecture.md)
-for the full picture, or jump straight to the [Quickstart](#quickstart).
+A mechanism that is not deployed is reported as absent — nothing underneath
+silently picks up what it would have done. See the
+[Architecture overview](docs/src/architecture/README.md) for the full picture, or
+jump straight to the [Quickstart](#quickstart).
+
+### Governing an AI dev tool
+
+Agents you write are one audience; the AI dev tool *you* run — Claude Code,
+Codex, Copilot, Windsurf — is the other. Those are governed through the
+**Developer Integration** lifecycle: `aasm integrations plan / install / verify /
+status / repair / remove` wires the tool's own configuration and launch path
+through Agent Assembly, then reports an **evidence-backed protection level**
+rather than asserting one.
+
+Start at the [`aasm integrations` CLI reference](docs/src/cli/integrations.md)
+or the [onboarding walkthrough](docs/src/devtools/onboarding.md), and read
+[Limitations and known bypasses](docs/src/devtools/limitations.md) for what is
+measured and what is not.
+
+> This command group is stripped from the **crates.io** publish only, so
+> `cargo install aasm` does not have it. A source build, the GitHub Release
+> tarballs, the `curl` installer and the Homebrew formula all carry it. Its
+> runtime surface is off by default on every channel. See the
+> [CLI overview](docs/src/cli/overview.md).
 
 ## Ecosystem
 
@@ -71,14 +191,14 @@ can move from this repo to the SDKs, the install tap, or the canonical docs.
 
 | Repository | Role | Status |
 |---|---|---|
-| **agent-assembly** (this repo) | Core runtime — gateway, policy engine, eBPF / proxy / SDK interception | Public · Alpha |
-| [python-sdk](https://github.com/ai-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | Public · Alpha |
-| [node-sdk](https://github.com/ai-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | Public · Alpha |
-| [go-sdk](https://github.com/ai-agent-assembly/go-sdk) | Go SDK | Public · Alpha |
-| [homebrew-agent-assembly](https://github.com/ai-agent-assembly/homebrew-agent-assembly) | Homebrew tap for the `aasm` CLI | Public |
-| [agent-assembly-docs](https://ai-agent-assembly.github.io/agent-assembly-docs/) | Canonical documentation site | Public |
-| agent-assembly-cloud | Hosted SaaS control plane | Private · in development |
-| agent-assembly-enterprise | Enterprise extensions (delivered via SaaS) | Private · in development |
+| **agent-assembly** (this repo) | Core runtime — gateway, policy engine, eBPF / proxy / SDK interception | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/agent-assembly?include_prereleases&sort=semver&label=release&logo=rust&logoColor=white)](https://github.com/ai-agent-assembly/agent-assembly/releases) |
+| [python-sdk](https://github.com/ai-agent-assembly/python-sdk) | Python SDK (PyO3 native + pure-Python client) | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/python-sdk?include_prereleases&sort=semver&label=release&logo=python&logoColor=white)](https://github.com/ai-agent-assembly/python-sdk/releases) |
+| [node-sdk](https://github.com/ai-agent-assembly/node-sdk) | TypeScript / Node.js SDK (napi-rs native + JS client) | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/node-sdk?include_prereleases&sort=semver&label=release&logo=nodedotjs&logoColor=white)](https://github.com/ai-agent-assembly/node-sdk/releases) |
+| [go-sdk](https://github.com/ai-agent-assembly/go-sdk) | Go SDK | [![release](https://img.shields.io/github/v/release/ai-agent-assembly/go-sdk?include_prereleases&sort=semver&label=release&logo=go&logoColor=white)](https://github.com/ai-agent-assembly/go-sdk/releases) |
+| [homebrew-tap](https://github.com/ai-agent-assembly/homebrew-tap) | Homebrew tap for the `aasm` CLI | [![Homebrew tap](https://img.shields.io/badge/homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/ai-agent-assembly/homebrew-tap) |
+| [docs](https://docs.agent-assembly.com/) | Canonical documentation site | [![docs](https://img.shields.io/badge/docs-live-2088FF)](https://docs.agent-assembly.com/) |
+| agent-assembly-cloud | Hosted SaaS control plane | ![coming soon](https://img.shields.io/badge/SaaS-coming_soon-8957E5) |
+| agent-assembly-enterprise | Enterprise extensions (delivered via SaaS) | ![coming soon](https://img.shields.io/badge/enterprise-coming_soon-8957E5) |
 
 > The protocol specification is maintained **inside this monorepo** under
 > [`proto/`](proto/) and [`docs/src/protocol/`](docs/src/protocol/CHANGELOG.md) —
@@ -86,7 +206,7 @@ can move from this repo to the SDKs, the install tap, or the canonical docs.
 
 ## Crate Map
 
-The Cargo workspace declares **28 members** in the top-level `Cargo.toml`. The table below lists the core architectural crates; storage drivers, dev-tool adapters, and test harnesses are omitted for brevity. Two additional eBPF-target crates live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` target.
+The Cargo workspace declares **30 members** in the top-level `Cargo.toml`. The table below lists the core architectural crates; storage drivers, dev-tool adapters, and test harnesses are omitted for brevity. Two additional eBPF-target crates live alongside but are intentionally outside the workspace because they compile for the `bpfel-unknown-none` target.
 
 ### Workspace members (core)
 
@@ -100,7 +220,7 @@ The Cargo workspace declares **28 members** in the top-level `Cargo.toml`. The t
 | `aa-proxy` | Sidecar HTTPS interception proxy (MitM with per-host CA) |
 | `aa-sdk-client` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the language shims wrap |
 | `aa-wasm` | WebAssembly target via wasm-bindgen |
-| `aa-gateway` | Control plane — policy enforcement, agent registry, budget tracking |
+| `aa-gateway` | Control plane — policy evaluation, agent registry, budget tracking |
 | `aa-api` | HTTP presentation layer with OpenAPI spec generation (utoipa) |
 | `aa-cli` | `aasm` command-line tool |
 | `conformance` | Cross-SDK protocol conformance test harness |
@@ -116,17 +236,17 @@ These two are built by `aa-ebpf/build.rs` (via `aya-build`) for the BPF target �
 
 ## Project Status
 
-🚧 **Alpha — `v0.0.1` pre-release series** _(status as of 2026-06-13)_. The
+🚧 **Release candidate — `v0.0.1-rc` series** _(status as of 2026-07-16)_. The
 public API and wire protocol are **not** stable; do not use in production.
 
 Releases are published as GitHub pre-releases — latest
-[`v0.0.1-beta.1`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-beta.1)
-(2026-06-13). The coordinated release tag also publishes the CLI, crates, SDK
+[`v0.0.1-rc.6`](https://github.com/ai-agent-assembly/agent-assembly/releases/tag/v0.0.1-rc.6)
+(2026-07-16). The coordinated release tag also publishes the CLI, crates, SDK
 packages, and container image:
 
 | Channel | Status |
 |---|---|
-| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.9`) |
+| GitHub Releases | ✅ Pre-releases published (`v0.0.1-alpha.1` … `alpha.9`, `v0.0.1-beta.1`, `beta.2`, `beta.4`, `v0.0.1-rc.1` … `rc.6`) |
 | crates.io | ✅ Workspace crates published at the pre-release version |
 | Homebrew tap | ✅ `aasm` formula published for tagged releases |
 | PyPI / npm | ✅ SDK pre-releases published from the release tag |
@@ -146,19 +266,27 @@ See [`docs/release/`](docs/release/) for the per-tag release notes and the
 
 ## Supported platforms
 
-The interception layers have different platform reach. The SDK shim and sidecar
-proxy run anywhere the runtime builds; kernel-level eBPF interception is
-Linux-only.
+Reach differs per mechanism. The canonical, evidence-cited matrix is §5.3 of
+[ADR 0033](docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md);
+this is a summary of it, and where the two disagree the ADR is right.
 
-| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | eBPF interception |
+| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | Host-level (eBPF) |
 |---|---|---|---|
-| Linux (x86_64 / arm64) | ✅ | ✅ | ✅ — kernel with BTF + nightly toolchain |
-| macOS (Apple Silicon / Intel) | ✅ | ✅ | ❌ — Linux-only |
-| Windows | ⚠️ via WSL2 | ⚠️ via WSL2 | ⚠️ via WSL2 |
+| Linux x86_64 | Implemented | Implemented | Implemented — observation (TLS / file / exec); syscall guard opt-in and asynchronous. Needs kernel ≥ 5.8 with BTF and a nightly toolchain |
+| Linux aarch64 | Implemented | Implemented | Implemented (partial) — TLS and exec only; no file-I/O kprobes, whose attach targets are `__x64_sys_*` |
+| macOS (Apple Silicon / Intel) | Implemented | Implemented, with conditions — no prebuilt binary on any channel, and CA trust is attempted at proxy start via an admin prompt that fails startup if refused | **Unsupported** — no host adapter exists |
+| Windows | **Unsupported** | **Unsupported** | **Unsupported** |
 
-On macOS, governance is enforced through the SDK and proxy layers; the eBPF
-layer is unavailable. See [`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel
-requirements.
+Windows is unsupported in all three columns rather than partial: `aa-proxy` uses
+`tokio::signal::unix` unconditionally so the crate has no Windows build path, `aasm`
+takes `aa-proxy` as an unconditional dependency, no release target is a Windows
+target, and no ETW, WFP or minifilter code exists. WSL2 is Linux — a Linux binary
+in a Linux VM is the Linux row, not Windows support, and reading it the other way
+is what ADR 0033 forbidden design 5 rules out.
+
+Where a mechanism is unsupported it is absent, and absence is reported as absence:
+nothing underneath picks up what it would have done. See
+[`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel requirements.
 
 ## Quickstart
 
@@ -223,9 +351,9 @@ dev-verify passed (22s total)
 ### Next steps
 
 - [SDK repositories](#ecosystem) — Python, Node.js, and Go SDK guides
-- [Architecture Overview](docs/src/architecture.md) — three-layer interception model
+- [Architecture Overview](docs/src/architecture/README.md) — three-layer interception model
 - [Policy examples](policy-examples/) — reference governance policies
-- [Runnable examples](https://github.com/ai-agent-assembly/agent-assembly-examples) — learn the runtime, CLI, and policy behavior by running small, framework-specific examples for Python, Node.js/TypeScript, Go, policy enforcement, approvals, audit, trace, and runtime workflows
+- [Runnable examples](https://github.com/ai-agent-assembly/examples) — learn the runtime, CLI, and policy behavior by running small, framework-specific examples for Python, Node.js/TypeScript, Go, policy enforcement, approvals, audit, trace, and runtime workflows
 
 ## Running with Docker Compose
 
@@ -289,7 +417,7 @@ agent-assembly/
 
 ## Documentation
 
-📖 **Canonical docs site:** <https://ai-agent-assembly.github.io/agent-assembly-docs/>
+📖 **Canonical docs site:** <https://docs.agent-assembly.com/>
 
 The contributor-facing documentation is also published as an [mdBook](https://rust-lang.github.io/mdBook/). Sources live under `docs/src/`. Build it locally with:
 
@@ -302,10 +430,11 @@ mdbook serve docs --open
 | Chapter | Description |
 |---|---|
 | [Introduction](docs/src/README.md) | Book overview and audience |
-| [Architecture Overview](docs/src/architecture.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
+| [Architecture Overview](docs/src/architecture/README.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
 | [API Reference](docs/src/api-reference.md) | rustdoc generation flow and per-crate API surface map |
-| [Command-Line Interface](docs/src/cli.md) | `aasm` global flags, command groups, and examples |
-| [Dashboard](docs/src/dashboard.md) | Web console and terminal (TUI) governance dashboards |
+| [Command-Line Interface](docs/src/cli/overview.md) | `aasm` global flags, command groups, and examples |
+| [Policy YAML Reference](docs/src/policy-reference.md) | Per-section policy field reference, `requires_approval_if` expression syntax, and example policies |
+| [Dashboard](docs/src/cli/dashboard.md) | Web console and terminal (TUI) governance dashboards |
 | [Local Development](docs/src/development/local-development.md) | From-clone setup, everyday build/test loop, git hooks |
 | [Releases](docs/src/releases.md) | Release state, distribution channels, and process |
 | [Compatibility Matrix](docs/src/compatibility.md) | Which `aa-runtime` versions work with which SDK versions |
@@ -319,7 +448,7 @@ mdbook serve docs --open
 
 - **Security:** Report vulnerabilities **privately** via
   [GitHub Security Advisories](https://github.com/ai-agent-assembly/agent-assembly/security)
-  or email `security@agent-assembly.dev`. Please do not open public issues for
+  or email `security@agent-assembly.com`. Please do not open public issues for
   security reports. See [`SECURITY.md`](SECURITY.md) for the disclosure policy
   and response SLA.
 - **Bugs & features:** Open an issue using the

@@ -6,7 +6,7 @@ interface ExpiredApprovalsSectionProps {
   rows: Approval[]
 }
 
-export function ExpiredApprovalsSection({ rows }: ExpiredApprovalsSectionProps) {
+export function ExpiredApprovalsSection({ rows }: Readonly<ExpiredApprovalsSectionProps>) {
   const [expanded, setExpanded] = useState(false)
 
   if (rows.length === 0) return null
@@ -14,6 +14,7 @@ export function ExpiredApprovalsSection({ rows }: ExpiredApprovalsSectionProps) 
   return (
     <section data-testid="expired-approvals-section" style={{ marginTop: '1rem' }}>
       <button
+        type="button"
         data-testid="expired-toggle"
         aria-expanded={expanded}
         onClick={() => setExpanded((v) => !v)}

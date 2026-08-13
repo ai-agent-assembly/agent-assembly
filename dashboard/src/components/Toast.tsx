@@ -1,7 +1,7 @@
 import { useContext } from 'react'
-import { ToastContext, type ToastVariant } from './ToastContext'
+import { ToastContext } from './ToastContext'
 
-export type { ToastVariant }
+export type { ToastVariant } from './ToastContext'
 
 export function useToast() {
   const ctx = useContext(ToastContext)

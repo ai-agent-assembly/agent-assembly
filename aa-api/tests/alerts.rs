@@ -399,6 +399,8 @@ fn sample_alert_rule() -> AlertRule {
         enabled: true,
         created_at: "2026-05-13T09:00:00Z".to_string(),
         updated_at: "2026-05-13T09:00:00Z".to_string(),
+        team_id: None,
+        org_id: None,
     }
 }
 
@@ -552,4 +554,56 @@ async fn resolve_alert_returns_404_for_unknown_id() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ── AAASM-4104 — per-operation authz regression coverage ────────────────────
+//
+// The alert write endpoints (resolve, silence) gate mutation behind the
+// compile-time `RequireWrite` scope extractor, which runs before the handler
+// body. These tests lock in that a read-scoped caller is rejected with 403 so a
+// future refactor that drops the extractor is caught.
+
+use aa_api::auth::scope::Scope;
+
+#[tokio::test]
+async fn resolve_alert_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/alerts/00000000000000000000000000/resolve")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn silence_alert_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/alerts/silence")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"fingerprint":"abc","duration_secs":3600,"reason":"ack"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353 positive, added after review: the other half of the boundary rule. A 統一編號 carrying an explicit label is still found inside a machine-delimited structure, which is where a real one actually appears in an API payload. Without this exemption the tightened boundary rule would simply switch the recognizer off for structured data. Weighted digit-sum 39; the seventh digit is 7, arming the historical exception, so 39+1 = 40 satisfies both era rules.",
+  "input_text": "{\"統一編號\":\"12345675\",\"name\":\"範例公司\"}",
+  "expected_findings": [
+    {
+      "category": "TAX_IDENTIFIER[zh-TW/business_id]",
+      "offset": 17,
+      "end": 25,
+      "confidence": "medium"
+    }
+  ],
+  "expected_redacted": "{\"統一編號\":\"[REDACTED]\",\"name\":\"範例公司\"}"
+}

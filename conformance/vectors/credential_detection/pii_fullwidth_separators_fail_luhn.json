@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5364 negative: a full-width, ideographic-space-grouped number whose final digit is altered from pii_credit_card_ideographic_space.json fails the Luhn checksum and must not be reported. Widening what reaches the checksum must not weaken the checksum — the only difference between this vector and the detected one is the checksum result, so a fix that flagged separator-grouped runs on shape alone fails here and nowhere else.",
+  "input_text": "card=４５３２　０１５１　１２８３　０３６７",
+  "expected_findings": [],
+  "expected_redacted": "card=４５３２　０１５１　１２８３　０３６７"
+}

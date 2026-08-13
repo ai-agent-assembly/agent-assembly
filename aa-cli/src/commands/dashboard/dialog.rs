@@ -101,4 +101,43 @@ mod tests {
         assert!(center.x + center.width <= area.width);
         assert!(center.y + center.height <= area.height);
     }
+
+    fn sample_approval() -> ApprovalResponse {
+        ApprovalResponse {
+            id: "ap-123".to_string(),
+            agent_id: "agent-x".to_string(),
+            action: "process_refund".to_string(),
+            reason: "amount exceeds $100".to_string(),
+            status: "pending".to_string(),
+            created_at: "2026-04-30T10:00:00Z".to_string(),
+            team_id: "team-x".to_string(),
+            routing_status: "routed:team-x".to_string(),
+        }
+    }
+
+    fn render_dialog(action: DialogAction) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let approval = sample_approval();
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw_confirm_dialog(f, &approval, action)).unwrap();
+        terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect()
+    }
+
+    #[test]
+    fn draw_approve_dialog_shows_title_and_summary() {
+        let text = render_dialog(DialogAction::Approve);
+        assert!(text.contains("Approve?"));
+        assert!(text.contains("ap-123"));
+        assert!(text.contains("process_refund"));
+        assert!(text.contains("confirm"));
+    }
+
+    #[test]
+    fn draw_reject_dialog_shows_reject_title() {
+        let text = render_dialog(DialogAction::Reject);
+        assert!(text.contains("Reject?"));
+        assert!(text.contains("agent-x"));
+    }
 }

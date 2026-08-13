@@ -1,0 +1,39 @@
+[package]
+name = "aa-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy document semantics — parsing, validation and version history for Agent Assembly"
+
+[dependencies]
+aa-core      = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
+aa-security  = { path = "../aa-security", version = "0.0.1-rc.6", features = ["serde"] }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+serde_yaml   = { workspace = true }
+rust_decimal = { workspace = true, features = ["serde-str"] }
+# The resolver's refusal text is composed for an operator to read and is
+# returned as one error; a typed enum per refusal would be the better library
+# shape and is a follow-up, not part of relocating the code unchanged.
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+async-trait  = { workspace = true }
+sha2         = { workspace = true }
+uuid         = { workspace = true, features = ["v4", "v5", "v7", "serde"] }
+strsim       = "0.11"
+regex        = "1"
+hex          = { workspace = true }
+humantime    = "2"
+dirs         = { workspace = true }
+similar      = "3"
+chrono       = { workspace = true, features = ["clock", "serde"] }
+chrono-tz    = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `time` is not optional: history/fs_store.rs's tests sleep between writes to
+# force distinct mtimes. Without it this crate's tests compile only when built
+# alongside a crate that happens to enable the feature — which is how they
+# passed here before anyone built aa-policy on its own.
+tokio    = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

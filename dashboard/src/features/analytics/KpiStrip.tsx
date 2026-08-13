@@ -17,7 +17,7 @@ const KPI_CONFIGS: KpiConfig[] = [
   { metric: 'anomalies',   label: 'Anomaly Count' },
 ]
 
-function KpiCardConnected({ metric, label, unit }: KpiConfig) {
+function KpiCardConnected({ metric, label, unit }: Readonly<KpiConfig>) {
   const { filters } = useAnalyticsFilters()
   const { data, isPending, isError } = useKpiQuery(metric, filters)
   return (

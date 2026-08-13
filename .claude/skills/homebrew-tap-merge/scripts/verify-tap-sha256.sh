@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-verify the 4 sha256 lines in homebrew-agent-assembly's Formula/aasm.rb
+# Cross-verify the 4 sha256 lines in homebrew-tap's Formula/aasm.rb
 # against the upstream agent-assembly release's SHA256SUMS asset.
 #
 # AAASM-2888 — extracted from .claude/skills/homebrew-tap-merge/SKILL.md step 2.
@@ -17,7 +17,7 @@
 set -uo pipefail
 
 UPSTREAM_REPO="ai-agent-assembly/agent-assembly"
-TAP_REPO="ai-agent-assembly/homebrew-agent-assembly"
+TAP_REPO="ai-agent-assembly/homebrew-tap"
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
   echo "Usage: $0 <tag> [<pr>]" >&2

@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5364: the Visa test number of pii_credit_card.json written in full-width digits and grouped by U+3000 IDEOGRAPHIC SPACE, which is what the space bar emits in full-width mode. Grouping in fours is how a card number is printed on the card itself, so the grouped rendering is the natural one; before this ticket only the ungrouped full-width form was detected. Sixteen 3-byte digits plus three 3-byte separators, so the span is 57 bytes for a 19-character value.",
+  "input_text": "card=４５３２　０１５１　１２８３　０３６６",
+  "expected_findings": [
+    { "kind": "CreditCardLuhn", "offset": 5 }
+  ],
+  "expected_redacted": "card=[REDACTED:CreditCardLuhn]"
+}

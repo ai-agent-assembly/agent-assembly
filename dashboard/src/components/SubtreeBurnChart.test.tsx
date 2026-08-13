@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
-import { SubtreeBurnChart, BurnTooltip } from './SubtreeBurnChart'
+import { SubtreeBurnChart, BurnTooltip, transform } from './SubtreeBurnChart'
 import * as agentsApi from '../features/agents/api'
 import type { SubtreeBurn } from '../features/agents/api'
 
@@ -96,6 +96,47 @@ describe('SubtreeBurnChart — populated', () => {
   })
 })
 
+// AAASM-5241 regression: a child agent id equal to `__proto__` must be retained
+// as an own property on the chart row. On a plain `{}` row, `row['__proto__'] = n`
+// is a silent no-op prototype assignment, so that child's burn vanishes from the
+// stacked chart. Rows are built on a null-prototype object to prevent that.
+describe('SubtreeBurnChart — __proto__ child id (AAASM-5241)', () => {
+  const data: SubtreeBurn = {
+    agent_id: 'aabbccdd00112233aabbccdd00112233',
+    period: '7d',
+    points: [
+      {
+        date: '2026-05-16',
+        per_child: [
+          { child_agent_id: '__proto__', child_name: 'proto-bot', spent_usd: '9.00' },
+          { child_agent_id: 'child-1', child_name: 'analyst-bot', spent_usd: '3.00' },
+        ],
+        total_usd: '12.00',
+      },
+    ],
+  }
+
+  it('keeps a __proto__ child id as an own row property carrying its burn', () => {
+    const { rows, childIds } = transform(data)
+
+    expect(childIds).toContain('__proto__')
+
+    const row = rows[0]
+    // Own property, not the object prototype — a plain `{}` row would drop this.
+    expect(Object.prototype.hasOwnProperty.call(row, '__proto__')).toBe(true)
+    expect(row['__proto__']).toBe(9)
+  })
+
+  it('still populates real child ids alongside the __proto__ child', () => {
+    const { rows, childIds } = transform(data)
+
+    expect(childIds).toContain('child-1')
+    expect(rows[0]['child-1']).toBe(3)
+    expect(rows[0].total).toBe(12)
+    expect(rows[0].date).toBe('2026-05-16')
+  })
+})
+
 // AAASM-1055 AC: "Hovering a layer shows: child agent name, period spend, % of
 // subtree". Recharts' Tooltip only renders inside ResponsiveContainer on a real
 // layout pass, which jsdom does not provide. We exercise `BurnTooltip` directly
@@ -151,7 +192,7 @@ describe('SubtreeBurnChart — tooltip content', () => {
     const tooltip = screen.getByTestId('subtree-burn-tooltip')
     // Only one per-child row — the `total` entry must be filtered out.
     const rows = tooltip.querySelectorAll('.sbc__tooltip-row')
-    expect(rows.length).toBe(1)
+    expect(rows).toHaveLength(1)
     expect(tooltip).toHaveTextContent('Total:')
   })
 

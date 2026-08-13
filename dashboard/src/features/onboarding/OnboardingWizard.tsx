@@ -30,7 +30,7 @@ export function OnboardingWizard({
   onFinish,
   onSkipAll,
   onPersist,
-}: OnboardingWizardProps) {
+}: Readonly<OnboardingWizardProps>) {
   const [current, setCurrent] = useState<StepId>(initialStep)
   const [state, setState] = useState<WizardState>(initialState)
 
@@ -56,14 +56,9 @@ export function OnboardingWizard({
     if (next) setCurrent(next)
   }
 
-  const handleSkipStep = () => {
-    if (final) {
-      onFinish(state)
-      return
-    }
-    const next = nextStep(current)
-    if (next) setCurrent(next)
-  }
+  // Skipping a step has the same effect as continuing: advance to the next
+  // step (or finish on the final step). Aliased to avoid duplicated logic.
+  const handleSkipStep = handleContinue
 
   const handleBack = () => {
     const prev = prevStep(current)
@@ -111,16 +106,11 @@ export function OnboardingWizard({
           )}
           {current === 'install' && (
             <Step2InstallSdk
-              state={state}
-              onVerified={() => patchState({ installVerified: true })}
+              onProbed={(healthy) => patchState({ gatewayHealthy: healthy })}
             />
           )}
-          {current === 'identity' && (
-            <Step3IssueIdentity
-              state={state}
-              onIssued={(identity) => patchState({ identity })}
-            />
-          )}
+          {/* Takes no callback: there is nothing for it to report (AAASM-5179). */}
+          {current === 'identity' && <Step3IssueIdentity />}
           {current === 'policy' && (
             <Step4BaselinePolicy
               state={state}

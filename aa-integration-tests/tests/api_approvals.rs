@@ -77,6 +77,7 @@ async fn approvals_list_pending_only_by_default() {
             ApprovalDecision::Approved {
                 by: "f122-approvals-it-approver".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -227,6 +228,7 @@ async fn approvals_approve_already_decided_returns_409() {
             ApprovalDecision::Approved {
                 by: "f122-approvals-it-first".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("first decide should succeed");

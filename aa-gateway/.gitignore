@@ -1,0 +1,6 @@
+# AAASM-5315: publish-staging mirror of the workspace-root `.sqlx/` offline
+# query cache, copied in by release.yml right before `cargo workspaces publish`
+# (and by scripts/check-packaged-artifacts.sh). The workspace-root copy stays
+# the single source of truth; this one exists only so cargo's `include` can
+# reach it, since `include` cannot escape the package directory.
+.sqlx/

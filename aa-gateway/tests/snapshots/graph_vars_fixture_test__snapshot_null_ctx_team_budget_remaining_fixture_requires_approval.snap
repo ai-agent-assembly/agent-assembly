@@ -1,0 +1,8 @@
+---
+source: aa-gateway/tests/graph_vars_fixture_test.rs
+expression: result
+---
+RequireApproval {
+    reason: "approval required for tool 'expensive_op'",
+    timeout_secs: 300,
+}

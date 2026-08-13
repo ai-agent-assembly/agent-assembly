@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { api } from '../../api/client'
 import type { components } from '../../api/generated/schema'
 
@@ -10,6 +11,26 @@ export type TeamTopology = components['schemas']['TeamTopology']
 export type AgentLineage = components['schemas']['AgentLineage']
 export type LineageStep = components['schemas']['LineageStep']
 export type AgentNode = components['schemas']['AgentNode']
+export type TeamPolicy = components['schemas']['TeamPolicyResponse']
+
+/**
+ * The Teams-page view of the topology fleet: every agent node plus the
+ * scope-derived `unclaimedObservable` flag (AAASM-5183). `false` means the
+ * caller's scope structurally cannot see unclaimed agents, so an empty orphan
+ * set must not be reported as "no unclaimed agents".
+ *
+ * `nodes` is `unknown`, not `readonly AgentNode[]` (AAASM-5380): the wire body
+ * is carried intact so `decodeTopologyNodes` (`features/agents/schema.ts`) can
+ * validate it at the render boundary. The old `nodes: data.nodes ?? []`
+ * fabricated a known-empty fleet — a missing `nodes` rendered a confident
+ * "0 unclaimed" chip and a non-array threw in `selectOrphanAgents`' `.filter`.
+ * Typing it `unknown` makes reading `.nodes` without decoding it a type error,
+ * not a convention.
+ */
+export interface TopologyAgents {
+  readonly nodes: unknown
+  readonly unclaimedObservable: boolean
+}
 
 export interface TeamListRow {
   team_id: string
@@ -17,9 +38,29 @@ export interface TeamListRow {
   root_agent_count: number
   daily_spend_usd: number | null
   daily_limit_usd: number | null
+  /**
+   * Month-to-date spend for the team in USD, or `null` when none is on the wire
+   * (AAASM-5160).
+   *
+   * `TeamCostEntry.monthly_spend_usd` is optional: the gateway only accumulates
+   * a monthly figure once monthly tracking is enabled, and a team absent from
+   * the cost breakdown has none at all. There is deliberately no companion
+   * limit — `TeamCostEntry` carries no ceiling of any window, and a team-tier
+   * monthly one is sign-off-gated on ADR-0020 / AAASM-5087.
+   */
+  monthly_spend_usd: number | null
   burn_pct: number | null
 }
 
+// The four response casts in this file (`TopologyOverview`, `CostSummary`,
+// `TeamTopology`, `AgentLineage` below) are bare casts (AAASM-5217 audit).
+// Accepted-risk: no field any of them expose — team/agent ids, spend figures,
+// member `status` (`'active' | 'suspended'`), lineage `tier` — is ever used
+// as an object/Map lookup key in `features/teams` or its consumers.
+// `joinTeamRows` keys `costByTeam` by `team_id`, but that id is opaque
+// (looked up with `.get()` on a real `Map`, which treats every key as an
+// ordinary key regardless of value); every status/tier field is rendered as
+// display text or compared with `===`.
 export function useTopologyOverviewQuery() {
   return useQuery({
     queryKey: ['topology', 'overview'],
@@ -31,6 +72,56 @@ export function useTopologyOverviewQuery() {
   })
 }
 
+/**
+ * Every agent the caller's tenant may see, as `AgentNode` records
+ * (`GET /api/v1/topology`, AAASM-5040) — no depth, status, or team filter.
+ *
+ * The Teams page needs the whole fleet, not `/topology/overview`'s
+ * `standalone_root_agents`, to answer "which agents does no team govern?"
+ * (AAASM-5157). The overview's field is root-only, so a spawned agent with no
+ * team fell out of every grouping on the page.
+ *
+ * Deliberately not `features/topology`'s `useTopologyQuery`, which fetches the
+ * same endpoint: that hook maps the response onto the graph view model, which
+ * drops `depth` and folds any unrecognised `status` to `idle`. The orphan rows
+ * render both verbatim, and a governance list is the wrong place to show a
+ * lossy projection of an agent's real state.
+ */
+export function useTopologyAgentsQuery() {
+  return useQuery({
+    queryKey: ['topology', 'agents'],
+    // Matches `features/topology`'s hook over the same endpoint. This is the
+    // most expensive topology handler — it resolves a policy cascade and
+    // effective permissions per node plus a budget snapshot, and pages the edge
+    // set, nearly all of which this page discards — so it must not refetch on
+    // every mount and window focus. It also narrows the window in which this
+    // page holds two snapshots taken at different moments (see `TeamsPage`).
+    // The two hooks cannot share a cache entry: distinct keys are never deduped,
+    // and prefix matching applies to invalidation only.
+    staleTime: 5_000,
+    queryFn: async (): Promise<TopologyAgents> => {
+      const { data, error } = await api.GET('/api/v1/topology')
+      if (error) throw new Error('Failed to fetch topology agents')
+      if (!data) throw new Error('Topology response was empty')
+      // AAASM-5183: carry `unclaimed_observable` alongside the nodes. A
+      // team-scoped caller structurally cannot see `team_id: None` agents, so an
+      // empty orphan set must read as "not available in your scope", not a
+      // confident "no unclaimed agents". The flag is the backend's scope-derived
+      // signal for that distinction, and stays fail-closed (`?? false`).
+      //
+      // AAASM-5380: `nodes` is carried *intact* (`?? null`, not `?? []`) — the
+      // `?? []` fabricated a known-empty fleet from a body with no `nodes`, and a
+      // non-array `nodes` threw in the orphan filter. `decodeTopologyNodes`
+      // validates it at the render boundary; `null` is the explicit no-payload it
+      // reports as absence.
+      return {
+        nodes: data.nodes ?? null,
+        unclaimedObservable: data.unclaimed_observable ?? false,
+      }
+    },
+  })
+}
+
 export function useCostSummaryQuery() {
   return useQuery({
     queryKey: ['costs', 'summary'],
@@ -38,6 +129,34 @@ export function useCostSummaryQuery() {
       const { data, error } = await api.GET('/api/v1/costs')
       if (error) throw new Error('Failed to fetch cost summary')
       return data as CostSummary
+    },
+  })
+}
+
+/**
+ * Policies in force for one team (`GET /api/v1/policies/team/{team_id}`,
+ * AAASM-5096) — the union of the team's agents' policy cascades, deduplicated
+ * by document. Backs the Active-policies card.
+ *
+ * Kept separate from `GET /api/v1/policies`, which requires Admin scope because
+ * it discloses raw policy YAML; this one is readable by the team's own operator.
+ *
+ * Resolves to `null` — not `[]` — when the API reports the mapping as
+ * unresolvable. The two are different governance claims and the `?? []` that
+ * would flatten them is exactly the bug: `[]` renders as "no policy is in force
+ * for this team", which is false while the engine's primary policy slot is
+ * enforcing over the team's agents (AAASM-5106).
+ */
+export function useTeamPoliciesQuery(teamId: string | undefined) {
+  return useQuery({
+    queryKey: ['policies', 'team', teamId],
+    enabled: !!teamId,
+    queryFn: async (): Promise<TeamPolicy[] | null> => {
+      const { data, error } = await api.GET('/api/v1/policies/team/{team_id}', {
+        params: { path: { team_id: teamId! } },
+      })
+      if (error) throw new Error('Failed to fetch team policies')
+      return data?.policies ?? null
     },
   })
 }
@@ -101,7 +220,7 @@ export function joinTeamRows(overview: TopologyOverview | undefined, costs: Cost
   const dailyLimit = parseUsd(costs?.daily_limit_usd)
   const costByTeam = new Map<string, TeamCostEntry>()
   for (const entry of costs?.per_team ?? []) costByTeam.set(entry.team_id, entry)
-  return overview.teams.map((team): TeamListRow => {
+  return (overview?.teams ?? []).map((team): TeamListRow => {
     const cost = costByTeam.get(team.team_id)
     const dailySpend = parseUsd(cost?.daily_spend_usd)
     const burnPct = dailySpend != null && dailyLimit != null && dailyLimit > 0
@@ -113,6 +232,7 @@ export function joinTeamRows(overview: TopologyOverview | undefined, costs: Cost
       root_agent_count: team.root_agent_count,
       daily_spend_usd: dailySpend,
       daily_limit_usd: dailyLimit,
+      monthly_spend_usd: parseUsd(cost?.monthly_spend_usd),
       burn_pct: burnPct,
     }
   })
@@ -164,7 +284,7 @@ export function useSuspendTeam() {
       if (context?.previous) client.setQueryData(['topology', 'team', teamId], context.previous)
     },
     onSettled: (_data, _err, { teamId }) => {
-      void client.invalidateQueries({ queryKey: ['topology', 'team', teamId] })
+      ignorePromise(client.invalidateQueries({ queryKey: ['topology', 'team', teamId] }))
     },
   })
 }
@@ -180,7 +300,7 @@ export function useResumeTeam() {
       if (context?.previous) client.setQueryData(['topology', 'team', teamId], context.previous)
     },
     onSettled: (_data, _err, { teamId }) => {
-      void client.invalidateQueries({ queryKey: ['topology', 'team', teamId] })
+      ignorePromise(client.invalidateQueries({ queryKey: ['topology', 'team', teamId] }))
     },
   })
 }

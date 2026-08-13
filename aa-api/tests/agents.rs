@@ -27,7 +27,6 @@ fn test_agent(id_byte: u8) -> AgentRecord {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: std::collections::VecDeque::new(),
         recent_traces: Vec::new(),
@@ -42,6 +41,7 @@ fn test_agent(id_byte: u8) -> AgentRecord {
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }
@@ -258,7 +258,6 @@ async fn get_agent_response_includes_new_fields() {
     agent.pid = Some(9876);
     agent.session_count = 7;
     agent.last_event = Some(chrono::Utc::now());
-    agent.policy_violations_count = 2;
     state.agent_registry.register(agent).unwrap();
 
     let app = aa_api::server::build_app(state);
@@ -281,7 +280,10 @@ async fn get_agent_response_includes_new_fields() {
     assert_eq!(json["pid"], 9876);
     assert_eq!(json["session_count"], 7);
     assert!(json["last_event"].as_str().is_some());
-    assert_eq!(json["policy_violations_count"], 2);
+    // AAASM-5103 — the count is audit-derived, not a record field; with no
+    // PolicyViolation events recorded it is 0 and the agent is not flagged.
+    assert_eq!(json["policy_violations_count"], 0);
+    assert_eq!(json["is_flagged"], false);
 }
 
 #[tokio::test]
@@ -310,6 +312,7 @@ async fn get_agent_response_null_optional_fields() {
     assert_eq!(json["session_count"], 0);
     assert!(json["last_event"].is_null());
     assert_eq!(json["policy_violations_count"], 0);
+    assert_eq!(json["is_flagged"], false);
     assert!(json["active_sessions"].as_array().unwrap().is_empty());
     assert!(json["recent_events"].as_array().unwrap().is_empty());
 }
@@ -324,6 +327,7 @@ async fn get_agent_response_includes_active_sessions_and_recent_events() {
         session_id: "sess-001".into(),
         started_at: chrono::Utc::now(),
         status: "running".into(),
+        actions_count: 3,
     }];
     agent.recent_events.push_back(RecentEvent {
         event_type: "violation".into(),
@@ -354,6 +358,7 @@ async fn get_agent_response_includes_active_sessions_and_recent_events() {
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["session_id"], "sess-001");
     assert_eq!(sessions[0]["status"], "running");
+    assert_eq!(sessions[0]["actions_count"], 3);
     assert!(sessions[0]["started_at"].as_str().is_some());
 
     let events = json["recent_events"].as_array().unwrap();
@@ -462,4 +467,227 @@ async fn resume_agent_returns_404_for_unknown_id() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+// ── Additional coverage tests (AAASM-3805) ────────────────────────────────────
+
+/// A valid hex string whose byte length ≠ 16 triggers the "wrong length" error
+/// branch in `parse_agent_id` (lines 69–72 of agents.rs).
+#[tokio::test]
+async fn get_agent_with_short_hex_id_returns_400() {
+    let app = common::test_app();
+    // "aabb" is valid hex but decodes to 2 bytes, not 16.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/agents/aabb")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        json["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("32 hex characters"),
+        "detail should mention 32-char requirement"
+    );
+}
+
+/// An agent registered with non-empty `recent_traces` must include those traces
+/// in the GET /agents/{id} response (tests lines 99–106 of agents.rs).
+#[tokio::test]
+async fn get_agent_includes_recent_traces_in_response() {
+    let state = common::test_state();
+    let mut rec = test_agent(0x77);
+    rec.recent_traces = vec![aa_gateway::registry::store::RecentTrace {
+        session_id: "test-session-abc".to_string(),
+        timestamp: chrono::Utc::now(),
+    }];
+    state.agent_registry.register(rec).unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}", hex_id(0x77)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let traces = json["recent_traces"].as_array().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0]["session_id"], "test-session-abc");
+    assert!(traces[0]["timestamp"].is_string());
+}
+
+/// A registered agent's effective-permissions endpoint returns the merged
+/// allow/deny sets plus per-scope provenance (covers the happy path of
+/// get_agent_capabilities).
+#[tokio::test]
+async fn get_agent_capabilities_returns_200_for_registered_agent() {
+    let state = common::test_state();
+    state.agent_registry.register(test_agent(0x42)).unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}/capabilities", hex_id(0x42)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["allow"].is_array());
+    assert!(json["deny"].is_array());
+    assert!(json["sources"].is_array());
+}
+
+#[tokio::test]
+async fn get_agent_capabilities_returns_404_for_unknown_agent() {
+    let app = common::test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}/capabilities", hex_id(0x99)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Subtree-burn over an agent with recorded spend (self) and a child with
+/// recorded spend emits a dense per-day point series with per-child rows.
+#[tokio::test]
+async fn get_agent_subtree_burn_includes_self_and_child_spend() {
+    use rust_decimal::Decimal;
+
+    let state = common::test_state();
+
+    // Parent agent declares one child; both are registered.
+    let mut parent = test_agent(0x10);
+    let child_bytes = [0x20u8; 16];
+    parent.children = vec![child_bytes];
+    state.agent_registry.register(parent).unwrap();
+
+    let mut child = test_agent(0x20);
+    child.parent_agent_id = Some(hex_id(0x10));
+    state.agent_registry.register(child).unwrap();
+
+    // Record spend so both the "(self)" and child rows are emitted.
+    let parent_id = aa_core::identity::AgentId::from_bytes([0x10u8; 16]);
+    let child_id = aa_core::identity::AgentId::from_bytes(child_bytes);
+    state
+        .budget_tracker
+        .record_raw_spend(parent_id, None, None, Decimal::new(150, 2));
+    state
+        .budget_tracker
+        .record_raw_spend(child_id, None, None, Decimal::new(75, 2));
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/agents/{}/subtree-burn?period=7d", hex_id(0x10)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let points = json["points"].as_array().unwrap();
+    assert!(!points.is_empty());
+    // The most recent day should carry per-child rows including the "(self)" row.
+    let last = points.last().unwrap();
+    let per_child = last["per_child"].as_array().unwrap();
+    let names: Vec<&str> = per_child
+        .iter()
+        .map(|c| c["child_name"].as_str().unwrap_or_default())
+        .collect();
+    assert!(names.contains(&"(self)"), "self row must be present; got {names:?}");
+}
+
+// ── AAASM-4104 — per-operation authz regression coverage ────────────────────
+//
+// The agent write endpoints gate mutation behind the compile-time `RequireWrite`
+// scope extractor. These tests lock in that a read-scoped caller is rejected
+// with 403 so a future refactor that drops the extractor is caught. The scope
+// extractor runs before the handler body, so an arbitrary agent id suffices.
+
+use aa_api::auth::scope::Scope;
+
+#[tokio::test]
+async fn delete_agent_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/agents/{}", hex_id(0x01)))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn suspend_agent_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/agents/{}/suspend", hex_id(0x01)))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn resume_agent_with_read_only_scope_is_forbidden() {
+    let (token, entry) = common::generate_test_api_key("viewer-key", vec![Scope::Read]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/agents/{}/resume", hex_id(0x01)))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

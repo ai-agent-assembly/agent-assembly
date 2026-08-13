@@ -11,6 +11,7 @@ use super::{AgentResponse, PaginatedResponse};
 use crate::client;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm agent list`.
 #[derive(Args)]
@@ -83,15 +84,18 @@ fn render_table(agents: &[AgentResponse]) {
         let sessions_str = agent.session_count.map_or("-".to_string(), |s| s.to_string());
         let last_event_str = agent.last_event.as_deref().unwrap_or("-");
 
+        // id/name/framework/version/status/last_event are server-supplied;
+        // strip terminal escapes (the colour is still chosen from the raw
+        // status string, which never reaches the terminal).
         table.add_row(vec![
-            Cell::new(&agent.id),
-            Cell::new(&agent.name),
-            Cell::new(&agent.framework),
-            Cell::new(&agent.version),
-            Cell::new(&agent.status).fg(status_color(&agent.status)),
+            Cell::new(sanitize_terminal(&agent.id)),
+            Cell::new(sanitize_terminal(&agent.name)),
+            Cell::new(sanitize_terminal(&agent.framework)),
+            Cell::new(sanitize_terminal(&agent.version)),
+            Cell::new(sanitize_terminal(&agent.status)).fg(status_color(&agent.status)),
             Cell::new(&pid_str),
             Cell::new(&sessions_str),
-            Cell::new(last_event_str),
+            Cell::new(sanitize_terminal(last_event_str)),
         ]);
     }
 

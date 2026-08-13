@@ -1,15 +1,21 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
 import { ToolUsagePanel } from './ToolUsagePanel'
 import { errorRateColor, sortToolsByCallsDesc } from './toolUsageUtils'
 import type { ToolStat } from './toolUsageUtils'
 
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub
 
@@ -17,7 +23,7 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeQC()}>
       <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>
@@ -35,7 +41,7 @@ function mockFetch(tools: ToolStat[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ tools }),
-  } as Response)
+  })
 }
 
 // ── toolUsageUtils unit tests ─────────────────────────────────────────────────
@@ -96,7 +102,7 @@ describe('ToolUsagePanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<ToolUsagePanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load tool usage data/)).toBeInTheDocument()
   })

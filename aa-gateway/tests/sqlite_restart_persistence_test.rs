@@ -55,6 +55,7 @@ async fn sqlite_data_survives_gateway_restart() {
                 registered_at: ts,
                 last_seen_at: ts,
                 enforcement_mode: "enforce".into(),
+                enforcement_mode_expires_at: None,
             })
             .await
             .expect("upsert");

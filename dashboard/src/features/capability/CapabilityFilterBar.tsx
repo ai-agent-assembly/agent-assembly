@@ -1,4 +1,4 @@
-import type { CapabilityAgent } from './types'
+import type { AgentMode, CapabilityAgent } from './types'
 import type { CapabilityFilters } from './filters'
 import './CapabilityFilterBar.css'
 
@@ -11,8 +11,34 @@ export interface CapabilityFilterBarProps {
 }
 
 function uniqueSorted(values: string[]): string[] {
-  return [...new Set(values)].sort()
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b))
 }
+
+/**
+ * Legend swatches, in the same visual order and colours the matrix cells use
+ * (see `CapabilityMatrixGrid.css`), so the bar reads as a key for the grid.
+ *
+ * Only the states this grid's projection can actually emit (ADR 0026 Decision 2,
+ * signed off in favour of option (A) under AAASM-5124). `GET /capability/matrix`
+ * yields `allow` / `deny` / `na` and nothing else: `narrow` and `approval` are
+ * decided per action by policy stages the projection does not run
+ * (`aa-api/src/routes/capability.rs:19-27`), so a legend entry for either
+ * advertised a state no cell could ever carry. That is the "aspirational legend"
+ * the ADR rejects as option (C), not a roadmap the key is entitled to show.
+ *
+ * `Decision` deliberately keeps all five members — it is the display vocabulary
+ * shared with surfaces the projection does not feed, and re-widening this list is
+ * the one-line change if AAASM-5094 ever computes those cells.
+ *
+ * ADR 0024's proposed sixth state, `unconfigured`, is **not** listed: nothing
+ * emits it yet, and adding it ahead of the backend would reintroduce exactly the
+ * defect this entry removes.
+ */
+const LEGEND: ReadonlyArray<{ decision: string; label: string }> = [
+  { decision: 'allow', label: 'allow' },
+  { decision: 'deny', label: 'deny' },
+  { decision: 'na', label: 'n/a' },
+]
 
 export function CapabilityFilterBar({
   filters,
@@ -20,10 +46,12 @@ export function CapabilityFilterBar({
   totalAgents,
   visibleAgents,
   agents,
-}: CapabilityFilterBarProps) {
+}: Readonly<CapabilityFilterBarProps>) {
   const frameworks = uniqueSorted(agents.map((a) => a.framework))
-  const owners = uniqueSorted(agents.map((a) => a.owner))
-  const modes = uniqueSorted(agents.map((a) => a.mode))
+  // Agents whose owner / mode the endpoint could not source contribute no
+  // option — a blank entry would filter on a value nothing actually carries.
+  const owners = uniqueSorted(agents.map((a) => a.owner).filter((o): o is string => !!o))
+  const modes = uniqueSorted(agents.map((a) => a.mode).filter((m): m is AgentMode => !!m))
 
   return (
     <div className="cap-filterbar" role="search">
@@ -70,6 +98,27 @@ export function CapabilityFilterBar({
         </select>
       </label>
 
+      {/* Field order mirrors design/v1: framework → owner → trust → mode, with
+          the trust filter emphasised (it is the primary lens for spotting
+          over-permissioned agents). The placeholder shows the "70" convention —
+          the trust threshold below which agents warrant review. */}
+      <label className="cap-filter-field cap-filter-field--em">
+        <span className="cap-filter-field-label">trust ≤</span>
+        <input
+          type="number"
+          min={0}
+          max={100}
+          step={5}
+          value={filters.trustMax ?? ''}
+          placeholder="70"
+          onChange={(e) => {
+            const v = e.target.value
+            onChange({ ...filters, trustMax: v === '' ? null : Number(v) })
+          }}
+          aria-label="filter by trust at most"
+        />
+      </label>
+
       <label className="cap-filter-field">
         <span className="cap-filter-field-label">mode</span>
         <select
@@ -85,26 +134,21 @@ export function CapabilityFilterBar({
         </select>
       </label>
 
-      <label className="cap-filter-field cap-filter-field--em">
-        <span className="cap-filter-field-label">trust ≤</span>
-        <input
-          type="number"
-          min={0}
-          max={100}
-          step={5}
-          value={filters.trustMax ?? ''}
-          placeholder="—"
-          onChange={(e) => {
-            const v = e.target.value
-            onChange({ ...filters, trustMax: v === '' ? null : Number(v) })
-          }}
-          aria-label="filter by trust at most"
-        />
-      </label>
-
       <span className="cap-filter-count">
         {visibleAgents} of {totalAgents} agents
       </span>
+
+      <ul className="cap-legend" aria-label="decision legend">
+        {LEGEND.map((item) => (
+          <li key={item.decision} className="cap-legend-item">
+            <span
+              className={`cap-legend-sw cap-legend-sw--${item.decision}`}
+              aria-hidden
+            />
+            {item.label}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

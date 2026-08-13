@@ -52,7 +52,7 @@ const NODE_R = 18;
 const WIDTH = 900;
 const HEIGHT = 560;
 
-export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
+export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Readonly<Props>) {
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
@@ -142,11 +142,11 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
       >
         {/* Links */}
         <g transform="translate(40,40)">
-          {links.map((link, i) => {
+          {links.map((link) => {
             if (link.source.data.agent_id === "__root__") return null;
             return (
               <line
-                key={i}
+                key={`${link.source.data.agent_id}->${link.target.data.agent_id}`}
                 x1={link.source.x}
                 y1={link.source.y}
                 x2={link.target.x}
@@ -193,11 +193,16 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
       {/* Tooltip */}
       {tooltip && (
         <div
+          data-testid="heatmap-tooltip"
           style={{
             position: "absolute",
             left: tooltip.x + 60,
             top: tooltip.y + 10,
-            background: "white",
+            // Theme tokens (not hardcoded white) so the tooltip stays legible
+            // in dark mode — a bare `white` background inherits the light
+            // foreground and produces light-on-white text (AAASM-3506).
+            background: "var(--paper-2)",
+            color: "var(--ink)",
             border: "1px solid var(--line-2)",
             borderRadius: 6,
             padding: "8px 12px",
@@ -231,6 +236,7 @@ export function ViolationHeatmap({ nodes, maxNodes = 1000 }: Props) {
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}>
           Showing {maxNodes} of {nodes.length} agents.{" "}
           <button
+            type="button"
             style={{ color: "var(--shell-accent)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
             onClick={() => setShowAll(true)}
           >

@@ -1,16 +1,21 @@
-import { useCallback, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useMemo, useRef, useState, type RefObject } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { usePoliciesQuery, useCreatePolicy, type Policy } from '../features/policies/api'
 import { useSandboxSummaryQuery } from '../features/audit/api'
-import { extractEnforcementMode } from '../features/policies/policyYamlHelpers'
+import { extractEnforcementMode, extractScope } from '../features/policies/policyYamlHelpers'
 import { SandboxEnableLiveDialog } from '../features/policies/SandboxEnableLiveDialog'
 import { SandboxSummaryCard } from '../components/SandboxSummaryCard'
-import { EmptyState, ErrorState } from '../components/states'
+import { StatusState } from '../components/truthfulness'
 import { OverlayHost } from '../components/OverlayHost'
 import { useOverlay } from '../components/useOverlay'
 import { useToast } from '../components/Toast'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { Tooltip } from '../components/Tooltip'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { PolicyEditorOverlay } from '../features/policies/editor/PolicyEditorOverlay'
-import { emptyDraft, stubDraftFromIdentity } from '../features/policies/editor/constants'
+import { PolicySimulatePanel } from '../features/policies/PolicySimulatePanel'
+import { emptyDraft } from '../features/policies/editor/constants'
+import { draftFromPolicy } from '../features/policies/editor/draftFromPolicy'
 import { serializeDraft } from '../features/policies/editor/serializeDraft'
 import type {
   PolicyDraft,
@@ -27,14 +32,22 @@ const FILTER_TABS: ReadonlyArray<{ id: FilterTab; label: string }> = [
 ]
 
 interface PolicyEditorOverlayContainerProps {
-  dirtyRef: MutableRefObject<boolean>
+  dirtyRef: RefObject<boolean>
   onRequestClose: () => void
+  /**
+   * Opens the page's single `PolicySimulatePanel` instance. Ownership stays on
+   * the page rather than in this container (AAASM-5142) because the page-header
+   * Simulate button already drives the same panel — two owners would mean two
+   * mounted dialogs and two sources of open/closed truth.
+   */
+  onSimulate: () => void
 }
 
 function PolicyEditorOverlayContainer({
   dirtyRef,
   onRequestClose,
-}: PolicyEditorOverlayContainerProps) {
+  onSimulate,
+}: Readonly<PolicyEditorOverlayContainerProps>) {
   const { props, closeOverlay } = useOverlay('policy-editor')
   const overlayProps = props as unknown as PolicyEditorOverlayProps
   const { toast } = useToast()
@@ -43,15 +56,11 @@ function PolicyEditorOverlayContainer({
   // Stable initial draft for the lifetime of this overlay open session.
   // Identity matters because useDraft references it for dirty tracking.
   const initialDraft = useMemo(() => {
-    if (
-      overlayProps.mode === 'edit' &&
-      overlayProps.name &&
-      overlayProps.version
-    ) {
-      return stubDraftFromIdentity(overlayProps.name, overlayProps.version)
+    if (overlayProps.mode === 'edit') {
+      return draftFromPolicy(overlayProps.policy)
     }
     return emptyDraft()
-  }, [overlayProps.mode, overlayProps.name, overlayProps.version])
+  }, [overlayProps])
 
   const handleDirtyChange = useCallback(
     (dirty: boolean) => {
@@ -84,6 +93,7 @@ function PolicyEditorOverlayContainer({
       onClose={onRequestClose}
       onDirtyChange={handleDirtyChange}
       isSaving={isPending}
+      onSimulate={onSimulate}
     />
   )
 }
@@ -100,21 +110,90 @@ function PolicySkeletonRow() {
   )
 }
 
-function PolicyRow({ policy, onEdit }: { policy: Policy; onEdit: () => void }) {
+/** How many affected-agent chips a row shows before collapsing into `+N`. */
+const AFFECTS_CHIP_LIMIT = 3
+
+/**
+ * The agents a policy is in force for, as chips (`design/v1/hi-fi/policy.jsx`).
+ *
+ * `affects` is absent — not `[]` — whenever the version is not in force for any
+ * agent the caller may see, so absence folds to the shared `—` rather than to a
+ * misleading "0 agents".
+ */
+function PolicyRowAffects({ affects }: Readonly<{ affects: Policy['affects'] }>) {
+  if (affects == null) {
+    return (
+      <span className="policies-list__affects" data-testid="policy-row-affects-empty">
+        —
+      </span>
+    )
+  }
+  const shown = affects.slice(0, AFFECTS_CHIP_LIMIT)
+  const overflow = affects.length - shown.length
+  return (
+    <span className="policies-list__affects" data-testid="policy-row-affects">
+      {shown.map((agent) => (
+        <span key={agent} className="policies-list__affects-chip">
+          {agent}
+        </span>
+      ))}
+      {overflow > 0 && (
+        <span className="policies-list__affects-chip" data-testid="policy-row-affects-overflow">
+          +{overflow}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function PolicyRow({
+  policy,
+  archived,
+  onEdit,
+}: Readonly<{ policy: Policy; archived: boolean; onEdit: () => void }>) {
   const proposed = !policy.active
+  // The aa-api `PolicyResponse` has no `scope` field, so recover it from the
+  // raw `policy_yaml` via the same parse the editor's draftFromPolicy uses.
+  const scope = extractScope(policy.policy_yaml ?? '')
   return (
     <li>
       <button
         type="button"
-        className="policies-list__row"
+        className={
+          archived
+            ? 'policies-list__row policies-list__row--archived'
+            : 'policies-list__row'
+        }
         data-testid="policy-row"
+        data-archived={archived ? 'true' : undefined}
         onClick={onEdit}
       >
-        <span className="policies-list__row-name">
-          {policy.name}
-          {proposed ? (
-            <span className="policies-list__chip-draft">draft</span>
-          ) : null}
+        <span className="policies-list__row-main">
+          <span className="policies-list__row-name">
+            {policy.name}
+            {archived ? (
+              <span
+                className="policies-list__chip-archived"
+                data-testid="policy-row-archived-tag"
+              >
+                archived
+              </span>
+            ) : null}
+            {proposed ? (
+              <span className="policies-list__chip-draft">draft</span>
+            ) : null}
+          </span>
+          <span className="policies-list__row-scope" data-testid="policy-row-scope">
+            scope: {scope}
+          </span>
+          <PolicyRowAffects affects={policy.affects} />
+        </span>
+        <span className="policies-list__row-hits" data-testid="policy-row-hits">
+          {/* Always `—` today: no audit record attributes a decision to a
+              policy document, so the count is absent on the wire rather than a
+              0 (AAASM-5107 owns capturing it). */}
+          <b>{policy.hits24h ?? '—'}</b>
+          <span>hits/24h</span>
         </span>
         <span className="policies-list__row-meta">
           v{policy.version} · {policy.rule_count} {policy.rule_count === 1 ? 'rule' : 'rules'}
@@ -134,14 +213,214 @@ function PolicyRow({ policy, onEdit }: { policy: Policy; onEdit: () => void }) {
   )
 }
 
+function emptyStateTitle(filter: FilterTab): string {
+  if (filter === 'active') return 'No active policies'
+  if (filter === 'proposed') return 'No proposed policies'
+  return 'No policies yet'
+}
+
+function emptyStateDescription(filter: FilterTab): string {
+  return filter === 'all'
+    ? 'Create your first policy to get started.'
+    : 'Switch to All to see every policy.'
+}
+
+interface PoliciesTabsProps {
+  readonly filter: FilterTab
+  readonly counts: Record<FilterTab, number>
+  readonly onSelect: (tab: FilterTab) => void
+}
+
+/**
+ * The filter tab strip. Extracted from PoliciesPage so its per-tab
+ * active/count-class branching does not count against the page's
+ * cognitive complexity (SonarCloud typescript:S3776).
+ */
+function PoliciesTabs({ filter, counts, onSelect }: PoliciesTabsProps) {
+  return (
+    <div className="policies-tabs" role="tablist" aria-label="Filter policies">
+      {FILTER_TABS.map((tab) => {
+        const active = filter === tab.id
+        const warnCount = tab.id === 'proposed' && counts.proposed > 0
+        return (
+          <button
+            type="button"
+            key={tab.id}
+            role="tab"
+            aria-selected={active}
+            data-testid={`policies-tab-${tab.id}`}
+            className={
+              active
+                ? 'policies-tabs__tab policies-tabs__tab--active'
+                : 'policies-tabs__tab'
+            }
+            onClick={() => onSelect(tab.id)}
+          >
+            {tab.label}
+            <span
+              className={
+                warnCount
+                  ? 'policies-tabs__count policies-tabs__count--warn'
+                  : 'policies-tabs__count'
+              }
+            >
+              {counts[tab.id]}
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+interface PoliciesSandboxBannerProps {
+  readonly summary: ReturnType<typeof useSandboxSummaryQuery>['data']
+  readonly onEnableLive: () => void
+}
+
+/**
+ * The observe-mode sandbox banner. Extracted from PoliciesPage so the
+ * nested optional-chaining for counts/top-rule does not count against the
+ * page's cognitive complexity (SonarCloud typescript:S3776).
+ */
+function PoliciesSandboxBanner({ summary, onEnableLive }: PoliciesSandboxBannerProps) {
+  const topRule = summary?.top_rule
+  return (
+    <div className="policies-page__sandbox" data-testid="policies-sandbox-banner">
+      <SandboxSummaryCard
+        policyName="All policies"
+        windowLabel="last 24h"
+        counts={{
+          wouldBeDenies: summary?.counts.would_be_denies ?? 0,
+          wouldBeRedactions: summary?.counts.would_be_redactions ?? 0,
+          wouldBePendingApprovals: summary?.counts.would_be_pending_approvals ?? 0,
+        }}
+        topRule={topRule ? { id: topRule.id, count: topRule.count } : undefined}
+        onEnableLiveEnforcement={onEnableLive}
+      />
+    </div>
+  )
+}
+
+interface PoliciesContentProps {
+  readonly isError: boolean
+  readonly isLoading: boolean
+  readonly filter: FilterTab
+  readonly filtered: readonly Policy[]
+  readonly onRetry: () => void
+  readonly onNew: () => void
+  readonly onEdit: (policy: Policy) => void
+  readonly canWrite: boolean
+  /**
+   * History mode is on (AAASM-5143). When true, inactive rows are the older
+   * archived versions the gateway only returns under include_archived, so they
+   * carry the archived marker.
+   */
+  readonly showHistory: boolean
+}
+
+/**
+ * The error / loading / empty / list state machine for the policies view.
+ * Extracted from PoliciesPage to keep its cognitive complexity low
+ * (SonarCloud typescript:S3776).
+ */
+function PoliciesContent({
+  isError,
+  isLoading,
+  filter,
+  filtered,
+  onRetry,
+  onNew,
+  onEdit,
+  canWrite,
+  showHistory,
+}: PoliciesContentProps) {
+  if (isError) {
+    return (
+      <StatusState
+        state="unavailable"
+        title="Failed to load policies"
+        description="The gateway returned an unexpected error."
+        testId="error-state"
+        action={
+          <button type="button" className="truth-state__retry" onClick={onRetry}>
+            Retry
+          </button>
+        }
+      />
+    )
+  }
+  if (isLoading) {
+    return (
+      <ul className="policies-list" data-testid="policies-list">
+        <PolicySkeletonRow />
+        <PolicySkeletonRow />
+        <PolicySkeletonRow />
+      </ul>
+    )
+  }
+  if (filtered.length === 0) {
+    return (
+      <StatusState
+        state={null}
+        title={emptyStateTitle(filter)}
+        description={emptyStateDescription(filter)}
+        testId="empty-state"
+        action={
+          filter === 'all' ? (
+            <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+              <button
+                type="button"
+                className="policies-page__new-btn"
+                data-testid="new-policy-empty-btn"
+                onClick={onNew}
+                disabled={!canWrite}
+                title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+              >
+                + new policy
+              </button>
+            </Tooltip>
+          ) : undefined
+        }
+      />
+    )
+  }
+  return (
+    <ul className="policies-list" data-testid="policies-list">
+      {filtered.map((policy) => (
+        <PolicyRow
+          key={`${policy.name}-${policy.version}`}
+          policy={policy}
+          archived={showHistory && !policy.active}
+          onEdit={() => onEdit(policy)}
+        />
+      ))}
+    </ul>
+  )
+}
+
 export function PoliciesPage() {
-  const { data: policies, isLoading, isError, refetch } = usePoliciesQuery()
+  // History toggle (AAASM-5143): off shows only the in-force version, on asks
+  // the gateway for older (archived) versions too via include_archived.
+  const [showHistory, setShowHistory] = useState(false)
+  const { data: policies, isLoading, isError, refetch } = usePoliciesQuery({
+    includeArchived: showHistory,
+  })
   const { data: sandboxSummary } = useSandboxSummaryQuery({ window: '24h' })
   const [filter, setFilter] = useState<FilterTab>('all')
   const { openOverlay, closeOverlay } = useOverlay('policy-editor')
   const { toast } = useToast()
   const { mutateAsync: createPolicy, isPending: enablingLive } = useCreatePolicy()
   const [enableLiveOpen, setEnableLiveOpen] = useState(false)
+  const [simulateOpen, setSimulateOpen] = useState(false)
+  const { canWrite } = usePermissions()
+
+  // One panel instance, one owner — driven both by the page-header button and
+  // by the editor overlay's footer "Simulate impact" (AAASM-5142).
+  const openSimulate = useCallback(() => setSimulateOpen(true), [])
+  const closeSimulate = useCallback(() => setSimulateOpen(false), [])
+
+  const toggleHistory = useCallback(() => setShowHistory((on) => !on), [])
 
   // Observe-mode policies detected by parsing each policy_yaml client-side.
   // The aa-api `PolicyResponse` doesn't expose `enforcement_mode` as a
@@ -184,12 +463,18 @@ export function PoliciesPage() {
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
 
   const attemptCloseEditor = useCallback(() => {
+    // The simulator is a native modal <dialog> in the top layer, but its Esc
+    // keydown still bubbles to the document listener OverlayHost installs — so
+    // without this guard one Esc would dismiss the simulator *and* the editor
+    // behind it (or raise the discard prompt over it). Esc belongs to the
+    // topmost surface; the simulator closes itself via its own `cancel`.
+    if (simulateOpen) return
     if (editorDirtyRef.current) {
       setConfirmDiscardOpen(true)
     } else {
       closeOverlay()
     }
-  }, [closeOverlay])
+  }, [closeOverlay, simulateOpen])
 
   const handleDiscardConfirm = useCallback(() => {
     setConfirmDiscardOpen(false)
@@ -201,9 +486,13 @@ export function PoliciesPage() {
   const activePolicies = useMemo(() => all.filter((p) => p.active), [all])
   const proposedPolicies = useMemo(() => all.filter((p) => !p.active), [all])
 
-  const filtered =
-    filter === 'active' ? activePolicies : filter === 'proposed' ? proposedPolicies : all
+  let filtered = all
+  if (filter === 'active') filtered = activePolicies
+  else if (filter === 'proposed') filtered = proposedPolicies
 
+  // FilterTab is a closed local union of this page's own filter-tab state,
+  // not a raw wire string — narrow-union Record gap (AAASM-5245 gap 2).
+  // eslint-disable-next-line no-restricted-syntax
   const counts: Record<FilterTab, number> = {
     all: all.length,
     active: activePolicies.length,
@@ -211,8 +500,7 @@ export function PoliciesPage() {
   }
 
   const handleNew = () => openOverlay({ mode: 'new' })
-  const handleEdit = (policy: Policy) =>
-    openOverlay({ mode: 'edit', name: policy.name, version: policy.version })
+  const handleEdit = (policy: Policy) => openOverlay({ mode: 'edit', policy })
 
   return (
     <main className="policies-page" data-testid="policies-page">
@@ -223,123 +511,69 @@ export function PoliciesPage() {
             Visual builder for narrowing rules — open one to edit.
           </p>
         </div>
-        <button
-          type="button"
-          className="policies-page__new-btn"
-          data-testid="new-policy-btn"
-          onClick={handleNew}
-        >
-          + new policy
-        </button>
+        <div className="policies-page__head-actions">
+          <button
+            type="button"
+            className={
+              showHistory
+                ? 'policies-page__history-btn policies-page__history-btn--on'
+                : 'policies-page__history-btn'
+            }
+            data-testid="policy-history-toggle"
+            aria-pressed={showHistory}
+            onClick={toggleHistory}
+          >
+            history
+          </button>
+          <button
+            type="button"
+            className="policies-page__simulate-btn"
+            data-testid="open-simulate-btn"
+            onClick={openSimulate}
+          >
+            ▸ Simulate
+          </button>
+          <Tooltip content={canWrite ? '' : WRITE_REQUIRED_HINT}>
+            <button
+              type="button"
+              className="policies-page__new-btn"
+              data-testid="new-policy-btn"
+              onClick={handleNew}
+              disabled={!canWrite}
+              title={canWrite ? undefined : WRITE_REQUIRED_HINT}
+            >
+              + new policy
+            </button>
+          </Tooltip>
+        </div>
       </header>
 
       {showSandboxBanner ? (
-        <div className="policies-page__sandbox" data-testid="policies-sandbox-banner">
-          <SandboxSummaryCard
-            policyName="All policies"
-            windowLabel="last 24h"
-            counts={{
-              wouldBeDenies: sandboxSummary?.counts.would_be_denies ?? 0,
-              wouldBeRedactions: sandboxSummary?.counts.would_be_redactions ?? 0,
-              wouldBePendingApprovals: sandboxSummary?.counts.would_be_pending_approvals ?? 0,
-            }}
-            topRule={
-              sandboxSummary?.top_rule
-                ? { id: sandboxSummary.top_rule.id, count: sandboxSummary.top_rule.count }
-                : undefined
-            }
-            onEnableLiveEnforcement={openEnableLiveDialog}
-          />
-        </div>
+        <PoliciesSandboxBanner
+          summary={sandboxSummary}
+          onEnableLive={openEnableLiveDialog}
+        />
       ) : null}
 
-      <nav className="policies-tabs" role="tablist" aria-label="Filter policies">
-        {FILTER_TABS.map((tab) => {
-          const active = filter === tab.id
-          return (
-            <button
-              type="button"
-              key={tab.id}
-              role="tab"
-              aria-selected={active}
-              data-testid={`policies-tab-${tab.id}`}
-              className={
-                active
-                  ? 'policies-tabs__tab policies-tabs__tab--active'
-                  : 'policies-tabs__tab'
-              }
-              onClick={() => setFilter(tab.id)}
-            >
-              {tab.label}
-              <span
-                className={
-                  tab.id === 'proposed' && counts.proposed > 0
-                    ? 'policies-tabs__count policies-tabs__count--warn'
-                    : 'policies-tabs__count'
-                }
-              >
-                {counts[tab.id]}
-              </span>
-            </button>
-          )
-        })}
-      </nav>
+      <PoliciesTabs filter={filter} counts={counts} onSelect={setFilter} />
 
-      {isError ? (
-        <ErrorState
-          title="Failed to load policies"
-          description="The gateway returned an unexpected error."
-          onRetry={() => void refetch()}
-        />
-      ) : isLoading ? (
-        <ul className="policies-list" data-testid="policies-list">
-          <PolicySkeletonRow />
-          <PolicySkeletonRow />
-          <PolicySkeletonRow />
-        </ul>
-      ) : filtered.length === 0 ? (
-        <EmptyState
-          title={
-            filter === 'active'
-              ? 'No active policies'
-              : filter === 'proposed'
-                ? 'No proposed policies'
-                : 'No policies yet'
-          }
-          description={
-            filter === 'all'
-              ? 'Create your first policy to get started.'
-              : 'Switch to All to see every policy.'
-          }
-          action={
-            filter === 'all' ? (
-              <button
-                type="button"
-                className="policies-page__new-btn"
-                data-testid="new-policy-empty-btn"
-                onClick={handleNew}
-              >
-                + new policy
-              </button>
-            ) : undefined
-          }
-        />
-      ) : (
-        <ul className="policies-list" data-testid="policies-list">
-          {filtered.map((policy) => (
-            <PolicyRow
-              key={`${policy.name}-${policy.version}`}
-              policy={policy}
-              onEdit={() => handleEdit(policy)}
-            />
-          ))}
-        </ul>
-      )}
+      <PoliciesContent
+        isError={isError}
+        isLoading={isLoading}
+        filter={filter}
+        filtered={filtered}
+        onRetry={() => ignorePromise(refetch())}
+        onNew={handleNew}
+        onEdit={handleEdit}
+        canWrite={canWrite}
+        showHistory={showHistory}
+      />
 
       <OverlayHost name="policy-editor" onRequestClose={attemptCloseEditor}>
         <PolicyEditorOverlayContainer
           dirtyRef={editorDirtyRef}
           onRequestClose={attemptCloseEditor}
+          onSimulate={openSimulate}
         />
       </OverlayHost>
 
@@ -361,6 +595,8 @@ export function PoliciesPage() {
         onConfirm={confirmEnableLive}
         submitting={enablingLive}
       />
+
+      <PolicySimulatePanel open={simulateOpen} onClose={closeSimulate} />
     </main>
   )
 }

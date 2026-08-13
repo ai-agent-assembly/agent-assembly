@@ -25,9 +25,9 @@ aasm version
 
 ```text
 COMPONENT   VERSION
-cli         0.0.1
-gateway     0.0.1
-api         0.0.1
+cli         0.0.1-rc.6
+gateway     0.0.1-rc.6
+api         0.0.1-rc.6
 ```
 
 JSON form:

@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353: the same mobile number in international form. The trunk zero is DROPPED, so it is +886912345678 and not +8860912345678 - an implementation that strips +886 and then expects a leading 0 misses every internationally written number while passing every national-form test.",
+  "input_text": "手機 +886-912-345-678 為國際格式。",
+  "expected_findings": [
+    {
+      "category": "PHONE_NUMBER[zh-TW/mobile]",
+      "offset": 7,
+      "end": 23,
+      "confidence": "high"
+    }
+  ],
+  "expected_redacted": "手機 [REDACTED] 為國際格式。"
+}

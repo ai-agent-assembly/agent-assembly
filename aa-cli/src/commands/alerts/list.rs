@@ -10,6 +10,7 @@ use crate::client;
 use crate::commands::agent::PaginatedResponse;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Arguments for `aasm alerts list`.
 #[derive(Args)]
@@ -77,14 +78,16 @@ pub fn render_table(alerts: &[AlertResponse]) {
         let sev = AlertSeverity::parse(&alert.severity);
         let status = AlertStatusKind::parse(&alert.status);
 
+        // All fields are server-supplied; strip terminal escapes (severity/
+        // status colours are still chosen from the raw, never-printed strings).
         table.add_row(vec![
-            Cell::new(&alert.id),
-            Cell::new(agent),
-            Cell::new(&alert.severity).fg(sev.color()),
-            Cell::new(&alert.category),
-            Cell::new(&alert.message),
-            Cell::new(&alert.status).fg(status.color()),
-            Cell::new(&alert.created_at),
+            Cell::new(sanitize_terminal(&alert.id)),
+            Cell::new(sanitize_terminal(agent)),
+            Cell::new(sanitize_terminal(&alert.severity)).fg(sev.color()),
+            Cell::new(sanitize_terminal(&alert.category)),
+            Cell::new(sanitize_terminal(&alert.message)),
+            Cell::new(sanitize_terminal(&alert.status)).fg(status.color()),
+            Cell::new(sanitize_terminal(&alert.created_at)),
         ]);
     }
 

@@ -6,7 +6,7 @@ system protects, against whom, and how** — and, just as importantly, **where i
 refuses to place its trust**.
 
 This section is the *why*. For the *how* — concrete crates, types, and data
-paths — follow the cross-links into [Architecture](../architecture/README.md).
+paths — follow the cross-links into [Architecture](../architecture/index.md).
 
 ## What the Security Model protects
 
@@ -74,6 +74,7 @@ forwarded raw (`aa-runtime/src/pipeline/enforcement.rs`,
 | Page | Question it answers |
 |---|---|
 | [Threat model](threat-model.md) | What assets, adversaries, and threats are in scope? |
+| [Release threat model](release-threat-model.md) | What does **this** release change about our exposure, and is each change covered? (versioned, refreshed every major) |
 | [Three-layer defense in depth](three-layer-defense.md) | How do SDK, proxy, and eBPF compose so nothing slips through? |
 | [Protection and enforcement](protection-model.md) | How are policy, fail-closed, egress, scanning, and budgets enforced? |
 | [Trust boundaries](trust-boundaries.md) | Why is the SDK untrusted and the runtime/gateway authoritative? |

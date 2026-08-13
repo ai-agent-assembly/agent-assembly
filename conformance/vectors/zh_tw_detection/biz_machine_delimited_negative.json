@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5353 negative, added after review: machine delimiters must not bound a bare 統一編號. The first version's boundary rule was a deny-list (ASCII alphanumerics, '.', ',', '+'), so every other delimiter bounded an 8-digit run - and at a 22% checksum pass rate, JSON, YAML, URLs, filesystem paths, environment variables and SQL all produced findings. Those are the dominant shapes of agent traffic, so this was the Epic's founding defect (ordinary content reported as sensitive) reappearing by another route. A bare 統一編號 must now sit in prose or carry a label.",
+  "input_text": "/var/log/app/20260801/trace.log ORDER_ID=12345675 ?id=12345675&page=2 {\"order_id\":12345675} order_id: 12345675 WHERE id = 12345675; pod-12345675-abcde",
+  "expected_findings": [],
+  "expected_redacted": "/var/log/app/20260801/trace.log ORDER_ID=12345675 ?id=12345675&page=2 {\"order_id\":12345675} order_id: 12345675 WHERE id = 12345675; pod-12345675-abcde"
+}

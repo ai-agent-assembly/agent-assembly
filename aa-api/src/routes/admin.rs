@@ -13,6 +13,7 @@ use axum::Json;
 
 use aa_gateway::storage::{ColdAction, RetentionConfig, RetentionEngine, RetentionStats};
 
+use crate::auth::scope::RequireAdmin;
 use crate::error::ProblemDetail;
 use crate::models::retention::{
     ColdActionDto, RetentionPolicyDocument, RetentionRunStatsDto, RunRetentionRequest, UpdateRetentionPolicyRequest,
@@ -78,6 +79,7 @@ fn stats_to_dto(stats: RetentionStats) -> RetentionRunStatsDto {
     tag = "admin"
 )]
 pub async fn get_retention_policy(
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
 ) -> Result<Json<RetentionPolicyDocument>, ProblemDetail> {
     let engine = require_engine(&state)?;
@@ -149,6 +151,7 @@ fn merge_request_into_config(base: &RetentionConfig, req: &UpdateRetentionPolicy
     tag = "admin"
 )]
 pub async fn update_retention_policy(
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Json(req): Json<UpdateRetentionPolicyRequest>,
 ) -> Result<Json<RetentionPolicyDocument>, ProblemDetail> {
@@ -181,6 +184,7 @@ pub async fn update_retention_policy(
     tag = "admin"
 )]
 pub async fn run_retention_policy(
+    _auth: RequireAdmin,
     Extension(state): Extension<AppState>,
     Json(req): Json<RunRetentionRequest>,
 ) -> Result<Json<RetentionRunStatsDto>, ProblemDetail> {
@@ -218,4 +222,109 @@ pub async fn run_retention_policy(
     let mut dto = stats_to_dto(stats);
     dto.dry_run = engine.current_config().dry_run;
     Ok(Json(dto))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::scope::Scope;
+    use crate::auth::{AuthenticatedCaller, Tenant};
+    use crate::state::LocalAuth;
+
+    /// Hardened state wires a real SQLite-backed RetentionEngine.
+    async fn hardened() -> AppState {
+        AppState::local_hardened(LocalAuth::Off)
+            .await
+            .expect("hardened state builds")
+    }
+
+    /// An admin-scoped `RequireAdmin` for invoking the handlers directly in
+    /// unit tests (these bypass the router, so the extractor is constructed
+    /// by hand). The 403 path for non-admin callers is covered end-to-end in
+    /// `tests/admin.rs`.
+    fn admin_auth() -> RequireAdmin {
+        RequireAdmin(AuthenticatedCaller {
+            key_id: "test-admin".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: Tenant::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn handlers_503_without_retention_engine() {
+        // local_in_memory leaves retention_engine None → every handler 503s.
+        let state = AppState::local_in_memory().expect("state builds");
+        let err = get_retention_policy(admin_auth(), Extension(state))
+            .await
+            .expect_err("503 expected");
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE.as_u16());
+        assert_eq!(err.error_code, Some("retention_engine_unavailable"));
+    }
+
+    #[tokio::test]
+    async fn update_policy_applies_valid_thresholds() {
+        let state = hardened().await;
+        let req = UpdateRetentionPolicyRequest {
+            hot_days: 3,
+            warm_days: 30,
+            cold_action: ColdActionDto::Drop,
+            archive_url: None,
+        };
+        let doc = update_retention_policy(admin_auth(), Extension(state), Json(req))
+            .await
+            .expect("applied")
+            .0;
+        assert_eq!(doc.hot_days, 3);
+        assert_eq!(doc.warm_days, 30);
+        assert!(matches!(doc.cold_action, ColdActionDto::Drop));
+    }
+
+    #[tokio::test]
+    async fn update_policy_rejects_invalid_thresholds() {
+        let state = hardened().await;
+        // warm_days must be strictly greater than hot_days.
+        let req = UpdateRetentionPolicyRequest {
+            hot_days: 10,
+            warm_days: 5,
+            cold_action: ColdActionDto::Drop,
+            archive_url: None,
+        };
+        let err = update_retention_policy(admin_auth(), Extension(state), Json(req))
+            .await
+            .expect_err("rejected");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST.as_u16());
+        assert_eq!(err.error_code, Some("retention_policy_invalid_warm_days"));
+    }
+
+    #[tokio::test]
+    async fn run_once_executes_real_pass() {
+        let state = hardened().await;
+        let req = RunRetentionRequest { dry_run: false };
+        let dto = run_retention_policy(admin_auth(), Extension(state), Json(req))
+            .await
+            .expect("run ok")
+            .0;
+        // A fresh DB has no rows to move; the pass still completes and reports its mode.
+        assert!(!dto.dry_run);
+    }
+
+    #[tokio::test]
+    async fn run_once_dry_run_restores_operator_preference() {
+        let state = hardened().await;
+        let engine_before = state.retention_engine.clone().unwrap();
+        let dry_pref_before = engine_before.current_config().dry_run;
+
+        let req = RunRetentionRequest { dry_run: true };
+        let dto = run_retention_policy(admin_auth(), Extension(state.clone()), Json(req))
+            .await
+            .expect("dry run ok")
+            .0;
+        assert!(dto.dry_run, "dry-run flag surfaces in the response");
+
+        // The temporary dry_run override is rolled back to the operator's preference.
+        assert_eq!(
+            state.retention_engine.unwrap().current_config().dry_run,
+            dry_pref_before
+        );
+    }
 }

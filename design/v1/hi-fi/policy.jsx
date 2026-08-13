@@ -1,4 +1,22 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Policy (AAASM-5072 / AAASM-5077, ratified 2026-07-25) ─────
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; the mock behavior noted is superseded):
+ *   • Layout — shipped uses a LIST + OVERLAY layout; this mock's `split-pane` layout
+ *     is superseded (split-pane rebuild is optional, only if fidelity is mandated).
+ *   • Simulate — shipped ships a SINGLE-REQUEST DRY-RUN as the v0 feature; this mock's
+ *     replay-impact `SimulateModal` (draft replayed against recent traffic) is
+ *     DEFERRED to backend (AAASM-5094 / SaaS), so it is no longer the FE target.
+ *
+ * NOT superseded: the FE-parity spec sections in this file (list-row scope chip,
+ * impact-preview shell) remain the reference for in-flight FE work — do not delete.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const { useState: useSP, useMemo: useMP } = React;
 
 // ============================================================

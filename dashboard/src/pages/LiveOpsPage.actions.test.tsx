@@ -1,32 +1,44 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '../components/ToastProvider'
+import { known } from '../lib/truthfulness'
 import { useAgentsQuery } from '../features/agents/api'
+import { useApprovalsQuery } from '../features/approvals/api'
 import { useTeamsQuery } from '../features/analytics/useTeamsQuery'
 import * as actions from '../features/liveOps/actions'
 import { useLiveOpsStream } from '../features/liveOps/useLiveOpsStream'
 import type { LiveOperation } from '../features/liveOps/types'
 import { LiveOpsPage } from './LiveOpsPage'
+import { GrantScopes } from '../auth/GrantScopes'
+import { WRITE_SCOPES } from '../auth/testScopes'
 
 vi.mock('../features/agents/api', () => ({ useAgentsQuery: vi.fn() }))
 vi.mock('../features/analytics/useTeamsQuery', () => ({ useTeamsQuery: vi.fn() }))
+vi.mock('../features/approvals/api', () => ({ useApprovalsQuery: vi.fn() }))
+vi.mock('../features/approvals/useApprovalsStream', () => ({
+  useApprovalsStream: () => ({ connected: true }),
+}))
 vi.mock('../features/liveOps/useLiveOpsStream', () => ({ useLiveOpsStream: vi.fn() }))
 vi.mock('../features/liveOps/actions', () => ({
   pauseOp: vi.fn(),
   resumeOp: vi.fn(),
   terminateOp: vi.fn(),
+  haltAgent: vi.fn(),
+  haltGlobal: vi.fn(),
 }))
 
 function makeOp(id: string, overrides: Partial<LiveOperation> = {}): LiveOperation {
   return {
     id,
     agent: 'support-agent',
-    opType: 'read',
-    resource: 'gmail.send',
+    opType: known('read'),
+    resource: known('gmail.send'),
     status: 'running',
     startedAt: '2026-05-13T14:23:01Z',
-    latencyMs: 100,
+    latencyMs: known(100),
     ...overrides,
   }
 }
@@ -41,9 +53,15 @@ function mockStream(ops: LiveOperation[]) {
 
 function renderPage() {
   return render(
-    <ToastProvider>
-      <LiveOpsPage />
-    </ToastProvider>,
+    <QueryClientProvider client={new QueryClient()}>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <MemoryRouter>
+          <ToastProvider>
+            <LiveOpsPage />
+          </ToastProvider>
+        </MemoryRouter>
+      </GrantScopes>
+    </QueryClientProvider>,
   )
 }
 
@@ -55,9 +73,17 @@ describe('LiveOpsPage row actions', () => {
     vi.mocked(useTeamsQuery).mockReturnValue({
       data: [],
     } as unknown as ReturnType<typeof useTeamsQuery>)
+    vi.mocked(useApprovalsQuery).mockReturnValue({
+      data: [],
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useApprovalsQuery>)
     vi.mocked(actions.pauseOp).mockReset()
     vi.mocked(actions.resumeOp).mockReset()
     vi.mocked(actions.terminateOp).mockReset()
+    vi.mocked(actions.haltAgent).mockReset()
+    vi.mocked(actions.haltGlobal).mockReset()
   })
 
   afterEach(() => {
@@ -83,9 +109,15 @@ describe('LiveOpsPage row actions', () => {
 
     mockStream([makeOp('op-1', { status: 'blocked' })])
     rerender(
-      <ToastProvider>
-        <LiveOpsPage />
-      </ToastProvider>,
+      <QueryClientProvider client={new QueryClient()}>
+        <GrantScopes scopes={WRITE_SCOPES}>
+          <MemoryRouter>
+            <ToastProvider>
+              <LiveOpsPage />
+            </ToastProvider>
+          </MemoryRouter>
+        </GrantScopes>
+      </QueryClientProvider>,
     )
 
     await waitFor(() => {
@@ -147,5 +179,53 @@ describe('LiveOpsPage row actions', () => {
       'data-override',
       'resuming',
     )
+  })
+
+  it('halt-agent fires through the confirmation dialog', async () => {
+    const user = userEvent.setup()
+    vi.mocked(actions.haltAgent).mockResolvedValue()
+    mockStream([makeOp('op-1', { status: 'running' })])
+    renderPage()
+
+    await user.click(screen.getByTestId('row-action-trigger'))
+    await user.click(screen.getByTestId('row-action-halt-agent'))
+    expect(actions.haltAgent).not.toHaveBeenCalled()
+
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+    await waitFor(() => {
+      expect(actions.haltAgent).toHaveBeenCalledWith('op-1')
+    })
+  })
+
+  it('global halt-all confirms then calls haltGlobal', async () => {
+    const user = userEvent.setup()
+    vi.mocked(actions.haltGlobal).mockResolvedValue()
+    mockStream([makeOp('op-1', { status: 'running' })])
+    renderPage()
+
+    await user.click(screen.getByTestId('live-ops-halt-all'))
+    expect(actions.haltGlobal).not.toHaveBeenCalled()
+
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+    await waitFor(() => {
+      expect(actions.haltGlobal).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('surfaces a toast when haltGlobal rejects', async () => {
+    const user = userEvent.setup()
+    vi.mocked(actions.haltGlobal).mockRejectedValue(new Error('gateway 503'))
+    mockStream([makeOp('op-1', { status: 'running' })])
+    renderPage()
+
+    await user.click(screen.getByTestId('live-ops-halt-all'))
+    await user.click(screen.getByTestId('confirm-dialog-confirm'))
+
+    await waitFor(() => {
+      const toast = screen.getByTestId('toast')
+      expect(toast).toHaveTextContent(/Failed to halt all ops/i)
+      expect(toast).toHaveTextContent(/gateway 503/)
+      expect(toast).toHaveAttribute('data-variant', 'error')
+    })
   })
 })

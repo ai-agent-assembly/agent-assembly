@@ -1,4 +1,21 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Identity (AAASM-5079 / AAASM-5077, ratified 2026-07-25) ────
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified item below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; the mock behavior noted is superseded):
+ *   • Model — shipped uses a 4-TAB Service-Identities model, a real SUPERSET of this
+ *     mock's 3-tab Members / API-Tokens / Roles model, which is superseded. The
+ *     human-user directory is CLOUD-ONLY (SaaS-tier, out of OSS scope), so OSS
+ *     Identity is pure design-artifact ratification.
+ *
+ * NOT superseded: the FE-parity spec sections in this file remain the reference for
+ * in-flight FE work — do not delete them.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const { useState: useIdSt } = React;
 
 /* ============================================================

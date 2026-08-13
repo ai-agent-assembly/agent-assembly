@@ -3,7 +3,7 @@
 // Policy entry (AAASM-1592 S-K); General and API Keys are placeholders
 // for future sub-tickets so the IA shape is complete on landing.
 
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router'
 import './Settings.css'
 
 interface SettingsNavEntry {

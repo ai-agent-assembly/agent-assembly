@@ -188,7 +188,30 @@
   background: var(--ok);
 }
 
+/* A failed clipboard write is now visible rather than reported as a success
+   (AAASM-5145). */
+.onb-pkg-copy.is-failed {
+  background: var(--danger);
+}
+
+.onb-copy-error {
+  margin-top: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--danger);
+}
+
 .onb-term {
+  /* The panel stays dark in both themes (see the --term-* note in
+     src/styles.css), so its warn/err hues are declared locally against that
+     fixed background rather than reaching for the theme-aware --warn/--danger
+     tokens, which are tuned for the page surface. Values match
+     design/v2/hi-fi/onboarding.jsx:303-304, whose .onb-term-err/.onb-term-warn
+     rules the original port dropped along with the failure path they were for
+     (AAASM-5132). */
+  --term-warn: #f3c14b;
+  --term-err: #ff6b6b;
+
   background: var(--term-bg);
   color: var(--term-text);
   border-radius: 3px;
@@ -204,14 +227,29 @@
 
 .onb-term-line {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .onb-term-prompt { color: var(--term-prompt); user-select: none; }
 .onb-term-cmd { color: var(--term-cmd); }
 .onb-term-out { color: var(--term-out); }
 .onb-term-ok { color: var(--term-ok); }
+.onb-term-warn { color: var(--term-warn); }
+.onb-term-err { color: var(--term-err); }
 .onb-term-faint { color: var(--term-faint); }
+
+.onb-term-caveat {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.onb-term-meta-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
 .onb-term-meta {
   display: flex;
@@ -229,42 +267,13 @@
   letter-spacing: 0.6px;
 }
 
-/* ── Step 3: identity ───────────────────────────────────────────────────── */
-.onb-id-card {
-  background: var(--paper-2);
-  border: 1px solid var(--line-2);
-  border-radius: 3px;
-  padding: 22px;
-  text-align: center;
-  min-height: 220px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-
-.onb-id-glyph {
-  width: 80px;
-  height: 80px;
-  border: 2px solid var(--line);
-  border-radius: 999px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 16px;
-  background: var(--paper);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 32px;
-  color: var(--ink-4);
-}
-
-.onb-id-glyph.is-done {
-  color: var(--ok);
-  font-size: 36px;
-  font-weight: bold;
-  border-color: var(--ok);
-}
-
+/* ── Step 5: listener status pill ───────────────────────────────────────── */
+/* Everything that dressed step 3's fake keypair ceremony — the card, the
+   spinning derive-glyph, the DID/fingerprint output block and the
+   "private key stored in ~/.aa/keys/" hint — is gone with the fiction it
+   presented (AAASM-5179). Step 3 now renders the shared StatusState. What
+   remains here is the `.onb-id-action-btn` family, which step 5 still uses for
+   its listener pill. */
 .onb-id-action-btn {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -285,37 +294,32 @@
   cursor: not-allowed;
 }
 
-.onb-id-out {
-  margin-top: 20px;
-  padding: 14px 16px;
-  background: var(--term-bg);
-  color: var(--term-text);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  line-height: 1.7;
-  border-radius: 3px;
-  text-align: left;
-  width: 100%;
+/* Non-interactive status pill for the step-5 listener state: a paper-bg outline
+   with a pulsing green dot signalling the listener is live (design/v1/hi-fi/
+   onboarding.jsx `.onb-id-action-btn.live`). Motion is gated below under
+   prefers-reduced-motion. */
+.onb-id-action-btn.live {
+  background: var(--paper);
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  pointer-events: none;
 }
 
-.onb-id-row { display: flex; gap: 10px; }
-.onb-id-key { color: var(--term-key); min-width: 90px; }
-.onb-id-val { color: var(--term-text); word-break: break-all; }
-.onb-id-val.is-fp { color: var(--term-ok); }
-
-.onb-id-hint {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--ink-4);
-  margin-top: 12px;
-  letter-spacing: 0.4px;
+.onb-id-action-btn.live::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ok);
+  margin-right: 7px;
+  animation: onb-pulse 1.4s ease-in-out infinite;
 }
 
-.onb-id-issued {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  color: var(--ok);
-  letter-spacing: 0.5px;
+@keyframes onb-pulse {
+  0%,
+  100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 /* ── Step 4: policy preset ──────────────────────────────────────────────── */
@@ -472,6 +476,13 @@
 
 .onb-enroll-count.is-live { color: var(--ok); }
 
+/* The `/ ∞` suffix beside the count. An absent count renders the shared `—`
+   marker in the count's place, so the suffix must not inherit the 28px size. */
+.onb-enroll-count-total {
+  font-size: 14px;
+  color: var(--ink-4);
+}
+
 .onb-enroll-bar {
   height: 4px;
   background: var(--line);
@@ -496,7 +507,25 @@
 }
 
 .onb-enroll-pings-empty { color: var(--term-faint); padding: 4px 0; }
-.onb-enroll-ping { padding: 2px 0; }
+
+/* Each ping slides in as it lands so the stream reads as live traffic arriving
+   one call at a time, not a batch dump. Gated under prefers-reduced-motion. */
+.onb-enroll-ping {
+  padding: 2px 0;
+  animation: onb-ping-in 320ms ease;
+}
+
+@keyframes onb-ping-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
 .onb-ping-time { color: var(--term-key); }
 .onb-ping-action { color: var(--term-text); }
 .onb-ping-tag { color: var(--term-ok); }
+
+/* Honour users who ask for reduced motion: keep the states, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .onb-enroll-ping { animation: none; }
+  .onb-id-action-btn.live::before { animation: none; }
+}

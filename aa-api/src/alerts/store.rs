@@ -59,7 +59,7 @@ impl InMemoryAlertStore {
     fn next_id(&self) -> String {
         self.id_gen
             .lock()
-            .expect("id generator lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .generate()
             .expect("ULID monotonic generation overflow (impossible in normal operation)")
             .to_string()
@@ -79,7 +79,7 @@ impl AlertStore for InMemoryAlertStore {
         let stored = stored_alert_from(alert, id.clone(), timestamp);
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -96,7 +96,23 @@ impl AlertStore for InMemoryAlertStore {
         let stored = stored_secret_alert_from(alert, id.clone(), timestamp);
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(stored.clone());
+        }
+        let _ = self.event_tx.send(AlertEvent::Fire(stored));
+        id
+    }
+
+    fn record_anomaly(&self, event: &aa_gateway::anomaly::AnomalyEvent) -> String {
+        let id = self.next_id();
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let stored = super::stored_anomaly_alert_from(event, id.clone(), timestamp);
+
+        {
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -112,7 +128,7 @@ impl AlertStore for InMemoryAlertStore {
         let stored = stored_rule_alert_from(seed, id.clone(), timestamp);
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -133,7 +149,7 @@ impl AlertStore for InMemoryAlertStore {
             // Look for an existing alert with the same rule_id whose
             // dedup window has not yet expired. Hold the write lock for
             // the whole search-and-mutate to avoid a TOCTOU race.
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             for alert in buf.iter_mut() {
                 let Some(ctx) = alert.rule_context.as_mut() else {
                     continue;
@@ -167,7 +183,7 @@ impl AlertStore for InMemoryAlertStore {
         }
 
         {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             if buf.len() >= self.capacity {
                 buf.pop_front();
             }
@@ -178,7 +194,7 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn list(&self, limit: usize, offset: usize) -> (Vec<StoredAlert>, u64) {
-        let buf = self.alerts.read().expect("alert store lock poisoned");
+        let buf = self.alerts.read().unwrap_or_else(|e| e.into_inner());
         let total = buf.len() as u64;
 
         // Return newest-first by iterating in reverse.
@@ -188,13 +204,13 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn get_by_id(&self, id: &str) -> Option<StoredAlert> {
-        let buf = self.alerts.read().expect("alert store lock poisoned");
+        let buf = self.alerts.read().unwrap_or_else(|e| e.into_inner());
         buf.iter().find(|a| a.id == id).cloned()
     }
 
     fn resolve(&self, id: &str, _reason: Option<&str>) -> Option<StoredAlert> {
         let (snapshot, was_mutation) = {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             let alert = buf.iter_mut().find(|a| a.id == id)?;
             // Idempotent: don't bump timestamps on subsequent resolves.
             let mutated = alert.status != "resolved";
@@ -218,7 +234,7 @@ impl AlertStore for InMemoryAlertStore {
 
     fn suppress(&self, id: &str) -> Option<StoredAlert> {
         let snapshot = {
-            let mut buf = self.alerts.write().expect("alert store lock poisoned");
+            let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
             let alert = buf.iter_mut().find(|a| a.id == id)?;
             if alert.status == "suppressed" {
                 // Defensive: refuse to overwrite an existing prior_status.
@@ -234,7 +250,7 @@ impl AlertStore for InMemoryAlertStore {
     }
 
     fn restore(&self, id: &str) -> Option<StoredAlert> {
-        let mut buf = self.alerts.write().expect("alert store lock poisoned");
+        let mut buf = self.alerts.write().unwrap_or_else(|e| e.into_inner());
         let alert = buf.iter_mut().find(|a| a.id == id)?;
         if alert.status != "suppressed" {
             return None; // not currently under a silence
@@ -780,5 +796,63 @@ mod tests {
 
         assert_ne!(id_a, id_b, "different rule_ids must not dedup against each other");
         assert_eq!(outcome_b, DedupOutcome::Created);
+    }
+
+    #[test]
+    fn default_impl_matches_new() {
+        let store = InMemoryAlertStore::default();
+        let (items, total) = store.list(10, 0);
+        assert!(items.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn record_secret_evicts_oldest_at_capacity() {
+        let store = InMemoryAlertStore::with_capacity(2);
+        store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey));
+        store.record_secret(&test_secret_alert(CredentialKind::OpenAiKey));
+        store.record_secret(&test_secret_alert(CredentialKind::AwsAccessKey)); // evicts oldest
+        assert_eq!(store.list(10, 0).1, 2);
+    }
+
+    #[test]
+    fn record_rule_alert_evicts_oldest_at_capacity() {
+        let store = InMemoryAlertStore::with_capacity(2);
+        let mut seed = test_rule_seed();
+        seed.rule_snapshot.dedup_window_seconds = 0; // force a fresh record each call
+        store.record_rule_alert(&seed);
+        store.record_rule_alert(&seed);
+        store.record_rule_alert(&seed); // evicts oldest
+        assert_eq!(store.list(10, 0).1, 2);
+    }
+
+    #[test]
+    fn dedup_create_evicts_oldest_at_capacity() {
+        let store = InMemoryAlertStore::with_capacity(2);
+        let mut seed = test_rule_seed();
+        seed.rule_snapshot.dedup_window_seconds = 0; // every call creates
+        let now = fixed_now();
+        store.dedup_or_record_rule_alert(&seed, now);
+        store.dedup_or_record_rule_alert(&seed, now);
+        store.dedup_or_record_rule_alert(&seed, now); // evicts oldest on create
+        assert_eq!(store.list(10, 0).1, 2);
+    }
+
+    #[test]
+    fn dedup_skips_non_rule_and_foreign_rule_entries_then_creates() {
+        let store = InMemoryAlertStore::with_capacity(100);
+        // A budget alert has no rule_context → the dedup scan `continue`s past it.
+        store.record(&test_alert(80));
+        // A rule alert recorded via record_rule_alert carries a rule_context but
+        // no dedup_window_expires_at → the dedup scan also `continue`s past it.
+        let mut other = test_rule_seed();
+        other.rule_id = "some-other-rule".to_string();
+        store.record_rule_alert(&other);
+
+        // Now dedup a fresh seed: it must skip both existing entries and create.
+        let seed = test_rule_seed();
+        let now = fixed_now();
+        let (_id, outcome) = store.dedup_or_record_rule_alert(&seed, now);
+        assert_eq!(outcome, DedupOutcome::Created);
     }
 }

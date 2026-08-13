@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent, type MouseEvent } from 'react'
+import { useEffect, useState, type ChangeEvent, type SyntheticEvent, type MouseEvent } from 'react'
 import './SuspendReasonDialog.css'
 
 interface SuspendReasonDialogProps {
@@ -24,7 +24,7 @@ export function SuspendReasonDialog({
   pending = false,
   onConfirm,
   onCancel,
-}: SuspendReasonDialogProps) {
+}: Readonly<SuspendReasonDialogProps>) {
   const [reason, setReason] = useState('')
   const [touched, setTouched] = useState(false)
   const trimmed = reason.trim()
@@ -42,7 +42,7 @@ export function SuspendReasonDialog({
     if (e.target === e.currentTarget) onCancel()
   }
 
-  function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: SyntheticEvent) {
     e.preventDefault()
     setTouched(true)
     if (invalid) return
@@ -53,7 +53,10 @@ export function SuspendReasonDialog({
     <div
       className="suspend-dialog__scrim"
       onClick={handleScrimClick}
-      role="presentation"
+      onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close dialog"
       data-testid="suspend-dialog-scrim"
     >
       <form

@@ -52,7 +52,8 @@ gh release view "$TAG" \
 Pass criteria:
 
 - `isDraft = false`
-- `isPrerelease = true` (every `v0.0.1-alpha.*` tag is a pre-release)
+- `isPrerelease = true` (every tag with a `-alpha`/`-beta`/`-rc` suffix is a
+  pre-release — `release.yml` sets `prerelease: contains(ref_name, '-')`)
 - `assets` array has **6 entries**, exactly:
   - `aasm-aarch64-apple-darwin.tar.gz`
   - `aasm-x86_64-apple-darwin.tar.gz`
@@ -186,7 +187,7 @@ do not block.
 ### 5. Homebrew tap — formula version + matching SHA256SUMS
 
 ```bash
-FORMULA="$(gh api repos/ai-agent-assembly/homebrew-agent-assembly/contents/Formula/aasm.rb \
+FORMULA="$(gh api repos/ai-agent-assembly/homebrew-tap/contents/Formula/aasm.rb \
   --jq '.content' | base64 -d)"
 printf '%s\n' "$FORMULA" | grep -E '^[[:space:]]*version '
 printf '%s\n' "$FORMULA" | grep -E 'sha256 '
@@ -254,7 +255,7 @@ the missing-package list.
 ```bash
 # agent-assembly main docs site
 gh run list --repo ai-agent-assembly/agent-assembly \
-  --workflow "Docs" --branch master --limit 1 \
+  --workflow "Docs" --branch main --limit 1 \
   --json status,conclusion,createdAt,url
 
 # python-sdk and node-sdk publish docs via GitHub Pages directly
@@ -304,11 +305,13 @@ skill does not relearn them every cut.
    agent-assembly==$PEP440` is unaffected because yanked versions are
    excluded from resolution unless explicitly pinned.
 
-2. **go-sdk is out of scope by design.** The Go SDK cuts its own
-   `goreleaser`-driven tag on its own cadence and is decoupled from the
-   `agent-assembly` release. Per `docs/release/RUNBOOK.md` section 7, do
-   NOT flag go-sdk as a missing channel. There is no `release-go.yml`
-   fanout to probe.
+2. **go-sdk has no published channel to validate here.** The Go SDK ships
+   via the Go module proxy off its own `goreleaser`-driven tag on its own
+   cadence. Per `docs/release/RUNBOOK.md` section 7, do NOT flag go-sdk as a
+   missing channel; there is no `release-go.yml` binary fanout to probe.
+   (`release.yml` does open an `update-go-sdk-ffi-pin` auto-bump PR per tag —
+   AAASM-3006 — but that is a source-pin PR on go-sdk, confirmed by merging
+   the PR, not a registry channel in this read-only matrix.)
 
 3. **crates.io public REST is rate-limited.** Sustained polling of
    `https://crates.io/api/v1/crates/<name>` returns 429. Use the

@@ -124,7 +124,7 @@ async fn e2e_hitl_approve_releases_blocked_waiter() {
         .expect("waiter resolves within deadline")
         .expect("waiter task did not panic");
     match decision {
-        ApprovalDecision::Approved { by, reason } => {
+        ApprovalDecision::Approved { by, reason, .. } => {
             assert_eq!(by, "ops-1");
             assert_eq!(reason.as_deref(), Some("approved by ST-P-1"));
         }

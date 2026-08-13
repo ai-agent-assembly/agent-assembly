@@ -20,7 +20,29 @@ export function isDeltaPositive(metric: KpiMetric, delta: number): boolean {
   }
 }
 
+// Threshold beyond which we switch to compact notation (100x = 10,000%)
+const LARGE_DELTA_THRESHOLD = 100
+
+// Intl formatter for large percentage values: e.g. 12345% -> +12K%
+const compactFormatter = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+})
+
 export function formatDelta(delta: number): string {
+  // Guard against non-finite values (Infinity, -Infinity, NaN) which occur
+  // when the prior-window baseline is 0 or data is malformed.
+  if (!Number.isFinite(delta)) {
+    return '—'
+  }
+
   const sign = delta > 0 ? '+' : ''
-  return `${sign}${(delta * 100).toFixed(1)}%`
+  const percent = delta * 100
+
+  // Use compact notation for very large deltas to prevent overflow
+  if (Math.abs(delta) >= LARGE_DELTA_THRESHOLD) {
+    return `${sign}${compactFormatter.format(Math.abs(percent))}%`
+  }
+
+  return `${sign}${percent.toFixed(1)}%`
 }

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
+import { PieChart, Pie, Tooltip, ResponsiveContainer } from 'recharts'
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { useApprovalAnalyticsQuery } from './useApprovalAnalyticsQuery'
 import { CHART_COLORBLIND_PALETTE } from './chartPalette'
@@ -21,9 +21,9 @@ function formatRate(rate: number): string {
 
 function buildDonutData(data: ApprovalAnalyticsResponse) {
   return [
-    { name: 'Approved', value: data.byOutcome.approved },
-    { name: 'Rejected', value: data.byOutcome.rejected },
-    { name: 'Expired',  value: data.byOutcome.expired  },
+    { name: 'Approved', value: data?.byOutcome?.approved ?? 0 },
+    { name: 'Rejected', value: data?.byOutcome?.rejected ?? 0 },
+    { name: 'Expired',  value: data?.byOutcome?.expired  ?? 0 },
   ]
 }
 
@@ -37,36 +37,47 @@ export function ApprovalAnalyticsPanel() {
   const { filters } = useAnalyticsFilters()
   const { data, isPending, isError } = useApprovalAnalyticsQuery(filters)
 
-  const donutData = useMemo(() => (data ? buildDonutData(data) : []), [data])
+  // Per-slice colour is carried on each datum's `fill` (recharts reads it when
+  // computing sector colours), replacing the deprecated <Cell> child elements.
+  const donutData = useMemo(
+    () =>
+      data
+        ? buildDonutData(data).map((entry, i) => ({
+            ...entry,
+            fill: DONUT_COLORS[i % DONUT_COLORS.length],
+          }))
+        : [],
+    [data],
+  )
 
-  return (
-    <div className="approval-analytics-panel" data-testid="approval-analytics-panel">
-      <div className="approval-analytics-panel__header">
-        <h2 className="approval-analytics-panel__title">Approval Analytics</h2>
-      </div>
-
-      {isPending ? (
-        <div className="approval-analytics-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="approval-analytics-panel__error">Failed to load approval data.</p>
-      ) : !data ? null : (
-        <div className="approval-analytics-panel__body">
+  function renderBody() {
+    if (isPending) {
+      return <div className="approval-analytics-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="approval-analytics-panel__error">Failed to load approval data.</p>
+    }
+    if (!data) {
+      return null
+    }
+    return (
+      <div className="approval-analytics-panel__body">
           <div className="approval-analytics-panel__stats">
             <div className="approval-analytics-panel__stat">
               <span className="approval-analytics-panel__stat-value">
-                {data.volume.toLocaleString()}
+                {(data.volume ?? 0).toLocaleString()}
               </span>
               <span className="approval-analytics-panel__stat-label">Total volume</span>
             </div>
             <div className="approval-analytics-panel__stat">
               <span className="approval-analytics-panel__stat-value">
-                {formatTta(data.medianTta)}
+                {formatTta(data.medianTta ?? 0)}
               </span>
               <span className="approval-analytics-panel__stat-label">Median TTA</span>
             </div>
             <div className="approval-analytics-panel__stat">
               <span className="approval-analytics-panel__stat-value">
-                {formatRate(data.approvalRate)}
+                {formatRate(data.approvalRate ?? 0)}
               </span>
               <span className="approval-analytics-panel__stat-label">Approval rate</span>
             </div>
@@ -83,11 +94,7 @@ export function ApprovalAnalyticsPanel() {
                   outerRadius={72}
                   dataKey="value"
                   isAnimationActive={false}
-                >
-                  {donutData.map((entry, i) => (
-                    <Cell key={entry.name} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
-                  ))}
-                </Pie>
+                />
                 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                 <Tooltip formatter={(value: any) => [value.toLocaleString(), '']} />
               </PieChart>
@@ -108,7 +115,16 @@ export function ApprovalAnalyticsPanel() {
             </ul>
           </div>
         </div>
-      )}
+    )
+  }
+
+  return (
+    <div className="approval-analytics-panel" data-testid="approval-analytics-panel">
+      <div className="approval-analytics-panel__header">
+        <h2 className="approval-analytics-panel__title">Approval Analytics</h2>
+      </div>
+
+      {renderBody()}
     </div>
   )
 }

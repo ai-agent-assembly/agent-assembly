@@ -15,6 +15,11 @@ pub enum Capability {
     FileRead,
     /// Write access to the filesystem.
     FileWrite,
+    /// Delete/unlink access to the filesystem.
+    ///
+    /// A distinct verb from [`Capability::FileWrite`] so a policy can allow
+    /// writes while denying deletes (and vice versa). See AAASM-4103.
+    FileDelete,
     /// Outbound network connections.
     NetworkOutbound,
     /// Inbound network connections.
@@ -37,6 +42,57 @@ pub struct CapabilitySet {
     pub allow: BTreeSet<Capability>,
     /// Capabilities explicitly denied.
     pub deny: BTreeSet<Capability>,
+    /// Whether an allow-list restriction is in force, independent of whether
+    /// `allow` currently lists anything.
+    ///
+    /// Set once any cascade tier contributes a non-empty allow-list. It exists
+    /// to disambiguate the two meanings an empty `allow` would otherwise
+    /// conflate: "no allow-list was ever declared" (unrestricted — only `deny`
+    /// governs) versus "an allow-list was declared but a disjoint multi-tier
+    /// intersection collapsed it to empty" (deny-all). Without this flag,
+    /// merging two disjoint restrictive whitelists produces an empty `allow`
+    /// that the guard reads as "no restriction", failing *open* to allow-all —
+    /// the inverse of most-restrictive-wins (AAASM-4154). `serde(default)` keeps
+    /// older serialized sets (which lack the field) deserializing unchanged.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allow_restricted: bool,
+}
+
+impl CapabilitySet {
+    /// Whether an allow-list restriction governs this set.
+    ///
+    /// True when the set whitelists at least one capability, or when a prior
+    /// cascade tier declared a non-empty allow that a disjoint merge collapsed
+    /// to empty (`allow_restricted`). When this is true, the capability guard
+    /// must deny any capability absent from `allow`; an empty `allow` therefore
+    /// means deny-all, never "no restriction" (AAASM-4154).
+    #[must_use]
+    pub fn allow_is_restricted(&self) -> bool {
+        self.allow_restricted || !self.allow.is_empty()
+    }
+}
+
+impl Capability {
+    /// Whether declaring this capability in a policy actually governs anything.
+    ///
+    /// A capability is *enforceable* only if some [`crate::GovernanceAction`]
+    /// maps to it via [`action_to_capability`] — otherwise no action ever routes
+    /// to it, so a declared allow/deny is silently inert and gives the operator a
+    /// false sense of security (AAASM-4099).
+    ///
+    /// Currently inert (no corresponding action variant): [`Capability::Model`],
+    /// [`Capability::NetworkInbound`], and [`Capability::AgentSpawn`]. This
+    /// predicate is the single source of truth policy validation uses to warn
+    /// loudly when a policy references one of them; keep it in lock-step with
+    /// [`action_to_capability`] — when a new action lands that maps to one of
+    /// these, wire the mapping there and drop it from the inert arm below.
+    #[must_use]
+    pub fn is_enforceable(&self) -> bool {
+        !matches!(
+            self,
+            Capability::Model(_) | Capability::NetworkInbound | Capability::AgentSpawn
+        )
+    }
 }
 
 impl FromStr for Capability {
@@ -46,6 +102,7 @@ impl FromStr for Capability {
         match s {
             "file_read" => Ok(Capability::FileRead),
             "file_write" => Ok(Capability::FileWrite),
+            "file_delete" => Ok(Capability::FileDelete),
             "network_outbound" => Ok(Capability::NetworkOutbound),
             "network_inbound" => Ok(Capability::NetworkInbound),
             "terminal_exec" => Ok(Capability::TerminalExec),
@@ -74,6 +131,7 @@ impl core::fmt::Display for Capability {
         match self {
             Capability::FileRead => f.write_str("file_read"),
             Capability::FileWrite => f.write_str("file_write"),
+            Capability::FileDelete => f.write_str("file_delete"),
             Capability::NetworkOutbound => f.write_str("network_outbound"),
             Capability::NetworkInbound => f.write_str("network_inbound"),
             Capability::TerminalExec => f.write_str("terminal_exec"),
@@ -94,6 +152,10 @@ impl core::fmt::Display for Capability {
 ///   - Parent empty, child non-empty → `child.allow` minus merged deny.
 ///   - Parent non-empty, child empty → `parent.allow` minus merged deny.
 ///   - Both non-empty → intersection of `parent.allow` and `child.allow`, minus merged deny.
+/// - `allow_restricted` = set once either input restricts (carries its flag) or
+///   declares a non-empty allow-list. This preserves the restriction across a
+///   disjoint intersection that empties `allow`, so the guard fails *closed*
+///   (deny-all) instead of reading empty as "unrestricted" (AAASM-4154).
 ///
 /// Requires the `alloc` feature.
 #[cfg(feature = "alloc")]
@@ -117,7 +179,16 @@ pub fn merge_capabilities(parent: &CapabilitySet, child: &CapabilitySet) -> Capa
             .collect(),
     };
 
-    CapabilitySet { allow, deny }
+    // A restriction is in force if either input already carries one or declares
+    // a non-empty allow-list — even when the intersection above empties `allow`.
+    let allow_restricted =
+        parent.allow_restricted || child.allow_restricted || !parent.allow.is_empty() || !child.allow.is_empty();
+
+    CapabilitySet {
+        allow,
+        deny,
+        allow_restricted,
+    }
 }
 
 /// Map a [`crate::GovernanceAction`] to the [`Capability`] it exercises,
@@ -130,8 +201,11 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
     use crate::GovernanceAction;
 
     // NOTE: Capability::AgentSpawn, NetworkInbound, and Model variants have no
-    // corresponding GovernanceAction yet. When new action variants land, add
-    // mappings here to avoid silent policy bypasses.
+    // corresponding GovernanceAction yet — they are flagged by
+    // `Capability::is_enforceable` so policy load warns loudly instead of
+    // presenting a silently-inert control (AAASM-4099). When new action variants
+    // land, add mappings here AND drop the variant from `is_enforceable`'s inert
+    // arm to avoid silent policy bypasses.
     match action {
         GovernanceAction::ToolCall { name, .. } => Some(Capability::McpTool(name.clone())),
         GovernanceAction::ToolResult { tool_name, .. } => Some(Capability::McpTool(tool_name.clone())),
@@ -139,13 +213,41 @@ pub fn action_to_capability(action: &crate::GovernanceAction) -> Option<Capabili
             mode: FileMode::Read, ..
         } => Some(Capability::FileRead),
         GovernanceAction::FileAccess {
-            mode: FileMode::Write | FileMode::Append | FileMode::Delete,
+            mode: FileMode::Write | FileMode::Append,
             ..
         } => Some(Capability::FileWrite),
+        // Delete is a first-class verb (AAASM-4103): it maps to FileDelete, not
+        // FileWrite, so a policy can allow writes yet deny deletes. A pre-4103
+        // `file_write` allow no longer implies delete — delete needs an explicit
+        // `file_delete` grant (fail-closed). See `capability_is_denied` for the
+        // reverse defense-in-depth rule on the deny side.
+        GovernanceAction::FileAccess {
+            mode: FileMode::Delete, ..
+        } => Some(Capability::FileDelete),
         GovernanceAction::NetworkRequest { .. } => Some(Capability::NetworkOutbound),
         GovernanceAction::ProcessExec { .. } => Some(Capability::TerminalExec),
         GovernanceAction::SendMessage { .. } => None,
     }
+}
+
+/// Whether a policy `deny` set blocks `cap`, honoring superset denies.
+///
+/// A `FileWrite` deny also blocks `FileDelete`: policies authored before
+/// `FileDelete` existed (AAASM-4103) expressed "no mutation" as a single
+/// `file_write` deny, and that intent must keep blocking delete — a stale
+/// write-deny must never leak delete (fail-closed migration). The converse is
+/// deliberately absent: a `FileWrite` *allow* never grants `FileDelete`;
+/// delete requires an explicit `file_delete` allow. Net effect: the new verb
+/// can only ever make delete *more* restricted than before, never less.
+///
+/// Requires the `alloc` feature.
+#[cfg(feature = "alloc")]
+pub fn capability_is_denied(deny: &BTreeSet<Capability>, cap: &Capability) -> bool {
+    if deny.contains(cap) {
+        return true;
+    }
+    // Defense in depth: deny(file_write) ⇒ deny(file_delete).
+    matches!(cap, Capability::FileDelete) && deny.contains(&Capability::FileWrite)
 }
 
 /// Per-scope contribution to an effective permission set.
@@ -238,6 +340,23 @@ mod tests {
     }
 
     #[test]
+    fn capability_from_str_file_delete() {
+        assert_eq!("file_delete".parse::<Capability>().unwrap(), Capability::FileDelete);
+    }
+
+    #[test]
+    fn capability_file_delete_display_round_trips() {
+        let cap = Capability::FileDelete;
+        assert_eq!(cap.to_string(), "file_delete");
+        assert_eq!(cap.to_string().parse::<Capability>().unwrap(), cap);
+    }
+
+    #[test]
+    fn capability_file_delete_distinct_from_file_write() {
+        assert_ne!(Capability::FileDelete, Capability::FileWrite);
+    }
+
+    #[test]
     fn capability_from_str_network_outbound() {
         assert_eq!(
             "network_outbound".parse::<Capability>().unwrap(),
@@ -314,6 +433,7 @@ mod tests {
         CapabilitySet {
             allow: allow.iter().cloned().collect(),
             deny: deny.iter().cloned().collect(),
+            allow_restricted: false,
         }
     }
 
@@ -441,12 +561,13 @@ mod tests {
     }
 
     #[test]
-    fn action_to_capability_file_delete_is_file_write() {
+    fn action_to_capability_file_delete_is_file_delete() {
+        // AAASM-4103: Delete is its own capability, not FileWrite.
         let action = crate::GovernanceAction::FileAccess {
             path: "/tmp/f".to_string(),
             mode: crate::policy::FileMode::Delete,
         };
-        assert_eq!(super::action_to_capability(&action), Some(Capability::FileWrite));
+        assert_eq!(super::action_to_capability(&action), Some(Capability::FileDelete));
     }
 
     #[test]
@@ -458,11 +579,174 @@ mod tests {
         assert_eq!(super::action_to_capability(&action), Some(Capability::NetworkOutbound));
     }
 
+    // ------------------------------------------------------------------
+    // is_enforceable tests (AAASM-4099)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn is_enforceable_false_for_inert_capabilities() {
+        // These have no GovernanceAction mapping, so declaring them is silently
+        // inert — is_enforceable must flag them so policy load can warn loudly.
+        assert!(!Capability::NetworkInbound.is_enforceable());
+        assert!(!Capability::AgentSpawn.is_enforceable());
+        assert!(!Capability::Model("gpt-4o".to_string()).is_enforceable());
+    }
+
+    #[test]
+    fn is_enforceable_true_for_action_backed_capabilities() {
+        assert!(Capability::FileRead.is_enforceable());
+        assert!(Capability::FileWrite.is_enforceable());
+        assert!(Capability::NetworkOutbound.is_enforceable());
+        assert!(Capability::TerminalExec.is_enforceable());
+        assert!(Capability::McpTool("bash".to_string()).is_enforceable());
+    }
+
+    #[test]
+    fn action_to_capability_only_yields_enforceable_capabilities() {
+        // Invariant: every capability an action can produce must be enforceable,
+        // otherwise stage_capability could deny on a cap load warned was inert.
+        let actions = [
+            crate::GovernanceAction::ToolCall {
+                name: "bash".to_string(),
+                args: "{}".to_string(),
+            },
+            crate::GovernanceAction::FileAccess {
+                path: "/tmp/f".to_string(),
+                mode: crate::policy::FileMode::Read,
+            },
+            crate::GovernanceAction::FileAccess {
+                path: "/tmp/f".to_string(),
+                mode: crate::policy::FileMode::Write,
+            },
+            crate::GovernanceAction::NetworkRequest {
+                url: "https://example.com".to_string(),
+                method: "GET".to_string(),
+            },
+            crate::GovernanceAction::ProcessExec {
+                command: "ls".to_string(),
+            },
+        ];
+        for action in &actions {
+            if let Some(cap) = super::action_to_capability(action) {
+                assert!(
+                    cap.is_enforceable(),
+                    "action {action:?} mapped to inert capability {cap:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn action_to_capability_process_exec() {
         let action = crate::GovernanceAction::ProcessExec {
             command: "ls".to_string(),
         };
         assert_eq!(super::action_to_capability(&action), Some(Capability::TerminalExec));
+    }
+
+    // ------------------------------------------------------------------
+    // capability_is_denied tests (AAASM-4103 fail-closed migration)
+    // ------------------------------------------------------------------
+
+    fn deny_set(caps: &[Capability]) -> BTreeSet<Capability> {
+        caps.iter().cloned().collect()
+    }
+
+    #[test]
+    fn capability_is_denied_direct_match() {
+        let deny = deny_set(&[Capability::FileDelete]);
+        assert!(super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    #[test]
+    fn capability_is_denied_empty_set_is_false() {
+        let deny = deny_set(&[]);
+        assert!(!super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    #[test]
+    fn capability_is_denied_file_write_deny_also_denies_delete() {
+        // Defense in depth: a pre-4103 `file_write` deny keeps blocking delete.
+        let deny = deny_set(&[Capability::FileWrite]);
+        assert!(super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    #[test]
+    fn capability_is_denied_file_delete_deny_does_not_deny_write() {
+        // Asymmetric: delete-deny must NOT block writes.
+        let deny = deny_set(&[Capability::FileDelete]);
+        assert!(!super::capability_is_denied(&deny, &Capability::FileWrite));
+    }
+
+    #[test]
+    fn capability_is_denied_unrelated_deny_is_false() {
+        let deny = deny_set(&[Capability::NetworkOutbound]);
+        assert!(!super::capability_is_denied(&deny, &Capability::FileDelete));
+    }
+
+    // ------------------------------------------------------------------
+    // allow_restricted / allow_is_restricted (AAASM-4154)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn allow_is_restricted_true_when_allow_non_empty() {
+        // A non-empty allow-list is a restriction even without the flag set.
+        let cs = cap_set(&[Capability::FileRead], &[]);
+        assert!(cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn allow_is_restricted_false_when_no_allow_declared() {
+        // Deny-only (or empty) set with no restriction flag → unrestricted.
+        let cs = cap_set(&[], &[Capability::TerminalExec]);
+        assert!(!cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn allow_is_restricted_true_when_flag_set_but_allow_empty() {
+        // The collapsed-cascade shape: empty allow but restriction carried.
+        let cs = CapabilitySet {
+            allow: BTreeSet::new(),
+            deny: BTreeSet::new(),
+            allow_restricted: true,
+        };
+        assert!(cs.allow_is_restricted());
+    }
+
+    #[test]
+    fn merge_disjoint_allow_lists_stays_restricted_with_empty_allow() {
+        // AAASM-4154: two disjoint non-empty allow-lists intersect to empty, but
+        // the restriction must survive so the guard fails closed (deny-all)
+        // rather than reading empty allow as "no restriction" (allow-all).
+        let parent = cap_set(&[Capability::FileRead], &[]);
+        let child = cap_set(&[Capability::FileWrite], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.is_empty(), "disjoint allow-lists intersect to empty");
+        assert!(result.allow_restricted, "restriction must persist across the collapse");
+        assert!(
+            result.allow_is_restricted(),
+            "guard must treat the collapsed set as restricted (deny-all)"
+        );
+    }
+
+    #[test]
+    fn merge_single_tier_allow_is_restricted() {
+        // A lone declared allow-list is a restriction after merge.
+        let parent = CapabilitySet::default();
+        let child = cap_set(&[Capability::FileRead], &[]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.contains(&Capability::FileRead));
+        assert!(result.allow_restricted);
+    }
+
+    #[test]
+    fn merge_no_allow_declared_is_unrestricted() {
+        // Deny-only tiers never manufacture an allow-list restriction.
+        let parent = cap_set(&[], &[Capability::FileWrite]);
+        let child = cap_set(&[], &[Capability::TerminalExec]);
+        let result = super::merge_capabilities(&parent, &child);
+        assert!(result.allow.is_empty());
+        assert!(!result.allow_restricted);
+        assert!(!result.allow_is_restricted());
     }
 }

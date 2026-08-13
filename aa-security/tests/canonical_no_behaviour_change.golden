@@ -1,0 +1,155 @@
+## anthropic
+findings: 2
+  AnthropicKey @13 [REDACTED:AnthropicKey]
+  GenericHighEntropy @13 [REDACTED:GenericHighEntropy]
+redacted: auth header: [REDACTED:AnthropicKey] gets sent
+## openai
+findings: 2
+  GenericHighEntropy @0 [REDACTED:GenericHighEntropy]
+  OpenAiKey @15 [REDACTED:OpenAiKey]
+redacted: [REDACTED:OpenAiKey]\nexport it
+## aws_long_term
+findings: 1
+  AwsAccessKey @20 [REDACTED:AwsAccessKey]
+redacted: aws_access_key_id = [REDACTED:AwsAccessKey]
+## aws_sts
+findings: 1
+  AwsAccessKey @17 [REDACTED:AwsAccessKey]
+redacted: temporary creds: [REDACTED:AwsAccessKey]
+## gcp
+findings: 1
+  GcpServiceAccount @1 [REDACTED:GcpServiceAccount]
+redacted: {[REDACTED:GcpServiceAccount], "project_id": "demo-1"}
+## gcp_compact
+findings: 1
+  GcpServiceAccount @1 [REDACTED:GcpServiceAccount]
+redacted: {[REDACTED:GcpServiceAccount],"project_id":"demo-2"}
+## azure
+findings: 2
+  AzureConnectionString @0 [REDACTED:AzureConnectionString]
+  AzureConnectionString @48 [REDACTED:AzureConnectionString]
+redacted: [REDACTED:AzureConnectionString];AccountName=acct;[REDACTED:AzureConnectionString];
+## github_pat_classic
+findings: 1
+  GitHubPat @6 [REDACTED:GitHubPat]
+redacted: token [REDACTED:GitHubPat]
+## github_pat_fine
+findings: 1
+  GitHubPat @6 [REDACTED:GitHubPat]
+redacted: token [REDACTED:GitHubPat]
+## github_app
+findings: 1
+  GitHubAppToken @13 [REDACTED:GitHubAppToken]
+redacted: installation [REDACTED:GitHubAppToken]
+## github_oauth
+findings: 1
+  GitHubOAuthToken @6 [REDACTED:GitHubOAuthToken]
+redacted: oauth [REDACTED:GitHubOAuthToken]
+## github_user
+findings: 1
+  GitHubUserToken @5 [REDACTED:GitHubUserToken]
+redacted: user [REDACTED:GitHubUserToken]
+## github_refresh
+findings: 1
+  GitHubRefreshToken @8 [REDACTED:GitHubRefreshToken]
+redacted: refresh [REDACTED:GitHubRefreshToken]
+## slack_bot
+findings: 1
+  SlackBotToken @6 [REDACTED:SlackBotToken]
+redacted: SLACK=[REDACTED:SlackBotToken]
+## slack_user
+findings: 1
+  SlackUserToken @6 [REDACTED:SlackUserToken]
+redacted: SLACK=[REDACTED:SlackUserToken]
+## slack_oauth
+findings: 1
+  SlackOAuthToken @6 [REDACTED:SlackOAuthToken]
+redacted: SLACK=[REDACTED:SlackOAuthToken]
+## slack_refresh
+findings: 1
+  SlackRefreshToken @6 [REDACTED:SlackRefreshToken]
+redacted: SLACK=[REDACTED:SlackRefreshToken]
+## slack_app
+findings: 1
+  SlackAppToken @6 [REDACTED:SlackAppToken]
+redacted: SLACK=[REDACTED:SlackAppToken]
+## postgres
+findings: 3
+  EmailAddress @0 [REDACTED:EmailAddress]
+  GenericHighEntropy @0 [REDACTED:GenericHighEntropy]
+  PostgresUrl @13 [REDACTED:PostgresUrl]
+redacted: [REDACTED:PostgresUrl]
+## mysql
+findings: 3
+  EmailAddress @0 [REDACTED:EmailAddress]
+  GenericHighEntropy @0 [REDACTED:GenericHighEntropy]
+  MysqlUrl @13 [REDACTED:MysqlUrl]
+redacted: [REDACTED:MysqlUrl]
+## mongodb
+findings: 3
+  EmailAddress @0 [REDACTED:EmailAddress]
+  GenericHighEntropy @0 [REDACTED:GenericHighEntropy]
+  MongodbUrl @13 [REDACTED:MongodbUrl]
+redacted: [REDACTED:MongodbUrl]
+## pem_rsa
+findings: 2
+  RsaPrivateKey @0 [REDACTED:RsaPrivateKey]
+  GenericHighEntropy @32 [REDACTED:GenericHighEntropy]
+redacted: [REDACTED:RsaPrivateKey]\n[REDACTED:GenericHighEntropy]\n-----END RSA PRIVATE KEY-----
+## pem_ec
+findings: 2
+  EcPrivateKey @0 [REDACTED:EcPrivateKey]
+  GenericHighEntropy @31 [REDACTED:GenericHighEntropy]
+redacted: [REDACTED:EcPrivateKey]\n[REDACTED:GenericHighEntropy]\n-----END EC PRIVATE KEY-----
+## pem_openssh
+findings: 1
+  OpensshPrivateKey @0 [REDACTED:OpensshPrivateKey]
+redacted: [REDACTED:OpensshPrivateKey]\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\n-----END OPENSSH PRIVATE KEY-----
+## pem_pkcs8
+findings: 2
+  PrivateKey @0 [REDACTED:PrivateKey]
+  GenericHighEntropy @28 [REDACTED:GenericHighEntropy]
+redacted: [REDACTED:PrivateKey]\n[REDACTED:GenericHighEntropy]\n-----END PRIVATE KEY-----
+## pem_pgp
+findings: 2
+  PgpPrivateKey @0 [REDACTED:PgpPrivateKey]
+  GenericHighEntropy @38 [REDACTED:GenericHighEntropy]
+redacted: [REDACTED:PgpPrivateKey]\n[REDACTED:GenericHighEntropy]\n-----END PGP PRIVATE KEY BLOCK-----
+## credit_card
+findings: 1
+  CreditCardLuhn @13 [REDACTED:CreditCardLuhn]
+redacted: card on file [REDACTED:CreditCardLuhn] expires soon
+## email
+findings: 1
+  EmailAddress @8 [REDACTED:EmailAddress]
+redacted: contact [REDACTED:EmailAddress] for access
+## ssn
+findings: 1
+  SsnPattern @16 [REDACTED:SsnPattern]
+redacted: employee record [REDACTED:SsnPattern] filed
+## high_entropy_b64
+findings: 1
+  GenericHighEntropy @0 [REDACTED:GenericHighEntropy]
+redacted: [REDACTED:GenericHighEntropy]
+## high_entropy_hex
+findings: 1
+  GenericHighEntropy @7 [REDACTED:GenericHighEntropy]
+redacted: digest=[REDACTED:GenericHighEntropy]
+## mixed_zh_tw_clean
+findings: 0
+redacted: 使用者詢問：請幫我把這份報告翻譯成英文，並整理成三個重點。The agent replied with a summary of the quarterly results and asked whether the customer wanted the appendix included as well. 助理回覆：好的，我會在明天下午之前完成。
+## mixed_zh_tw_with_secret
+findings: 4
+  GenericHighEntropy @42 [REDACTED:GenericHighEntropy]
+  PostgresUrl @55 [REDACTED:PostgresUrl]
+  AnthropicKey @117 [REDACTED:AnthropicKey]
+  GenericHighEntropy @117 [REDACTED:GenericHighEntropy]
+redacted: 設定檔內容如下，請協助檢查：[REDACTED:PostgresUrl] 以及 API 金鑰 [REDACTED:AnthropicKey]
+## clean_prose
+findings: 0
+redacted: The deployment finished at noon and the rollout looks healthy across all three regions.
+## overlapping_url_and_email
+findings: 2
+  PostgresUrl @12 [REDACTED:PostgresUrl]
+  EmailAddress @12 [REDACTED:EmailAddress]
+redacted: connect via [REDACTED:PostgresUrl] now

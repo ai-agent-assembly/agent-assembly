@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type SyntheticEvent } from 'react'
 import {
   APPROVER_QUORUM_OPTS,
   APPROVER_SLA_OPTS,
@@ -31,15 +31,15 @@ function ChipList({
   onChange,
   placeholder,
   testid,
-}: {
+}: Readonly<{
   values: string[]
   onChange: (next: string[]) => void
   placeholder: string
   testid: string
-}) {
+}>) {
   const [draft, setDraft] = useState('')
 
-  const handleAdd = (e: FormEvent<HTMLFormElement>) => {
+  const handleAdd = (e: SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault()
     const trimmed = draft.trim()
     if (trimmed.length === 0) return
@@ -92,11 +92,11 @@ function NarrowSubClause({
   resource,
   values,
   onChange,
-}: {
+}: Readonly<{
   resource: ResourceOption
   values: string[]
   onChange: (next: string[]) => void
-}) {
+}>) {
   return (
     <div className="editor__sub-clause" data-testid="editor-narrow">
       <div className="editor__sub-clause-row">
@@ -118,10 +118,10 @@ function NarrowSubClause({
 function ApprovalSubClause({
   value,
   onChange,
-}: {
+}: Readonly<{
   value: ApproverConfig
   onChange: (next: ApproverConfig) => void
-}) {
+}>) {
   return (
     <div className="editor__sub-clause" data-testid="editor-approver">
       <div className="editor__sub-clause-row">
@@ -174,10 +174,10 @@ function ApprovalSubClause({
 function ScrubSubClause({
   value,
   onChange,
-}: {
+}: Readonly<{
   value: string[]
   onChange: (next: string[]) => void
-}) {
+}>) {
   const toggle = (preset: string) => {
     if (value.includes(preset)) {
       onChange(value.filter((v) => v !== preset))
@@ -219,10 +219,10 @@ function ScrubSubClause({
 function ExceptionsSubClause({
   values,
   onChange,
-}: {
+}: Readonly<{
   values: string[]
   onChange: (next: string[]) => void
-}) {
+}>) {
   return (
     <div className="editor__sub-clause" data-testid="editor-except">
       <div className="editor__sub-clause-row">
@@ -252,7 +252,7 @@ function ExceptionsSubClause({
  *   - scrub-then-allow: scrub tags + except list
  *   - deny:             except list only
  */
-export function SubClauses({ rule, onChange }: SubClausesProps) {
+export function SubClauses({ rule, onChange }: Readonly<SubClausesProps>) {
   const action: ActionKind = rule.action
 
   return (
@@ -279,12 +279,12 @@ export function SubClauses({ rule, onChange }: SubClausesProps) {
         />
       ) : null}
 
-      {action !== 'allow' ? (
+      {action === 'allow' ? null : (
         <ExceptionsSubClause
           values={rule.exceptions ?? []}
           onChange={(exceptions) => onChange({ exceptions })}
         />
-      ) : null}
+      )}
     </>
   )
 }

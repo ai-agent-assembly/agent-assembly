@@ -12,7 +12,7 @@ const TABS: ReadonlyArray<{ value: AlertsTab; label: string }> = [
   { value: 'rules', label: 'Rule Configuration' },
 ]
 
-export function AlertsTabs({ value, onChange }: AlertsTabsProps) {
+export function AlertsTabs({ value, onChange }: Readonly<AlertsTabsProps>) {
   return (
     <div
       data-testid="alerts-tabs"

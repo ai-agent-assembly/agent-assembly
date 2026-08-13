@@ -37,7 +37,11 @@
   margin-left: 8px;
   font-size: 14px;
   font-weight: 400;
-  color: var(--ink-4);
+  /* `--ink-3`, not `--ink-4`: this span now carries the `NO_DATA` em-dash when
+     the fleet size is not a known fact, and `--ink-4` measures 3.45:1 (light) /
+     3.83:1 (dark) — below the ADR-0027 AA floor. The absence glyph is the least
+     affordable thing on the page to render illegibly. */
+  color: var(--ink-3);
   font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 
@@ -145,7 +149,12 @@
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: var(--ink-4);
+  /* `--ink-3`, not the `--ink-4` this rule shipped with while it had no
+     consumer: at 12px/400 `--ink-4` measures 3.45:1 (light) / 3.83:1 (dark),
+     below the ADR-0027 WCAG 2.1 AA floor of 4.5:1, and no large-text exemption
+     applies. `--ink-3` is the smallest step that clears it (6.90:1 / 7.07:1)
+     and keeps the title on the same hue ramp as the body it heads. */
+  color: var(--ink-3);
 }
 
 .fleet-empty__body {
@@ -232,20 +241,19 @@
 
 /* ── Bulk action bar ────────────────────────────────────────── */
 
+/* Rendered inline inside `.fleet-filters` (AAASM-5069): pushed to the right of
+   the filter row via margin-left:auto, per the hi-fi Fleet layout. */
 .fleet-bulkbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 24px;
-  background: var(--paper-3);
-  border-bottom: 1px solid var(--line);
+  margin-left: auto;
 }
 
 .fleet-bulkbar__count {
   font-size: 11px;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   color: var(--ink-3);
-  margin-right: auto;
 }
 
 .fleet-bulkbar__btn {
@@ -312,6 +320,23 @@
   letter-spacing: 0;
 }
 
+/* ── Filtered-empty callout (AAASM-5130) ───────────────────────
+   Sits *under* the table, mirroring `design/v2/hi-fi/fleet.jsx:275`: the
+   column headers stay so the operator keeps the sort/column context, and the
+   callout supplies the sentence the bare headers could not. */
+
+.fleet-empty--filtered {
+  /* `<output>` (implicit role="status", preferred over role="status" per
+     typescript:S6819) is inline by default. */
+  display: block;
+  padding: 48px 24px 60px;
+  border-top: 1px solid var(--line);
+}
+
+.fleet-empty__action {
+  margin-top: 16px;
+}
+
 /* ── Fleet data table ───────────────────────────────────────── */
 
 .fleet-table__wrap {
@@ -346,6 +371,7 @@
 
 .fleet-table__th--sortable { cursor: pointer; }
 .fleet-table__th--sortable:hover { color: var(--ink); }
+.fleet-table__th--numeric { text-align: right; }
 
 .fleet-table__sort {
   margin-left: 3px;
@@ -363,7 +389,7 @@
 }
 
 .fleet-table__row:hover { background: var(--paper-3); }
-.fleet-table__row--flagged { background: rgba(184, 41, 30, 0.04); }
+.fleet-table__row--flagged { background: var(--danger-row-tint); }
 
 .fleet-table__cell {
   padding: 7px 10px;
@@ -371,6 +397,10 @@
 }
 
 .fleet-table__cell--skeleton { padding: 7px 10px; }
+/* Alignment lives on the cell, not the inner span: a right-aligned inline
+   span inside a left-aligned `<td>` only shrink-wraps to the digits, so the
+   column never forms a scannable right-aligned edge (AAASM-5161). */
+.fleet-table__cell--numeric { text-align: right; }
 
 .fleet-table__skeleton {
   display: block;
@@ -428,10 +458,17 @@
 }
 
 .fleet-table__numeric {
-  display: inline-block;
-  text-align: right;
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   color: var(--ink-2);
+}
+
+.fleet-table__numeric--danger {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.fleet-table__numeric--scrub {
+  color: var(--scrub);
 }
 
 .fleet-table__last-seen {
@@ -456,3 +493,82 @@
 }
 
 .fleet-table__action:hover { background: var(--paper-3); }
+
+/* ── Active Sessions tab ────────────────────────────────────── */
+
+/* Live count badge on the (inactive) Active Sessions tab — mirrors the
+   ok-coloured pill in design/v1/hi-fi/fleet.jsx. */
+.fleet-tabs__count--live {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border: 1px solid var(--ok);
+}
+
+.fleet-tabs__tab--active .fleet-tabs__count--live {
+  background: var(--ink);
+  color: var(--paper-2);
+  border-color: var(--ink);
+}
+
+.fleet-session__id {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.fleet-session__agent {
+  display: block;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.fleet-session__agent:hover { text-decoration-style: solid; }
+
+.fleet-session__team {
+  display: block;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9px;
+  color: var(--ink-4);
+  margin-top: 1px;
+}
+
+.fleet-session__running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.fleet-session__pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 0 var(--ok);
+  animation: fleet-session-pulse 1.8s ease-out infinite;
+}
+
+@keyframes fleet-session-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fleet-session__pulse { animation: none; }
+}
+
+.fleet-session__inspect {
+  font-size: 11px;
+  color: var(--ink-3);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.fleet-session__inspect:hover { color: var(--ink); }

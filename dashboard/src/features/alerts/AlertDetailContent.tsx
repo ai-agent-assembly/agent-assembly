@@ -2,12 +2,14 @@ import { useAlertQuery } from './api'
 import { SeverityBadge } from './SeverityBadge'
 import { StatusBadge } from './StatusBadge'
 import { SilenceAction } from './SilenceAction'
+import { ResolveAction } from './ResolveAction'
 import { RuleYamlViewer } from './RuleYamlViewer'
 import type { AlertDetail } from './types'
 
 function ruleYaml(detail: AlertDetail): string {
   const r = detail.ruleSnapshot
   const labels = Object.entries(r.suppressionLabels)
+  const labelLines = labels.map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')
   return [
     `name: ${JSON.stringify(r.name)}`,
     `metric: ${r.metric}`,
@@ -17,9 +19,7 @@ function ruleYaml(detail: AlertDetail): string {
     `severity: ${r.severity}`,
     `dedup_window_seconds: ${r.dedupWindowSeconds}`,
     `destinations: [${r.destinationIds.map((d) => JSON.stringify(d)).join(', ')}]`,
-    labels.length
-      ? `suppression_labels:\n${labels.map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')}`
-      : 'suppression_labels: {}',
+    labels.length ? `suppression_labels:\n${labelLines}` : 'suppression_labels: {}',
   ].join('\n')
 }
 
@@ -40,7 +40,7 @@ interface AlertDetailContentProps {
   alertId: string
 }
 
-export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
+export function AlertDetailContent({ alertId }: Readonly<AlertDetailContentProps>) {
   const { data, isLoading, isError, error } = useAlertQuery(alertId)
 
   if (isLoading) {
@@ -146,7 +146,10 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
       </section>
 
       {data.status !== 'RESOLVED' && (
-        <SilenceAction alertId={data.id} silenced={data.status === 'SUPPRESSED'} />
+        <>
+          <ResolveAction alertId={data.id} />
+          <SilenceAction alertId={data.id} silenced={data.status === 'SUPPRESSED'} />
+        </>
       )}
 
       <section style={sectionStyle}>
@@ -158,8 +161,8 @@ export function AlertDetailContent({ alertId }: AlertDetailContentProps) {
             data-testid="alert-detail-routing-log"
             style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: '0.75rem' }}
           >
-            {data.routingLog.map((entry, i) => (
-              <li key={i}>
+            {data.routingLog.map((entry) => (
+              <li key={`${entry.deliveredAt}-${entry.destinationId}`}>
                 <strong>{entry.deliveredAt}</strong> → {entry.destinationId} ·{' '}
                 <span style={{ color: entry.status === 'ok' ? 'var(--status-success-text-strong)' : 'var(--status-danger-text-strong)' }}>
                   {entry.status}

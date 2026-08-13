@@ -15,15 +15,34 @@ function isStepId(value: unknown): value is StepId {
   return typeof value === 'string' && VALID_STEP_IDS.has(value)
 }
 
+/**
+ * Fields no current build writes, whose presence marks a pre-AAASM-5179 payload.
+ *
+ * `identity` held a browser-minted DID and a "fingerprint" of unrelated random
+ * bytes; `installVerified` recorded a verification no probe ever performed.
+ * Neither has a reader any more, so neither could do harm on its own — but a
+ * payload carrying them is by definition one this build did not write, and
+ * rehydrating a wizard from it would restore progress that was recorded against
+ * claims since withdrawn. Rejected outright rather than silently ignored.
+ */
+const WITHDRAWN_KEYS = ['identity', 'installVerified', 'gatewayReachable'] as const
+
+/**
+ * Validates by *shape*, not merely by key presence.
+ *
+ * Presence alone accepted `{ framework: 42, enrolled: 'yes' }`, which then
+ * reached `canAdvance` as a `WizardState` the type system believed. The wizard
+ * restarts on anything it cannot vouch for.
+ */
 function isWizardState(value: unknown): value is WizardState {
-  if (!value || typeof value !== 'object') return false
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const v = value as Record<string, unknown>
+  if (WITHDRAWN_KEYS.some((key) => key in v)) return false
   return (
-    'framework' in v &&
-    'installVerified' in v &&
-    'identity' in v &&
-    'policyPreset' in v &&
-    'enrolled' in v
+    (v.framework === null || typeof v.framework === 'string') &&
+    typeof v.gatewayHealthy === 'boolean' &&
+    (v.policyPreset === null || typeof v.policyPreset === 'string') &&
+    typeof v.enrolled === 'boolean'
   )
 }
 
@@ -34,7 +53,7 @@ function isWizardState(value: unknown): value is WizardState {
  * shape change).
  */
 export function loadWizardSession(
-  storage: Storage = window.localStorage,
+  storage: Storage = globalThis.localStorage,
 ): WizardSession | null {
   try {
     const raw = storage.getItem(ONBOARDING_SESSION_KEY)
@@ -51,7 +70,7 @@ export function loadWizardSession(
 
 export function saveWizardSession(
   session: WizardSession,
-  storage: Storage = window.localStorage,
+  storage: Storage = globalThis.localStorage,
 ): void {
   try {
     storage.setItem(ONBOARDING_SESSION_KEY, JSON.stringify(session))
@@ -60,7 +79,7 @@ export function saveWizardSession(
   }
 }
 
-export function clearWizardSession(storage: Storage = window.localStorage): void {
+export function clearWizardSession(storage: Storage = globalThis.localStorage): void {
   try {
     storage.removeItem(ONBOARDING_SESSION_KEY)
   } catch {
@@ -68,17 +87,34 @@ export function clearWizardSession(storage: Storage = window.localStorage): void
   }
 }
 
+export interface ResolvedSession extends WizardSession {
+  /**
+   * A payload was stored and was rejected, so saved progress was dropped.
+   *
+   * Distinguished from "nothing was stored" so the page can say what happened.
+   * Dropping an operator at step 1 with no explanation invites them to assume
+   * the wizard lost their work at random; the honest reading is that the saved
+   * progress recorded claims this build has withdrawn.
+   */
+  discarded: boolean
+}
+
 /**
  * Resolves the wizard's initial step + state on mount. Falls back to
- * step 1 with EMPTY_STATE when no session is persisted.
+ * step 1 with EMPTY_STATE when no session is persisted or the persisted one
+ * was rejected.
  */
 export function resolveInitialSession(
-  storage: Storage = window.localStorage,
-): WizardSession {
-  return (
-    loadWizardSession(storage) ?? {
-      step: 'framework',
-      state: EMPTY_STATE,
-    }
-  )
+  storage: Storage = globalThis.localStorage,
+): ResolvedSession {
+  const loaded = loadWizardSession(storage)
+  if (loaded) return { ...loaded, discarded: false }
+
+  let stored: string | null = null
+  try {
+    stored = storage.getItem(ONBOARDING_SESSION_KEY)
+  } catch {
+    stored = null
+  }
+  return { step: 'framework', state: EMPTY_STATE, discarded: stored !== null }
 }

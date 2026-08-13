@@ -113,4 +113,30 @@ mod tests {
             "empty AA_DATA_DIR should fall through to data_local_dir; got {path:?}"
         );
     }
+
+    #[test]
+    fn write_read_remove_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(tmp.path().to_str().unwrap());
+
+        // No file yet → read returns None, remove is a silent no-op.
+        assert!(read_pid().is_none());
+        remove_pid().unwrap();
+
+        write_pid(4321).unwrap();
+        let (pid, port) = read_pid().expect("pid file should be readable after write");
+        assert_eq!(pid, std::process::id());
+        assert_eq!(port, 4321);
+
+        remove_pid().unwrap();
+        assert!(read_pid().is_none(), "pid file should be gone after remove");
+    }
+
+    #[test]
+    fn read_pid_returns_none_on_malformed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = EnvGuard::set(tmp.path().to_str().unwrap());
+        std::fs::write(pid_path(), "not-a-pid\n").unwrap();
+        assert!(read_pid().is_none());
+    }
 }

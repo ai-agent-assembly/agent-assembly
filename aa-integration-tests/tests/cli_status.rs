@@ -176,10 +176,10 @@ async fn status_exits_1_when_agent_has_policy_violations() {
     let fixture = CliFixture::start().await.expect("fixture should start");
 
     // `aasm status` exits 1 when at least one agent reports
-    // `policy_violations_count > 0`. AgentSpec doesn't expose that field
-    // (and adding it would extend shared infra beyond the AC's
-    // seed_approval allowance), so register the violation-carrying agent
-    // directly on the in-process registry.
+    // `policy_violations_count > 0`. AAASM-5103 — that count is derived from the
+    // agent's `PolicyViolation` audit events, not a record field (the dead
+    // counter was removed). Register a plain agent and seed real violation events
+    // so `status` reads a genuine non-zero count through the audit path.
     let pid_bytes = std::process::id().to_le_bytes();
     let mut id = [0u8; 16];
     id[0..4].copy_from_slice(&pid_bytes);
@@ -201,7 +201,6 @@ async fn status_exits_1_when_agent_has_policy_violations() {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 3,
         active_sessions: vec![],
         recent_events: VecDeque::new(),
         recent_traces: vec![],
@@ -216,6 +215,7 @@ async fn status_exits_1_when_agent_has_policy_violations() {
         children: vec![],
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     };
     fixture
@@ -223,6 +223,9 @@ async fn status_exits_1_when_agent_has_policy_violations() {
         .agent_registry
         .register(record)
         .expect("violator agent should register");
+    fixture
+        .seed_audit_events(3, id, aa_core::audit::AuditEventType::PolicyViolation)
+        .expect("seed PolicyViolation audit events");
 
     let out = fixture
         .cmd()

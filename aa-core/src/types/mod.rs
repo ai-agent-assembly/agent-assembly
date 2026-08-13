@@ -14,11 +14,14 @@
 mod agent_id;
 mod audit_event;
 mod credential;
-mod policy;
+// Gated on `std` rather than `alloc` because the sensitive-data records are
+// built from `aa-security`'s canonical finding model, and `aa-security` is only
+// a dependency under `std` (see this crate's `Cargo.toml`).
+#[cfg(feature = "std")]
+pub mod sensitive_data;
 mod session_ctx;
 
 pub use agent_id::{AgentId, AgentIdParseError};
 pub use audit_event::AuditEvent;
 pub use credential::Credential;
-pub use policy::{Policy, Rule};
 pub use session_ctx::SessionCtx;

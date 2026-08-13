@@ -1,0 +1,190 @@
+/* ============================================================
+   TopologySidebar (AAASM-5071)
+   Left control rail — stat badges, team filter, edge-type
+   checkboxes + cross-team toggle, cycle alert, status legend.
+   Mirrors design/v1/hi-fi/topology.jsx TopoSidebar; all colours
+   are tokens so it re-themes in light/dark.
+   ============================================================ */
+
+.topo-sidebar {
+  width: 12rem;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  background: var(--paper-2);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.topo-sidebar__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.topo-sidebar__stat {
+  white-space: nowrap;
+}
+
+.topo-sidebar__stat--ok {
+  color: var(--ok);
+}
+
+.topo-sidebar__stat--danger {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.topo-sidebar__stat--muted {
+  color: var(--ink-4);
+}
+
+/* "N not shown" — the gap between the fleet-wide cross-team count and what the
+   canvas is drawing (AAASM-5138). `--warn` is the `caution` tone the shared
+   truthfulness vocabulary uses for a value the operator has to act on to see. */
+.topo-sidebar__stat--hidden {
+  color: var(--warn);
+}
+
+/* "⚠ N unclaimed" — agents no team claims (AAASM-5184). Warn-toned per
+   design/v2/hi-fi/topology.jsx:952: not a fault, but a governance gap the
+   operator has an action to take about. */
+.topo-sidebar__stat--warn {
+  color: var(--warn);
+}
+
+.topo-sidebar__group {
+  padding: 0.7rem 0.8rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.topo-sidebar__group--footer {
+  margin-top: auto;
+  border-bottom: none;
+}
+
+.topo-sidebar__heading {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-4);
+  margin-bottom: 0.45rem;
+}
+
+.topo-sidebar__team {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  border: none;
+  border-radius: 3px;
+  margin-bottom: 1px;
+  background: transparent;
+  color: var(--ink-3);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.topo-sidebar__team:hover {
+  background: var(--paper-3);
+}
+
+.topo-sidebar__team--active {
+  background: var(--paper-3);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.topo-sidebar__team-mark {
+  color: var(--ink-4);
+}
+
+/* The unclaimed row reads as the governance gap it is, so it is not mistaken
+   for one more team in the list (design/v2/hi-fi/topology.jsx:790). */
+.topo-sidebar__team--unclaimed,
+.topo-sidebar__team--unclaimed .topo-sidebar__team-mark {
+  color: var(--warn);
+}
+
+.topo-sidebar__edge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+  font-size: 9px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.topo-sidebar__edge--soon {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.topo-sidebar__edge-swatch {
+  font-weight: 800;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.topo-sidebar__edge-label {
+  flex: 1;
+}
+
+.topo-sidebar__edge-soon {
+  font-size: 7.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-5);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0 3px;
+}
+
+.topo-sidebar__alert {
+  background: var(--info-bg);
+  border: 1px solid var(--danger);
+  border-radius: 3px;
+  padding: 0.45rem 0.6rem;
+  font-size: 9px;
+  color: var(--danger);
+}
+
+.topo-sidebar__alert-title {
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.topo-sidebar__alert-body {
+  opacity: 0.85;
+}
+
+.topo-sidebar__legend-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+  font-size: 9px;
+  color: var(--ink-3);
+}
+
+.topo-sidebar__legend-swatch {
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+}
+
+.topo-sidebar__hint {
+  margin-top: 0.5rem;
+  font-size: 8.5px;
+  color: var(--ink-4);
+  line-height: 1.5;
+}

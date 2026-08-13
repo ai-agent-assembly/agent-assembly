@@ -1,5 +1,5 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
 import { FleetPage } from '../../pages/FleetPage'
@@ -13,7 +13,7 @@ function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children, path = '/', initialPath = '/' }: { children: React.ReactNode; path?: string; initialPath?: string }) {
+function Wrapper({ children, path = '/', initialPath = '/' }: Readonly<{ children: React.ReactNode; path?: string; initialPath?: string }>) {
   return (
     <QueryClientProvider client={makeClient()}>
       <ToastProvider>
@@ -44,6 +44,7 @@ const MOCK_AGENT: Agent = {
   active_sessions: [],
   session_count: 3,
   policy_violations_count: 1,
+  is_flagged: true,
   tool_names: ['web_search', 'code_exec'],
   metadata: {},
   pid: null,
@@ -86,7 +87,7 @@ describe('FleetPage', () => {
       mockQuery<Agent[]>({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
     )
     render(<FleetPage />, { wrapper: ({ children }) => <Wrapper path="/">{children}</Wrapper> })
-    await waitFor(() => expect(screen.getByTestId('agents-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('agents-empty')).toBeInTheDocument()
   })
 
   it('shows error banner with retry button on failure', () => {
@@ -116,7 +117,7 @@ describe('AgentDetailPage', () => {
       </Wrapper>,
     )
 
-    await waitFor(() => expect(screen.getByTestId('agent-detail')).toBeInTheDocument())
+    expect(await screen.findByTestId('agent-detail')).toBeInTheDocument()
     expect(screen.getByText('test-agent')).toBeInTheDocument()
     // Framework chip + recent events table both surface "langgraph" / "enforced".
     expect(screen.getAllByText('langgraph').length).toBeGreaterThan(0)

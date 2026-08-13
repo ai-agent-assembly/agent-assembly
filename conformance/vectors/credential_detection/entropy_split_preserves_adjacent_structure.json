@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5368: the split rule must not destroy the document around what it finds. Two shapes that an earlier form of the rule damaged. In the SQL projection the two runs are joined by a comma, which is NOT a splitting separator: punctuation leaves both halves inside one whitespace token, so the whitespace-token pass already scores it and clamps the span at the first delimiter, keeping the column name intact — admitting punctuation into the split rule added no detection and replaced that correctly clamped span with a wider one, redacting replicasCount. In the YAML the two runs are joined by a newline, which IS a splitting separator, so the pair is scored — but as two findings rather than one span across the separator, because the separator is the evasion rather than part of the secret. A single joined span redacted the newline and left a document that no longer parses.",
+  "input_text": "SELECT aB3dEf7hJk9mNp2qR,replicasCount FROM t",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 7 }
+  ],
+  "expected_redacted": "SELECT [REDACTED:GenericHighEntropy],replicasCount FROM t"
+}

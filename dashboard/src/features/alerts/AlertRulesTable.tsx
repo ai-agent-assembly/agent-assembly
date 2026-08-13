@@ -3,6 +3,7 @@ import { SeverityBadge } from './SeverityBadge'
 import { useAlertRulesQuery, useDeleteAlertRuleMutation } from './api'
 import { useToast } from '../../components/Toast'
 import { EmptyStateNoRules } from './EmptyStateNoRules'
+import { usePermissions, WRITE_REQUIRED_HINT } from '../../auth/usePermissions'
 import type { AlertRule } from './types'
 
 interface AlertRulesTableProps {
@@ -39,10 +40,14 @@ const headerStyle = {
  * Wired into AlertsPage in the same Story; rules state is fetched via
  * `useAlertRulesQuery` (same hook AlertsPage already uses).
  */
-export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: AlertRulesTableProps) {
+export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: Readonly<AlertRulesTableProps>) {
   const rulesQuery = useAlertRulesQuery()
   const deleteMutation = useDeleteAlertRuleMutation()
   const { toast } = useToast()
+  // AAASM-5147: mirrors the gate AlertsPage already puts on "New rule". Without
+  // it, Edit / Delete rendered enabled for a read-scope caller whose click ended
+  // in a raw `DELETE … failed: 403` toast.
+  const { canWrite } = usePermissions()
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   const rules = rulesQuery.data ?? []
@@ -64,6 +69,11 @@ export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: AlertR
     })
   }
 
+  const pluralSuffix = rules.length === 1 ? '' : 's'
+  const ruleCountLabel = isLoading
+    ? 'Loading rules…'
+    : `${rules.length} alert rule${pluralSuffix} configured`
+
   return (
     <section data-testid="alert-rules-tab">
       <div
@@ -77,9 +87,7 @@ export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: AlertR
         }}
       >
         <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-          {isLoading
-            ? 'Loading rules…'
-            : `${rules.length} alert rule${rules.length === 1 ? '' : 's'} configured`}
+          {ruleCountLabel}
         </p>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button
@@ -94,13 +102,15 @@ export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: AlertR
             type="button"
             data-testid="alert-rules-create"
             onClick={onCreate}
+            disabled={!canWrite}
+            title={canWrite ? undefined : WRITE_REQUIRED_HINT}
             style={{
               padding: '6px 12px',
               background: 'var(--button-primary-bg)',
               color: 'var(--button-primary-text)',
               border: 'none',
               borderRadius: '4px',
-              cursor: 'pointer',
+              cursor: canWrite ? 'pointer' : 'not-allowed',
               fontSize: '0.875rem',
             }}
           >
@@ -172,6 +182,8 @@ export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: AlertR
                     type="button"
                     data-testid="alert-rules-row-edit"
                     onClick={() => onEdit(rule)}
+                    disabled={!canWrite}
+                    title={canWrite ? undefined : WRITE_REQUIRED_HINT}
                     style={{ padding: '4px 10px', fontSize: '0.75rem', marginRight: '0.25rem' }}
                   >
                     Edit
@@ -180,7 +192,8 @@ export function AlertRulesTable({ onCreate, onEdit, onOpenDestinations }: AlertR
                     type="button"
                     data-testid="alert-rules-row-delete"
                     onClick={() => handleDelete(rule)}
-                    disabled={pendingDeleteId === rule.id}
+                    disabled={!canWrite || pendingDeleteId === rule.id}
+                    title={canWrite ? undefined : WRITE_REQUIRED_HINT}
                     style={{
                       padding: '4px 10px',
                       fontSize: '0.75rem',

@@ -1,6 +1,6 @@
 ---
 name: homebrew-tap-merge
-description: Verify and merge the bot PR that release.yml auto-opens on homebrew-agent-assembly for a new agent-assembly release. Use when a bot/aasm-<version> PR is open on the Homebrew tap and needs sha256 cross-verification against the upstream SHA256SUMS, a stale-master server-side rebase, or the AAASM-2871 macOS-CI tap-trust workaround before it can be merged.
+description: Verify and merge the bot PR that release.yml auto-opens on homebrew-tap for a new agent-assembly release. Use when a bot/aasm-<version> PR is open on the Homebrew tap and needs sha256 cross-verification against the upstream SHA256SUMS, a stale-master server-side rebase, or the AAASM-2871 macOS-CI tap-trust workaround before it can be merged.
 ---
 
 # SKILL.md — homebrew-tap-merge
@@ -8,7 +8,7 @@ description: Verify and merge the bot PR that release.yml auto-opens on homebrew
 ## Purpose
 
 After each `agent-assembly` release, `release.yml`'s `update-homebrew-tap` job
-opens a `bot/aasm-<version>` PR on `ai-agent-assembly/homebrew-agent-assembly`
+opens a `bot/aasm-<version>` PR on `ai-agent-assembly/homebrew-tap`
 that bumps `Formula/aasm.rb` (version line + 4 SHA256 sums). This skill owns the
 verify-and-merge flow for that PR so `brew install aasm` picks up the release.
 
@@ -18,7 +18,7 @@ it is logically owned by the upstream that publishes to it.
 ## When to use
 
 Invoke when `release.yml`'s `update-homebrew-tap` job has finished and a
-`bot/aasm-<version>` PR is open on `ai-agent-assembly/homebrew-agent-assembly`,
+`bot/aasm-<version>` PR is open on `ai-agent-assembly/homebrew-tap`,
 and the operator (or `release-watch`) wants to verify the bot diff and merge it.
 
 ## When NOT to use
@@ -38,7 +38,7 @@ and the operator (or `release-watch`) wants to verify the bot diff and merge it.
 ```
 
 Example: `/homebrew-tap-merge 16`. Resolve the PR number with
-`gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open`. The
+`gh pr list --repo ai-agent-assembly/homebrew-tap --state open`. The
 matching upstream `agent-assembly` release must already be published with its
 `SHA256SUMS` asset attached.
 
@@ -47,7 +47,7 @@ matching upstream `agent-assembly` release must already be published with its
 ### 1. Verify PR scope
 
 ```bash
-gh pr view <n> --repo ai-agent-assembly/homebrew-agent-assembly \
+gh pr view <n> --repo ai-agent-assembly/homebrew-tap \
   --json files,additions,deletions
 ```
 
@@ -69,7 +69,7 @@ mismatch table — **escalate; do not merge**.
 ### 3. Handle red `brew install + test (macOS)` check
 
 ```bash
-gh pr view <n> --repo ai-agent-assembly/homebrew-agent-assembly \
+gh pr view <n> --repo ai-agent-assembly/homebrew-tap \
   --json baseRefOid,mergeable,mergeStateStatus
 ```
 
@@ -78,21 +78,21 @@ gh pr view <n> --repo ai-agent-assembly/homebrew-agent-assembly \
 
   ```bash
   gh api -X PUT \
-    /repos/ai-agent-assembly/homebrew-agent-assembly/pulls/<n>/update-branch \
+    /repos/ai-agent-assembly/homebrew-tap/pulls/<n>/update-branch \
     -f update_method=rebase
   ```
 
   Wait for CI to re-run, then re-evaluate. See the AAASM-2871 note below.
 
 - If the PR is up to date, surface the failure log with
-  `gh run view --repo ai-agent-assembly/homebrew-agent-assembly --job <id> --log-failed`.
+  `gh run view --repo ai-agent-assembly/homebrew-tap --job <id> --log-failed`.
 
 ### 4. Merge
 
 Once CI is green and sha256s are verified:
 
 ```bash
-gh pr merge <n> --repo ai-agent-assembly/homebrew-agent-assembly --squash
+gh pr merge <n> --repo ai-agent-assembly/homebrew-tap --squash
 ```
 
 ## AAASM-2871 quirk (live until Homebrew/brew#22719 ships)

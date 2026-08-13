@@ -29,11 +29,33 @@
   gap: 8px;
 }
 
+/* See PatternsLibrary.css: category replaces a severity scale the product never
+   modelled. Same colour mapping, so a kind reads identically in both places. */
+.scrub-detail-cat {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.scrub-detail-cat--api-key,
+.scrub-detail-cat--private-key { color: var(--danger); }
+.scrub-detail-cat--auth-token,
+.scrub-detail-cat--cloud-credential { color: var(--warn); }
+.scrub-detail-cat--database-url,
+.scrub-detail-cat--pii { color: var(--info); }
+.scrub-detail-cat--generic,
+.scrub-detail-cat--policy-defined { color: var(--ink-3); }
+
+/* Severity as `/scrub/patterns` serves it (AAASM-5347). Same colour ramp as the
+   catalogue table so a kind reads identically in both places. */
 .scrub-detail-sev {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  text-transform: uppercase;
   font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 8px;
+  color: var(--ink-3);
 }
 
 .scrub-detail-sev--critical { color: var(--danger); }
@@ -58,7 +80,10 @@
 
 .scrub-detail-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  /* Four cells since AAASM-5347 added the windowed alert count. `auto-fit` with
+     a floor keeps them on one row on a wide pane and wraps to two on a narrow
+     one, rather than crushing the detection prose to an unreadable column. */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
   margin-top: 12px;
 }
@@ -87,13 +112,79 @@
   color: var(--ink);
 }
 
-.scrub-detail-code--example {
-  background: var(--danger-bg);
-  color: var(--danger);
-  text-decoration: line-through;
+.scrub-detail-prose {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* The alert cell's event-vs-finding caveat. It sits with the number rather than
+   only in a tooltip, because a tooltip is not reachable by every operator and
+   this distinction is the difference between a count and an overstatement. */
+.scrub-detail-hint {
+  margin: 4px 0 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ink-4);
 }
 
 .scrub-detail-code--replace {
   background: var(--scrub-bg);
   color: var(--scrub);
+}
+
+.scrub-detail-actions {
+  margin-top: 12px;
+}
+
+.scrub-detail-actions-row {
+  display: flex;
+  gap: 6px;
+}
+
+/* The note is not a tooltip: a disabled control explains itself in text that
+   survives a screenshot and is reachable without a pointer. */
+.scrub-detail-actions-note {
+  margin: 6px 0 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-4);
+}
+
+.scrub-detail-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.scrub-detail-btn:disabled:hover {
+  background: var(--paper);
+}
+
+.scrub-detail-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.scrub-detail-btn:hover {
+  background: var(--paper-3);
+  color: var(--ink);
+}
+
+.scrub-detail-btn--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.scrub-detail-btn--danger:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
 }

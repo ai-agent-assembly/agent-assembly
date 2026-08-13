@@ -36,18 +36,18 @@ Once rustdoc is built (`target/doc/<crate>/index.html`), the most-frequented ent
 
 | Crate | rustdoc entry | Highlights |
 |---|---|---|
-| [`aa-core`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-core) | `target/doc/aa_core/index.html` | Domain newtypes (`AgentId`, `TeamId`), `ActionType` enum, common traits |
-| [`aa-proto`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-proto) | `target/doc/aa_proto/index.html` | Generated protobuf message types — wire format source of truth |
-| [`aa-runtime`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-runtime) | `target/doc/aa_runtime/index.html` | Tokio runtime wrapper, agent lifecycle hooks |
-| [`aa-proxy`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-proxy) | `target/doc/aa_proxy/index.html` | MitM HTTPS proxy primitives |
-| [`aa-gateway`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-gateway) | `target/doc/aa_gateway/index.html` | Policy engine, agent registry, budget tracker |
-| [`aa-api`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-api) | `target/doc/aa_api/index.html` | HTTP layer with `utoipa`-generated OpenAPI spec |
-| [`aa-cli`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-cli) | `target/doc/aa_cli/index.html` | `aasm` operator binary surface (clap commands) |
-| [`aa-sdk-client`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-sdk-client) | `target/doc/aa_sdk_client/index.html` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the Python/Node/Go shims wrap |
-| [`aa-wasm`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-wasm) | `target/doc/aa_wasm/index.html` | wasm-bindgen surface for in-browser embedding |
-| [`conformance`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/conformance) | `target/doc/conformance/index.html` | Cross-SDK protocol vector harness |
+| [`aa-core`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-core) | `target/doc/aa_core/index.html` | Domain newtypes (`AgentId`, `TeamId`), `ActionType` enum, common traits |
+| [`aa-proto`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-proto) | `target/doc/aa_proto/index.html` | Generated protobuf message types — wire format source of truth |
+| [`aa-runtime`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-runtime) | `target/doc/aa_runtime/index.html` | Tokio runtime wrapper, agent lifecycle hooks |
+| [`aa-proxy`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-proxy) | `target/doc/aa_proxy/index.html` | MitM HTTPS proxy primitives |
+| [`aa-gateway`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-gateway) | `target/doc/aa_gateway/index.html` | Policy engine, agent registry, budget tracker |
+| [`aa-api`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-api) | `target/doc/aa_api/index.html` | HTTP layer with `utoipa`-generated OpenAPI spec |
+| [`aa-cli`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-cli) | `target/doc/aa_cli/index.html` | `aasm` operator binary surface (clap commands) |
+| [`aa-sdk-client`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-sdk-client) | `target/doc/aa_sdk_client/index.html` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the Python/Node/Go shims wrap |
+| [`aa-wasm`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-wasm) | `target/doc/aa_wasm/index.html` | wasm-bindgen surface for in-browser embedding |
+| [`conformance`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/conformance) | `target/doc/conformance/index.html` | Cross-SDK protocol vector harness |
 
-The HTTP API (served by `aa-api`) additionally publishes a generated [OpenAPI v1 spec](https://github.com/ai-agent-assembly/agent-assembly/tree/master/openapi). Validate the spec with `npx @stoplight/spectral-cli lint openapi/v1.yaml`.
+The HTTP API (served by `aa-api`) additionally publishes a generated [OpenAPI v1 spec](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/openapi). Validate the spec with `npx @stoplight/spectral-cli lint openapi/v1.yaml`.
 
 ## Hosted documentation (deferred)
 

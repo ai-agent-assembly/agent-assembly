@@ -34,8 +34,12 @@ aasm admin run-retention --dry-run
 
 ```json
 {
-  "dry_run": true,
-  "audit_events_scanned": 14293,
-  "audit_events_dropped": 0
+  "ran_at": "2026-06-09T14:05:00Z",
+  "hot_rows": 14293,
+  "compressed_rows": 512,
+  "archived_rows": 128,
+  "dropped_rows": 0,
+  "freed_bytes": 0,
+  "dry_run": true
 }
 ```

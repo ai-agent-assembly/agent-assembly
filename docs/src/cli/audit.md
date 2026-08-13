@@ -43,8 +43,8 @@ aasm audit list --result deny --since 2h --limit 20
 ```
 
 ```text
-SEQ   TIMESTAMP             AGENT     EVENT             RESULT
-142   2026-06-09T14:01:00Z  a1b2c3…   PolicyViolation   deny
+TIMESTAMP             AGENT     ACTION            TOOL         RESULT   POLICY
+2026-06-09T14:01:00Z  a1b2c3…   PolicyViolation   file_write   deny     block-system-paths
 ```
 
 ---
@@ -87,7 +87,7 @@ aasm audit verify-chain ./audit/session-7f3a.jsonl
 ```
 
 ```text
-✓ chain valid — 412 entries, genesis → entry 0xab12…
+OK — 412 entries verified
 ```
 
 ---

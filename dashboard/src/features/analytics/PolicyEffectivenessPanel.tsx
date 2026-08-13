@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { usePolicyEffectivenessQuery } from './usePolicyEffectivenessQuery'
 import {
@@ -7,6 +7,7 @@ import {
   sortRulesByBlocks,
   collectDates,
   ratioToColor,
+  formatDate,
 } from './policyEffectivenessUtils'
 import type { PolicyDay } from './policyEffectivenessUtils'
 
@@ -18,10 +19,29 @@ interface TooltipState {
   y: number
 }
 
-const DATE_FMT = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+interface HeatmapCellProps {
+  ruleId: string
+  ruleName: string
+  date: string
+  day: PolicyDay
+  onEnter: (rule: { id: string; name: string }, day: PolicyDay, target: HTMLElement) => void
+  onLeave: () => void
+}
 
-function formatDate(iso: string): string {
-  return DATE_FMT.format(new Date(iso))
+function HeatmapCell({ ruleId, ruleName, date, day, onEnter, onLeave }: Readonly<HeatmapCellProps>) {
+  const ratio = computeRatio(day)
+  return (
+    <div
+      className="policy-effectiveness-panel__cell"
+      style={{ background: ratioToColor(ratio) }}
+      data-testid={`policy-heatmap-cell-${ruleId}-${date}`}
+      data-ratio={ratio.toFixed(4)}
+      role="gridcell"
+      aria-label={`${ruleName} ${date}: ${day.blocks} blocks, ${day.warns} warns, ${day.passes} passes`}
+      onMouseEnter={(e) => onEnter({ id: ruleId, name: ruleName }, day, e.currentTarget)}
+      onMouseLeave={onLeave}
+    />
+  )
 }
 
 export function PolicyEffectivenessPanel() {
@@ -47,23 +67,34 @@ export function PolicyEffectivenessPanel() {
     return m
   }, [rules])
 
-  return (
-    <div className="policy-effectiveness-panel" data-testid="policy-effectiveness-panel">
-      <div className="policy-effectiveness-panel__header">
-        <h2 className="policy-effectiveness-panel__title">Policy Effectiveness</h2>
-      </div>
+  function showCellTooltip(
+    rule: { id: string; name: string },
+    day: PolicyDay,
+    target: HTMLElement,
+  ) {
+    const rect = target.getBoundingClientRect()
+    setTooltip({ ruleId: rule.id, ruleName: rule.name, day, x: rect.left, y: rect.top })
+  }
 
-      {isPending ? (
-        <div className="policy-effectiveness-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="policy-effectiveness-panel__error">Failed to load policy data.</p>
-      ) : rules.length === 0 ? (
+  const hideCellTooltip = () => setTooltip(null)
+
+  function renderBody() {
+    if (isPending) {
+      return <div className="policy-effectiveness-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="policy-effectiveness-panel__error">Failed to load policy data.</p>
+    }
+    if (rules.length === 0) {
+      return (
         <div className="policy-effectiveness-panel__empty">
           <p>No policies are enabled for the selected filters.</p>
           <a href="/policy/builder">Go to Policy Builder</a>
         </div>
-      ) : (
-        <div className="policy-effectiveness-panel__scroll">
+      )
+    }
+    return (
+      <div className="policy-effectiveness-panel__scroll">
           <div
             className="policy-effectiveness-panel__grid"
             style={{
@@ -83,7 +114,7 @@ export function PolicyEffectivenessPanel() {
                 Rule {sortAsc ? '↑' : '↓'}
               </button>
             </div>
-            {dates.map(date => (
+            {dates.map((date) => (
               <div key={date} className="policy-effectiveness-panel__date-cell" title={date}>
                 {formatDate(date)}
               </div>
@@ -91,41 +122,33 @@ export function PolicyEffectivenessPanel() {
 
             {/* Data rows */}
             {sortedRules.map(rule => (
-              <>
+              <Fragment key={rule.id}>
                 <div
-                  key={`label-${rule.id}`}
                   className="policy-effectiveness-panel__rule-label"
                   title={rule.name}
                 >
                   {rule.name}
                 </div>
-                {dates.map(date => {
+                {dates.map((date) => {
                   const day = dayMap.get(rule.id)?.get(date) ?? {
                     date,
                     blocks: 0,
                     warns: 0,
                     passes: 0,
                   }
-                  const ratio = computeRatio(day)
-                  const bg = ratioToColor(ratio)
                   return (
-                    <div
-                      key={`cell-${rule.id}-${date}`}
-                      className="policy-effectiveness-panel__cell"
-                      style={{ background: bg }}
-                      data-testid={`policy-heatmap-cell-${rule.id}-${date}`}
-                      data-ratio={ratio.toFixed(4)}
-                      role="gridcell"
-                      aria-label={`${rule.name} ${date}: ${day.blocks} blocks, ${day.warns} warns, ${day.passes} passes`}
-                      onMouseEnter={e => {
-                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                        setTooltip({ ruleId: rule.id, ruleName: rule.name, day, x: rect.left, y: rect.top })
-                      }}
-                      onMouseLeave={() => setTooltip(null)}
+                    <HeatmapCell
+                      key={date}
+                      ruleId={rule.id}
+                      ruleName={rule.name}
+                      date={date}
+                      day={day}
+                      onEnter={showCellTooltip}
+                      onLeave={hideCellTooltip}
                     />
                   )
                 })}
-              </>
+              </Fragment>
             ))}
           </div>
 
@@ -148,7 +171,16 @@ export function PolicyEffectivenessPanel() {
             </div>
           )}
         </div>
-      )}
+    )
+  }
+
+  return (
+    <div className="policy-effectiveness-panel" data-testid="policy-effectiveness-panel">
+      <div className="policy-effectiveness-panel__header">
+        <h2 className="policy-effectiveness-panel__title">Policy Effectiveness</h2>
+      </div>
+
+      {renderBody()}
     </div>
   )
 }

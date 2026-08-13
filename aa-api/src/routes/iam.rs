@@ -12,7 +12,7 @@ use aa_gateway::iam::{
     ApiKeyEntry, ApiKeyScope as GwApiKeyScope, ApiKeyStatus as GwApiKeyStatus, GeneratedApiKey as GwGeneratedApiKey,
     IamApiKeyStore, RecentActivityEntry,
 };
-use aa_gateway::policy::rbac::MutationKind;
+use aa_gateway::policy::rbac::{required_role_for, CallerRole, MutationKind};
 use aa_gateway::policy::scope::PolicyScope;
 use axum::extract::Path;
 use axum::http::StatusCode;
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::auth::policy_auth::{PolicyAuthorizationDenied, PolicyWriteAuth};
+use crate::auth::scope::{RequireAdmin, RequireRead};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -75,6 +76,9 @@ impl From<ApiKeyScopeResponse> for GwApiKeyScope {
 pub enum ApiKeyStatusResponse {
     Active,
     Revoked,
+    /// AAASM-5177 — the key is past its `expires_at`. Computed by the gateway
+    /// store on read; the dashboard renders it as a distinct terminal state.
+    Expired,
 }
 
 impl From<GwApiKeyStatus> for ApiKeyStatusResponse {
@@ -82,6 +86,7 @@ impl From<GwApiKeyStatus> for ApiKeyStatusResponse {
         match s {
             GwApiKeyStatus::Active => Self::Active,
             GwApiKeyStatus::Revoked => Self::Revoked,
+            GwApiKeyStatus::Expired => Self::Expired,
         }
     }
 }
@@ -113,6 +118,8 @@ pub struct ApiKeyResponse {
     pub scopes: Vec<ApiKeyScopeResponse>,
     pub status: ApiKeyStatusResponse,
     pub created_at: String,
+    /// AAASM-5177 — RFC3339 expiry instant, or `null` for a non-expiring key.
+    pub expires_at: Option<String>,
     pub last_used: Option<String>,
     pub owner: String,
     pub role: String,
@@ -129,6 +136,7 @@ impl From<ApiKeyEntry> for ApiKeyResponse {
             scopes: e.scopes.into_iter().map(Into::into).collect(),
             status: e.status.into(),
             created_at: e.created_at.to_rfc3339(),
+            expires_at: e.expires_at.map(|d| d.to_rfc3339()),
             last_used: e.last_used.map(|d| d.to_rfc3339()),
             owner: e.owner,
             role: e.role,
@@ -157,13 +165,145 @@ impl From<GwGeneratedApiKey> for GeneratedApiKeyResponse {
     }
 }
 
+/// AAASM-5177 — default API-key lifetime when the request omits `ttl_seconds`.
+///
+/// 90 days. Chosen as a safe default: long enough not to disrupt long-lived
+/// service integrations, short enough to bound the blast radius of a leaked key
+/// and force periodic rotation. Keys never expire only when explicitly seeded
+/// with `expires_at: None` at the store layer — this request path always sets a
+/// finite expiry, so the default is fail-safe rather than fail-open.
+pub const DEFAULT_API_KEY_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct GenerateApiKeyRequest {
     pub label: String,
     pub scopes: Vec<ApiKeyScopeResponse>,
+    /// AAASM-5177 — optional time-to-live in seconds. When omitted, the server
+    /// applies [`DEFAULT_API_KEY_TTL_SECS`] (a safe, bounded default) rather than
+    /// issuing a non-expiring key. Must be positive; `0` is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
+}
+
+// ── Role → capability grants (AAASM-5046) ──
+//
+// The dashboard's Identity → Roles tab (AAASM-5042) shipped role-capability
+// cards backed by a *static* front-end catalogue behind a flag banner, because
+// the gateway exposed no role→grant endpoint. This surfaces the real model.
+//
+// The authoritative role→capability data in the gateway is the
+// `PolicyMutationRequiredRole` table in `aa-gateway/src/policy/rbac.rs`: it
+// maps `(policy-scope, mutation) → minimum CallerRole`. There is deliberately
+// no richer per-capability catalogue on the server — the grants below are
+// *derived* from that table (exactly like `generate_policy_rbac_doc`), so this
+// endpoint reflects the coarse policy-RBAC model faithfully rather than
+// fabricating the design's richer catalogue.
+
+/// One built-in RBAC role and the governance capabilities it grants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RoleCapabilitiesResponse {
+    /// Canonical role identifier, snake_case (e.g. `org_admin`).
+    pub role: String,
+    /// Human-readable summary of what the role may do.
+    pub description: String,
+    /// Capability grant strings derived from the policy-RBAC table. Read grants
+    /// (`read:policies` / `read:audit`) reflect each role's read authority;
+    /// `write:policies:<scope>` grants come straight from `required_role_for`.
+    pub capabilities: Vec<String>,
+}
+
+/// The 5 canonical roles, highest → lowest privilege — the render order the
+/// dashboard cards expect.
+const ROLE_ORDER: [CallerRole; 5] = [
+    CallerRole::OrgAdmin,
+    CallerRole::TeamAdmin,
+    CallerRole::Developer,
+    CallerRole::Viewer,
+    CallerRole::Auditor,
+];
+
+/// Human-readable description per role, mirroring the role doc-comments in
+/// `aa-gateway/src/policy/rbac.rs` (the single source of truth for role intent).
+fn role_description(role: CallerRole) -> &'static str {
+    match role {
+        CallerRole::OrgAdmin => "Full policy mutation rights across all scopes.",
+        CallerRole::TeamAdmin => "Can mutate team-scoped policies and below (Agent, Tool).",
+        CallerRole::Developer => "Can mutate agent- and tool-scoped policies only.",
+        CallerRole::Viewer => "Read-only access — no writes permitted.",
+        CallerRole::Auditor => "Read-only audit access — no writes permitted.",
+    }
+}
+
+/// Derive the capability grant list for `role` from the policy-RBAC table.
+///
+/// The write grants are computed the same way `generate_policy_rbac_doc` builds
+/// `docs/src/policy-rbac.md`: for each policy scope, a role is granted
+/// `write:policies:<scope>` iff it satisfies the minimum role the table
+/// requires to mutate that scope. Read grants reflect the role's documented
+/// read authority (`Auditor` is audit-scoped; every other role has standard
+/// policy read). `MutationKind` does not change the required role, so any
+/// mutation kind is representative here.
+fn role_capabilities(role: CallerRole) -> Vec<String> {
+    let mut caps = Vec::new();
+
+    // Read authority: Auditor is audit-scoped; all others have standard read.
+    caps.push(match role {
+        CallerRole::Auditor => "read:audit".to_string(),
+        _ => "read:policies".to_string(),
+    });
+
+    // Representative PolicyScope per scope kind (labels match the wire scope).
+    let scopes: [(&str, PolicyScope); 5] = [
+        ("global", PolicyScope::Global),
+        ("org", PolicyScope::Org("*".into())),
+        ("team", PolicyScope::Team("*".into())),
+        (
+            "agent",
+            PolicyScope::Agent(aa_core::identity::AgentId::from_bytes([0u8; 16])),
+        ),
+        ("tool", PolicyScope::Tool("*".into())),
+    ];
+
+    for (label, scope) in scopes {
+        if role.satisfies(required_role_for(&scope, MutationKind::Update)) {
+            caps.push(format!("write:policies:{label}"));
+        }
+    }
+
+    caps
 }
 
 // ── Handlers ──
+
+/// `GET /api/v1/iam/roles` — the built-in RBAC roles and their capability grants.
+///
+/// Read-only reflection of the gateway's policy-RBAC model
+/// (`PolicyMutationRequiredRole`). Grants are derived server-side, not stored,
+/// so the response is stable and requires no IAM state. Gated `RequireRead`
+/// (deny-by-default): the authz model is not per-tenant secret — it is the same
+/// data published in `docs/src/policy-rbac.md` — but still requires a valid
+/// read-scoped caller.
+#[utoipa::path(
+    get,
+    path = "/api/v1/iam/roles",
+    responses(
+        (status = 200, description = "Built-in roles with derived capability grants, highest privilege first", body = [RoleCapabilitiesResponse]),
+        (status = 401, description = "Caller is unauthenticated"),
+        (status = 403, description = "Caller lacks the read scope required to view IAM roles")
+    ),
+    tag = "iam"
+)]
+pub async fn list_roles(RequireRead(_caller): RequireRead) -> (StatusCode, Json<Vec<RoleCapabilitiesResponse>>) {
+    let roles = ROLE_ORDER
+        .into_iter()
+        .map(|role| RoleCapabilitiesResponse {
+            role: role.to_string(),
+            description: role_description(role).to_string(),
+            capabilities: role_capabilities(role),
+        })
+        .collect();
+    (StatusCode::OK, Json(roles))
+}
 
 /// `GET /api/v1/iam/api-keys` — list every API key the IAM store knows.
 ///
@@ -173,11 +313,18 @@ pub struct GenerateApiKeyRequest {
     get,
     path = "/api/v1/iam/api-keys",
     responses(
-        (status = 200, description = "All API keys, newest first", body = [ApiKeyResponse])
+        (status = 200, description = "All API keys, newest first", body = [ApiKeyResponse]),
+        (status = 403, description = "Caller lacks the admin role required to read IAM state")
     ),
     tag = "iam"
 )]
-pub async fn list_api_keys(Extension(state): Extension<AppState>) -> (StatusCode, Json<Vec<ApiKeyResponse>>) {
+pub async fn list_api_keys(
+    // AAASM-3846 — listing API keys discloses sensitive IAM state (labels,
+    // scopes, owners, activity), so it requires the same admin authority as the
+    // generate / revoke / rotate mutations rather than being open to any caller.
+    RequireAdmin(_caller): RequireAdmin,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<Vec<ApiKeyResponse>>) {
     let keys = state
         .iam_api_key_store
         .list()
@@ -200,6 +347,7 @@ pub async fn list_api_keys(Extension(state): Extension<AppState>) -> (StatusCode
     request_body = GenerateApiKeyRequest,
     responses(
         (status = 200, description = "Generated key (with one-shot secret)", body = GeneratedApiKeyResponse),
+        (status = 400, description = "ttl_seconds is zero or out of range"),
         (status = 403, description = "Caller lacks the role required to mutate IAM state")
     ),
     tag = "iam"
@@ -213,11 +361,43 @@ pub async fn generate_api_key(
         .check_mutation(&PolicyScope::Global, MutationKind::Create)
         .map_err(IamHandlerError::Forbidden)?;
 
+    // AAASM-5177 — resolve the key's expiry. An omitted ttl_seconds applies the
+    // safe default; an explicit 0 is rejected (a zero-lifetime key is a caller
+    // error, never a way to opt out of expiry through this path).
+    let expires_at = resolve_expires_at(body.ttl_seconds)?;
+
     let scopes: Vec<GwApiKeyScope> = body.scopes.into_iter().map(Into::into).collect();
     let generated = state
         .iam_api_key_store
-        .generate(&body.label, scopes, &policy_auth.caller.key_id);
+        .generate(&body.label, scopes, &policy_auth.caller.key_id, Some(expires_at));
     Ok((StatusCode::OK, Json(generated.into())))
+}
+
+/// AAASM-5177 — compute an API key's expiry instant from a requested TTL.
+///
+/// `None` applies [`DEFAULT_API_KEY_TTL_SECS`]. An explicit `0` is a client
+/// error (`400`). The TTL is added to the current time; an overflow (absurdly
+/// large TTL) is also a `400` rather than a silently non-expiring key.
+fn resolve_expires_at(ttl_seconds: Option<u64>) -> Result<chrono::DateTime<chrono::Utc>, IamHandlerError> {
+    let ttl = match ttl_seconds {
+        None => DEFAULT_API_KEY_TTL_SECS,
+        Some(0) => {
+            return Err(IamHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                    .with_detail("ttl_seconds must be greater than zero".to_string()),
+            ));
+        }
+        Some(secs) => secs,
+    };
+    let secs = i64::try_from(ttl).ok();
+    secs.and_then(chrono::Duration::try_seconds)
+        .and_then(|d| chrono::Utc::now().checked_add_signed(d))
+        .ok_or_else(|| {
+            IamHandlerError::BadRequest(
+                ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+                    .with_detail("ttl_seconds is out of range".to_string()),
+            )
+        })
 }
 
 /// `POST /api/v1/iam/api-keys/{id}/revoke` — revoke an existing key.
@@ -307,13 +487,14 @@ pub async fn rotate_api_key(
 pub enum IamHandlerError {
     NotFound(ProblemDetail),
     Conflict(ProblemDetail),
+    BadRequest(ProblemDetail),
     Forbidden(PolicyAuthorizationDenied),
 }
 
 impl IntoResponse for IamHandlerError {
     fn into_response(self) -> axum::response::Response {
         match self {
-            Self::NotFound(p) | Self::Conflict(p) => p.into_response(),
+            Self::NotFound(p) | Self::Conflict(p) | Self::BadRequest(p) => p.into_response(),
             Self::Forbidden(d) => d.into_response(),
         }
     }
@@ -340,6 +521,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::ReadMembers, GwApiKeyScope::ReadPolicies],
             status: GwApiKeyStatus::Active,
             created_at: ts("2026-04-30T09:12:00Z"),
+            expires_at: None,
             last_used: Some(ts("2026-05-13T07:55:00Z")),
             owner: "alice".into(),
             role: "service:reader".into(),
@@ -372,6 +554,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::ReadAudit],
             status: GwApiKeyStatus::Active,
             created_at: ts("2026-05-02T14:30:00Z"),
+            expires_at: None,
             last_used: None,
             owner: "carol".into(),
             role: "service:observer".into(),
@@ -390,6 +573,7 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
             scopes: vec![GwApiKeyScope::Admin],
             status: GwApiKeyStatus::Revoked,
             created_at: ts("2026-03-14T11:00:00Z"),
+            expires_at: None,
             last_used: Some(ts("2026-04-21T10:18:00Z")),
             owner: "bob".into(),
             role: "service:admin".into(),
@@ -417,4 +601,154 @@ pub fn seeded_iam_store() -> Arc<IamApiKeyStore> {
         },
     ]);
     Arc::new(store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_key_scope_conversions_round_trip_every_variant() {
+        let wire_variants = [
+            ApiKeyScopeResponse::ReadMembers,
+            ApiKeyScopeResponse::WriteMembers,
+            ApiKeyScopeResponse::ReadPolicies,
+            ApiKeyScopeResponse::WritePolicies,
+            ApiKeyScopeResponse::ReadAudit,
+            ApiKeyScopeResponse::Admin,
+        ];
+        for wire in wire_variants {
+            // wire → gateway → wire must be the identity for every scope.
+            let gw: GwApiKeyScope = wire.into();
+            let back: ApiKeyScopeResponse = gw.into();
+            assert_eq!(back, wire);
+        }
+    }
+
+    #[test]
+    fn gateway_scope_maps_to_matching_wire_variant() {
+        assert_eq!(
+            ApiKeyScopeResponse::from(GwApiKeyScope::WriteMembers),
+            ApiKeyScopeResponse::WriteMembers
+        );
+        assert_eq!(
+            ApiKeyScopeResponse::from(GwApiKeyScope::Admin),
+            ApiKeyScopeResponse::Admin
+        );
+    }
+
+    // ── AAASM-5046 — role → capability grant derivation ──
+
+    #[test]
+    fn org_admin_grants_read_plus_every_write_scope() {
+        assert_eq!(
+            role_capabilities(CallerRole::OrgAdmin),
+            vec![
+                "read:policies",
+                "write:policies:global",
+                "write:policies:org",
+                "write:policies:team",
+                "write:policies:agent",
+                "write:policies:tool",
+            ]
+        );
+    }
+
+    #[test]
+    fn team_admin_grants_team_and_below_only() {
+        assert_eq!(
+            role_capabilities(CallerRole::TeamAdmin),
+            vec![
+                "read:policies",
+                "write:policies:team",
+                "write:policies:agent",
+                "write:policies:tool",
+            ]
+        );
+    }
+
+    #[test]
+    fn developer_grants_agent_and_tool_only() {
+        assert_eq!(
+            role_capabilities(CallerRole::Developer),
+            vec!["read:policies", "write:policies:agent", "write:policies:tool"]
+        );
+    }
+
+    #[test]
+    fn viewer_is_read_only_policies() {
+        assert_eq!(role_capabilities(CallerRole::Viewer), vec!["read:policies"]);
+    }
+
+    #[test]
+    fn auditor_is_read_only_audit() {
+        // Auditor is audit-scoped and may never mutate any policy.
+        assert_eq!(role_capabilities(CallerRole::Auditor), vec!["read:audit"]);
+    }
+
+    #[test]
+    fn read_only_roles_grant_no_write_capabilities() {
+        for role in [CallerRole::Viewer, CallerRole::Auditor] {
+            let caps = role_capabilities(role);
+            assert!(
+                !caps.iter().any(|c| c.starts_with("write:")),
+                "{role} must not grant any write capability, got {caps:?}"
+            );
+        }
+    }
+
+    // ── AAASM-5177 — TTL resolution ──
+
+    #[test]
+    fn resolve_expires_at_applies_default_ttl_when_omitted() {
+        let before = chrono::Utc::now();
+        let expiry = resolve_expires_at(None).expect("default ttl must resolve");
+        let expected = before + chrono::Duration::seconds(DEFAULT_API_KEY_TTL_SECS as i64);
+        // Allow a small window for the clock advancing between reads.
+        let delta = (expiry - expected).num_seconds().abs();
+        assert!(delta <= 5, "omitted ttl must apply the 90-day default (delta {delta}s)");
+    }
+
+    #[test]
+    fn resolve_expires_at_honors_explicit_ttl() {
+        let before = chrono::Utc::now();
+        let expiry = resolve_expires_at(Some(3600)).expect("explicit ttl must resolve");
+        let delta = (expiry - (before + chrono::Duration::hours(1))).num_seconds().abs();
+        assert!(delta <= 5, "explicit ttl_seconds must be honored (delta {delta}s)");
+    }
+
+    #[test]
+    fn resolve_expires_at_rejects_zero_ttl() {
+        assert!(
+            matches!(resolve_expires_at(Some(0)), Err(IamHandlerError::BadRequest(_))),
+            "ttl_seconds=0 must be a 400, never a non-expiring key"
+        );
+    }
+
+    #[test]
+    fn resolve_expires_at_rejects_overflowing_ttl() {
+        assert!(
+            matches!(resolve_expires_at(Some(u64::MAX)), Err(IamHandlerError::BadRequest(_))),
+            "an out-of-range ttl must be a 400, never a silently non-expiring key"
+        );
+    }
+
+    #[test]
+    fn expired_gateway_status_maps_to_expired_wire_status() {
+        assert_eq!(
+            ApiKeyStatusResponse::from(GwApiKeyStatus::Expired),
+            ApiKeyStatusResponse::Expired
+        );
+    }
+
+    #[test]
+    fn every_role_has_a_description_and_at_least_one_capability() {
+        for role in ROLE_ORDER {
+            assert!(!role_description(role).is_empty(), "{role} needs a description");
+            assert!(
+                !role_capabilities(role).is_empty(),
+                "{role} must grant at least its read capability"
+            );
+        }
+    }
 }

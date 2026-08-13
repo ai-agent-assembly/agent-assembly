@@ -25,7 +25,6 @@ fn make_record(key: [u8; 16]) -> AgentRecord {
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: VecDeque::new(),
         recent_traces: Vec::new(),
@@ -40,6 +39,7 @@ fn make_record(key: [u8; 16]) -> AgentRecord {
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }
@@ -231,7 +231,6 @@ async fn concurrent_registration_of_100_agents() {
                 pid: None,
                 session_count: 0,
                 last_event: None,
-                policy_violations_count: 0,
                 active_sessions: Vec::new(),
                 recent_events: VecDeque::new(),
                 recent_traces: Vec::new(),
@@ -246,6 +245,7 @@ async fn concurrent_registration_of_100_agents() {
                 children: Vec::new(),
                 parent_key: None,
                 enforcement_mode: None,
+                enforcement_mode_expires_at: None,
                 org_id: None,
             };
             reg.register(record).unwrap();
@@ -331,7 +331,6 @@ fn new_fields_default_values_on_registration() {
     assert!(record.pid.is_none());
     assert_eq!(record.session_count, 0);
     assert!(record.last_event.is_none());
-    assert_eq!(record.policy_violations_count, 0);
     assert!(record.active_sessions.is_empty());
     assert!(record.recent_events.is_empty());
 }
@@ -343,14 +342,12 @@ fn new_fields_survive_clone_and_retrieval() {
     record.pid = Some(5678);
     record.session_count = 10;
     record.last_event = Some(Utc::now());
-    record.policy_violations_count = 3;
     reg.register(record).unwrap();
 
     let retrieved = reg.get(&key(2)).unwrap();
     assert_eq!(retrieved.pid, Some(5678));
     assert_eq!(retrieved.session_count, 10);
     assert!(retrieved.last_event.is_some());
-    assert_eq!(retrieved.policy_violations_count, 3);
 }
 
 #[test]
@@ -363,6 +360,7 @@ fn active_sessions_and_recent_events_survive_retrieval() {
         session_id: "aabb".into(),
         started_at: Utc::now(),
         status: "running".into(),
+        actions_count: 0,
     }];
     record.recent_events.push_back(RecentEvent {
         event_type: "violation".into(),
@@ -442,4 +440,144 @@ fn root_agent_id_field_round_trips_through_registry() {
 
     let retrieved = reg.get(&key(5)).unwrap();
     assert_eq!(retrieved.root_agent_id, Some([0xAA; 16]));
+}
+
+// ── Session lifecycle (AAASM-5088) ───────────────────────────────────────────
+
+#[test]
+fn record_session_activity_opens_session_on_first_action() {
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(7))).unwrap();
+
+    let count = reg.record_session_activity(&key(7), "sess-a").unwrap();
+    assert_eq!(count, 1, "first action opens the session with count 1");
+
+    let record = reg.get(&key(7)).unwrap();
+    assert_eq!(record.active_sessions.len(), 1);
+    assert_eq!(record.active_sessions[0].session_id, "sess-a");
+    assert_eq!(record.active_sessions[0].status, "running");
+    assert_eq!(record.active_sessions[0].actions_count, 1);
+    assert_eq!(record.session_count, 1, "lifetime session_count is bumped on open");
+}
+
+#[test]
+fn record_session_activity_increments_existing_session() {
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(7))).unwrap();
+
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+    let count = reg.record_session_activity(&key(7), "sess-a").unwrap();
+
+    assert_eq!(count, 3, "subsequent actions increment the same session");
+    let record = reg.get(&key(7)).unwrap();
+    assert_eq!(record.active_sessions.len(), 1, "no duplicate session is opened");
+    assert_eq!(record.active_sessions[0].actions_count, 3);
+    assert_eq!(
+        record.session_count, 1,
+        "session_count counts distinct sessions, not actions"
+    );
+}
+
+#[test]
+fn record_session_activity_tracks_multiple_sessions_per_agent() {
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(7))).unwrap();
+
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+    reg.record_session_activity(&key(7), "sess-b").unwrap();
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+
+    let record = reg.get(&key(7)).unwrap();
+    assert_eq!(record.active_sessions.len(), 2);
+    assert_eq!(record.session_count, 2);
+    let a = record
+        .active_sessions
+        .iter()
+        .find(|s| s.session_id == "sess-a")
+        .unwrap();
+    let b = record
+        .active_sessions
+        .iter()
+        .find(|s| s.session_id == "sess-b")
+        .unwrap();
+    assert_eq!(a.actions_count, 2);
+    assert_eq!(b.actions_count, 1);
+}
+
+#[test]
+fn record_session_activity_on_unregistered_agent_is_not_found() {
+    use aa_gateway::registry::RegistryError;
+    let reg = AgentRegistry::new();
+    let result = reg.record_session_activity(&key(9), "sess-a");
+    assert!(matches!(result, Err(RegistryError::NotFound(id)) if id == key(9)));
+}
+
+#[test]
+fn close_session_removes_the_session() {
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(7))).unwrap();
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+    reg.record_session_activity(&key(7), "sess-b").unwrap();
+
+    let removed = reg.close_session(&key(7), "sess-a").unwrap();
+    assert!(removed, "closing an open session returns true");
+
+    let record = reg.get(&key(7)).unwrap();
+    assert_eq!(record.active_sessions.len(), 1);
+    assert_eq!(record.active_sessions[0].session_id, "sess-b");
+}
+
+#[test]
+fn close_session_is_idempotent() {
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(7))).unwrap();
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+
+    assert!(reg.close_session(&key(7), "sess-a").unwrap());
+    assert!(
+        !reg.close_session(&key(7), "sess-a").unwrap(),
+        "a second close of the same session is a no-op returning false"
+    );
+}
+
+#[test]
+fn open_count_close_lifecycle_leaves_no_active_sessions() {
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(7))).unwrap();
+
+    // open + count
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+    reg.record_session_activity(&key(7), "sess-a").unwrap();
+    assert_eq!(reg.get(&key(7)).unwrap().active_sessions[0].actions_count, 2);
+
+    // close
+    reg.close_session(&key(7), "sess-a").unwrap();
+    let record = reg.get(&key(7)).unwrap();
+    assert!(record.active_sessions.is_empty(), "session is gone after close");
+    assert_eq!(record.session_count, 1, "lifetime session_count survives the close");
+}
+
+#[test]
+fn active_sessions_are_bounded_by_max_active_sessions() {
+    use aa_gateway::registry::store::MAX_ACTIVE_SESSIONS;
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(7))).unwrap();
+
+    // Open one more distinct session than the cap allows.
+    for i in 0..=MAX_ACTIVE_SESSIONS {
+        reg.record_session_activity(&key(7), &format!("sess-{i}")).unwrap();
+    }
+
+    let record = reg.get(&key(7)).unwrap();
+    assert_eq!(
+        record.active_sessions.len(),
+        MAX_ACTIVE_SESSIONS,
+        "the oldest session is evicted once the cap is exceeded"
+    );
+    // The very first session (oldest by started_at) is the one evicted.
+    assert!(
+        !record.active_sessions.iter().any(|s| s.session_id == "sess-0"),
+        "the oldest session was evicted"
+    );
 }

@@ -33,3 +33,35 @@ impl From<std::io::Error> for SimulationError {
         Self::IoError(err)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_renders_each_variant_with_its_prefix() {
+        assert_eq!(
+            SimulationError::PolicyLoad("bad yaml".into()).to_string(),
+            "policy load error: bad yaml"
+        );
+        assert_eq!(
+            SimulationError::AuditParse("line 3".into()).to_string(),
+            "audit log parse error: line 3"
+        );
+        assert_eq!(
+            SimulationError::InvalidDuration("60x".into()).to_string(),
+            "invalid duration: 60x"
+        );
+    }
+
+    #[test]
+    fn io_error_converts_and_displays_through_io_variant() {
+        // The `?` conversion path and the IoError Display arm must surface the
+        // underlying os-error message so a failed file read is actionable.
+        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "missing.log");
+        let err: SimulationError = io.into();
+        assert!(matches!(err, SimulationError::IoError(_)));
+        assert!(err.to_string().starts_with("I/O error: "));
+        assert!(err.to_string().contains("missing.log"));
+    }
+}

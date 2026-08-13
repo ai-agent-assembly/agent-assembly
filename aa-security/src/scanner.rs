@@ -30,6 +30,27 @@ const AC_PATTERNS: &[&str] = &[
     "-----BEGIN OPENSSH PRIVATE KEY-----",   // 15 OpensshPrivateKey
     "-----BEGIN PRIVATE KEY-----",           // 16 PrivateKey
     "-----BEGIN PGP PRIVATE KEY BLOCK-----", // 17 PgpPrivateKey
+    // AAASM-3727: GCP service-account JSON whitespace variants. A compact
+    // serializer emits no space after the colon, and some emit a space before
+    // it; index 3's single-space literal misses both. These map to the same
+    // GcpServiceAccount kind so the realistic serialized forms are all caught.
+    "\"type\":\"service_account\"",   // 18 GcpServiceAccount (compact, no space)
+    "\"type\" :\"service_account\"",  // 19 GcpServiceAccount (space before colon)
+    "\"type\" : \"service_account\"", // 20 GcpServiceAccount (spaces around colon)
+    // AAASM-4128: near-parity token prefixes that share a brand stem with the
+    // detectors above. The brand prefix dilutes each token's run entropy below
+    // the 4.5 gate (and `xapp-` tokens exceed the 20–64 whitespace-token window),
+    // so the entropy backstop never catches them — literal-prefix detection is
+    // the only reliable path. `github_pat_` (fine-grained PAT) and `ASIA` (STS
+    // temporary access key ID) are the same credential kind as their siblings,
+    // mirroring the GCP multi-pattern → single-kind mapping above.
+    "gho_",        // 21 GitHubOAuthToken
+    "ghu_",        // 22 GitHubUserToken
+    "ghr_",        // 23 GitHubRefreshToken
+    "github_pat_", // 24 GitHubPat (fine-grained PAT)
+    "xapp-",       // 25 SlackAppToken
+    "xoxr-",       // 26 SlackRefreshToken
+    "ASIA",        // 27 AwsAccessKey (STS temporary access key ID)
 ];
 
 /// Maps AC pattern index → [`CredentialKind`].
@@ -52,6 +73,16 @@ const AC_KINDS: &[CredentialKind] = &[
     CredentialKind::OpensshPrivateKey,     // 15
     CredentialKind::PrivateKey,            // 16
     CredentialKind::PgpPrivateKey,         // 17
+    CredentialKind::GcpServiceAccount,     // 18 (compact JSON)
+    CredentialKind::GcpServiceAccount,     // 19 (space before colon)
+    CredentialKind::GcpServiceAccount,     // 20 (spaces around colon)
+    CredentialKind::GitHubOAuthToken,      // 21
+    CredentialKind::GitHubUserToken,       // 22
+    CredentialKind::GitHubRefreshToken,    // 23
+    CredentialKind::GitHubPat,             // 24 (fine-grained PAT)
+    CredentialKind::SlackAppToken,         // 25
+    CredentialKind::SlackRefreshToken,     // 26
+    CredentialKind::AwsAccessKey,          // 27 (STS temporary access key ID)
 ];
 
 // ---------------------------------------------------------------------------
@@ -65,7 +96,7 @@ pub enum CredentialKind {
     // API keys
     /// Anthropic API key (prefix `sk-ant-`).
     AnthropicKey,
-    /// AWS access key ID (prefix `AKIA`).
+    /// AWS access key ID (long-term prefix `AKIA`, STS temporary prefix `ASIA`).
     AwsAccessKey,
     /// GCP service account JSON credential (contains `"type": "service_account"`).
     GcpServiceAccount,
@@ -77,12 +108,22 @@ pub enum CredentialKind {
     // Auth tokens
     /// GitHub App installation token (prefix `ghs_`).
     GitHubAppToken,
-    /// GitHub personal access token (prefix `ghp_`).
+    /// GitHub OAuth access token (prefix `gho_`).
+    GitHubOAuthToken,
+    /// GitHub personal access token (classic prefix `ghp_`, fine-grained prefix `github_pat_`).
     GitHubPat,
+    /// GitHub refresh token (prefix `ghr_`).
+    GitHubRefreshToken,
+    /// GitHub user-to-server token (prefix `ghu_`).
+    GitHubUserToken,
+    /// Slack app-level token (prefix `xapp-`).
+    SlackAppToken,
     /// Slack bot token (prefix `xoxb-`).
     SlackBotToken,
     /// Slack OAuth token (prefix `xoxa-`).
     SlackOAuthToken,
+    /// Slack refresh token (prefix `xoxr-`).
+    SlackRefreshToken,
     /// Slack user token (prefix `xoxp-`).
     SlackUserToken,
     // Database URLs
@@ -111,7 +152,9 @@ pub enum CredentialKind {
     /// US Social Security Number in `DDD-DD-DDDD` format.
     SsnPattern,
     // Generic
-    /// High-entropy token (Shannon entropy > 4.5 bits/char, length 20–64 bytes).
+    /// High-entropy or long encoded token: a whitespace token of length 20–64
+    /// with Shannon entropy > 4.5 bits/char, a contiguous hex run ≥ 64 chars, or
+    /// a contiguous base64 run ≥ 20 chars above the entropy gate.
     GenericHighEntropy,
     // Policy-defined
     /// A pattern defined in the policy document's `data.sensitive_patterns` field.
@@ -119,6 +162,117 @@ pub enum CredentialKind {
 }
 
 impl CredentialKind {
+    /// Every built-in detector kind, in a stable declaration order.
+    ///
+    /// This is the single source of truth for enumerating the effective
+    /// pattern catalogue (e.g. over HTTP via the DLP/scrub API, AAASM-5174).
+    /// It intentionally excludes [`CredentialKind::Custom`], which is not a
+    /// built-in detector but the label applied to matches produced by
+    /// policy-defined `data.sensitive_patterns` regexes; those are enumerated
+    /// from the active policy, not from this list.
+    ///
+    /// A compile-time exhaustiveness test in this module asserts every variant
+    /// except `Custom` appears here exactly once, so a newly-added detector
+    /// kind cannot silently drop out of the catalogue.
+    pub const ALL: &'static [CredentialKind] = &[
+        Self::AnthropicKey,
+        Self::AwsAccessKey,
+        Self::GcpServiceAccount,
+        Self::OpenAiKey,
+        Self::AzureConnectionString,
+        Self::GitHubAppToken,
+        Self::GitHubOAuthToken,
+        Self::GitHubPat,
+        Self::GitHubRefreshToken,
+        Self::GitHubUserToken,
+        Self::SlackAppToken,
+        Self::SlackBotToken,
+        Self::SlackOAuthToken,
+        Self::SlackRefreshToken,
+        Self::SlackUserToken,
+        Self::MongodbUrl,
+        Self::MysqlUrl,
+        Self::PostgresUrl,
+        Self::EcPrivateKey,
+        Self::OpensshPrivateKey,
+        Self::PgpPrivateKey,
+        Self::PrivateKey,
+        Self::RsaPrivateKey,
+        Self::CreditCardLuhn,
+        Self::EmailAddress,
+        Self::SsnPattern,
+        Self::GenericHighEntropy,
+    ];
+
+    /// Coarse detector family for grouping in the catalogue UI: one of
+    /// `"api_key"`, `"cloud_credential"`, `"auth_token"`, `"database_url"`,
+    /// `"private_key"`, `"pii"`, or `"generic"`.
+    pub fn category(&self) -> &'static str {
+        match self {
+            Self::AnthropicKey | Self::OpenAiKey => "api_key",
+            Self::AwsAccessKey | Self::GcpServiceAccount | Self::AzureConnectionString => "cloud_credential",
+            Self::GitHubAppToken
+            | Self::GitHubOAuthToken
+            | Self::GitHubPat
+            | Self::GitHubRefreshToken
+            | Self::GitHubUserToken
+            | Self::SlackAppToken
+            | Self::SlackBotToken
+            | Self::SlackOAuthToken
+            | Self::SlackRefreshToken
+            | Self::SlackUserToken => "auth_token",
+            Self::MongodbUrl | Self::MysqlUrl | Self::PostgresUrl => "database_url",
+            Self::EcPrivateKey
+            | Self::OpensshPrivateKey
+            | Self::PgpPrivateKey
+            | Self::PrivateKey
+            | Self::RsaPrivateKey => "private_key",
+            Self::CreditCardLuhn | Self::EmailAddress | Self::SsnPattern => "pii",
+            Self::GenericHighEntropy => "generic",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// Relative leak severity of this kind: `"critical"`, `"high"`, `"medium"`,
+    /// or `"low"`.
+    ///
+    /// Live credentials and private keys (which grant direct access) are
+    /// `critical`; regulated PII (`CreditCardLuhn`, `SsnPattern`) is also
+    /// `critical`. Database connection URIs are `high`. Email PII is `medium`.
+    /// The generic high-entropy backstop is `low` because it is the least
+    /// specific signal. This is a fixed classification, not a live-computed
+    /// value.
+    pub fn severity(&self) -> &'static str {
+        match self {
+            Self::AnthropicKey
+            | Self::OpenAiKey
+            | Self::AwsAccessKey
+            | Self::GcpServiceAccount
+            | Self::AzureConnectionString
+            | Self::GitHubAppToken
+            | Self::GitHubOAuthToken
+            | Self::GitHubPat
+            | Self::GitHubRefreshToken
+            | Self::GitHubUserToken
+            | Self::SlackAppToken
+            | Self::SlackBotToken
+            | Self::SlackOAuthToken
+            | Self::SlackRefreshToken
+            | Self::SlackUserToken
+            | Self::EcPrivateKey
+            | Self::OpensshPrivateKey
+            | Self::PgpPrivateKey
+            | Self::PrivateKey
+            | Self::RsaPrivateKey
+            | Self::CreditCardLuhn
+            | Self::SsnPattern => "critical",
+            Self::MongodbUrl | Self::MysqlUrl | Self::PostgresUrl => "high",
+            Self::EmailAddress => "medium",
+            Self::GenericHighEntropy => "low",
+            Self::Custom => "high",
+        }
+    }
+
     /// Returns the string used in the `[REDACTED:<kind>]` label.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -131,7 +285,10 @@ impl CredentialKind {
             Self::GcpServiceAccount => "GcpServiceAccount",
             Self::GenericHighEntropy => "GenericHighEntropy",
             Self::GitHubAppToken => "GitHubAppToken",
+            Self::GitHubOAuthToken => "GitHubOAuthToken",
             Self::GitHubPat => "GitHubPat",
+            Self::GitHubRefreshToken => "GitHubRefreshToken",
+            Self::GitHubUserToken => "GitHubUserToken",
             Self::MongodbUrl => "MongodbUrl",
             Self::MysqlUrl => "MysqlUrl",
             Self::OpenAiKey => "OpenAiKey",
@@ -140,11 +297,73 @@ impl CredentialKind {
             Self::PostgresUrl => "PostgresUrl",
             Self::PrivateKey => "PrivateKey",
             Self::RsaPrivateKey => "RsaPrivateKey",
+            Self::SlackAppToken => "SlackAppToken",
             Self::SlackBotToken => "SlackBotToken",
             Self::SlackOAuthToken => "SlackOAuthToken",
+            Self::SlackRefreshToken => "SlackRefreshToken",
             Self::SlackUserToken => "SlackUserToken",
             Self::SsnPattern => "SsnPattern",
             Self::Custom => "Custom",
+        }
+    }
+
+    /// Whether this kind is a PEM private-key block detected by its
+    /// `-----BEGIN … PRIVATE KEY-----` header.
+    ///
+    /// Used to extend the finding span through the block's `-----END …-----`
+    /// marker when the block ends in a base64 line too short for the
+    /// length-gated entropy pass, so that short trailing line of key material
+    /// cannot slip past redaction (ADR 0015 §2/§5.1, AAASM-4946).
+    fn is_pem_private_key(&self) -> bool {
+        matches!(
+            self,
+            Self::EcPrivateKey | Self::OpensshPrivateKey | Self::PgpPrivateKey | Self::PrivateKey | Self::RsaPrivateKey
+        )
+    }
+
+    /// Relative confidence of this kind when two overlapping findings are
+    /// coalesced into one span.
+    ///
+    /// When several detectors match the same byte region (e.g. a GitHub PAT is
+    /// also flagged as a `GenericHighEntropy` token, or a database URL embeds an
+    /// `EmailAddress`), the merged span must carry the label of the most
+    /// specific, highest-confidence detector — never a generic backstop. A
+    /// higher number wins. Specific literal-prefix and PEM detectors and
+    /// policy-defined `Custom` patterns outrank the generic
+    /// `GenericHighEntropy` / `EmailAddress` heuristics.
+    fn priority(&self) -> u8 {
+        match self {
+            // Generic / heuristic backstops — lowest confidence.
+            Self::GenericHighEntropy => 0,
+            Self::EmailAddress => 1,
+            // Specific, high-signal detectors — they identify the exact
+            // credential kind and must win over the generic backstops above.
+            Self::AnthropicKey
+            | Self::AwsAccessKey
+            | Self::AzureConnectionString
+            | Self::CreditCardLuhn
+            | Self::EcPrivateKey
+            | Self::GcpServiceAccount
+            | Self::GitHubAppToken
+            | Self::GitHubOAuthToken
+            | Self::GitHubPat
+            | Self::GitHubRefreshToken
+            | Self::GitHubUserToken
+            | Self::MongodbUrl
+            | Self::MysqlUrl
+            | Self::OpenAiKey
+            | Self::OpensshPrivateKey
+            | Self::PgpPrivateKey
+            | Self::PostgresUrl
+            | Self::PrivateKey
+            | Self::RsaPrivateKey
+            | Self::SlackAppToken
+            | Self::SlackBotToken
+            | Self::SlackOAuthToken
+            | Self::SlackRefreshToken
+            | Self::SlackUserToken
+            | Self::SsnPattern
+            | Self::Custom => 2,
         }
     }
 }
@@ -181,6 +400,18 @@ impl CredentialFinding {
         }
     }
 
+    /// Byte offset one past the end of the match.
+    ///
+    /// Deliberately `pub(crate)`. A length paired with a category can identify a
+    /// value in a small domain, so ADR 0032 §9 permits offsets and lengths only
+    /// in the tamper-evident audit tier; keeping the end offset crate-private
+    /// stops it reaching an API response or a metric label by accident. The
+    /// canonical model reads it to build a [`ByteSpan`](crate::canonical::ByteSpan),
+    /// which carries the same restriction.
+    pub(crate) fn end(&self) -> usize {
+        self.end
+    }
+
     /// Construct a finding for a match produced by a policy-defined regex pattern.
     ///
     /// Used by `aa-gateway` when custom `data.sensitive_patterns` regexes match.
@@ -206,16 +437,36 @@ impl ScanResult {
 
     /// Returns a copy of `text` with every finding replaced by its redacted label.
     ///
-    /// Replacements are applied in reverse offset order so earlier byte positions
-    /// remain valid after each splice. The `end` field of each finding records the
-    /// original match boundary and is used here without being exposed in the public API.
+    /// Overlapping findings are first coalesced into non-overlapping byte spans so
+    /// no region is ever partially redacted (which previously left raw secret
+    /// fragments and mangled labels in the output). The merged spans are then
+    /// spliced in reverse offset order so earlier byte positions remain valid
+    /// after each replacement.
+    ///
+    /// A span whose bounds are out of range or do not fall on UTF-8 character
+    /// boundaries cannot be spliced without panicking, but it still marks a
+    /// region the scanner flagged as a secret. Rather than skip it — which would
+    /// emit that region's raw bytes and leak the secret (fail-open) — the whole
+    /// value is replaced with a single opaque redaction label (fail-closed).
+    /// This branch is unreachable for spans the scanner produces over `text`
+    /// (offsets are always valid char boundaries of the scanned text); it exists
+    /// so a caller that ever pairs mismatched spans with `text` cannot leak a
+    /// secret through this path.
     pub fn redact(&self, text: &str) -> String {
-        let mut sorted: Vec<&CredentialFinding> = self.findings.iter().collect();
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.offset));
+        let merged = coalesce_findings(&self.findings);
         let mut result = text.to_string();
-        for finding in sorted {
-            if finding.end <= result.len() && finding.offset <= finding.end {
-                result.replace_range(finding.offset..finding.end, &finding.matched);
+        // Splice merged spans in reverse offset order so earlier positions stay valid.
+        for span in merged.iter().rev() {
+            if span.end <= result.len()
+                && span.offset <= span.end
+                && result.is_char_boundary(span.offset)
+                && result.is_char_boundary(span.end)
+            {
+                result.replace_range(span.offset..span.end, &span.label);
+            } else {
+                // Fail closed: we cannot prove this flagged region has been
+                // removed, so never return the raw text with a secret intact.
+                return "[REDACTED]".to_string();
             }
         }
         result
@@ -285,6 +536,11 @@ impl CredentialScanner {
 
         let ac = AhoCorasick::builder()
             .match_kind(aho_corasick::MatchKind::LeftmostFirst)
+            // AAASM-3727: scheme prefixes (postgres://), PEM headers, and the
+            // GCP JSON key are case-insensitive in the wild (RFC 3986 schemes,
+            // lower/mixed-case PEM). Match case-insensitively so case variants
+            // cannot bypass detection. Prefixes like AKIA / ghp_ stay high-signal.
+            .ascii_case_insensitive(true)
             .build(&all_patterns)
             .expect("AC patterns are always valid");
 
@@ -298,11 +554,13 @@ impl CredentialScanner {
     /// Scan `text` for credential patterns and return a [`ScanResult`].
     ///
     /// Four passes are performed:
-    /// 1. Aho-Corasick literal prefix scan — O(n), 18 patterns covering API keys,
+    /// 1. Aho-Corasick literal prefix scan — O(n), 28 patterns covering API keys,
     ///    auth tokens, cloud credentials, database URLs, and PEM private key headers.
     /// 2. Credit card and SSN digit-sequence scan.
     /// 3. Email address scan.
-    /// 4. High-entropy token scan (Shannon entropy > 4.5 bits/char, length 20–64).
+    /// 4. Generic high-entropy / long-encoded-blob scan: a 20–64 whitespace token
+    ///    above the entropy gate, a contiguous hex run ≥ 64 chars, or a base64
+    ///    run ≥ 20 chars above the gate (see [`scan_high_entropy`]).
     pub fn scan(&self, text: &str) -> ScanResult {
         if self.disabled {
             return ScanResult { findings: Vec::new() };
@@ -311,11 +569,25 @@ impl CredentialScanner {
         let mut findings = Vec::new();
 
         // Phase 1: AC literal prefix scan (API keys, auth tokens, cloud creds,
-        //          database URLs, PEM private key headers — 18 patterns + custom)
+        //          database URLs, PEM private key headers — 28 patterns + custom)
         for mat in self.patterns.find_iter(text) {
             let kind = self.kinds[mat.pattern()].clone();
             let offset = mat.start();
-            let end = token_end(text, mat.end());
+            let mut end = token_end(text, mat.end());
+            // ADR 0015 §2/§5.1 (AAASM-4946): a PEM private-key block whose body
+            // is entropy-caught but ends in a base64 line too short for the
+            // run-length gate leaves that trailing line of key material in the
+            // clear. Extend the literal finding through the block's END marker
+            // so it subsumes the overlapping `GenericHighEntropy` body span and
+            // the short tail as one label. The trigger is narrow (see
+            // [`pem_short_tail_block_end`]) so the common-case PEM vectors —
+            // whose current spans are a documented, accepted residual — stay
+            // byte-identical.
+            if kind.is_pem_private_key() {
+                if let Some(block_end) = pem_short_tail_block_end(text, mat.end()) {
+                    end = end.max(block_end);
+                }
+            }
             findings.push(CredentialFinding::new(kind, offset, end));
         }
 
@@ -325,17 +597,168 @@ impl CredentialScanner {
         // Phase 3: Email addresses
         scan_emails(text, &mut findings);
 
-        // Phase 4: High-entropy tokens (Shannon entropy > 4.5 bits/char, length 20–64)
+        // Phase 4: High-entropy / long-hex tokens (encoding & length evasions, AAASM-3870)
         scan_high_entropy(text, &mut findings);
 
+        // Phase 5: Azure `AccountKey=` values wherever they appear in a
+        //          connection string (AAASM-3997).
+        scan_azure_account_key(text, &mut findings);
+
         findings.sort_by_key(|f| f.offset);
+        dedupe_same_kind_overlaps(&mut findings);
         ScanResult { findings }
     }
+}
+
+/// Collapse findings of the **same kind** whose byte spans overlap into one
+/// finding per overlapping cluster, so a single secret caught by two passes of
+/// one detector is reported once — while keeping the survivor's span equal to
+/// the **union** of the overlapping spans so redaction still covers the whole
+/// secret.
+///
+/// The high-entropy detector runs additive passes (whitespace-token, long-hex,
+/// long-base64, separator-grouped-hex): a base64 secret that is *also* a
+/// whitespace token — e.g. a PEM
+/// body on its own line, or a bare `token=<b64>` — trips both the token pass and
+/// the base64-run pass, yielding two overlapping `GenericHighEntropy` findings
+/// for one secret. This collapses that double-count.
+///
+/// AAASM-4093: the overlapping finding must be *merged into* the survivor, not
+/// dropped outright. Dropping it discarded the longer overlapping pass whenever
+/// the shorter pass happened to sort first — e.g. a ≥64-char hex run
+/// (`[start, 64)`) is kept and the base64 run over the same start plus a non-hex
+/// base64 tail (`[start, 64+K)`) is dropped — so `redact` (which coalesces only
+/// the surviving findings) left bytes `[64, 64+K)` un-redacted on the
+/// sanitize-and-forward path. Extending `k.end = max(k.end, f.end)` keeps the
+/// reported count at one per cluster (unchanged from AAASM-4071) while making the
+/// span the full union.
+///
+/// Only *same-kind* overlaps are merged: overlaps across different kinds are
+/// deliberately kept, because a connection URL legitimately produces distinct
+/// coincident findings (e.g. `PostgresUrl` + `GenericHighEntropy` + `EmailAddress`
+/// over the same region) that `redact` coalesces into one span but that callers
+/// count as separate detections. `findings` must already be sorted by `offset`,
+/// so any earlier same-kind finding `k` has `k.offset <= f.offset`; the spans
+/// therefore overlap exactly when `f.offset < k.end`.
+fn dedupe_same_kind_overlaps(findings: &mut Vec<CredentialFinding>) {
+    let mut kept: Vec<CredentialFinding> = Vec::with_capacity(findings.len());
+    for f in findings.drain(..) {
+        match kept.iter_mut().find(|k| k.kind == f.kind && f.offset < k.end) {
+            // Same secret caught by another pass: keep one finding but widen its
+            // span to the union so no tail byte of the longer pass survives.
+            Some(k) => k.end = k.end.max(f.end),
+            None => kept.push(f),
+        }
+    }
+    *findings = kept;
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// A single non-overlapping byte span to be replaced by `redact`.
+struct MergedSpan {
+    offset: usize,
+    end: usize,
+    label: String,
+    /// Kind whose `label` the span currently carries — retained so a later
+    /// overlapping finding of higher [`CredentialKind::priority`] can claim the
+    /// merged span's label.
+    kind: CredentialKind,
+}
+
+/// Coalesce findings into non-overlapping, offset-ordered spans.
+///
+/// Findings are sorted by `(offset, end)` and any subsequent finding whose
+/// `offset` falls before the current span's `end` is merged into it (extending
+/// the span's `end` to the maximum, i.e. the union of overlapping spans so no
+/// raw secret fragment can survive). The merged span carries the label of the
+/// highest-[`CredentialKind::priority`] finding in the run, so a specific,
+/// high-confidence detector (e.g. `GitHubPat`, `PostgresUrl`) always wins over a
+/// generic backstop (`GenericHighEntropy`, `EmailAddress`) regardless of byte
+/// offset. This guarantees `redact` never leaves a region partially replaced and
+/// never downgrades a credential's label to a less specific kind.
+fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
+    let mut sorted: Vec<&CredentialFinding> = findings.iter().collect();
+    sorted.sort_by_key(|f| (f.offset, f.end));
+
+    let mut merged: Vec<MergedSpan> = Vec::with_capacity(sorted.len());
+    for f in sorted {
+        match merged.last_mut() {
+            // Overlapping the current span — extend it to the union and adopt
+            // the higher-priority kind's label.
+            //
+            // `<`, not `<=`: two findings that merely *touch* (`f.offset ==
+            // last.end`) stay separate and produce two labels. That is
+            // deliberate. Adjacent findings of different kinds are genuinely two
+            // findings, and merging them would erase which kinds were present —
+            // `{"key":"<pat>","email":"<addr>"}` scrubbed to one
+            // `[REDACTED:GitHubPat]` would report a PAT and silently lose the
+            // email. Merging is for spans that share bytes, because a partially
+            // replaced region can leave a raw secret fragment on the wire; two
+            // touching spans share no byte and have no such problem.
+            //
+            // This comment previously read "Overlapping (or touching)", which
+            // describes `<=`. Reimplementations are written from it: AAASM-5373's
+            // acceptance criteria required the Python conformance runner to merge
+            // "overlapping and adjacent" spans, and implementing that faithfully
+            // would have made the harness emit one label where this function
+            // emits two. A `<=` variant differs from this code in 3,081 of 32,378
+            // span geometries, and **none** of it would have shown up against the
+            // committed corpus, because no vector has touching spans. Fixing this
+            // function to match the old comment would break the Python runner and
+            // every SDK harness silently — the code is right, the prose was wrong.
+            // `touching_spans_stay_separate` pins the boundary (AAASM-5383).
+            Some(last) if f.offset < last.end => {
+                last.end = last.end.max(f.end);
+                if f.kind.priority() > last.kind.priority() {
+                    last.label = f.matched.clone();
+                    last.kind = f.kind.clone();
+                }
+            }
+            _ => merged.push(MergedSpan {
+                offset: f.offset,
+                end: f.end,
+                label: f.matched.clone(),
+                kind: f.kind.clone(),
+            }),
+        }
+    }
+    merged
+}
+
+/// Redact the secret value of every Azure `AccountKey=<value>` in `text`,
+/// regardless of its position in a connection string (AAASM-3997).
+///
+/// The `DefaultEndpointsProtocol=` prefix detector coalesces its span only up to
+/// the first `;` (see [`token_end`]), so in a canonical
+/// `DefaultEndpointsProtocol=...;AccountName=...;AccountKey=<secret>` string the
+/// `AccountKey` — which sits after two `;` separators — was left in the clear.
+/// This pass targets the key's value directly: it spans from the `AccountKey=`
+/// marker to the next `;`, token terminator, or end of input, so the secret is
+/// redacted wherever it falls in the string.
+fn scan_azure_account_key(text: &str, findings: &mut Vec<CredentialFinding>) {
+    const MARKER: &str = "AccountKey=";
+    let mut search_from = 0;
+    while let Some(rel) = text[search_from..].find(MARKER) {
+        let offset = search_from + rel;
+        let value_start = offset + MARKER.len();
+        // The value ends at the next connection-string delimiter (`;`), a
+        // whitespace/quote/bracket token terminator, or the end of the input.
+        let end = text[value_start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '"' | '\'' | ',' | ')' | ']' | '}'))
+            .map(|i| value_start + i)
+            .unwrap_or(text.len());
+        findings.push(CredentialFinding::new(
+            CredentialKind::AzureConnectionString,
+            offset,
+            end,
+        ));
+        // Advance past this marker (at least) so overlapping/repeated keys still progress.
+        search_from = end.max(value_start);
+    }
+}
 
 /// Returns the byte index of the first token-terminating character at or after
 /// `from`. Token terminators are whitespace and common delimiters.
@@ -344,6 +767,62 @@ fn token_end(text: &str, from: usize) -> usize {
         .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}'))
         .map(|i| from + i)
         .unwrap_or(text.len())
+}
+
+/// Byte index just past the `-----END …-----` marker of the PEM private-key
+/// block whose header ended at `header_end`, **but only** when the block ends in
+/// a base64 line too short for the entropy pass to catch. Returns `None`
+/// otherwise, leaving the finding's header-only span untouched.
+///
+/// ADR 0015 §2/§5.1 (AAASM-4946). The literal detector matches only a PEM key's
+/// `-----BEGIN … PRIVATE KEY-----` header; the base64 body is covered by the
+/// entropy pass, which length-gates base64 runs at [`BASE64_RUN_MIN_LEN`]. A
+/// block laid out as long body line(s) plus a short final line therefore leaks
+/// that final line (real key material) — the residual the reverted AAASM-4936
+/// change tried, and mis-implemented, to close.
+///
+/// The trigger is deliberately narrow so it partitions cleanly against the
+/// existing conformance vectors, which must stay byte-identical: extend **only**
+/// when the block body contains a base64 run of length ≥ [`BASE64_RUN_MIN_LEN`]
+/// (so the entropy pass emits an overlapping `GenericHighEntropy` finding the
+/// extended literal span subsumes per §2) **and** its final base64 run is
+/// shorter than that gate (the uncovered tail). A block whose only body line is
+/// itself short/low-entropy (its body already in the clear as a documented,
+/// accepted residual) has no long run and is left unchanged; a fully
+/// entropy-covered block has no short tail and is likewise left unchanged.
+fn pem_short_tail_block_end(text: &str, header_end: usize) -> Option<usize> {
+    let end_rel = text[header_end..].find("-----END")?;
+    let end_marker_start = header_end + end_rel;
+
+    // Measure the longest and the final contiguous base64 run in the block body
+    // (everything between the header line and the END marker). `=` padding and
+    // newlines are run separators, so a `wJ8=` tail measures as a run of 3.
+    let mut max_run = 0usize;
+    let mut last_run = 0usize;
+    let mut cur = 0usize;
+    for &b in &text.as_bytes()[header_end..end_marker_start] {
+        if is_base64_char(b) {
+            cur += 1;
+        } else if cur > 0 {
+            max_run = max_run.max(cur);
+            last_run = cur;
+            cur = 0;
+        }
+    }
+    if cur > 0 {
+        max_run = max_run.max(cur);
+        last_run = cur;
+    }
+
+    if max_run < BASE64_RUN_MIN_LEN || last_run == 0 || last_run >= BASE64_RUN_MIN_LEN {
+        return None;
+    }
+
+    // Consume through the END marker's closing dashes so the whole block —
+    // including the short trailing line and the marker — is inside the span.
+    let after_end_keyword = end_marker_start + "-----END".len();
+    let closing = text[after_end_keyword..].find("-----")?;
+    Some(after_end_keyword + closing + "-----".len())
 }
 
 /// Returns `true` if `s` matches the SSN format `DDD-DD-DDDD` exactly.
@@ -385,56 +864,303 @@ fn luhn_valid(digits: &str) -> bool {
     sum % 10 == 0
 }
 
+/// Maximum number of characters consumed into one digit segment.
+///
+/// Bounds the per-segment work just above the longest value either detector
+/// recognises. The binding case is **not** the bare 19-digit card number: it is
+/// a 19-digit card written in separator-delimited groups of four, which is 19
+/// digits plus 4 separators — 23 characters. An 11-character SSN is well under
+/// that. Do not "tidy" this down to 20: doing so truncates a grouped card
+/// mid-number, and, worse, a budget that lands on a Luhn-valid prefix of a
+/// longer digit run reports a card that is not there (see
+/// `digit_run_longer_than_the_segment_budget_stays_clean_in_both_widths`).
+///
+/// The budget counts **characters, not bytes**, so it does not shrink on
+/// multi-byte input — a byte budget would truncate a segment written in
+/// multi-byte digits partway through the number and lose the match.
+const DIGIT_SEGMENT_MAX_CHARS: usize = 24;
+
+/// The ASCII digit equivalent of `c` — `c` itself for `'0'..='9'`, and the
+/// corresponding ASCII digit for the full-width forms `'０'..='９'`
+/// (U+FF10–U+FF19). `None` for anything else.
+///
+/// AAASM-5345: full-width digits render near-identically to ASCII in most
+/// fonts, are one keystroke away on any CJK input method, and round-trip
+/// through JSON unchanged — so a card number or SSN typed in full-width form
+/// was a working evasion of both PII detectors, which compared raw ASCII bytes.
+///
+/// Normalisation is for **matching only**. A full-width digit occupies three
+/// UTF-8 bytes against ASCII's one, so callers must keep every reported offset
+/// in terms of the original text; normalising the text and matching on the
+/// result would yield offsets that index the wrong bytes.
+///
+/// `pub(crate)` rather than private so [`crate::locale`] shares this exact
+/// mapping instead of copying it. A locale pack that matched raw ASCII bytes
+/// would reintroduce AAASM-5345's evasion one recognizer at a time, and a second
+/// copy of the table would be free to drift from this one — the digits a
+/// Taiwanese identifier is written in are the same digits a card number is
+/// written in, so there is one correct answer and it should have one definition.
+pub(crate) fn ascii_digit_of(c: char) -> Option<char> {
+    match c {
+        '0'..='9' => Some(c),
+        '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + u32::from(b'0')),
+        _ => None,
+    }
+}
+
+/// The ASCII separator equivalent of `c` for [`digit_segment`]'s walk — `' '`
+/// for the space forms, `'-'` for the hyphen forms, `None` for anything else.
+///
+/// AAASM-5364: [`ascii_digit_of`] closed the full-width *digit* evasion, which
+/// is the whole of the credit-card case because a bare card carries no
+/// separators. It is not the whole of the SSN case: [`is_ssn`] matches the exact
+/// shape `DDD-DD-DDDD`, so the hyphens have to normalise too, and the
+/// space-grouped card form has the same problem. A CJK input method in full-width
+/// mode emits **U+FF0D** when the hyphen key is pressed and **U+3000** for the
+/// space bar, so an SSN or a grouped card typed the natural way by a Taiwanese or
+/// Japanese user went undetected while its ASCII twin did not.
+///
+/// The normalisation is for **matching only**, exactly as for digits: both
+/// full-width forms are three UTF-8 bytes against ASCII's one, so the caller
+/// pushes the ASCII equivalent into the normalised string while advancing `end`
+/// by the *original* character's width.
+///
+/// AAASM-5450 adds the full stop `.` and its full-width twin `．` (U+FF0E) to the
+/// hyphen role, for the reasons set out under *The boundary* below.
+///
+/// # What widening this set costs, measured
+///
+/// Every character admitted here lengthens the run [`digit_segment`] joins, and a
+/// longer run is a fresh chance to land in the 13-19 digit window where
+/// [`luhn_valid`] — a mod-10 checksum — passes an arbitrary number roughly one
+/// time in ten. On the enforcement path a coincidental pass redacts or blocks a
+/// legitimate payload, so this set is widened by measurement, never by admitting
+/// a character class.
+///
+/// AAASM-5450 priced all seven candidates the same way: admit one, rebuild, scan
+/// `aaasm5450_machine_payload_v1` (4,194,360 bytes of ordinary machine output —
+/// JSON log lines with float unix timestamps, TSV numeric columns, CSV amounts,
+/// dotted versions and IPv4 addresses, underscore-grouped numeric literals,
+/// slash-formatted dates, bare numeric columns — containing no card and no SSN,
+/// so every finding is a false positive). See
+/// `aa-security/tests/digit_separator_fp_cost.rs`:
+///
+/// | admitted | card false positives | runs it pushed into the window |
+/// |---|---|---|
+/// | `.` U+002E | 1255 | 12,284 |
+/// | `．` U+FF0E | 1193 | 11,963 |
+/// | `_` U+005F | 1207 | 12,127 |
+/// | `/` U+002F | 1253 | 12,176 |
+/// | `,` U+002C | 1175 | 12,265 |
+/// | tab U+0009 | 1218 | 12,265 |
+/// | newline U+000A | 532 | 5,395 |
+///
+/// The ratio is 9.6-10.3% on every row. That is the measurement's actual finding:
+/// **no candidate is intrinsically safer than any other** — each costs the same
+/// ~10% of whatever runs it pushes into the window. So the choice cannot be made
+/// on cost, only on *coverage*: whether a real card or SSN is ever written with
+/// the character. Only the two full stops are.
+///
+/// # The boundary, and why it stops here
+///
+/// **Admitted, individually:**
+///
+/// * `.` (U+002E) — the one candidate with an attested grouping usage. `123.45.6789`
+///   is a standard written form of an SSN, alongside `123-45-6789`, and dot-grouped
+///   card numbers (`4532.0151.1283.0366`) appear on invoices and statements. It is
+///   admitted in the *hyphen* role, not the space role, so a dot-written SSN
+///   normalises to `DDD-DD-DDDD` and satisfies [`is_ssn`]'s exact-11-byte shape.
+/// * `．` (U+FF0E, full-width full stop) — admitted because `.` is. A CJK input
+///   method in full-width mode emits U+FF0E for the period key exactly as it emits
+///   U+FF0D for the hyphen key, so admitting only the ASCII form would catch an
+///   en-US user's dot-written SSN and miss a Taiwanese user's — reopening the
+///   input-mode asymmetry AAASM-5364 existed to remove, one glyph later.
+///
+/// **Declined, individually.** Each is priced above at the same ~10% per exposed
+/// run, and none of them groups the digits of a card or an SSN in any written
+/// form, so each is cost without coverage:
+///
+/// * `,` (U+002C) — the thousands separator. Its numeric job is to group the
+///   digits of one number that is not a card (`1,234,567,890,123` is thirteen
+///   joined digits, inside the window).
+/// * `/` (U+002F) — the date and path separator. `2026/08/07 12/30/45` is fourteen
+///   joined digits once the already-admitted space links the two halves.
+/// * `_` (U+005F) — the digit-group separator in Rust and Python numeric literals
+///   (`1_000_000_000_000_000` is sixteen) and a joiner inside identifiers.
+/// * tab (U+0009) — a column delimiter, so joining across it merges two adjacent
+///   numeric *columns* of a TSV row. It is also a space-role glyph, so it could
+///   not produce an SSN shape even if admitted: it would buy card coverage only,
+///   and a tab-grouped card number is a four-column spreadsheet, not a card.
+/// * newline (U+000A) — the *record* delimiter in JSON Lines, CSV and log output,
+///   so joining across it merges two unrelated records. A wrapped card number
+///   wraps at the space, which is already admitted.
+///
+/// `digit_separator_declines_the_candidates_that_buy_no_coverage` pins all five.
+///
+/// **Unchanged from AAASM-5364:** U+2010–U+2015 (hyphen, non-breaking hyphen,
+/// figure/en/em dash, horizontal bar) and U+00A0 (no-break space) stay declined.
+/// No input method emits any of them for the hyphen or space key, and the en dash
+/// is the standard glyph for a numeric *range* (`1990–2000`, `第 12–15 頁`) —
+/// precisely where two unrelated numbers sit adjacent with a dash between them.
+/// AAASM-5450 produced no coverage evidence for them, so it did not reopen the
+/// decision; `digit_separator_boundary_declines_en_dash_and_nbsp` still pins it.
+///
+/// # What this rule cannot do
+///
+/// It cannot close *adversarial* evasion. An attacker who wants a card to slip
+/// past picks a glyph nobody enumerated, and the set of glyphs is unbounded, so
+/// widening by enumeration can never catch up. What it closes is the *natural*
+/// formatting a real payload carries — which is why every entry above is
+/// justified by an attested written form rather than by how plausible the glyph
+/// looks as an evasion.
+fn ascii_separator_of(c: char) -> Option<char> {
+    match c {
+        ' ' | '\u{3000}' => Some(' '),
+        '-' | '\u{FF0D}' | '.' | '\u{FF0E}' => Some('-'),
+        _ => None,
+    }
+}
+
+/// Result of walking one digit segment (see [`digit_segment`]).
+struct DigitSegment {
+    /// Byte offset just past the segment — where the outer scan resumes, and
+    /// the `end` of any finding the segment produces.
+    end: usize,
+    /// The segment's digits — normalised to ASCII by [`ascii_digit_of`] — and
+    /// the separators between them, in order. Matched against the
+    /// `DDD-DD-DDDD` SSN shape by [`is_ssn`].
+    normalised: String,
+    /// The segment's normalised digits only, without separators — what
+    /// [`luhn_valid`] computes the checksum over.
+    digits: String,
+}
+
+/// Walk the digit segment beginning at byte offset `start` (which must be the
+/// boundary of a digit character).
+///
+/// The walk advances one whole character at a time, so [`DigitSegment::end`] is
+/// always a valid UTF-8 char boundary of `text`. That is a correctness
+/// requirement rather than a nicety: [`ScanResult::redact`] splices the original
+/// bytes at a finding's offsets, and a bound landing mid-character would make it
+/// fail closed and replace the entire payload with an opaque label.
+fn digit_segment(text: &str, start: usize) -> DigitSegment {
+    let mut normalised = String::new();
+    let mut digits = String::new();
+    let mut chars = 0usize;
+    let mut end = start;
+
+    while chars < DIGIT_SEGMENT_MAX_CHARS {
+        let Some(c) = text[end..].chars().next() else { break };
+
+        if let Some(d) = ascii_digit_of(c) {
+            normalised.push(d);
+            digits.push(d);
+            // Advance by the *original* character's width, never the ASCII
+            // equivalent's, so `end` stays an offset into `text`.
+            end += c.len_utf8();
+            chars += 1;
+            continue;
+        }
+
+        // Only consume a separator that sits *between* digits. A trailing
+        // separator must not be swallowed into the segment, or an SSN like
+        // "123-45-6789 " would become 12 bytes and fail the exact-11-byte
+        // `is_ssn` check, letting the PII through unredacted (AAASM-4820).
+        if let Some(sep) = ascii_separator_of(c) {
+            if !digits.is_empty()
+                && chars + 1 < DIGIT_SEGMENT_MAX_CHARS
+                && text[end + c.len_utf8()..]
+                    .chars()
+                    .next()
+                    .and_then(ascii_digit_of)
+                    .is_some()
+            {
+                // The ASCII equivalent, so `is_ssn`'s exact-11-byte shape check
+                // sees `DDD-DD-DDDD` whichever width the hyphens were typed in
+                // (AAASM-5364). `end` still advances by the original width.
+                normalised.push(sep);
+                end += c.len_utf8();
+                chars += 1;
+                continue;
+            }
+        }
+
+        break;
+    }
+
+    DigitSegment {
+        end,
+        normalised,
+        digits,
+    }
+}
+
 /// Scans `text` for credit card numbers (Luhn-validated) and SSN patterns (`DDD-DD-DDDD`).
+///
+/// Digits are normalised by [`ascii_digit_of`] and the separators between them by
+/// [`ascii_separator_of`], so a value written in full-width digits (AAASM-5345)
+/// or grouped by a full-width hyphen / ideographic space (AAASM-5364) is detected
+/// as the same kind as its ASCII equivalent. Findings still span the **original**
+/// text: normalisation never reaches the offsets, only the strings the two checks
+/// are run against.
 fn scan_digit_sequences(text: &str, findings: &mut Vec<CredentialFinding>) {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if !bytes[i].is_ascii_digit() {
-            i += 1;
+    let mut i = 0usize;
+    while i < text.len() {
+        // `i` is always on a char boundary: it advances either by one whole
+        // character or to a segment's `end`, which is itself a boundary.
+        let Some(c) = text[i..].chars().next() else { break };
+        if ascii_digit_of(c).is_none() {
+            i += c.len_utf8();
             continue;
         }
 
         let start = i;
-        let mut digits = String::new();
-        let mut j = i;
-        let limit = (start + 24).min(bytes.len());
+        let segment = digit_segment(text, start);
+        let end = segment.end;
 
-        while j < limit {
-            match bytes[j] {
-                b if b.is_ascii_digit() => {
-                    digits.push(b as char);
-                    j += 1;
-                }
-                b' ' | b'-' if !digits.is_empty() => {
-                    j += 1;
-                }
-                _ => break,
-            }
-        }
-
-        let end = j;
-        let segment = &text[start..end];
-
-        if is_ssn(segment) {
+        if is_ssn(&segment.normalised) {
             findings.push(CredentialFinding::new(CredentialKind::SsnPattern, start, end));
-        } else if digits.len() >= 13 && digits.len() <= 19 && luhn_valid(&digits) {
+        } else if segment.digits.len() >= 13 && segment.digits.len() <= 19 && luhn_valid(&segment.digits) {
             findings.push(CredentialFinding::new(CredentialKind::CreditCardLuhn, start, end));
         }
-        i = end.max(i + 1);
+        i = end.max(start + c.len_utf8());
     }
 }
 
-/// Computes the Shannon entropy of `s` in bits per character.
+/// Single-slice form of [`shannon_entropy_joined`], for the tests that score one
+/// string. Production callers reach entropy through [`clears_entropy_bar`], which
+/// needs both halves, so this exists only under `cfg(test)`.
+#[cfg(test)]
 fn shannon_entropy(s: &str) -> f64 {
-    if s.is_empty() {
+    shannon_entropy_joined(s, "")
+}
+
+/// Shannon entropy of `a` followed by `b`, in bits per **byte**, without
+/// materialising the concatenation. Pass `""` as `b` to score a single slice.
+///
+/// [`scan_separated_base64_runs`] scores a *pair* of runs, because the pair —
+/// not either half — is the candidate once a secret has been split. Joining them
+/// into a `String` first would put one allocation on the scanner's hot path for
+/// every word boundary in the payload, so the frequency table is accumulated over
+/// both slices instead.
+///
+/// Callers must pass ASCII-only slices, both of them. Bytes and characters
+/// coincide only for ASCII, and every threshold this result is compared against
+/// ([`ENTROPY_BITS_GATE`]) is specified per character. Feeding it multi-byte
+/// UTF-8 measures the encoding rather than the text: Han characters spread
+/// their bytes widely and land at 4.6-4.9 bits, above a gate calibrated on
+/// English prose, which is how ordinary Chinese was reported as leaked secrets
+/// (AAASM-5344). Every call site therefore narrows to an ASCII run first.
+fn shannon_entropy_joined(a: &str, b: &str) -> f64 {
+    let total = a.len() + b.len();
+    if total == 0 {
         return 0.0;
     }
     let mut freq = [0u32; 256];
-    for &b in s.as_bytes() {
-        freq[b as usize] += 1;
+    for &byte in a.as_bytes().iter().chain(b.as_bytes()) {
+        freq[byte as usize] += 1;
     }
-    let len = s.len() as f64;
+    let len = total as f64;
     freq.iter()
         .filter(|&&c| c > 0)
         .map(|&c| {
@@ -444,56 +1170,915 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
-/// Scans `text` for high-entropy whitespace-delimited tokens (> 4.5 bits/char,
-/// length 20–64 bytes) and reports them as [`CredentialKind::GenericHighEntropy`].
-fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
-    let mut offset = 0usize;
-    for token in text.split_whitespace() {
-        let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
-        let token_end_pos = token_offset + token.len();
-        let len = token.len();
-        if (20..=64).contains(&len) && shannon_entropy(token) > 4.5 {
-            findings.push(CredentialFinding::new(
-                CredentialKind::GenericHighEntropy,
-                token_offset,
-                token_end_pos,
-            ));
+/// Shannon-entropy gate, in bits per character, over **ASCII** text.
+///
+/// Base64/base85 encodings of random bytes sit around 5-6 bits/char, while
+/// English prose and `snake_case` / `kebab-case` identifiers stay below this.
+/// The corpus behind that calibration is ASCII, and the gate is only meaningful
+/// against ASCII — see [`shannon_entropy_joined`] for why non-ASCII input measures the
+/// UTF-8 encoding instead of the text (AAASM-5344).
+/// Note hex tops out at `log2(16) = 4.0` bits/char, so hex-encoded secrets never
+/// trip this gate — they are caught by the dedicated hex rule (see
+/// [`HEX_RUN_MIN_LEN`]).
+const ENTROPY_BITS_GATE: f64 = 4.5;
+
+/// Length at which a candidate becomes eligible for the relaxed bar below.
+///
+/// Entropy is capped at `log2(len)`, so the *same* absolute gate is a different
+/// demand at each length: at 64 characters 4.5 bits is 75% of the attainable
+/// maximum, at 40 it is 85%, and at 23 it is 99.5%. A uniformly random draw does
+/// not reach its own alphabet's entropy at short lengths — it falls short by the
+/// finite-sample bias, which shrinks as length grows. At 40 characters over a
+/// 62-64 symbol alphabet that bias puts roughly 2% of genuinely random secrets
+/// **below** 4.5 bits by ordinary repetition, and they were missed (AAASM-5502).
+///
+/// 40 is the shortest secret the guaranteed 23+17 split band produces, and the
+/// threshold is set from that band rather than from any measurement of any
+/// corpus. Holding everything shorter to the strict gate keeps the relaxation
+/// off the identifier and encoded-fragment lengths that dominate real payloads
+/// — including PEM body lines, which run 36 characters at the standard 64-column
+/// wrapping minus its final group, and which the committed conformance vectors
+/// pin as *not* independently flagged (ADR 0015).
+const DENSE_CANDIDATE_MIN_LEN: usize = 40;
+
+/// Entropy bar for a candidate that clears [`DENSE_CANDIDATE_MIN_LEN`] and
+/// [`MIN_DISTINCT_BYTES_FOR_GATE`].
+///
+/// Set from the measured shortfall, not by taste: across 2,000 samples per
+/// alphabet the missed 40-character secrets scored 4.2531-4.4964 bits, a deficit
+/// of at most 0.2469 below the gate. 4.25 clears that whole band with margin
+/// while staying far above where prose and identifiers sit, and the false-
+/// positive ceiling is re-measured against it rather than assumed.
+const DENSE_CANDIDATE_ENTROPY_BITS_GATE: f64 = 4.25;
+
+/// Whether `a` followed by `b` clears the entropy evidence bar.
+///
+/// Two ways to clear it, and the first is [`ENTROPY_BITS_GATE`] exactly as
+/// before — no candidate that used to be flagged stops being flagged.
+///
+/// The second admits a candidate that is long *and* dense: at least
+/// [`DENSE_CANDIDATE_MIN_LEN`] bytes, at least [`MIN_DISTINCT_BYTES_FOR_GATE`]
+/// distinct values, and above [`DENSE_CANDIDATE_ENTROPY_BITS_GATE`]. It is
+/// keyed on the candidate's own length and shape — never on which pass called,
+/// what surrounds it, or which corpus it came from — so a contiguous run and a
+/// run rejoined across one separator are held to the identical bar. That
+/// equality is the point: the split form must face what the unsplit form faces.
+///
+/// The distinct-byte floor is deliberately the *strict* branch's floor rather
+/// than the ~20 that 4.25 bits alone would require. Density is what separates
+/// key material from a long identifier, so the relaxation spends length, not
+/// evidence.
+///
+/// # Why the relaxed branch demands a homogeneous alphabet
+///
+/// Because distinct-byte count alone is not evidence of randomness — structural
+/// punctuation inflates it for free. Relaxing on length and density alone
+/// reported `application/vnd.agent-assembly.decision-event+json;version=3` as a
+/// secret 4,052 times across the 20 MB corpus: 60 characters, 25 distinct
+/// values, 4.4 bits, every threshold cleared. Its diversity comes from
+/// `/ . ; = + -`, which is what a *structured* token looks like, not what a
+/// uniform draw from an encoding alphabet looks like.
+///
+/// The bias the relaxation compensates for is a property of sampling one
+/// alphabet uniformly, so the relaxation is confined to candidates that are
+/// drawn from one. Passes 3 and 5 see base64 runs by construction and are
+/// unaffected; this constrains pass 1, which scores whole whitespace tokens and
+/// is where the inflation arises.
+///
+/// The two O(n) tests are ordered after the entropy comparison, and
+/// `distinct_bytes` last, because the strict gate already implies the distinct
+/// floor — `log2(22) = 4.4594 < 4.5` — so neither runs except for a candidate
+/// that failed the strict gate and is long enough to matter.
+fn clears_entropy_bar(a: &str, b: &str) -> bool {
+    let entropy = shannon_entropy_joined(a, b);
+    if entropy > ENTROPY_BITS_GATE {
+        return true;
+    }
+    a.len() + b.len() >= DENSE_CANDIDATE_MIN_LEN
+        && entropy > DENSE_CANDIDATE_ENTROPY_BITS_GATE
+        && a.bytes().chain(b.bytes()).all(is_base64_char)
+        && symbol_percent(a, b) <= DENSE_CANDIDATE_MAX_SYMBOL_PERCENT
+        && longest_repeat_run(a, b) <= DENSE_CANDIDATE_MAX_REPEAT_RUN
+        && distinct_bytes(a, b) >= MIN_DISTINCT_BYTES_FOR_GATE
+}
+
+/// Percentage of `a` followed by `b` that is base64's non-alphanumeric symbols
+/// (`+ / - _`), rounded down.
+fn symbol_percent(a: &str, b: &str) -> usize {
+    let total = a.len() + b.len();
+    if total == 0 {
+        return 0;
+    }
+    let symbols = a
+        .bytes()
+        .chain(b.bytes())
+        .filter(|b| !b.is_ascii_alphanumeric())
+        .count();
+    symbols * 100 / total
+}
+
+/// Share of `+ / - _` the relaxed bar tolerates, as a percentage.
+///
+/// These four are 2-of-64 symbols in any one base64 variant, so encoded key
+/// material carries them at about 3% — roughly one character in a 40-character
+/// secret. Path, URL and namespace text carries them far more heavily, because
+/// there they are *structure*: `/var/log/agent-assembly/gateway/policy-
+/// evaluation-2026-08-03.log` is one unbroken base64 run by the alphabet test
+/// alone, 26 distinct values, no repeated run, and it was reported as a secret
+/// until this bound existed.
+///
+/// 10% is about three standard deviations above the expected share, so the
+/// measured cost to base64 recall is a fraction of a percent and the alphanumeric
+/// alphabet is untouched. Both figures are measured on AAASM-5502, not assumed.
+const DENSE_CANDIDATE_MAX_SYMBOL_PERCENT: usize = 10;
+
+/// Longest run of one repeated byte across `a` followed by `b`.
+///
+/// Counted across the join because the pair is the candidate: a marker like
+/// `-----END` contributes its run whether it arrived contiguously or was
+/// rejoined over a separator, and the answer must not depend on which.
+fn longest_repeat_run(a: &str, b: &str) -> usize {
+    let mut longest = 0usize;
+    let mut current = 0usize;
+    let mut prev: Option<u8> = None;
+    for byte in a.bytes().chain(b.bytes()) {
+        current = if prev == Some(byte) { current + 1 } else { 1 };
+        prev = Some(byte);
+        longest = longest.max(current);
+    }
+    longest
+}
+
+/// Longest repeated-byte run the relaxed bar tolerates.
+///
+/// The relaxed branch admits candidates *below* the calibrated gate, so it owes
+/// positive evidence of uniformity rather than merely an absence of structure.
+/// A repeated run is the signature of padding and markers — `-----END`,
+/// `====`, `0000` — which lengthen a candidate without making it any more
+/// random, and length is precisely what the relaxation spends.
+///
+/// Rejecting runs of 4 or more costs effectively no recall: in a uniform draw of
+/// 40 symbols from a 62-64 symbol alphabet a run of 4 appears with probability
+/// about 1.5e-4, and such a draw still has the strict gate available to it.
+/// Without this bound, pass 5 joined a PEM body line to the `-----END` marker
+/// that follows it and reported two findings where the committed vector pins one
+/// (ADR 0015).
+const DENSE_CANDIDATE_MAX_REPEAT_RUN: usize = 3;
+
+/// Minimum length of a contiguous hex run (`[0-9a-fA-F]`) flagged as a secret.
+///
+/// Set to 64 — the length of a hex-encoded 256-bit key (and of a SHA-256
+/// digest). The threshold is deliberately high to avoid redacting the shorter
+/// hex blobs that pervade normal payloads: 32-char MD5/UUID hex and 40-char git
+/// SHA-1 hashes stay below it and are **not** flagged. The accepted tradeoff is
+/// that hex blobs of 64+ chars — including SHA-256 digests — are redacted; this
+/// is harmless (redacting a public hash leaks nothing) and is the price of
+/// closing the hex-encoded-secret evasion, since a hex secret is byte-for-byte
+/// indistinguishable from a hash of the same length.
+const HEX_RUN_MIN_LEN: usize = 64;
+
+/// Minimum length of a contiguous base64/base64url run flagged as a secret.
+///
+/// Set to 20 — the same floor the whitespace-token pass uses (AAASM-4071). The
+/// token pass only inspects `split_whitespace()` tokens, so a base64 secret in a
+/// punctuation-delimited (compact-JSON) context — e.g. `{"api_token":"<64 b64>"}`
+/// — is invisible to it: the whole payload is one whitespace token > 64 chars, so
+/// pass 1 skips it, and the quote-delimited run was exactly 64 chars, which the
+/// old strictly-greater `> 64` bound also skipped, letting a 64-char base64 secret
+/// survive `scan()` clean on the authoritative enforce path. Mirroring the pass-1
+/// floor here (with `>=`, matching [`HEX_RUN_MIN_LEN`]) closes that gap; the
+/// [`ENTROPY_BITS_GATE`] — not the length — is what bounds false positives, so
+/// benign structured runs (hex ids, UUIDs, connection strings) stay below the gate
+/// and clean regardless of length.
+const BASE64_RUN_MIN_LEN: usize = 20;
+
+/// Yields each maximal run of ASCII bytes in `s` as `(byte offset in s, run)`.
+///
+/// The whitespace-token entropy pass needs this because both halves of its gate
+/// are byte-denominated while their thresholds are character-denominated: a
+/// 7-character Han phrase is 21 bytes, already inside the 20-64 "looks like a
+/// secret" window, and [`shannon_entropy_joined`] then scores its UTF-8 bytes above a
+/// gate calibrated on English. Narrowing to ASCII runs restores bytes ==
+/// characters, which is what both thresholds were written for (AAASM-5344).
+///
+/// Runs — rather than dropping any token that holds a non-ASCII byte — is the
+/// security-critical part. A secret worth hiding is ASCII by construction
+/// (base64, hex, base62 key material), so a whole-token test would let an
+/// attacker prepend one glyph from any non-Latin script and carry the secret
+/// straight through the gate. Segmenting keeps a *contiguous* ASCII candidate
+/// visible no matter what surrounds it.
+///
+/// # The residual this used to carry is closed (AAASM-5368)
+///
+/// Because non-ASCII is purely a run boundary here, a glyph inserted into the
+/// *middle* of a secret splits it into two runs, and if both fall under the
+/// 20-character floor neither is scored by this pass. That was true of a plain
+/// **space**, tab or newline before this function existed — separator-splitting
+/// defeated the length gate for every separator class, and this function only
+/// made a non-ASCII separator behave like the whitespace separators beside it.
+///
+/// [`scan_separated_base64_runs`] now closes that gap for every separator class
+/// at once, by scoring an adjacent *pair* of base64 runs joined across a single
+/// separator character. This function is deliberately left alone: narrowing to ASCII runs
+/// is what stops the gate scoring UTF-8 bytes, and re-widening it to recover the
+/// split case would reintroduce the false-positive defect it exists to fix. The
+/// recovery belongs in an additive pass, which is where it now lives.
+///
+/// What remains open is stated on [`scan_separated_base64_runs`] rather than here:
+/// a gap of more than one character, and a secret cut into three or more pieces.
+fn ascii_runs(s: &str) -> impl Iterator<Item = (usize, &str)> {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        while i < bytes.len() && !bytes[i].is_ascii() {
+            i += 1;
         }
-        offset = token_end_pos;
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii() {
+            i += 1;
+        }
+        // Both bounds are ASCII-adjacent, hence UTF-8 char boundaries: `start`
+        // is an ASCII byte and `i` is either the end of `s` or the lead byte of
+        // a multi-byte sequence, since a continuation byte never follows ASCII.
+        (start < i).then(|| (start, &s[start..i]))
+    })
+}
+
+/// Returns `true` if `b` is in the base64 / base64url alphabet
+/// (alphanumerics plus `+ / - _`). `=` padding and all delimiters are excluded.
+fn is_base64_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'-' | b'_')
+}
+
+/// Scans `text` for generic secret-like tokens, reporting them as
+/// [`CredentialKind::GenericHighEntropy`]. Four additive passes run; each only
+/// *adds* findings, so the literal/URL/PEM detectors are never displaced and the
+/// conformance behaviour of the original whitespace pass is preserved exactly.
+/// A secret caught by more than one pass yields overlapping same-kind findings
+/// that [`scan`]'s final [`dedupe_same_kind_overlaps`] collapses back to one:
+///
+/// 1. **Whitespace-token entropy** (unchanged spec behaviour for ASCII input) —
+///    an ASCII run *within* a whitespace token, of length 20–64 with Shannon
+///    entropy > [`ENTROPY_BITS_GATE`]. For ASCII-only text the run and the
+///    token are the same slice, so this is the original rule; for mixed text it
+///    is what stops the gate scoring UTF-8 bytes (see [`ascii_runs`]).
+/// 2. **Long hex run** (AAASM-3870) — a contiguous hex run ≥ [`HEX_RUN_MIN_LEN`],
+///    closing the hex-encoding evasion (hex entropy is capped at 4.0 bits/char,
+///    below the gate, so pass 1 never catches it at any length).
+/// 3. **Base64 run** (AAASM-3870, AAASM-4071) — a contiguous base64/base64url run
+///    ≥ [`BASE64_RUN_MIN_LEN`] whose entropy exceeds the gate, closing both the
+///    old > 64-char length evasion and the compact-JSON evasion where a base64
+///    secret carries no whitespace and its delimited run is ≤ 64 chars.
+/// 4. **Separator-grouped hex run** (AAASM-4075) — a hex run broken into groups
+///    by `:` / `-` separators (e.g. `de:ad:be:ef:…`) whose total hex-digit count
+///    reaches [`HEX_RUN_MIN_LEN`]. Such reformatting splits the contiguous run
+///    into 2-char groups that clear neither the pass-2 length bar nor (with `-`
+///    kept inside the base64 alphabet) the pass-3 entropy gate, so it evades
+///    passes 1-3 entirely; this pass closes that gap.
+/// 5. **Separator-split base64 run** (AAASM-5368) — pass 3's rule applied to two
+///    adjacent runs joined across a single separator character, closing the
+///    length-gate evasion where a secret is simply cut in two, for every
+///    separator class at once (see [`scan_separated_base64_runs`]).
+///
+/// Passes 2-4 need no ASCII narrowing of their own: every byte they accept is
+/// selected by an ASCII predicate (`is_ascii_hexdigit`, [`is_base64_char`],
+/// [`is_hex_group_separator`]), and every byte of a multi-byte UTF-8 sequence
+/// is ≥ `0x80`, so non-ASCII terminates their runs exactly as whitespace does.
+/// Their runs are therefore ASCII by construction and score correctly already.
+///
+/// # The scanner's own output is not evidence about the payload (AAASM-5441)
+///
+/// Every pass here runs over `text` with the redaction labels this crate writes
+/// masked out ([`mask_redaction_markers`]). Without that, the labels are scored
+/// as if they were payload: `[REDACTED:AnthropicKey]` inside a compact-JSON body
+/// contributes both its length and its punctuation-rich byte distribution to the
+/// enclosing whitespace token, and a **correctly and completely scrubbed** body
+/// re-reads as still carrying a secret. That inverts the meaning of the signal —
+/// the better a redacting proxy behaves, the less protective it looks — and it
+/// does not converge: each re-scan splices another label in, so a payload passing
+/// two inspection points accumulates markers instead of reaching a fixed point.
+///
+/// Masking is length-preserving, so every offset these passes report is still an
+/// offset into the caller's `text`.
+fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
+    match mask_redaction_markers(text) {
+        Some(masked) => high_entropy_passes(&masked, findings),
+        None => high_entropy_passes(text, findings),
     }
 }
 
-/// Scans `text` for email addresses by locating `@` signs and expanding outward.
+/// The prefix every redaction label this crate writes begins with.
+///
+/// Used only to find *candidate* positions cheaply; whether a candidate is
+/// actually a label is decided by [`redaction_marker_len_at`] against the closed
+/// set of labels, never by this prefix alone.
+const REDACTION_MARKER_PREFIX: &str = "[REDACTED";
+
+/// Byte length of the redaction label starting at `at`, or `None` if no label
+/// starts there.
+///
+/// # Why this cannot become an evasion
+///
+/// The recognised set is **closed and literal**: the bare `[REDACTED]` that the
+/// locale packs and [`ScanResult::redact`]'s fail-closed branch emit, plus
+/// `[REDACTED:<kind>]` for each `<kind>` in [`CredentialKind::ALL`] and for
+/// `Custom` — the complete set of labels [`CredentialFinding::new`] and
+/// `CanonicalCategory::redaction_label` can produce. It is matched
+/// character-for-character, with no wildcard between the colon and the closing
+/// bracket.
+///
+/// So an attacker who writes marker-shaped text around a secret excises **zero
+/// bytes of their own choosing**: `[REDACTED:AKIAIOSFODNN7EXAMPLE]` is not in the
+/// set, is not masked, and its contents are scanned exactly as before. The only
+/// strings this removes from the scanner's view are 28 fixed constants that carry
+/// no attacker payload, and removing them cannot hide anything adjacent — a
+/// label is bracketed by `[` and `]`, which already terminate every run and token
+/// the passes build, so a genuine secret beside one is a separate candidate
+/// before and after masking. `a_marker_cannot_be_used_to_smuggle_a_secret` and
+/// `marker_shaped_text_is_not_a_marker` pin both halves of that argument.
+fn redaction_marker_len_at(text: &str, at: usize) -> Option<usize> {
+    let rest = text.get(at..)?.strip_prefix(REDACTION_MARKER_PREFIX)?;
+    if rest.starts_with(']') {
+        return Some(REDACTION_MARKER_PREFIX.len() + 1);
+    }
+    let named = rest.strip_prefix(':')?;
+    CredentialKind::ALL
+        .iter()
+        .chain(std::iter::once(&CredentialKind::Custom))
+        .map(CredentialKind::as_str)
+        .find(|name| named.strip_prefix(*name).is_some_and(|tail| tail.starts_with(']')))
+        .map(|name| REDACTION_MARKER_PREFIX.len() + 1 + name.len() + 1)
+}
+
+/// `text` with every redaction label replaced by spaces of the same byte length,
+/// or `None` when it carries no label and the caller can scan it as-is.
+///
+/// A space is the mask because it is a boundary for *every* entropy pass at once:
+/// it ends a `split_whitespace` token, it is neither a hex digit nor a
+/// [`is_base64_char`], and a label is at least ten bytes, so the ten-plus space
+/// gap it leaves can never be the single-separator gap [`is_one_separator`]
+/// requires. The label's bytes therefore contribute neither entropy nor length to
+/// any candidate, rather than being filtered out after the fact — a finding whose
+/// span lay *outside* the label (pass 1 clamps its span at the first delimiter,
+/// which for a scrubbed compact-JSON body was the opening `{`) survives any
+/// post-hoc filter.
+///
+/// Returning `None` for the common case keeps the allocation off every scan of a
+/// payload that has never been through a scrubber.
+fn mask_redaction_markers(text: &str) -> Option<String> {
+    let mut masked: Option<String> = None;
+    // Bytes of `text` already copied into `masked`.
+    let mut copied = 0usize;
+    let mut search = 0usize;
+    while let Some(rel) = text[search..].find(REDACTION_MARKER_PREFIX) {
+        let at = search + rel;
+        match redaction_marker_len_at(text, at) {
+            Some(len) => {
+                let out = masked.get_or_insert_with(|| String::with_capacity(text.len()));
+                out.push_str(&text[copied..at]);
+                // Same byte count in, same byte count out: the offsets the passes
+                // report have to index the caller's original text.
+                for _ in 0..len {
+                    out.push(' ');
+                }
+                copied = at + len;
+                search = copied;
+            }
+            // Marker-shaped but not a marker. Resume past the prefix so an
+            // overlapping real marker later in the text is still found.
+            None => search = at + REDACTION_MARKER_PREFIX.len(),
+        }
+    }
+    let mut out = masked?;
+    out.push_str(&text[copied..]);
+    Some(out)
+}
+
+/// The five entropy passes, over text whose redaction labels [`scan_high_entropy`]
+/// has already masked out.
+fn high_entropy_passes(text: &str, findings: &mut Vec<CredentialFinding>) {
+    // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
+    let mut offset = 0usize;
+    for token in text.split_whitespace() {
+        let token_offset = text[offset..].find(token).map(|i| offset + i).unwrap_or(offset);
+        let whitespace_end = token_offset + token.len();
+        // Gate each of the token's ASCII runs, not the token itself. A script
+        // that does not delimit words with spaces (Chinese, Japanese, Thai)
+        // makes one "token" an entire clause, and both the length window and
+        // the entropy gate then measure UTF-8 bytes against character-scale
+        // thresholds — which classified ordinary Chinese prose as leaked
+        // secrets. See [`ascii_runs`] for why this segments rather than skips
+        // (AAASM-5344). For ASCII-only text the run is the whole token, so
+        // every pre-existing finding is reproduced byte-identically.
+        for (run_offset, run) in ascii_runs(token) {
+            let run_start = token_offset + run_offset;
+            if (20..=64).contains(&run.len()) && clears_entropy_bar(run, "") {
+                // The whitespace token can still carry trailing delimiters when a
+                // secret is embedded in structured text (e.g. `...key"}]}` in compact
+                // JSON). Clamp the finding's `end` at the first token-terminating
+                // character so the span covers only the credential — matching how the
+                // AC literal scan derives its `end`. The run's own end bounds it too,
+                // so a trailing non-ASCII neighbour is never swallowed into the span.
+                let end = token_end(text, run_start).min(run_start + run.len());
+                findings.push(CredentialFinding::new(
+                    CredentialKind::GenericHighEntropy,
+                    run_start,
+                    end,
+                ));
+            }
+        }
+        offset = whitespace_end;
+    }
+
+    // Passes 2 & 3: contiguous encoded-blob runs that the token pass misses.
+    scan_long_hex_runs(text, findings);
+    scan_long_base64_runs(text, findings);
+    // Pass 4: separator-grouped hex runs the contiguous passes miss (AAASM-4075).
+    scan_separated_hex_runs(text, findings);
+    // Pass 5: a base64 run cut in two by one separator (AAASM-5368).
+    scan_separated_base64_runs(text, findings);
+}
+
+/// Pass 2 — flag every contiguous hex run of length ≥ [`HEX_RUN_MIN_LEN`].
+fn scan_long_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_hexdigit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        if i - start >= HEX_RUN_MIN_LEN {
+            findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
+        }
+    }
+}
+
+/// Pass 3 — flag every contiguous base64/base64url run of length
+/// ≥ [`BASE64_RUN_MIN_LEN`] whose Shannon entropy exceeds [`ENTROPY_BITS_GATE`].
+fn scan_long_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_base64_char(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_base64_char(bytes[i]) {
+            i += 1;
+        }
+        let run = &text[start..i];
+        if run.len() >= BASE64_RUN_MIN_LEN && clears_entropy_bar(run, "") {
+            findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, i));
+        }
+    }
+}
+
+/// Returns `true` for the intra-token separators that a secret can be rewritten
+/// around to split it into small groups (`de:ad:be:ef…`, `de-ad-be-ef…`). Note
+/// `-` is also a base64url character, so dash-grouping additionally dilutes the
+/// per-run entropy below [`ENTROPY_BITS_GATE`] — both reasons the contiguous
+/// passes miss these tokens.
+fn is_hex_group_separator(b: u8) -> bool {
+    matches!(b, b':' | b'-')
+}
+
+/// Pass 4 — flag a hex run split into groups by `:` / `-` separators whose total
+/// hex-digit count reaches [`HEX_RUN_MIN_LEN`] (AAASM-4075).
+///
+/// Scans each maximal run of `[0-9a-fA-F:-]`, counts only the hex digits (the
+/// separators are the evasion and are not part of the secret's entropy), and
+/// flags the run — trimmed to its first/last hex digit — when it both contains a
+/// separator (a contiguous run is already handled by [`scan_long_hex_runs`]) and
+/// carries at least [`HEX_RUN_MIN_LEN`] hex digits. Keying the bar on the same
+/// 64-digit threshold as the contiguous rule keeps benign grouped hex — MAC
+/// addresses (12 digits) and dash-delimited UUIDs (32 digits) — below the bar.
+/// Result of scanning one maximal `[0-9a-fA-F:-]` run (see [`scan_hex_run`]).
+struct HexRun {
+    /// Byte offset just past the run — where the outer scan resumes.
+    end: usize,
+    /// Number of hex digits in the run (separators excluded).
+    hex_count: usize,
+    /// Whether the run contained at least one `:`/`-` separator.
+    has_separator: bool,
+    /// Offset of the first hex digit, if any (the flagged span's start).
+    first_hex: Option<usize>,
+    /// Offset of the last hex digit seen (the flagged span's inclusive end).
+    last_hex: usize,
+}
+
+/// Scan the maximal `[0-9a-fA-F:-]` run beginning at `start`, tallying the hex
+/// digits and separators so the caller can decide whether it clears the gate.
+fn scan_hex_run(bytes: &[u8], start: usize) -> HexRun {
+    let mut i = start;
+    let mut hex_count = 0usize;
+    let mut has_separator = false;
+    let mut first_hex: Option<usize> = None;
+    let mut last_hex = start;
+    while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || is_hex_group_separator(bytes[i])) {
+        if bytes[i].is_ascii_hexdigit() {
+            hex_count += 1;
+            first_hex.get_or_insert(i);
+            last_hex = i;
+        } else {
+            has_separator = true;
+        }
+        i += 1;
+    }
+    HexRun {
+        end: i,
+        hex_count,
+        has_separator,
+        first_hex,
+        last_hex,
+    }
+}
+
+fn scan_separated_hex_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_hexdigit() && !is_hex_group_separator(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let run = scan_hex_run(bytes, i);
+        i = run.end;
+        if run.has_separator && run.hex_count >= HEX_RUN_MIN_LEN {
+            if let Some(span_start) = run.first_hex {
+                findings.push(CredentialFinding::new(
+                    CredentialKind::GenericHighEntropy,
+                    span_start,
+                    run.last_hex + 1,
+                ));
+            }
+        }
+    }
+}
+
+/// Shortest run that could *possibly* clear [`ENTROPY_BITS_GATE`] on its own.
+///
+/// The same exact bound as [`MIN_DISTINCT_BYTES_FOR_GATE`], applied to length
+/// instead of to distinct bytes — a run of `n` bytes holds at most `n` distinct
+/// values, and entropy is at most `log2(distinct)`, so both quantities must reach
+/// 23 for 4.5 bits to be reachable. `log2(22) = 4.4594 <= 4.5 < 4.5236 = log2(23)`.
+///
+/// Used as the floor of [`scan_separated_base64_runs`]'s joined-length window: a
+/// pair shorter than this cannot clear the gate, so scoring it is wasted work.
+/// It is **not** an admission rule for the individual runs — keying that on length
+/// was a defect, because length answers "could another pass have scored this run",
+/// and what matters is whether one *did* (see [`overlaps_earlier_finding`]).
+const ENTROPY_REACHABLE_MIN_LEN: usize = 23;
+
+/// Returns `true` if any of `earlier` overlaps the byte range `start..end`.
+///
+/// [`scan_separated_base64_runs`] uses this to stay off runs another pass has
+/// already flagged, which is the bound that stops it widening a span over text
+/// beside a secret that was found without its help.
+///
+/// # Why overlap, and not a length or entropy test
+///
+/// Two wrong answers were tried. Keying on "this run is at least
+/// [`ENTROPY_REACHABLE_MIN_LEN`] long, so pass 3 will take it" is wrong because
+/// length only says pass 3 *could* have scored the run; pass 3 scores it only if
+/// it clears the gate, which a random 23-24 character run does about 5% of the
+/// time. That left a band nothing scored at all: a 40-character secret split
+/// 23+17 across one space produced zero findings with both halves in the clear,
+/// and 99.8% of such splits were fully missed at 400 trials per cell, against
+/// 1.5-2.2% for 18+22 through 22+18.
+///
+/// Testing "pass 3 did not score it" instead is closer but still wrong, because
+/// pass 3 is not the only pass that runs first. The literal detector finds
+/// `ghs_16C7e42F292c6912E7710c838347Ae178B4a` by prefix, and that run scores only
+/// 4.14 bits — below the gate — so an entropy test admits it, and joining it to
+/// the word before produced `[REDACTED] [REDACTED:GitHubAppToken]` where the
+/// pre-canonical baseline has `installation [REDACTED:GitHubAppToken]`. Asking
+/// what was *already found*, rather than what one particular pass would have
+/// found, is the property actually wanted and covers the literal, digit, email
+/// and entropy passes alike.
+fn overlaps_earlier_finding(earlier: &[CredentialFinding], start: usize, end: usize) -> bool {
+    earlier.iter().any(|f| f.offset < end && start < f.end())
+}
+
+/// Returns `true` for the characters that count as a secret-splitting separator.
+///
+/// Whitespace and non-ASCII only — deliberately **not** ASCII punctuation.
+///
+/// # This is a measured tradeoff, not a free win
+///
+/// An earlier version of this comment claimed punctuation "would add no detection
+/// whatsoever" and could be excluded "at zero recall cost". Both were false, and
+/// the measurement that disproves them is worth keeping:
+///
+/// A pair joined by punctuation does sit inside one whitespace token, and pass 1
+/// does score that token — but it then clamps the span at the first [`token_end`]
+/// delimiter. For the seven delimiters that are also base64-adjacent in real text
+/// (`,` `;` `)` `"` `'` `]` `}`), the clamp lands *before* the secret:
+/// `a,<18-char run>,<18-char run>,3` yields one finding covering the single
+/// character `a`, and **both halves of the secret survive in the clear**. Pass 1's
+/// "coverage" there is a finding pointed at the wrong bytes. For punctuation that
+/// is not a delimiter (`.` `:` `-` `/`) pass 1 does cover the whole value, so
+/// those cost nothing.
+///
+/// What excluding punctuation buys, measured over 28 MB of this repository's code
+/// and configuration: **10 genuine false positives avoided** (3 in a workflow
+/// file, 6 in dashboard end-to-end specs, 1 fabricated JWT). What it costs: a
+/// secret split by one of those seven delimiters keeps both halves, pinned by
+/// `entropy_split_by_a_token_end_delimiter_residual.json` and by
+/// `a_secret_split_by_a_token_end_delimiter_keeps_both_halves`.
+///
+/// The choice stands on those two numbers. It is **not** a regression against the
+/// merge base — behaviour on every punctuation shape is byte-identical to it — but
+/// it is a gap this pass could have closed and deliberately does not, and the
+/// underlying cause is pass 1's clamp rather than anything here.
+fn is_split_separator(c: char) -> bool {
+    c.is_whitespace() || !c.is_ascii()
+}
+
+/// Returns `true` if `gap` is exactly one [`is_split_separator`] character.
+///
+/// One decode rather than the two a `chars().count() == 1 && chars().all(..)`
+/// pair costs, because this is on the per-pair path.
+fn is_one_separator(gap: &str) -> bool {
+    let mut chars = gap.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if is_split_separator(c))
+}
+
+/// Minimum number of distinct byte values a candidate must carry before
+/// [`ENTROPY_BITS_GATE`] can possibly be cleared.
+///
+/// Not a heuristic and not a filter — an exact necessary condition, used as a
+/// fast path. Shannon entropy over an alphabet of `d` distinct symbols is at
+/// most `log2(d)`, so a candidate can only exceed 4.5 bits if `log2(d) > 4.5`,
+/// i.e. `d > 22.63`, i.e. `d >= 23`. Testing it before scoring therefore cannot
+/// change any verdict; it exists so [`scan_separated_base64_runs`] does not clear
+/// a 1 KiB frequency table for every word boundary in the payload.
+/// `the_distinct_byte_fast_path_cannot_change_a_verdict` pins it from both
+/// sides — 22 can never pass the gate, and 23 can.
+const MIN_DISTINCT_BYTES_FOR_GATE: u32 = 23;
+
+/// Number of distinct byte values across `a` followed by `b`.
+///
+/// A 256-bit set held in four words, so the count costs one pass and four
+/// `popcount`s with no allocation and no table to clear per candidate.
+fn distinct_bytes(a: &str, b: &str) -> u32 {
+    let mut seen = [0u64; 4];
+    for &byte in a.as_bytes().iter().chain(b.as_bytes()) {
+        seen[(byte >> 6) as usize] |= 1u64 << (byte & 63);
+    }
+    seen.iter().map(|w| w.count_ones()).sum()
+}
+
+/// Yields each maximal base64/base64url run in `text` as `(start, end)` byte
+/// offsets — the same runs [`scan_long_base64_runs`] scores, exposed as an
+/// iterator so pass 5 can look at two of them at once.
+///
+/// Byte-wise rather than char-wise, and still boundary-safe: [`is_base64_char`]
+/// accepts only ASCII, and every byte of a multi-byte UTF-8 sequence is ≥ `0x80`,
+/// so a run bound is either an ASCII byte or a lead byte — never a continuation
+/// byte. Same argument as [`ascii_runs`].
+fn base64_runs(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        while i < bytes.len() && !is_base64_char(bytes[i]) {
+            i += 1;
+        }
+        let start = i;
+        while i < bytes.len() && is_base64_char(bytes[i]) {
+            i += 1;
+        }
+        (start < i).then_some((start, i))
+    })
+}
+
+/// Pass 5 — a base64 run cut in two by a single separator character
+/// (AAASM-5368).
+///
+/// Pass 3 gates a contiguous base64 run at [`BASE64_RUN_MIN_LEN`], so a secret
+/// split into two sub-20-character pieces clears neither half of the bar and is
+/// not scored — by a space, a tab, a newline or a non-ASCII glyph alike.
+/// Separator-splitting was a fully open evasion of the length gate on `main` for
+/// every separator class at once.
+///
+/// This is [`scan_separated_hex_runs`] (AAASM-4075) applied to the entropy gate
+/// rather than to a hex-digit count, which is the generalisation that ticket's
+/// shape was always pointing at: scan the runs, exclude the separator from what
+/// is scored — it is the evasion, not part of the secret's entropy — and hold the
+/// rejoined value to the bar its unsplit form would have faced.
+///
+/// # Why this does not become a false-positive explosion
+///
+/// Joining fragments freely until the length window is reached swallows whole
+/// clauses of running text, which is the defect AAASM-5344 was opened to fix.
+/// Three properties bound it instead, and all three are load-bearing:
+///
+/// * **Base64 alphabet.** The candidate must be drawn from the alphabet encoded
+///   key material is drawn from ([`is_base64_char`]) — the same restriction pass 3
+///   already applies. This is what keeps ordinary punctuated prose out: without
+///   it, joining `RBAC/NetworkPolicy` to `hardening).` clears the gate, because a
+///   near-all-distinct string of 27 characters scores `log2(27)` whatever it says.
+/// * **Pairs only, and only runs [`scan_long_base64_runs`] did not score.** At
+///   most two runs are ever joined, and only when neither was already flagged on
+///   its own — see [`unscored_by_the_contiguous_pass`]. That is what stops the
+///   pass reaching past an already-detected secret into the next word:
+///   `tok=<40-char PAT> done` keeps its ` done` because the PAT run scores 4.63
+///   bits and is pass 3's, and a PEM body line keeps its `-----END` for the same
+///   reason.
+/// * **A one-character gap, of a splitting character.** The evasion is the
+///   insertion of *a* separator into a secret. A longer gap — indentation, a
+///   paragraph break, sentence spacing — is ordinary text structure with no
+///   matching evasion story. ASCII punctuation is excluded too, for a measured
+///   reason that is **not** "it costs no recall" (see [`is_split_separator`]).
+///
+/// Measured over the committed clean zh-TW corpus (0), 1.8 MB of this repository's
+/// English and Chinese prose, and 23.6 MB of its code and configuration: this pass
+/// adds **one** false-positive pair in 25.4 MB, and loses nothing. Every other
+/// added finding is its own test literal or vector.
+///
+/// That one is `CONTRIBUTING/PR-template/DCO` joined to `wording` in a release
+/// sign-off document — 35 characters, 26 distinct, 4.615 bits. It is the cost of
+/// admitting runs of 23 and over (see [`overlaps_earlier_finding`]): a long
+/// mixed-case punctuated identifier next to a short word can reach the gate, and
+/// no cheap property separates it from a secret cut in two, because a 23-character
+/// secret fragment scores about the same. `a_long_hyphenated_identifier_beside_a_word_is_a_known_false_positive`
+/// pins it so the rate is tracked rather than rediscovered. The trade it buys is
+/// large: without that admission, 99.8% of 23+17 splits were missed entirely.
+///
+/// # What it does and does not recover
+///
+/// A split secret faces the same [`ENTROPY_BITS_GATE`] its unsplit form faces,
+/// applied to the same rejoined characters — but the outcome is not identical
+/// either way, and the pass's reach is bounded by the joined window it shares with
+/// pass 1 (23-64 characters).
+///
+/// `log2(n)` is only the *ceiling* on a run's entropy; a random base64 run's mean
+/// sits well below it (4.25 against a 4.585 ceiling at n = 24). Measured by Monte
+/// Carlo, the gate is cleared about 5% of the time at 24 characters, ~91% at 36
+/// and ~96% at 38 — so detection is real only from the low thirties upward, split
+/// or not. This pass does not change that calibration; it removes the separator as
+/// a way of avoiding it.
+///
+/// # What is still open
+///
+/// Measured at 400 trials per cell over random base64 secrets, "fully missed"
+/// meaning both halves left in the clear:
+///
+/// 1. **A pair in which one run was already scored by pass 3.** The pass declines
+///    such a pair *by design* — that is the bound which stops it eating the word
+///    beside a detected secret — so the other run is left in the clear if it
+///    cannot be scored alone. A 46-character secret split 36+10 loses the 36 and
+///    keeps the 10. This is the dominant residual and it is a deliberate trade,
+///    not an oversight.
+/// 2. **A gap of more than one character**, and **ASCII punctuation gaps**, where
+///    a secret split by one of [`token_end`]'s delimiters keeps its tail (see
+///    [`is_split_separator`]).
+/// 3. **Pieces short enough that no adjacent pair reaches 23 characters**, or a
+///    pair summing past the window's 64.
+///
+/// All three are pinned by `residuals_of_the_split_pass_are_pinned`. Closing (1)
+/// means attributing entropy to one half of a pair, which pairwise scoring cannot
+/// do; closing (2) or (3) means joining more than two runs or across arbitrary
+/// distance — the clause-swallowing shape the bounds above exist to prevent. Each
+/// needs its own false-positive measurement, not a constant nudged.
+///
+/// # The spans — two, not one
+///
+/// A qualifying pair emits **one finding per run**, never a single span across the
+/// separator. The separator is the evasion rather than part of the secret, which is
+/// why it is excluded from the scored string; it is excluded from the span for the
+/// same reason, and leaving it in place is what keeps the surrounding document
+/// intact. A single joined span redacted the newline out of
+/// `token: <run>\nreplicas: 3` and left invalid YAML behind.
+///
+/// This differs from [`scan_separated_hex_runs`], which does span its internal
+/// separators. It can afford to: 64 hex digits grouped by `:` are unambiguously one
+/// value, whereas a pair joined across whitespace is a *hypothesis* about two runs.
+///
+/// Which is this pass's honest limit. When the hypothesis is wrong — an ordinary
+/// word sitting beside a genuine short secret — that word is redacted too, because
+/// pairwise scoring cannot attribute the entropy to one half. What makes that
+/// tolerable is the firing rate rather than the reasoning: one false-positive pair
+/// across 25.4 MB of this repository's prose, code and configuration. `an_adjacent_word_shares_the_fate_of_a_split_secret` pins the cost so
+/// it is visible here rather than discovered in production.
+fn scan_separated_base64_runs(text: &str, findings: &mut Vec<CredentialFinding>) {
+    // Everything found before this pass ran. Runs already covered by one of those
+    // findings are not this pass's to widen (see [`overlaps_earlier_finding`]).
+    let earlier = findings.len();
+    let mut prev: Option<(usize, usize)> = None;
+    for (start, end) in base64_runs(text) {
+        if let Some((p_start, p_end)) = prev {
+            // Ordered cheapest-first, and every test short-circuits. This runs
+            // once per adjacent run pair, and code is dense in them — identifiers
+            // are base64 runs — so an eagerly-evaluated gap decode here is
+            // measurable on the synchronous enforcement path.
+            let joined_len = (p_end - p_start) + (end - start);
+            let (a, b) = (&text[p_start..p_end], &text[start..end]);
+            if (ENTROPY_REACHABLE_MIN_LEN..=64).contains(&joined_len) && is_one_separator(&text[p_end..start]) {
+                // The overlap test is last because it is the only O(findings) one
+                // and the gates above reject almost every pair; `earlier` is the
+                // prefix of `findings` that existed before this pass began, so a
+                // pass-5 finding never blocks the next pair in a chain.
+                // The distinct-byte test stays ahead of the entropy work as its
+                // own fast path: it is necessary for *both* branches of
+                // `clears_entropy_bar` (see its docs), so testing it here skips
+                // the frequency table for the overwhelming majority of adjacent
+                // run pairs without changing a single verdict.
+                if distinct_bytes(a, b) >= MIN_DISTINCT_BYTES_FOR_GATE
+                    && clears_entropy_bar(a, b)
+                    && !overlaps_earlier_finding(&findings[..earlier], p_start, p_end)
+                    && !overlaps_earlier_finding(&findings[..earlier], start, end)
+                {
+                    // One finding per run, never one span across the separator.
+                    // The separator is the evasion, not part of the secret, so it
+                    // is no more part of the *span* than it is part of the scored
+                    // string — and leaving it in place is what keeps the
+                    // surrounding document intact. A single joined span redacted
+                    // the newline out of `token: <run>\nreplicas: 3` and left
+                    // invalid YAML behind.
+                    findings.push(CredentialFinding::new(
+                        CredentialKind::GenericHighEntropy,
+                        p_start,
+                        p_end,
+                    ));
+                    findings.push(CredentialFinding::new(CredentialKind::GenericHighEntropy, start, end));
+                }
+            }
+        }
+        prev = Some((start, end));
+    }
+}
+
+/// RFC 5321 caps the local-part of an address at 64 octets. A run longer than
+/// this cannot be a legitimate email, so it is skipped — this also bounds the
+/// per-`@` work on delimiter-free input (AAASM-3988).
+const MAX_EMAIL_LOCAL_LEN: usize = 64;
+
+/// RFC 5321 caps the domain of an address at 255 octets. Capping the forward
+/// domain scan at this length keeps [`scan_emails`] linear on pathological
+/// input (e.g. `a@a@a@…`) without affecting any real address (AAASM-3988).
+const MAX_EMAIL_DOMAIN_LEN: usize = 255;
+
+/// Like [`token_end`] but scans at most `max_len` bytes forward, returning a
+/// valid char boundary. Bounding the scan prevents a single `@` from costing
+/// O(n) on delimiter-free input, keeping [`scan_emails`] linear overall.
+fn bounded_token_end(text: &str, from: usize, max_len: usize) -> usize {
+    let mut end = from;
+    for (i, c) in text[from..].char_indices() {
+        if i >= max_len {
+            return from + i;
+        }
+        if c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}') {
+            return from + i;
+        }
+        end = from + i + c.len_utf8();
+    }
+    end
+}
+
+/// Scans `text` for email addresses in a single forward pass.
+///
+/// The local-part start is tracked as the byte offset just past the most recent
+/// token-delimiting character, so it is known in O(1) per `@` rather than an
+/// O(n) backward rescan. Combined with the local/domain length caps this keeps
+/// the scan linear even on adversarial input such as ~1 MB of consecutive `@`
+/// with no delimiters (AAASM-3988 — quadratic-time DoS).
 fn scan_emails(text: &str, findings: &mut Vec<CredentialFinding>) {
-    let mut search = text;
-    let mut base = 0usize;
+    // Byte offset just past the most recent delimiter — i.e. the local-part
+    // start for the next `@` encountered. Equivalent to the old backward
+    // `rfind`, computed incrementally.
+    let mut local_start = 0usize;
 
-    while let Some(at) = search.find('@') {
-        let abs_at = base + at;
+    for (idx, c) in text.char_indices() {
+        if c == '@' {
+            // Skip an empty or over-long local-part. The length cap also gates
+            // the domain scan below so delimiter-free runs stay linear.
+            if idx == local_start || idx - local_start > MAX_EMAIL_LOCAL_LEN {
+                continue;
+            }
 
-        let local_start = text[..abs_at]
-            .rfind(|c: char| c.is_whitespace() || matches!(c, '<' | ',' | ';' | '"' | '\''))
-            .map(|i| i + 1)
-            .unwrap_or(0);
+            let domain_start = idx + 1;
+            let domain_end = bounded_token_end(text, domain_start, MAX_EMAIL_DOMAIN_LEN);
+            let domain = &text[domain_start..domain_end];
 
-        let domain_end = token_end(text, abs_at + 1);
-        let local = &text[local_start..abs_at];
-        let domain = &text[abs_at + 1..domain_end];
-
-        if !local.is_empty() && domain.contains('.') && domain.len() >= 3 {
-            findings.push(CredentialFinding::new(
-                CredentialKind::EmailAddress,
-                local_start,
-                domain_end,
-            ));
+            if domain.contains('.') && domain.len() >= 3 {
+                findings.push(CredentialFinding::new(
+                    CredentialKind::EmailAddress,
+                    local_start,
+                    domain_end,
+                ));
+            }
+            continue;
         }
 
-        let next = abs_at + 1;
-        if next >= text.len() {
-            break;
+        if c.is_whitespace() || matches!(c, '<' | ',' | ';' | '"' | '\'') {
+            local_start = idx + c.len_utf8();
         }
-        search = &text[next..];
-        base = next;
     }
 }
 
@@ -503,6 +2088,167 @@ fn scan_emails(text: &str, findings: &mut Vec<CredentialFinding>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// AAASM-5502 — a secret whose entropy lands in the band the relaxed bar
+    /// exists for, split across the 23+17 boundary the product guarantees.
+    ///
+    /// 4.3939 bits: below `ENTROPY_BITS_GATE`, above
+    /// `DENSE_CANDIDATE_ENTROPY_BITS_GATE`. Synthetic, generated for this test;
+    /// not a real credential.
+    const MISSED_BASE64_SECRET: &str = "gCfEX1ggX6sUTGX4DVf1/gD2s8m1Dtc7X7RjUg3K";
+
+    /// AAASM-5502 — the same class over the alphanumeric alphabet, 4.4964 bits.
+    const MISSED_ALNUM_SECRET: &str = "1MwNMa48aWhrchr8SJs4haK4mJDvnA6xF8t6uhBr";
+
+    #[test]
+    fn a_sub_gate_secret_is_found_whether_split_or_contiguous() {
+        // The split form must face exactly what the unsplit form faces — that
+        // equality is the property AAASM-5368 was opened for, and measuring only
+        // one of the two is how the shortfall stayed invisible.
+        for secret in [MISSED_BASE64_SECRET, MISSED_ALNUM_SECRET] {
+            assert!(
+                !CredentialScanner::new().scan(secret).findings.is_empty(),
+                "contiguous form went undetected: {secret}"
+            );
+            for separator in [" ", "-", "\n", "\t", "\u{3000}", "\u{FF0D}"] {
+                let split = format!("{}{}{}", &secret[..23], separator, &secret[23..]);
+                assert!(
+                    !CredentialScanner::new().scan(&split).findings.is_empty(),
+                    "split form went undetected over separator {separator:?}: {secret}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_relaxed_bar_is_what_finds_them() {
+        // Falsification: if these cleared `ENTROPY_BITS_GATE` on their own the
+        // test above would pass with the relaxation deleted, and would be
+        // proving nothing. Both must sit strictly inside the relaxed band.
+        for secret in [MISSED_BASE64_SECRET, MISSED_ALNUM_SECRET] {
+            let entropy = shannon_entropy(secret);
+            assert!(
+                entropy <= ENTROPY_BITS_GATE,
+                "{secret} clears the strict gate at {entropy} — it cannot demonstrate the relaxed bar"
+            );
+            assert!(
+                entropy > DENSE_CANDIDATE_ENTROPY_BITS_GATE,
+                "{secret} is below the relaxed bar at {entropy}"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_text_stays_clean_under_the_relaxed_bar() {
+        // Each of these is one unbroken base64 run that clears length, distinct
+        // bytes and the relaxed entropy bar. Each was reported as a secret by an
+        // earlier form of the rule; each is held out by one of its shape tests.
+        for text in [
+            "application/vnd.agent-assembly.decision-event+json;version=3",
+            "/var/log/agent-assembly/gateway/policy-evaluation-2026-08-03.log",
+            "https://docs.agent-assembly.example/reference/policy-schema#matched-rule-ids",
+            "aa_gateway::storage::sensitive_data::projection_writer::ProjectionWriter",
+            "getUserAccountPreferencesForTenantScopeAndOrganisation",
+        ] {
+            assert!(
+                CredentialScanner::new().scan(text).findings.is_empty(),
+                "structured text reported as a secret: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_relaxed_bar_does_not_reach_below_the_guaranteed_band() {
+        // A 36-character PEM body line clears every other relaxed test. Only the
+        // length bound holds it out, and the committed conformance vectors pin
+        // it as not independently flagged (ADR 0015).
+        let pem_body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw";
+        assert_eq!(pem_body.len(), 36);
+        assert!(pem_body.len() < DENSE_CANDIDATE_MIN_LEN);
+        assert!(CredentialScanner::new().scan(pem_body).findings.is_empty());
+    }
+
+    #[test]
+    fn a_marker_run_cannot_lengthen_a_candidate_into_the_relaxed_bar() {
+        // Without the repeated-run bound, pass 5 joined the PEM body above to the
+        // `-----END` that follows it: 44 bytes, all base64, dense enough — and
+        // padding supplied every one of the extra characters.
+        let pem = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcw\n-----END PRIVATE KEY-----";
+        assert!(
+            longest_repeat_run("-----END", "") > DENSE_CANDIDATE_MAX_REPEAT_RUN,
+            "the marker no longer trips the repeat bound, so this test proves nothing"
+        );
+        assert!(CredentialScanner::new().scan(pem).findings.is_empty());
+    }
+
+    /// AAASM-5441 — the exclusion list and the label writer must not drift apart.
+    ///
+    /// A new [`CredentialKind`] arrives with a new `[REDACTED:<kind>]` label the
+    /// moment it is added to `as_str`, and if the exclusion does not recognise it
+    /// then bodies scrubbed of that kind start re-inspecting dirty — silently,
+    /// because nothing else in the suite mentions the new name. This enumerates
+    /// the labels from the same source the writer uses, so the drift is a failing
+    /// test rather than a field report.
+    #[test]
+    fn every_label_this_crate_can_emit_is_excluded() {
+        let labels = CredentialKind::ALL
+            .iter()
+            .chain(std::iter::once(&CredentialKind::Custom))
+            .map(|kind| format!("[REDACTED:{}]", kind.as_str()))
+            .chain(std::iter::once("[REDACTED]".to_string()));
+
+        for label in labels {
+            assert_eq!(
+                redaction_marker_len_at(&label, 0),
+                Some(label.len()),
+                "{label} is a label this crate writes but not one it excludes"
+            );
+            assert_eq!(
+                mask_redaction_markers(&label).as_deref(),
+                Some(" ".repeat(label.len()).as_str()),
+                "{label} was not fully masked"
+            );
+        }
+    }
+
+    /// The masking must be length-preserving, because the offsets the entropy
+    /// passes report over the masked text are handed back to the caller as
+    /// offsets into the *original* text. A mask that changed length would move
+    /// every later finding's span onto the wrong bytes — and `redact` splices by
+    /// span, so the failure mode is a leaked secret, not a cosmetic slip.
+    #[test]
+    fn masking_preserves_every_byte_offset() {
+        for text in [
+            "value [REDACTED:GenericHighEntropy] tail",
+            "{\"a\":\"[REDACTED]\",\"b\":\"[REDACTED:SsnPattern]\"}",
+            "統編[REDACTED] 已登記",
+            "[REDACTED][REDACTED:Custom]",
+        ] {
+            let masked = mask_redaction_markers(text).expect("carries a label");
+            assert_eq!(masked.len(), text.len(), "{text} changed length under masking");
+            for (i, (a, b)) in text.bytes().zip(masked.bytes()).enumerate() {
+                assert!(
+                    a == b || b == b' ',
+                    "byte {i} of {text} changed to something other than the mask"
+                );
+            }
+        }
+    }
+
+    /// Text that merely looks like a label is left alone, and a real label that
+    /// follows it is still found — the resume point after a rejected candidate
+    /// must not skip past the next one.
+    #[test]
+    fn label_shaped_text_is_left_in_place() {
+        assert_eq!(redaction_marker_len_at("[REDACTED:NotAKind]", 0), None);
+        assert_eq!(redaction_marker_len_at("[REDACTEDX]", 0), None);
+        assert_eq!(redaction_marker_len_at("[REDACTED", 0), None);
+        assert_eq!(mask_redaction_markers("[REDACTED:NotAKind]"), None);
+        assert_eq!(
+            mask_redaction_markers("[REDACTED:NotAKind][REDACTED]").as_deref(),
+            Some("[REDACTED:NotAKind]          ")
+        );
+    }
     use super::*;
 
     // --- CredentialKind::as_str ---
@@ -512,6 +2258,82 @@ mod tests {
         assert_eq!(CredentialKind::AnthropicKey.as_str(), "AnthropicKey");
         assert_eq!(CredentialKind::AwsAccessKey.as_str(), "AwsAccessKey");
         assert_eq!(CredentialKind::GenericHighEntropy.as_str(), "GenericHighEntropy");
+    }
+
+    // --- CredentialKind::ALL catalogue (AAASM-5174) ---
+
+    /// `ALL` must enumerate every built-in kind exactly once and never include
+    /// `Custom`. This is the compile-time-ish guard promised in `ALL`'s doc:
+    /// the `match` below is exhaustive, so adding a new `CredentialKind`
+    /// variant forces a decision here, and the count/uniqueness asserts catch a
+    /// variant that was added to the enum but forgotten in `ALL`.
+    #[test]
+    fn all_enumerates_every_builtin_kind_exactly_once() {
+        // 27 built-in detector kinds today; `Custom` is excluded by design.
+        assert_eq!(CredentialKind::ALL.len(), 27, "ALL must list all 27 built-in kinds");
+
+        // No duplicates.
+        let mut seen = std::collections::BTreeSet::new();
+        for k in CredentialKind::ALL {
+            assert!(seen.insert(k.as_str()), "duplicate kind in ALL: {}", k.as_str());
+        }
+
+        // Custom must not appear in the built-in catalogue.
+        assert!(
+            !CredentialKind::ALL.contains(&CredentialKind::Custom),
+            "Custom is policy-defined, not a built-in — it must not be in ALL"
+        );
+
+        // Exhaustiveness: every variant is accounted for. Adding a variant
+        // without deciding whether it belongs in `ALL` will fail to compile.
+        for k in CredentialKind::ALL
+            .iter()
+            .chain(std::iter::once(&CredentialKind::Custom))
+        {
+            match k {
+                CredentialKind::AnthropicKey
+                | CredentialKind::AwsAccessKey
+                | CredentialKind::GcpServiceAccount
+                | CredentialKind::OpenAiKey
+                | CredentialKind::AzureConnectionString
+                | CredentialKind::GitHubAppToken
+                | CredentialKind::GitHubOAuthToken
+                | CredentialKind::GitHubPat
+                | CredentialKind::GitHubRefreshToken
+                | CredentialKind::GitHubUserToken
+                | CredentialKind::SlackAppToken
+                | CredentialKind::SlackBotToken
+                | CredentialKind::SlackOAuthToken
+                | CredentialKind::SlackRefreshToken
+                | CredentialKind::SlackUserToken
+                | CredentialKind::MongodbUrl
+                | CredentialKind::MysqlUrl
+                | CredentialKind::PostgresUrl
+                | CredentialKind::EcPrivateKey
+                | CredentialKind::OpensshPrivateKey
+                | CredentialKind::PgpPrivateKey
+                | CredentialKind::PrivateKey
+                | CredentialKind::RsaPrivateKey
+                | CredentialKind::CreditCardLuhn
+                | CredentialKind::EmailAddress
+                | CredentialKind::SsnPattern
+                | CredentialKind::GenericHighEntropy
+                | CredentialKind::Custom => {}
+            }
+        }
+    }
+
+    #[test]
+    fn category_and_severity_are_defined_for_every_kind() {
+        for k in CredentialKind::ALL {
+            assert!(!k.category().is_empty(), "empty category for {}", k.as_str());
+            assert!(
+                ["critical", "high", "medium", "low"].contains(&k.severity()),
+                "unexpected severity {:?} for {}",
+                k.severity(),
+                k.as_str()
+            );
+        }
     }
 
     // --- API key patterns ---
@@ -546,6 +2368,57 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == CredentialKind::GcpServiceAccount));
+    }
+
+    // --- AAASM-3727: case / whitespace bypass variants ---
+
+    #[test]
+    fn detects_gcp_service_account_compact_json() {
+        // Compact serializer output (no space after the colon) must be caught.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(r#"{"type":"service_account","project_id":"p"}"#);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GcpServiceAccount),
+            "compact GCP service-account JSON must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_gcp_service_account_spaces_around_colon() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(r#"{ "type" : "service_account" }"#);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GcpServiceAccount),
+            "spaced-colon GCP service-account JSON must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_postgres_url_uppercase_scheme() {
+        // RFC 3986 schemes are case-insensitive; an upper-case scheme must not bypass.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("DATABASE_URL=POSTGRES://user:password@host:5432/db");
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::PostgresUrl),
+            "upper-case POSTGRES:// scheme must be detected"
+        );
+    }
+
+    #[test]
+    fn detects_lowercase_pem_private_key_header() {
+        let scanner = CredentialScanner::new();
+        let result =
+            scanner.scan("-----begin rsa private key-----\nMIIEpAIBAAKCAQEA...\n-----end rsa private key-----");
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::RsaPrivateKey),
+            "lower-case PEM header must be detected"
+        );
     }
 
     // --- Auth token patterns ---
@@ -588,6 +2461,197 @@ mod tests {
             .any(|f| f.kind == CredentialKind::SlackOAuthToken));
     }
 
+    // --- AAASM-4128: sibling token prefixes the entropy backstop misses ---
+
+    #[test]
+    fn detects_and_redacts_github_oauth_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: gho_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubOAuthToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("gho_"));
+        assert!(redacted.contains("[REDACTED:GitHubOAuthToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_github_user_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: ghu_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubUserToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghu_"));
+        assert!(redacted.contains("[REDACTED:GitHubUserToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_github_refresh_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token: ghr_1234567890abcdefghijklmnopqrstuvwxyz";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GitHubRefreshToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghr_"));
+        assert!(redacted.contains("[REDACTED:GitHubRefreshToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_github_fine_grained_pat() {
+        let scanner = CredentialScanner::new();
+        let text = "token: github_pat_11ABCDE0000abcdefghij_1234567890abcdefghijklmnopqrstuvwxyzABCDEF";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("github_pat_"));
+        assert!(redacted.contains("[REDACTED:GitHubPat]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_slack_app_token() {
+        let scanner = CredentialScanner::new();
+        let text = "SLACK_APP_TOKEN=xapp-1-A012345678-1234567890123-abcdef0123456789abcdef0123456789abcdef";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SlackAppToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("xapp-"));
+        assert!(redacted.contains("[REDACTED:SlackAppToken]"));
+    }
+
+    #[test]
+    fn detects_and_redacts_slack_refresh_token() {
+        let scanner = CredentialScanner::new();
+        let text = "token=xoxr-123456789012-123456789012-XXXXXXXXXXXX";
+        let result = scanner.scan(text);
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::SlackRefreshToken));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("xoxr-"));
+        assert!(redacted.contains("[REDACTED:SlackRefreshToken]"));
+    }
+
+    /// AAASM-4936 (L1): `redact` must fail closed when a finding's span cannot
+    /// be spliced. An out-of-range `end` previously hit the implicit skip and
+    /// returned the raw text with the flagged secret intact; it must instead
+    /// return an opaque redaction so no secret bytes escape.
+    #[test]
+    fn redact_fails_closed_on_out_of_bounds_span() {
+        let text = "the secret is hunter2";
+        let result = ScanResult {
+            findings: vec![CredentialFinding::from_regex_match(14, 999)],
+        };
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("hunter2"), "raw secret must not leak: {redacted}");
+        assert_eq!(redacted, "[REDACTED]");
+    }
+
+    /// AAASM-4936 (L1): a span whose bound lands mid-codepoint (not on a UTF-8
+    /// char boundary) must also fail closed rather than leave the secret raw.
+    #[test]
+    fn redact_fails_closed_on_non_char_boundary_span() {
+        // "é" occupies bytes 6..8; a span ending at byte 7 is mid-codepoint.
+        let text = "secretémore";
+        let result = ScanResult {
+            findings: vec![CredentialFinding::from_regex_match(0, 7)],
+        };
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("secret"), "raw secret must not leak: {redacted}");
+        assert_eq!(redacted, "[REDACTED]");
+    }
+
+    // --- AAASM-4946: PEM literal span subsumes overlapping entropy + covers a
+    //     short trailing base64 line (ADR 0015 §2/§5.1) ---
+
+    /// A PEM private key laid out as a long (entropy-caught) body line plus a
+    /// short final base64 line must redact to a **single** `[REDACTED:<kind>]`
+    /// label covering the whole block: the extended literal span subsumes the
+    /// overlapping `GenericHighEntropy` body span, and the short tail — which the
+    /// length-gated entropy pass misses — cannot leak. This is the invariant the
+    /// reverted AAASM-4936 attempt violated by leaving a coexisting entropy label
+    /// and the END marker in the clear.
+    #[test]
+    fn pem_short_trailing_line_subsumed_into_single_label() {
+        let scanner = CredentialScanner::new();
+        let text = "key=-----BEGIN EC PRIVATE KEY-----\n\
+                    MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n\
+                    wJ8=\n\
+                    -----END EC PRIVATE KEY-----";
+        let redacted = scanner.scan(text).redact(text);
+        assert_eq!(
+            redacted, "key=[REDACTED:EcPrivateKey]",
+            "whole PEM block must collapse to one EcPrivateKey label: {redacted}"
+        );
+        assert!(
+            !redacted.contains("wJ8="),
+            "short trailing line must not leak: {redacted}"
+        );
+        assert!(
+            !redacted.contains("[REDACTED:GenericHighEntropy]"),
+            "the entropy span must be subsumed, not left coexisting: {redacted}"
+        );
+        assert!(
+            !redacted.contains("-----END"),
+            "END marker must fall inside the subsuming span: {redacted}"
+        );
+    }
+
+    /// The common PEM case — a body fully covered by the entropy pass with no
+    /// short trailing line — must keep its existing span: the literal header
+    /// label and a separate `GenericHighEntropy` body label, with the END marker
+    /// (non-secret) in the clear. Guards against regressing to the reverted
+    /// universal block extension, which collapsed this to one label.
+    #[test]
+    fn pem_fully_covered_body_is_not_extended() {
+        let scanner = CredentialScanner::new();
+        let text = "KEY=-----BEGIN EC PRIVATE KEY-----\n\
+                    MHQCAQEEIOaRgVBExLFbHznv7gHsepSPpLUFKr\n\
+                    -----END EC PRIVATE KEY-----";
+        let redacted = scanner.scan(text).redact(text);
+        assert_eq!(
+            redacted, "KEY=[REDACTED:EcPrivateKey]\n[REDACTED:GenericHighEntropy]\n-----END EC PRIVATE KEY-----",
+            "fully entropy-covered PEM block must keep its two-span behaviour: {redacted}"
+        );
+    }
+
+    /// A PEM block whose single body line is itself short/low-entropy (no long
+    /// entropy-caught run) has no overlapping entropy span to subsume; its body
+    /// in the clear is a documented, accepted residual. It must be left unchanged
+    /// so the trigger stays narrow and the existing conformance vectors
+    /// (`private_keys_openssh`, `private_keys_pgp`, `private_keys_generic`) stay
+    /// byte-identical.
+    #[test]
+    fn pem_single_short_body_line_is_not_extended() {
+        let scanner = CredentialScanner::new();
+        let text = "KEY=-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGRkZGQBCACx\n-----END PGP PRIVATE KEY BLOCK-----";
+        let redacted = scanner.scan(text).redact(text);
+        assert_eq!(
+            redacted, "KEY=[REDACTED:PgpPrivateKey]\n\nlQOYBGRkZGQBCACx\n-----END PGP PRIVATE KEY BLOCK-----",
+            "single-short-line PEM block must keep its header-only span: {redacted}"
+        );
+    }
+
+    #[test]
+    fn detects_and_redacts_aws_sts_temporary_key() {
+        let scanner = CredentialScanner::new();
+        let text = "AWS_ACCESS_KEY_ID=ASIAIOSFODNN7EXAMPLE";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ASIA"));
+        assert!(redacted.contains("[REDACTED:AwsAccessKey]"));
+    }
+
     // --- Cloud credential patterns ---
 
     #[test]
@@ -598,6 +2662,30 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == CredentialKind::AzureConnectionString));
+    }
+
+    #[test]
+    fn redacts_azure_account_key_value_after_semicolons() {
+        // AAASM-3997: the `DefaultEndpointsProtocol=` prefix detector stops at the
+        // first `;`, so the AccountKey — which appears two segments later — used to
+        // survive redaction in the clear. The dedicated AccountKey pass must redact
+        // the secret wherever it falls in the connection string.
+        let scanner = CredentialScanner::new();
+        let secret = "abc123DEF456ghi789JKL012mno345PQR678stu901VWX234yz==";
+        let input = format!(
+            "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey={secret};EndpointSuffix=core.windows.net"
+        );
+        let redacted = scanner.scan(&input).redact(&input);
+        assert!(
+            !redacted.contains(secret),
+            "Azure AccountKey secret leaked past redaction: {redacted}"
+        );
+        assert!(
+            redacted.contains("[REDACTED:AzureConnectionString]"),
+            "expected an AzureConnectionString redaction label: {redacted}"
+        );
+        // The trailing segment after the key is preserved (only the value is redacted).
+        assert!(redacted.contains("EndpointSuffix=core.windows.net"));
     }
 
     // --- Database URL patterns ---
@@ -697,10 +2785,764 @@ mod tests {
     }
 
     #[test]
+    fn detects_ssn_trailed_by_space() {
+        // Regression (AAASM-4820): a trailing space must not be swallowed into the
+        // digit segment, which would defeat the exact-11-byte SSN check and forward
+        // the PII unredacted.
+        let scanner = CredentialScanner::new();
+        let text = "SSN 123-45-6789 was leaked";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SsnPattern));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("123-45-6789"));
+        assert!(redacted.contains("[REDACTED:SsnPattern]"));
+    }
+
+    #[test]
+    fn detects_ssn_trailed_by_hyphen() {
+        // Regression (AAASM-4820): a trailing hyphen must likewise not be consumed.
+        let scanner = CredentialScanner::new();
+        let text = "SSN 123-45-6789-leaked";
+        let result = scanner.scan(text);
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::SsnPattern));
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("123-45-6789"));
+        assert!(redacted.contains("[REDACTED:SsnPattern]"));
+    }
+
+    // --- AAASM-5345: full-width digits (U+FF10–U+FF19) must not evade the
+    //     credit-card and SSN detectors. All fixtures are synthetic. ---
+
+    #[test]
+    fn detects_fullwidth_credit_card_as_the_same_kind_as_ascii() {
+        // The same synthetic Visa test number in both digit widths must be
+        // classified identically — switching input mode must not change the
+        // verdict.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("card=4532015112830366");
+        let fullwidth = scanner.scan("card=４５３２０１５１１２８３０３６６");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::CreditCardLuhn]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
+    #[test]
+    fn detects_fullwidth_ssn_as_the_same_kind_as_ascii() {
+        // The SSN detector matches an exact `DDD-DD-DDDD` shape, so it is the
+        // detector most likely to be broken by normalisation changing the
+        // string's length — assert it survives in full-width form.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("ssn=123-45-6789");
+        let fullwidth = scanner.scan("ssn=１２３-４５-６７８９");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::SsnPattern]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
+    #[test]
+    fn detects_mixed_width_credit_card() {
+        // A single full-width digit inside an otherwise ASCII number is the
+        // cheapest form of the evasion and the case where the byte-offset
+        // arithmetic is least uniform — one 3-byte character among 15 1-byte
+        // ones.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("card=4532０15112830366");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::CreditCardLuhn],
+        );
+    }
+
+    /// Every digit character a redacted payload must never still contain —
+    /// both widths, so a partial splice cannot hide behind the assertion.
+    fn contains_no_digit(s: &str) -> bool {
+        !s.chars().any(|c| c.is_ascii_digit() || matches!(c, '０'..='９'))
+    }
+
+    #[test]
+    fn redacts_a_fullwidth_credit_card_to_exact_bytes() {
+        // Counting findings is not enough: the failure mode this fix risks is a
+        // span that is off by a byte or two, which still yields one finding but
+        // splices the wrong region and leaves digits in the clear. Assert the
+        // exact output bytes.
+        let scanner = CredentialScanner::new();
+        let text = "card=４５３２０１５１１２８３０３６６";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "card=[REDACTED:CreditCardLuhn]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn redacts_a_fullwidth_ssn_to_exact_bytes() {
+        // The SSN span mixes 3-byte digits with 1-byte separators, so its end
+        // offset is the one least likely to survive a width assumption.
+        let scanner = CredentialScanner::new();
+        let text = "ssn=１２３-４５-６７８９";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "ssn=[REDACTED:SsnPattern]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn redacts_a_mixed_width_credit_card_to_exact_bytes() {
+        let scanner = CredentialScanner::new();
+        let text = "card=4532０15112830366";
+        let redacted = scanner.scan(text).redact(text);
+
+        assert_eq!(redacted, "card=[REDACTED:CreditCardLuhn]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn fullwidth_finding_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on, asserted directly rather than
+        // inferred from redaction output: offsets index the *original* text and
+        // land on character boundaries. A span that satisfies this can always be
+        // spliced; one that does not sends `redact` down its fail-closed path.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=４５３２０１５１１２８３０３６６",
+            "ssn=１２３-４５-６７８９",
+            "card=4532０15112830366",
+        ] {
+            let result = scanner.scan(text);
+            assert!(!result.findings.is_empty(), "no finding for {text:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character",
+                    f.offset
+                );
+                assert!(text.is_char_boundary(f.end), "end {} splits a character", f.end);
+                // The span must cover the whole value, not a prefix of it.
+                assert!(contains_no_digit(&text[..f.offset]));
+                assert!(contains_no_digit(&text[f.end..]));
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_flag_a_fullwidth_number_that_fails_luhn() {
+        // The point of the fix is to widen what reaches the checksum, not to
+        // weaken the checksum. A full-width number with one digit altered must
+        // be rejected exactly as its ASCII equivalent is
+        // (`does_not_flag_invalid_luhn` above).
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("num=４５３２０１５１１２８３０３６７");
+        assert!(
+            !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+            "Luhn gate must reject a full-width number too: {:?}",
+            result.findings,
+        );
+    }
+
+    #[test]
+    fn does_not_flag_a_short_fullwidth_digit_run() {
+        // An 8-digit run is below the 13-digit card floor and is not SSN-shaped,
+        // so it must stay clean. Full-width digits are ordinary content — order
+        // numbers, dates, quantities — in CJK text, and flagging them would make
+        // the detector unusable in exactly the locales this fix serves.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("qty=１２３４５６７８");
+        assert!(result.is_clean(), "short run must stay clean: {:?}", result.findings);
+    }
+
+    #[test]
+    fn redact_fails_closed_on_a_span_inside_a_fullwidth_digit() {
+        // The concrete instance of the fail-closed guard this change puts at
+        // risk. `redact` must never emit the payload with the flagged region
+        // intact, so a span landing inside a full-width digit's three bytes has
+        // to collapse the whole value to an opaque label rather than splice.
+        // Exercised rather than assumed, because the guard is the only thing
+        // standing between a mis-computed span and a leak.
+        let text = "card=４５３２０１５１１２８３０３６６";
+        // `card=` is five bytes; the first full-width digit occupies bytes 5..8,
+        // so byte 6 is mid-character.
+        let result = ScanResult {
+            findings: vec![CredentialFinding::new(CredentialKind::CreditCardLuhn, 5, 6)],
+        };
+
+        let redacted = result.redact(text);
+        assert_eq!(redacted, "[REDACTED]");
+        assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+    }
+
+    #[test]
+    fn digit_run_longer_than_the_segment_budget_stays_clean_in_both_widths() {
+        // Pins `DIGIT_SEGMENT_MAX_CHARS`, the refactor's riskiest invariant.
+        //
+        // The budget decides how much of a long digit run one segment swallows,
+        // and shrinking it fails in the *false positive* direction: a 30-digit
+        // run is not a card number, but its first 19 digits here are
+        // Luhn-valid, so a budget of 19 would truncate the segment exactly onto
+        // that prefix and report a card that is not there. On the enforce path
+        // that means redacting a legitimate payload — worse than the missed
+        // detection a too-large budget would cause.
+        //
+        // The synthetic 19-digit prefix is Luhn-valid by construction; the
+        // trailing zeros only push the run past the budget.
+        let scanner = CredentialScanner::new();
+        let ascii = "num=004532015112830366500000000000";
+        let fullwidth = "num=００４５３２０１５１１２８３０３６６５００００００００００００";
+
+        for text in [ascii, fullwidth] {
+            let result = scanner.scan(text);
+            assert!(
+                !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+                "over-long digit run must not yield a card finding: {:?}",
+                result.findings,
+            );
+        }
+    }
+
+    // --- AAASM-5364: the full-width hyphen (U+FF0D) and the ideographic space
+    //     (U+3000) are what a CJK input method emits for the hyphen and space
+    //     keys, so they must separate digits exactly as their ASCII twins do.
+    //     All fixtures are synthetic. ---
+
+    #[test]
+    fn detects_an_ssn_grouped_by_the_fullwidth_hyphen() {
+        // The case AAASM-5345 left open: it normalised the digits, but `is_ssn`
+        // still demanded ASCII hyphens, so a wholly full-width SSN — what a
+        // full-width IME actually produces — read as an ungrouped 9-digit run
+        // and was not SSN-shaped at all.
+        let scanner = CredentialScanner::new();
+        let ascii = scanner.scan("ssn=123-45-6789");
+        let fullwidth = scanner.scan("ssn=１２３－４５－６７８９");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&ascii), vec![CredentialKind::SsnPattern]);
+        assert_eq!(kinds(&fullwidth), kinds(&ascii));
+    }
+
+    #[test]
+    fn detects_an_ssn_whose_digits_are_ascii_but_whose_hyphens_are_not() {
+        // The cheapest form of the evasion, and the one a user reaches by
+        // accident: ASCII digits typed with the IME still in full-width mode, so
+        // only the two separators differ from the detected form.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("ssn=123－45－6789");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::SsnPattern],
+        );
+    }
+
+    #[test]
+    fn detects_a_card_grouped_by_the_ideographic_space() {
+        // The space-grouped card form. Grouping is how card numbers are written
+        // on the card itself, so this is the *natural* rendering rather than an
+        // adversarial one — and U+3000 is what the space bar emits in full-width
+        // mode.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("card=４５３２　０１５１　１２８３　０３６６");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::CreditCardLuhn],
+        );
+    }
+
+    #[test]
+    fn redacts_fullwidth_separated_values_to_exact_bytes() {
+        // Counting findings is not enough: a separator is three bytes here
+        // against ASCII's one, so an end offset computed on the normalised form
+        // splices the wrong region — one finding, digits still in the clear.
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            ("ssn=１２３－４５－６７８９", "ssn=[REDACTED:SsnPattern]"),
+            ("ssn=123－45－6789", "ssn=[REDACTED:SsnPattern]"),
+            (
+                "card=４５３２　０１５１　１２８３　０３６６",
+                "card=[REDACTED:CreditCardLuhn]",
+            ),
+        ] {
+            let redacted = scanner.scan(text).redact(text);
+            assert_eq!(redacted, expected, "wrong redaction for {text:?}");
+            assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+        }
+    }
+
+    #[test]
+    fn fullwidth_separated_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on, asserted directly. A separator
+        // is the newest way for an offset to land mid-character, since it is the
+        // one part of the segment whose normalised width (1 byte) differs from
+        // its original width (3 bytes) *and* which the walk may or may not
+        // consume depending on what follows it.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "ssn=１２３－４５－６７８９",
+            "ssn=123－45－6789",
+            "card=４５３２　０１５１　１２８３　０３６６",
+        ] {
+            let result = scanner.scan(text);
+            assert!(!result.findings.is_empty(), "no finding for {text:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character in {text:?}",
+                    f.offset
+                );
+                assert!(
+                    text.is_char_boundary(f.end),
+                    "end {} splits a character in {text:?}",
+                    f.end
+                );
+                // The span must cover the whole value, not a prefix of it.
+                assert!(contains_no_digit(&text[..f.offset]));
+                assert!(contains_no_digit(&text[f.end..]));
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_flag_a_fullwidth_separated_number_that_fails_luhn() {
+        // Widening what reaches the checksum must not weaken the checksum. The
+        // final digit is altered from the detected form above, so the only
+        // difference between this and a reported card is the Luhn result.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("num=４５３２　０１５１　１２８３　０３６７");
+        assert!(
+            !result.findings.iter().any(|f| f.kind == CredentialKind::CreditCardLuhn),
+            "Luhn gate must reject a full-width-separated number too: {:?}",
+            result.findings,
+        );
+    }
+
+    #[test]
+    fn a_grouped_19_digit_card_still_fits_the_segment_budget_in_full_width() {
+        // `DIGIT_SEGMENT_MAX_CHARS` is 24 because the binding case is a 19-digit
+        // card written in groups of four — 19 digits plus 4 separators, 23
+        // characters. That arithmetic is in *characters*, so it has to survive
+        // separators that are three bytes each, not just digits that are. A
+        // budget accidentally counted in bytes would truncate this segment
+        // one-third of the way in and lose the card entirely.
+        //
+        // The 19-digit number is Luhn-valid by construction, not observed.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=4532-0151-1283-0366-500",
+            "card=４５３２－０１５１－１２８３－０３６６－５００",
+            "card=４５３２　０１５１　１２８３　０３６６　５００",
+        ] {
+            let result = scanner.scan(text);
+            assert_eq!(
+                result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+                vec![CredentialKind::CreditCardLuhn],
+                "grouped 19-digit card must fit the segment budget: {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn digit_separator_boundary_declines_en_dash_and_nbsp() {
+        // Pins the boundary [`ascii_separator_of`] documents, so the decision is
+        // visible rather than implicit. U+2013 (en dash) and U+00A0 (no-break
+        // space) are *not* separators: no input method emits either for the
+        // hyphen or space key, so admitting them would buy no coverage against
+        // the input-mode evasion while adding runs for the Luhn check to trip
+        // over — the en dash being the standard glyph for a numeric range, i.e.
+        // exactly where two unrelated numbers sit adjacent with a dash between.
+        //
+        // Asserted as **not detected**, deliberately. If a payload is ever
+        // observed using one of these, widen `ascii_separator_of` and rewrite
+        // this test — do not delete it.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=4532\u{2013}0151\u{2013}1283\u{2013}0366",
+            "card=4532\u{00A0}0151\u{00A0}1283\u{00A0}0366",
+            "ssn=123\u{2013}45\u{2013}6789",
+            "ssn=123\u{00A0}45\u{00A0}6789",
+        ] {
+            assert!(
+                scanner.scan(text).is_clean(),
+                "separator set widened past its stated boundary for {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn fullwidth_separators_do_not_flag_ordinary_cjk_prose() {
+        // The false-positive guard the widened separator set needs. Dates,
+        // phone numbers, ranges and identifiers written with U+FF0D and U+3000
+        // are ordinary content in Traditional-Chinese and Japanese documents —
+        // they are, in fact, *more* common than the SSN this rule exists to
+        // catch. Every line below now reaches the joined-segment path that only
+        // ASCII text reached before, and must still produce nothing.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "報表期間　２０２４－０１－０１　至　２０２４－１２－３１，共 365 天。",
+            "聯絡電話　０２－１２３４－５６７８，分機 21。",
+            "發票號碼　ＡＢ－１２３４５６７８，金額 1,250 元。",
+            "會議時間　１０：００－１１：３０，地點　Ｂ棟　３０５　會議室。",
+            "版本區間　１．０．０－２．３．４，共 12 個修訂。",
+            // A 16-digit identifier in 4x4 groups — the only shape in this list
+            // that reaches the 13-19 digit Luhn window at all. The lines above
+            // are 4-2-2, 2-4-4 and dotted-version shapes that can never get
+            // there, so without this row the widened separator set is never
+            // exercised against the checksum in prose at all.
+            "轉帳帳號　１２３４　５６７８　９０１２　３４５６，於今日入帳。",
+            "轉帳帳號　１２３４－５６７８－９０１２－３４５６，於今日入帳。",
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.is_clean(),
+                "clean CJK prose produced {:?} for {text:?}",
+                result.findings.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn a_fullwidth_grouped_number_gets_exactly_the_ascii_verdict() {
+        // The cost side of AAASM-5364, asserted rather than left to the PR.
+        //
+        // Widening the separator set gives a full-width, separator-grouped
+        // 13-19 digit run its first chance to reach the Luhn check — and Luhn is
+        // a mod-10 checksum, so roughly one in ten arbitrary 16-digit numbers
+        // passes it by coincidence. Measured over 100,000 random 4x4 groupings:
+        // 10.209% for full-width digits with U+3000, 10.209% with U+FF0D, and
+        // 10.209% for the ASCII forms — identical, because the digit stream is
+        // identical once normalised. That parity is the ticket's goal.
+        //
+        // What parity does not settle is *who* pays it: full-width digits come
+        // from CJK input methods, so the whole of that new false-positive mass
+        // lands on CJK users, under `credential_action: Block`. That trade is an
+        // owner decision and is recorded on AAASM-5364; what this test can pin is
+        // the mechanism — a grouped number must get exactly the verdict its ASCII
+        // twin gets, never a different one, in either direction.
+        let scanner = CredentialScanner::new();
+        let verdict = |t: &str| {
+            scanner
+                .scan(t)
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::CreditCardLuhn)
+        };
+        for (ascii, fullwidth_space, fullwidth_hyphen) in [
+            // Luhn-valid (a synthetic Visa test number).
+            (
+                "n=4532 0151 1283 0366",
+                "n=４５３２　０１５１　１２８３　０３６６",
+                "n=４５３２－０１５１－１２８３－０３６６",
+            ),
+            // Luhn-invalid: an ordinary 16-digit reference number.
+            (
+                "n=1234 5678 9012 3456",
+                "n=１２３４　５６７８　９０１２　３４５６",
+                "n=１２３４－５６７８－９０１２－３４５６",
+            ),
+        ] {
+            let expected = verdict(ascii);
+            assert_eq!(verdict(fullwidth_space), expected, "U+3000 diverged for {ascii:?}");
+            assert_eq!(verdict(fullwidth_hyphen), expected, "U+FF0D diverged for {ascii:?}");
+        }
+    }
+
+    // --- AAASM-5450: the full stop `.` and its full-width twin `．` (U+FF0E)
+    //     join digit runs; the other five candidates the ticket named do not.
+    //
+    //     Falsification, so none of the assertions below is trusted unheld:
+    //     each admitted character was removed from `ascii_separator_of` on its
+    //     own, the crate rebuilt, and the surviving failures recorded.
+    //
+    //       * removing `.`      kills `detects_a_card_grouped_by_the_full_stop`,
+    //         `detects_an_ssn_written_with_full_stops`,
+    //         `redacts_full_stop_separated_values_to_exact_bytes`,
+    //         `full_stop_separated_spans_are_char_boundaries_of_the_original_text`
+    //         and `the_trailing_separator_guard_holds_for_the_full_stop_forms`.
+    //       * removing `．`     kills
+    //         `detects_a_card_grouped_by_the_fullwidth_full_stop` and the
+    //         full-width rows of the redaction and span tests.
+    //
+    //     The two mutations kill *disjoint* named tests, so the ASCII and
+    //     full-width forms are separately pinned rather than sharing one proof.
+    //
+    //     All fixtures are synthetic. No real card number or SSN appears. ---
+
+    #[test]
+    fn detects_a_card_grouped_by_the_full_stop() {
+        // The dot-grouped card form, which invoices and statements use where a
+        // card face uses spaces. Its ASCII twin is already detected, so this
+        // asserts the two agree rather than merely that something was found.
+        let scanner = CredentialScanner::new();
+        let spaced = scanner.scan("card=4532 0151 1283 0366");
+        let dotted = scanner.scan("card=4532.0151.1283.0366");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&spaced), vec![CredentialKind::CreditCardLuhn]);
+        assert_eq!(kinds(&dotted), kinds(&spaced));
+    }
+
+    #[test]
+    fn detects_a_card_grouped_by_the_fullwidth_full_stop() {
+        // U+FF0E is what a CJK input method emits for the period key, exactly as
+        // U+FF0D is for the hyphen key. Admitting only the ASCII form would catch
+        // the en-US rendering of this number and miss the zh-TW one — the
+        // input-mode asymmetry AAASM-5364 existed to remove.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("card=４５３２．０１５１．１２８３．０３６６");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::CreditCardLuhn],
+        );
+    }
+
+    #[test]
+    fn detects_an_ssn_written_with_full_stops() {
+        // `123.45.6789` is a standard written form of an SSN alongside the
+        // hyphenated one, which is why the full stop is admitted in the *hyphen*
+        // role: the segment normalises to `DDD-DD-DDDD` and satisfies `is_ssn`'s
+        // exact-11-byte shape rather than merely reaching it.
+        let scanner = CredentialScanner::new();
+        for text in ["ssn=123.45.6789", "ssn=１２３．４５．６７８９", "ssn=123．45．6789"] {
+            assert_eq!(
+                scanner
+                    .scan(text)
+                    .findings
+                    .iter()
+                    .map(|f| f.kind.clone())
+                    .collect::<Vec<_>>(),
+                vec![CredentialKind::SsnPattern],
+                "dot-written SSN not detected: {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_ssn_shape_check_still_demands_exactly_eleven_ascii_bytes() {
+        // The widened separator set feeds `is_ssn` a *normalised* string, so the
+        // shape check itself must not have drifted: it still accepts only
+        // `DDD-DD-DDDD` and still rejects the twelve-byte form that AAASM-4820
+        // was filed about. Asserted against the predicate directly, because the
+        // scan path can reach the same verdict for the wrong reason.
+        assert!(is_ssn("123-45-6789"));
+        assert!(!is_ssn("123-45-6789 "), "a trailing separator must not be accepted");
+        assert!(!is_ssn("123-45-678"), "ten bytes is not the SSN shape");
+        assert!(
+            !is_ssn("123.45.6789"),
+            "the shape check is on the normalised form, not the raw text"
+        );
+    }
+
+    #[test]
+    fn redacts_full_stop_separated_values_to_exact_bytes() {
+        // Counting findings is not enough. U+FF0E is three UTF-8 bytes against
+        // the ASCII full stop's one, so an end offset computed on the normalised
+        // form splices the wrong region — one finding, digits still in the clear.
+        // This is the assertion that catches that, and it is why the full-width
+        // rows are here rather than only the ASCII ones.
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            ("card=4532.0151.1283.0366", "card=[REDACTED:CreditCardLuhn]"),
+            (
+                "card=４５３２．０１５１．１２８３．０３６６",
+                "card=[REDACTED:CreditCardLuhn]",
+            ),
+            ("ssn=123.45.6789", "ssn=[REDACTED:SsnPattern]"),
+            ("ssn=１２３．４５．６７８９", "ssn=[REDACTED:SsnPattern]"),
+            ("ssn=123．45．6789", "ssn=[REDACTED:SsnPattern]"),
+        ] {
+            let redacted = scanner.scan(text).redact(text);
+            assert_eq!(redacted, expected, "wrong redaction for {text:?}");
+            assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+        }
+    }
+
+    #[test]
+    fn full_stop_separated_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on, asserted directly rather than
+        // inferred from redaction output. A mixed-width form — ASCII digits with
+        // three-byte separators — is where an offset arithmetic that assumed one
+        // width lands mid-character.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=4532.0151.1283.0366",
+            "card=４５３２．０１５１．１２８３．０３６６",
+            "card=4532．0151．1283．0366",
+            "ssn=123.45.6789",
+            "ssn=１２３．４５．６７８９",
+            "ssn=123．45．6789",
+        ] {
+            let result = scanner.scan(text);
+            assert!(!result.findings.is_empty(), "no finding for {text:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character in {text:?}",
+                    f.offset
+                );
+                assert!(
+                    text.is_char_boundary(f.end),
+                    "end {} splits a character in {text:?}",
+                    f.end
+                );
+                // The span must cover the whole value, not a prefix of it.
+                assert!(contains_no_digit(&text[..f.offset]));
+                assert!(contains_no_digit(&text[f.end..]));
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_flag_a_full_stop_separated_number_that_fails_luhn() {
+        // Widening what reaches the checksum must not weaken the checksum. Only
+        // the final digit differs from the detected form above, so the Luhn
+        // result is the sole difference between this and a reported card.
+        let scanner = CredentialScanner::new();
+        for text in ["num=4532.0151.1283.0367", "num=４５３２．０１５１．１２８３．０３６７"] {
+            assert!(
+                !scanner
+                    .scan(text)
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::CreditCardLuhn),
+                "Luhn gate must reject a dot-separated number too: {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_trailing_separator_guard_holds_for_the_full_stop_forms() {
+        // AAASM-4820 generalised. A separator is consumed only between two
+        // digits, so a sentence-ending full stop must not be swallowed into the
+        // segment — which for an SSN would push it to twelve bytes and defeat
+        // `is_ssn` exactly as the trailing space did. The full stop is the form
+        // where this matters most, because ending a sentence with one is the
+        // common case rather than the edge case.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "SSN 123-45-6789. It was leaked.",
+            "SSN 123.45.6789. It was leaked.",
+            "SSN 123．45．6789。 已外洩。",
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.findings.iter().any(|f| f.kind == CredentialKind::SsnPattern),
+                "trailing full stop swallowed the segment: {text:?}",
+            );
+            let redacted = result.redact(text);
+            assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+        }
+    }
+
+    #[test]
+    fn digit_separator_declines_the_candidates_that_buy_no_coverage() {
+        // Pins the other half of AAASM-5450's boundary, so the decision is
+        // visible rather than implicit — the same discipline
+        // `digit_separator_boundary_declines_en_dash_and_nbsp` applies to the
+        // dash family.
+        //
+        // `_`, `/`, `,`, tab and newline were each measured at 1175-1253 card
+        // false positives per 4 MB of ordinary machine output (newline, 532),
+        // which is the same ~10% of exposed runs the admitted full stop costs —
+        // but none of them groups the digits of a card or an SSN in any written
+        // form, so each is that cost with no coverage in return. The numbers and
+        // the corpus are in `tests/digit_separator_fp_cost.rs`.
+        //
+        // Asserted as **not detected**, deliberately. If a payload is ever
+        // observed using one of these, widen `ascii_separator_of` and rewrite
+        // this test with the new measurement — do not delete it.
+        let scanner = CredentialScanner::new();
+
+        // Positive control. The two values below are the same card and the same
+        // SSN the negatives use, grouped by an *admitted* separator: if these
+        // stopped being detected, every "clean" assertion after them would pass
+        // for the wrong reason and this test would silently stop guarding
+        // anything.
+        assert_eq!(
+            scanner.scan("card=4532.0151.1283.0366").findings.len(),
+            1,
+            "positive control failed; the negatives below would prove nothing",
+        );
+        assert_eq!(
+            scanner.scan("ssn=123.45.6789").findings.len(),
+            1,
+            "positive control failed; the negatives below would prove nothing",
+        );
+
+        for (label, sep) in [
+            ("underscore", "_"),
+            ("solidus", "/"),
+            ("comma", ","),
+            ("tab", "\t"),
+            ("newline", "\n"),
+        ] {
+            for value in [
+                format!("card=4532{sep}0151{sep}1283{sep}0366"),
+                format!("ssn=123{sep}45{sep}6789"),
+            ] {
+                assert!(
+                    scanner.scan(&value).is_clean(),
+                    "separator set widened past its stated boundary for {label}: {value:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn detects_email_address() {
         let scanner = CredentialScanner::new();
         let result = scanner.scan("contact: user@example.com for support");
         assert!(result.findings.iter().any(|f| f.kind == CredentialKind::EmailAddress));
+    }
+
+    #[test]
+    fn detects_email_after_delimiter() {
+        // The forward-pass local-part tracking must start after the delimiter,
+        // matching the previous backward-rfind behaviour.
+        let input = "mail to: <alice@example.org>";
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(input);
+        // The local-part must begin at 'alice' (just past '<'), not at '<'.
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::EmailAddress
+                    && input[f.offset..f.end].starts_with("alice@example.org"))
+        );
+    }
+
+    #[test]
+    fn email_scan_is_linear_on_pathological_at_run() {
+        // Regression for AAASM-3988: ~1 MB of consecutive '@' with no
+        // delimiters previously drove scan_emails to O(n²) (~1e12 ops),
+        // hanging the enforcement/redaction path. It must now complete
+        // near-instantly and flag nothing.
+        let scanner = CredentialScanner::new();
+        let payload = "@".repeat(1_000_000);
+
+        let start = std::time::Instant::now();
+        let result = scanner.scan(&payload);
+        let elapsed = start.elapsed();
+
+        assert!(
+            !result.findings.iter().any(|f| f.kind == CredentialKind::EmailAddress),
+            "delimiter-free '@' run must not be flagged as an email",
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "email scan took {elapsed:?}; expected well under a second",
+        );
+    }
+
+    #[test]
+    fn email_scan_is_linear_on_alternating_at_run() {
+        // A delimiter-free `a@a@a@…` run keeps the domain token scan bounded.
+        let scanner = CredentialScanner::new();
+        let payload = "a@".repeat(500_000);
+
+        let start = std::time::Instant::now();
+        let _ = scanner.scan(&payload);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "alternating '@' run must scan in linear time",
+        );
     }
 
     // --- High-entropy ---
@@ -723,6 +3565,239 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == CredentialKind::GenericHighEntropy));
+    }
+
+    // --- AAASM-3870: encoding / length evasions ---
+
+    /// A 64-char lowercase-hex secret (hex-encoded 256-bit key) has entropy
+    /// capped at 4.0 bits/char, so it slipped past the old 4.5-bit gate. The
+    /// dedicated long-hex rule must now flag it.
+    #[test]
+    fn detects_64_char_lowercase_hex_secret() {
+        let scanner = CredentialScanner::new();
+        // 64 lowercase hex chars.
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        assert_eq!(secret.len(), 64, "fixture must be exactly 64 hex chars");
+        let result = scanner.scan(&format!("token={secret}"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char hex secret must be flagged: {:?}",
+            result.findings
+        );
+        assert!(!scanner.scan(secret).is_clean());
+    }
+
+    /// A single base64 token longer than 64 chars was skipped entirely by the
+    /// old length-bounded rule. Removing the upper bound must now flag it.
+    #[test]
+    fn detects_base64_token_beyond_64_chars() {
+        let scanner = CredentialScanner::new();
+        // 88-char base64 of random-looking bytes (entropy well above the gate).
+        let secret = "aGVsbG9Xb3JsZFRoaXNJc0FWZXJ5TG9uZ0Jhc2U2NFNlY3JldFRva2VuQmV5b25kU2l4dHlGb3VyQ2hhcnM5OQ";
+        assert!(secret.len() > 64, "fixture must exceed the old 64-char cap");
+        let result = scanner.scan(&format!("authorization: {secret}"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            ">64-char base64 token must be flagged: {:?}",
+            result.findings
+        );
+    }
+
+    /// AAASM-4075: a 64-hex secret reformatted with `:` (or `-`) separators
+    /// splits into 2-char groups that clear neither the contiguous-hex length bar
+    /// nor the base64 entropy gate, evading passes 1-3. The separator-grouped pass
+    /// must still flag it once the total hex-digit count reaches 64.
+    #[test]
+    fn detects_separator_delimited_hex_secret() {
+        let scanner = CredentialScanner::new();
+        // The 64-hex secret from `detects_64_char_lowercase_hex_secret`, regrouped
+        // into colon-separated byte pairs (32 groups × 2 hex = 64 hex digits).
+        let raw = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let colon = raw
+            .as_bytes()
+            .chunks(2)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(":");
+        let dash = colon.replace(':', "-");
+        for secret in [&colon, &dash] {
+            let result = scanner.scan(&format!("token={secret}"));
+            assert!(
+                result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "separator-delimited hex secret must be flagged: {secret:?} -> {:?}",
+                result.findings
+            );
+            // And end-to-end the raw secret must not survive redaction.
+            let text = format!(r#"{{"api_token":"{secret}"}}"#);
+            let redacted = scanner.scan(&text).redact(&text);
+            assert!(!redacted.contains(secret.as_str()), "raw secret survived: {redacted}");
+        }
+    }
+
+    /// A MAC address (12 hex digits) and a dash-delimited UUID (32 hex digits)
+    /// carry separators but stay well under the 64-digit bar, so the AAASM-4075
+    /// pass must leave them clean — no new false positives.
+    #[test]
+    fn does_not_flag_short_separated_hex() {
+        let scanner = CredentialScanner::new();
+        for text in ["mac de:ad:be:ef:00:01 up", "id 550e8400-e29b-41d4-a716-446655440000 ok"] {
+            let result = scanner.scan(text);
+            assert!(
+                !result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "short separated hex wrongly flagged: {text:?} -> {:?}",
+                result.findings
+            );
+        }
+    }
+
+    /// A 64-char base64 secret in punctuation-delimited (compact-JSON) context —
+    /// `{"api_token":"<64 b64>"}` — has no whitespace, so the whole payload is one
+    /// token > 64 chars that pass 1 skips, and the quote-delimited run is exactly
+    /// 64 chars, which the old strictly-greater `> 64` bound also skipped, letting
+    /// the secret survive `scan()` clean. Lowering the base64-run floor to 20 with
+    /// `>=` (AAASM-4071) must now flag and redact it. (Regression.)
+    #[test]
+    fn detects_64_char_base64_secret_in_compact_json() {
+        let scanner = CredentialScanner::new();
+        // 64 base64 chars, Shannon entropy ~5.6 bits/char (well above the gate).
+        let secret = "xK9mP2nQvR7sT4wY1aB6dF3hJ8lN0cE5gI7kM1oQ3uW9zA2bD4fH6jL8pR0tV5xZ";
+        assert_eq!(secret.len(), 64, "fixture must be exactly 64 base64 chars");
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char base64 secret in compact JSON must be flagged: {:?}",
+            result.findings
+        );
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(secret), "raw base64 secret survived: {redacted}");
+    }
+
+    /// Branded literal prefixes must remain detected after the rewrite — the
+    /// long-token rules must not displace the high-signal AC matchers.
+    #[test]
+    fn branded_prefixes_still_flagged_after_rewrite() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("k=AKIAIOSFODNN7EXAMPLE p=ghp_0123456789abcdefghijklmnopqrstuvwxyz");
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::AwsAccessKey));
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat));
+    }
+
+    /// Common shorter hex blobs (32-char MD5/UUID, 40-char git SHA-1) and a
+    /// plain English sentence must NOT be flagged — the 64-char hex bar and the
+    /// 20-char/4.5-bit entropy gate keep these benign payloads clean.
+    #[test]
+    fn does_not_flag_benign_hex_ids_or_prose() {
+        let scanner = CredentialScanner::new();
+        let benign = [
+            // 40-char git SHA-1.
+            "commit 0123456789abcdef0123456789abcdef01234567 fixed it",
+            // 32-char MD5 / dashless UUID.
+            "etag d41d8cd98f00b204e9800998ecf8427e cached",
+            // 36-char UUID with dashes.
+            "id 550e8400-e29b-41d4-a716-446655440000 ok",
+            // Plain prose and a short id.
+            "The quarterly report is ready for review by the team.",
+            "user id 42 logged in",
+        ];
+        for text in &benign {
+            let result = scanner.scan(text);
+            assert!(
+                !result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "benign text wrongly flagged: {:?} -> {:?}",
+                text,
+                result.findings
+            );
+        }
+    }
+
+    /// End-to-end: a 64-char hex secret embedded in JSON is fully redacted with
+    /// no raw fragment surviving.
+    #[test]
+    fn redact_removes_long_hex_secret() {
+        let scanner = CredentialScanner::new();
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(secret), "raw hex secret survived: {redacted}");
+        assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
+    }
+
+    /// AAASM-4093: a `<64-hex><base64-tail>` run trips both the long-hex pass
+    /// (span `[start, 64)`) and the base64-run pass (span `[start, 64+K)`). Both
+    /// are `GenericHighEntropy` at the same offset; the shorter hex finding sorts
+    /// first. The same-kind dedupe must *widen* the survivor's span to the union
+    /// rather than drop the longer base64 finding, or `redact` forwards the tail
+    /// bytes `[64, 64+K)` in the clear. Assert the full run is masked and that the
+    /// secret is still counted exactly once.
+    #[test]
+    fn redact_covers_base64_tail_after_long_hex_run() {
+        let scanner = CredentialScanner::new();
+        // 64 hex digits followed by a non-hex base64 tail; the whole contiguous
+        // run is base64 and its Shannon entropy clears the gate, so the base64
+        // pass spans the full 84 chars while the hex pass stops at 64.
+        let hex = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let tail = "GHIJKLMNOPQRSTUVWXYZ";
+        let secret = format!("{hex}{tail}");
+        assert_eq!(hex.len(), 64);
+        assert!(!tail.is_empty(), "tail must add bytes beyond the 64-hex span");
+
+        let text = format!(r#"{{"api_token":"{secret}"}}"#);
+        let result = scanner.scan(&text);
+
+        // Exactly one GenericHighEntropy finding for the run (count unchanged
+        // from the AAASM-4071 same-kind dedupe).
+        let entropy_findings = result
+            .findings
+            .iter()
+            .filter(|f| f.kind == CredentialKind::GenericHighEntropy)
+            .count();
+        assert_eq!(
+            entropy_findings, 1,
+            "expected exactly one GenericHighEntropy finding: {:?}",
+            result.findings
+        );
+
+        // The whole run — including the base64 tail bytes [64, 64+K) — is masked.
+        let redacted = result.redact(&text);
+        assert!(!redacted.contains(&secret), "raw secret survived: {redacted}");
+        assert!(!redacted.contains(tail), "base64 tail survived un-redacted: {redacted}");
+        assert!(!redacted.contains(hex), "hex prefix survived: {redacted}");
+        assert!(redacted.contains("[REDACTED:GenericHighEntropy]"));
+    }
+
+    /// The additive passes must not disturb the original whitespace-token
+    /// behaviour: a database URL still yields its specific URL finding plus the
+    /// whole-blob GenericHighEntropy at offset 0 (3 findings), exactly as the
+    /// conformance spec encodes it.
+    #[test]
+    fn additive_passes_preserve_url_and_whole_blob_entropy_findings() {
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("MONGO_URI=mongodb://admin:pass@cluster0.mongodb.net/mydb");
+        assert!(result.findings.iter().any(|f| f.kind == CredentialKind::MongodbUrl));
+        assert!(result
+            .findings
+            .iter()
+            .any(|f| f.kind == CredentialKind::GenericHighEntropy && f.offset == 0));
     }
 
     // --- luhn_valid helper ---
@@ -832,6 +3907,119 @@ mod tests {
         assert!(scanner.scan("Hello, world! No secrets here.").is_clean());
     }
 
+    // --- AAASM-3689: overlapping-findings redaction must not leak fragments ---
+
+    #[test]
+    fn redact_overlapping_findings_leaks_no_secret_fragment() {
+        // A GitHub PAT embedded in an email-shaped string, adjacent to a
+        // postgres URL — the AC-prefix, email, and high-entropy passes produce
+        // overlapping byte ranges over the same region. Pre-fix this spliced
+        // mangled labels and left raw secret bytes (e.g. "stgresUrl]]").
+        let scanner = CredentialScanner::new();
+        let text = "user@ghp_tokenAAAAAAAAAAAAAAAAAAAAAAAA.example.com_postgres://x:y@h/d";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+
+        // No raw secret fragment from a matched region survives.
+        assert!(!redacted.contains("ghp_"), "raw GitHub PAT prefix leaked: {redacted}");
+        assert!(!redacted.contains("postgres://"), "raw postgres URL leaked: {redacted}");
+        assert!(!redacted.contains("tokenAAAA"), "raw token body leaked: {redacted}");
+        assert!(
+            !redacted.contains("stgresUrl"),
+            "mangled-splice secret fragment leaked: {redacted}"
+        );
+        // Output contains only well-formed redaction labels — no mangled splices.
+        assert!(redacted.contains("[REDACTED:"));
+        assert!(!redacted.contains("]]"), "malformed nested label produced: {redacted}");
+        // Every '[REDACTED:' opener has a matching ']' closer with a known kind —
+        // a mangled splice would have left an opener without a clean close.
+        for label in redacted.match_indices("[REDACTED:").map(|(i, _)| &redacted[i..]) {
+            let close = label.find(']').expect("redaction label must be closed");
+            let kind = &label["[REDACTED:".len()..close];
+            assert!(!kind.is_empty(), "empty/mangled redaction kind in: {redacted}");
+        }
+    }
+
+    #[test]
+    fn redact_overlap_at_multibyte_boundary_does_not_panic() {
+        // Overlapping matches whose region spans multi-byte UTF-8 codepoints.
+        // Pre-fix, an overlap boundary landing mid-codepoint panicked in
+        // replace_range; the char-boundary guard now makes this impossible.
+        let scanner = CredentialScanner::new();
+        let text = "postgres://é:é@hosté.com sk-ant-éXXXXXXXXXXXXXXXXXXXX";
+        let result = scanner.scan(text);
+        // Must not panic, and must not leave the raw scheme behind.
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("postgres://"), "raw scheme survived: {redacted}");
+    }
+
+    #[test]
+    fn redact_adjacent_overlapping_findings_merge_into_one_span() {
+        // Two findings sharing an offset (prefix + high-entropy over the same
+        // token) coalesce so the token is replaced exactly once, not double-spliced.
+        let scanner = CredentialScanner::new();
+        let text = "tok=ghp_abcdefABCDEF0123456789ABCDEF0123456789 done";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+        assert!(!redacted.contains("ghp_"));
+        assert!(!redacted.contains("abcdefABCDEF"), "raw token body leaked: {redacted}");
+        assert!(
+            redacted.contains(" done"),
+            "trailing context must be preserved: {redacted}"
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_specific_kind_label_over_generic() {
+        // A GitHub PAT is also flagged as GenericHighEntropy over the same token.
+        // The GenericHighEntropy finding starts at the earlier offset, but the
+        // merged span must carry the specific GitHubPat label, not the generic
+        // backstop — kind priority wins over offset order.
+        let scanner = CredentialScanner::new();
+        let text = "token=ghp_abcdefABCDEF0123456789ABCDEF0123456789";
+        let result = scanner.scan(text);
+        // Sanity: both detectors fired over the same region.
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::GitHubPat),
+            "expected a GitHubPat finding: {:?}",
+            result.findings
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "expected a GenericHighEntropy finding: {:?}",
+            result.findings
+        );
+        let redacted = result.redact(text);
+        assert!(
+            redacted.contains("[REDACTED:GitHubPat]"),
+            "merged label must be the specific GitHubPat kind, not GenericHighEntropy: {redacted}"
+        );
+        assert!(
+            !redacted.contains("GenericHighEntropy"),
+            "generic backstop label must not win over a specific detector: {redacted}"
+        );
+        assert!(!redacted.contains("ghp_"), "raw token survived: {redacted}");
+    }
+
+    #[test]
+    fn coalesce_keeps_db_url_label_over_embedded_email() {
+        // A database URL embeds an EmailAddress-shaped span (user@host). The
+        // merged span must keep the specific PostgresUrl label, not collapse to
+        // the generic EmailAddress backstop.
+        let scanner = CredentialScanner::new();
+        let text = "DATABASE_URL=postgres://user:password@db.internal:5432/mydb";
+        let result = scanner.scan(text);
+        let redacted = result.redact(text);
+        assert_eq!(
+            redacted, "[REDACTED:PostgresUrl]",
+            "db-url region must redact to the specific PostgresUrl label: {redacted}"
+        );
+        assert!(!redacted.contains("postgres://"), "raw scheme survived: {redacted}");
+    }
+
     // --- CredentialKind::Custom and CredentialFinding::from_regex_match ---
 
     #[test]
@@ -916,6 +4104,712 @@ mod tests {
         assert!(kinds.contains(&&CredentialKind::Custom));
     }
 
+    // --- AAASM-5344: the entropy gate measures ASCII runs, not raw bytes ---
+    //
+    // Every fixture below is synthetic: no real credential, order reference,
+    // phone number or person appears in this section.
+
+    /// Offsets are byte offsets into the slice handed in, since that is what the
+    /// caller adds to the token's own offset to place a finding. Each Han
+    /// character is 3 UTF-8 bytes, so character indices would be silently wrong.
+    #[test]
+    fn ascii_runs_segments_a_token_around_its_non_ascii_bytes() {
+        let runs: Vec<(usize, &str)> = ascii_runs("日誌abc：xy").collect();
+        assert_eq!(runs, vec![(6, "abc"), (12, "xy")]);
+    }
+
+    /// The behaviour-preservation claim of the whole change: for ASCII input the
+    /// run *is* the token, so the entropy pass sees the same slice at the same
+    /// offset it always did and every pre-existing finding is reproduced.
+    #[test]
+    fn ascii_runs_yields_the_whole_slice_for_ascii_only_input() {
+        let token = "xK9mP2nQvR7sT4wY1aB6dF3hJ8lN0eC5";
+        let runs: Vec<(usize, &str)> = ascii_runs(token).collect();
+        assert_eq!(runs, vec![(0, token)]);
+    }
+
+    /// Synthetic mixed `zh-TW`/English agent traffic carrying no credential.
+    const BENIGN_ZH_TW_BLOCK: &str = "使用者請求：請協助查詢訂單狀態，並將結果整理成報表。\
+         系統回應：查詢完成，共 12 筆資料，處理時間 340 毫秒。\
+         備註 (note): the retrieval step returned 12 rows from the orders table. \
+         設定檔版本 version = \"1.0.0\"，環境 environment = production。\
+         日誌：2026-04-27T12:00:00Z 資訊 處理中 request_id=abc123 狀態正常。\
+         客戶反映系統登入失敗請協助處理謝謝，我們已於今日上午完成修復並通知使用者。\
+         測試涵蓋率報告顯示核心模組的分支覆蓋率為百分之九十二，尚有兩個邊界案例待補。";
+
+    /// The headline defect: 32 KB of this traffic produced 87 `GenericHighEntropy`
+    /// findings while the byte-equivalent English produced none, so a `zh-TW`
+    /// tenant on `credential_action: Block` was denied for speaking Chinese.
+    #[test]
+    fn benign_mixed_zh_tw_traffic_yields_no_findings() {
+        let mut corpus = String::new();
+        while corpus.len() < 32 * 1024 {
+            corpus.push_str(BENIGN_ZH_TW_BLOCK);
+        }
+
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan(&corpus);
+
+        assert!(
+            result.findings.is_empty(),
+            "{} bytes of benign zh-TW traffic must be clean, got {} findings: {:?}",
+            corpus.len(),
+            result.findings.len(),
+            result.findings,
+        );
+        assert_eq!(result.redact(&corpus), corpus, "clean traffic must survive redact()");
+    }
+
+    /// The evasion this fix must not create. Skipping any whitespace token that
+    /// holds a non-ASCII byte would have fixed the false positives and handed an
+    /// attacker a one-glyph bypass: prepend a Han character and the secret rides
+    /// through untouched. The fixture's punctuation keeps it out of the base64
+    /// alphabet, so passes 2-4 cannot cover for pass 1 here — the whitespace-token
+    /// pass is the only thing that can catch it, which is the point.
+    ///
+    /// Asserting the exact span also pins the offset arithmetic: the finding must
+    /// start after the leading Han characters (3 bytes each) and stop before the
+    /// trailing ones rather than swallowing the surrounding prose.
+    #[test]
+    fn a_cjk_prefix_cannot_hide_an_ascii_secret() {
+        let scanner = CredentialScanner::new();
+        let secret = "Xk9!mQ2*vB7#nR4$wT6%zP1&";
+        let text = format!("日誌：{secret}，狀態正常");
+
+        let result = scanner.scan(&text);
+        let hit = result
+            .findings
+            .iter()
+            .find(|f| f.kind == CredentialKind::GenericHighEntropy)
+            .expect("an ASCII secret must stay visible behind a CJK prefix");
+
+        assert_eq!(&text[hit.offset..hit.end], secret, "span must cover exactly the secret");
+        assert!(
+            !result.redact(&text).contains(secret),
+            "secret must not survive redact()"
+        );
+    }
+
+    /// Reported reproducer 1. This redacted to `[REDACTED:GenericHighEntropy]
+    /// 的狀態`, destroying the sentence around a synthetic order reference that
+    /// is not a secret at all.
+    #[test]
+    fn zh_tw_order_reference_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "請查詢訂單編號：ORD20260427001 的狀態";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
+    /// Reported reproducer 2, redacted in its entirety. The digits are a
+    /// synthetic Taiwanese mobile number: 10 digits, so neither the SSN shape
+    /// nor the Luhn range applies and the PII passes are not what fired here.
+    #[test]
+    fn zh_tw_contact_line_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "聯絡電話：0912-345-678，請於上班時間撥打";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
+    /// Reported reproducer 3. The URL is the interesting part: it is a 30-char
+    /// ASCII run, squarely inside the 20-64 window, and it stays clean because
+    /// its entropy is genuinely below the gate — the same verdict the identical
+    /// URL gets in English text. That is the equivalence the fix restores.
+    #[test]
+    fn zh_tw_document_link_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "文件連結：https://example.com/docs/guide 請參考";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
+    /// Reported reproducer 4, and the end-to-end one: on the enforcement path
+    /// this whole sentence became `[REDACTED:GenericHighEntropy]`, so a support
+    /// request written in Chinese reached the model as nothing at all.
+    #[test]
+    fn zh_tw_support_request_survives_redact() {
+        let scanner = CredentialScanner::new();
+        let text = "客戶反映系統登入失敗請協助處理謝謝";
+        let result = scanner.scan(text);
+        assert!(result.is_clean(), "unexpected findings: {:?}", result.findings);
+        assert_eq!(result.redact(text), text);
+    }
+
+    /// Detection-strength guard: the plain ASCII high-entropy token is the case
+    /// the whitespace-token pass exists for, and the case this change edits. It
+    /// must be unaffected.
+    #[test]
+    fn ascii_high_entropy_token_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let secret = "xK9mP2nQvR7sT4wY1aB6dF3hJ8lN0eC5";
+        let text = format!("token={secret}");
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "ASCII high-entropy token must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(!result.redact(&text).contains(secret));
+    }
+
+    /// Detection-strength guard for the base64-run pass. Deliberately shaped as
+    /// compact JSON with no whitespace and a run past 64 chars, so the
+    /// whitespace-token pass cannot reach it — this asserts pass 3 specifically.
+    #[test]
+    fn ascii_base64_secret_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let secret = "aGVsbG9Xb3JsZFRoaXNJc0FWZXJ5TG9uZ0Jhc2U2NFNlY3JldFRva2VuQmV5b25kU2l4dHlGb3VyQ2hhcnM5OQ";
+        let text = format!("{{\"api_token\":\"{secret}\"}}");
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "ASCII base64 secret must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(!result.redact(&text).contains(secret));
+    }
+
+    /// Detection-strength guard for the hex-run pass. Hex tops out at 4.0
+    /// bits/char, below the gate, so this can only ever be caught by the
+    /// dedicated length rule — an entropy-side regression would be invisible
+    /// here, which is exactly why it needs its own assertion.
+    #[test]
+    fn ascii_hex_secret_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let secret = "deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210";
+        let text = format!("key={secret}");
+        let result = scanner.scan(&text);
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+            "64-char ASCII hex secret must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(!result.redact(&text).contains(secret));
+    }
+
+    /// Detection-strength guard for the literal prefix pass, across the vendor
+    /// families whose prefixes dilute run entropy below the gate — for these the
+    /// AC scan is the only reliable path, so a regression here is a silent leak.
+    #[test]
+    fn ascii_api_key_prefixes_are_still_detected() {
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            ("k=AKIAIOSFODNN7EXAMPLE", CredentialKind::AwsAccessKey),
+            ("k=ghp_0000000000000000000000000000000000ab", CredentialKind::GitHubPat),
+            ("k=sk-ant-api03-000000000000000000000000", CredentialKind::AnthropicKey),
+            ("k=xoxb-000000000000-000000000000-abcdef", CredentialKind::SlackBotToken),
+            (
+                "url=postgres://user:notarealpassword@host:5432/db",
+                CredentialKind::PostgresUrl,
+            ),
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.findings.iter().any(|f| f.kind == expected),
+                "{expected:?} must still be flagged: {:?}",
+                result.findings
+            );
+        }
+    }
+
+    /// Detection-strength guard for PEM private keys, whose span is assembled
+    /// from a literal header plus an entropy-caught body (ADR 0015 §2/§5.1) —
+    /// the one detector that depends on the edited pass for part of its answer,
+    /// so it needs asserting on both halves rather than on the header alone.
+    #[test]
+    fn ascii_private_key_block_is_still_detected() {
+        let scanner = CredentialScanner::new();
+        let body = "MIIEpAIBAAKCAQEAx7Vq2mNfP9sKdL3wQzR8tYuI0oP1aScDeFgHjKlMnBvCxZ";
+        let text = format!("-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----");
+        let result = scanner.scan(&text);
+        assert!(
+            result.findings.iter().any(|f| f.kind == CredentialKind::RsaPrivateKey),
+            "PEM private key header must still be flagged: {:?}",
+            result.findings
+        );
+        assert!(
+            !result.redact(&text).contains(body),
+            "key material must not survive redact()"
+        );
+    }
+
+    // --- AAASM-5368: a secret cut in two by one separator must face the same
+    //     bar its unsplit form faces. All fixtures are synthetic. ---
+
+    /// A constructed 36-character base64 value, split into two 18-character
+    /// halves by the tests below. Not observed key material: the characters are
+    /// deliberately near-all-distinct so its entropy (5.11 bits/byte) sits
+    /// clearly above the 4.5 gate rather than straddling it, which keeps these
+    /// tests measuring the *split* rather than the gate's calibration at short
+    /// lengths. Both halves are under `BASE64_RUN_MIN_LEN`, which is what makes
+    /// it the evasion this pass closes.
+    const SPLIT_SECRET_HEAD: &str = "aB3dEf7hJk9mNp2qRs";
+    const SPLIT_SECRET_TAIL: &str = "5tUv8wXy4zC6gLhQ1V";
+
+    /// The former residual, now closed (AAASM-5368). Every whitespace and
+    /// non-ASCII row here was asserted as **not detected** by
+    /// `separator_split_secret_is_a_known_residual` until this pass existed.
+    ///
+    /// Rewritten rather than deleted, so the flip is visible in one place. The
+    /// undivided row is the control — it was detected before and must stay
+    /// detected, which is what tells a reader the pass added coverage rather than
+    /// moving it.
+    #[test]
+    fn a_secret_split_by_one_separator_of_any_class_is_detected() {
+        let scanner = CredentialScanner::new();
+        let (head, tail) = (SPLIT_SECRET_HEAD, SPLIT_SECRET_TAIL);
+
+        // Pass 5's separators: whitespace and non-ASCII. Both halves must go.
+        for splitter in ["中", "😀", "д", " ", "\t", "\n"] {
+            let text = format!("log {head}{splitter}{tail} end");
+            let result = scanner.scan(&text);
+            assert!(
+                result
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::GenericHighEntropy),
+                "split secret not detected for splitter {splitter:?}: {:?}",
+                result.findings,
+            );
+            let redacted = result.redact(&text);
+            assert!(!redacted.contains(head), "head survived for {splitter:?}: {redacted}");
+            assert!(!redacted.contains(tail), "tail survived for {splitter:?}: {redacted}");
+        }
+
+        // ASCII punctuation is deliberately *not* a pass-5 separator: it leaves
+        // both halves inside one whitespace token, which pass 1 owns. `.` is not a
+        // `token_end` delimiter, so pass 1 covers the whole value on its own.
+        let text = format!("log {head}.{tail} end");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(!redacted.contains(head) && !redacted.contains(tail), "{redacted}");
+
+        // `,` *is* a `token_end` delimiter, so pass 1 detects the token and then
+        // clamps the span at the comma, leaving the tail in the clear. That is
+        // pre-existing behaviour of pass 1 on `main` — verified identical at the
+        // merge base — and is not this pass's to change: `token_end`'s delimiter
+        // set is shared with the literal detector and every conformance vector
+        // that depends on it. Pinned here as a known residual so the asymmetry
+        // between `.` and `,` is recorded rather than mistaken for coverage.
+        let text = format!("log {head},{tail} end");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(!redacted.contains(head), "head must still be redacted: {redacted}");
+        assert!(
+            redacted.contains(tail),
+            "residual changed: pass 1's clamp used to leak the tail after a comma — \
+             if that is now fixed, update this test: {redacted}"
+        );
+
+        let undivided = format!("log {head}{tail} end");
+        assert!(
+            !scanner.scan(&undivided).is_clean(),
+            "control: the same secret undivided must still be detected"
+        );
+    }
+
+    #[test]
+    fn a_split_secret_is_redacted_to_exact_bytes() {
+        // Counting findings is not enough. The span deliberately covers the
+        // separator, so it is the one span in the scanner that is wider than the
+        // run it was derived from — an off-by-one either leaves a character of
+        // key material in the clear or eats the surrounding text. Assert the
+        // output bytes, including the words either side.
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            (
+                format!("log {SPLIT_SECRET_HEAD} {SPLIT_SECRET_TAIL} end"),
+                "log [REDACTED:GenericHighEntropy] [REDACTED:GenericHighEntropy] end".to_string(),
+            ),
+            (
+                format!("log {SPLIT_SECRET_HEAD}中{SPLIT_SECRET_TAIL} end"),
+                "log [REDACTED:GenericHighEntropy]中[REDACTED:GenericHighEntropy] end".to_string(),
+            ),
+        ] {
+            let redacted = scanner.scan(&text).redact(&text);
+            assert_eq!(redacted, expected, "wrong redaction for {text:?}");
+        }
+    }
+
+    #[test]
+    fn split_pair_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on. This pass is the one that can
+        // put a *multi-byte* character inside a span it did not scan — the
+        // separator — so its bounds are the ones most likely to land
+        // mid-character if the walk ever advanced by bytes where it should have
+        // advanced by characters.
+        let scanner = CredentialScanner::new();
+        for splitter in ["中", "😀", "д", " "] {
+            let text = format!("log {SPLIT_SECRET_HEAD}{splitter}{SPLIT_SECRET_TAIL} end");
+            let result = scanner.scan(&text);
+            assert!(!result.findings.is_empty(), "no finding for {splitter:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character for {splitter:?}",
+                    f.offset
+                );
+                assert!(
+                    text.is_char_boundary(f.end),
+                    "end {} splits a character for {splitter:?}",
+                    f.end
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn residuals_of_the_split_pass_are_pinned() {
+        // What AAASM-5368 does **not** close, asserted as not detected so the
+        // gaps stay visible instead of being rediscovered by an attacker.
+        let scanner = CredentialScanner::new();
+        let (head, tail) = (SPLIT_SECRET_HEAD, SPLIT_SECRET_TAIL);
+
+        // (1) The dominant residual, and a deliberate trade. When one run was
+        // already scored by pass 3, this pass declines the pair — that bound is
+        // what stops it eating the word beside a detected secret — so the other
+        // run is left in the clear when it cannot be scored alone. Here the
+        // 36-character half is flagged and the 10-character half is not.
+        let big = "aB3dEf7hJk9mNp2qRs5tUvWxYz0C6gLhQ1Vd";
+        let small = "YtPkRs4Nm2";
+        let text = format!("log {big} {small} end");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(!redacted.contains(big), "the scored half must still go: {redacted}");
+        assert!(
+            redacted.contains(small),
+            "residual changed — if the unscored half is now caught too, this pass has \
+             learned to attribute entropy to one half of a pair; update this test: {redacted}"
+        );
+
+        // (2) A gap of more than one character.
+        for gap in ["  ", " \n", "中文", " \t", "\n\n"] {
+            let text = format!("log {head}{gap}{tail} end");
+            assert!(
+                scanner.scan(&text).is_clean(),
+                "residual changed for gap {gap:?} — if it is now closed, update this test"
+            );
+        }
+
+        // (3) Pieces short enough that no adjacent pair reaches 23 characters:
+        // the same 36 characters cut into four 9-character runs.
+        let joined = format!("{head}{tail}");
+        let quartered = joined
+            .as_bytes()
+            .chunks(9)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            scanner.scan(&quartered).is_clean(),
+            "a many-way split into short pieces is a documented residual: {:?}",
+            scanner.scan(&quartered).findings
+        );
+    }
+
+    #[test]
+    fn the_split_pass_takes_the_runs_no_earlier_pass_found() {
+        // The band that was scored by *nobody*, and the two wrong answers on the
+        // way to the right one.
+        //
+        // Keying admission on length ("23 or more is pass 3's") asks whether
+        // pass 3 *could* have scored a run. Pass 3 scores it only if it clears the
+        // gate, which a random 23-24 character run does about 5% of the time — so
+        // 95% of them were declined here and never scored there. A 40-character
+        // secret split 23+17 across one space produced zero findings with both
+        // halves in the clear; 99.8% of such splits were fully missed at 400
+        // trials per cell, against 1.5-2.2% for 18+22 through 22+18, and the total
+        // was irrelevant: at 44 characters 23+21 missed 95.2% and 22+22 missed
+        // 0.5%.
+        //
+        // Keying on "pass 3 did not score it" is closer and still wrong — see
+        // `an_already_detected_secret_is_never_widened_into_its_neighbour`.
+        let scanner = CredentialScanner::new();
+
+        // The exact case the review measured as producing zero findings. Its
+        // 23-character half scores 4.4366 bits, below the gate, so no earlier pass
+        // takes it and this one must.
+        let text = "token: aB3dEf7hJk9mNp2qRs5tUva 8wXy4zC6gLhQ1VjD0 end";
+        let result = scanner.scan(text);
+        assert_eq!(
+            result.findings.len(),
+            2,
+            "the 23+17 split must now be found: {:?}",
+            result.findings
+        );
+
+        // And the sweep. The secret is near-all-distinct, so every split of it is
+        // deterministic; the Monte Carlo figures above are what generalise it.
+        let secret = "aB3dEf7hJk9mNp2qRs5tUv8wXy4zC6gLhQ1VdYtP";
+        assert_eq!(secret.len(), 40);
+        for k in 18..=30 {
+            let (a, b) = secret.split_at(k);
+            for splitter in [" ", "\t", "\n", "中"] {
+                let text = format!("log {a}{splitter}{b} end");
+                let redacted = scanner.scan(&text).redact(&text);
+                // Never *fully* missed — that is the metric the former defect
+                // failed, and it must hold at every split position.
+                assert!(
+                    !(redacted.contains(a) && redacted.contains(b)),
+                    "split {k}+{} with {splitter:?} was fully missed: {redacted}",
+                    40 - k
+                );
+                // Below 23 neither half can be scored alone, so this pass owns the
+                // pair outright and both halves must go. At and above 23 this
+                // fixture's leading half clears the gate by itself, so pass 3
+                // takes it and the tail is left — residual (1), pinned in
+                // `residuals_of_the_split_pass_are_pinned`.
+                if k < ENTROPY_REACHABLE_MIN_LEN {
+                    assert!(
+                        !redacted.contains(a) && !redacted.contains(b),
+                        "split {k}+{} with {splitter:?} left key material in the clear: {redacted}",
+                        40 - k
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_already_detected_secret_is_never_widened_into_its_neighbour() {
+        // Why the admission test asks what was *already found* rather than what
+        // pass 3 would have found.
+        //
+        // `ghs_16C7e42F292c6912E7710c838347Ae178B4a` is caught by the literal
+        // detector, by prefix — and it scores only 4.14 bits, below the entropy
+        // gate. So a "pass 3 did not score it" test admits it, and joining it to
+        // the word before turns the pre-canonical baseline's
+        // `installation [REDACTED:GitHubAppToken]` into
+        // `[REDACTED] [REDACTED:GitHubAppToken]`, redacting an ordinary English
+        // word beside a secret that was found without this pass's help.
+        //
+        // The same property covers the entropy passes, which is what keeps
+        // `tok=<PAT> done` and a PEM block's `-----END` marker intact.
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            (
+                "installation ghs_16C7e42F292c6912E7710c838347Ae178B4a",
+                "installation [REDACTED:GitHubAppToken]".to_string(),
+            ),
+            (
+                "tok=ghp_abcdefABCDEF0123456789ABCDEF0123456789 done",
+                "[REDACTED:GitHubPat] done".to_string(),
+            ),
+        ] {
+            assert_eq!(
+                scanner.scan(text).redact(text),
+                expected,
+                "a neighbour was widened into for {text:?}"
+            );
+        }
+
+        let pem = "KEY=-----BEGIN EC PRIVATE KEY-----\n\
+                   MHQCAQEEIOaRgVBExLFbHznv7gHsepSPpLUFKr\n\
+                   -----END EC PRIVATE KEY-----";
+        assert!(
+            scanner.scan(pem).redact(pem).contains("-----END EC PRIVATE KEY-----"),
+            "the END marker must not be swallowed into the body span"
+        );
+    }
+
+    #[test]
+    fn a_secret_split_by_a_token_end_delimiter_keeps_both_halves() {
+        // The cost of excluding ASCII punctuation from `is_split_separator`,
+        // asserted rather than asserted-away. The previous test here only used
+        // benign tails, so it could not fail when the property its name claimed
+        // was broken.
+        //
+        // Pass 1 scores the whole whitespace token but clamps the span at the
+        // first `token_end` delimiter, which for these seven lands *before* the
+        // secret — the finding covers the single character `a` and both halves
+        // survive. This is byte-identical to the merge base; it is a gap this pass
+        // could close by admitting punctuation, and deliberately does not, because
+        // doing so cost 10 measured false positives across 28 MB of code.
+        let scanner = CredentialScanner::new();
+        let (head, tail) = (SPLIT_SECRET_HEAD, SPLIT_SECRET_TAIL);
+        for delimiter in [",", ";", ")", "\"", "'", "]", "}"] {
+            let text = format!("a{delimiter}{head}{delimiter}{tail}{delimiter}3");
+            let redacted = scanner.scan(&text).redact(&text);
+            assert!(
+                redacted.contains(head) && redacted.contains(tail),
+                "residual changed for {delimiter:?} — if a punctuation split is now \
+                 caught, update this test and re-measure the false-positive rate: {redacted}"
+            );
+        }
+
+        // Punctuation that is *not* a `token_end` delimiter costs nothing: pass 1
+        // covers the whole value, so excluding it here loses no detection.
+        for punctuation in [".", ":", "-", "/"] {
+            let text = format!("a{punctuation}{head}{punctuation}{tail}{punctuation}3");
+            let redacted = scanner.scan(&text).redact(&text);
+            assert!(
+                !redacted.contains(head) && !redacted.contains(tail),
+                "pass 1 must still cover a {punctuation:?}-joined secret whole: {redacted}"
+            );
+        }
+
+        // And adjacent structure is still preserved where pass 1 clamps benignly.
+        let run = "aB3dEf7hJk9mNp2qR";
+        let text = format!("SELECT {run},replicasCount FROM t");
+        assert_eq!(
+            scanner.scan(&text).redact(&text),
+            "SELECT [REDACTED:GenericHighEntropy],replicasCount FROM t",
+            "the column name must survive"
+        );
+    }
+
+    #[test]
+    fn a_split_secret_never_consumes_the_separator_between_its_halves() {
+        // Two findings, not one span. The separator is the evasion rather than
+        // part of the secret, so it is no more part of the span than it is part of
+        // the scored string — and leaving it in place is what keeps the document
+        // around it parseable. A single joined span ate the newline out of this
+        // YAML and left a document that no longer parses.
+        let scanner = CredentialScanner::new();
+        let run = "aB3dEf7hJk9mNp2qRs5";
+        let text = format!("token: {run}\nreplicas: 3");
+        let redacted = scanner.scan(&text).redact(&text);
+        assert!(
+            redacted.contains('\n'),
+            "the newline between the two runs must survive: {redacted:?}"
+        );
+        assert_eq!(
+            redacted, "token: [REDACTED:GenericHighEntropy]\n[REDACTED:GenericHighEntropy]: 3",
+            "the separator must survive; the key name shares the second run's fate, \
+             which is `an_adjacent_word_shares_the_fate_of_a_split_secret`'s subject"
+        );
+    }
+
+    #[test]
+    fn an_adjacent_word_shares_the_fate_of_a_split_secret() {
+        // This pass's honest limit, pinned rather than hidden.
+        //
+        // Pairwise scoring cannot attribute the joined entropy to one half, so an
+        // ordinary word next to a genuine short secret is redacted with it. That
+        // is over-redaction on a payload that did contain secret-shaped material,
+        // and what makes it tolerable is the measured firing rate — one finding
+        // across 23 MB of code — not the reasoning. Asserted so the cost is
+        // visible here rather than discovered in production.
+        let scanner = CredentialScanner::new();
+        let run = "aB3dEf7hJk9mNp2qRs5";
+        let text = format!("hardening {run} done");
+        assert_eq!(
+            scanner.scan(&text).redact(&text),
+            "[REDACTED:GenericHighEntropy] [REDACTED:GenericHighEntropy] done",
+            "if this pass learns to attribute entropy to one half, update this test"
+        );
+    }
+
+    #[test]
+    fn the_distinct_byte_fast_path_cannot_change_a_verdict() {
+        // `MIN_DISTINCT_BYTES_FOR_GATE` is a fast path, not a filter: Shannon
+        // entropy over d distinct symbols is at most log2(d), so a candidate below
+        // the bar could never have cleared `ENTROPY_BITS_GATE` anyway. Pinned from
+        // both sides so it can neither reject a candidate the gate would accept
+        // (too high) nor stop being a useful skip (too low).
+        let below = f64::from(MIN_DISTINCT_BYTES_FOR_GATE - 1);
+        assert!(
+            below.log2() <= ENTROPY_BITS_GATE,
+            "{} distinct bytes can still clear the gate, so skipping it changes verdicts",
+            MIN_DISTINCT_BYTES_FOR_GATE - 1,
+        );
+        let at = f64::from(MIN_DISTINCT_BYTES_FOR_GATE);
+        assert!(
+            at.log2() > ENTROPY_BITS_GATE,
+            "the fast path is looser than it needs to be at {MIN_DISTINCT_BYTES_FOR_GATE}",
+        );
+        // The arithmetic above is independent of the code, so on its own it
+        // cannot fail when the comparison is wrong: mutating `>=` to `>` survived
+        // the entire suite while changing a verdict. This pair joins to exactly
+        // MIN_DISTINCT_BYTES_FOR_GATE distinct bytes and scores 4.5236 bits, just
+        // over the gate — so it is found iff the boundary is inclusive.
+        let scanner = CredentialScanner::new();
+        let text = "log aB3dEf7hJk9m Np2qRs5tUvW end";
+        let joined = "aB3dEf7hJk9mNp2qRs5tUvW";
+        assert_eq!(
+            u32::try_from(joined.bytes().collect::<std::collections::BTreeSet<_>>().len()).unwrap(),
+            MIN_DISTINCT_BYTES_FOR_GATE,
+            "fixture no longer sits exactly on the boundary"
+        );
+        assert!(
+            shannon_entropy(joined) > ENTROPY_BITS_GATE,
+            "fixture must clear the gate, or it pins nothing"
+        );
+        let result = scanner.scan(text);
+        assert_eq!(
+            result.findings.len(),
+            2,
+            "a pair with exactly {MIN_DISTINCT_BYTES_FOR_GATE} distinct bytes must be found: {:?}",
+            result.findings
+        );
+    }
+
+    #[test]
+    fn a_long_hyphenated_identifier_beside_a_word_is_a_known_false_positive() {
+        // The one false positive this pass adds, pinned rather than left silent.
+        //
+        // Measured across 25.4 MB of this repository's prose, code and
+        // configuration, this is the only genuine one: a release sign-off document
+        // in which `CONTRIBUTING/PR-template/DCO` (28 characters) sits beside
+        // `wording`, joining to 35 characters with 26 distinct bytes and 4.615
+        // bits. It appeared when admission stopped being a length comparison, and
+        // it is the price of that: without admitting runs of 23 and over, 99.8% of
+        // 23+17 secret splits were missed entirely.
+        //
+        // No cheap property separates it from a secret cut in two — a 23-character
+        // secret fragment scores about the same — so closing it means a new gate
+        // with its own calibration, not a constant nudged. Asserted as **detected**
+        // so the rate is tracked; if it is ever fixed, this test should fail.
+        let scanner = CredentialScanner::new();
+        let text = "internal doc-link check, CONTRIBUTING/PR-template/DCO wording, and release-process updates.";
+        let result = scanner.scan(text);
+        assert!(
+            !result.is_clean(),
+            "the known false positive stopped firing — if this pass was tightened, \
+             re-measure the corpus and update the rate quoted on it"
+        );
+    }
+
+    #[test]
+    fn english_technical_prose_stays_clean_under_the_split_pass() {
+        // The measured false-positive corpus, reduced to the lines that actually
+        // fired. Each of these joined pairs cleared the 4.5-bit gate in a draft of
+        // this pass that let the candidate contain punctuation: a near-all-distinct
+        // string of 27-35 characters scores about log2(n) whatever it says, so
+        // ordinary mixed-case technical English sailed over the bar. Restricting
+        // the candidate to the base64 alphabet is what excludes them, and it is
+        // the only thing that does — the entropy gate cannot tell these from key
+        // material at this length.
+        //
+        // Measured over 1.8 MB of this repository's English and Chinese prose,
+        // the pass adds zero findings; these are the seven that a weaker rule
+        // added.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "upgrades, RBAC/NetworkPolicy hardening). Those remain SaaS surface.",
+            "The `policy_engine` is `Arc<PolicyEngine>` (`state.rs:45`); the test code that uses it",
+            "`0.5` approval-rejection, `MIN_ACTIONS = 20`) are product-owned",
+            "the value is replaced with a `[REDACTED:<kind>]` placeholder and the request continues",
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.is_clean(),
+                "prose false positive returned: {:?} in {text:?}",
+                result.findings.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(),
+            );
+        }
+    }
+
     #[test]
     fn default_config_matches_new() {
         let default_scanner = CredentialScanner::new();
@@ -928,5 +4822,71 @@ mod tests {
             assert_eq!(a.kind, b.kind);
             assert_eq!(a.offset, b.offset);
         }
+    }
+
+    /// Touching spans stay separate; only overlapping spans merge (AAASM-5383).
+    ///
+    /// This is the boundary a reimplementation gets wrong. `coalesce_findings`
+    /// merges on `f.offset < last.end`, so `f.offset == last.end` — two spans
+    /// that abut with no shared byte — yields **two** labels, not one. The
+    /// inline comment used to say "Overlapping (or touching)", which describes
+    /// `<=`, and AAASM-5373's acceptance criteria were written from it.
+    ///
+    /// Nothing in the committed corpus has touching spans, so this divergence is
+    /// invisible to the conformance vectors — which is exactly why it needs a
+    /// test of its own rather than trust in the suite staying green. Anyone who
+    /// "fixes" the code to match the old prose fails here instead of silently
+    /// desynchronising the Python runner and every SDK harness.
+    ///
+    /// Both halves are asserted: the merge itself still happens when the spans
+    /// genuinely overlap, so a mutation that merged nothing at all would pass the
+    /// touching case alone.
+    #[test]
+    fn touching_spans_stay_separate_and_overlapping_spans_merge() {
+        // `end` of the first is the `offset` of the second: they abut exactly.
+        let touching = vec![
+            CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+            CredentialFinding::new(CredentialKind::EmailAddress, 10, 20),
+        ];
+        let merged = coalesce_findings(&touching);
+        let spans: Vec<(usize, usize)> = merged.iter().map(|s| (s.offset, s.end)).collect();
+        assert_eq!(
+            merged.len(),
+            2,
+            "touching spans must stay separate — merging them erases which kinds \
+             were present: {spans:?}"
+        );
+        assert_eq!((merged[0].offset, merged[0].end), (0, 10));
+        assert_eq!((merged[1].offset, merged[1].end), (10, 20));
+
+        // Positive control: one byte of overlap and they do merge, taking the
+        // higher-priority kind's label.
+        let overlapping = vec![
+            CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+            CredentialFinding::new(CredentialKind::EmailAddress, 9, 20),
+        ];
+        let merged = coalesce_findings(&overlapping);
+        let spans: Vec<(usize, usize)> = merged.iter().map(|s| (s.offset, s.end)).collect();
+        assert_eq!(
+            merged.len(),
+            1,
+            "overlapping spans share bytes, so a partial replacement could leave a \
+             raw secret fragment — they must merge: {spans:?}"
+        );
+        assert_eq!((merged[0].offset, merged[0].end), (0, 20));
+    }
+
+    /// The same boundary through the public surface, since `redact` is what
+    /// callers and reimplementations actually have to match.
+    #[test]
+    fn redact_emits_two_labels_for_touching_findings() {
+        let result = ScanResult {
+            findings: vec![
+                CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+                CredentialFinding::new(CredentialKind::EmailAddress, 10, 20),
+            ],
+        };
+        let redacted = result.redact("0123456789abcdefghij");
+        assert_eq!(redacted, "[REDACTED:GitHubPat][REDACTED:EmailAddress]");
     }
 }

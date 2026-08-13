@@ -109,7 +109,7 @@ impl Default for InMemoryAlertRuleStore {
 
 impl AlertRuleStore for InMemoryAlertRuleStore {
     fn create(&self, mut rule: AlertRule) -> Result<AlertRule, AlertRuleStoreError> {
-        let mut rules = self.rules.write().expect("alert rule store lock poisoned");
+        let mut rules = self.rules.write().unwrap_or_else(|e| e.into_inner());
 
         if rules.values().any(|r| r.name == rule.name) {
             return Err(AlertRuleStoreError::NameConflict { name: rule.name });
@@ -125,12 +125,12 @@ impl AlertRuleStore for InMemoryAlertRuleStore {
     }
 
     fn get(&self, id: &str) -> Option<AlertRule> {
-        let rules = self.rules.read().expect("alert rule store lock poisoned");
+        let rules = self.rules.read().unwrap_or_else(|e| e.into_inner());
         rules.get(id).cloned()
     }
 
     fn list(&self, enabled_filter: Option<bool>) -> Vec<AlertRule> {
-        let rules = self.rules.read().expect("alert rule store lock poisoned");
+        let rules = self.rules.read().unwrap_or_else(|e| e.into_inner());
         rules
             .values()
             .filter(|r| match enabled_filter {
@@ -142,7 +142,7 @@ impl AlertRuleStore for InMemoryAlertRuleStore {
     }
 
     fn update(&self, id: &str, mut rule: AlertRule) -> Result<AlertRule, AlertRuleStoreError> {
-        let mut rules = self.rules.write().expect("alert rule store lock poisoned");
+        let mut rules = self.rules.write().unwrap_or_else(|e| e.into_inner());
         let existing = rules.get(id).ok_or(AlertRuleStoreError::NotFound)?;
 
         // Reject the update when the new name collides with another
@@ -159,12 +159,12 @@ impl AlertRuleStore for InMemoryAlertRuleStore {
     }
 
     fn delete(&self, id: &str) -> bool {
-        let mut rules = self.rules.write().expect("alert rule store lock poisoned");
+        let mut rules = self.rules.write().unwrap_or_else(|e| e.into_inner());
         rules.remove(id).is_some()
     }
 
     fn find_by_name(&self, name: &str) -> Option<AlertRule> {
-        let rules = self.rules.read().expect("alert rule store lock poisoned");
+        let rules = self.rules.read().unwrap_or_else(|e| e.into_inner());
         rules.values().find(|r| r.name == name).cloned()
     }
 }
@@ -194,6 +194,8 @@ mod tests {
             enabled: true,
             created_at: String::new(),
             updated_at: String::new(),
+            team_id: None,
+            org_id: None,
         }
     }
 
@@ -329,5 +331,19 @@ mod tests {
         store.create(rule_named("r1")).expect("create");
         assert!(store.find_by_name("r1").is_some());
         assert!(store.find_by_name("not-there").is_none());
+    }
+
+    #[test]
+    fn default_impl_is_empty_and_error_display_renders() {
+        let store = InMemoryAlertRuleStore::default();
+        assert!(store.list(None).is_empty());
+        assert_eq!(
+            AlertRuleStoreError::NameConflict {
+                name: "dup".to_string()
+            }
+            .to_string(),
+            "rule name already exists: dup"
+        );
+        assert_eq!(AlertRuleStoreError::NotFound.to_string(), "rule not found");
     }
 }

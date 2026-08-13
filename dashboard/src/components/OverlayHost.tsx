@@ -42,13 +42,24 @@ export function OverlayHost({ name, onRequestClose, children }: OverlayHostProps
   if (!open) return null
 
   const target =
-    typeof document !== 'undefined'
-      ? document.querySelector(`[data-overlay="${name}"]`)
-      : null
+    typeof document === 'undefined'
+      ? null
+      : document.querySelector(`[data-overlay="${name}"]`)
   if (!target) return null
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target !== e.currentTarget) return
+    const dismiss = onRequestClose ?? closeOverlay
+    dismiss()
+  }
+
+  // Dismissal is driven by Escape via the document-level listener above; the
+  // backdrop key handler exists to satisfy the click/keyboard parity rule and
+  // mirrors the backdrop click for keyboard users who focus the backdrop.
+  const handleBackdropKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    e.preventDefault()
     const dismiss = onRequestClose ?? closeOverlay
     dismiss()
   }
@@ -58,6 +69,10 @@ export function OverlayHost({ name, onRequestClose, children }: OverlayHostProps
       className="overlay-backdrop"
       data-testid={`overlay-${name}`}
       onClick={handleBackdropClick}
+      onKeyDown={handleBackdropKeyDown}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close overlay"
     >
       <div className="overlay-container" role="dialog" aria-modal="true">
         {children}

@@ -73,7 +73,8 @@ const TRACE_EVENTS = [
 
 async function injectToken(page: Page) {
   await page.addInitScript(() => {
-    localStorage.setItem('aa_token', 'e2e-test-token')
+    // Token lives in sessionStorage (see src/auth/tokenStorage.ts, AAASM-4322).
+    sessionStorage.setItem('aa_token', 'e2e-test-token')
   })
 }
 
@@ -121,14 +122,18 @@ test.describe('TraceViewPage E2E', () => {
     // Re-enable Info to keep the rest of the test using the full set.
     await page.getByTestId('trace-filter-info').click()
 
-    // 3) Open the payload modal on the redacted row and confirm the sentinel.
+    // 3) Open the decision explainer on the redacted row and confirm the
+    //    redaction-block preview replaces the raw value (AAASM-5027).
     await page.getByTestId('trace-event').first().click()
     await expect(page.getByTestId('payload-modal')).toBeVisible()
-    const redacted = page.getByTestId('redacted-field')
-    await expect(redacted.first()).toBeVisible()
-    await expect(redacted.first()).toContainText('"<redacted: user_id>"')
-    // Original value (4521) must not leak into the rendered modal.
-    await expect(page.getByTestId('payload-modal-json')).not.toContainText('4521')
+    await expect(page.getByTestId('decision-explainer')).toBeVisible()
+    await expect(page.getByTestId('layer-steps')).toBeVisible()
+    await expect(page.getByTestId('decision-outcome-band')).toBeVisible()
+    const block = page.getByTestId('redaction-block').first()
+    await expect(block).toBeVisible()
+    await expect(block).toHaveText(/^█+$/)
+    // Original value (4521) must not leak into the rendered preview.
+    await expect(page.getByTestId('redaction-preview-body')).not.toContainText('4521')
     await page.getByTestId('payload-modal-close').click()
 
     // 4) Click Export and verify the downloaded file parses against the schema.

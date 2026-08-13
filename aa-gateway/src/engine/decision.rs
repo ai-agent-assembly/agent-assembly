@@ -25,8 +25,15 @@ pub enum PolicyDecision {
 }
 
 impl PolicyDecision {
-    /// Convert to `aa_core::PolicyResult`, dropping the `source_scope` audit
-    /// field that is not part of the core protocol type.
+    /// Convert to `aa_core::PolicyResult`, dropping the `source_scope` field
+    /// that is not part of the core protocol type.
+    ///
+    /// AAASM-5107: `source_scope` is scope-granular (global/org/team/agent) and
+    /// never named a *document*, so document attribution does not travel on this
+    /// conversion. The deciding document's content digest is captured separately
+    /// via [`merge_decisions_attributed`] and carried to the audit write on
+    /// [`crate::engine::EvaluationResult::policy_doc_id`], so it is no longer
+    /// lost here.
     pub fn into_policy_result(self) -> aa_core::PolicyResult {
         match self {
             PolicyDecision::Allow => aa_core::PolicyResult::Allow,
@@ -39,11 +46,16 @@ impl PolicyDecision {
 }
 
 /// Evaluate a single `PolicyDocument` against `(ctx, action)` and return the
-/// decision for stages 1–3 and 5 (schedule, network, tool-allow, approval-condition).
+/// decision for the *cacheable* stages 2–3 and 5 (network, tool-allow,
+/// capability, approval-condition).
 ///
-/// Stages 4 (rate-limit) and 7 (budget) are stateful at engine level and are
-/// evaluated separately after merging. Stage 6 (credential scan) does not
-/// produce a decision — it is handled at the engine level.
+/// Stage 1 (schedule) is deliberately **excluded** here: it is time-dependent
+/// and must be evaluated fresh on every request via [`evaluate_schedule_cascade`]
+/// so that a cached `Allow` computed inside an active-hours window cannot be
+/// served after the window closes (AAASM-3893). Stages 4 (rate-limit) and 7
+/// (budget) are stateful at engine level and are evaluated separately after
+/// merging. Stage 6 (credential scan) does not produce a decision — it is
+/// handled at the engine level.
 ///
 /// Returns `Deny` on the first matching deny rule, `RequireApproval` for approval
 /// conditions, and `Allow` if no rule fires.
@@ -52,111 +64,239 @@ pub(crate) fn evaluate_single_doc(
     ctx: &aa_core::AgentContext,
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
 ) -> PolicyDecision {
-    // Stage 1 — Schedule
-    if let Some(schedule) = &doc.schedule {
-        if let Some(ah) = &schedule.active_hours {
-            use chrono::Timelike;
-            let tz: chrono_tz::Tz = ah.timezone.parse().unwrap_or(chrono_tz::UTC);
-            let now = chrono::Utc::now().with_timezone(&tz);
-            let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
-            if current_hhmm < ah.start || current_hhmm >= ah.end {
-                return PolicyDecision::Deny {
-                    reason: "outside active hours".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-        }
+    if let Some(d) = stage_network(doc, action) {
+        return d;
     }
-
-    // Stage 2 — Network allowlist
-    if let aa_core::GovernanceAction::NetworkRequest { url, .. } = action {
-        if let Some(np) = &doc.network {
-            if !np.allowlist.is_empty() {
-                let host = url
-                    .split_once("://")
-                    .map(|x| x.1)
-                    .unwrap_or("")
-                    .split('/')
-                    .next()
-                    .unwrap_or("");
-                if !np.allowlist.iter().any(|entry| entry == host) {
-                    return PolicyDecision::Deny {
-                        reason: "host not in network allowlist".into(),
-                        source_scope: doc.scope.clone(),
-                    };
-                }
-            }
-        }
+    if let Some(d) = stage_tool_allow(doc, action) {
+        return d;
     }
-
-    // Stage 3 — Tool allow/deny
-    if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-        if let Some(tp) = doc.tools.get(name) {
-            if !tp.allow {
-                return PolicyDecision::Deny {
-                    reason: "tool denied by policy".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-        }
+    if let Some(d) = stage_capability(doc, action) {
+        return d;
     }
-
-    // Stage 3.5 — Capability check
-    if let Some(caps) = &doc.capabilities {
-        if let Some(cap) = aa_core::action_to_capability(action) {
-            if caps.deny.contains(&cap) {
-                return PolicyDecision::Deny {
-                    reason: "capability denied by policy".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-            if !caps.allow.is_empty() && !caps.allow.contains(&cap) {
-                return PolicyDecision::Deny {
-                    reason: "capability not in allow list".into(),
-                    source_scope: doc.scope.clone(),
-                };
-            }
-        }
-    }
-
-    // Stage 5 — Approval condition
-    if let aa_core::GovernanceAction::ToolCall { name, .. } = action {
-        if let Some(tp) = doc.tools.get(name) {
-            if let Some(expr) = &tp.requires_approval_if {
-                if !expr.is_empty()
-                    && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx)
-                {
-                    return PolicyDecision::RequireApproval {
-                        reason: format!("approval required for tool '{name}'"),
-                        timeout_secs: doc.approval_timeout_secs,
-                    };
-                }
-            }
-        }
-    }
-
-    // Stage 5b — Approval condition for SendMessage (channel policy).
-    // Looks up the "message" sentinel key in the tools map; all inter-team
-    // channel rules are expressed as `requires_approval_if` on that key.
-    // The expression evaluator resolves source.team_id, target.team_id, and
-    // target.channel_id directly from the SendMessage action fields.
-    if let aa_core::GovernanceAction::SendMessage { .. } = action {
-        if let Some(tp) = doc.tools.get("message") {
-            if let Some(expr) = &tp.requires_approval_if {
-                if !expr.is_empty()
-                    && crate::policy::expr::evaluate(expr, action, Some(ctx.governance_level), policy_ctx)
-                {
-                    return PolicyDecision::RequireApproval {
-                        reason: "approval required: cross-team channel policy".into(),
-                        timeout_secs: doc.approval_timeout_secs,
-                    };
-                }
-            }
-        }
+    if let Some(d) = stage_approval(doc, ctx, action, policy_ctx, failures) {
+        return d;
     }
 
     PolicyDecision::Allow
+}
+
+/// Stage 1 — Schedule, evaluated **fresh** across the whole cascade.
+///
+/// Returns the first schedule-based `Deny` (current time outside a doc's
+/// active-hours window, or an unparseable timezone), or `None` when every doc's
+/// window currently permits the request.
+///
+/// AAASM-3893: this stage is time-dependent and is intentionally kept out of
+/// [`evaluate_single_doc`] (and therefore out of the engine's decision cache).
+/// The caller runs it on every request so a cached verdict computed inside an
+/// active-hours window cannot outlive that window.
+pub(crate) fn evaluate_schedule_cascade(cascade: &[Arc<PolicyDocument>]) -> Option<PolicyDecision> {
+    cascade.iter().find_map(|doc| stage_schedule(doc))
+}
+
+/// Stage 1 — Schedule: deny when the current time is outside the doc's
+/// active-hours window.
+fn stage_schedule(doc: &PolicyDocument) -> Option<PolicyDecision> {
+    let ah = doc.schedule.as_ref()?.active_hours.as_ref()?;
+    use chrono::Timelike;
+    // AAASM-3133: an unparseable timezone must fail closed. Silently falling
+    // back to UTC let an operator's active-hours window be evaluated in the
+    // wrong zone — e.g. a window meant for business hours in `America/New_York`
+    // evaluated in UTC could be wide open when it should be shut, bypassing the
+    // schedule control. Deny when the configured tz does not parse.
+    let Ok(tz) = ah.timezone.parse::<chrono_tz::Tz>() else {
+        return Some(PolicyDecision::Deny {
+            reason: format!("invalid schedule timezone: {}", ah.timezone),
+            source_scope: doc.scope.clone(),
+        });
+    };
+    let now = chrono::Utc::now().with_timezone(&tz);
+    let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
+    if current_hhmm < ah.start || current_hhmm >= ah.end {
+        return Some(PolicyDecision::Deny {
+            reason: "outside active hours".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Stage 2 — Network allowlist: deny a `NetworkRequest` whose host is not
+/// permitted by the doc's egress allowlist.
+///
+/// Two correctness fixes over the previous inline matcher (F3/AAASM-3127):
+///
+/// * **Wildcards** — delegates to
+///   [`aa_core::policy::is_host_allowed_by_egress_allowlist`], the same
+///   wildcard-aware matcher the `aa-proxy` egress layer uses, so the engine
+///   and the proxy no longer disagree on `*.host` patterns. The previous
+///   `entry == host` exact-match silently failed to match any wildcard entry,
+///   denying legitimate traffic the operator believed they had allowed.
+/// * **Empty allowlist = deny-all** — a policy doc that declares a `network`
+///   section but leaves the allowlist empty is treated as "deny all egress",
+///   not "allow all egress". An empty allowlist is the most restrictive
+///   posture; failing open here defeated the whole egress control.
+fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
+    let aa_core::GovernanceAction::NetworkRequest { url, .. } = action else {
+        return None;
+    };
+    let np = doc.network.as_ref()?;
+    if !network_request_url_allowed(url, np) {
+        return Some(PolicyDecision::Deny {
+            reason: "host not in network allowlist".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Shared egress decision for a `NetworkRequest` URL against a [`NetworkPolicy`].
+///
+/// This is the single source of truth for the gateway's network-stage check:
+/// both the cascade path ([`stage_network`]) and the single-file engine path
+/// (`PolicyEngine::eval_network_stage`) route through it so they cannot diverge
+/// (AAASM-3728).
+///
+/// * Extracts the authority from `proto://host:port/...` and strips a trailing
+///   numeric `:port` (AAASM-3350) — allowlist entries are bare hosts.
+/// * Delegates matching to the **fail-closed** matcher
+///   ([`aa_core::policy::is_host_allowed_by_egress_allowlist_fail_closed`]):
+///   a configured-but-empty allowlist denies all egress, and wildcard patterns
+///   (`*.host`, `*`) are honoured (AAASM-3127/AAASM-3730). The previous
+///   single-file path used an empty-is-allow-all default and an exact-only
+///   compare — a fail-open egress control.
+pub(crate) fn network_request_url_allowed(url: &str, np: &crate::policy::NetworkPolicy) -> bool {
+    let host_port = url
+        .split_once("://")
+        .map(|x| x.1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    let host = match host_port.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host_port,
+    };
+    aa_core::policy::is_host_allowed_by_egress_allowlist_fail_closed(host, &np.allowlist)
+}
+
+/// Stage 3 — Tool allow/deny: deny a `ToolCall` whose tool policy is not allowed.
+///
+/// AAASM-4152: the `"*"` tools key is a wildcard fallback, not a literal tool
+/// name. An exact per-tool entry takes precedence; a tool with no explicit
+/// entry falls back to the `"*"` policy. This mirrors the network stage's
+/// wildcard support and lets `tools: { "*": { allow: false } }` deny unknown
+/// tools (fail closed). Previously the exact-only `get(name)` returned `None`
+/// for any unlisted tool, so the stage fell through to the engine's
+/// allow-by-default — a fail-open tool control.
+fn stage_tool_allow(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
+    let aa_core::GovernanceAction::ToolCall { name, .. } = action else {
+        return None;
+    };
+    let tp = doc.tools.get(name).or_else(|| doc.tools.get("*"))?;
+    if !tp.allow {
+        return Some(PolicyDecision::Deny {
+            reason: "tool denied by policy".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Stage 3.5 — Capability check: deny when this doc's capability set blocks the
+/// action's capability (explicit deny, or omitted while an allow-list
+/// restriction is in force — see `CapabilitySet::allow_is_restricted`).
+fn stage_capability(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Option<PolicyDecision> {
+    let caps = doc.capabilities.as_ref()?;
+    let cap = aa_core::action_to_capability(action)?;
+    if aa_core::capability_is_denied(&caps.deny, &cap) {
+        return Some(PolicyDecision::Deny {
+            reason: "capability denied by policy".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    // Fail closed when a restriction is in force even if the allow-list is now
+    // empty (a disjoint cascade merge collapsed it) — never allow-all (AAASM-4154).
+    if caps.allow_is_restricted() && !caps.allow.contains(&cap) {
+        return Some(PolicyDecision::Deny {
+            reason: "capability not in allow list".into(),
+            source_scope: doc.scope.clone(),
+        });
+    }
+    None
+}
+
+/// Stages 5 & 5b — Approval condition: require approval when the tool's (or the
+/// `message` channel sentinel's) `requires_approval_if` expression evaluates
+/// true for the action.
+fn stage_approval(
+    doc: &PolicyDocument,
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
+) -> Option<PolicyDecision> {
+    match action {
+        // AAASM-4164: fall back to the `"*"` wildcard entry (exact entry wins) so a
+        // `tools: { "*": { requires_approval_if: "<guard>" } }` scope gates
+        // unlisted tools behind approval instead of skipping the check — the
+        // cascade twin of `eval_toolcall_stages`' stage-5 wildcard fallback.
+        aa_core::GovernanceAction::ToolCall { name, .. }
+            if approval_condition_met(
+                doc.tools.get(name).or_else(|| doc.tools.get("*")),
+                ctx,
+                action,
+                policy_ctx,
+                failures,
+            ) =>
+        {
+            Some(PolicyDecision::RequireApproval {
+                reason: format!("approval required for tool '{name}'"),
+                timeout_secs: doc.approval_timeout_secs,
+            })
+        }
+        // The "message" sentinel key carries all inter-team channel rules; the
+        // expression evaluator resolves source/target team and channel ids from
+        // the SendMessage action fields directly.
+        aa_core::GovernanceAction::SendMessage { .. }
+            if approval_condition_met(doc.tools.get("message"), ctx, action, policy_ctx, failures) =>
+        {
+            Some(PolicyDecision::RequireApproval {
+                reason: "approval required: cross-team channel policy".into(),
+                timeout_secs: doc.approval_timeout_secs,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Whether a tool/channel policy has a non-empty `requires_approval_if`
+/// expression that evaluates true for `action`.
+///
+/// `requires_approval_if` is a guard clause, so any graph-context resolution
+/// failure fails closed (fires) per ADR 0015 §4 and is appended to `failures`
+/// as audit evidence.
+fn approval_condition_met(
+    tool_policy: Option<&crate::policy::document::ToolPolicy>,
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
+) -> bool {
+    let Some(expr) = tool_policy.and_then(|tp| tp.requires_approval_if.as_ref()) else {
+        return false;
+    };
+    !expr.is_empty()
+        && crate::policy::expr::evaluate_clause(
+            expr,
+            action,
+            Some(ctx.governance_level),
+            policy_ctx,
+            crate::policy::expr::ClauseKind::RequireApproval,
+            failures,
+        )
 }
 
 /// Merge a cascade of policy documents into a single `PolicyDecision` using
@@ -178,29 +318,91 @@ pub fn merge_decisions(
     action: &aa_core::GovernanceAction,
     policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
 ) -> PolicyDecision {
+    // Callers that do not consume the resolution-failure audit evidence discard
+    // it here; the engine uses [`merge_decisions_audited`] to surface it.
+    let mut failures = Vec::new();
+    merge_decisions_audited(cascade, ctx, action, policy_ctx, &mut failures)
+}
+
+/// Like [`merge_decisions`], but appends every graph-context **resolution
+/// failure** encountered during evaluation to `failures` (ADR 0015 §4 rule 5).
+///
+/// Each record identifies the unresolved variable, the clause that referenced
+/// it, and — via [`crate::policy::expr::ResolutionFailure::fail_safe_action`] —
+/// the fail-safe action taken. The engine drains this into the audit trail so a
+/// decision made on degraded context is never invisible to an operator.
+pub fn merge_decisions_audited(
+    cascade: &[Arc<PolicyDocument>],
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
+) -> PolicyDecision {
+    merge_decisions_attributed(cascade, ctx, action, policy_ctx, failures).0
+}
+
+/// Like [`merge_decisions_audited`], but additionally reports the **content
+/// digest of the deciding policy document** (AAASM-5107).
+///
+/// The returned `Option<String>` is [`PolicyDocument::content_digest`] of the
+/// single document that produced the terminal verdict:
+///
+/// * a `Deny` — the document whose stage fired the short-circuit deny;
+/// * a `RequireApproval` — the most-specific document that required approval
+///   (the one whose decision the merge kept);
+/// * an `Allow` — the most-specific document evaluated (the last in cascade
+///   order), i.e. the narrowest policy that let the action through.
+///
+/// `None` only for the empty-cascade fail-closed deny, which no document
+/// produced. This is the stable identity carried to the audit write so a
+/// per-document 24h hit count is queryable (AAASM-5107 §3), and it distinguishes
+/// two versions of the same `(scope, name)` because the digest is content-derived.
+pub fn merge_decisions_attributed(
+    cascade: &[Arc<PolicyDocument>],
+    ctx: &aa_core::AgentContext,
+    action: &aa_core::GovernanceAction,
+    policy_ctx: Option<&dyn crate::policy::context::PolicyContext>,
+    failures: &mut Vec<crate::policy::expr::ResolutionFailure>,
+) -> (PolicyDecision, Option<String>) {
     if cascade.is_empty() {
-        return PolicyDecision::Deny {
-            reason: "no policy — fail-closed".into(),
-            source_scope: PolicyScope::Global,
-        };
+        return (
+            PolicyDecision::Deny {
+                reason: "no policy — fail-closed".into(),
+                source_scope: PolicyScope::Global,
+            },
+            None,
+        );
     }
 
     let mut running = PolicyDecision::Allow;
+    // The document whose verdict `running` currently holds. Seeded to the first
+    // (broadest) document so an all-Allow cascade still attributes the allow to
+    // a concrete document rather than dropping the attribution.
+    let mut decided_by: &Arc<PolicyDocument> = &cascade[0];
 
     for doc in cascade {
-        let verdict = evaluate_single_doc(doc, ctx, action, policy_ctx);
+        let verdict = evaluate_single_doc(doc, ctx, action, policy_ctx, failures);
         match verdict {
-            // Short-circuit: Deny always wins.
-            PolicyDecision::Deny { .. } => return verdict,
+            // Short-circuit: Deny always wins — attribute to the denying doc.
+            PolicyDecision::Deny { .. } => return (verdict, Some(doc.content_digest())),
             // Most-specific scope wins: always overwrite with the narrower scope's decision.
             PolicyDecision::RequireApproval { .. } => {
                 running = verdict;
+                decided_by = doc;
             }
-            PolicyDecision::Allow => {}
+            // An allow from this doc does not change the verdict, but the
+            // most-specific evaluated doc is the effective decider for an
+            // all-Allow cascade.
+            PolicyDecision::Allow => {
+                if matches!(running, PolicyDecision::Allow) {
+                    decided_by = doc;
+                }
+            }
         }
     }
 
-    running
+    let doc_id = decided_by.content_digest();
+    (running, Some(doc_id))
 }
 
 #[cfg(test)]
@@ -253,6 +455,7 @@ mod tests {
         CapabilitySet {
             allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
             deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+            allow_restricted: false,
         }
     }
 
@@ -264,7 +467,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Read,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -283,7 +486,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Write,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -302,7 +505,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Read,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(result, PolicyDecision::Allow);
     }
 
@@ -315,7 +518,7 @@ mod tests {
             path: "/tmp/f".into(),
             mode: FileMode::Write,
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(result, PolicyDecision::Allow);
     }
 
@@ -327,7 +530,7 @@ mod tests {
             name: "bash".into(),
             args: "{}".into(),
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(
             result,
             PolicyDecision::Deny {
@@ -345,7 +548,184 @@ mod tests {
             name: "bash".into(),
             args: "{}".into(),
         };
-        let result = evaluate_single_doc(&doc, &ctx, &action, None);
+        let result = evaluate_single_doc(&doc, &ctx, &action, None, &mut Vec::new());
         assert_eq!(result, PolicyDecision::Allow);
+    }
+
+    // ── Stage 2: network egress allowlist (F3 / AAASM-3127) ─────────────────
+
+    fn doc_with_allowlist(allowlist: Vec<String>) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.network = Some(crate::policy::document::NetworkPolicy { allowlist });
+        doc
+    }
+
+    fn net_action(url: &str) -> GovernanceAction {
+        GovernanceAction::NetworkRequest {
+            url: url.into(),
+            method: "GET".into(),
+        }
+    }
+
+    #[test]
+    fn stage_network_wildcard_matches_subdomain() {
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_wildcard_denies_non_matching_host() {
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://evil.attacker.net/x")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_wildcard_denies_bare_apex() {
+        // `*.openai.com` must NOT match the bare apex `openai.com`.
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://openai.com/")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_exact_match_allows() {
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_empty_allowlist_denies_all() {
+        // F3: an empty allowlist is the most restrictive posture — deny-all,
+        // not allow-all.
+        let doc = doc_with_allowlist(vec![]);
+        let d = stage_network(&doc, &net_action("https://api.openai.com/v1")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_network_no_network_section_is_noop() {
+        let doc = minimal_doc(None);
+        assert_eq!(stage_network(&doc, &net_action("https://anything.test/")), None);
+    }
+
+    #[test]
+    fn stage_network_allowlisted_host_with_port_allows() {
+        // AAASM-3350: the gateway builds URLs as `proto://host:port`. A bare
+        // allowlist entry must still match once the port is stripped.
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com:443/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_wildcard_host_with_port_allows() {
+        // AAASM-3350: port stripping must also let wildcard entries match.
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        assert_eq!(stage_network(&doc, &net_action("https://api.openai.com:443/v1")), None);
+    }
+
+    #[test]
+    fn stage_network_non_allowlisted_host_with_port_denies() {
+        // AAASM-3350: stripping the port must not let a non-allowlisted host through.
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        let d = stage_network(&doc, &net_action("https://evil.attacker.net:8443/x")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    // ── Stage 3: tool allow/deny wildcard fail-closed (AAASM-4152) ──────────
+
+    fn tool_action(name: &str) -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: name.into(),
+            args: "{}".into(),
+        }
+    }
+
+    fn doc_with_tools(tools: &[(&str, bool)]) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.tools = tools
+            .iter()
+            .map(|(name, allow)| {
+                (
+                    (*name).to_string(),
+                    crate::policy::document::ToolPolicy {
+                        allow: *allow,
+                        limit_per_hour: None,
+                        requires_approval_if: None,
+                    },
+                )
+            })
+            .collect();
+        doc
+    }
+
+    #[test]
+    fn stage_tool_wildcard_deny_denies_unlisted_tool() {
+        // AAASM-4152: `tools: { "*": { allow: false }, read_file: { allow: true } }`
+        // must deny an unlisted tool — the `"*"` key is a wildcard fallback, not a
+        // literal name. Previously the unlisted tool fell through to allow-by-default.
+        let doc = doc_with_tools(&[("*", false), ("read_file", true)]);
+        let d = stage_tool_allow(&doc, &tool_action("exfiltrate_secrets")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_tool_wildcard_deny_allows_explicitly_listed_tool() {
+        // An explicit per-tool entry takes precedence over the `"*"` fallback.
+        let doc = doc_with_tools(&[("*", false), ("read_file", true)]);
+        assert_eq!(stage_tool_allow(&doc, &tool_action("read_file")), None);
+    }
+
+    #[test]
+    fn stage_tool_explicit_entry_overrides_wildcard_allow() {
+        // A per-tool deny beats a permissive `"*": allow` fallback.
+        let doc = doc_with_tools(&[("*", true), ("dangerous", false)]);
+        let d = stage_tool_allow(&doc, &tool_action("dangerous")).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+        // And an unlisted tool falls back to the permissive wildcard → allow.
+        assert_eq!(stage_tool_allow(&doc, &tool_action("anything_else")), None);
+    }
+
+    #[test]
+    fn stage_tool_no_matching_entry_is_noop() {
+        // No exact entry and no `"*"` fallback → stage abstains (returns None),
+        // deferring to later stages / the engine default.
+        let doc = doc_with_tools(&[("read_file", true)]);
+        assert_eq!(stage_tool_allow(&doc, &tool_action("write_file")), None);
+    }
+
+    // ── Stage 1: schedule timezone fail-closed (AAASM-3133) ─────────────────
+
+    fn doc_with_schedule(tz: &str, start: &str, end: &str) -> PolicyDocument {
+        let mut doc = minimal_doc(None);
+        doc.schedule = Some(crate::policy::document::SchedulePolicy {
+            active_hours: Some(crate::policy::document::ActiveHours {
+                start: start.into(),
+                end: end.into(),
+                timezone: tz.into(),
+            }),
+        });
+        doc
+    }
+
+    #[test]
+    fn stage_schedule_invalid_timezone_fails_closed() {
+        // AAASM-3133: an unparseable tz must DENY, not silently fall back to UTC
+        // and risk evaluating the active-hours window in the wrong zone.
+        let doc = doc_with_schedule("Mars/Phobos", "00:00", "23:59");
+        let d = stage_schedule(&doc).expect("deny");
+        match d {
+            PolicyDecision::Deny { reason, .. } => {
+                assert!(reason.contains("invalid schedule timezone"), "got: {reason}");
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stage_schedule_valid_timezone_full_day_window_allows() {
+        // A valid tz with an all-day window must not deny on the tz check.
+        let doc = doc_with_schedule("UTC", "00:00", "23:59");
+        assert_eq!(stage_schedule(&doc), None);
     }
 }

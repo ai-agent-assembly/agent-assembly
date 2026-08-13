@@ -68,6 +68,14 @@ export interface SandboxPayloadInfo {
  * observe-mode signal. Tolerates malformed payloads and missing fields by
  * returning a `dryRun: false` value, matching the gateway's contract that
  * absence of the field means live enforcement.
+ *
+ * `JSON.parse(payload) as Record<string, unknown>` is a bare cast
+ * (AAASM-5217 audit); accepted-risk because `parsed` is only ever probed with
+ * two fixed string literals (`'dry_run'`, `'shadow_decision'`) — ordinary own
+ * keys on the union type, never a dynamic value read off the wire — so a
+ * payload keyed `"__proto__"` or `"constructor"` simply fails both checks and
+ * falls to the tolerant default, the same as a payload missing the field
+ * entirely.
  */
 export function extractSandboxInfo(payload: string): SandboxPayloadInfo {
   try {

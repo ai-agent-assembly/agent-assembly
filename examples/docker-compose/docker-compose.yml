@@ -1,22 +1,44 @@
-# aa-runtime sidecar — docker-compose example
+# Agent Assembly — limited-function self-host stack (Docker Compose)
+#
+# Owner policy (2026-06-21): limited-function self-hosting via open source is
+# acceptable. FULL functionality (gateway brain, persistence, HTTP/OpenAPI API,
+# operator dashboard, team budgets, central registry) remains SaaS-only.
+#
+# This stack therefore stands up only the open-source services that ship a real
+# container image or build context in this repository:
+#
+#   * aa-runtime  — the authoritative in-process enforcement sidecar
+#                   (published image: ghcr.io/ai-agent-assembly/aa-runtime)
+#   * agent-stub  — a placeholder agent wired to the runtime over the IPC socket
+#   * aa-proxy    — the egress-interception proxy (built locally from
+#                   ../../aa-proxy/Dockerfile; OPTIONAL, see the `proxy` profile)
+#
+# Services that are SaaS-only and have NO open-source image/build context are
+# intentionally NOT defined here: aa-gateway, aa-api, persistence, dashboard.
 #
 # Usage:
-#   AA_API_KEY=<your-key> docker-compose up
+#   AA_API_KEY=<your-key> docker compose up                  # runtime sidecar path (default)
+#   AA_API_KEY=<your-key> docker compose --profile proxy up  # + optional egress proxy
 #
 # The agent and runtime share a Unix domain socket volume.
 # AA_AGENT_ID must be identical in both services.
 
 services:
   aa-runtime:
+    # The only Agent Assembly service published as a container image. It is the
+    # authoritative enforcement point for the SDK/sidecar interception path.
     image: ghcr.io/ai-agent-assembly/aa-runtime:latest
     restart: unless-stopped               # restart if the process exits unexpectedly
     environment:
       AA_AGENT_ID: "my-agent-001"
+      # Limited-function self-host: run with no central gateway. The runtime
+      # enforces locally from the mounted policy file instead of calling the
+      # SaaS gateway. Leaving AA_GATEWAY_ENDPOINT unset keeps it standalone.
+      AA_POLICY_PATH: "/etc/aa/policy.toml"
       # AA_METRICS_ADDR: "0.0.0.0:8080"   # default shown for reference
     volumes:
       - aa-runtime-socket:/tmp            # socket path hardcoded to /tmp/aa-runtime-<agent_id>.sock
-      # Uncomment to mount a policy file:
-      # - ./policy.toml:/etc/aa/policy.toml:ro
+      - ../policy.toml:/etc/aa/policy.toml:ro   # local enforcement policy (see ../policy.toml)
     ports:
       - "8080:8080"                       # health + metrics
     # Note: requires a health-check-capable image or override; distroless images have no shell.
@@ -50,6 +72,28 @@ services:
       AA_API_KEY: "${AA_API_KEY}"
     volumes:
       - aa-runtime-socket:/tmp      # IPC socket: /tmp/aa-runtime-my-agent-001.sock
+
+  aa-proxy:
+    # OPTIONAL egress-interception layer. Built locally from this repo (no
+    # published image yet). Enabled only under the `proxy` profile because, in
+    # production, the proxy forwards governance decisions to the SaaS gateway and
+    # fails CLOSED when that gateway is unreachable.
+    #
+    # AA_PROXY_MCP_FAIL_OPEN=1 below lets it start WITHOUT a gateway so you can
+    # exercise the egress path in this limited-function, gateway-less self-host
+    # demo. Remove it (and set AA_PROXY_GATEWAY_ENDPOINT) to enforce via a gateway.
+    build:
+      context: ../..
+      dockerfile: aa-proxy/Dockerfile
+    profiles: ["proxy"]
+    restart: unless-stopped
+    environment:
+      AA_PROXY_ADDR: "0.0.0.0:8899"
+      AA_PROXY_LLM_ONLY: "false"
+      AA_PROXY_MCP_FAIL_OPEN: "1"   # demo only: start without a gateway (fails open)
+      # AA_PROXY_GATEWAY_ENDPOINT: "http://aa-gateway:50051"  # SaaS-only; no OSS image
+    ports:
+      - "8899:8899"                 # MitM HTTPS proxy listener
 
 volumes:
   aa-runtime-socket:

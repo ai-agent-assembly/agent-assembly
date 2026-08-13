@@ -6,7 +6,7 @@
 
 This runbook assumes the operator has push rights to
 `ai-agent-assembly/agent-assembly` and merge rights on the
-`ai-agent-assembly/homebrew-agent-assembly` tap.
+`ai-agent-assembly/homebrew-tap` tap.
 
 ---
 
@@ -16,23 +16,23 @@ The bump PR sets the workspace version, refreshes path-dep version literals,
 adds the `CHANGELOG.md` section, and creates `docs/release/v<version>.md`.
 
 ```bash
-# in a feature worktree off master
+# in a feature worktree off main
 $EDITOR Cargo.toml                 # workspace.package.version
 $EDITOR aa-*/Cargo.toml            # all path-dep `version = "..."` literals
 $EDITOR CHANGELOG.md               # prepend ## [<version>] section
 $EDITOR docs/release/v<version>.md # release notes (copy structure from previous)
 ```
 
-Open the bump PR, wait for green CI, merge to master. **Then run the
-readiness check from a fresh master checkout:**
+Open the bump PR, wait for green CI, merge to main. **Then run the
+readiness check from a fresh main checkout:**
 
 ```bash
-git checkout master
-git pull --ff-only remote master
+git checkout main
+git pull --ff-only remote main
 bash scripts/release-readiness.sh <version>      # e.g. 0.0.1-alpha.5
 ```
 
-All 10 checks must report ✓ before continuing. Common failures and what to do:
+All 11 checks must report ✓ before continuing. Common failures and what to do:
 
 - *Cargo.toml version mismatch* — bump PR not yet merged.
 - *Workspace path-dep literals don't match* — at least one Cargo.toml was
@@ -40,6 +40,40 @@ All 10 checks must report ✓ before continuing. Common failures and what to do:
 - *Stale homebrew tap PR open* — close or merge it before tagging; otherwise
   the per-tag bot will open a parallel PR and reviewers will be unsure
   which one is current.
+- *Security-review sign-off missing or not PASS* — see section 1.5; run
+  `/release-security-gate <version>`, resolve any High/Critical finding, commit
+  the PASS sign-off, then re-run.
+
+## 1.5. Security gate — review sign-off (BLOCKS the tag push)
+
+> **This gate sits between the bump PR (section 1) and the IRREVERSIBLE tag
+> push (section 2). A release cannot proceed past an unaddressed High/Critical
+> finding.**
+
+Before tagging, run the release-gate security review, scaled by release type:
+
+```bash
+/release-security-gate <version>      # e.g. 0.0.1-beta.4
+```
+
+- **patch** = dependency/advisory audit (`cargo deny check advisories`, open
+  CodeQL/Dependabot alerts) + release-diff review.
+- **minor** = + changed-attack-surface review via the
+  [trust-boundary review checklist](../src/security/trust-boundary-review-checklist.md).
+- **major** = + full [release threat-model](../src/security/release-threat-model.md)
+  refresh + pen-test checklist.
+
+The review writes a committed sign-off artifact at
+`docs/release/security-signoff/v<version>.md` (from
+`docs/release/security-signoff/TEMPLATE.md`) ending in a `Verdict: PASS` or
+`Verdict: BLOCK` line. **`scripts/release-readiness.sh` check 11 fails the
+readiness run unless that file exists and its verdict is `PASS`** — so a BLOCK
+verdict, or a missing sign-off, structurally stops the tag push in section 2.
+See the [`/release-security-gate` SKILL](../../.claude/skills/release-security-gate/SKILL.md)
+for tier detail and the BLOCK-on-unaddressed-High/Critical rule. The gate wraps
+Claude Code's built-in `/security-review` diff scanner (and, at major tier, the
+`anthropics/claude-code-security-review` Action) — it does not reimplement diff
+scanning.
 
 ## 2. Tag push — IRREVERSIBLE
 
@@ -76,7 +110,7 @@ per the "Post-release verification" section of `RELEASING.md`.
 ## 4. Manual gate — merge the Homebrew tap PR (within ~5 minutes)
 
 `release.yml`'s `update-homebrew-tap` job opens a PR against
-`ai-agent-assembly/homebrew-agent-assembly` with branch `bot/aasm-<version>`
+`ai-agent-assembly/homebrew-tap` with branch `bot/aasm-<version>`
 and title `🤖 (formula): aasm <version>`.
 
 **Until that PR is merged, `brew install aasm` will still resolve to the
@@ -84,8 +118,8 @@ previous version.** The formula file on the tap's master branch is what
 Homebrew reads; the bot-created branch is invisible to `brew install`.
 
 ```bash
-gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open
-gh pr merge <pr-number> --repo ai-agent-assembly/homebrew-agent-assembly --squash
+gh pr list --repo ai-agent-assembly/homebrew-tap --state open
+gh pr merge <pr-number> --repo ai-agent-assembly/homebrew-tap --squash
 ```
 
 ## 5. Verification
@@ -109,7 +143,7 @@ re-trigger command. The workflow:
 
 1. Open a ticket describing the failure (link the failed workflow run).
 2. Open a fix PR against the affected repo (sources, not just CI config).
-3. Merge the fix to master.
+3. Merge the fix to main.
 4. Re-trigger the relevant workflow via `workflow_dispatch` with the
    `release_tag` input. Each `release-*.yml` accepts this for re-trigger.
 5. Re-run `check-release.sh v<version>` to verify.

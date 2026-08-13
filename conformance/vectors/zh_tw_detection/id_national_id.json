@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353: 國民身分證統一編號. Synthetic: letter A -> area code 10, so n1*1 + n2*9 = 1; body 20000000 contributes 2*8 = 16; check digit 3 brings the weighted sum to 20, divisible by 10. The 身分證 label is adjacent, so confidence is corroborated to high.",
+  "input_text": "客戶身分證字號 A200000003 已完成核對。",
+  "expected_findings": [
+    {
+      "category": "NATIONAL_ID[zh-TW/national_id]",
+      "offset": 22,
+      "end": 32,
+      "confidence": "high"
+    }
+  ],
+  "expected_redacted": "客戶身分證字號 [REDACTED] 已完成核對。"
+}

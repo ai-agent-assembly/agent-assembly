@@ -35,6 +35,7 @@ fn data_doc(scope: PolicyScope, pattern: &str, action: CredentialAction) -> Poli
         data: Some(DataPolicy {
             sensitive_patterns: vec![pattern.to_string()],
             credential_action: action,
+            locale_packs: vec![],
         }),
         approval_timeout_secs: 300,
         approval_policy: None,

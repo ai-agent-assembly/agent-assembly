@@ -55,6 +55,12 @@ impl RedisPolicyStore {
     }
 }
 
+// TODO(AAASM-3919): namespace this key by the verified tenant/org id
+// (e.g. `aa:policy:<org_id>:<agent_id>`) once org context is threaded into the
+// PolicyStore path. The shared L2 cache currently has no tenant boundary; agent
+// ids are globally unique so there is no collision today, but also no isolation.
+// Deferred here because PolicyStore::get_policy/invalidate carry only an agent
+// id — adding a prefix without the org id would break lookups.
 fn policy_key(agent_id: &AgentId) -> String {
     format!("aa:policy:{}", hex16(agent_id.as_bytes()))
 }
