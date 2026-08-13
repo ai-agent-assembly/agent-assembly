@@ -91,7 +91,7 @@ clap           = { workspace = true, features = ["derive", "env"] }
 clap_complete  = "4"
 colored        = "3"
 csv            = "1"
-comfy-table    = "7"
+comfy-table    = "8"
 console        = "0.16"
 crossterm      = "0.29"
 dirs           = { workspace = true }

@@ -41,6 +41,21 @@ gate shells out, fixture the command's SEMANTICS, not merely its failure. See
 `governance/testdata/invalid-r5-evidence-newer-than-tree.yaml`, which is the
 input on which the two candidate predicates disagree.
 
+EXIT CODES
+----------
+Two failures that must never be collapsed, because a caller reading only `$?`
+turns one into the other (AAASM-5692):
+
+* **1** — the document was validated and is INVALID. Findings on stderr.
+* **2** — it could not be validated at all: unreadable, not YAML, not a
+  mapping, or not a capability manifest. A statement about the run, not about
+  the document's contents.
+
+A traceback is neither, and is always a defect in this script: it exits 1
+having formed no opinion, which reads to every caller as "the document failed"
+— the wrong-reason failure the fixtures in `governance/testdata` exist to make
+impossible.
+
 Only PyYAML is required beyond the standard library, so the script runs in CI
 without a resolver step.
 """
@@ -54,6 +69,7 @@ import pathlib
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 
 try:
     import yaml
@@ -64,6 +80,7 @@ except ImportError:  # pragma: no cover - environment problem, not a manifest pr
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = REPO_ROOT / "governance" / "capability-manifest.yaml"
 SCHEMA_DIR = REPO_ROOT / "schemas" / "capability-manifest" / "v1"
+SCHEMA_FILE = SCHEMA_DIR / "capability-manifest.schema.json"
 
 # ── The three vocabulary axes. Hand-off 7 of ADR 0034 fixes three axes with
 # three owners; forbidden design 12 forbids coining a term on the claim axis
@@ -265,6 +282,207 @@ def prose_values(row: dict):
 
 
 # ── Rules ────────────────────────────────────────────────────────────────────
+
+
+# Every field schemas/capability-manifest/v1 declares as a mapping or a list of
+# mappings. DERIVED from the schema, never transcribed: the first version of
+# this gate carried a hand-written list of five, the schema declares seven
+# array-of-mapping fields and nine mapping fields, and two of the missed ones
+# (`meta.cross_representation.seed.excluded_fields` and
+# `.declared_divergences`) were live AttributeErrors sitting behind a
+# self-referential cross-check that compared the wrong literal to a copy of
+# itself.
+#
+# A count read from the schema moves when the schema moves — but only for
+# growth expressed as a top-level `properties` entry. This walk does not
+# descend into `oneOf`/`anyOf` branches or `additionalProperties` subtrees, and
+# the schema already uses both, so a field arriving that way would be
+# uncovered with every check here still green. Those subtrees hold no mapping
+# or list-of-mapping field today; that is a measured fact about the current
+# schema, not a property of this walk, and it is tracked separately rather than
+# left implied.
+
+
+def _schema_shape_paths() -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str, ...], ...]]:
+    """(array-of-mapping paths, mapping paths), read out of the JSON Schema.
+
+    Paths are tuples of key names with `[]` marking "descend into every element",
+    so `("capabilities", "[]", "evidence")` reads `capabilities[i].evidence`.
+
+    Only fields whose declared type is *exactly* object are treated as mappings.
+    `capabilities[].policy_context` is `oneOf[array, object]` — a list there is
+    legal, and asserting a mapping would be this script inventing a rule the
+    schema does not state. The gate's job is to guarantee the precondition the
+    rules below rely on, not to re-implement ajv.
+    """
+    defs: dict[str, object] = {}
+
+    def resolve(node: object, depth: int = 0) -> dict[str, object]:
+        while isinstance(node, dict) and "$ref" in node and depth < 20:
+            node = defs.get(str(node["$ref"]).split("/")[-1], {})
+            depth += 1
+        return node if isinstance(node, dict) else {}
+
+    def types(node: object, depth: int = 0) -> set[str]:
+        resolved = resolve(node)
+        if depth > 20:
+            return set()
+        out = set()
+        declared = resolved.get("type")
+        if isinstance(declared, str):
+            out.add(declared)
+        elif isinstance(declared, list):
+            out.update(declared)
+        for key in ("oneOf", "anyOf", "allOf"):
+            options = resolved.get(key)
+            if isinstance(options, list):
+                for option in options:
+                    out |= types(option, depth + 1)
+        if not out and "properties" in resolved:
+            out.add("object")
+        return out
+
+    arrays: list[tuple[str, ...]] = []
+    objects: list[tuple[str, ...]] = []
+
+    def walk(node: object, path: tuple[str, ...], depth: int = 0) -> None:
+        if depth > 10:
+            return
+        properties = resolve(node).get("properties")
+        if not isinstance(properties, dict):
+            return
+        for name, sub in properties.items():
+            here = (*path, name)
+            declared = types(sub)
+            if declared == {"object"}:
+                objects.append(here)
+                walk(sub, here, depth + 1)
+            elif "array" in declared:
+                item = resolve(resolve(sub).get("items") or {})
+                if types(item) == {"object"}:
+                    arrays.append(here)
+                    walk(item, (*here, "[]"), depth + 1)
+
+    try:
+        schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # pragma: no cover - environment problem
+        sys.stderr.write(
+            f"validate_capability_manifest: cannot read {SCHEMA_FILE}: {exc}. The structural "
+            "gate is derived from it, and a gate that silently covers nothing is worse than "
+            "no gate.\n"
+        )
+        raise SystemExit(2) from exc
+    defs = schema.get("definitions") or {}
+    walk(schema, ())
+    if not arrays or not objects:
+        sys.stderr.write(
+            f"validate_capability_manifest: derived {len(arrays)} array-of-mapping and "
+            f"{len(objects)} mapping fields from {SCHEMA_FILE.name}. Both must be non-empty; "
+            "an empty derivation would gate nothing while reporting success.\n"
+        )
+        raise SystemExit(2)
+    return tuple(arrays), tuple(objects)
+
+
+ARRAY_OF_MAPPING_PATHS, MAPPING_PATHS = _schema_shape_paths()
+
+
+def _at_path(
+    doc: object, parts: tuple[str, ...], label: str = ""
+) -> Iterator[tuple[str, object]]:
+    """Yield (label, value) for each concrete instance of a schema path.
+
+    Descent stops at a container that is not the shape it should be. That
+    container has its own entry in MAPPING_PATHS and is reported there, so the
+    reader gets the outermost cause once rather than a cascade beneath it.
+    """
+    if not parts:
+        yield label, doc
+        return
+    head, rest = parts[0], parts[1:]
+    if head == "[]":
+        if isinstance(doc, list):
+            for i, item in enumerate(doc):
+                yield from _at_path(item, rest, f"{label}[{i}]")
+        return
+    if isinstance(doc, dict) and head in doc:
+        yield from _at_path(doc[head], rest, f"{label}.{head}" if label else head)
+
+
+def check_document_shape(doc: dict[str, object], rep: Report) -> bool:
+    """R1. Structure before semantics. Returns False to stop the run.
+
+    AAASM-5692. Pointing the validator at the AAASM-5527 seed raised
+    `AttributeError: 'str' object has no attribute 'get'` — the seed spells an
+    evidence item as a bare path string where the manifest's is a mapping, and
+    every reader assumed the mapping.
+
+    The crash is worse than an ugly failure. It exits 1 having formed no
+    opinion, so by exit code alone it is indistinguishable from a validation
+    failure, and a wrapper reading only `$?` records "this document is invalid"
+    — a different and false statement.
+
+    Three things make this a gate rather than an `isinstance` guard per read
+    site:
+
+    * The bug was reported against `evidence`. The schema declares seven
+      array-of-mapping fields and nine mapping fields, and — measured against
+      the canonical manifest before this gate existed — FIFTEEN of those
+      sixteen raised the same AttributeError. Patching the reported one leaves
+      fourteen, and the next field added to the schema arrives uncovered. The
+      sixteenth, `capabilities[].owner`, was read without crashing and is
+      tracked separately: a silent misread, which is the worse half.
+    * A structural finding makes the semantic ones meaningless, not merely
+      incomplete. A rule that reads past a shape it cannot read either crashes
+      or — worse — reports a confident finding derived from a misread.
+    * The field list is DERIVED from the schema, not transcribed from it. Round
+      one of this fix transcribed five field names and asserted the count
+      against a copy of the same transcription, so the two fields it had missed
+      were invisible to the check written to catch exactly that. A hand-copied
+      denominator is not a denominator.
+
+    ajv enforces the same precondition and does not always run: `--no-git`, a
+    direct invocation and the fixture harness all reach this script without it,
+    and `governance/README.md` documents the bare `python3 scripts/…` call as
+    the developer command. A rule whose only enforcement lives in another tool
+    is enforced only where that tool runs.
+    """
+    ok = True
+    # Mappings first. A container reported here stops the descent into the
+    # paths beneath it, so the reader gets one outermost cause, not a cascade.
+    for parts in MAPPING_PATHS:
+        for label, value in _at_path(doc, parts):
+            if value is None or isinstance(value, dict):
+                continue
+            rep.error(
+                label,
+                "R1",
+                f"is {type(value).__name__}, not a mapping. The schema declares this field an "
+                "object, and the rules below read it with `.get()`",
+            )
+            ok = False
+
+    for parts in ARRAY_OF_MAPPING_PATHS:
+        for label, value in _at_path(doc, parts):
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                rep.error(label, "R1", f"is {type(value).__name__}, not a list")
+                ok = False
+                continue
+            for i, item in enumerate(value):
+                if isinstance(item, dict):
+                    continue
+                rep.error(
+                    f"{label}[{i}]",
+                    "R1",
+                    f"is {type(item).__name__}, not a mapping. Every item in this field is a "
+                    "mapping (schemas/capability-manifest/v1); a bare string — the AAASM-5527 "
+                    "seed's spelling for `evidence` — carries none of the keys the rules read, "
+                    "so no rule can weigh it",
+                )
+                ok = False
+    return ok
 
 
 def check_vocabulary_constants(rep: Report) -> None:
@@ -1575,6 +1793,12 @@ def validate(doc: dict, rep: Report, use_git: bool, is_canonical: bool = False) 
             "field change needs a new schemas/capability-manifest/vN directory",
         )
 
+    # Structure before semantics, and a hard stop rather than a report — every
+    # rule below reads a list-of-mappings field by calling `.get()` per item.
+    # See check_document_shape for why this is a gate and not four guards.
+    if not check_document_shape(doc, rep):
+        return
+
     meta = doc.get("meta") or {}
     tree = check_meta(doc, rep, use_git)
 
@@ -1667,6 +1891,27 @@ def main() -> int:
         return 2
     if not isinstance(doc, dict):
         sys.stderr.write(f"validate_capability_manifest: {args.manifest} is not a mapping\n")
+        return 2
+    # Identity, not validity. `manifest_version` PRESENT means the document
+    # claims to be a capability manifest, and only then do these rules describe
+    # it; whether the version is one this schema directory serves is rule R1's
+    # question and an exit 1.
+    #
+    # AAASM-5692. Without this, the AAASM-5527 seed — an INPUT to the manifest,
+    # read by rule R16 via meta.sources.seed, and never required to satisfy the
+    # manifest's contract — was validated as though it were a manifest. It
+    # crashed; had it not, a wall of findings about a document these rules do
+    # not govern would have been just as false and harder to spot.
+    if "manifest_version" not in doc:
+        sys.stderr.write(
+            f"validate_capability_manifest: {args.manifest} declares no `manifest_version`, "
+            "so it does not claim to be a capability manifest and these rules do not "
+            "describe it. Refusing to validate it.\n"
+            "  The AAASM-5527 coverage matrix is the common case: it is an INPUT to the "
+            "manifest (rule R16 reads it via meta.sources.seed), not a subject of it.\n"
+            "  Exit 2 means the tool did not validate; exit 1 means the document is "
+            "invalid. Do not collapse them.\n"
+        )
         return 2
 
     use_git = not args.no_git
