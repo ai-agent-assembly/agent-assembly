@@ -16,7 +16,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'v0.0.1/AAASM-5677/**']
     # AAASM-5677: deliberately NOT path-filtered — selection moved to the
     # `changes` router below. This gate is governance-bearing (CONTRIBUTING,
     # "Which CI checks are governance-bearing"): its failure means published

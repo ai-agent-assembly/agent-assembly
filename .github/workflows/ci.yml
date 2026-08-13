@@ -107,7 +107,7 @@ on:
       - "verification-reports/AAASM-5527-capability-coverage-matrix.yaml"
       - "verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md"
   pull_request:
-    branches: [main]
+    branches: [main, 'v0.0.1/AAASM-5677/**']
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
     #
     # `main` carried no required status checks at all, so a pull request could

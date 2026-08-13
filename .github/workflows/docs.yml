@@ -8,7 +8,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'v0.0.1/AAASM-5677/**']
     # AAASM-5677: deliberately NOT path-filtered — the selection that used to
     # live here now lives in the `changes` router below, glob for glob.
     #
