@@ -186,8 +186,8 @@ fn measure_filesystem_read(facts: &HostFacts, always: &[String], secret: &Path) 
     let test = run_confined(facts, always, &[], &script);
     compare(
         "filesystem read",
-        control.map(|o| o.stdout.contains(PROBE_SECRET)),
-        test.map(|o| o.stdout.contains(PROBE_SECRET)),
+        control.map(|o| (o.stdout.contains(PROBE_SECRET), o.diagnostic)),
+        test.map(|o| (o.stdout.contains(PROBE_SECRET), o.diagnostic)),
     )
 }
 
@@ -209,8 +209,8 @@ fn measure_filesystem_write(facts: &HostFacts, always: &[String], dir: &Path) ->
     );
     compare(
         "filesystem write",
-        control.map(|_| control_target.exists()),
-        test.map(|_| test_target.exists()),
+        control.map(|o| (control_target.exists(), o.diagnostic)),
+        test.map(|o| (test_target.exists(), o.diagnostic)),
     )
 }
 
@@ -237,8 +237,8 @@ fn measure_process_ceiling(facts: &HostFacts, always: &[String], dir: &Path) -> 
     );
     compare(
         "process ceiling",
-        control.map(|_| control_target.exists()),
-        test.map(|_| test_target.exists()),
+        control.map(|o| (control_target.exists(), o.diagnostic)),
+        test.map(|o| (test_target.exists(), o.diagnostic)),
     )
 }
 
@@ -277,8 +277,8 @@ fn measure_network_egress(facts: &HostFacts, always: &[String]) -> Observation {
     drop(listener);
     compare(
         "network egress",
-        control.map(|o| o.stdout.contains(PROBE_SECRET)),
-        test.map(|o| o.stdout.contains(PROBE_SECRET)),
+        control.map(|o| (o.stdout.contains(PROBE_SECRET), o.diagnostic)),
+        test.map(|o| (o.stdout.contains(PROBE_SECRET), o.diagnostic)),
     )
 }
 
@@ -287,14 +287,14 @@ fn measure_network_egress(facts: &HostFacts, always: &[String]) -> Observation {
 /// The asymmetry is the point: a control that did not produce the effect makes
 /// the pair inconclusive whatever the test run did, so no measurement can be
 /// read as a denial on the strength of two failures.
-fn compare(what: &str, control: Result<bool, String>, test: Result<bool, String>) -> Observation {
-    let control = match control {
-        Ok(true) => true,
-        Ok(false) => {
+fn compare(what: &str, control: Result<(bool, String), String>, test: Result<(bool, String), String>) -> Observation {
+    match control {
+        Ok((true, _)) => {}
+        Ok((false, diagnostic)) => {
             return Observation::Inconclusive {
                 detail: format!(
                     "the {what} control run did not produce its effect even though the policy permitted \
-                     it, so the test run's failure is not attributable to the boundary"
+                     it, so the test run's failure is not attributable to the boundary ({diagnostic})"
                 ),
             }
         }
@@ -303,11 +303,10 @@ fn compare(what: &str, control: Result<bool, String>, test: Result<bool, String>
                 detail: format!("the {what} control run could not be executed: {detail}"),
             }
         }
-    };
-    debug_assert!(control);
+    }
     match test {
-        Ok(true) => Observation::Permitted,
-        Ok(false) => Observation::Denied,
+        Ok((true, _)) => Observation::Permitted,
+        Ok((false, _)) => Observation::Denied,
         Err(detail) => Observation::Inconclusive {
             detail: format!("the {what} test run could not be executed: {detail}"),
         },
@@ -317,6 +316,11 @@ fn compare(what: &str, control: Result<bool, String>, test: Result<bool, String>
 /// What one confined run produced.
 struct RunOutput {
     stdout: String,
+    /// Everything needed to say *why* a run did not produce its effect, in one
+    /// line. Present on success too, and only ever rendered into an
+    /// [`Observation::Inconclusive`] detail — a probe whose failure message is
+    /// "it did not work" costs a whole CI round-trip to diagnose.
+    diagnostic: String,
 }
 
 /// Run `script` under the backend with `extra` flags added to the fixed system
@@ -341,8 +345,18 @@ fn run_confined(facts: &HostFacts, always: &[String], extra: &[String], script: 
     let output = command
         .output()
         .map_err(|e| format!("{}: {e}", facts.executable().display()))?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Ok(RunOutput {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        diagnostic: format!(
+            "exit {}, stderr: {}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signalled".to_string()),
+            if stderr.is_empty() { "<empty>" } else { stderr.as_str() }
+        ),
     })
 }
 
@@ -354,7 +368,14 @@ fn run_confined(facts: &HostFacts, always: &[String], extra: &[String], script: 
 /// output — never an exit code, which a shell can produce without the action
 /// having been attempted.
 fn nested(inner: &str) -> String {
-    format!("{PROBE_SHELL} -c {} 2>/dev/null; exit 0", shell_word(inner))
+    // No `2>/dev/null`. Redirecting to the null device opens it *for writing*,
+    // and a default-deny write policy denies that — so the redirection fails,
+    // the shell never reaches the command, and every measurement reads as
+    // inconclusive for a reason that has nothing to do with what was under
+    // test. Measured on a Linux runner: it made all four controls fail at once.
+    // Noise is not a problem here; stderr is captured and only ever reported
+    // inside a diagnostic.
+    format!("{PROBE_SHELL} -c {}; exit 0", shell_word(inner))
 }
 
 /// Single-quote a value for the one place this crate builds a shell script.
@@ -434,16 +455,22 @@ mod tests {
     /// The asymmetry that keeps a broken probe from reading as a denial.
     #[test]
     fn a_control_that_did_not_fire_makes_the_pair_inconclusive() {
-        let outcome = compare("filesystem write", Ok(false), Ok(false));
+        let outcome = compare(
+            "filesystem write",
+            Ok((false, "exit 1, stderr: nope".to_string())),
+            Ok((false, String::new())),
+        );
         assert!(matches!(outcome, Observation::Inconclusive { .. }), "{outcome:?}");
     }
 
     #[test]
     fn a_denial_requires_the_control_to_have_succeeded() {
-        assert_eq!(compare("x", Ok(true), Ok(false)), Observation::Denied);
-        assert_eq!(compare("x", Ok(true), Ok(true)), Observation::Permitted);
+        let d = || (true, String::new());
+        let n = || (false, String::new());
+        assert_eq!(compare("x", Ok(d()), Ok(n())), Observation::Denied);
+        assert_eq!(compare("x", Ok(d()), Ok(d())), Observation::Permitted);
         assert!(matches!(
-            compare("x", Err("boom".into()), Ok(false)),
+            compare("x", Err("boom".into()), Ok(n())),
             Observation::Inconclusive { .. }
         ));
     }
@@ -455,6 +482,9 @@ mod tests {
         let script = nested("printf x > /tmp/f");
         assert!(script.starts_with(PROBE_SHELL), "{script}");
         assert!(script.contains("printf x > /tmp/f"), "{script}");
+        // A redirection to the null device opens it for writing, which a
+        // default-deny write policy denies — so it must not appear here.
+        assert!(!script.contains("/dev/null"), "{script}");
     }
 
     /// A path with a quote in it must not be able to end the quoting and start

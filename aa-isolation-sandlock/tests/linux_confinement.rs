@@ -238,7 +238,11 @@ fn run(backend: &SandlockBackend, spec: &ExecutionSpec) -> (CompletedRun, Enforc
 /// process, so what is measured is descendant coverage and not the launched
 /// process alone.
 fn as_grandchild(inner: &str) -> String {
-    format!("/bin/sh -c {} 2>/dev/null; exit 0", quote(inner))
+    // No `2>/dev/null`: the null device is opened for *writing*, which a
+    // default-deny write policy denies, so the redirection would fail before
+    // the command under test ever ran. Stderr is captured by the backend and
+    // only surfaces in an assertion message.
+    format!("/bin/sh -c {}; exit 0", quote(inner))
 }
 
 /// Single-quote a value for a shell script this test constructs.
