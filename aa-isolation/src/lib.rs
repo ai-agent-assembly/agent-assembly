@@ -125,6 +125,7 @@
 #![warn(missing_docs)]
 
 pub mod capability;
+pub mod evidence;
 pub mod plan;
 pub mod spec;
 
@@ -133,6 +134,7 @@ pub use capability::{
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
     Synchrony,
 };
+pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
 pub use plan::{
     negotiate, AchievedControl, BackendIdentity, EnforcementPlan, LaunchPosture, Lowering, PlanRefusal,
     PlannedRequirement, Provenance, RefusalReason, RequirementOutcome,
