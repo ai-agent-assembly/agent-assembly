@@ -252,7 +252,15 @@ check_active_backend() {
   # Upstream modification tracking. Several allowlisted licenses (Apache-2.0
   # §4(b) among them) require a statement of changes when a modified work is
   # distributed; if we carry patches, the notice must exist and be findable.
-  modified="$(jget "$b" '.modifications.modified')"
+  # NOT read via jget: jq's `//` operator treats `false` as absent, so
+  # `"modified": false` — the common, correct case — would read as missing and
+  # be reported as an error. Read the type explicitly instead, which also
+  # rejects a string "false" masquerading as a boolean.
+  modified="$(printf '%s' "$b" | jq -r '
+    (.modifications // {}) as $m
+    | if ($m | type) != "object" then "<invalid>"
+      elif ($m.modified | type) == "boolean" then ($m.modified | tostring)
+      else "<invalid>" end')"
   case "$modified" in
     true)
       notice_path="$(jget "$b" '.modifications.notice_path')"
@@ -263,7 +271,7 @@ check_active_backend() {
       fi
       ;;
     false) ;;
-    *) err "active backend '$id' has modifications.modified '${modified:-<missing>}'; must be the boolean true or false. 'We did not check' is not a valid answer here." ;;
+    *) err "active backend '$id' has a missing or non-boolean 'modifications.modified'; it must be the boolean true or false. 'We did not check' is not a valid answer here — whether AASM carries upstream patches decides whether a statement-of-changes obligation applies." ;;
   esac
 
   # AC: a backend upgrade must require capability/evidence and license review,
