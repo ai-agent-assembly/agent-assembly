@@ -66,6 +66,14 @@ on:
       - "examples/aa-devint-reference-client/**/*.cjs"
       - "examples/aa-devint-reference-client/**/*.toml"
       - "examples/aa-devint-reference-client/.npmrc"
+      # AAASM-5714: the isolation-backend license/provenance gate's own inputs.
+      # Paired with the `backend_license` router filter below — a router filter
+      # without a matching `on.*.paths` entry is a dead trigger (ADR 0028).
+      # `deny.toml` is included because the manifest's allowlist mirrors it; a
+      # license added to one and not the other is exactly the drift this catches.
+      - "metadata/isolation-backends.json"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/check-backend-license-compliance.sh"
   pull_request:
     branches: [main]
     paths:
@@ -128,6 +136,10 @@ on:
       - "examples/aa-devint-reference-client/**/*.cjs"
       - "examples/aa-devint-reference-client/**/*.toml"
       - "examples/aa-devint-reference-client/.npmrc"
+      # AAASM-5714: see the matching comment on the push trigger above.
+      - "metadata/isolation-backends.json"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/check-backend-license-compliance.sh"
   # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
   # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
   # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
@@ -159,6 +171,7 @@ jobs:
       storage: ${{ steps.filter.outputs.storage }}
       conformance: ${{ steps.filter.outputs.conformance }}
       devint_client: ${{ steps.filter.outputs.devint_client }}
+      backend_license: ${{ steps.filter.outputs.backend_license }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -274,6 +287,17 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'scripts/build-ebpf-probes.sh'
               - '.github/workflows/release.yml'
+            # AAASM-5714: the isolation-backend license/provenance gate. Its
+            # inputs are NOT a subset of `rust` — `metadata/isolation-backends.json`
+            # and `THIRD_PARTY_NOTICES.md` match no `aa-*/**` pattern — so this
+            # needs its own filter and its own `on.*.paths` entries (added
+            # above) rather than riding on the Rust matrix.
+            backend_license:
+              - 'metadata/isolation-backends.json'
+              - 'THIRD_PARTY_NOTICES.md'
+              - 'scripts/check-backend-license-compliance.sh'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
@@ -824,6 +848,38 @@ jobs:
         with:
           command: check
           arguments: --all-features
+
+  backend-license:
+    needs: [changes]
+    # AAASM-5714. The `deny` job above is the license gate for the CARGO GRAPH.
+    # It cannot see an execution-isolation backend that ships as a prebuilt
+    # binary — bundled into a release tarball, fetched by install-cli.sh, or
+    # baked into a container image — because such an artifact never becomes a
+    # crate. That class had no gate at all; this job is it.
+    #
+    # Deliberately NOT folded into the `deny` job: that job is gated on
+    # `changes.rust`, and this gate's inputs (the manifest, the notices file)
+    # match no Rust path, so a manifest-only PR would skip the check entirely
+    # while the required aggregate still went green.
+    if: needs.changes.outputs.backend_license == 'true'
+    name: Backend license and provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No toolchain needed — the gate reads JSON and Markdown. `jq` is
+      # preinstalled on ubuntu-latest (scripts/check-release-completeness.sh
+      # already relies on this).
+
+      # The negative control runs FIRST and in the same job. A gate proven only
+      # against a manifest it accepts may be passing vacuously; this asserts it
+      # still rejects each violation class, and for the stated reason. If the
+      # gate is ever weakened, this fails before the real check can report OK.
+      - name: Self-test the gate (negative control)
+        run: bash scripts/check-backend-license-compliance.sh --self-test
+
+      - name: Run backend license and provenance gate
+        run: bash scripts/check-backend-license-compliance.sh
 
   no-std:
     needs: [changes]
@@ -1766,6 +1822,10 @@ jobs:
       - timescaledb-tests
       - migration-drift-check
       - deny
+      # AAASM-5714: blocks, like `deny`. It asserts a distribution-boundary
+      # property (no unreviewed license reaches a channel), not a metric, so an
+      # advisory version of it would be a report nobody acts on.
+      - backend-license
       - no-std
       - buf-lint
       - schema-lint
