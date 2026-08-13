@@ -1262,9 +1262,23 @@ impl PolicyServiceImpl {
         };
 
         // AAASM-5665 — a rejected impersonation is the case where the assurance
-        // matters most, so the refusal states it too. It can only be ASSERTED:
-        // the claim reached this branch precisely because it did not agree with
-        // the registered identity behind the presented token.
+        // matters most, so the refusal states it too.
+        //
+        // It is ASSERTED when the request claimed an agent subject, and
+        // UNATTRIBUTED when it did not. The second case is reachable and is not
+        // a contradiction: a request carrying `agent_id { org, team, agent_id:
+        // "" }` plus a token registered to a *different* agent claims no
+        // subject, yet must still be refused — otherwise a token holder could
+        // dodge an `agent:<their id>` scoped rule by blanking the field. The
+        // refusal is about the credential, the assurance is about the claim,
+        // and the two answer different questions.
+        //
+        // Both sites derive "is there a claim?" from
+        // `convert::claimed_agent_id`, so they cannot drift apart. The payload
+        // carries `identity_claimed` because the assurance field alone cannot
+        // answer "refused impersonations where a subject was claimed" — reading
+        // `agent_identity_assurance != "unattributed"` would silently drop the
+        // blank-subject rows.
         let response = self.stamp_identity_assurance(
             req,
             CheckActionResponse {
@@ -1302,6 +1316,11 @@ impl PolicyServiceImpl {
             "claimed_agent_id": &proto_agent.agent_id,
             "claimed_org_id": &proto_agent.org_id,
             "credential_token_present": !req.credential_token.is_empty(),
+            // AAASM-5665 — whether the refused request claimed an agent subject
+            // at all, from the same predicate the assurance uses. A blank
+            // `agent_id` with a foreign token is refused but claims nobody, so
+            // filtering on the assurance field alone would drop that row.
+            "identity_claimed": convert::claimed_agent_id(req).is_some(),
             // AAASM-5665 — same key name as `record_audit` uses, so one query
             // over the entries this service emits answers "how was this
             // identity established?" for its refusals as well as its verdicts.
