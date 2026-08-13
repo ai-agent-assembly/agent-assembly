@@ -1325,7 +1325,14 @@ impl PolicyServiceImpl {
             "decision": response.decision,
             "reason": &response.reason,
             "policy_rule": &response.policy_rule,
-            "claimed_agent_id": &proto_agent.agent_id,
+            // AAASM-5665 (R3) — `record_audit` writes this subject as
+            // `agent_id_claimed`; this producer wrote `claimed_agent_id`, so
+            // the stated goal ("one query over the entries this service emits
+            // answers how an identity was established") held for the assurance
+            // and broke for the subject it belongs to. Same key AND same value
+            // shape: `Option<&str>`, null when nothing was claimed, so a blank
+            // or absent subject reads identically from both producers.
+            "agent_id_claimed": claimed,
             "claimed_org_id": &proto_agent.org_id,
             "credential_token_present": !req.credential_token.is_empty(),
             // AAASM-5665 — whether the refused request claimed an agent subject

@@ -387,7 +387,7 @@ async fn a_claim_that_disagrees_with_the_token_owner_is_refused_and_never_bound(
     assert_ne!(resp.agent_identity_assurance, ProtoAssurance::Bound as i32);
 
     let p = payload(&next_entry(&mut audit_rx).await);
-    assert_eq!(p["claimed_agent_id"], "agent-victim");
+    assert_eq!(p["agent_id_claimed"], "agent-victim");
     assert_eq!(p["agent_identity_assurance"], "asserted");
 }
 
@@ -459,7 +459,7 @@ async fn a_named_subject_impersonation_is_recorded_as_claiming_someone() {
 
     let p = payload(&next_entry(&mut audit_rx).await);
     assert_eq!(p["identity_claimed"], true);
-    assert_eq!(p["claimed_agent_id"], "agent-victim");
+    assert_eq!(p["agent_id_claimed"], "agent-victim");
 }
 
 // ── F4: batch_check stamps the assurance too ────────────────────────────────
