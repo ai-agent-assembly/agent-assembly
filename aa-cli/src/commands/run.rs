@@ -158,6 +158,7 @@ mod plan {
     use uuid::Uuid;
 
     use aa_core::{DevToolAdapter, DevToolInfo};
+    use aa_isolation::{ControlRequirement, CredentialPosture, ExecutionSpec, IdentityRef};
     use aa_policy::resolve as run_policy;
 
     use super::{run_registration, RegistrationHandle, RunArgs};
@@ -293,6 +294,31 @@ mod plan {
                 session_id: format!("dry-run-{}", Uuid::new_v4()),
                 team_id: self.team_id.clone(),
             }
+        }
+
+        /// The backend-neutral identity reference an [`ExecutionSpec`] is built
+        /// against.
+        ///
+        /// `--root-agent` becomes an *ancestor* rather than a flat parent field:
+        /// ADR 0035 §6 needs lineage in order to check that sub-agent identity
+        /// narrows while OS authority does not widen, and a single parent string
+        /// cannot express depth.
+        ///
+        /// `agent_id` is a parameter rather than re-derived so the reference
+        /// names the identity this launch actually presented — under `Launch`
+        /// that is the one the gateway accepted, which [`Self::agent_id`] cannot
+        /// know. The reference is **asserted, not verified**; nothing in
+        /// `aa-isolation` authenticates it and no claim derived from it may
+        /// present it as verified.
+        pub(super) fn identity_ref(&self, agent_id: &str) -> IdentityRef {
+            let mut identity = IdentityRef::root(agent_id);
+            if let Some(team) = self.team_id() {
+                identity = identity.with_team(team);
+            }
+            if let Some(root) = self.root_agent() {
+                identity = identity.with_ancestor(root);
+            }
+            identity
         }
     }
 
@@ -439,6 +465,107 @@ mod plan {
         }
     }
 
+    /// What the execution boundary is required to provide.
+    ///
+    /// Backend-neutral by construction: it names no backend, selects none, and
+    /// nothing in this Story negotiates it against one. `aa-isolation` keeps
+    /// [`BackendIdentity`](aa_isolation::BackendIdentity) out of
+    /// [`ControlRequirement`] and [`ExecutionSpec`] for exactly this reason, so
+    /// carrying requirements here cannot make policy depend on which backend
+    /// answers them (ADR 0035 §3).
+    ///
+    /// The requirement list is **empty**, and that is the honest state rather
+    /// than a placeholder: no policy surface lowers to an isolation requirement
+    /// yet and no backend is selected, so a populated list would describe demands
+    /// nothing was asked to meet. The remaining tickets under Epic AAASM-5702
+    /// populate it.
+    #[derive(Debug, Default, Clone)]
+    pub(super) struct IsolationPlan {
+        requirements: Vec<ControlRequirement>,
+    }
+
+    impl IsolationPlan {
+        /// The backend-neutral statement of what this launch runs and what it
+        /// must run inside.
+        ///
+        /// `None` when the program or any argument is not valid UTF-8.
+        /// [`ExecutionSpec`] is explicit that a launch it cannot describe
+        /// faithfully must be rejected at the CLI boundary rather than lossily
+        /// converted — "losing the launch is better than logging an argv that
+        /// differs from the one that ran". This Story does not yet gate a launch
+        /// on having a spec, so the honest answer here is to carry none rather
+        /// than one built from a lossy conversion.
+        fn spec(
+            &self,
+            identity: &IdentityPlan,
+            handle: &RegistrationHandle,
+            command: &std::process::Command,
+            credentials: CredentialPosture,
+        ) -> Option<ExecutionSpec> {
+            let program = command.get_program().to_str()?.to_string();
+            let args: Vec<String> = command
+                .get_args()
+                .map(|arg| arg.to_str().map(str::to_string))
+                .collect::<Option<_>>()?;
+
+            let mut spec = ExecutionSpec::new(program, identity.identity_ref(&handle.agent_id))
+                .with_args(args)
+                .with_credentials(credentials);
+            if let Some(dir) = command.get_current_dir() {
+                spec = spec.with_working_dir(dir);
+            }
+            for requirement in &self.requirements {
+                spec = spec.with_requirement(requirement.clone());
+            }
+            Some(spec)
+        }
+    }
+
+    /// How this launch treats the authority the child would otherwise inherit.
+    ///
+    /// Three fields, three separate factual claims. ADR 0035 §9 requires the
+    /// distinction because "the child has this credential because we handed it
+    /// one" and "the child has this credential because we could not take it
+    /// away" are different security postures with the same observable outcome.
+    ///
+    /// * `removed` — names the adapter asked to have unset. A fact: the spawn
+    ///   path calls `env_remove` for exactly these, and `--dry-run` prints them
+    ///   as removals.
+    /// * `delegated` — **empty, and that is correct rather than unfinished**.
+    ///   `aasm run` deliberately hands the launched tool no credential of its
+    ///   own: the gateway's token authenticates *as the registered agent*, and
+    ///   the launched tool is the software registration exists to govern (see
+    ///   [`RegistrationHandle`]).
+    /// * `ambient_unremoved` — inherited names that look like they carry
+    ///   credential material and reach the child anyway. `build_child_env` seeds
+    ///   the child from the operator's whole environment, so on a real host this
+    ///   is normally non-empty — and it must be. An empty list would make
+    ///   [`CredentialPosture::has_unremoved_ambient_authority`] answer `false`,
+    ///   which reads as a least-authority run, which this is not.
+    ///
+    /// That last list is a name-shaped **lower bound** — see
+    /// [`super::looks_like_credential_name`]. Its emptiness is never evidence
+    /// that no ambient authority reached the child.
+    fn credential_posture(
+        effective: &std::collections::BTreeMap<String, String>,
+        removed: &[String],
+    ) -> CredentialPosture {
+        let ambient_unremoved: Vec<String> = std::env::vars()
+            .map(|(name, _)| name)
+            .filter(|name| super::looks_like_credential_name(name))
+            // Still present after the adapter's own removals were applied.
+            .filter(|name| effective.contains_key(name))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+
+        CredentialPosture {
+            removed: removed.to_vec(),
+            delegated: Vec::new(),
+            ambient_unremoved,
+        }
+    }
+
     /// The exact command and environment a child will receive under one identity.
     ///
     /// Produced only by [`ResolvedRunPlan::bind`], so there is no way to obtain
@@ -448,6 +575,7 @@ mod plan {
         child_env: HashMap<String, String>,
         fidelity: super::PreviewFidelity,
         adapter_error: Option<String>,
+        spec: Option<ExecutionSpec>,
     }
 
     impl BoundLaunch {
@@ -473,6 +601,19 @@ mod plan {
         /// preview degrades visibly and still prints, a live launch fails.
         pub(super) fn adapter_error(&self) -> Option<&str> {
             self.adapter_error.as_deref()
+        }
+
+        /// The backend-neutral [`ExecutionSpec`] this launch corresponds to.
+        ///
+        /// Constructed but not yet consumed. AC 4 of AAASM-5705 is that the plan
+        /// can *carry* a spec without depending on a concrete backend, and the
+        /// ticket is explicit that no isolation backend is activated here.
+        /// Negotiating it — [`aa_isolation::negotiate`] — belongs to the next
+        /// ticket under Epic AAASM-5702. Making it change anything now would be
+        /// the new protection claim AC 9 rules out.
+        #[allow(dead_code)]
+        pub(super) fn spec(&self) -> Option<&ExecutionSpec> {
+            self.spec.as_ref()
         }
 
         /// Consume this into the two values `spawn_and_wait` needs.
@@ -502,6 +643,7 @@ mod plan {
         integration: IntegrationPlan<'a>,
         network: NetworkPlan,
         policy: PolicyPlan,
+        isolation: IsolationPlan,
         enforcement_mode: aa_core::EnforcementMode,
     }
 
@@ -556,11 +698,24 @@ mod plan {
                 self.integration
                     .launch_command(self.args, self.target.label(), handle, self.network.endpoint());
 
+            // Derived through the same merge `spawn_and_wait` applies, so the
+            // spec describes the environment the child actually receives —
+            // including the names the adapter removes, which a naive union of the
+            // two sources would still show as present.
+            let (effective, removed) = super::effective_child_env(&command, &child_env);
+            let spec = self.isolation.spec(
+                &self.identity,
+                handle,
+                &command,
+                credential_posture(&effective, &removed),
+            );
+
             BoundLaunch {
                 command,
                 child_env,
                 fidelity,
                 adapter_error,
+                spec,
             }
         }
 
@@ -688,6 +843,9 @@ mod plan {
                     no_proxy: self.args.no_proxy,
                 },
                 policy: PolicyPlan { resolution, document },
+                // Empty until a policy surface lowers to isolation requirements;
+                // see `IsolationPlan`.
+                isolation: IsolationPlan::default(),
                 enforcement_mode,
             })
         }
@@ -1030,14 +1188,39 @@ fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
 /// non-secret in a diagnostic preview is harmless, a leaked secret is not.
 fn mask_value(key: &str, value: &str) -> String {
     let upper = key.to_uppercase();
-    if upper.ends_with("_URL") || upper.ends_with("_DSN") || upper.ends_with("_URI") {
+    if is_connection_string_name(&upper) {
         return redact_database_url(value);
     }
-    const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASS", "CREDENTIAL", "AUTH"];
     if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
         return "***MASKED***".into();
     }
     redact_database_url(value)
+}
+
+/// Name fragments that signal an opaque secret, case-insensitive.
+const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PASS", "CREDENTIAL", "AUTH"];
+
+/// Whether an already-uppercased name is a connection string — the shapes that
+/// carry `user:pass@host` userinfo (AAASM-4936).
+fn is_connection_string_name(upper: &str) -> bool {
+    upper.ends_with("_URL") || upper.ends_with("_DSN") || upper.ends_with("_URI")
+}
+
+/// Whether an environment variable *name* suggests it carries credential
+/// material.
+///
+/// A **name-shaped lower bound**, not a detector. It cannot see a secret in a
+/// blandly-named variable, so a name that fails this test is not evidence that
+/// its value is harmless, and an empty result is never evidence that no
+/// credential is present.
+///
+/// Both callers want that bias and both err toward over-inclusion: one masks a
+/// value before printing it in the `--dry-run` preview, the other records which
+/// inherited authority reaches the launched child unvetted. Over-masking a
+/// non-secret is harmless; under-recording ambient authority is not.
+fn looks_like_credential_name(key: &str) -> bool {
+    let upper = key.to_uppercase();
+    is_connection_string_name(&upper) || SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle))
 }
 
 /// How faithfully a preview reflects the launch it describes.
