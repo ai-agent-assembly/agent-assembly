@@ -110,9 +110,10 @@ fi
 # Two claims no fixture file can state, because every fixture IS a manifest:
 # that a document which is not one is refused rather than crashed on or
 # opinionated about, and that "the tool did not validate" (exit 2) and "the
-# document is invalid" (exit 1) stay different numbers. Plus the four
-# array-of-object fields beyond the one the AAASM-5692 crash was reported
-# against, which would otherwise be four near-identical fixture files.
+# document is invalid" (exit 1) stay different numbers. Plus one bare-string
+# mutation per field the schema declares a mapping, a list of mappings or an
+# array of scalars — 38 fields, which would otherwise be 38 near-identical
+# fixture files differing by one line each.
 echo "negative controls (input scope and structure)"
 if out="$(python3 "${here}/input_shape_probes.py" 2>&1)"; then
   printf '%s\n' "${out}" | sed -n 's/^  ok    /  ok    /p'
@@ -175,16 +176,17 @@ printf '\n%d passed, %d failed\n' "${pass}" "${fail}"
 #  36  invalid-*.yaml through the validator
 #   4  r15_branch_probes.py    (one per R15 repository-state branch)
 #   8  real_manifest_probes.py   (5 mutations + 1 attribution control + positive + restore)
-#  20  input_shape_probes.py     (positive + seed scope + exit-code discrimination
+#  42  input_shape_probes.py     (positive + seed scope + exit-code discrimination
 #                                 + the derivation floor + one bare-string mutation per
-#                                 field the SCHEMA declares a mapping or list-of-mappings:
-#                                 7 + 9 today. This one MOVES WITH THE SCHEMA by design —
-#                                 adding such a field makes the probe emit one more check
-#                                 and turns this total red until it is bumped on purpose.)
+#                                 field the SCHEMA declares a mapping, a list-of-mappings
+#                                 or an array of scalars: 9 + 7 + 22 today. This one MOVES
+#                                 WITH THE SCHEMA by design — adding such a field makes the
+#                                 probe emit one more check and turns this total red until
+#                                 it is bumped on purpose.)
 #   8  readme_counts_probe.py    (one per quoted count: line + the EXPECTED_TOTAL cross-check)
 #   8  schema negative controls through ajv
 #   4  valid-*.yaml through ajv
-EXPECTED_TOTAL=92
+EXPECTED_TOTAL=114
 if [ "$((pass + fail))" -ne "${EXPECTED_TOTAL}" ]; then
   printf 'FAIL  the harness ran %d checks, expected %d. A check that stops running is
 ' \
