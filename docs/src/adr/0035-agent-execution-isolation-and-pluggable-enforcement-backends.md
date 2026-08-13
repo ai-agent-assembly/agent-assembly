@@ -308,6 +308,13 @@ built-in implementation without review.
 This requirement prevents implementation substitution from silently changing the legal
 or distribution boundary of the product.
 
+**Scope of this section.** It records an engineering and release-process requirement —
+which facts a backend must carry, and which changes require review before it ships. It is
+not legal advice and does not interpret any licence. Whether a particular licence or
+hosted-service term is acceptable for a given distribution channel is a decision for the
+product and legal owners; this ADR records that the question must be asked, not what the
+answer is.
+
 ---
 
 ## Initial execution flow
