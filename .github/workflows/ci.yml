@@ -94,6 +94,25 @@ on:
       - "scripts/install.sh"
       - "metadata/versions.rb"
       - "scripts/check-release-completeness.sh"
+      # AAASM-5677: inputs of the `governance-coverage` gate below. Paired with
+      # the `governance` router filter — a router filter without a matching
+      # `on.*.paths` entry is a dead trigger, and on `push` that means the gate
+      # never runs on the merge that breaks it.
+      #
+      # `.github/workflows/*.yml` is load-bearing rather than incidental: the
+      # gate reads the workflow files, so re-adding an `on.pull_request.paths`
+      # filter to a governance workflow — the exact regression this closes —
+      # must re-run it. Extension-qualified, never a bare directory wildcard
+      # (CONTRIBUTING). The router keeps the cost down: a workflow-only change
+      # leaves `rust` false, so only `governance-coverage` runs.
+      - "governance/**"
+      - "schemas/capability-manifest/**"
+      - "scripts/validate_capability_manifest.py"
+      - "scripts/check_governance_ci_coverage.py"
+      - "docs/src/adr/**/*.md"
+      - ".github/workflows/*.yml"
+      - "verification-reports/AAASM-5527-capability-coverage-matrix.yaml"
+      - "verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md"
   pull_request:
     branches: [main]
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
@@ -142,6 +161,7 @@ jobs:
       devint_client: ${{ steps.filter.outputs.devint_client }}
       backend_license: ${{ steps.filter.outputs.backend_license }}
       isolation_backend: ${{ steps.filter.outputs.isolation_backend }}
+      governance: ${{ steps.filter.outputs.governance }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -295,6 +315,21 @@ jobs:
               - '.ci/test-evidence-summary.sh'
               - '.config/nextest.toml'
               - '.github/workflows/ci.yml'
+            # AAASM-5677: the governance surface. Before this filter existed, a
+            # change to `governance/capability-manifest.yaml` selected NO job in
+            # this workflow — every `needs` of `ci-success` skipped, and the
+            # aggregate reported the skip as a pass. `CI Success` is the sole
+            # required check, so that was a governance path with no merge gate
+            # at all.
+            governance:
+              - 'governance/**'
+              - 'schemas/capability-manifest/**'
+              - 'scripts/validate_capability_manifest.py'
+              - 'scripts/check_governance_ci_coverage.py'
+              - 'docs/src/adr/**/*.md'
+              - '.github/workflows/*.yml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix.yaml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
@@ -2000,6 +2035,38 @@ jobs:
   # PRs that legitimately skip whole areas, yet fails if any job failed or was
   # cancelled. Quality/acceptance jobs (coverage, sonar) are deliberately NOT
   # gated here: their failures are advisory and must not block merge.
+  # AAASM-5677: makes "no check ran" a failure instead of a silent pass.
+  #
+  # `ci-success` counts a skipped need as a pass, which is correct given the
+  # router but makes the router's globs load-bearing for merge safety now that
+  # `CI Success` is the only required check. This job cross-checks the
+  # declaration in `governance/ci-coverage.yaml` against the workflow files and
+  # the tracked file tree, so a governance path that has fallen outside every
+  # filter — or a required check that has stopped reporting — turns the merge
+  # gate red rather than disappearing from the checks list.
+  #
+  # Blocks, by CONTRIBUTING's rule: it asserts a property (every
+  # governance-bearing path is inside a required check's trigger surface), not
+  # a metric. Pure Python, no toolchain, so it costs seconds.
+  governance-coverage:
+    needs: [changes]
+    if: needs.changes.outputs.governance == 'true'
+    name: Governance CI coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml
+      # The selftest runs first so a gate that has stopped detecting anything
+      # fails loudly instead of passing everything.
+      - name: Coverage gate still fails closed
+        run: python3 scripts/check_governance_ci_coverage.py --selftest
+      - name: Every governance-bearing path is inside a required check
+        run: python3 scripts/check_governance_ci_coverage.py --verbose
+
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
@@ -2064,6 +2131,11 @@ jobs:
       - dashboard-codegen-drift
       - aa-cli-compat
       - devint-reference-client
+      # AAASM-5677: blocks. It asserts that every governance-bearing path is
+      # inside the trigger surface of a required check — a property, not a
+      # metric. Advisory, it would be a report on the health of the merge gate
+      # that the merge gate itself ignores.
+      - governance-coverage
     steps:
       - name: Verify no required job failed or was cancelled
         run: |

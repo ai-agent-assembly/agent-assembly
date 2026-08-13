@@ -266,6 +266,71 @@ These trade against each other, so neither is an escape from the other: leaving 
 
 **One exception**, so the rule is not miscited: a repo whose entire purpose *is* non-code content — a docs site where `docs/**` / `*.md` legitimately *is* the source, such as `internal-docs` — needs no file-type qualification. There the content directory itself is the correct trigger surface, and over-qualifying its filter would exclude legitimate changes.
 
+### Which CI checks are governance-bearing
+
+The rule above decides whether a job inside `ci.yml` blocks. This one decides something different and is asked at the level of a **whole workflow**: whether its check must be a **required status check** on `main`, and therefore whether it is allowed to be path-filtered at all.
+
+> **If this gate fails, is the honest description "a published statement about the product is false" or "we would distribute something we did not declare" — rather than "a test broke"?**
+> If yes, the workflow is **governance-bearing**.
+
+Three questions make it decidable rather than a matter of taste. A workflow is governance-bearing when all three hold:
+
+1. **Object.** It asserts over a *claim, declaration, or evidence record* — a manifest, a coverage matrix, a metadata registry, published documentation, a contact surface, a distribution boundary — not over program behaviour.
+2. **Failure meaning.** A red run means we are telling someone something untrue, or would ship something we did not declare. It does not mean the code stopped working.
+3. **Silence is indistinguishable from truth.** If the gate never runs, nothing else detects the same defect. This is the question that does the real work. A broken test also breaks at runtime later, and something eventually notices; a false claim never breaks anything. It simply stays false. Nothing in the tree except `scripts/validate_capability_manifest.py` reads `governance/capability-manifest.yaml`.
+
+Question 3 is also why the criterion is not "everything important". `Crate Pinnability Smoke` asserts a distribution-shaped property, but what it asserts is that code *compiles* in an external-consumer shape — behaviour, question 1 — and it belongs with the `ci-success` family. `CodeQL` produces findings, which is a metric.
+
+`Claude Code conformance` is the closest call and should be recorded as such rather than waved past: one of its jobs is literally named *"Native CLI suite (evidence report)"*, and an evidence record is question 1's own object type. It is excluded on questions 2 and 3 — a red run there means the integration stopped working, which is a behaviour failure that surfaces elsewhere, not a false published claim that nothing else would ever notice. If that job's output ever becomes a *published* evidence artefact rather than a CI report, the answer flips and it belongs in `governance/ci-coverage.yaml`.
+
+**A governance-bearing workflow must not path-filter `on.pull_request`.** This is not a style preference. A path-filtered workflow that does not trigger produces **no check run at all** — not a pending one, an absent one — so it cannot be a required check: a required check that never arrives blocks the pull request forever, and the natural unblock is an administrative override, which is exactly what the merge policy forbids. Put the selection in a `dorny/paths-filter` router job instead and gate the real jobs on `needs.changes.outputs.*`, so the check always reports a conclusion.
+
+Two consequences that are easy to get wrong:
+
+- **Route `pull_request` only; leave the backstops unconditional.** A workflow's `push` or `schedule` trigger is what makes its evidence a standing property rather than a PR-time opinion (ADR 0034: a path-filtered gate with no backstop "is not evidence of a standing property at all"). If its `on.push` carries no paths filter, gate the router job itself with `if: github.event_name == 'pull_request'` — otherwise the router silences the backstop too. If `on.push` *does* carry a paths filter, every router glob needs a matching entry in it, or the gate never runs on the merge that breaks it.
+- **Disclose the cost, because the trade is real.** Dropping the `pull_request` path filter means the workflow starts on every pull request, so its router job runs unconditionally. Across the five governance-bearing workflows that is five extra runner starts, plus five aggregate jobs — roughly a minute of runner time per pull request, none of it a build. That is the price of a check that always reports, and #2014 set the precedent of stating added unconditional work rather than letting someone discover it in a billing report. The gated jobs themselves still skip: on a pull request matching none of their paths, 44 of them concluded `skipped`.
+
+  One class *is* a build, so the "none of it a build" line above does not cover it: bringing `verification-reports/**/*.md` inside `docs.yml`'s router means a pull request touching only a verification report now runs the whole gated docs set, including `Verify documented commands`, at roughly 841 s. Measured frequency before deciding it was acceptable: **1 of the last 60 merged pull requests** touched that path. The alternative — a second workflow carrying only the pure-script drift gates — buys back ~14 minutes on one PR in sixty and adds a seventh required context to keep in step, so it is not worth it yet. Revisit if verification reports become a routine part of the workflow.
+- **Name the required context separately from the job it aggregates.** Each governance-bearing workflow ends in an `if: always()` aggregate — `Capability Manifest Success`, `Docs Success`, and so on — and *that* is what branch protection names. Requiring an internal job's name means a rename silently drops the requirement, with no error anywhere.
+
+### Path filters, triggered workflows and required checks
+
+These three are one contract, and a change to any of them can silently remove coverage from the other two. The relationship is recorded in **`governance/ci-coverage.yaml`** and enforced by **`scripts/check_governance_ci_coverage.py`**, which runs as the blocking `Governance CI coverage` job in `ci.yml`.
+
+| Layer | Decides | Failure if wrong |
+|---|---|---|
+| `on.<event>.paths` | whether the workflow runs at all | no check run — reads as *absent*, not *failing* |
+| router filter (`dorny/paths-filter`) | which jobs run | job skips; `ci-success` counts a skip as a pass |
+| branch protection contexts | which checks must pass to merge | a red gate does not block the merge |
+
+**Adding a new governance-bearing path is therefore a four-part change**, and the gate fails until all four agree:
+
+1. add the path to the covering workflow's router filter;
+2. add it to that workflow's `on.push.paths`, if it has one (a router filter with no matching trigger entry is a dead trigger);
+3. add it to the relevant `coverage[].paths` entry in `governance/ci-coverage.yaml`;
+4. if it needs a *new* covering workflow, drop that workflow's `on.pull_request` paths filter, give it an `if: always()` aggregate, and add the aggregate to branch protection as a required context.
+
+#### Turning a new aggregate into a required check
+
+Requiring a context is **not** a single settings edit, and getting the order wrong blocks every open pull request rather than gating them. The steps are ordered by what each one makes true:
+
+1. **Merge the workflow change first.** Until the workflow that produces the check is on `main`, no pull request based on `main` can produce it.
+2. **Force a new event on every open pull request** — `gh pr update-branch`, or an empty push. Merging does **not** retroactively create check runs on an existing head SHA; only a new event does, and with `strict=false` GitHub will not force the update for you. A pull request last built before the merge still has no run for the new context.
+3. **Verify per head SHA, reading the pull requests and not `main`.** For every open pull request, confirm each candidate context has a check run on *its* head SHA. `Release Completeness Success` cannot be confirmed on `main` at all — `release-completeness.yml` has only `pull_request` and `workflow_dispatch` triggers, no `push` — so a check phrased as "confirm the contexts appear on `main`" silently comes back 5-of-6 and reads as success.
+4. **Only then add the contexts** to branch protection, via the `required_status_checks` sub-endpoint so review requirements and `enforce_admins` cannot be altered as a side effect.
+5. **Confirm merge-blocking, not configuration.** Read the setting back with an independent `GET`, then run `gh pr checks <n> --required` on a live pull request. A configuration read-back is not evidence that a merge is blocked.
+
+The failure this ordering exists to prevent has a live example: **PR #1053** was last updated before #2014 merged and has **no `CI Success` run today**, so it is already unmergeable on an absent required context. Note the discriminator carefully — **#1050 was updated the same day and does have one**. Staleness is not the cause; whether the pull request's paths matched the filter is. That is the mechanism, and it scales with the number of required contexts.
+
+Run the gate locally before pushing:
+
+```bash
+python3 scripts/check_governance_ci_coverage.py --verbose   # lists the files every declared glob selects
+python3 scripts/check_governance_ci_coverage.py --selftest  # proves the gate can still go red
+```
+
+`--verbose` exists because the failure mode is quiet: a glob that matches nothing looks exactly like a glob that matches everything you meant. Read the counts.
+
 ## Performance and Latency Tests
 
 Latency and performance tests assert absolute timing thresholds (e.g. p99 < 15 ms). They **must not run under `cargo llvm-cov`** or any other coverage/instrumentation tool, because instrumentation adds 2–10× overhead per instruction and makes timing guarantees unreliable on shared CI runners.
