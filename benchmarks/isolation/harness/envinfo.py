@@ -56,6 +56,16 @@ def _run(argv: list[str], timeout: float = 10.0) -> str | None:
     return output.splitlines()[0] if output else None
 
 
+def _mount_table() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["mount"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout if completed.returncode == 0 else None
+
+
 def _cpu_model() -> str | None:
     if sys.platform == "darwin":
         return _run(["sysctl", "-n", "machdep.cpu.brand_string"])
@@ -93,15 +103,28 @@ def _filesystem(path: str) -> dict[str, str | None]:
     """
     target = path if os.path.exists(path) else os.path.dirname(path) or "."
     if sys.platform == "darwin":
-        raw = _run(["stat", "-f", "%T %Sd", target])
-        if raw:
-            parts = raw.split(None, 1)
-            return {
-                "type": parts[0],
-                "device": parts[1] if len(parts) > 1 else None,
-                "source": "stat -f",
-            }
-        return {"type": None, "device": None, "source": "stat -f (failed)"}
+        # `stat -f %T` is the ls-style file-type *suffix* ("/" for a directory),
+        # not the filesystem type — an easy and silent mis-read. The type is only
+        # available from mount(8), matched by the device df reports for the path.
+        # df's first line is the header, so the data row is index 1 — _run()
+        # returns only the first line and would hand back "Filesystem".
+        device = None
+        try:
+            df_out = subprocess.run(
+                ["df", "-P", target], capture_output=True, text=True, timeout=10, check=False
+            )
+            rows = df_out.stdout.splitlines() if df_out.returncode == 0 else []
+            if len(rows) > 1 and rows[1].split():
+                device = rows[1].split()[0]
+        except (OSError, subprocess.SubprocessError):
+            device = None
+        fstype = None
+        if device:
+            for line in (_mount_table() or "").splitlines():
+                if line.startswith(f"{device} on ") and "(" in line:
+                    fstype = line.rsplit("(", 1)[1].split(",", 1)[0].strip(") ")
+                    break
+        return {"type": fstype, "device": device, "source": "df -P + mount"}
     raw = _run(["findmnt", "--noheadings", "--output", "FSTYPE,SOURCE", "--target", target])
     if raw:
         parts = raw.split(None, 1)
@@ -116,18 +139,39 @@ def _filesystem(path: str) -> dict[str, str | None]:
 def _repo_state(repo_root: str) -> dict[str, object]:
     commit = _run(["git", "-C", repo_root, "rev-parse", "HEAD"])
     branch = _run(["git", "-C", repo_root, "rev-parse", "--abbrev-ref", "HEAD"])
+    # Tracked and untracked are reported separately on purpose. A run against a
+    # tree with uncommitted edits is not reproducible from the recorded commit,
+    # and collapsing the two would hide the case where the only difference is a
+    # file git has never seen.
+    dirty_tracked: bool | None = None
+    untracked_count: int | None = None
     try:
-        porcelain = subprocess.run(
+        tracked = subprocess.run(
             ["git", "-C", repo_root, "status", "--porcelain", "--untracked-files=no"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
             check=False,
         )
-        dirty: bool | None = bool(porcelain.stdout.strip()) if porcelain.returncode == 0 else None
+        if tracked.returncode == 0:
+            dirty_tracked = bool(tracked.stdout.strip())
+        untracked = subprocess.run(
+            ["git", "-C", repo_root, "ls-files", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if untracked.returncode == 0:
+            untracked_count = len([line for line in untracked.stdout.splitlines() if line.strip()])
     except (OSError, subprocess.SubprocessError):
-        dirty = None
-    return {"commit": commit, "branch": branch, "dirty": dirty}
+        pass
+    return {
+        "commit": commit,
+        "branch": branch,
+        "dirty_tracked_files": dirty_tracked,
+        "untracked_file_count": untracked_count,
+    }
 
 
 def toolchain_versions(names: set[str] | None = None) -> dict[str, str | None]:
