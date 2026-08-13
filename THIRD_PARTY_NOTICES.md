@@ -38,7 +38,7 @@ the build fails.
 
 ## Redistributed third-party components
 
-_None at present._
+*None at present.*
 
 Agent Assembly does not currently redistribute any third-party prebuilt binary.
 When the first execution-isolation backend lands, its notice section is added
