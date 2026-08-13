@@ -90,6 +90,26 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
                 "this gate only models **, * and ?"
             )
 
+    # AAASM-5677 review F3. picomatch only treats `**` as "cross directory
+    # separators" when it is its OWN path segment. Anywhere else — `dir/**.yaml`
+    # — it degrades to a single-segment `*`, so `governance/**.yaml` selects the
+    # 2 files directly under `governance/`, not the 44 under it recursively.
+    # Modelling that as `.*` would have C7 count 44, see a healthy number and
+    # pass, while dorny/paths-filter selects 2. That is AAASM-5699's defect
+    # reproduced inside the gate written to prevent it, so refuse the pattern
+    # rather than approximate it: a wrong count is worse than no count.
+    i = pattern.find("**")
+    while i != -1:
+        ok_before = i == 0 or pattern[i - 1] == "/"
+        ok_after = i + 2 == len(pattern) or pattern[i + 2] == "/"
+        if not (ok_before and ok_after):
+            raise ValueError(
+                f"`**` must be its own path segment in {pattern!r} (write `dir/**/*.yaml`, "
+                "not `dir/**.yaml`). picomatch treats a non-segment `**` as a single-segment "
+                "`*`, so this gate would count files CI never selects."
+            )
+        i = pattern.find("**", i + 2)
+
     out = ["^"]
     i = 0
     while i < len(pattern):
@@ -257,6 +277,18 @@ def check(
                     f"[{eid}] C3 job {entry['required_check']!r} aggregates nothing, so it "
                     "would report green regardless of what the gates concluded"
                 )
+            else:
+                # AAASM-5677 review F6: assert what the docstring always claimed.
+                # An aggregate that does not need the router cannot see a router
+                # failure, and a failed router leaves every gated job skipped —
+                # which `always()` would then report as a pass.
+                rid, _ = router_job(wf)
+                if rid is not None and rid not in needs:
+                    errors.append(
+                        f"[{eid}] C3 job {entry['required_check']!r} does not need the router "
+                        f"job {rid!r}. A failed router skips every gated job, and the aggregate "
+                        "would count those skips as a pass."
+                    )
 
         # C4
         pushp = push_paths(wf)
@@ -314,7 +346,14 @@ def check(
                     "the gate never runs on the merge that breaks it"
                 )
             # C7
-            hits = matches(path, files)
+            try:
+                hits = matches(path, files)
+            except ValueError as exc:
+                errors.append(
+                    f"[{eid}] C7 path {path!r} uses a glob this gate cannot model faithfully, "
+                    f"so its coverage cannot be verified: {exc}"
+                )
+                continue
             if not hits:
                 errors.append(
                     f"[{eid}] C7 path {path!r} matches no tracked file. A glob that selects "
@@ -328,8 +367,16 @@ def check(
 
     # C8
     covered = set(covered_by_some_entry)
-    for root in declaration.get("governance_roots") or []:
-        under_root = [f for f in files if f.startswith(root)]
+    for spec in declaration.get("governance_roots") or []:
+        # A root is either a bare path, or a mapping scoping C8 to the
+        # claim-bearing file types under it (see the declaration's comment for
+        # why verification-reports/ needs the scoped form).
+        if isinstance(spec, dict):
+            root, exts = spec["path"], tuple(spec.get("extensions") or ())
+        else:
+            root, exts = spec, ()
+        under_root = [f for f in files if f.startswith(root)
+                      and (not exts or f.endswith(exts))]
         if not under_root:
             errors.append(
                 f"C8 governance root {root!r} contains no tracked file; either it moved or "
@@ -383,6 +430,10 @@ def selftest() -> int:
            lambda d: d["coverage"][0]["paths"].append("governance/no-such-file.yaml"))
     mutate("C8 governance root left uncovered",
            lambda d: [e["paths"].clear() for e in d["coverage"]])
+    # AAASM-5677 review F3: the glob whose Python and picomatch counts diverge
+    # (44 vs 2) must be refused, not approximated.
+    mutate("C7 non-segment ** cannot be modelled",
+           lambda d: d["coverage"][0]["paths"].append("governance/**.yaml"))
 
     # Workflow-side mutations. These are the checks that matter most — C2 is
     # the regression this whole ticket exists to prevent — so they must be
@@ -403,6 +454,11 @@ def selftest() -> int:
     mutate_wf("C6 router path missing from on.push.paths",
               ".github/workflows/doc-links.yml",
               lambda w: w["on"]["push"]["paths"].remove("docs/**"))
+    # AAASM-5677 review F6: an aggregate that does not need the router cannot
+    # see a router failure, and every gated job would be skipped under it.
+    mutate_wf("C3 aggregate does not need the router",
+              ".github/workflows/doc-links.yml",
+              lambda w: w["jobs"]["doc-links-success"].__setitem__("needs", ["check-links"]))
 
     failures = 0
     for label, mutated in cases:
