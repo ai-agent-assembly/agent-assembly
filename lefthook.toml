@@ -12,7 +12,26 @@ run = "cargo clippy --all-targets --all-features -- -D warnings"
 fail_text = "Clippy warnings found. Run 'cargo clippy --fix' or fix manually."
 
 [pre-commit.commands.deny]
-glob = "Cargo.toml"
+# AAASM-5699: patterns match against the *whole path*, so a wildcard-free
+# `Cargo.toml` is an exact path match — it caught the workspace-root manifest and
+# none of the 35 crate manifests under `aa-*/`. The licence/advisory/banned-crate
+# gate therefore never ran for 35 of the repo's 36 manifests: a commit adding a
+# dependency to `aa-gateway/Cargo.toml` alone printed `deny (skip) no matching
+# staged files`. The leading `*` fixes it because `*` crosses `/` at any depth.
+#
+# `*Cargo.lock` is in the list because what cargo-deny evaluates is the *resolved*
+# graph, which comes from the lock file, not the version requirements in the
+# manifests. Measured: the root manifest asks for `serde = "1"`, the lock pins
+# 1.0.229, and `cargo deny check bans` reports `serde v1.0.229`. So a bare
+# `cargo update` — a lock-only diff, no manifest touched — can pull in a new
+# transitive crate carrying a denied licence, a banned crate, an unvendored source
+# or a fresh RUSTSEC advisory, and a manifest-only glob would not gate it. The
+# whole check costs ~1 s, which is not worth trading against that.
+#
+# Over-triggers on `aa-sandbox/fuzz/{Cargo.toml,Cargo.lock}`: that crate is in the
+# workspace `exclude` list, so this root-level check does not evaluate its graph.
+# Running anyway is harmless; do not record it as coverage of the fuzz crate.
+glob = ["*Cargo.toml", "*Cargo.lock"]
 run = "cargo deny check"
 fail_text = "cargo-deny check failed. Review license or advisory violations."
 
