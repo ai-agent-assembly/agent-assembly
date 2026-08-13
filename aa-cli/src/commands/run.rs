@@ -122,6 +122,176 @@ impl RunArgs {
     }
 }
 
+/// Planning for `aasm run`: what a launch resolves to, before anything runs.
+///
+/// # The seam
+///
+/// Everything a launch depends on is resolved **once**, here, into a
+/// [`ResolvedRunPlan`]. Execution consumes that plan rather than re-deriving any
+/// part of it. `--dry-run` and a live launch then differ in exactly the two
+/// places they legitimately must, both named by [`PlanPosture`]: whether an
+/// unmet precondition refuses or is merely reported, and whether the identity is
+/// registered or synthesized. Every other input — the proxy endpoint, the
+/// effective policy, the adapter's launch command, the child environment — is
+/// computed by the same code for both.
+///
+/// That convergence is the whole point. Before it the preview built its own
+/// command and its own environment, and the two drifted twice: AAASM-5327
+/// dropped the adapter's environment from the *live* launch, AAASM-5329 dropped
+/// the adapter entirely from the *preview*. Each time, one side reported a
+/// session as protected that the other would not have protected.
+///
+/// # Why this is a module inside `run.rs` rather than a `run_plan.rs`
+///
+/// `.ci/strip-for-publish.sh` removes the `aasm run` surface from the published
+/// crate by deleting an explicit list of files (`DELETED_FILES`). A sibling
+/// `run_plan.rs` would consume `aa-devtool` and `aa-isolation` — both
+/// `publish = false` — so it would have to be added to that list or the
+/// published build would fail on dependencies its manifest no longer declares.
+/// Living inside `run.rs` means this seam ships, and strips, with the command it
+/// belongs to and needs no packaging edit at all. Extraction later is
+/// mechanical: move this module body to `run_plan.rs` and add one line to
+/// `DELETED_FILES`.
+mod plan {
+    use uuid::Uuid;
+
+    use super::{run_registration, RegistrationHandle, RunArgs};
+
+    /// What a launch is pointed at.
+    ///
+    /// One variant today. A *generic command* target — a launch with no dev-tool
+    /// adapter behind it — is AAASM-5706. The enum exists now so that ticket adds
+    /// a variant rather than a parallel code path, and so every `match` on it
+    /// fails to compile until it has accounted for the new case.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) enum RunTarget {
+        /// A supported developer tool, named by its canonical registry token.
+        ///
+        /// Canonical, not as-typed: [`super::canonical_tool_id`] has already
+        /// resolved whichever accepted alias the operator used, so nothing
+        /// downstream has to know which spelling arrived (AAASM-5503).
+        DevTool {
+            /// The canonical `aa_devtool::registry` token.
+            tool: String,
+        },
+    }
+
+    impl RunTarget {
+        /// A launch of the supported developer tool named by `tool`.
+        pub(super) fn dev_tool(tool: impl Into<String>) -> Self {
+            Self::DevTool { tool: tool.into() }
+        }
+
+        /// The name this target is announced and refused under.
+        ///
+        /// Also the executable a degraded preview falls back to, which is why it
+        /// has to be the canonical token rather than a display string.
+        pub(super) fn label(&self) -> &str {
+            match self {
+                Self::DevTool { tool } => tool,
+            }
+        }
+    }
+
+    /// Whether a plan is being resolved in order to *launch*, or in order to
+    /// *describe a launch*.
+    ///
+    /// The only two things it changes are the two that legitimately differ:
+    ///
+    /// * an unmet precondition **refuses** under [`Launch`](Self::Launch) and is
+    ///   **reported** under [`Preview`](Self::Preview) — a preview exists to tell
+    ///   the operator what a live run would do, and "it would refuse" is the most
+    ///   useful thing it can say;
+    /// * a *minted* agent id is prefixed `dry-run-` under `Preview`, so nothing
+    ///   downstream can mistake a previewed identity for a registered one.
+    ///
+    /// Nothing else branches on it. Every protection-critical value is derived
+    /// the same way under both, which is what stops a preview from describing a
+    /// launch that is not the launch.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum PlanPosture {
+        /// Resolving in order to start a child process.
+        Launch,
+        /// Resolving in order to print `--dry-run` output.
+        Preview,
+    }
+
+    /// Who the launch will be attributed to — the operator's intent, before any
+    /// gateway has accepted it.
+    ///
+    /// Holds intent rather than an identity because at planning time no identity
+    /// exists yet: a live launch obtains one by registering, a preview
+    /// synthesizes one. Both derive it from *this*, so the identity a preview
+    /// prints is the identity a live run would have submitted.
+    #[derive(Debug, Clone)]
+    pub(super) struct IdentityPlan {
+        agent_id: Option<String>,
+        team_id: Option<String>,
+        root_agent: Option<String>,
+    }
+
+    impl IdentityPlan {
+        /// The identity intent carried by `args`.
+        pub(super) fn of(args: &RunArgs) -> Self {
+            Self {
+                agent_id: args.agent_id.clone(),
+                team_id: args.team_id.clone(),
+                root_agent: args.root_agent.clone(),
+            }
+        }
+
+        /// The agent id this launch presents.
+        ///
+        /// An operator-supplied `--agent-id` is honored verbatim under both
+        /// postures, so a preview shows the id a live run would submit rather
+        /// than a stand-in. Only a *minted* id differs, and deliberately: the
+        /// `dry-run-` prefix makes it obvious in the printed plan that no
+        /// registration occurred.
+        pub(super) fn agent_id(&self, posture: PlanPosture) -> String {
+            self.agent_id.clone().unwrap_or_else(|| match posture {
+                PlanPosture::Launch => Uuid::new_v4().to_string(),
+                PlanPosture::Preview => format!("dry-run-{}", Uuid::new_v4()),
+            })
+        }
+
+        /// The owning team, when the operator named one.
+        pub(super) fn team_id(&self) -> Option<&str> {
+            self.team_id.as_deref()
+        }
+
+        /// The lineage root, when the operator named one.
+        pub(super) fn root_agent(&self) -> Option<&str> {
+            self.root_agent.as_deref()
+        }
+
+        /// The identity a `--dry-run` preview presents, without contacting the
+        /// gateway.
+        ///
+        /// Used by the preview so planning works in CI runners where no AI dev
+        /// tool is installed and no gateway is reachable.
+        ///
+        /// The locally-minted correlation ids are prefixed `dry-run-` for the
+        /// same reason a minted agent id is. `registration_did` and
+        /// `registration_id`, by contrast, are **not** faked: both are pure
+        /// derivations of the identity a live run would present, so the preview
+        /// can show the DID that would be registered and the registry key it
+        /// would occupy. A `dry-run-` placeholder there would hide the one thing
+        /// about the identity worth previewing.
+        pub(super) fn preview_handle(&self) -> RegistrationHandle {
+            let agent_id = self.agent_id(PlanPosture::Preview);
+            let registration_did = run_registration::registration_did(&agent_id);
+            RegistrationHandle {
+                registration_id: run_registration::registry_id(self.team_id(), &registration_did),
+                agent_id,
+                registration_did,
+                trace_id: format!("dry-run-{}", Uuid::new_v4()),
+                session_id: format!("dry-run-{}", Uuid::new_v4()),
+                team_id: self.team_id.clone(),
+            }
+        }
+    }
+}
+
 /// Stable string form of an [`aa_core::EnforcementMode`] used on the wire to
 /// the gateway and inside the `AA_ENFORCEMENT_MODE` child env var. Matches the
 /// `serde(rename_all = "snake_case")` encoding so a round-trip via YAML/JSON
@@ -249,17 +419,25 @@ impl Drop for RegistrationGuard {
 /// CLI-shaped shortcut around it: the gateway applies its `did:key`↔`public_key`
 /// binding and its possession-proof check to this request exactly as it does to
 /// an SDK's.
-async fn register_with_gateway(info: &DevToolInfo, args: &RunArgs) -> Result<GovernedRegistration> {
-    let agent_id = args.agent_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+/// `identity` supplies the agent id, team and lineage. It is the same
+/// [`plan::IdentityPlan`] a `--dry-run` preview derives its printed identity
+/// from, so the preview cannot advertise an identity the live run would not have
+/// submitted.
+async fn register_with_gateway(
+    info: &DevToolInfo,
+    identity: &plan::IdentityPlan,
+    mode: aa_core::EnforcementMode,
+) -> Result<GovernedRegistration> {
+    let agent_id = identity.agent_id(plan::PlanPosture::Launch);
     let governance_level = info.governance_level.to_string();
 
     run_registration::register(run_registration::SessionDescriptor {
         agent_id: &agent_id,
         name: &dev_tool_kind_str(&info.kind),
         version: info.version.as_deref().unwrap_or("unknown"),
-        team_id: args.team_id.as_deref(),
-        parent_agent_id: args.root_agent.as_deref(),
-        enforcement_mode: args.resolved_enforcement_mode(),
+        team_id: identity.team_id(),
+        parent_agent_id: identity.root_agent(),
+        enforcement_mode: mode,
         governance_level: &governance_level,
     })
     .await
@@ -386,36 +564,6 @@ fn resolve_launch_proxy(no_proxy: bool) -> Result<Option<String>> {
         url.host_str().unwrap_or_default(),
         url.port().unwrap_or_default()
     )))
-}
-
-/// Synthesize a `RegistrationHandle` for `--dry-run` without contacting the
-/// gateway. Used by the dry-run short-circuit so the planning preview works
-/// in CI runners where no AI dev tool is installed and no gateway is reachable.
-///
-/// The locally-minted correlation ids are prefixed `dry-run-` to make it obvious
-/// in stdout that no real registration occurred. The caller-supplied
-/// `--agent-id` / `--team-id` overrides are honored verbatim so the printed plan
-/// reflects what the live run *would* have submitted.
-///
-/// `registration_did` and `registration_id`, by contrast, are **not** faked: both
-/// are pure derivations of the identity the live run would present, so the
-/// preview can show the DID that would be registered and the registry key it
-/// would occupy. Substituting a `dry-run-` placeholder there would hide the one
-/// thing about the identity worth previewing.
-fn dry_run_handle(args: &RunArgs) -> RegistrationHandle {
-    let agent_id = args
-        .agent_id
-        .clone()
-        .unwrap_or_else(|| format!("dry-run-{}", Uuid::new_v4()));
-    let registration_did = run_registration::registration_did(&agent_id);
-    RegistrationHandle {
-        registration_id: run_registration::registry_id(args.team_id.as_deref(), &registration_did),
-        agent_id,
-        registration_did,
-        trace_id: format!("dry-run-{}", Uuid::new_v4()),
-        session_id: format!("dry-run-{}", Uuid::new_v4()),
-        team_id: args.team_id.clone(),
-    }
 }
 
 /// Resolve the effective policy for this launch, and announce which of the four
@@ -793,7 +941,7 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
 /// find out what a live run *would* do — and "it would refuse" is only useful if
 /// they are shown it.
 fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs, mode: aa_core::EnforcementMode) -> String {
-    let handle = dry_run_handle(args);
+    let handle = plan::IdentityPlan::of(args).preview_handle();
 
     // A preview launches nothing, so an unresolvable endpoint is reported rather
     // than fatal — but it *is* reported, because a preview that silently omits
@@ -875,13 +1023,15 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         return Ok(0);
     }
 
+    let target = plan::RunTarget::dev_tool(&args.tool);
+
     let info = adapter
         .detect()
-        .ok_or_else(|| anyhow::anyhow!("{} is not installed", args.tool))?;
+        .ok_or_else(|| anyhow::anyhow!("{} is not installed", target.label()))?;
 
     eprintln!(
         "tool={} version={} path={} governance_level={}",
-        args.tool,
+        target.label(),
         info.version.as_deref().unwrap_or("unknown"),
         info.install_path.display(),
         info.governance_level,
@@ -913,7 +1063,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // Fatal on failure, and fatal *before* anything is launched: a session the
     // gateway did not accept has no governed identity, and a tool started under
     // no identity is an ungoverned process wearing a governed launch's name.
-    let registration = register_with_gateway(&info, args).await?;
+    let registration = register_with_gateway(&info, &plan::IdentityPlan::of(args), mode).await?;
     let handle = RegistrationHandle::of(&registration);
 
     // Recorded now, not at exit: an audit trail that only learns about a session
