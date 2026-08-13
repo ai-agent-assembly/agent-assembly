@@ -1,0 +1,42 @@
+[package]
+name = "aa-isolation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Backend-neutral agent execution isolation contract for Agent Assembly (ADR 0035)"
+# AAASM-5704. Held back from crates.io deliberately — see the "Packaging" section
+# of the crate-level documentation in `src/lib.rs` for the full rationale.
+# `cargo workspaces publish` (release.yml `publish-crates`) ships every workspace
+# member that does NOT carry this key, so omitting it would publish this crate by
+# default rather than by decision.
+publish = false
+
+[dependencies]
+# Sole dependency, and only for the `ClaimTerm` evidence vocabulary
+# (`aa_core::attestation`). This crate deliberately adds no other dependency:
+# the contract must not acquire a platform, an async runtime or a serialization
+# format as a side effect of being depended upon.
+aa-core = { path = "../aa-core", version = "0.0.1-rc.6" }
+serde = { workspace = true, optional = true, features = ["derive"] }
+
+[features]
+default = []
+# Off by default and never enabled by a shipped binary. See `src/lib.rs`
+# "Serialization" — turning this on is a decision to expose a wire contract,
+# not a convenience.
+serde = ["dep:serde", "aa-core/serde"]
+# The in-memory reference backend. Off by default so a release build of a
+# consumer cannot select a backend that enforces nothing.
+mock-backend = []
+
+[dev-dependencies]
+# Self dev-dependency (same pattern as aa-core): turns the non-default features
+# on for this crate's OWN test build, so `cargo nextest run -p aa-isolation`
+# alone exercises the mock backend and the serde derives without making either
+# a default for downstream consumers.
+aa-isolation = { path = ".", features = ["mock-backend", "serde"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
