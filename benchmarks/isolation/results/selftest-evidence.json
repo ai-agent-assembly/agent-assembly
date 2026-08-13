@@ -1,0 +1,386 @@
+{
+  "schema_version": "1.0.0",
+  "generated_utc": "2026-08-13T04:06:13.044065+00:00",
+  "purpose": "Negative control. Demonstrates the harness detects known injected degradation. These are synthetic control arms, not backend measurements, and no product decision may be drawn from them.",
+  "control_tolerance": 0.4,
+  "injected": {
+    "delay_ms": 500,
+    "repeat_factor": 2
+  },
+  "arms": {
+    "baseline": "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/results/selftest-arm-unconfined.json",
+    "control_delay": "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/results/selftest-arm-control-delay.json",
+    "control_repeat": "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/results/selftest-arm-control-repeat.json"
+  },
+  "comparisons": {
+    "delay": {
+      "schema_version": "1.0.0",
+      "generated_utc": "2026-08-13T04:06:13.044019+00:00",
+      "thresholds": {
+        "max_rel_iqr": 0.15,
+        "min_repetitions": 10
+      },
+      "baseline": {
+        "path": "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/results/selftest-arm-unconfined.json",
+        "run_id": "20260813T040544Z-fd93b23a",
+        "launcher": {
+          "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/unconfined.sh",
+          "argv": [
+            "sh",
+            "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/unconfined.sh"
+          ],
+          "throttle_env": {}
+        },
+        "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+      },
+      "candidate": {
+        "path": "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/results/selftest-arm-control-delay.json",
+        "run_id": "20260813T040548Z-0069318f",
+        "launcher": {
+          "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/throttled.sh",
+          "argv": [
+            "sh",
+            "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/throttled.sh"
+          ],
+          "throttle_env": {
+            "AABENCH_THROTTLE_MODE": "delay",
+            "AABENCH_THROTTLE_MS": "500"
+          }
+        },
+        "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+      },
+      "control_validity": "VALID",
+      "control_validity_reason": "environment fingerprints match",
+      "dimensions": {
+        "P1": {
+          "key": "P1",
+          "blocked": false,
+          "label": "Startup overhead",
+          "unit": "ms",
+          "value": 510.57533400000005,
+          "grade": "RED",
+          "baseline_ms": 8.6574165,
+          "candidate_ms": 519.2327505000001
+        },
+        "P2": {
+          "key": "P2",
+          "blocked": true,
+          "reason": "no comparable admissible general family"
+        },
+        "P3": {
+          "key": "P3",
+          "blocked": true,
+          "reason": "no comparable admissible fs family"
+        },
+        "P4": {
+          "key": "P4",
+          "blocked": false,
+          "label": "Steady state, process spawn",
+          "unit": "x",
+          "value": 0.9519011880556765,
+          "grade": "GREEN",
+          "aggregation": "worst family in tag",
+          "worst_family": "process_spawn",
+          "families_over_amber": [],
+          "contributions": [
+            {
+              "family": "process_spawn",
+              "baseline_ms": 325.380542,
+              "candidate_ms": 309.73012449999993,
+              "ratio": 0.9519011880556765
+            }
+          ]
+        },
+        "P5": {
+          "key": "P5",
+          "blocked": true,
+          "reason": "no comparable admissible network family"
+        },
+        "P6": {
+          "key": "P6",
+          "blocked": false,
+          "label": "Peak memory",
+          "unit": "bytes",
+          "value": 0.0,
+          "grade": "GREEN",
+          "aggregation": "worst family overall",
+          "worst_family": "startup_nop",
+          "contributions": [
+            {
+              "family": "startup_nop",
+              "baseline": 1949696.0,
+              "candidate": 1949696.0,
+              "value": 0.0
+            },
+            {
+              "family": "process_spawn",
+              "baseline": 2015232.0,
+              "candidate": 2015232.0,
+              "value": 0.0
+            }
+          ]
+        },
+        "P7": {
+          "key": "P7",
+          "blocked": false,
+          "label": "CPU time",
+          "unit": "x",
+          "value": 1.1722209627446536,
+          "grade": "AMBER",
+          "aggregation": "worst family overall",
+          "worst_family": "startup_nop",
+          "contributions": [
+            {
+              "family": "startup_nop",
+              "baseline": 0.006616499999999999,
+              "candidate": 0.007755999999999999,
+              "value": 1.1722209627446536
+            },
+            {
+              "family": "process_spawn",
+              "baseline": 0.25330949999999997,
+              "candidate": 0.24586999999999998,
+              "value": 0.9706307896071802
+            }
+          ]
+        }
+      },
+      "blocked": [
+        {
+          "key": "P2",
+          "reason": "no comparable admissible general family"
+        },
+        {
+          "key": "P3",
+          "reason": "no comparable admissible fs family"
+        },
+        {
+          "key": "P5",
+          "reason": "no comparable admissible network family"
+        },
+        {
+          "key": "C1",
+          "reason": "functional compatibility requires a backend to run the families under (AAASM-5708)"
+        },
+        {
+          "key": "S1",
+          "reason": "advertised-control coverage is a judgement about the backend's capability surface"
+        },
+        {
+          "key": "S2",
+          "reason": "kernel-floor coverage requires testing the backend across supported kernels"
+        }
+      ],
+      "verdict": null,
+      "verdict_reason": "Rule 0: blocked, no verdict. Inadmissible or missing dimensions: C1, P2, P3, P5, S1, S2"
+    },
+    "repeat": {
+      "schema_version": "1.0.0",
+      "generated_utc": "2026-08-13T04:06:13.044053+00:00",
+      "thresholds": {
+        "max_rel_iqr": 0.15,
+        "min_repetitions": 10
+      },
+      "baseline": {
+        "path": "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/results/selftest-arm-unconfined.json",
+        "run_id": "20260813T040544Z-fd93b23a",
+        "launcher": {
+          "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/unconfined.sh",
+          "argv": [
+            "sh",
+            "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/unconfined.sh"
+          ],
+          "throttle_env": {}
+        },
+        "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+      },
+      "candidate": {
+        "path": "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/results/selftest-arm-control-repeat.json",
+        "run_id": "20260813T040605Z-5669ea81",
+        "launcher": {
+          "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/throttled.sh",
+          "argv": [
+            "sh",
+            "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/throttled.sh"
+          ],
+          "throttle_env": {
+            "AABENCH_THROTTLE_MODE": "repeat",
+            "AABENCH_THROTTLE_REPEAT": "2"
+          }
+        },
+        "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+      },
+      "control_validity": "VALID",
+      "control_validity_reason": "environment fingerprints match",
+      "dimensions": {
+        "P1": {
+          "key": "P1",
+          "blocked": false,
+          "label": "Startup overhead",
+          "unit": "ms",
+          "value": 2.4668755000000004,
+          "grade": "GREEN",
+          "baseline_ms": 8.6574165,
+          "candidate_ms": 11.124292
+        },
+        "P2": {
+          "key": "P2",
+          "blocked": true,
+          "reason": "no comparable admissible general family"
+        },
+        "P3": {
+          "key": "P3",
+          "blocked": true,
+          "reason": "no comparable admissible fs family"
+        },
+        "P4": {
+          "key": "P4",
+          "blocked": false,
+          "label": "Steady state, process spawn",
+          "unit": "x",
+          "value": 1.8615184263231084,
+          "grade": "RED",
+          "aggregation": "worst family in tag",
+          "worst_family": "process_spawn",
+          "families_over_amber": [
+            "process_spawn"
+          ],
+          "contributions": [
+            {
+              "family": "process_spawn",
+              "baseline_ms": 325.380542,
+              "candidate_ms": 605.7018745,
+              "ratio": 1.8615184263231084
+            }
+          ]
+        },
+        "P5": {
+          "key": "P5",
+          "blocked": true,
+          "reason": "no comparable admissible network family"
+        },
+        "P6": {
+          "key": "P6",
+          "blocked": false,
+          "label": "Peak memory",
+          "unit": "bytes",
+          "value": 131072.0,
+          "grade": "GREEN",
+          "aggregation": "worst family overall",
+          "worst_family": "startup_nop",
+          "contributions": [
+            {
+              "family": "startup_nop",
+              "baseline": 1949696.0,
+              "candidate": 2080768.0,
+              "value": 131072.0
+            },
+            {
+              "family": "process_spawn",
+              "baseline": 2015232.0,
+              "candidate": 2080768.0,
+              "value": 65536.0
+            }
+          ]
+        },
+        "P7": {
+          "key": "P7",
+          "blocked": false,
+          "label": "CPU time",
+          "unit": "x",
+          "value": 1.8561483086895678,
+          "grade": "RED",
+          "aggregation": "worst family overall",
+          "worst_family": "process_spawn",
+          "contributions": [
+            {
+              "family": "startup_nop",
+              "baseline": 0.006616499999999999,
+              "candidate": 0.008452999999999999,
+              "value": 1.2775636665910979
+            },
+            {
+              "family": "process_spawn",
+              "baseline": 0.25330949999999997,
+              "candidate": 0.47018,
+              "value": 1.8561483086895678
+            }
+          ]
+        }
+      },
+      "blocked": [
+        {
+          "key": "P2",
+          "reason": "no comparable admissible general family"
+        },
+        {
+          "key": "P3",
+          "reason": "no comparable admissible fs family"
+        },
+        {
+          "key": "P5",
+          "reason": "no comparable admissible network family"
+        },
+        {
+          "key": "C1",
+          "reason": "functional compatibility requires a backend to run the families under (AAASM-5708)"
+        },
+        {
+          "key": "S1",
+          "reason": "advertised-control coverage is a judgement about the backend's capability surface"
+        },
+        {
+          "key": "S2",
+          "reason": "kernel-floor coverage requires testing the backend across supported kernels"
+        }
+      ],
+      "verdict": null,
+      "verdict_reason": "Rule 0: blocked, no verdict. Inadmissible or missing dimensions: C1, P2, P3, P5, S1, S2"
+    }
+  },
+  "checks": [
+    {
+      "id": 1,
+      "name": "startup regression detected",
+      "passed": true,
+      "expected": {
+        "injected_ms": 500,
+        "grade": "RED"
+      },
+      "measured": {
+        "added_ms": 510.57533400000005,
+        "grade": "RED"
+      },
+      "detail": "the harness must recover the injected per-invocation delay and classify it RED"
+    },
+    {
+      "id": 2,
+      "name": "startup cost does not leak into steady state",
+      "passed": true,
+      "expected": {
+        "grade": "GREEN",
+        "ratio": 1.0
+      },
+      "measured": {
+        "ratio": 0.9519011880556765,
+        "grade": "GREEN"
+      },
+      "detail": "a purely fixed per-invocation cost must be absent from the startup-corrected steady-state ratio"
+    },
+    {
+      "id": 3,
+      "name": "steady-state regression detected",
+      "passed": true,
+      "expected": {
+        "injected_factor": 2,
+        "grade": "RED"
+      },
+      "measured": {
+        "ratio": 1.8615184263231084,
+        "grade": "RED"
+      },
+      "detail": "the harness must recover a proportional steady-state slowdown and classify it RED"
+    }
+  ],
+  "passed": true
+}
