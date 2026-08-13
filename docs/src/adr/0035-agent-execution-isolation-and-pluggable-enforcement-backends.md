@@ -186,6 +186,13 @@ promise that one named backend will always implement it.
 Concrete backend selection is an execution-plan fact. Advanced diagnostics may expose or
 pin a backend for reproducibility, but ordinary policy should survive a backend change.
 
+Backend replaceability is an **implementation property of this design, not the product
+value**. What the product offers is *portable policy semantics* — one AASM policy that
+keeps its meaning across execution substrates — together with the *evidence* that records
+which controls that policy actually achieved on a given run. The backend interface exists
+to preserve those two things. Material derived from this ADR must not present
+pluggability itself as the benefit.
+
 ### 4. Capability negotiation happens before the untrusted process starts
 
 The execution planner resolves policy requirements against the selected backend's actual
