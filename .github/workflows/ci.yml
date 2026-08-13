@@ -68,72 +68,21 @@ on:
       - "examples/aa-devint-reference-client/.npmrc"
   pull_request:
     branches: [main]
-    paths:
-      - "aa-*/**/*.rs"
-      - "aa-*/**/*.sql"
-      - "aa-*/**/*.toml"
-      - "aa-*/**/*.py"
-      - "aa-*/**/*.ts"
-      - "aa-*/**/*.js"
-      - "aa-*/**/*.mjs"
-      - "aa-*/**/*.go"
-      - "aa-*/**/*.wat"
-      - "aa-*/**/*.sh"
-      - "aa-*/**/*.json"
-      - "aa-*/**/*.jsonl"
-      - "proto/**/*.proto"
-      - "conformance/**/*.rs"
-      - "conformance/**/*.json"
-      - "conformance/**/*.bin"
-      - "conformance/**/*.toml"
-      - "conformance/**/*.py"
-      - "conformance/runner/requirements.txt"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      # AAASM-5385: the Rust jobs' own shell implementations, by exact filename.
-      # Without these, editing a gate's script does not re-run the gate that the
-      # script IS. Named individually rather than `.ci/*.sh` because the other
-      # four scripts in `.ci/` belong to docs.yml, release.yml and
-      # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
-      - ".ci/verify-range-builds.sh"
-      - ".ci/check-compatibility-matrix.sh"
-      - "openapi/v1.yaml"
-      - "schemas/**/*.json"
-      - "schemas/**/*.yaml"
-      - ".spectral.yaml"
-      - ".github/workflows/ci.yml"
-      - "dashboard/**/*.ts"
-      - "dashboard/**/*.tsx"
-      - "dashboard/**/*.css"
-      - "dashboard/**/*.js"
-      - "dashboard/**/*.mjs"
-      - "dashboard/**/*.cjs"
-      - "dashboard/package.json"
-      - "dashboard/tsconfig.json"
-      - "dashboard/.npmrc"
-      - "dashboard/pnpm-lock.yaml"
-      - "dashboard/index.html"
-      - "sonar-project.properties"
-      # AAASM-5282: the DI-API TypeScript reference client and its Rust
-      # contract-test harness. Paired with the `devint_client` router filter
-      # below — a router filter without a matching `on.*.paths` entry is a dead
-      # trigger, and a trigger that looks like coverage but is not is worse than
-      # no trigger at all (ADR 0028).
-      - "examples/aa-devint-reference-client/**/*.ts"
-      - "examples/aa-devint-reference-client/**/*.mjs"
-      - "examples/aa-devint-reference-client/**/*.rs"
-      - "examples/aa-devint-reference-client/**/*.json"
-      - "examples/aa-devint-reference-client/**/*.yaml"
-      - "examples/aa-devint-reference-client/**/*.cjs"
-      - "examples/aa-devint-reference-client/**/*.toml"
-      - "examples/aa-devint-reference-client/.npmrc"
-  # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
-  # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
-  # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
-  # main. A weekly schedule + on-demand dispatch restores standing main
-  # coverage for the AAASM-1520/1522/1523 suites at ~1 run/week without
-  # adding per-PR eBPF cost. The eBPF jobs' `if:` opt in to these events.
+    # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
+    #
+    # `main` carried no required status checks at all, so a pull request
+    # could merge with every check red. Requiring the `CI Success`
+    # aggregator is the fix, and it only works if that check reliably
+    # reports: a workflow that never triggers produces no check run, and a
+    # required check that never arrives leaves the pull request waiting
+    # forever. A docs-only or governance-only change hits exactly that.
+    #
+    # Removing the filter here costs almost nothing, because job selection
+    # never lived in this filter — it lives in the `changes` router below,
+    # and every job is already gated on `needs.changes.outputs.*`. A pull
+    # request touching nothing relevant now runs `changes`, skips the rest,
+    # and reports `CI Success`. `push` keeps its filter: main does not need
+    # a check run per unrelated commit.
   schedule:
     - cron: "0 3 * * 1" # Mondays 03:00 UTC
   workflow_dispatch:
