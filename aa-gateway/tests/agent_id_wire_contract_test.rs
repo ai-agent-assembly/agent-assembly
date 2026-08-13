@@ -311,11 +311,22 @@ async fn a_request_with_no_agent_id_field_at_all_is_still_processed() {
 async fn an_omitted_agent_id_is_never_reported_as_bound_even_with_a_valid_token() {
     // A credentialed caller that names no agent must not silently acquire the
     // token owner's identity.
+    //
+    // R1: this request is now *refused* as well, and the decision is asserted
+    // here deliberately. Before the R1 fix this test passed while the request
+    // was allowed, and it would have gone on passing had the refusal been
+    // reverted — it only ever asserted the assurance, which is UNATTRIBUTED
+    // either way. Pinning the decision is what makes it notice.
     let (addr, registry, mut audit_rx) = start_server(ALLOW_ALL_POLICY).await;
     register(&registry, &proto("agent-owner"), "token-owner");
 
     let resp = check(addr, bash_request(None, "token-owner", "trace-tokenless-claim")).await;
     assert_eq!(resp.agent_identity_assurance, ProtoAssurance::Unattributed as i32);
+    assert_eq!(
+        resp.decision,
+        Decision::Deny as i32,
+        "a token owning a registered agent, presented with no subject, must be refused"
+    );
 
     let p = payload(&next_entry(&mut audit_rx).await);
     assert!(p["agent_id_claimed"].is_null());
@@ -507,4 +518,70 @@ async fn batch_check_stamps_the_assurance_on_every_entry() {
     assert_eq!(first["agent_identity_assurance"], "bound");
     assert_eq!(second["agent_id_claimed"], "agent-stranger");
     assert_eq!(second["agent_identity_assurance"], "asserted");
+}
+
+// ── R1: an omitted subject must not shed the caller's own agent scope ────────
+
+#[tokio::test]
+async fn every_agent_id_shape_is_refused_when_the_token_owns_a_registered_agent() {
+    // Reported by the second review of #2016 — a regression this PR created.
+    // `validate_credential_token` returned early when the `agent_id` MESSAGE was
+    // absent, so the presented token was never examined. That was inert while an
+    // absent `agent_id` was rejected upstream as `InvalidArgument`; once it is
+    // evaluated instead it becomes an escape hatch. The request evaluates under
+    // `UNATTRIBUTED_AGENT_ID`, so the caller's own `agent:<id>` tier — the
+    // narrowest and highest precedence — is never consulted, while
+    // `apply_authoritative_tenancy` still resolves org/team/governance level
+    // from the token owner. The caller keeps its tenancy and sheds only its own
+    // restrictions.
+    //
+    // That is restriction-shedding rather than privilege-borrowing, which is
+    // exactly why every impersonation test passed straight through it.
+    //
+    // One server, one registry, one token, three subject shapes. Before the fix
+    // the third row was `Allow` with an empty `policy_rule`.
+    let (addr, registry, mut audit_rx) = start_server(ALLOW_ALL_POLICY).await;
+    register(&registry, &proto("agent-owner"), "token-owner");
+
+    let blank = ProtoAgentId {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: String::new(),
+    };
+
+    for (label, agent, subject_claimed) in [
+        ("named", Some(proto("agent-victim")), true),
+        ("blank", Some(blank), false),
+        ("omitted", None, false),
+    ] {
+        let resp = check(addr, bash_request(agent, "token-owner", &format!("trace-r1-{label}"))).await;
+
+        assert_eq!(
+            resp.decision,
+            Decision::Deny as i32,
+            "{label}: a token owning a registered agent must be refused whatever subject shape it presents"
+        );
+        assert_eq!(resp.policy_rule, "a2a_identity_verification", "{label}");
+        assert_ne!(
+            resp.agent_identity_assurance,
+            ProtoAssurance::Bound as i32,
+            "{label}: a refused request is never bound"
+        );
+
+        // The refusal must leave evidence. A silent deny is the same defect as
+        // a missing audit entry on any other denied path.
+        let p = payload(&next_entry(&mut audit_rx).await);
+        assert_eq!(
+            p["identity_claimed"], subject_claimed,
+            "{label}: the refusal must record whether a subject was claimed"
+        );
+        assert_eq!(p["credential_token_present"], true, "{label}");
+        if !subject_claimed {
+            assert!(
+                p["agent_id_claimed"].is_null(),
+                "{label}: nothing was claimed, so the subject must read null — got {}",
+                p["agent_id_claimed"]
+            );
+        }
+    }
 }
