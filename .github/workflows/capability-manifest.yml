@@ -80,6 +80,10 @@ jobs:
               # the gate never runs on.
               - 'verification-reports/AAASM-5527-capability-coverage-matrix.yaml'
               - 'verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md'
+              # AAASM-5677 review R2: the consistency guard for those two
+              # artifacts. Its own docstring says to run it before any change to
+              # either, so a change to the guard changes what that means.
+              - 'verification-reports/aaasm-5527-scope-guard.py'
 
   capability-manifest:
     name: capability manifest schema & evidence

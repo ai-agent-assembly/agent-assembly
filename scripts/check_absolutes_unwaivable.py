@@ -81,7 +81,7 @@ DEFAULT_GLOBS: tuple[str, ...] = (
     # nothing, because this tuple is what decides the scan set. Measured at the
     # time of adding: 96 files, all clean, so this closes the gap without
     # importing a backlog.
-    "verification-reports/*.md",
+    "verification-reports/**/*.md",
 )
 
 # Naming a banned absolute. Lower-cased substring match after markup stripping.
@@ -827,17 +827,32 @@ def selftest() -> int:
     return 0
 
 
+def default_paths() -> list[Path]:
+    """Resolve DEFAULT_GLOBS to the files this gate will actually read.
+
+    AAASM-5677 review R1. Extracted from `main` so the coverage gate can call
+    the REAL resolution rather than re-implement it. Comparing glob *strings*
+    is not enough: dropping `recursive=True` below leaves the strings identical
+    and silently collapses the scan set from 137 files to 41, and the
+    vacuous-pass guard does not fire because the other globs still match.
+    `check_governance_ci_coverage.py`'s C9 calls this function and compares its
+    output to what docs.yml's router selects.
+
+    `recursive=True` is therefore load-bearing: without it `glob.glob` treats
+    `**` as a single `*`, so `verification-reports/**/*.md` matches nothing.
+    """
+    root = Path(__file__).resolve().parent.parent
+    paths: list[Path] = []
+    for pattern in DEFAULT_GLOBS:
+        paths.extend(sorted(Path(p) for p in glob.glob(str(root / pattern), recursive=True)))
+    return paths
+
+
 def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
 
-    if argv:
-        paths = [Path(a) for a in argv]
-    else:
-        root = Path(__file__).resolve().parent.parent
-        paths = []
-        for pattern in DEFAULT_GLOBS:
-            paths.extend(sorted(Path(p) for p in glob.glob(str(root / pattern))))
+    paths = [Path(a) for a in argv] if argv else default_paths()
 
     if not paths:
         print("check_absolutes_unwaivable: no files matched; refusing to pass vacuously", file=sys.stderr)

@@ -53,7 +53,17 @@ governance_roots:
   - schemas/capability-manifest/
   - docs/src/adr/
   - path: verification-reports/
-    extensions: ['.md', '.yaml']
+    # AAASM-5677 review R2: an EXCLUSION list, so a file type nobody anticipated
+    # defaults to COVERED. The earlier inclusion form let `.yml`, `.json` and
+    # `.txt` pass silently while `.yaml` was caught. Only the PNG screenshots and
+    # the .gitkeep are genuinely claim-free; demanding coverage for those would
+    # force a bare `verification-reports/**` into the router, which CONTRIBUTING
+    # forbids, and would re-run the docs gates on every screenshot.
+    exclude_extensions: ['.png', '.gitkeep']
+    # Ratchet on the population C8 examines. Narrowing the exclusions is
+    # otherwise silent — measured, it dropped 96 files and produced 0 errors.
+    # Lowering this is a deliberate, reviewable edit.
+    min_examined: 98
 
 coverage:
   - id: capability-manifest
@@ -71,6 +81,10 @@ coverage:
       - .github/workflows/capability-manifest.yml
       - verification-reports/AAASM-5527-capability-coverage-matrix.yaml
       - verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
+      # AAASM-5677 review R2: the consistency guard for the two artifacts
+      # above. Its docstring says to run it before any change to either, so a
+      # change to the guard changes what that instruction means.
+      - verification-reports/aaasm-5527-scope-guard.py
 
   - id: contact-metadata
     # ADR 0014 / AAASM-5519. The security reporting address and response-target
@@ -126,6 +140,20 @@ coverage:
       # check_absolutes_unwaivable.py's DEFAULT_GLOBS, which is what decides
       # the scan set once the job runs.
       - verification-reports/**/*.md
+    # AAASM-5677 review R1. The router decides whether the job RUNS; this decides
+    # what it READS once it does. They were out of step by one directory level:
+    # the router matched verification-reports/<dir>/x.md, the scanner's globs did
+    # not, so the job ran and scanned nothing. C9 compares the two using probes
+    # synthesised from the patterns, not from today's tree — a tree comparison
+    # passes vacuously until the first deeper file exists, which is exactly the
+    # state the defect shipped in.
+    scan_parity:
+      script: scripts/check_absolutes_unwaivable.py
+      attr: DEFAULT_GLOBS
+      # C9a calls this to compare against what the scanner REALLY reads.
+      resolver: default_paths
+      router_globs:
+        - verification-reports/**/*.md
 
   - id: release-completeness
     # AAASM-4456 / AAASM-5309 / AAASM-5315 / AAASM-5316. Each of these three

@@ -57,6 +57,8 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -68,6 +70,18 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DECLARATION = REPO_ROOT / "governance" / "ci-coverage.yaml"
 
+# AAASM-5677 review R2. Held here rather than only in the declaration, because a
+# root that exists solely in the file it guards can be deleted from that file and
+# take its own enforcement with it — measured: deleting the root produced 0
+# errors. Two artefacts, so removing a root is a code change that shows up in
+# review.
+REQUIRED_ROOTS: tuple[str, ...] = (
+    "governance/",
+    "schemas/capability-manifest/",
+    "docs/src/adr/",
+    "verification-reports/",
+)
+
 
 # --------------------------------------------------------------------------
 # glob handling
@@ -76,6 +90,12 @@ DECLARATION = REPO_ROOT / "governance" / "ci-coverage.yaml"
 
 def glob_to_regex(pattern: str) -> re.Pattern[str]:
     """Translate the picomatch subset used in these filters to a regex.
+
+    Modelled against picomatch ^2.3.1 with `dot: true`, which is what
+    dorny/paths-filter resolves to at the SHA pinned in these workflows. Both
+    are load-bearing: `dot: true` is why a leading-dot path is matched by `*`,
+    and the major version is why `**` is only recursive as its own segment. If
+    the action's pin moves, re-check those two before trusting any count here.
 
     Only the constructs actually present in the workflows are supported —
     `**`, `*`, `?` and literals. Anything richer is a signal that the filter
@@ -134,6 +154,25 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
     # `.*` already covers it.
     out.append("$")
     return re.compile("".join(out))
+
+
+def probes_for(pattern: str) -> list[str]:
+    """Synthesise paths a pattern must match, at several depths.
+
+    AAASM-5677 review R1. Comparing a router glob to a scanner glob over the
+    CURRENT tree proves nothing: `verification-reports/*.md` and
+    `.../**/*.md` select the same 96 files today, and diverge only once
+    somebody adds a file one directory down. These probes come from the
+    pattern, so the divergence is detected before it can bite.
+    """
+    depths = ["", "sub/", "sub/deep/"]
+    out = []
+    for d in depths:
+        probe = pattern.replace("**/", d) if "**/" in pattern else (pattern if d == "" else None)
+        if probe is None:
+            continue
+        out.append(probe.replace("**", "any").replace("*", "probe"))
+    return sorted(set(out))
 
 
 def tracked_files() -> list[str]:
@@ -365,18 +404,92 @@ def check(
                 print(f"  {eid}: {path} -> {len(hits)} file(s): {sample}{more}")
             covered_by_some_entry.extend(hits)
 
+    # C9 — the scan set, not just the router. AAASM-5677 review R1: docs.yml's
+    # router made `metadata-drift` RUN on a verification-reports change while
+    # check_absolutes_unwaivable.py's own globs made it scan NOTHING, which is
+    # the failure that ticket's commit message named and then reproduced one
+    # directory down. A gate that models only the router cannot see this.
+    for entry in declaration.get("coverage") or []:
+        parity = entry.get("scan_parity")
+        if not parity:
+            continue
+        eid = entry.get("id", "<unnamed>")
+        spath = REPO_ROOT / parity["script"]
+        try:
+            spec_ = importlib.util.spec_from_file_location("_aa_scanned", spath)
+            mod = importlib.util.module_from_spec(spec_)
+            # `@dataclass` resolves its own module through sys.modules, so the
+            # module has to be registered before exec_module or the decorator
+            # raises on a None lookup.
+            sys.modules["_aa_scanned"] = mod
+            try:
+                spec_.loader.exec_module(mod)
+            finally:
+                sys.modules.pop("_aa_scanned", None)
+            scan_globs = list(getattr(mod, parity["attr"]))
+            resolved = {
+                str(Path(x).resolve().relative_to(REPO_ROOT))
+                for x in getattr(mod, parity["resolver"])()
+            }
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(f"[{eid}] C9 could not read {parity['attr']} from {parity['script']}: {exc}")
+            continue
+        # C9a — BEHAVIOURAL. Compare against what the scanner actually resolves,
+        # not against its glob strings. Removing `recursive=True` leaves the
+        # strings identical and collapses the scan set 137 -> 41; a string
+        # comparison sees nothing, and the scanner's own vacuous-pass guard does
+        # not fire because its other globs still match.
+        for rg in parity["router_globs"]:
+            selected = set(matches(rg, files))
+            missed = sorted(selected - resolved)
+            if missed:
+                errors.append(
+                    f"[{eid}] C9 router glob {rg!r} selects {len(selected)} tracked file(s), but "
+                    f"{len(missed)} of them are not in what {parity['script']} actually reads "
+                    f"(e.g. {missed[0]}). The gate would RUN on such a change and never open the "
+                    "file."
+                )
+        # C9b — SEMANTIC. Probes synthesised from the patterns, so a depth
+        # divergence is caught before the first deeper file exists to reveal it.
+        for rg in parity["router_globs"]:
+            for probe in probes_for(rg):
+                if not any(matches(sg, [probe]) for sg in scan_globs):
+                    errors.append(
+                        f"[{eid}] C9 router glob {rg!r} selects {probe!r}, but no glob in "
+                        f"{parity['script']}'s {parity['attr']} does. The gate would RUN on "
+                        "that change and scan nothing — a job that runs and reads no files is "
+                        "indistinguishable from a fix."
+                    )
+
     # C8
     covered = set(covered_by_some_entry)
+    declared_roots = set()
     for spec in declaration.get("governance_roots") or []:
         # A root is either a bare path, or a mapping scoping C8 to the
         # claim-bearing file types under it (see the declaration's comment for
         # why verification-reports/ needs the scoped form).
+        # AAASM-5677 review R2: an EXCLUSION list, not an inclusion list, so a
+        # file type nobody thought about defaults to covered. The inclusion form
+        # let `.yml`, `.json` and `.txt` under a scoped root pass silently while
+        # `.yaml` was caught.
         if isinstance(spec, dict):
-            root, exts = spec["path"], tuple(spec.get("extensions") or ())
+            root = spec["path"]
+            excl = tuple(spec.get("exclude_extensions") or ())
+            floor = spec.get("min_examined")
         else:
-            root, exts = spec, ()
-        under_root = [f for f in files if f.startswith(root)
-                      and (not exts or f.endswith(exts))]
+            root, excl, floor = spec, (), None
+        declared_roots.add(root)
+        under_root = [f for f in files if f.startswith(root) and not f.endswith(excl)]
+        # A ratchet on the population C8 actually examines. Narrowing the
+        # exclusions is otherwise silent: measured, dropping 96 files from the
+        # examined set produced 0 errors. Lowering this number is a deliberate,
+        # reviewable edit.
+        if floor is not None and len(under_root) < floor:
+            errors.append(
+                f"C8 governance root {root!r} now examines {len(under_root)} files, below its "
+                f"declared floor of {floor}. Either files were deleted or `exclude_extensions` "
+                "was widened; both silently shrink what any required check can see."
+            )
         if not under_root:
             errors.append(
                 f"C8 governance root {root!r} contains no tracked file; either it moved or "
@@ -386,6 +499,14 @@ def check(
             errors.append(
                 f"C8 {f} is under the governance root {root!r} but is matched by no coverage "
                 "entry, so no required check sees a change to it"
+            )
+
+    for r in REQUIRED_ROOTS:
+        if r not in declared_roots:
+            errors.append(
+                f"C8 governance root {r!r} is named in REQUIRED_ROOTS but is not declared in "
+                "governance/ci-coverage.yaml. Removing a root removes its own enforcement, so "
+                "the script keeps an independent copy."
             )
 
     return errors
@@ -434,6 +555,41 @@ def selftest() -> int:
     # (44 vs 2) must be refused, not approximated.
     mutate("C7 non-segment ** cannot be modelled",
            lambda d: d["coverage"][0]["paths"].append("governance/**.yaml"))
+    # AAASM-5677 review R2: the scoped-root feature shipped with no mutation
+    # guarding it, in a gate whose whole point is that a check quietly rewritten
+    # into a no-op looks exactly like a healthy one.
+    def _drop_root(d):
+        d["governance_roots"] = [
+            r for r in d["governance_roots"]
+            if (r.get("path") if isinstance(r, dict) else r) != "verification-reports/"
+        ]
+        for e in d["coverage"]:
+            e["paths"] = [x for x in e["paths"] if not x.startswith("verification-reports/")]
+    mutate("C8 scoped root deleted outright", _drop_root)
+
+    def _narrow_root(d):
+        for r in d["governance_roots"]:
+            if isinstance(r, dict) and r["path"] == "verification-reports/":
+                r["exclude_extensions"] = ['.png', '.gitkeep', '.md']
+        for e in d["coverage"]:
+            e["paths"] = [x for x in e["paths"] if x != "verification-reports/**/*.md"]
+    mutate("C8 scoped root's exclusions widened", _narrow_root)
+
+    # AAASM-5677 review R1: the router/scan-set divergence itself.
+    def _break_parity(d):
+        for e in d["coverage"]:
+            if e.get("scan_parity"):
+                e["scan_parity"]["attr"] = "ABSOLUTE_ANCHORS"
+    mutate("C9 scanner globs do not cover the router glob", _break_parity)
+
+    # Exercises C9a specifically — the behavioural half. A router glob whose
+    # files the scanner genuinely never opens must be caught even though both
+    # sides' glob STRINGS are well-formed.
+    def _break_parity_behavioural(d):
+        for e in d["coverage"]:
+            if e.get("scan_parity"):
+                e["scan_parity"]["router_globs"] = ["governance/**"]
+    mutate("C9 router glob the scanner never reads", _break_parity_behavioural)
 
     # Workflow-side mutations. These are the checks that matter most — C2 is
     # the regression this whole ticket exists to prevent — so they must be
@@ -490,16 +646,73 @@ def selftest() -> int:
     return 0
 
 
+def check_requirable(repo: str) -> int:
+    """Fail if any open pull request would be blocked by requiring the contexts.
+
+    AAASM-5677 review. The ordering in CONTRIBUTING is prose, and prose is not a
+    gate. Requiring a context that a pull request cannot produce does not gate
+    that pull request — it blocks it permanently, and the only exit is the
+    administrative override the merge policy forbids.
+
+    Merging the workflow is not sufficient: GitHub does not create check runs on
+    an existing head SHA retroactively, and with `strict=false` it will not force
+    the branch update either. So this reads the PULL REQUESTS, per head SHA.
+    Reading `main` would also miss `Release Completeness Success` entirely —
+    that workflow has no `push` trigger, so the context never appears there and
+    the answer comes back a misleading 5-of-6.
+    """
+    declaration = yaml.safe_load(DECLARATION.read_text())
+    wanted = [e["required_check"] for e in declaration["coverage"]]
+    wanted = sorted(set(wanted))
+
+    def gh(*args: str) -> str:
+        return subprocess.run(["gh", *args], capture_output=True, text=True, check=True).stdout
+
+    prs = json.loads(gh("pr", "list", "--repo", repo, "--state", "open",
+                        "--limit", "100", "--json", "number,title,headRefOid"))
+    blocked = []
+    for pr in sorted(prs, key=lambda p: p["number"]):
+        sha = pr["headRefOid"]
+        names = set(gh("api", "--paginate",
+                       f"repos/{repo}/commits/{sha}/check-runs?per_page=100",
+                       "--jq", ".check_runs[].name").split("\n"))
+        missing = [c for c in wanted if c not in names]
+        status = "OK  " if not missing else "MISS"
+        print(f"  {status} #{pr['number']:<5} {sha[:9]}  {pr['title'][:48]}")
+        if missing:
+            for c in missing:
+                print(f"         absent: {c}")
+            blocked.append(pr["number"])
+
+    if blocked:
+        print(
+            f"\n::error::{len(blocked)} open pull request(s) would be BLOCKED, not gated, by "
+            f"requiring these contexts: {blocked}.\nRun `gh pr update-branch` on each (an empty "
+            "push also works) and re-run this. See CONTRIBUTING, \"Turning a new aggregate into "
+            "a required check\".",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"\nAll {len(prs)} open pull request(s) report all {len(wanted)} contexts. Safe to require.")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--selftest", action="store_true",
                     help="prove the gate can still go red, then exit")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="list the files each declared glob selects")
+    ap.add_argument("--check-requirable", metavar="OWNER/REPO",
+                    help="fail if any open pull request lacks a candidate context on its head "
+                         "SHA, i.e. would be blocked rather than gated by requiring them")
     args = ap.parse_args()
 
     if args.selftest:
         return selftest()
+
+    if args.check_requirable:
+        return check_requirable(args.check_requirable)
 
     declaration = yaml.safe_load(DECLARATION.read_text())
     files = tracked_files()
