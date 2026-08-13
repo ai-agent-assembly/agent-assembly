@@ -1199,18 +1199,44 @@ impl PolicyServiceImpl {
     ///
     /// * No `AgentRegistry` is attached (test fixtures that bypass the
     ///   registry layer continue to work unchanged).
-    /// * `req.agent_id` is `None` (caller did not declare an identity —
-    ///   handled by downstream evaluation).
     /// * The claimed agent is not registered (no fixture data to verify
     ///   against; the policy engine may or may not allow per its rules).
+    /// * No subject is claimed AND the presented token belongs to no
+    ///   registered agent (the unregistered / OSS self-host path).
+    ///
+    /// AAASM-5665 — `req.agent_id` being `None` is **not** on that list. An
+    /// absent message and a blank `agent_id` string are the same claim, so a
+    /// token owning a registered agent is refused under either shape; skipping
+    /// on absent would let its owner shed its own agent-scoped rules while
+    /// keeping the tenancy the same token resolves.
     ///
     /// Emitting the audit event is fire-and-forget — a full `Deny`
     /// response is always constructed and returned to the caller.
     async fn validate_credential_token(&self, req: &CheckActionRequest) -> Option<CheckActionResponse> {
         let registry = self.registry.as_ref()?;
-        let proto_agent = req.agent_id.as_ref()?;
-        let key = proto_agent_id_to_key(proto_agent);
-        let record_opt = registry.get(&key);
+        // AAASM-5665 (R1) — an ABSENT `agent_id` message is the same claim as a
+        // blank one: none. `convert::claimed_agent_id` already collapses the two
+        // everywhere else, and this is the site that used to disagree.
+        //
+        // This previously `?`-returned on absent, so the presented token was
+        // never examined at all. That was inert while an absent `agent_id` was
+        // rejected upstream as `InvalidArgument`. Once it is evaluated instead,
+        // it becomes an escape hatch: the request is evaluated under
+        // `UNATTRIBUTED_AGENT_ID`, so `PolicyScope::Agent(hash_to_16(<own id>))`
+        // — the narrowest, highest-precedence tier — is never consulted, while
+        // `apply_authoritative_tenancy` still resolves org/team/governance level
+        // from the token owner. The caller keeps its tenancy and sheds only its
+        // own restrictions.
+        //
+        // That is the dodge the refusal below already exists to prevent, one
+        // shape wider: the comment there reasons "otherwise a token holder could
+        // dodge an `agent:<their id>` scoped rule by blanking the field", and
+        // omitting the field did exactly that. Falling through with `None` sends
+        // the absent shape down the same branch as the blank one.
+        let record_opt = req
+            .agent_id
+            .as_ref()
+            .and_then(|proto_agent| registry.get(&proto_agent_id_to_key(proto_agent)));
 
         let reason = if let Some(record) = &record_opt {
             // The claimed agent is registered at the claimed (org, team, id)

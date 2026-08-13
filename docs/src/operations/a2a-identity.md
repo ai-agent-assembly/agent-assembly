@@ -41,7 +41,7 @@ Two `AuditEventType` variants make A2A traffic explicit in the chain:
 | Variant | Emitted when | Payload fields |
 |---|---|---|
 | `A2ACallIntercepted` | Allow decision on a request whose `caller_agent_id` differs from `agent_id`. | `caller_agent_id`, `callee_agent_id`, plus the usual `action_type`, `decision`, `policy_rule`, `latency_us`. |
-| `A2AImpersonationAttempted` | Pre-policy-eval rejection because `credential_token` is empty or does not match the registered token for the claimed `agent_id`. | `agent_id_claimed` (null when nothing was claimed), `identity_claimed` (bool), `agent_identity_assurance`, `credential_token_present` (bool), `reason`, `policy_rule = "a2a_identity_verification"`. |
+| `A2AImpersonationAttempted` | Pre-policy-eval rejection because `credential_token` is empty, does not match the registered token for the claimed `agent_id`, or is registered to another agent while the request claims no subject — whether the `agent_id` is blank or omitted entirely. | `agent_id_claimed` (null when nothing was claimed), `identity_claimed` (bool), `agent_identity_assurance`, `credential_token_present` (bool), `reason`, `policy_rule = "a2a_identity_verification"`. |
 
 Single-agent calls (no `caller_agent_id`, or caller equals callee) keep
 emitting the existing `ToolCallIntercepted` / `PolicyViolation`
