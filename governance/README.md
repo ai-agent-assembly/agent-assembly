@@ -79,7 +79,7 @@ Step 3 also runs three probes the fixture files cannot express:
   page* is the live one, by value. The counts below were shipped stale once, in
   the document whose thesis is that they are printed on every run; correcting
   them was not a mechanism, so this is one. It also cross-checks the harness's
-  own asserted total, **90 checks**, against `EXPECTED_TOTAL` in
+  own asserted total, **92 checks**, against `EXPECTED_TOTAL` in
   `run-validator-tests.sh` — that constant is the only thing standing between a
   silently-dropped check and a green run, and a single uncorroborated number is
   defended by nothing but the visible diff.
