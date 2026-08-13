@@ -1,0 +1,198 @@
+# Governance-bearing CI coverage — AAASM-5677
+#
+# WHY THIS FILE EXISTS
+#
+# AAASM-5677 found that `main` required no status check at all, and that the
+# governance gates were additionally path-filtered so that a pull request
+# touching a governance path could produce *no check run for it whatsoever*.
+# The absence is silent: no failing check, no warning, simply fewer check runs
+# than a neighbouring pull request got. A reviewer reading a green page cannot
+# tell "the gate ran and passed" from "the gate never ran".
+#
+# Requiring `CI Success` fixed the first half. This file, and the gate that
+# reads it (`scripts/check_governance_ci_coverage.py`), fix the second: it
+# declares which paths are governance-bearing and which always-reporting,
+# required check covers each one, and the gate fails when the declaration and
+# the workflows have drifted apart.
+#
+# The criterion for what belongs here is written down in CONTRIBUTING.md,
+# "Which CI checks are governance-bearing". Do not add an entry by analogy with
+# a neighbouring one — apply the criterion.
+#
+# WHAT THE GATE CHECKS (see the script for the authoritative list)
+#
+#   * the covering workflow does NOT path-filter `on.pull_request`, so its
+#     check always reports and can therefore be required;
+#   * the declared `required_check` is a real job in that workflow, runs with
+#     `if: always()`, and aggregates the router;
+#   * every path below appears verbatim in that workflow's router filter, and
+#     in its `on.push.paths` when it has one — a router filter with no matching
+#     trigger entry is a dead trigger;
+#   * every path below matches at least one tracked file. A glob that selects
+#     nothing is a gate that never fires, which is AAASM-5699's defect;
+#   * every tracked file under `governance_roots` is matched by some entry, so
+#     a new governance file cannot be added outside all of the filters.
+#
+# The three artefacts cross-checked here — this declaration, the workflow
+# files, and the file tree — are independent. Two hand-maintained lists
+# agreeing with each other would prove nothing.
+
+version: 1
+
+# Trees whose contents are governance-bearing by construction. Every tracked
+# file under these must be matched by some entry's `paths` below.
+# A root may be a bare path (every tracked file under it must be covered) or a
+# mapping with `extensions`, which scopes C8 to the claim-bearing file types.
+# The scoped form exists for verification-reports/: 16 of its files are PNG
+# screenshots and one is a .gitkeep, which carry no claim. Demanding coverage
+# for those would force a bare `verification-reports/**` into the router, and
+# CONTRIBUTING forbids a directory wildcard with no type qualifier — it would
+# also re-run the docs gates on every screenshot.
+governance_roots:
+  - governance/
+  - schemas/capability-manifest/
+  - docs/src/adr/
+  - path: verification-reports/
+    # AAASM-5677 review R2: an EXCLUSION list, so a file type nobody anticipated
+    # defaults to COVERED. The earlier inclusion form let `.yml`, `.json` and
+    # `.txt` pass silently while `.yaml` was caught. Only the PNG screenshots and
+    # the .gitkeep are genuinely claim-free; demanding coverage for those would
+    # force a bare `verification-reports/**` into the router, which CONTRIBUTING
+    # forbids, and would re-run the docs gates on every screenshot.
+    exclude_extensions: ['.png', '.gitkeep']
+    # Ratchet on the population C8 examines. Narrowing the exclusions is
+    # otherwise silent — measured, it dropped 96 files and produced 0 errors.
+    # Lowering this is a deliberate, reviewable edit.
+    min_examined: 98
+
+coverage:
+  - id: capability-manifest
+    # ADR 0034's validation requirement W7. `governance/capability-manifest.yaml`
+    # is the T2 source of truth for what Agent Assembly can be said to do, and
+    # AAASM-5588/5600/5609 generate public surfaces from it: a wrong row becomes
+    # published output. Nothing else in the tree reads this file.
+    workflow: .github/workflows/capability-manifest.yml
+    required_check: Capability Manifest Success
+    router_output: manifest
+    paths:
+      - governance/**
+      - schemas/capability-manifest/**
+      - scripts/validate_capability_manifest.py
+      - .github/workflows/capability-manifest.yml
+      - verification-reports/AAASM-5527-capability-coverage-matrix.yaml
+      - verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
+      # AAASM-5677 review R2: the consistency guard for the two artifacts
+      # above. Its docstring says to run it before any change to either, so a
+      # change to the guard changes what that instruction means.
+      - verification-reports/aaasm-5527-scope-guard.py
+
+  - id: contact-metadata
+    # ADR 0014 / AAASM-5519. The security reporting address and response-target
+    # SLAs published in SECURITY.md and README.md are owned by the canonical org
+    # registry. A drift here means a published statement about how to report a
+    # vulnerability is false, and no other reader would notice.
+    workflow: .github/workflows/contact-metadata-check.yml
+    required_check: Contact Metadata Success
+    router_output: contact
+    paths:
+      - SECURITY.md
+      - README.md
+      - scripts/check_contact_metadata.py
+      - .github/workflows/contact-metadata-check.yml
+
+  - id: doc-links
+    # AAASM-4635 / AAASM-5328. Published documentation that points at pages
+    # which do not exist, or a page added where the book will never render it.
+    # Both regressions shipped once; nothing but this gate reads for them.
+    workflow: .github/workflows/doc-links.yml
+    required_check: Doc Links Success
+    router_output: docs
+    paths:
+      - README.md
+      - docs/**
+      - scripts/check-doc-links.sh
+      - scripts/check-doc-orphans.sh
+      - .github/workflows/doc-links.yml
+
+  - id: docs-drift
+    # AAASM-4911 (version literals vs the SoT), AAASM-4922 (ADR 0014
+    # registry-owned canonical values) and AAASM-5671 (ADR 0034 W10, banned
+    # absolutes are unwaivable). The `metadata-drift` job is what carries
+    # scripts/check_absolutes_unwaivable.py in CI — the specific gate AAASM-5677
+    # found a governance pull request escaping.
+    workflow: .github/workflows/docs.yml
+    required_check: Docs Success
+    router_output: docs
+    paths:
+      - docs/**
+      - README.md
+      - CONTRIBUTING.md
+      - .github/workflows/docs.yml
+      - metadata/**
+      - scripts/generate_docs_metadata.py
+      - Cargo.toml
+      - scripts/propagate_versions.py
+      - .ci/check-metadata-drift.sh
+      - scripts/check_absolutes_unwaivable.py
+      # AAASM-5677 AC3: "verification-reports/** ... is inside the path filters
+      # of the workflow that runs the governance gates". Closing it took two
+      # edits, not one — this router glob, and the matching entry in
+      # check_absolutes_unwaivable.py's DEFAULT_GLOBS, which is what decides
+      # the scan set once the job runs.
+      - verification-reports/**/*.md
+    # AAASM-5677 review R1. The router decides whether the job RUNS; this decides
+    # what it READS once it does. They were out of step by one directory level:
+    # the router matched verification-reports/<dir>/x.md, the scanner's globs did
+    # not, so the job ran and scanned nothing. C9 compares the two using probes
+    # synthesised from the patterns, not from today's tree — a tree comparison
+    # passes vacuously until the first deeper file exists, which is exactly the
+    # state the defect shipped in.
+    scan_parity:
+      script: scripts/check_absolutes_unwaivable.py
+      attr: DEFAULT_GLOBS
+      # C9a calls this to compare against what the scanner REALLY reads.
+      resolver: default_paths
+      router_globs:
+        - verification-reports/**/*.md
+
+  - id: release-completeness
+    # AAASM-4456 / AAASM-5309 / AAASM-5315 / AAASM-5316. Each of these three
+    # jobs asserts that what a release DISTRIBUTES matches what the repository
+    # DECLARES it distributes. Their own comments record why the pull request
+    # is the only useful place: a defect found at tag-cut time is already a
+    # broken release with a burned version number.
+    workflow: .github/workflows/release-completeness.yml
+    required_check: Release Completeness Success
+    router_output: release
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/release.yml
+      - .github/workflows/release-completeness.yml
+      - scripts/check-release-completeness.sh
+      - .ci/strip-for-publish.sh
+      - scripts/check-publish-surface.sh
+      - aa-cli/src/commands/mod.rs
+      - aa-runtime/src/runtime.rs
+
+  - id: governance-coverage
+    # This gate's own coverage, declared like any other. Without an entry here
+    # the gate could be silently un-triggered by narrowing `ci.yml`'s router,
+    # and it would be the last thing to notice.
+    #
+    # `.github/workflows/*.yml` is deliberate and load-bearing: the gate reads
+    # the workflow files, so re-adding an `on.pull_request.paths` filter to any
+    # covering workflow must re-run it. Extension-qualified rather than a bare
+    # `.github/workflows/**` per CONTRIBUTING's filter-shape rule.
+    workflow: .github/workflows/ci.yml
+    required_check: CI Success
+    router_output: governance
+    paths:
+      - governance/**
+      - schemas/capability-manifest/**
+      - scripts/validate_capability_manifest.py
+      - scripts/check_governance_ci_coverage.py
+      - docs/src/adr/**/*.md
+      - .github/workflows/*.yml
+      - verification-reports/AAASM-5527-capability-coverage-matrix.yaml
+      - verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
