@@ -3146,4 +3146,275 @@ mod tests {
             None => std::env::remove_var("HTTPS_PROXY"),
         }
     }
+
+    // --- launch planning (AAASM-5705) ---
+
+    /// A plan resolved the way `--dry-run` resolves one.
+    ///
+    /// `--no-proxy` keeps the resolution off any real proxy trust check, so this
+    /// is the same construction the preview performs without depending on what
+    /// is running on the host.
+    fn preview_plan<'a>(adapter: &'a dyn DevToolAdapter, args: &'a RunArgs) -> plan::ResolvedRunPlan<'a> {
+        plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), adapter)
+            .resolve(plan::PlanPosture::Preview)
+            .expect("preview resolution reports refusals rather than raising them")
+    }
+
+    fn planning_args(tool: &str) -> RunArgs {
+        let mut args = run_args(tool);
+        args.no_proxy = true;
+        args
+    }
+
+    /// AC 8: every supported tool plans a launch, and the plan's two failure
+    /// signals agree.
+    ///
+    /// Driven from the registry rather than a hand-written list of four, so a
+    /// tool added to `SUPPORTED_TOOLS` is covered here without an edit — the same
+    /// discipline the tool-id agreement tests above use.
+    ///
+    /// The invariant is the one that matters now that a single `launch_command`
+    /// serves both callers: `PreviewFidelity` is what a preview prints and the
+    /// adapter error is what a live launch fails on, so a result that is
+    /// `FromAdapter` must carry no error, and one that carries an error must not
+    /// present itself as faithful. If those two ever disagree, one of the paths
+    /// is reporting a launch the other would not perform.
+    ///
+    /// Copilot is the load-bearing case: its `build_launch_command` always
+    /// errors by design, so on a host where it is detected this exercises the
+    /// degraded-with-error arm rather than only the happy one.
+    #[test]
+    fn every_supported_tool_plans_a_launch_with_agreeing_failure_signals() {
+        for tool in aa_devtool::registry::SUPPORTED_TOOLS {
+            let adapter = resolve_adapter(tool).expect("registered tool must resolve");
+            let args = planning_args(tool);
+            let handle = stub_handle(None);
+
+            let integration = plan::IntegrationPlan::probe(adapter.as_ref());
+            let detected = integration.detected().is_some();
+            let (cmd, fidelity, error) = integration.launch_command(&args, tool, &handle, None);
+
+            match (&fidelity, &error) {
+                (PreviewFidelity::FromAdapter, Some(e)) => {
+                    panic!("{tool}: a faithful command must carry no adapter error, got {e}")
+                }
+                (PreviewFidelity::Degraded(_), None) if detected => {
+                    // The tool is installed but the adapter declined to build a
+                    // command and said nothing about why — a live launch would
+                    // then fail with no message to fail on.
+                    panic!("{tool}: a degraded command from an installed tool must name the error")
+                }
+                _ => {}
+            }
+
+            if !detected {
+                assert!(
+                    matches!(fidelity, PreviewFidelity::Degraded(_)),
+                    "{tool}: an uninstalled tool must degrade rather than claim fidelity"
+                );
+                assert_eq!(
+                    cmd.get_program().to_string_lossy(),
+                    *tool,
+                    "{tool}: the fallback command must name the tool the operator asked for"
+                );
+                assert!(
+                    error.is_none(),
+                    "{tool}: 'not installed' is a detection fact, not an adapter error"
+                );
+            }
+        }
+    }
+
+    /// The bound launch composes both layers: what the *plan* contributes (this
+    /// session's governance identity) and what the *adapter* contributes (the CA
+    /// path and the normalised proxy URL).
+    ///
+    /// Before AAASM-5705 the preview built these separately from the live launch,
+    /// and each drifted in turn — AAASM-5327 lost the adapter's half on the live
+    /// path, AAASM-5329 lost it in the preview. Asserting both halves are present
+    /// in one bound result is what makes losing either a test failure rather than
+    /// a silently ungoverned session.
+    #[test]
+    fn the_bound_launch_carries_both_the_session_identity_and_the_adapter_environment() {
+        let adapter = StubEnvContributing;
+        let args = planning_args("claude");
+        let resolved = preview_plan(&adapter, &args);
+        let handle = stub_handle(Some("team-a"));
+
+        let bound = resolved.bind(&handle);
+        let (effective, removed) = effective_child_env(bound.command(), bound.child_env());
+
+        assert_eq!(
+            effective.get("AA_AGENT_DID").map(String::as_str),
+            Some(run_registration::registration_did("test-agent").as_str()),
+            "the plan's governance identity must reach the child"
+        );
+        assert_eq!(
+            effective.get("AA_TEAM_ID").map(String::as_str),
+            Some("team-a"),
+            "the plan's team must reach the child"
+        );
+        assert_eq!(
+            effective.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
+            Some("/tmp/aasm-ca.pem"),
+            "the adapter's CA path must reach the child"
+        );
+        assert_eq!(
+            removed,
+            vec!["ANTHROPIC_API_KEY".to_string()],
+            "the adapter's removal must survive the bind"
+        );
+    }
+
+    /// The spec describes the command that will actually run, not a
+    /// reconstruction of it.
+    #[test]
+    fn the_execution_spec_describes_the_command_that_will_run() {
+        let adapter = StubEnvContributing;
+        let mut args = planning_args("claude");
+        args.tool_args = vec!["--resume".into(), "session-7".into()];
+        let resolved = preview_plan(&adapter, &args);
+        let handle = stub_handle(None);
+
+        let bound = resolved.bind(&handle);
+        let spec = bound.spec().expect("a UTF-8 argv must yield a spec");
+
+        assert_eq!(spec.program(), "claude-real-binary");
+        assert_eq!(spec.args(), ["--resume", "session-7"]);
+        assert_eq!(
+            spec.program(),
+            bound.command().get_program().to_string_lossy(),
+            "the spec must name the same program the launch will spawn"
+        );
+    }
+
+    /// AC 9: this refactor adds no protection claim.
+    ///
+    /// The spec carries no requirement, because nothing lowers policy into an
+    /// isolation requirement yet and no backend is selected. A requirement
+    /// appearing here without a backend asked to meet it is exactly the
+    /// "planned but never enforced" shape ADR 0035 exists to prevent, so this
+    /// fails the moment one is added ahead of the ticket that negotiates it.
+    #[test]
+    fn the_execution_spec_states_no_isolation_requirement_yet() {
+        let adapter = StubEnvContributing;
+        let args = planning_args("claude");
+        let resolved = preview_plan(&adapter, &args);
+        let bound = resolved.bind(&stub_handle(None));
+        let spec = bound.spec().expect("spec");
+
+        assert!(
+            spec.requirements().is_empty(),
+            "no backend is active, so a requirement here would be one nothing was asked to meet: {:?}",
+            spec.requirements()
+        );
+        assert_eq!(spec.required().count(), 0);
+    }
+
+    /// The identity a spec is built against is the one the launch presented,
+    /// with `--root-agent` recorded as lineage rather than flattened away.
+    ///
+    /// ADR 0035 §6 needs the ancestry in order to check later that sub-agent
+    /// identity narrows; a single parent string cannot express depth.
+    #[test]
+    fn the_execution_spec_identity_carries_the_team_and_the_lineage() {
+        let adapter = StubEnvContributing;
+        let mut args = planning_args("claude");
+        args.team_id = Some("team-a".into());
+        args.root_agent = Some("root-agent-1".into());
+        let resolved = preview_plan(&adapter, &args);
+
+        let bound = resolved.bind(&stub_handle(Some("team-a")));
+        let identity = bound.spec().expect("spec").identity();
+
+        assert_eq!(identity.agent_id, "test-agent", "the identity the launch presented");
+        assert_eq!(identity.team_id.as_deref(), Some("team-a"));
+        assert_eq!(identity.lineage, vec!["root-agent-1".to_string()]);
+        assert_eq!(identity.depth(), 1);
+    }
+
+    /// The credential posture has to distinguish authority we *removed* from
+    /// authority we merely *inherited* — ADR 0035 §9, and the difference between
+    /// a least-authority run and one that only looks like one.
+    ///
+    /// Both halves are asserted against a variable this test plants, so the
+    /// assertion does not depend on what the developer's shell happens to carry:
+    /// `ANTHROPIC_API_KEY` is credential-shaped *and* removed by the adapter, so
+    /// it must be recorded as removed and must not appear as ambient; the planted
+    /// token is credential-shaped and not removed, so it must appear as ambient.
+    #[test]
+    fn the_credential_posture_separates_removed_authority_from_inherited_authority() {
+        let _guard = crate::test_support::env_guard();
+        let prior_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let prior_token = std::env::var("AASM_TEST_PLANTED_TOKEN").ok();
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-inherited");
+        std::env::set_var("AASM_TEST_PLANTED_TOKEN", "planted");
+
+        let adapter = StubEnvContributing;
+        let args = planning_args("claude");
+        let resolved = preview_plan(&adapter, &args);
+        let bound = resolved.bind(&stub_handle(None));
+        let credentials = bound.spec().expect("spec").credentials().clone();
+
+        match prior_key {
+            Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v),
+            None => std::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+        match prior_token {
+            Some(v) => std::env::set_var("AASM_TEST_PLANTED_TOKEN", v),
+            None => std::env::remove_var("AASM_TEST_PLANTED_TOKEN"),
+        }
+
+        assert!(
+            credentials.removed.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "a variable the adapter unsets must be recorded as removed: {credentials:?}"
+        );
+        assert!(
+            !credentials.ambient_unremoved.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "a removed variable must not also be reported as reaching the child: {credentials:?}"
+        );
+        assert!(
+            credentials
+                .ambient_unremoved
+                .contains(&"AASM_TEST_PLANTED_TOKEN".to_string()),
+            "an inherited credential-shaped variable reaches the child and must be recorded: \
+             {credentials:?}"
+        );
+        assert!(
+            credentials.has_unremoved_ambient_authority(),
+            "the child inherits the operator's environment, so this run is not least-authority \
+             and must not report itself as one"
+        );
+        assert!(
+            credentials.delegated.is_empty(),
+            "`aasm run` hands the launched tool no credential of its own: {credentials:?}"
+        );
+    }
+
+    /// The name heuristic is a lower bound, and its two callers depend on that
+    /// bias in opposite directions — over-masking a preview, over-recording
+    /// ambient authority. Pins the shapes it must catch, and that an ordinary
+    /// name is not swept in.
+    #[test]
+    fn the_credential_name_heuristic_catches_secrets_and_connection_strings() {
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "AA_JWT_SECRET",
+            "DB_PASSWORD",
+            "GITHUB_TOKEN",
+            "AWS_SESSION_TOKEN",
+            "DATABASE_URL",
+            "MONGODB_URI",
+            "PG_DSN",
+            "some_lowercase_token",
+        ] {
+            assert!(
+                looks_like_credential_name(name),
+                "{name} must be treated as credential-shaped"
+            );
+        }
+        for name in ["LOG_LEVEL", "HOME", "PATH", "AA_TRACE_ID"] {
+            assert!(!looks_like_credential_name(name), "{name} must not be swept in");
+        }
+    }
 }
