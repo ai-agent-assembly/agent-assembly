@@ -530,11 +530,10 @@ async fn prevention_counts_only_events_with_all_four_conditions() {
 }
 
 // ---------------------------------------------------------------------------
-// AC4 — bounded metric-label cardinality
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // AAASM-5685 AC4 — the partially-measured window
+//
+// Note the neighbouring header below is AAASM-5359's AC4, a different ticket's
+// numbering. Kept apart deliberately so the two are not read as one section.
 // ---------------------------------------------------------------------------
 
 /// **AAASM-5685 AC4.** `prevention_rate` and `unmeasured_transmission_rate` sum
@@ -542,11 +541,13 @@ async fn prevention_counts_only_events_with_all_four_conditions() {
 ///
 /// # Why this case, and why it was not already covered
 ///
-/// Every existing test pins a window that is uniform in this respect: the
-/// prevention test has exactly one true prevention among four near-misses, and
-/// the empty-window test has nothing at all. Neither exercises the state a real
-/// deployment is actually in — some events observed by a layer that holds the
-/// bytes, others decided by a layer that does not.
+/// Not because no window mixes the two rates —
+/// [`prevention_counts_only_events_with_all_four_conditions`] already asserts
+/// both in one window. The gap is narrower and load-bearing: **no existing
+/// fixture contains positively-forwarded evidence.** Every event in this file
+/// is either `NotForwarded` or `NotRecorded`, so nothing distinguishes "we
+/// observed the bytes leave" from "we observed nothing", and a handler that
+/// counted a *forwarded* event as unmeasured would pass the whole suite.
 ///
 /// That state is where the two rates can silently contradict each other. They
 /// are computed from independent counters over the same denominator, so nothing
@@ -573,10 +574,17 @@ async fn a_partially_measured_window_keeps_the_two_rates_coherent() {
     let mut specs = Vec::new();
 
     for i in 0..3 {
+        // One event carries TWO findings, so `event_count` (10) and
+        // `finding_count` (11) differ. With one finding each they were equal and
+        // a rate denominated by the wrong one was indistinguishable — which this
+        // file's own module doc warns about, and which a mutation swapping
+        // `event_count` for `finding_count` in `prevention_rate` exploited.
+        let findings = if i == 0 { vec![email(), token()] } else { vec![email()] };
+        let blocked = findings.len() as u32;
         specs.push(
             EventSpec::new(&format!("evt-prevented-{i}"), "acme", RuntimeVerdictLabel::DENY)
-                .findings(vec![email()])
-                .dispositions(0, 1)
+                .findings(findings)
+                .dispositions(0, blocked)
                 .evidence(
                     EnforcementPoint::PreTransmission,
                     TransmissionEvidence::NotForwarded,
@@ -598,16 +606,26 @@ async fn a_partially_measured_window_keeps_the_two_rates_coherent() {
         );
     }
 
-    for (i, evidence) in [
-        TransmissionEvidence::ForwardedClean,
-        TransmissionEvidence::ForwardedCarryingSensitiveValue,
-        TransmissionEvidence::ForwardedClean,
+    // The verdicts matter. The first of these is **DENY**, pre-transmission and
+    // enforcing, so ADR 0032 §8 conditions 1, 2 and 4 all hold and the *only*
+    // thing keeping it out of `prevented` is condition 3 — its transmission
+    // evidence says the bytes went. With every event here `ALLOW`, condition 2
+    // excluded them on its own and the fixture could not show that transmission
+    // evidence was load-bearing at all: making `ForwardedClean` prove
+    // non-transmission left this test green.
+    for (i, (verdict, evidence)) in [
+        (RuntimeVerdictLabel::DENY, TransmissionEvidence::ForwardedClean),
+        (
+            RuntimeVerdictLabel::ALLOW,
+            TransmissionEvidence::ForwardedCarryingSensitiveValue,
+        ),
+        (RuntimeVerdictLabel::ALLOW, TransmissionEvidence::ForwardedClean),
     ]
     .into_iter()
     .enumerate()
     {
         specs.push(
-            EventSpec::new(&format!("evt-forwarded-{i}"), "acme", RuntimeVerdictLabel::ALLOW)
+            EventSpec::new(&format!("evt-forwarded-{i}"), "acme", verdict)
                 .findings(vec![email()])
                 .evidence(EnforcementPoint::PreTransmission, evidence, EnforcementMode::Enforce),
         );
@@ -620,46 +638,65 @@ async fn a_partially_measured_window_keeps_the_two_rates_coherent() {
         .await
         .json();
 
-    assert_eq!(counter(&body, "event_count"), 10, "fixture size");
+    let event_count = counter(&body, "event_count");
+    let finding_count = counter(&body, "finding_count");
+    let prevented = counter(&body, "prevented_event_count");
+    let unmeasured = counter(&body, "unmeasured_transmission_event_count");
 
     let prevention = body["rates"]["prevention_rate"]
         .as_f64()
         .expect("a non-empty window has a prevention rate");
-    let unmeasured = body["rates"]["unmeasured_transmission_rate"]
+    let unmeasured_rate = body["rates"]["unmeasured_transmission_rate"]
         .as_f64()
         .expect("a non-empty window has an unmeasured rate");
 
-    assert_eq!(prevention, 3.0 / 10.0, "three events satisfy all four conditions");
-    assert_eq!(unmeasured, 4.0 / 10.0, "four events observed nothing");
+    // Order matters. An earlier version asserted the two exact values first, so
+    // everything below was unreachable — reached only when both rates already
+    // equalled their expected constants, at which point every relation is
+    // trivially true. The relations are the property; the constants are a
+    // sanity check on the fixture, so they come last.
 
-    // The coherence property, stated as a relation rather than as two constants
-    // so it keeps meaning if the fixture is ever resized.
-    assert!(
-        prevention + unmeasured <= 1.0,
-        "prevented and unmeasured are disjoint, so their rates cannot exceed 1.0 \
-         (got {prevention} + {unmeasured})"
+    // Both rates are denominated by EVENTS, not findings. The fixture has 10
+    // events and 11 findings precisely so a rate computed over the wrong one is
+    // a different number.
+    assert_ne!(event_count, finding_count, "fixture must distinguish the denominators");
+    assert_eq!(
+        prevention,
+        prevented as f64 / event_count as f64,
+        "prevention_rate must be denominated by event_count"
+    );
+    assert_eq!(
+        unmeasured_rate,
+        unmeasured as f64 / event_count as f64,
+        "unmeasured_transmission_rate must be denominated by event_count"
     );
 
-    // Prevention is a strict subset of what was measured: an event whose bytes
-    // nothing observed can never be proved un-transmitted.
-    let measured = 1.0 - unmeasured;
+    // The coherence property: prevented and unmeasured are disjoint, because a
+    // row carries one `transmission_evidence` and `NotForwarded` cannot also be
+    // `not_recorded`. Asserted on the COUNTS as well as the rates — the rate
+    // form alone would still hold if both were scaled by a shared mistake.
     assert!(
-        prevention <= measured,
-        "prevention_rate ({prevention}) exceeded the measured share ({measured}), \
-         which would mean an unobserved event was counted as prevented"
+        prevented + unmeasured <= event_count,
+        "prevented ({prevented}) + unmeasured ({unmeasured}) exceeded the window ({event_count}); \
+         an event was counted as both proved-not-transmitted and never-observed"
+    );
+    assert!(prevention + unmeasured_rate <= 1.0);
+
+    // The window is genuinely mixed. Without these the assertions above also
+    // hold on a fully-unmeasured window, which is the structurally-zero state
+    // AAASM-5685 exists to record and must never be confused with this one.
+    assert!(prevented > 0, "fixture must contain real preventions");
+    assert!(unmeasured > 0, "fixture must contain unmeasured events");
+    assert!(
+        prevented + unmeasured < event_count,
+        "fixture must contain measured events that were NOT prevented, or condition 3 \
+         is never the thing doing the excluding"
     );
 
-    // ...and the window is genuinely mixed. Without this the assertions above
-    // would also pass on a fully-unmeasured window, where prevention is 0 for
-    // the structural reason AAASM-5685 exists to record — which is exactly the
-    // case they must not be confused with.
-    assert!(prevention > 0.0, "fixture must contain real preventions");
-    assert!(unmeasured > 0.0, "fixture must contain unmeasured events");
-    assert!(
-        measured > prevention,
-        "fixture must contain measured events that were NOT prevented, or the \
-         subset relation above is trivially satisfied"
-    );
+    // Finally the concrete shape, so a fixture edit that silently changes the
+    // population is visible.
+    assert_eq!((event_count, finding_count), (10, 11), "fixture size");
+    assert_eq!((prevented, unmeasured), (3, 4));
 }
 
 /// **AC4.** `/breakdown` refuses the forbidden dimensions and serves the
