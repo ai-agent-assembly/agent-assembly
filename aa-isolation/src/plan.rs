@@ -619,3 +619,36 @@ pub fn negotiate(
         posture,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The justification for `#[allow(clippy::result_large_err)]` on
+    /// [`negotiate`] and [`crate::backend::IsolationBackend::plan`].
+    ///
+    /// That lint targets a small `Ok` variant paying for a large `Err` on every
+    /// call. Here the `Ok` variant is the larger of the two, so the `Result` is
+    /// exactly as big either way and boxing the error would buy nothing while
+    /// putting a `Box` in the public contract.
+    ///
+    /// If `EnforcementPlan` ever shrinks below `PlanRefusal`, that reasoning
+    /// stops holding — and this fails, instead of the comment going stale
+    /// unnoticed.
+    #[test]
+    fn refusal_is_free_to_carry_by_value() {
+        use core::mem::size_of;
+        assert!(
+            size_of::<PlanRefusal>() <= size_of::<EnforcementPlan>(),
+            "PlanRefusal ({}) outgrew EnforcementPlan ({}); revisit the \
+             result_large_err allow on `negotiate` and `IsolationBackend::plan`",
+            size_of::<PlanRefusal>(),
+            size_of::<EnforcementPlan>(),
+        );
+        assert_eq!(
+            size_of::<Result<EnforcementPlan, PlanRefusal>>(),
+            size_of::<EnforcementPlan>(),
+            "boxing the error variant would have to save bytes to be worth it",
+        );
+    }
+}
