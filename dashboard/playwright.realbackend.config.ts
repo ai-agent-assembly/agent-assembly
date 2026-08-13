@@ -1,0 +1,51 @@
+import { defineConfig } from '@playwright/test'
+
+import base from './playwright.config'
+
+/**
+ * The real-backend e2e lane (AAASM-5694).
+ *
+ * # Why this is a separate config and not an entry in the CI one
+ *
+ * `playwright.ci.config.ts` applies `playwright.quarantine.ts`, and
+ * `hitl-approval.spec.ts` is *in* that quarantine list — quarantined precisely
+ * because it needs a live gateway the `dashboard-e2e` job cannot provide (that
+ * job body contains zero matches for `rust`, `cargo` or `toolchain`). Adding
+ * these specs to the CI config would either un-quarantine a spec that still
+ * cannot run there, or run it against nothing.
+ *
+ * So the split is along the axis that actually matters: **whether the lane
+ * provisions a backend**. This config runs only the specs that need one, and
+ * only in the job that starts one.
+ *
+ * # No quarantine list here, on purpose
+ *
+ * A quarantine is a list of specs allowed to be absent. This lane's whole
+ * premise is that absence is the failure being fixed, so it does not get one.
+ * If a spec here is broken, it goes red.
+ */
+export default defineConfig({
+  ...base,
+
+  testMatch: [
+    // Asserts the paginated envelope against the live server — the AAASM-4892
+    // drift class the mocked gate structurally cannot see.
+    '**/real-backend-contract.spec.ts',
+    // AAASM-5360's acceptance evidence: proxies /api/v1/** to the live server.
+    '**/verify-aaasm-5360.spec.ts',
+    // The one pre-existing spec that asserts a genuine round trip.
+    '**/hitl-approval.spec.ts',
+  ],
+
+  // Retries hide a flaky backend boot, which is the one failure this lane must
+  // report rather than paper over.
+  retries: 0,
+
+  reporter: [
+    ['list'],
+    // Consumed by `scripts/assert-e2e-actually-ran.mjs`. The exit code alone
+    // cannot distinguish "passed" from "skipped everything", which is the
+    // defect AAASM-5694 reports; the JSON report can.
+    ['json', { outputFile: 'test-results/real-backend-report.json' }],
+  ],
+})
