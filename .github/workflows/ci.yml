@@ -977,7 +977,20 @@ jobs:
         # Using the bundled-LLVM default (no --no-default-features) avoids fragile
         # system-LLVM package discovery. Only runs on cache miss.
         if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
-        run: cargo install bpf-linker
+        # Pinned to the version the cache key names. It was previously unpinned,
+        # so `cargo install` took the latest while the key still said 0.10.3 —
+        # the two could drift, and they did: bpf-linker 0.11.0 stopped bundling
+        # LLVM, so the install began failing with
+        #   Error: could not find llvm-config in directories specified by environment
+        # which is exactly the "fragile system-LLVM package discovery" the
+        # comment above says this step avoids.
+        #
+        # This never surfaced because the job is path-gated and had been skipped
+        # on every recent run of `main`. Removing the pull_request path filter in
+        # this same PR makes it run on every pull request, and `ci-success`
+        # needs it — so an unpinned install here would block every merge the
+        # moment `CI Success` becomes a required check (AAASM-5675).
+        run: cargo install bpf-linker --version 0.10.3 --locked
       - name: Build eBPF probes
         # AAASM-3712: build via the shared script — the SINGLE SOURCE OF TRUTH
         # also used by release.yml's AAASM-3601 step, so the two recipes can
@@ -1083,7 +1096,20 @@ jobs:
           key: bpf-linker-${{ runner.os }}-0.10.3
       - name: Install bpf-linker
         if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
-        run: cargo install bpf-linker
+        # Pinned to the version the cache key names. It was previously unpinned,
+        # so `cargo install` took the latest while the key still said 0.10.3 —
+        # the two could drift, and they did: bpf-linker 0.11.0 stopped bundling
+        # LLVM, so the install began failing with
+        #   Error: could not find llvm-config in directories specified by environment
+        # which is exactly the "fragile system-LLVM package discovery" the
+        # comment above says this step avoids.
+        #
+        # This never surfaced because the job is path-gated and had been skipped
+        # on every recent run of `main`. Removing the pull_request path filter in
+        # this same PR makes it run on every pull request, and `ci-success`
+        # needs it — so an unpinned install here would block every merge the
+        # moment `CI Success` becomes a required check (AAASM-5675).
+        run: cargo install bpf-linker --version 0.10.3 --locked
       - name: Build BPF probes
         # Pre-builds the BPF ELF objects that `aa-ebpf`'s build.rs embeds
         # via `include_bytes_aligned!`. Doing it explicitly here surfaces
