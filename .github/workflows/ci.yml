@@ -315,21 +315,38 @@ jobs:
   # are merges (`HEAD^1..HEAD` would walk fine on push), but every commit in that
   # range was already walked by this job on the PR that introduced it.
   commit-range-build:
-    # AAASM-5675: `needs: [changes]` + a router gate, added when the
-    # `on.pull_request` path filter was removed. That filter was this job's ONLY
-    # gating — it has never had a `needs.changes.outputs.*` condition — so
-    # without this it would run a full-workspace `cargo check` on every pull
-    # request, including a one-line README fix. Measured on this branch: 1m06s of
-    # cargo on a warm cache for a single build-relevant commit, 6m38s on a
-    # two-commit non-Rust PR, ~5m for a cold first commit.
+    # AAASM-5675 — COST DISCLOSURE, deliberately not a router gate.
     #
-    # It cannot be left unconditional: `CONTRIBUTING.md` ("No filter at all")
-    # states that a job with non-trivial cost must carry some change-based
-    # gating, and that omission is not an exemption. The `rust` filter is the
-    # right one because the script's own `is_skippable()` is what decides per
-    # commit; this only decides whether the walk is worth starting.
-    needs: [changes]
-    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
+    # Removing `on.pull_request.paths` removed this job's only gating: it has
+    # never carried a `needs.changes.outputs.*` condition. So it now runs on
+    # every pull request, including a one-line README fix. That cost is real and
+    # is stated here rather than left to be discovered:
+    #
+    #   * ~1m07s of `cargo check` on a warm cache — the FLOOR for any pull
+    #     request, because `is_skippable()` never skips a merge commit and the
+    #     synthetic `refs/pull/N/merge` head is always the last element of the
+    #     range. Every PR builds at least that one commit.
+    #   * 6m43s measured on this branch's own head run (2 build-relevant commits).
+    #   * ~5m for a cold first commit, per this job's own env comment.
+    #
+    # A first review asked for either a gate or an explicit justification of the
+    # cost. **The gate is not available**, and the paragraph directly above says
+    # why: `needs.changes.outputs.rust` is a `dorny/paths-filter` over the PR's
+    # NET three-dot diff, and this job exists precisely because intermediate
+    # commits differ from that diff. An earlier revision of this PR added exactly
+    # that gate; it would have reopened the AAASM-5385 hole (break -> revert ->
+    # dashboard work lands an unbuildable commit with every check green) and it
+    # also silently dropped coverage of `schemas/**` and the two `examples/`
+    # workspace members, which `.ci/verify-range-builds.sh` classifies MUST BUILD.
+    #
+    # `CONTRIBUTING.md` "No filter at all" is satisfied by the `pull_request`
+    # condition below; `CONTRIBUTING.md` (`ci-success` treats a skipped need as
+    # passing — "if your job can be broken by a change outside its own filter, it
+    # needs a different guard") is what rules the net-diff router out. A
+    # range-aware guard would be the real answer and does not exist yet; until it
+    # does, paying the floor cost is the correct trade against landing an
+    # unbuildable commit on `main`.
+    if: github.event_name == 'pull_request'
     name: Every commit in the range builds
     runs-on: ubuntu-latest
     env:
