@@ -38,14 +38,12 @@ authoritative visual spec at all — is what let the claim sit there.
 
 # The one implementation choice worth reading before changing anything
 
-The mask filler is `.` (see `_FILLER`). §6.2 requires a filler "that no pattern
-matches", and preserving byte offsets requires it be exactly one character wide.
-`.` satisfies both *and* one more thing that a neutral character such as `\\x00`
-would not: `CLAIM-ABS-11`, `CLAIM-ABS-12` and `CLAIM-VERB-01` span with
-`[^.;:!?]{0,40}`, which happily crosses `\\x00` and would let a collocation rule
-join a word on one side of a code span to a governance noun on the other. `.` is
-excluded by those classes, so masking a region also stops a span through it,
-which is the intended reading.
+The mask filler is NUL (see `_FILLER`), and the reasoning is recorded there
+because the first version got it wrong in a way that produced **blocking false
+positives on correct English**. `.` was used initially, on the theory that a
+masked region should also stop a collocation span; because `.` is a clause
+boundary it truncated the `NEG` window instead, so a negated sentence containing
+any inline code span was reported as a violation.
 """
 
 from __future__ import annotations
@@ -92,7 +90,25 @@ CFG_NOUN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_FILLER = "."
+# NUL, and the choice matters in two directions that pull against each other.
+#
+# It must not be a clause boundary. `.` was used here first, and because
+# `CLAUSE_BOUNDARIES` contains `.`, any masked region between a negation and a
+# match truncated the NEG window — so "It does not, per `RFC-1`, catch
+# everything." was reported as a **blocking** violation while the identical
+# sentence without backticks was correctly suppressed. Banned absolutes are
+# unwaivable (§7.4), so an author hit by that had no escape but to reword correct
+# English, which §5.1 names as the way a blocking rule gets switched off.
+#
+# It must also not be whitespace. `SEP` expands to `[-‑_\s]+`, so a space filler
+# would let `catch` and `everything` on opposite sides of a code span match
+# CLAIM-ABS-01 as though they were adjacent.
+#
+# NUL satisfies both: it is a non-word character (so `\b` still anchors), it is
+# not in `CLAUSE_BOUNDARIES`, it is not matched by `SEP`, and `[^.;:!?]` accepts
+# it — so a collocation rule may still span a code span, which is what E3's
+# "exempt the span, not the sentence around it" means.
+_FILLER = "\x00"
 
 
 @dataclass(frozen=True)
@@ -203,6 +219,51 @@ def in_scope(path: str) -> bool:
     return _matches_any(path, INCLUDE_GLOBS)
 
 
+def _is_repo_relative(root: Path, rel: str) -> bool:
+    """True when `rel` names a path inside the repository (so scope applies)."""
+    candidate = Path(rel)
+    if candidate.is_absolute():
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return False
+    return (root / rel).exists() or not candidate.is_absolute()
+
+
+def _changed_lines(root: Path, base: str, targets: list[str]) -> dict[str, set[int]]:
+    """Line numbers added or modified since `base`, per file.
+
+    Uses `git diff -U0` and reads the post-image hunk headers. A failure here is
+    raised, never swallowed: a gate that silently treats "I could not work out
+    what changed" as "nothing changed" passes everything, which is the defect
+    this whole ticket is about.
+    """
+    result = subprocess.run(
+        ["git", "diff", "-U0", "--no-color", f"{base}...HEAD", "--", *targets],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git diff against {base!r} failed ({result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+
+    changed: dict[str, set[int]] = {}
+    current: str | None = None
+    hunk = re.compile(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@")
+    for line in result.stdout.split("\n"):
+        if line.startswith("+++ b/"):
+            current = line[6:]
+            changed.setdefault(current, set())
+        elif current and (m := hunk.match(line)):
+            start = int(m.group(1))
+            count = int(m.group(2) or 1)
+            changed[current].update(range(start, start + count))
+    return changed
+
+
 def tracked_files(root: Path) -> list[str]:
     """§6.5: tracked files only, so a gitignored artifact cannot change the result."""
     out = subprocess.run(
@@ -240,7 +301,74 @@ def _blockquote_depth(line: str) -> tuple[int, str]:
     return marker.count(">"), line[len(marker) :]
 
 
-def _mask_code_regions(text: str) -> str:
+# A real `<meta …>` element, not the word "meta" in prose. The first version was
+# `<meta\b` matched anywhere on the line, and it marked an entire ADR table row
+# structural because that row *discusses* `<meta description>` — promoting a
+# correctly-quoted negative example to a blocking violation. Requiring the
+# closing `>` and marking only the tag's own span fixes both halves.
+_META_TAG = re.compile(r"<meta\s[^>]*>", re.IGNORECASE)
+_TITLE_DESC_LINE = re.compile(r"^\s*(?:title|description)\s*:", re.IGNORECASE)
+_ATX_HEADING = re.compile(r"^\s{0,3}#{1,6}\s")
+
+
+def _structural_ranges(text: str) -> list[tuple[int, int]]:
+    """Offsets where §6.3.1 bound 3 says E3 and E6 do **not** apply.
+
+    ADR 0034 Decision 10 exempts a banned absolute only when it is labelled and
+    presented as a non-product assertion, and bound 3 withdraws that even then
+    for "a heading, a summary, page metadata, SEO text, marketing copy, or a
+    user-facing conclusion" — because a heading is quoted alone in a table of
+    contents and a `<meta description>` is quoted alone in a search result, and
+    the label does not travel there.
+
+    So in these positions a *backticked* or *quoted* banned absolute keeps its
+    own severity. Without this the gate had a one-character bypass: the spec's
+    own worked example -- a heading whose banned phrase sits in backticks --
+    scored 0 blocking / 0 finding / 0 info — silent at every severity on a
+    landing-page headline that renders the words in full.
+    """
+    ranges: list[tuple[int, int]] = []
+    offset = 0
+    lines = text.split("\n")
+    in_front_matter = False
+    for index, line in enumerate(lines):
+        start, end = offset, offset + len(line)
+        offset = end + 1
+
+        # YAML front matter: a leading `---` on the very first line opens it.
+        if index == 0 and line.strip() == "---":
+            in_front_matter = True
+            continue
+        if in_front_matter:
+            if line.strip() in {"---", "..."}:
+                in_front_matter = False
+            else:
+                ranges.append((start, end))
+            continue
+
+        # A heading is structural in its entirety — it is quoted alone in a
+        # table of contents.
+        if _ATX_HEADING.match(line):
+            ranges.append((start, end))
+            continue
+
+        # `title:` / `description:` — only the VALUE is the metadata.
+        if m := _TITLE_DESC_LINE.match(line):
+            ranges.append((start + m.end(), end))
+            continue
+
+        # A `<meta …>` element marks only its own span, so prose that merely
+        # mentions one is untouched.
+        for m in _META_TAG.finditer(line):
+            ranges.append((start + m.start(), start + m.end()))
+    return ranges
+
+
+def _in_ranges(ranges: list[tuple[int, int]], offset: int) -> bool:
+    return any(lo <= offset < hi for lo, hi in ranges)
+
+
+def _mask_code_regions(text: str, structural: list[tuple[int, int]] | None = None) -> str:
     """E1-E5. Returns a same-length string with exempt regions replaced by `.`."""
     chars = list(text)
     n = len(text)
@@ -282,7 +410,17 @@ def _mask_code_regions(text: str) -> str:
     masked = "".join(chars)
 
     # E3 inline code spans, on the partially masked text.
-    for m in re.finditer(r"(`+)(?:.|\n)*?\1", masked):
+    #
+    # `[^`\n]` and not `(?:.|\n)`: CommonMark forbids a blank line inside a code
+    # span, and the permissive form let one stray backtick pair up with another
+    # lines away and mask everything between them — silently deleting whatever
+    # violations lived in the gap.
+    structural = structural or []
+    for m in re.finditer(r"(`+)[^`\n]*?\1", masked):
+        # §6.3.1 bound 3: in a heading, front matter, `<meta>` or a
+        # `title:`/`description:` value, E3 does not apply.
+        if _in_ranges(structural, m.start()):
+            continue
         blank(m.start(), m.end())
     masked = "".join(chars)
 
@@ -376,8 +514,9 @@ class Diagnostic:
 
 
 def scan_text(path: str, original: str, markdown: bool = True) -> list[Diagnostic]:
+    structural = _structural_ranges(original) if markdown else []
     if markdown:
-        masked = _mask_code_regions(original)
+        masked = _mask_code_regions(original, structural)
         normalised = _join_soft_wraps(masked, original)
     else:
         normalised = original
@@ -424,7 +563,7 @@ def scan_text(path: str, original: str, markdown: bool = True) -> list[Diagnosti
             rel = m.start() - start
             in_quote = any(
                 lo <= rel < hi for lo, hi in _quoted_spans(match_text[start:end])
-            )
+            ) and not _in_ranges(structural, m.start())
             if in_quote:
                 # §6.6: emitted IN PLACE OF the rule's own diagnostic.
                 diagnostics.append(
@@ -472,6 +611,13 @@ def main(argv: list[str]) -> int:
         help="never exit non-zero; used while the blocking baseline is non-empty",
     )
     parser.add_argument("--selftest", action="store_true", help="run built-in fixtures")
+    parser.add_argument(
+        "--diff-base",
+        help=(
+            "restrict BLOCKING diagnostics to lines added or modified since this "
+            "ref, per claim-vocabulary.md 6.6's adoption sequence"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.selftest:
@@ -493,14 +639,42 @@ def main(argv: list[str]) -> int:
                     targets.append(str(candidate))
             else:
                 targets.append(p)
+        # 6.5's exclusions are semantic, not a convenience: `verification-reports/**`
+        # is excluded because its job is to QUOTE overstatements in order to
+        # disprove them. An explicit path must not smuggle those back in.
+        dropped = [t for t in targets if _is_repo_relative(root, t) and not in_scope(t)]
+        if dropped:
+            for t in dropped:
+                print(f"skipped (outside 6.5 scope): {t}")
+            targets = [t for t in targets if t not in set(dropped)]
     else:
         targets = [p for p in tracked_files(root) if in_scope(p)]
 
+    changed_lines: dict[str, set[int]] | None = None
+    if args.diff_base:
+        changed_lines = _changed_lines(root, args.diff_base, targets)
+
     diagnostics: list[Diagnostic] = []
     for rel in targets:
-        diagnostics.extend(scan_file(root, rel))
+        for d in scan_file(root, rel):
+            # 6.6: while the tree's blocking baseline is non-empty, blocking
+            # rules gate the pull request's own added and modified lines. A
+            # whole-file gate would fail an author on someone else's
+            # pre-existing violation, which is not the adoption sequence the
+            # specification describes.
+            if (
+                changed_lines is not None
+                and d.severity == "blocking"
+                and d.line not in changed_lines.get(d.path, set())
+            ):
+                d = Diagnostic(
+                    d.path, d.line, d.col, d.rule_id, "pre-existing",
+                    d.message + " (pre-existing; not introduced by this change)",
+                    d.matched,
+                )
+            diagnostics.append(d)
 
-    counts = {"blocking": 0, "finding": 0, "info": 0}
+    counts = {"blocking": 0, "finding": 0, "info": 0, "pre-existing": 0}
     for d in diagnostics:
         counts[d.severity] = counts.get(d.severity, 0) + 1
         print(f"{d.path}:{d.line}:{d.col} {d.rule_id} {d.severity} {d.message} — {d.matched!r}")
@@ -509,7 +683,8 @@ def main(argv: list[str]) -> int:
     # measurement, and a scan set that silently shrank must be visible here.
     print(
         f"\ncheck_claim_vocabulary: {len(targets)} file(s) scanned; "
-        f"{counts['blocking']} blocking, {counts['finding']} finding, {counts['info']} info."
+        f"{counts['blocking']} blocking, {counts['finding']} finding, "
+        f"{counts['info']} info, {counts['pre-existing']} pre-existing."
     )
 
     if args.report_only:
@@ -542,11 +717,71 @@ SELFTEST_CASES: tuple[tuple[str, str, str | None], ...] = (
     ('The bug was "an immutable audit trail" on the front page.', "md", QUOTE_RULE_ID),
     ("Immutable governance trail across all agents.", "jsx", None),
     ("Recorded in an immutable audit trail.", "jsx", "CLAIM-ABS-09"),
+    # Rules that previously had no positive case at all. CLAIM-VERB-01 is 11 of
+    # the 12 baseline findings — the most-firing rule was the least tested.
+    ("Checked before every action the agent takes.", "md", "CLAIM-ABS-06"),
+    ("Our coverage is complete.", "md", "CLAIM-ABS-12"),
+    ("Agent Assembly enforces a zero-trust posture.", "md", "CLAIM-VERB-01"),
+    # Exempt regions E1, E2 and E4, none of which had a case.
+    ("```\nimmutable audit\n```", "md", None),
+    ("    immutable audit trail\n", "md", None),
+    ("<!-- immutable audit -->", "md", None),
+    ("See [the docs](https://example.com/immutable-audit-trail).", "md", None),
+    # §6.3.1 bound 3: a heading, front matter, `<meta>` or a title/description
+    # value keeps the rule's own severity even when the phrase is backticked or
+    # quoted. Before this, backticks in a heading were a one-character bypass of
+    # a blocking gate.
+    ("## Agent Assembly `catches everything` on your fleet", "md", "CLAIM-ABS-01"),
+    ('## The "immutable audit" trail', "md", "CLAIM-ABS-09"),
+    ('<meta name="description" content="an immutable audit trail">', "md", "CLAIM-ABS-09"),
+    ("---\ntitle: An immutable audit trail\n---\n", "md", "CLAIM-ABS-09"),
+    # ...but the same phrase backticked in body prose is still exempt.
+    ("The phrase `catches everything` is banned in body copy.", "md", None),
+    # The mask filler must not truncate the NEG window. With `.` as filler these
+    # two lines disagreed — the backticked one was reported *blocking* while the
+    # identical sentence without backticks was correctly suppressed, and banned
+    # absolutes are unwaivable, so the author's only escape was to reword correct
+    # English.
+    ("It does not, per `RFC-1`, catch everything.", "md", None),
+    ("It does not, per RFC-1, catch everything.", "md", None),
+    ("This is not a claim of `verified` complete coverage.", "md", None),
 )
 
 
 def selftest() -> int:
     failures: list[str] = []
+
+    # Written out literally, NOT derived from `RULES`. Deriving it from the
+    # thing under test is circular: a severity typo changes both sides and the
+    # assertion agrees with itself. That is exactly what the first version did,
+    # and a mutation flipping CLAIM-ABS-09 from `blocking` to `info` — which
+    # disables the gate, since exit status depends only on `blocking` — passed.
+    EXPECTED_SEVERITY = {
+        "CLAIM-ABS-01": "blocking",
+        "CLAIM-ABS-02": "finding",
+        "CLAIM-ABS-03": "blocking",
+        "CLAIM-ABS-04": "blocking",
+        "CLAIM-ABS-05": "blocking",
+        "CLAIM-ABS-06": "finding",
+        "CLAIM-ABS-07": "blocking",
+        "CLAIM-ABS-08": "blocking",
+        "CLAIM-ABS-09": "blocking",
+        "CLAIM-ABS-10": "blocking",
+        "CLAIM-ABS-11": "finding",
+        "CLAIM-ABS-12": "finding",
+        "CLAIM-VERB-01": "finding",
+        QUOTE_RULE_ID: "info",
+    }
+    expected_severity = EXPECTED_SEVERITY
+
+    # The declared table must also agree with the rule set, so a NEW rule cannot
+    # be added without deciding its severity here.
+    for rule in RULES:
+        if EXPECTED_SEVERITY.get(rule.rule_id) != rule.severity:
+            failures.append(
+                f"{rule.rule_id} declares severity {rule.severity!r} but the "
+                f"selftest expects {EXPECTED_SEVERITY.get(rule.rule_id)!r}"
+            )
 
     for text, kind, expected in SELFTEST_CASES:
         diags = scan_text("<selftest>", text + "\n", markdown=(kind != "jsx"))
@@ -554,8 +789,26 @@ def selftest() -> int:
         if expected is None:
             if ids:
                 failures.append(f"expected no diagnostic for {text!r}, got {sorted(ids)}")
-        elif expected not in ids:
+            continue
+        if expected not in ids:
             failures.append(f"expected {expected} for {text!r}, got {sorted(ids) or 'none'}")
+            continue
+        # Assert the SEVERITY too. Exit status depends only on `blocking`, so a
+        # rule silently downgraded to `info` disables the gate while this suite
+        # still reports every case passing.
+        for d in diags:
+            if d.rule_id == expected and d.severity != expected_severity[expected]:
+                failures.append(
+                    f"{expected} emitted severity {d.severity!r}, expected "
+                    f"{expected_severity[expected]!r} for {text!r}"
+                )
+
+    # Every rule must have at least one positive case. Without this, deleting a
+    # rule outright leaves the suite green.
+    covered = {expected for _, _, expected in SELFTEST_CASES if expected}
+    for rule in RULES:
+        if rule.rule_id not in covered:
+            failures.append(f"{rule.rule_id} has no positive selftest case")
 
     # The soft-wrap join (§6.2 step 2): a phrase split across a hard wrap whose
     # second line is a continuation must still be found.
@@ -583,7 +836,8 @@ def selftest() -> int:
         print(f"\ncheck_claim_vocabulary --selftest: {len(failures)} failure(s).")
         return 1
     print(
-        f"check_claim_vocabulary --selftest: {len(SELFTEST_CASES) + 4} case(s) passed."
+        f"check_claim_vocabulary --selftest: {len(SELFTEST_CASES) + 3} table case(s) "
+        f"+ 3 inline check(s) passed; {len(RULES)} rule(s) have positive coverage."
     )
     return 0
 

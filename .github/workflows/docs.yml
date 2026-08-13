@@ -33,6 +33,17 @@ on:
       # one committed is gated, rather than sitting outside the trigger unnoticed —
       # the vacuous-pass guard cannot catch that, since the docs/ globs still match.
       - 'TRUTH-ADOPTION.md'
+      # AAASM-5679: the claim-vocabulary gate's scope is wider than `docs/**`,
+      # and a scope the workflow never fires for is a scope that is not gated.
+      # `design/**` is where the AC3 violation lived (ADR 0025 makes those specs
+      # authoritative), `.claude/**` is in the spec's 6.5 scope, and a README at
+      # any depth is too. The checker itself is listed for the same reason the
+      # two scripts above are: a change to a gate must re-run it.
+      - 'design/**'
+      - '.claude/**'
+      - '**/README.md'
+      - 'governance/**'
+      - 'scripts/check_claim_vocabulary.py'
   push:
     branches: [main]
     paths:
@@ -405,6 +416,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # AAASM-5679: full history. The claim-vocabulary gate below diffs
+          # against the pull request's base, and a three-dot diff needs a merge
+          # base. Under the default `fetch-depth: 1` git reports
+          #   fatal: <sha>...HEAD: no merge base
+          # and the step's `|| true` turned that into "no files changed" — so
+          # the gate passed on every pull request regardless of content. A gate
+          # that cannot fail is worse than no gate, because it reads as one.
+          fetch-depth: 0
 
       - name: Fail if a registry-owned canonical value drifts
         run: bash .ci/check-metadata-drift.sh
@@ -437,10 +457,6 @@ jobs:
       # bare invocation once the baseline reaches zero.
       - name: Claim vocabulary — selftest, then enforce
         env:
-          # Via env rather than inlined into `run:` — a `${{ }}` expansion is
-          # substituted into the script text before the shell sees it, so any
-          # event-controlled field becomes shell source. This one is a SHA, but
-          # the pattern is the point.
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
@@ -450,22 +466,17 @@ jobs:
           python3 scripts/check_claim_vocabulary.py --report-only
           echo "::endgroup::"
 
-          base="${BASE_SHA:-}"
-          if [ -z "$base" ]; then
-            echo "not a pull request — full-tree report above is the whole check"
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "not a pull request — the full-tree report above is the whole check"
             exit 0
           fi
-          git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
-          changed=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD -- \
-            '*.md' '*.markdown' '*.mdx' '*.html' '*.txt' '*.jsx' '*.tsx' || true)
-          if [ -z "$changed" ]; then
-            echo "no in-scope files changed"
-            exit 0
-          fi
-          echo "gating these changed files:"
-          echo "$changed"
-          # shellcheck disable=SC2086
-          python3 scripts/check_claim_vocabulary.py $changed
+
+          # No `|| true` anywhere below. claim-vocabulary.md 6.6 gates the pull
+          # request's own added and modified lines, and `--diff-base` computes
+          # those inside the checker, where a failure to work out what changed
+          # is raised as an error instead of being silently read as "nothing
+          # changed".
+          python3 scripts/check_claim_vocabulary.py --diff-base "$BASE_SHA"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
