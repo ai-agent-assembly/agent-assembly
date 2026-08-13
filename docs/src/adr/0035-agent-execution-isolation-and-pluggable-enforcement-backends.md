@@ -154,8 +154,9 @@ changing their semantics):
   observe or cannot represent on this host/version.
 - **`EnforcementPlan`** — the resolved lowering from `ExecutionSpec` to a selected
   backend, including unsupported/degraded requirements before launch.
-- **`EnforcementEvidence`** — post-prepare/runtime facts that justify what the product
-  may claim was installed, exercised, enforced, observed or left unmeasured.
+- **`EnforcementEvidence`** — the post-prepare/runtime facts that justify which
+  [ADR 0033 §6](0033-canonical-governance-and-enforcement-architecture.md#6-claim-vocabulary--decision-timing-and-failure-posture-are-part-of-every-claim)
+  claim term the product may attach to each control for this run.
 
 A concrete backend implements an internal contract equivalent to:
 
@@ -190,17 +191,29 @@ pin a backend for reproducibility, but ordinary policy should survive a backend 
 The execution planner resolves policy requirements against the selected backend's actual
 host capabilities before launch.
 
-For every required control, the result is one of:
+For every required control, planning resolves to exactly one outcome. This ADR does not
+invent a parallel vocabulary for those outcomes: each maps onto a term already defined by
+ADR 0033 §6, which stays authoritative for the terms themselves.
 
-- **enforceable** — the backend has a mechanism with the claimed decision timing;
-- **observable only** — useful evidence, but not a substitute for a required deny;
-- **unsupported/unavailable** — no applicable mechanism exists in this deployment;
-- **explicitly degraded** — only when policy/operator posture permits that weaker state.
+| Planning outcome | ADR 0033 §6 term the run may then claim |
+| --- | --- |
+| The backend has a mechanism that refuses the action before it takes effect | **Denied before execution** |
+| The backend can report the action but cannot refuse it before effect | **Observed** / **Detected** |
+| No applicable mechanism exists on this host, backend or backend version | **Unsupported** |
+| A planned control is configured but unavailable, and posture permits proceeding | **Degraded**, carrying both the planned and the achieved level |
+| Nothing inspected this action or payload | **Unmeasured** |
 
-A required prevention control that is only observable **must not be silently promoted to
-prevention**. The default for an unmet required capability is refusal before launch.
-An observe/degraded mode, where supported, must be explicit and must flow into E6 evidence
-and audit rather than presenting the run as equivalently protected.
+The following are normative:
+
+- A required pre-effect control that the selected backend can only observe **must not be
+  promoted to *Denied before execution***.
+- The default for an unmet required capability is **refusal before launch**.
+- ***Degraded*** is reachable only where policy or operator posture explicitly permits it,
+  and it must carry both levels into E6 evidence and audit rather than presenting the run
+  as equivalently protected.
+- A backend that is implemented but not validated for production use is ***Experimental***;
+  a control that is decided but not implemented is ***Planned*** and carries no capability
+  claim. Neither may be reported as an achieved control.
 
 ### 5. The trusted supervisor stays outside the confined process tree
 
@@ -269,8 +282,9 @@ A successful process spawn is not evidence that every desired control was enforc
 
 - requested isolation/capabilities;
 - selected backend and backend version/provenance;
-- planned controls and their decision timing;
-- unsupported or degraded requirements;
+- planned controls, each with the ADR 0033 §6 term it is expected to reach;
+- requirements resolved as **Unsupported** or **Degraded**, the latter naming the planned
+  level alongside the achieved one;
 - evidence sources available after prepare/start;
 - the resulting launch posture: ready, refused or explicitly degraded.
 
@@ -331,7 +345,7 @@ axes include:
 | IPC | Unix sockets, shared memory, namespaces and inherited descriptors |
 | Credentials | removed, delegated, brokered, visible-to-child or unmeasured |
 | Platform boundary | shared host kernel, userspace kernel, guest kernel/microVM |
-| Evidence | configured, installed, exercised, enforcement decision and independent verification |
+| Evidence | which ADR 0033 §6 term the control reaches, and whether that rests on configuration, an exercised code path or independent verification |
 
 A single boolean `sandbox=true` or `supported=true` is insufficient.
 
@@ -422,7 +436,7 @@ Before a backend can support a prevention claim:
 - [ ] Negative controls prove the harness fails when an enforcement mechanism is removed/bypassed.
 - [ ] Representative coding-agent performance/compatibility tests are recorded.
 - [ ] Backend provenance, version, license and SBOM/notice requirements are recorded.
-- [ ] E6 output never promotes `available`/`configured`/`observed` into `enforced` without evidence.
+- [ ] E6 output never promotes **Observed**/**Detected** into **Denied before execution**, and never reports backend availability or configuration as an achieved control.
 
 ---
 
