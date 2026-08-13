@@ -33,7 +33,7 @@ jobs:
   # glob. Consulted for `pull_request` only; `workflow_dispatch` stays
   # unconditional so a manual run always exercises every gate.
   changes:
-    name: Detect changed areas
+    name: Detect changed areas (Release completeness)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:

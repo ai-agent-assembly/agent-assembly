@@ -41,7 +41,7 @@ jobs:
   # AAASM-5677: consulted for `pull_request` only. Every glob here has a
   # matching `on.push.paths` entry above, so neither is a dead trigger.
   changes:
-    name: Detect changed areas
+    name: Detect changed areas (Doc Links)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:

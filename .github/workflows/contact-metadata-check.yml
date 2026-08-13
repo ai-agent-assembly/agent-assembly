@@ -32,7 +32,7 @@ jobs:
   # AAASM-5677: consulted for `pull_request` only. The `push` backstop stays
   # unconditional so the gate still runs on the merge that breaks it.
   changes:
-    name: Detect changed areas
+    name: Detect changed areas (Contact Metadata)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:

@@ -57,7 +57,7 @@ jobs:
   # consulted for `pull_request` — see the `on:` comment for why the push and
   # schedule backstops must stay unconditional.
   changes:
-    name: Detect changed areas
+    name: Detect changed areas (Capability Manifest)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     outputs:
