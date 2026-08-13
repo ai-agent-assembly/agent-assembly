@@ -1514,6 +1514,19 @@ jobs:
         with:
           shared-key: dashboard-e2e-real-backend
 
+      - name: Pre-build the hitl-approval fixture
+        # `hitl-approval` spawns its own gateway via `cargo test --test
+        # e2e_hitl_approval`, and `hitl-fixture.ts` waits up to 4 minutes for it
+        # to print READY. Compiling inside that window on a cold runner spends
+        # the whole budget on rustc, so the fixture is built here — where a
+        # build failure is reported as a build failure — and the spec's wait
+        # then covers only process start.
+        #
+        # No Docker: this fixture's `TopologyTestEnv` is backed by in-memory
+        # stores. The testcontainers dependency in `aa-integration-tests` belongs
+        # to `audit_consumer_verify.rs`, a different target.
+        run: cargo test -p aa-integration-tests --no-run --test e2e_hitl_approval
+
       - name: Build aa-api-server
         # `aa-gateway --mode local` deliberately does not construct
         # `aa_api::AppState`, so every /api/v1/* path returns the SPA fallback as

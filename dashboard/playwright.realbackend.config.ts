@@ -41,6 +41,19 @@ export default defineConfig({
   // report rather than paper over.
   retries: 0,
 
+  // `hitl-approval` spawns its own gateway through `cargo test`, and
+  // `hitl-fixture.ts` budgets `READY_TIMEOUT_MS = 4 minutes` for a cold build.
+  // A Playwright hook inherits the *test* timeout, so under the inherited 30s
+  // the `beforeAll` was killed at 30s — three and a half minutes before the
+  // fixture itself would have given up. Measured locally: the spec failed with
+  // "beforeAll hook timeout of 30000ms exceeded" while every other spec passed.
+  //
+  // That is why simply listing the spec in this config was not enough to make
+  // it run: it executed and went red, which the AC ("both execute rather than
+  // skip") would have been satisfied by while the lane stayed permanently
+  // broken. The budget here is the fixture's own, plus room for the assertions.
+  timeout: 5 * 60 * 1000,
+
   reporter: [
     ['list'],
     // Consumed by `scripts/assert-e2e-actually-ran.mjs`. The exit code alone
