@@ -1514,6 +1514,15 @@ jobs:
         with:
           shared-key: dashboard-e2e-real-backend
 
+      - name: Install protoc
+        # `aa-proto`'s build script shells out to `protoc`, and the runner image
+        # does not ship it — every other Rust job here installs it the same way.
+        # Without it the first cargo invocation dies with
+        #   Could not find `protoc` … try setting the `PROTOC` environment variable
+        # which is what took this lane red on its first CI run while it passed
+        # locally, where protoc happened to be installed.
+        run: sudo apt-get install -y protobuf-compiler
+
       - name: Pre-build the hitl-approval fixture
         # `hitl-approval` spawns its own gateway via `cargo test --test
         # e2e_hitl_approval`, and `hitl-fixture.ts` waits up to 4 minutes for it
