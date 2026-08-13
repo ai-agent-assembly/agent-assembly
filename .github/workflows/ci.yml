@@ -1488,6 +1488,109 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # AAASM-5694: the one lane in this repository that compares the dashboard
+  # against the *real* API rather than against its own fixtures.
+  #
+  # `dashboard-e2e` above stubs every network call in all 44 of its gated specs,
+  # so its real-backend coverage is exactly zero and it structurally cannot see
+  # backend contract drift. AAASM-4892 is the demonstrated cost: the pagination
+  # envelope changed, the app had already been fixed, and the *mocks* were what
+  # went stale — the gate stayed green against a contract the backend no longer
+  # had. Recovering that needs a Rust-side lane, not a shorter quarantine list.
+  #
+  # It runs on the union of dashboard and Rust API changes, because either side
+  # can break the contract and only one of them is watched today.
+  dashboard-e2e-real-backend:
+    name: Dashboard e2e (real backend)
+    needs: [changes, dashboard-build]
+    if: needs.changes.outputs.dashboard == 'true' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
+        with:
+          shared-key: dashboard-e2e-real-backend
+
+      - name: Build aa-api-server
+        # `aa-gateway --mode local` deliberately does not construct
+        # `aa_api::AppState`, so every /api/v1/* path returns the SPA fallback as
+        # text/html. The REST surface comes from this binary, and that is not
+        # discoverable from the gateway's own output — AAASM-5694 records it
+        # because it is the first wall anyone hits trying to "run the app".
+        run: cargo build -p aa-api --bin aa-api-server
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: dashboard
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate API types from OpenAPI spec
+        working-directory: dashboard
+        run: pnpm generate:api
+
+      - name: Download dashboard dist artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dashboard-dist
+          path: dashboard/dist/
+
+      - name: Install Playwright chromium + OS deps
+        working-directory: dashboard
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Boot aa-api-server and wait for health
+        env:
+          AASM_API_AUTH: 'off'
+          AA_API_ADDR: 127.0.0.1:7700
+        run: |
+          set -euo pipefail
+          ./target/debug/aa-api-server &
+          echo "AA_API_PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:7700/api/v1/health >/dev/null 2>&1; then
+              echo "aa-api-server is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "aa-api-server did not become healthy within 60s" >&2
+          exit 1
+
+      - name: Run the real-backend specs
+        working-directory: dashboard
+        env:
+          AA_API_BASE: http://127.0.0.1:7700
+        run: pnpm exec playwright test --config=playwright.realbackend.config.ts
+
+      # The step that makes this lane mean something. Playwright exits 0 on a run
+      # where every real-backend spec skipped for want of a backend, so an
+      # exit-code-only gate would record verification that never happened —
+      # the precise defect AAASM-5694 reports. This asserts the population.
+      - name: Assert the real-backend specs actually ran
+        if: always()
+        working-directory: dashboard
+        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 8
+
+      - name: Upload real-backend report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-e2e-real-backend-results
+          path: dashboard/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
   dashboard-codegen-drift:
     name: Dashboard codegen drift check
     needs: [changes]
@@ -1796,6 +1899,11 @@ jobs:
       # specs (AAASM-5195) and ratchets that list against a frozen baseline
       # (QUARANTINE_BASELINE in playwright.quarantine.ts).
       - dashboard-e2e
+      # AAASM-5694: gated for the same reason as `dashboard-e2e`, and with more
+      # force — this is the only lane that can observe backend contract drift at
+      # all. Left advisory it would reproduce the defect it was built to fix: a
+      # real-backend signal that exists, is green, and gates nothing.
+      - dashboard-e2e-real-backend
       - dashboard-codegen-drift
       - aa-cli-compat
       - devint-reference-client
