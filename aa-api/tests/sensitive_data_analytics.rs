@@ -533,6 +533,135 @@ async fn prevention_counts_only_events_with_all_four_conditions() {
 // AC4 — bounded metric-label cardinality
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// AAASM-5685 AC4 — the partially-measured window
+// ---------------------------------------------------------------------------
+
+/// **AAASM-5685 AC4.** `prevention_rate` and `unmeasured_transmission_rate` sum
+/// coherently when a window contains *both* measured and unmeasured events.
+///
+/// # Why this case, and why it was not already covered
+///
+/// Every existing test pins a window that is uniform in this respect: the
+/// prevention test has exactly one true prevention among four near-misses, and
+/// the empty-window test has nothing at all. Neither exercises the state a real
+/// deployment is actually in — some events observed by a layer that holds the
+/// bytes, others decided by a layer that does not.
+///
+/// That state is where the two rates can silently contradict each other. They
+/// are computed from independent counters over the same denominator, so nothing
+/// in the type system stops `prevention_rate + unmeasured_transmission_rate`
+/// exceeding 1.0 — which would mean an event was counted as both *proved not
+/// transmitted* and *never observed*.
+///
+/// # What the fixture makes true first
+///
+/// Ten events in one org and window, in three groups that must not overlap:
+///
+/// * **3 prevented** — pre-transmission, `NotForwarded`, enforcing, denied. All
+///   four ADR 0032 §8 conditions.
+/// * **4 unmeasured** — `NotRecorded`. This is what the gateway writes today for
+///   every row it produces, so it is the realistic majority.
+/// * **3 measured but not prevented** — `ForwardedClean` /
+///   `ForwardedCarryingSensitiveValue`. These are the group that makes the test
+///   bite: they are *observed*, so they must not raise the unmeasured rate, and
+///   they were *forwarded*, so they must not raise the prevention rate. A
+///   handler that treated "not prevented" as "unmeasured" would report 0.7
+///   instead of 0.4.
+#[tokio::test]
+async fn a_partially_measured_window_keeps_the_two_rates_coherent() {
+    let mut specs = Vec::new();
+
+    for i in 0..3 {
+        specs.push(
+            EventSpec::new(&format!("evt-prevented-{i}"), "acme", RuntimeVerdictLabel::DENY)
+                .findings(vec![email()])
+                .dispositions(0, 1)
+                .evidence(
+                    EnforcementPoint::PreTransmission,
+                    TransmissionEvidence::NotForwarded,
+                    EnforcementMode::Enforce,
+                ),
+        );
+    }
+
+    for i in 0..4 {
+        specs.push(
+            EventSpec::new(&format!("evt-unmeasured-{i}"), "acme", RuntimeVerdictLabel::DENY)
+                .findings(vec![email()])
+                .dispositions(0, 1)
+                .evidence(
+                    EnforcementPoint::PreTransmission,
+                    TransmissionEvidence::NotRecorded,
+                    EnforcementMode::Enforce,
+                ),
+        );
+    }
+
+    for (i, evidence) in [
+        TransmissionEvidence::ForwardedClean,
+        TransmissionEvidence::ForwardedCarryingSensitiveValue,
+        TransmissionEvidence::ForwardedClean,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        specs.push(
+            EventSpec::new(&format!("evt-forwarded-{i}"), "acme", RuntimeVerdictLabel::ALLOW)
+                .findings(vec![email()])
+                .evidence(EnforcementPoint::PreTransmission, evidence, EnforcementMode::Enforce),
+        );
+    }
+
+    let (server, _backend, _dir) = app_with(&specs).await;
+    let body: Value = server
+        .get("/api/v1/sensitive-data/summary")
+        .add_query_param("org_id", "acme")
+        .await
+        .json();
+
+    assert_eq!(counter(&body, "event_count"), 10, "fixture size");
+
+    let prevention = body["rates"]["prevention_rate"]
+        .as_f64()
+        .expect("a non-empty window has a prevention rate");
+    let unmeasured = body["rates"]["unmeasured_transmission_rate"]
+        .as_f64()
+        .expect("a non-empty window has an unmeasured rate");
+
+    assert_eq!(prevention, 3.0 / 10.0, "three events satisfy all four conditions");
+    assert_eq!(unmeasured, 4.0 / 10.0, "four events observed nothing");
+
+    // The coherence property, stated as a relation rather than as two constants
+    // so it keeps meaning if the fixture is ever resized.
+    assert!(
+        prevention + unmeasured <= 1.0,
+        "prevented and unmeasured are disjoint, so their rates cannot exceed 1.0 \
+         (got {prevention} + {unmeasured})"
+    );
+
+    // Prevention is a strict subset of what was measured: an event whose bytes
+    // nothing observed can never be proved un-transmitted.
+    let measured = 1.0 - unmeasured;
+    assert!(
+        prevention <= measured,
+        "prevention_rate ({prevention}) exceeded the measured share ({measured}), \
+         which would mean an unobserved event was counted as prevented"
+    );
+
+    // ...and the window is genuinely mixed. Without this the assertions above
+    // would also pass on a fully-unmeasured window, where prevention is 0 for
+    // the structural reason AAASM-5685 exists to record — which is exactly the
+    // case they must not be confused with.
+    assert!(prevention > 0.0, "fixture must contain real preventions");
+    assert!(unmeasured > 0.0, "fixture must contain unmeasured events");
+    assert!(
+        measured > prevention,
+        "fixture must contain measured events that were NOT prevented, or the \
+         subset relation above is trivially satisfied"
+    );
+}
+
 /// **AC4.** `/breakdown` refuses the forbidden dimensions and serves the
 /// permitted ones.
 ///
