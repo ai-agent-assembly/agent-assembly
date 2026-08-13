@@ -123,3 +123,11 @@
 //! [`std::process::Command`]: https://doc.rust-lang.org/std/process/struct.Command.html
 
 #![warn(missing_docs)]
+
+pub mod capability;
+
+pub use capability::{
+    BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
+    DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
+    Synchrony,
+};
