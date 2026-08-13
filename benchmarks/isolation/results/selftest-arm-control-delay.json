@@ -1,0 +1,217 @@
+{
+  "schema_version": "1.0.0",
+  "harness_version": "0.1.0",
+  "run_id": "20260813T040548Z-0069318f",
+  "label": "selftest-control-delay",
+  "started_utc": "2026-08-13T04:05:48.993444+00:00",
+  "finished_utc": "2026-08-13T04:06:05.340464+00:00",
+  "control_experiment": true,
+  "launcher": {
+    "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/throttled.sh",
+    "argv": [
+      "sh",
+      "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/throttled.sh"
+    ],
+    "throttle_env": {
+      "AABENCH_THROTTLE_MODE": "delay",
+      "AABENCH_THROTTLE_MS": "500"
+    }
+  },
+  "config": {
+    "repetitions": 10,
+    "warmups": 2,
+    "families_requested": "startup_nop,process_spawn",
+    "heavy": false,
+    "network": false,
+    "scratch_root": "/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/aabench-yg00aj0j"
+  },
+  "notes": [],
+  "environment": {
+    "captured_utc": "2026-08-13T04:05:48.993457+00:00",
+    "platform": {
+      "system": "Darwin",
+      "release": "25.4.0",
+      "version": "Darwin Kernel Version 25.4.0: Thu Mar 19 19:26:07 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6031",
+      "machine": "arm64",
+      "python": "3.14.0",
+      "python_implementation": "CPython"
+    },
+    "cpu": {
+      "model": "Apple M3 Max",
+      "logical_cores": 16
+    },
+    "memory": {
+      "total_bytes": 137438953472,
+      "ru_maxrss_native_unit": "bytes"
+    },
+    "filesystem": {
+      "scratch_path": "/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/aabench-yg00aj0j",
+      "type": "apfs",
+      "device": "/dev/disk3s5",
+      "source": "df -P + mount"
+    },
+    "toolchains": {
+      "sh": "3.2.57(1)-release"
+    },
+    "repo": {
+      "commit": "ec8646518588554258b87a5b16af3aef02907b53",
+      "branch": "v0.0.1/AAASM-5713/test/isolation_benchmark_harness",
+      "dirty_tracked_files": true,
+      "untracked_file_count": 14
+    },
+    "load_average_at_start": [
+      5.3828125,
+      7.50537109375,
+      8.5166015625
+    ],
+    "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+  },
+  "startup_correction_ms": 519.2327505000001,
+  "results": [
+    {
+      "family": "startup_nop",
+      "dimension_tag": "startup",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "Empty payload. Isolates the launcher's fixed per-invocation cost: sandbox construction plus teardown, paid once for every command an agent shells out to.",
+      "skip_reason": null,
+      "samples_ms": [
+        521.382084,
+        524.025,
+        523.357917,
+        514.62775,
+        517.39775,
+        519.555792,
+        518.813875,
+        518.909709,
+        521.359125,
+        518.164542
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 514.62775,
+        "max": 524.025,
+        "mean": 519.7593544,
+        "median": 519.2327505000001,
+        "p95": 523.72481265,
+        "stdev": 2.8372352427027416,
+        "q1": 518.3268752500001,
+        "q3": 521.37634425,
+        "iqr": 3.049468999999931,
+        "rel_iqr": 0.005873028997233738
+      },
+      "steady_state_ms": null,
+      "steady_state_note": null,
+      "cpu_seconds": {
+        "utime_median": 0.002989,
+        "stime_median": 0.0047669999999999995,
+        "total_median": 0.007755999999999999
+      },
+      "memory": {
+        "max_rss_bytes_median": 1949696.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "bytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "process_spawn",
+      "dimension_tag": "process",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "200 sequential execve plus reap cycles. Every tool an agent runs pays this once.",
+      "skip_reason": null,
+      "samples_ms": [
+        816.974333,
+        829.083,
+        823.446875,
+        855.54275,
+        811.544375,
+        853.773666,
+        853.762584,
+        814.09625,
+        833.569833,
+        828.84275
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 811.544375,
+        "max": 855.54275,
+        "mean": 832.0636416,
+        "median": 828.9628749999999,
+        "p95": 854.7466622,
+        "stdev": 16.86801093108436,
+        "q1": 818.5924685,
+        "q3": 848.7143962499999,
+        "iqr": 30.12192774999994,
+        "rel_iqr": 0.03633688390448118
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 292.3116244999999,
+        "max": 336.3099994999999,
+        "mean": 312.8308910999999,
+        "median": 309.73012449999993,
+        "p95": 335.5139116999999,
+        "stdev": 16.86801093108436,
+        "q1": 299.35971799999993,
+        "q3": 329.48164574999987,
+        "iqr": 30.12192774999994,
+        "rel_iqr": 0.0972521733190339
+      },
+      "steady_state_note": "startup correction of 519.233 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.10105449999999999,
+        "stime_median": 0.1445925,
+        "total_median": 0.24586999999999998
+      },
+      "memory": {
+        "max_rss_bytes_median": 2015232.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "bytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    }
+  ],
+  "denominators": {
+    "families_declared_in_manifest": 9,
+    "families_selected": 2,
+    "families_attempted": 2,
+    "families_ok": 2,
+    "families_skipped": 0,
+    "families_failed": 0,
+    "families_admissible": 2
+  }
+}

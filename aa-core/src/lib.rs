@@ -36,6 +36,7 @@ pub mod config;
 pub mod dev_tool;
 pub mod evaluators;
 pub mod identity;
+pub mod identity_attribution;
 #[cfg(feature = "std")]
 pub mod integration;
 #[cfg(feature = "alloc")]
@@ -52,6 +53,9 @@ pub mod types;
 
 pub use dev_tool::GovernanceLevel;
 pub use identity::{AgentId, SessionId};
+pub use identity_attribution::AgentIdentityAssurance;
+#[cfg(feature = "alloc")]
+pub use identity_attribution::AgentIdentityAttribution;
 pub use policy::{EnforcementMode, FileMode, PolicyDecision, PolicyError};
 pub use risk_tier::RiskTier;
 
