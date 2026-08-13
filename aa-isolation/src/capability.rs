@@ -674,3 +674,44 @@ impl BackendCapabilities {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `CapabilityDomain::ALL` is hand-maintained, so a new variant could be
+    /// added without it and silently vanish from every sweep that iterates it.
+    ///
+    /// This test has to live inside the crate: `CapabilityDomain` is
+    /// `#[non_exhaustive]`, so an integration test in `tests/` would be forced
+    /// to write a wildcard arm and the match below would stop being exhaustive
+    /// — which is the entire mechanism being relied on here.
+    #[test]
+    fn all_lists_every_domain() {
+        // Exhaustive by compiler enforcement: adding a variant fails to compile
+        // here until it is handled, at which point the count assertion fails
+        // until it is also added to `ALL`.
+        let count = CapabilityDomain::ALL
+            .iter()
+            .map(|domain| match domain {
+                CapabilityDomain::FilesystemRead
+                | CapabilityDomain::FilesystemWrite
+                | CapabilityDomain::NetworkEgress
+                | CapabilityDomain::NameResolution
+                | CapabilityDomain::Syscall
+                | CapabilityDomain::ProcessCreation
+                | CapabilityDomain::Ipc
+                | CapabilityDomain::Credential
+                | CapabilityDomain::Resource => 1,
+            })
+            .sum::<usize>();
+        assert_eq!(count, 9, "CapabilityDomain::ALL is missing a variant");
+        assert_eq!(CapabilityDomain::ALL.len(), count);
+
+        // No duplicates, which would make `unreported_domains` over-count.
+        let mut seen = CapabilityDomain::ALL.to_vec();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), CapabilityDomain::ALL.len());
+    }
+}
