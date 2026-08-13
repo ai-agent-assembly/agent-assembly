@@ -221,6 +221,30 @@ Assertions 1 and 3 prove sensitivity; assertion 2 proves the two metrics are not
 the same metric wearing two hats. The self-test's own output is committed as
 evidence under `results/`.
 
+### The self-test can fail for two very different reasons
+
+Observed on a loaded host (load average ~9): assertion 3 failed not because the
+harness missed the injected 2× slowdown, but because `startup_nop` in the repeat
+arm recorded a relative IQR of 0.162 against the 0.15 gate. That made it
+inadmissible, which left no startup correction available, which left P4 with no
+comparable pair — so P4 came back **blocked**, and a blocked dimension fails the
+assertion. The raw medians in that same run showed the slowdown plainly
+(768.7 ms against 391.7 ms, ≈1.96×). The harness declined to score it rather
+than score it on a number it had already judged unreliable.
+
+So a red self-test means one of two things, and they are not interchangeable:
+
+- **a blocked dimension** — the host was too noisy, nothing was measured, re-run
+  somewhere quieter; or
+- **a graded dimension that came back wrong** — the harness genuinely failed to
+  detect a known degradation, which is a defect in the harness.
+
+Read the `checks[].detail` and the `blocked` reason before concluding which.
+`startup_nop` is the family most prone to the first case: its absolute duration
+is a few milliseconds, so ordinary scheduler jitter is large *relative* to it,
+and under `repeat` mode it is doubled while staying small. Loosening
+`MAX_REL_IQR` to make this go away would defeat the gate it exists to be.
+
 ## Evidence committed alongside this pre-registration
 
 | File | What it is | What it is not |
