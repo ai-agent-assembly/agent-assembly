@@ -65,6 +65,19 @@ Step 3 also runs three probes the fixture files cannot express:
   by walking the schema, and the probe **imports the same list** rather than
   keeping a copy, so a field added as a top-level `properties` entry is covered
   without anyone remembering to update a literal.
+  AAASM-5729 extended the same walk to the **twenty-two remaining array
+  fields**, whose items are scalars. That half never crashed, which is how it
+  survived the fix for the first: a string is *iterable*, so
+  `known_bypasses: one string` walked its ten characters, R8/R8b matched
+  environment-token regexes against single letters, and the document validated
+  at **exit 0** having examined nothing — a rule reporting clean on a field it
+  never read. Where it did fail it failed for the wrong reason:
+  `released_channels: crates_io` exited 1 with nine R9 findings naming the
+  letters `c`, `r`, `a`, `t`, `e`, `s`, `_`, `i`, `o` as unsurveyed
+  distribution channels. Each path carries its own declared type set, so
+  `policy_context` — `oneOf[array, object]` — is admitted as either and refused
+  only as a scalar, which is what the schema says and not a rule this validator
+  invented.
   What that buys is bounded, and the bound is stated rather than implied: this
   is a **behavioural probe of one derivation**. It catches divergence between
   the derivation and the gate that consumes it — a skipped path kind, a wrong
