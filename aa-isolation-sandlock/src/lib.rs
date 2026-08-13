@@ -60,5 +60,7 @@
 #![warn(missing_docs)]
 
 pub mod host;
+pub mod lower;
 
 pub use host::{BackendLookupError, HostFacts, KernelVersion, BACKEND_PATH_ENV, BACKEND_PROGRAM};
+pub use lower::{Argv, LoweringGap};
