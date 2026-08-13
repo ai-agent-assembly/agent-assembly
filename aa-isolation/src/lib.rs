@@ -130,6 +130,9 @@ pub mod evidence;
 pub mod plan;
 pub mod spec;
 
+#[cfg(feature = "mock-backend")]
+pub mod mock;
+
 pub use backend::{ExecutionHandle, IsolationBackend, PreparedExecution, SpawnError};
 pub use capability::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
