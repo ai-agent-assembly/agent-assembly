@@ -5,9 +5,11 @@ import { expect, test } from '@playwright/test'
  *
  * # Why this file exists
  *
- * `tests/e2e/README.md` records that of the 44 gated specs, **all 44** stub every
- * network call, so the gate compares the frontend against its own hand-written
- * mocks and "its real-backend coverage is exactly zero". AAASM-4892 is the
+ * `tests/e2e/README.md` records that **every** gated spec stubs its network
+ * calls, so the gate compares the frontend against its own hand-written mocks
+ * and "its real-backend coverage is exactly zero". (That README carried a count
+ * of 44 written when the suite was smaller; it measures 58 gated spec files
+ * today. The figure that matters is the zero, not the denominator.) AAASM-4892 is the
  * demonstrated cost: the pagination envelope changed, the app had already been
  * fixed, and it was the *mocks* that were stale — a green gate certified the
  * frontend against a contract the backend no longer had.

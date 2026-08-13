@@ -141,7 +141,6 @@ page verified this way is verified against what CI checks. Endpoints backed by
 the SaaS/cloud control plane remain unavailable locally; a panel still empty
 after this is either one of those or genuinely has no rows.
 
-
 ## `policy validate` prints "Unknown key … will be ignored"
 
 ```console

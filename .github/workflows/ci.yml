@@ -1535,8 +1535,8 @@ jobs:
   # AAASM-5694: the one lane in this repository that compares the dashboard
   # against the *real* API rather than against its own fixtures.
   #
-  # `dashboard-e2e` above stubs every network call in all 44 of its gated specs,
-  # so its real-backend coverage is exactly zero and it structurally cannot see
+  # `dashboard-e2e` above stubs every network call in every one of its gated
+  # specs, so its real-backend coverage is exactly zero and it cannot see
   # backend contract drift. AAASM-4892 is the demonstrated cost: the pagination
   # envelope changed, the app had already been fixed, and the *mocks* were what
   # went stale — the gate stayed green against a contract the backend no longer
@@ -1555,12 +1555,23 @@ jobs:
     # Either way the one lane that can observe backend contract drift was absent
     # on exactly the changes that cause it, which is AAASM-4892's shape again.
     needs: [changes, dashboard-build, dashboard-assets]
+    # `!cancelled()` and not `always()`: this workflow sets
+    # `cancel-in-progress` for pull requests, and under `always()` a superseded
+    # run would still start this job — ~15 min of pre-build, server build and
+    # browser provisioning — only to die at the download. Requiring the builder
+    # that will actually supply the artifact to have **succeeded** (rather than
+    # merely not failed) closes the same hole for a *skipped* builder, e.g. when
+    # `dashboard-typecheck` fails and `dashboard-build` never runs.
     if: >-
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
-      (needs.changes.outputs.dashboard == 'true' || needs.changes.outputs.rust == 'true') &&
-      needs.dashboard-build.result != 'failure' &&
-      needs.dashboard-assets.result != 'failure'
+      (
+        (needs.changes.outputs.dashboard == 'true' &&
+         needs.dashboard-build.result == 'success') ||
+        (needs.changes.outputs.dashboard != 'true' &&
+         needs.changes.outputs.rust == 'true' &&
+         needs.dashboard-assets.result == 'success')
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1580,8 +1591,6 @@ jobs:
         # locally, where protoc happened to be installed.
         run: sudo apt-get install -y protobuf-compiler
 
-      # NOTE ordering: this must come AFTER `Build aa-api-server`, because that
-      # build re-invalidates `aa-integration-tests`' fingerprint.
       - name: Pre-build the hitl-approval fixture
         # `hitl-approval` spawns its own gateway via `cargo test --test
         # e2e_hitl_approval`, and `hitl-fixture.ts` waits up to 4 minutes for it
@@ -1600,6 +1609,10 @@ jobs:
         # which is a different package selection, therefore a different feature
         # unification, therefore a different binary hash — so the fixture still
         # compiled inside its own 4-minute window and cleared it by ~13 s.
+        # Measured after the fix: the whole lane runs in 37 s and the fixture's
+        # `beforeAll` in ~33 s, against ~227 s before. Step order relative to
+        # `Build aa-api-server` turned out not to matter — cargo keys artifacts
+        # by a hash that includes the feature set, so the two builds coexist.
         run: cargo test --no-run --test e2e_hitl_approval
 
       - name: Build aa-api-server
@@ -1629,8 +1642,9 @@ jobs:
 
       # `dashboard-build` publishes `dashboard-dist`; `dashboard-assets` (the
       # rust-gated builder) publishes `dashboard-dist-rust`. Exactly one of them
-      # ran, so both downloads are `continue-on-error` and the presence check
-      # below is what actually decides.
+      # ran, and the two conditions below select on the same `changes` outputs
+      # that decided which — so selection is by router output, not by probing for
+      # existence. A missing artifact fails at `download-artifact` itself.
       - name: Download dashboard dist (dashboard-gated build)
         if: needs.changes.outputs.dashboard == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1645,9 +1659,12 @@ jobs:
           name: dashboard-dist-rust
           path: dashboard/dist/
 
-      - name: Fail loudly if no dashboard dist arrived
-        # Without this the preview server serves nothing and every spec fails
-        # with an unhelpful navigation error instead of naming the real cause.
+      - name: Fail loudly if the dist has no index.html
+        # Narrower than it looks, and deliberately kept: `download-artifact`
+        # already fails on a *missing* artifact, so the only state this catches
+        # is one that uploaded but is empty or mis-laid-out. Without it the
+        # preview server serves nothing and every spec fails with an unhelpful
+        # navigation error instead of naming the cause.
         run: test -f dashboard/dist/index.html
 
       - name: Install Playwright chromium + OS deps
@@ -1993,7 +2010,7 @@ jobs:
       # above are quality/acceptance signals; this one asserts functional
       # behaviour (routes render, client-side behaviour holds, the rendered app
       # still works against a stubbed backend) exactly as `dashboard-test` does,
-      # so it belongs in the same bucket. Note what it does NOT assert: all 44
+      # so it belongs in the same bucket. Note what it does NOT assert: the
       # gated specs stub every call, so this is not an API-contract check and
       # cannot see backend drift; real-backend coverage is zero because the one
       # spec that talks to a live gateway needs `cargo` (dashboard/tests/e2e/
