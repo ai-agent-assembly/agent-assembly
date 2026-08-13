@@ -124,11 +124,13 @@
 
 #![warn(missing_docs)]
 
+pub mod backend;
 pub mod capability;
 pub mod evidence;
 pub mod plan;
 pub mod spec;
 
+pub use backend::{ExecutionHandle, IsolationBackend, PreparedExecution, SpawnError};
 pub use capability::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
