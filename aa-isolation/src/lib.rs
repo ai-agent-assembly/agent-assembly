@@ -125,9 +125,14 @@
 #![warn(missing_docs)]
 
 pub mod capability;
+pub mod spec;
 
 pub use capability::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
     Synchrony,
+};
+pub use spec::{
+    ControlRequirement, CredentialPosture, DescendantRequirement, ExecutionSpec, IdentityRef, RequirementIntent,
+    RequirementPosture, RequirementScope, ResourceLimits,
 };
