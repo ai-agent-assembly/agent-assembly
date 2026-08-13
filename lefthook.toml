@@ -23,23 +23,44 @@ parallel = true
 # AAASM-5695: unfiltered, this full-workspace rustdoc build ran on every push,
 # whatever the diff — 3046 s (50m46s) measured here on a branch whose only
 # changed file is this one. A wait that long on a docs-only change is what
-# pressures people into --no-verify. Rustdoc output can only change when Rust
-# sources or the dependency graph do, so gate on those; CI's Rustdoc job is
-# gated the same way (ci.yml `changes.rust`).
+# pressures people into --no-verify.
 #
-# `files` is required, not decorative: lefthook's built-in push_files runs
-# `git diff HEAD @{push}`, and with the default push.default=simple that is
-# unresolvable on any branch whose name differs from its upstream's — i.e. every
-# ticket branch before its first push. lefthook then falls back to the whole
-# tree (measured: 3932 files, 1089 of them *.rs), so a bare glob would match on
-# every push and never filter anything. Diffing against the upstream merge-base
-# gives the set this push actually adds. If that cannot be resolved (no upstream
-# configured) we fail open to the whole tree, keeping the old always-run
-# behaviour rather than silently dropping the gate.
+# `files` is load-bearing, and *whether* it is depends on a state most readers
+# will not have in mind. lefthook's built-in push_files is `git diff HEAD
+# @{push}`, so its behaviour splits:
+#   - @{push} resolves — the branch has a same-named upstream, i.e. after its
+#     first `git push -u`. push_files is then the real push diff and a bare
+#     `glob` filters correctly. Measured: a no-Rust diff skipped.
+#   - @{push} does not resolve — push.default=simple plus a branch whose name
+#     differs from its upstream's. That is every ticket branch *before* its
+#     first push, and stacked worktrees with no upstream at all. lefthook then
+#     falls back to a list holding every tracked file (observed to include
+#     `.cargo/config.toml` and `verification-reports/*.md`, which no such push
+#     touches), so a bare `glob` matches on every push and filters nothing.
+#     Measured: a diff containing zero Rust still ran the full build.
+# Deleting `files` is therefore wasteful rather than unsafe — the gate would run
+# always, never silently off — but it un-does this ticket precisely when it
+# pays, on the first push of a ticket branch. Diffing against the upstream
+# merge-base removes the dependency on @{push} entirely; with no upstream at
+# all we fail open to the whole tree, keeping the old always-run behaviour
+# rather than dropping the gate.
 #
-# The patterns are matched against the whole path, and a wildcard-free pattern
-# is an exact path match — plain `Cargo.toml` would catch the root manifest and
-# miss all 35 crate manifests under `aa-*/`. Hence the leading `*`.
+# Patterns match against the whole path, and a wildcard-free pattern is an exact
+# path match: plain `Cargo.toml` catches the root manifest and misses all 35
+# crate manifests under `aa-*/`. Hence the leading `*` (which does cross `/`).
+#
+# Known gaps — tracked, not hidden:
+#   - Pushing a ref that is not HEAD (`git push remote <branch>` from a checkout
+#     sitting elsewhere, or `git push --all`) computes an empty set and skips.
+#     AAASM-5726; lefthook's own push_files shares the blind spot.
+#   - `.proto`-only and deletion-only diffs skip here and have no workspace
+#     rustdoc gate anywhere in CI: ci.yml's `Rustdoc` job builds only
+#     `-p aa-core` (1 of 32 workspace members per `cargo metadata`; aa-proto is
+#     not in its dependency closure), and docs.yml's `--workspace` rustdoc is
+#     not triggered by `proto/**` or `aa-*/**/*.rs`. Do not record this as
+#     covered. The residual is bounded: this hook sets no RUSTDOCFLAGS, so it
+#     only ever caught rustdoc *hard* errors — it passed at exit 0 while
+#     emitting 67 rustdoc warnings in aa-api.
 files = 'git diff --name-only --merge-base @{u} HEAD 2>/dev/null || git ls-files'
 glob = ["*.rs", "*Cargo.toml", "*Cargo.lock"]
 run = "cargo doc --workspace --no-deps"
