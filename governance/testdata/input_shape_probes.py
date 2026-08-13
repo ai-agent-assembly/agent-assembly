@@ -36,22 +36,44 @@ two live AttributeErrors sat in the gap
 `.declared_divergences:1358`). A control that cannot move when the thing under
 test is wrong is not a control.
 
-So this file walks `capability-manifest.schema.json` itself, with its own
-implementation rather than importing the validator's — two independent
-derivations of the same set, cross-checked by behaviour. If the validator's
-walk misses a field, the mutation for that field produces no finding and this
-probe goes red naming it.
+So the gate reads that list out of `capability-manifest.schema.json` instead,
+and this file **imports the same list** rather than keeping a copy.
 
-The floors below catch the other direction: a walk that returns nothing would
-otherwise probe nothing and pass. They are floors, not equalities — when the
-schema grows, the probe emits more checks and `EXPECTED_TOTAL` in
-run-validator-tests.sh is what forces that to be a deliberate decision.
+WHAT THIS PROBE DOES AND DOES NOT PROVE
+---------------------------------------
+Round two of this fix shipped a second walk here and called the pair "two
+independent derivations, cross-checked by behaviour". Review extracted both,
+stripped docstrings and renamed the differing identifiers, and the traversals
+were **line for line identical** — the same `$ref` loop, the same
+`oneOf`/`anyOf`/`allOf` union, the same `properties` fallback, the same two
+branches. A probe can only mutate fields its own walk finds; if that walk is a
+copy of the gate's, it finds exactly what the gate finds, always. The claimed
+guarantee was vacuous, which is round one's error one level up: an independence
+asserted rather than checked.
+
+Importing makes the honest shape explicit. This is a **behavioural probe of one
+derivation**, and it still earns its place:
+
+* it exercises every field the derivation yields end to end, so it catches
+  divergence between the derivation and the gate that consumes it —
+  `_at_path`'s descent, the label a finding is reported under, a branch of
+  `check_document_shape` that silently skips a path kind;
+* it pins the exit-code contract and the out-of-scope refusal, which no fixture
+  can state;
+* the floors catch the derivation silently shrinking to a smaller set.
+
+It does **not** independently confirm the derivation is complete against the
+schema. Nothing here would notice a field the walk cannot see — a property
+inside a `oneOf` branch, or one under `additionalProperties`. That limitation
+is real, is tracked separately, and is stated here rather than papered over
+with a second hand-written walk, which would only be a second chance to be
+wrong.
 """
 
 from __future__ import annotations
 
 import copy
-import json
+import importlib.util
 import pathlib
 import subprocess
 import sys
@@ -61,10 +83,22 @@ import yaml
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 VALIDATOR = REPO / "scripts" / "validate_capability_manifest.py"
-SCHEMA = REPO / "schemas" / "capability-manifest" / "v1" / "capability-manifest.schema.json"
 MINIMAL = HERE / "valid-minimal.yaml"
 SEED = REPO / "verification-reports" / "AAASM-5527-capability-coverage-matrix.yaml"
 SCRATCH = HERE / ".input-shape-probe.yaml"
+
+# The gate's own derived field lists, imported rather than recomputed. Importing
+# executes the validator's module body, so a schema it cannot read or that
+# yields nothing raises SystemExit(2) here too — this probe then emits no
+# HARNESS_COUNTS trailer and the harness records it as failed, which is the
+# correct reading of "the probe could not run".
+_spec = importlib.util.spec_from_file_location("validate_capability_manifest", VALIDATOR)
+if _spec is None or _spec.loader is None:  # pragma: no cover - environment problem
+    raise SystemExit(f"input_shape_probes: cannot load {VALIDATOR}")
+_validator = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_validator)
+ARRAY_PATHS: tuple[tuple[str, ...], ...] = _validator.ARRAY_OF_MAPPING_PATHS
+MAPPING_PATHS: tuple[tuple[str, ...], ...] = _validator.MAPPING_PATHS
 
 # Exit 1 = the document is invalid. Exit 2 = the tool did not validate it.
 # Named rather than inlined, because the entire point of this file is that the
@@ -72,72 +106,13 @@ SCRATCH = HERE / ".input-shape-probe.yaml"
 INVALID = 1
 OUT_OF_SCOPE = 2
 
-# Floors, deliberately below the current 7 and 9. They exist so a derivation
-# that silently returns nothing cannot pass vacuously; raise them if the schema
-# ever legitimately drops a field.
+# Floors on the imported lists. The validator already refuses to run on an empty
+# derivation; these catch the case it cannot — a derivation that shrinks to a
+# smaller non-empty set, which would quietly probe and gate fewer fields.
 MIN_ARRAY_FIELDS = 7
 MIN_MAPPING_FIELDS = 9
 
 MARKER = "a bare string"
-
-
-# ── An independent walk of the schema. Deliberately not imported from the
-# validator: two derivations that can disagree are a cross-check, one
-# derivation used twice is a tautology. ──────────────────────────────────────
-
-
-def schema_paths() -> tuple[list[tuple[str, ...]], list[tuple[str, ...]]]:
-    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
-    defs = schema.get("definitions") or {}
-
-    def deref(node: object, depth: int = 0) -> dict[str, object]:
-        while isinstance(node, dict) and "$ref" in node and depth < 20:
-            node = defs.get(str(node["$ref"]).split("/")[-1], {})
-            depth += 1
-        return node if isinstance(node, dict) else {}
-
-    def kinds(node: object, depth: int = 0) -> set[str]:
-        node = deref(node)
-        if depth > 20:
-            return set()
-        found = set()
-        declared = node.get("type")
-        if isinstance(declared, str):
-            found.add(declared)
-        elif isinstance(declared, list):
-            found.update(declared)
-        for combinator in ("oneOf", "anyOf", "allOf"):
-            options = node.get(combinator)
-            if isinstance(options, list):
-                for option in options:
-                    found |= kinds(option, depth + 1)
-        if not found and "properties" in node:
-            found.add("object")
-        return found
-
-    arrays: list[tuple[str, ...]] = []
-    mappings: list[tuple[str, ...]] = []
-
-    def walk(node: object, path: tuple[str, ...], depth: int = 0) -> None:
-        if depth > 10:
-            return
-        properties = deref(node).get("properties")
-        if not isinstance(properties, dict):
-            return
-        for name, sub in properties.items():
-            here = (*path, name)
-            declared = kinds(sub)
-            if declared == {"object"}:
-                mappings.append(here)
-                walk(sub, here, depth + 1)
-            elif "array" in declared:
-                item = deref(deref(sub).get("items") or {})
-                if kinds(item) == {"object"}:
-                    arrays.append(here)
-                    walk(item, (*here, "[]"), depth + 1)
-
-    walk(schema, ())
-    return arrays, mappings
 
 
 def render(parts: tuple[str, ...]) -> str:
@@ -254,17 +229,17 @@ def main() -> int:
         ok(f"exit codes discriminate — invalid={inv_code}, out of scope={seed_code}")
 
     # ── Claim 2: structure ───────────────────────────────────────────────────
-    arrays, mappings = schema_paths()
+    arrays, mappings = ARRAY_PATHS, MAPPING_PATHS
     if len(arrays) < MIN_ARRAY_FIELDS or len(mappings) < MIN_MAPPING_FIELDS:
         bad(
-            f"derived {len(arrays)} array-of-mapping and {len(mappings)} mapping fields "
-            f"from the schema, expected at least {MIN_ARRAY_FIELDS} and {MIN_MAPPING_FIELDS}. "
-            "A derivation that returns nothing probes nothing"
+            f"the gate derives {len(arrays)} array-of-mapping and {len(mappings)} mapping "
+            f"fields, expected at least {MIN_ARRAY_FIELDS} and {MIN_MAPPING_FIELDS}. "
+            "A derivation that shrinks gates fewer fields and probes fewer fields, in step"
         )
     else:
         ok(
-            f"schema derivation yields {len(arrays)} array-of-mapping + {len(mappings)} "
-            f"mapping fields (floors {MIN_ARRAY_FIELDS}/{MIN_MAPPING_FIELDS})"
+            f"the gate derives {len(arrays)} array-of-mapping + {len(mappings)} mapping "
+            f"fields (floors {MIN_ARRAY_FIELDS}/{MIN_MAPPING_FIELDS})"
         )
 
     # object rather than a union: the value is opaque here — it is written into a

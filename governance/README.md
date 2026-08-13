@@ -61,12 +61,20 @@ Step 3 also runs three probes the fixture files cannot express:
   different and false statement. It also puts a bare string in **every field
   the schema declares as a mapping or a list of mappings** — seven and nine
   respectively — of which **fifteen of the sixteen** raised the identical crash
-  against this manifest before the gate existed. Both the probe and the gate
-  *derive* that list by walking the schema, with separate implementations, so
-  a field added to the schema is covered without anyone remembering to update a
-  literal. The first version of this fix hand-copied five names and asserted
-  the count against a copy of the same transcription — a control that cannot
-  move when the thing under test is wrong.
+  against this manifest before the gate existed. The gate *derives* that list
+  by walking the schema, and the probe **imports the same list** rather than
+  keeping a copy, so a field added as a top-level `properties` entry is covered
+  without anyone remembering to update a literal.
+  What that buys is bounded, and the bound is stated rather than implied: this
+  is a **behavioural probe of one derivation**. It catches divergence between
+  the derivation and the gate that consumes it — a skipped path kind, a wrong
+  finding label — and it cannot confirm the derivation is complete against the
+  schema. Round one hand-copied five names and asserted the count against a
+  copy of the same transcription; round two shipped a *second walk* here and
+  called the pair independent, when the two traversals were line-for-line
+  identical. Both are the same error: a control that cannot move when the thing
+  under test is wrong. Importing makes the single derivation visible instead of
+  dressing it as two.
 * **`readme_counts_probe.py`** — asserts every `count:` line pasted into *this
   page* is the live one, by value. The counts below were shipped stale once, in
   the document whose thesis is that they are printed on every run; correcting

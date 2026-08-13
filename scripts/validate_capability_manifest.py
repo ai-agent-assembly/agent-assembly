@@ -291,7 +291,16 @@ def prose_values(row: dict):
 # (`meta.cross_representation.seed.excluded_fields` and
 # `.declared_divergences`) were live AttributeErrors sitting behind a
 # self-referential cross-check that compared the wrong literal to a copy of
-# itself. A count that is read from the schema moves when the schema moves.
+# itself.
+#
+# A count read from the schema moves when the schema moves — but only for
+# growth expressed as a top-level `properties` entry. This walk does not
+# descend into `oneOf`/`anyOf` branches or `additionalProperties` subtrees, and
+# the schema already uses both, so a field arriving that way would be
+# uncovered with every check here still green. Those subtrees hold no mapping
+# or list-of-mapping field today; that is a measured fact about the current
+# schema, not a property of this walk, and it is tracked separately rather than
+# left implied.
 
 
 def _schema_shape_paths() -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str, ...], ...]]:
