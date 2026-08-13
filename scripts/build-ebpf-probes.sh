@@ -14,7 +14,16 @@ STAGE_DIR="${1:-}"
 # bpf-linker is required to link aya BPF programs.
 if ! command -v bpf-linker >/dev/null 2>&1; then
   echo "Installing bpf-linker..."
-  cargo install bpf-linker --locked
+  # Pinned, and pinned to the SAME version as ci.yml's two cache-backed install
+  # steps. This script is the shared recipe release.yml uses (it has no
+  # bpf-linker step of its own), so an unpinned install here takes the latest —
+  # and bpf-linker 0.11.0 dropped the `rust-llvm-*` features that let it borrow
+  # rustc's libLLVM, so it now requires a system `llvm-config` and fails with
+  #   Error: could not find llvm-config in directories specified by environment
+  # In CI this branch is unreachable (the pinned step installs first), so CI
+  # going green does NOT cover the release path — which is the one that breaks
+  # a tag (AAASM-5675).
+  cargo install bpf-linker --version 0.10.3 --locked
 fi
 cd "$REPO_ROOT/aa-ebpf-probes"
 cargo +nightly build --release

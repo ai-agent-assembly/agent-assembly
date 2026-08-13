@@ -77,12 +77,17 @@ on:
     # required check that never arrives leaves the pull request waiting
     # forever. A docs-only or governance-only change hits exactly that.
     #
-    # Removing the filter here costs almost nothing, because job selection
-    # never lived in this filter — it lives in the `changes` router below,
-    # and every job is already gated on `needs.changes.outputs.*`. A pull
-    # request touching nothing relevant now runs `changes`, skips the rest,
-    # and reports `CI Success`. `push` keeps its filter: main does not need
-    # a check run per unrelated commit.
+    # Job selection does not live in this filter — it lives in the `changes`
+    # router below, and jobs gate on `needs.changes.outputs.*`. But that was
+    # NOT true of every job when this filter was removed: `commit-range-build`
+    # had no router gate at all, and `on.pull_request.paths` was the only thing
+    # keeping it off unrelated pull requests. It has been given one in the same
+    # change; if you add a job here, gate it, because this filter is no longer
+    # a backstop.
+    #
+    # A pull request touching nothing relevant therefore runs `changes`, skips
+    # the rest, and reports `CI Success`. `push` keeps its filter: main does
+    # not need a check run per unrelated commit.
   schedule:
     - cron: "0 3 * * 1" # Mondays 03:00 UTC
   workflow_dispatch:
@@ -310,7 +315,21 @@ jobs:
   # are merges (`HEAD^1..HEAD` would walk fine on push), but every commit in that
   # range was already walked by this job on the PR that introduced it.
   commit-range-build:
-    if: github.event_name == 'pull_request'
+    # AAASM-5675: `needs: [changes]` + a router gate, added when the
+    # `on.pull_request` path filter was removed. That filter was this job's ONLY
+    # gating — it has never had a `needs.changes.outputs.*` condition — so
+    # without this it would run a full-workspace `cargo check` on every pull
+    # request, including a one-line README fix. Measured on this branch: 1m06s of
+    # cargo on a warm cache for a single build-relevant commit, 6m38s on a
+    # two-commit non-Rust PR, ~5m for a cold first commit.
+    #
+    # It cannot be left unconditional: `CONTRIBUTING.md` ("No filter at all")
+    # states that a job with non-trivial cost must carry some change-based
+    # gating, and that omission is not an exemption. The `rust` filter is the
+    # right one because the script's own `is_skippable()` is what decides per
+    # commit; this only decides whether the walk is worth starting.
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
     name: Every commit in the range builds
     runs-on: ubuntu-latest
     env:
