@@ -203,9 +203,12 @@ degradation**.
 The self-test asserts three properties, and each one can fail independently:
 
 1. **Startup regressions are detected.** Under `delay`, the measured startup
-   delta must land within ±40 % of the injected delay, and the `startup_added_ms`
-   dimension must classify **RED**. If the harness reports GREEN against a
-   150 ms injected slowdown, it cannot detect a real one.
+   delta must land within ±40 % of the injected delay, and P1 must classify
+   **RED**. The self-test injects **500 ms** rather than the launcher's 150 ms
+   default, because 150 ms would land in P1's AMBER band and the assertion needs
+   a degradation that is unambiguously past the RED threshold at both ends of
+   the tolerance window. If the harness reports GREEN against 500 ms, it cannot
+   detect a real regression.
 2. **The startup/steady-state separation is real.** Under `delay`, the
    *startup-corrected* steady-state ratio of a real workload must stay GREEN.
    A fixed per-invocation cost must not leak into the steady-state number; if it
@@ -217,6 +220,19 @@ The self-test asserts three properties, and each one can fail independently:
 Assertions 1 and 3 prove sensitivity; assertion 2 proves the two metrics are not
 the same metric wearing two hats. The self-test's own output is committed as
 evidence under `results/`.
+
+## Evidence committed alongside this pre-registration
+
+| File | What it is | What it is not |
+| --- | --- | --- |
+| `results/baseline-unconfined-darwin.json` | Unconfined baseline, all eight default families, 10 repetitions after 2 warmups, every family admissible | A control arm for any Linux run |
+| `results/selftest-evidence.json` | Negative-control result: the three assertions and the comparisons behind them | A backend measurement |
+| `results/selftest-arm-*.json` | The three synthetic control arms, flagged `"control_experiment": true` | Data arms |
+
+No performance conclusion is drawn from any of them. The baseline exists to
+demonstrate the harness produces the intended distributions and to fix the shape
+of the result schema; the self-test files exist to demonstrate the harness can
+detect a regression at all.
 
 ## Pre-registered thresholds
 
@@ -256,6 +272,20 @@ Why these numbers, chosen before seeing any:
 - **P7** — CPU overhead above 20 % means the boundary burns a fifth of the
   machine's capacity on enforcement, which is a poor trade against building a
   narrower native launcher.
+
+### Aggregating a dimension over several families
+
+P3 covers two families and P6 and P7 are computed across all of them, so a tag
+with more than one contributing family needs an aggregation rule, pre-registered
+like everything else: **the worst family in the tag wins**, not the mean.
+Averaging would let a cheap family mask an expensive one, and the decision rule
+resolves ambiguity toward the more conservative outcome. The result file records
+every contributing family's individual figure alongside the aggregate, so the
+spread is inspectable rather than collapsed.
+
+A family contributes only if it is admissible in **both** arms. A family that
+was stable on one arm and noisy on the other has not been compared; it has been
+guessed at, and it is reported blocked.
 
 ### Compatibility dimensions
 
