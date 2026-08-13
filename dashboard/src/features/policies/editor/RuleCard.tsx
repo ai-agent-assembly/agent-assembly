@@ -8,6 +8,13 @@ import { WindowSeverityRow } from './WindowSeverityRow'
 interface RuleCardProps {
   index: number
   rule: RuleDraft
+  /**
+   * The rule's snapshot from the initial (deployed) draft, matched by id.
+   * Undefined for rules that did not exist at open time (added/duplicated).
+   * A rule is "dirty" when it differs from this snapshot — which drives the
+   * per-rule dirty-dot, distinct from the editor-wide dirty flag.
+   */
+  original?: RuleDraft
   onChange: (patch: Partial<RuleDraft>) => void
   onDuplicate: () => void
   onRemove: () => void
@@ -18,8 +25,30 @@ function toggleVerb(current: VerbOption[], verb: VerbOption): VerbOption[] {
   return [...current, verb]
 }
 
-export function RuleCard({ index, rule, onChange, onDuplicate, onRemove }: RuleCardProps) {
+export function RuleCard({ index, rule, original, onChange, onDuplicate, onRemove }: Readonly<RuleCardProps>) {
   const isDeny = rule.action === 'deny'
+  const isDirty = !original || JSON.stringify(rule) !== JSON.stringify(original)
+
+  // A rule whose body couldn't be recovered from the loaded policy YAML
+  // (AAASM-5059). Render it read-only and clearly flagged rather than
+  // pretending it is an editable default.
+  if (rule.unknown) {
+    return (
+      <section
+        className="editor__section editor__section--unknown"
+        data-testid={`editor-rule-${index}`}
+        aria-label={`rule ${index + 1}`}
+      >
+        <header className="editor__section-head">
+          <span className="editor__rule-num">R{index + 1}</span>
+        </header>
+        <p className="editor__unknown-rule" data-testid={`editor-rule-${index}-unknown`}>
+          Rule body unavailable — this policy was authored outside the visual
+          editor. Switch to the DSL view or inspect the source YAML to see it.
+        </p>
+      </section>
+    )
+  }
 
   const handleActionChange = (next: ActionKind) => {
     // When switching to "narrow", seed the path list from the resource's
@@ -33,12 +62,24 @@ export function RuleCard({ index, rule, onChange, onDuplicate, onRemove }: RuleC
 
   return (
     <section
-      className="editor__section"
+      className={
+        isDirty ? 'editor__section editor__section--dirty' : 'editor__section'
+      }
       data-testid={`editor-rule-${index}`}
       aria-label={`rule ${index + 1}`}
     >
       <header className="editor__section-head">
-        <span className="editor__rule-num">R{index + 1}</span>
+        <span className="editor__rule-num">
+          R{index + 1}
+          {isDirty ? (
+            <span
+              className="editor__dirty-dot"
+              data-testid={`editor-rule-${index}-dirty-dot`}
+              title="unsaved change"
+              aria-label="unsaved change"
+            />
+          ) : null}
+        </span>
         <div className="editor__section-actions">
           <button
             type="button"
@@ -80,16 +121,16 @@ export function RuleCard({ index, rule, onChange, onDuplicate, onRemove }: RuleC
         <div className="editor__verb-group" role="group" aria-label="verbs">
           {VERB_OPTS.map((verb) => {
             const active = rule.verb.includes(verb)
+            const dangerSuffix = isDeny ? ' editor__verb--danger' : ''
+            const verbClassName = active
+              ? `editor__verb editor__verb--active${dangerSuffix}`
+              : 'editor__verb'
             return (
               <button
                 key={verb}
                 type="button"
                 aria-pressed={active}
-                className={
-                  active
-                    ? `editor__verb editor__verb--active${isDeny ? ' editor__verb--danger' : ''}`
-                    : 'editor__verb'
-                }
+                className={verbClassName}
                 data-testid={`editor-rule-${index}-verb-${verb}`}
                 onClick={() => onChange({ verb: toggleVerb(rule.verb, verb) })}
               >

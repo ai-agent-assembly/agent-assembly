@@ -47,7 +47,18 @@ pub trait DestinationStore: Send + Sync {
     /// Fetch a single destination by id.
     fn get(&self, id: &str) -> Option<Destination>;
     /// Insert a new destination and return the persisted record.
-    fn create(&self, name: String, config: DestinationConfig, enabled: bool) -> Destination;
+    ///
+    /// `team_id` / `org_id` are the owning tenant, taken from the creating
+    /// caller (AAASM-3911). Pass `None` for an admin / bypass caller with no
+    /// tenant scope — the destination is then untagged (admin-only).
+    fn create(
+        &self,
+        name: String,
+        config: DestinationConfig,
+        enabled: bool,
+        team_id: Option<String>,
+        org_id: Option<String>,
+    ) -> Destination;
     /// Mutate any subset of `name`/`config`/`enabled` and bump `updated_at`.
     fn update(
         &self,
@@ -99,7 +110,14 @@ impl DestinationStore for InMemoryDestinationStore {
         self.items.get(id).map(|e| e.value().clone())
     }
 
-    fn create(&self, name: String, config: DestinationConfig, enabled: bool) -> Destination {
+    fn create(
+        &self,
+        name: String,
+        config: DestinationConfig,
+        enabled: bool,
+        team_id: Option<String>,
+        org_id: Option<String>,
+    ) -> Destination {
         let now = Utc::now().to_rfc3339();
         let d = Destination {
             id: Self::generate_id(),
@@ -108,6 +126,8 @@ impl DestinationStore for InMemoryDestinationStore {
             enabled,
             created_at: now.clone(),
             updated_at: now,
+            team_id,
+            org_id,
         };
         self.items.insert(d.id.clone(), d.clone());
         d
@@ -171,7 +191,7 @@ mod tests {
     #[test]
     fn create_then_get() {
         let s = store();
-        let d = s.create("hook".into(), webhook("https://example.com/hook"), true);
+        let d = s.create("hook".into(), webhook("https://example.com/hook"), true, None, None);
         assert!(d.id.starts_with("dst_"));
         assert_eq!(d.id.len(), 4 + 32);
         let fetched = s.get(&d.id).unwrap();
@@ -182,9 +202,9 @@ mod tests {
     #[test]
     fn list_filters_by_kind() {
         let s = store();
-        s.create("h1".into(), webhook("https://example.com/h1"), true);
-        s.create("s1".into(), slack("https://hooks.slack.com/x"), true);
-        s.create("h2".into(), webhook("https://example.com/h2"), false);
+        s.create("h1".into(), webhook("https://example.com/h1"), true, None, None);
+        s.create("s1".into(), slack("https://hooks.slack.com/x"), true, None, None);
+        s.create("h2".into(), webhook("https://example.com/h2"), false, None, None);
 
         assert_eq!(s.list(None).len(), 3);
         assert_eq!(s.list(Some(DestinationKind::Webhook)).len(), 2);
@@ -196,7 +216,7 @@ mod tests {
     #[test]
     fn update_preserves_created_at_and_bumps_updated_at() {
         let s = store();
-        let d = s.create("hook".into(), webhook("https://example.com/hook"), true);
+        let d = s.create("hook".into(), webhook("https://example.com/hook"), true, None, None);
         let orig_created = d.created_at.clone();
         let orig_updated = d.updated_at.clone();
         std::thread::sleep(std::time::Duration::from_millis(15));
@@ -233,7 +253,7 @@ mod tests {
     #[test]
     fn delete_returns_in_use_when_checker_says_yes() {
         let s = InMemoryDestinationStore::new(Arc::new(AlwaysReferenced));
-        let d = s.create("hook".into(), webhook("https://example.com/hook"), true);
+        let d = s.create("hook".into(), webhook("https://example.com/hook"), true, None, None);
         assert_eq!(s.delete(&d.id), Err(StoreError::InUse));
         // still present after the failed delete
         assert!(s.get(&d.id).is_some());

@@ -5,6 +5,7 @@
 //! layer (and downstream WebSocket streaming) can subscribe to.
 
 use aa_gateway::alerts::SecretAlert;
+use aa_gateway::anomaly::AnomalyEvent;
 use aa_gateway::budget::types::BudgetAlert;
 use aa_runtime::approval::ApprovalRequest;
 use aa_runtime::pipeline::event::PipelineEvent;
@@ -51,6 +52,11 @@ pub struct EventBroadcast {
     /// `GovernanceEvent { event_type: OpsChange, ... }` so the dashboard
     /// can apply its per-op_id row merge and override auto-clear.
     ops_change_tx: broadcast::Sender<OpsChangeBroadcast>,
+    /// Behavioral-anomaly detections broadcast by the gateway's anomaly
+    /// engine (AAASM-3384). The anomaly-capture task subscribes here and
+    /// records each detection into the alert store so anomalies surface
+    /// via `GET /api/v1/alerts`, mirroring the budget/secret alert paths.
+    anomaly_tx: broadcast::Sender<AnomalyEvent>,
 }
 
 impl EventBroadcast {
@@ -62,6 +68,7 @@ impl EventBroadcast {
         let (budget_tx, _) = broadcast::channel(capacity);
         let (secret_tx, _) = broadcast::channel(capacity);
         let (ops_change_tx, _) = broadcast::channel(capacity);
+        let (anomaly_tx, _) = broadcast::channel(capacity);
         Self {
             pipeline_tx,
             approval_tx,
@@ -69,6 +76,7 @@ impl EventBroadcast {
             budget_tx,
             secret_tx,
             ops_change_tx,
+            anomaly_tx,
         }
     }
 
@@ -136,6 +144,20 @@ impl EventBroadcast {
     /// after every successful registry transition.
     pub fn ops_change_sender(&self) -> broadcast::Sender<OpsChangeBroadcast> {
         self.ops_change_tx.clone()
+    }
+
+    /// Subscribe to gateway anomaly-detection events (AAASM-3384).
+    pub fn subscribe_anomaly(&self) -> broadcast::Receiver<AnomalyEvent> {
+        self.anomaly_tx.subscribe()
+    }
+
+    /// Get a clone of the anomaly-detection event sender (AAASM-3384).
+    ///
+    /// The same sender is handed to the gateway's `PolicyServiceImpl` via
+    /// `with_anomaly_detection` so a single broadcast feeds both the live
+    /// enforcement path and the alert-capture task in one process.
+    pub fn anomaly_sender(&self) -> broadcast::Sender<AnomalyEvent> {
+        self.anomaly_tx.clone()
     }
 }
 

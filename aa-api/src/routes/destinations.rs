@@ -12,12 +12,14 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::auth::scope::{RequireRead, RequireWrite, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::destinations::connectors::slack::SlackConnector;
 use crate::destinations::connectors::webhook::WebhookConnector;
 use crate::destinations::connectors::{ConnectorError, DispatchRequest, NotificationConnector};
 use crate::destinations::store::StoreError;
 use crate::destinations::types::{Destination, DestinationConfig, DestinationKind};
-use crate::destinations::validate::{validate_config, ValidationError};
+use crate::destinations::validate::{validate_config, validate_webhook_egress, ValidationError};
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -49,16 +51,124 @@ pub struct DestinationResponse {
     pub updated_at: String,
 }
 
+/// Sentinel returned in place of a configured webhook secret. The real value is
+/// write-only (accepted on create/update, never returned).
+const SECRET_MASK: &str = "********";
+
 impl From<Destination> for DestinationResponse {
     fn from(d: Destination) -> Self {
+        // AAASM-3688 / AAASM-3843: never return a connector secret in cleartext.
+        // Mask each kind's secret-bearing field to a fixed sentinel so the
+        // response still signals that a secret is configured without leaking
+        // the value: webhook `secret_header`, Slack `webhook_url` (bearer-grade),
+        // PagerDuty `routing_key`, OpsGenie `api_key`.
+        let config = match d.config {
+            DestinationConfig::Webhook {
+                url,
+                secret_header: Some(_),
+            } => DestinationConfig::Webhook {
+                url,
+                secret_header: Some(SECRET_MASK.to_string()),
+            },
+            DestinationConfig::Slack { channel_override, .. } => DestinationConfig::Slack {
+                webhook_url: SECRET_MASK.to_string(),
+                channel_override,
+            },
+            DestinationConfig::PagerDuty { severity_map, .. } => DestinationConfig::PagerDuty {
+                routing_key: SECRET_MASK.to_string(),
+                severity_map,
+            },
+            DestinationConfig::OpsGenie { team_id, .. } => DestinationConfig::OpsGenie {
+                api_key: SECRET_MASK.to_string(),
+                team_id,
+            },
+            other => other,
+        };
         Self {
             id: d.id,
             name: d.name,
-            config: d.config,
+            config,
             enabled: d.enabled,
             created_at: d.created_at,
             updated_at: d.updated_at,
         }
+    }
+}
+
+/// Restore masked secrets on an incoming update from the stored config.
+///
+/// AAASM-3751 / AAASM-3843: every secret-bearing field is returned as
+/// [`SECRET_MASK`] on read. A GET → edit → PUT round-trip would otherwise
+/// write that literal sentinel back, clobbering the real stored secret. When an
+/// incoming secret field equals the mask, replace it with the value already
+/// persisted so the round-trip preserves the stored secret. Applied to every
+/// connector kind's secret-bearing field, not just the webhook `secret_header`.
+fn restore_masked_secrets(incoming: &mut DestinationConfig, stored: Option<DestinationConfig>) {
+    match incoming {
+        DestinationConfig::Webhook { secret_header, .. } => {
+            restore_webhook_secret(secret_header, stored);
+        }
+        DestinationConfig::Slack { webhook_url, .. } => {
+            restore_slack_secret(webhook_url, stored);
+        }
+        DestinationConfig::PagerDuty { routing_key, .. } => {
+            restore_pagerduty_secret(routing_key, stored);
+        }
+        DestinationConfig::OpsGenie { api_key, .. } => {
+            restore_opsgenie_secret(api_key, stored);
+        }
+    }
+}
+
+/// Restore the webhook `secret_header` from stored config when masked.
+fn restore_webhook_secret(secret_header: &mut Option<String>, stored: Option<DestinationConfig>) {
+    if secret_header.as_deref() != Some(SECRET_MASK) {
+        return;
+    }
+    *secret_header = match stored {
+        Some(DestinationConfig::Webhook { secret_header, .. }) => secret_header,
+        _ => None,
+    };
+}
+
+/// Restore the Slack `webhook_url` from stored config when masked.
+fn restore_slack_secret(webhook_url: &mut String, stored: Option<DestinationConfig>) {
+    if webhook_url != SECRET_MASK {
+        return;
+    }
+    if let Some(DestinationConfig::Slack {
+        webhook_url: stored_url,
+        ..
+    }) = stored
+    {
+        *webhook_url = stored_url;
+    }
+}
+
+/// Restore the PagerDuty `routing_key` from stored config when masked.
+fn restore_pagerduty_secret(routing_key: &mut String, stored: Option<DestinationConfig>) {
+    if routing_key != SECRET_MASK {
+        return;
+    }
+    if let Some(DestinationConfig::PagerDuty {
+        routing_key: stored_key,
+        ..
+    }) = stored
+    {
+        *routing_key = stored_key;
+    }
+}
+
+/// Restore the OpsGenie `api_key` from stored config when masked.
+fn restore_opsgenie_secret(api_key: &mut String, stored: Option<DestinationConfig>) {
+    if api_key != SECRET_MASK {
+        return;
+    }
+    if let Some(DestinationConfig::OpsGenie {
+        api_key: stored_key, ..
+    }) = stored
+    {
+        *api_key = stored_key;
     }
 }
 
@@ -175,6 +285,40 @@ fn in_use_problem() -> ProblemDetail {
     ProblemDetail::from_status(StatusCode::CONFLICT).with_detail("destination_in_use")
 }
 
+/// Enforce tenant ownership of a destination for a caller that already cleared
+/// the scope gate (AAASM-3911).
+///
+/// Mirrors `alert_rules::authorize_rule_owner`: an admin may act on any
+/// destination; a tenant-scoped caller may act only on destinations its own
+/// tenant owns; a caller with neither admin scope nor any tenant scope is
+/// denied up front (fail-closed). Untagged destinations (created by an admin /
+/// bypass caller) are admin-only. A destination is matched on its finer-grained
+/// tag first: a `team_id` requires team access, otherwise an `org_id` requires
+/// org access, otherwise (untagged) admin is required.
+fn authorize_destination_owner(caller: &AuthenticatedCaller, dest: &Destination) -> Result<(), ProblemDetail> {
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    if !is_admin && caller.tenant.team_id.is_none() && caller.tenant.org_id.is_none() {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or a tenant scope"));
+    }
+    let authorized = match (dest.team_id.as_deref(), dest.org_id.as_deref()) {
+        (Some(team), _) => caller.can_access_team(team),
+        (None, Some(org)) => caller.can_access_org(org),
+        (None, None) => is_admin,
+    };
+    if !authorized {
+        return Err(ProblemDetail::from_status(StatusCode::FORBIDDEN)
+            .with_detail("This operation requires admin scope or membership in the destination's tenant"));
+    }
+    Ok(())
+}
+
+/// Whether `caller` may see `dest` — the boolean form of
+/// [`authorize_destination_owner`], used to filter the list response.
+fn destination_visible_to(caller: &AuthenticatedCaller, dest: &Destination) -> bool {
+    authorize_destination_owner(caller, dest).is_ok()
+}
+
 /// Pick the connector implementation matching a destination kind.
 fn connector_for(kind: DestinationKind) -> Box<dyn NotificationConnector> {
     match kind {
@@ -215,6 +359,7 @@ impl NotificationConnector for UnsupportedConnector {
         &self,
         _destination: &Destination,
         _req: &DispatchRequest,
+        _pinned: &[std::net::SocketAddr],
     ) -> Result<crate::destinations::connectors::DispatchOutcome, ConnectorError> {
         Err(ConnectorError::Transport(format!(
             "connector kind '{}' not enabled in this build",
@@ -228,6 +373,10 @@ impl NotificationConnector for UnsupportedConnector {
 pub enum TestDestinationFailure {
     /// Destination does not exist — surfaced as 404.
     NotFound(ProblemDetail),
+    /// Request rejected before dispatch (e.g. the SSRF egress guard refused the
+    /// webhook target) — surfaced as the status carried by the `ProblemDetail`
+    /// (400). (AAASM-3789.)
+    Rejected(ProblemDetail),
     /// Connector failed — surfaced as 502 with `ConnectorFailedBody`.
     Connector(ConnectorFailedBody),
 }
@@ -236,6 +385,7 @@ impl IntoResponse for TestDestinationFailure {
     fn into_response(self) -> Response {
         match self {
             TestDestinationFailure::NotFound(p) => p.into_response(),
+            TestDestinationFailure::Rejected(p) => p.into_response(),
             TestDestinationFailure::Connector(body) => (StatusCode::BAD_GATEWAY, Json(body)).into_response(),
         }
     }
@@ -257,13 +407,19 @@ impl IntoResponse for TestDestinationFailure {
     tag = "alert-destinations"
 )]
 pub async fn list_destinations(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Query(filter): Query<DestinationListFilter>,
 ) -> Json<Vec<DestinationResponse>> {
+    // AAASM-3911: confine the listing to destinations the caller's tenant owns.
+    // An admin sees every destination; a tenant-scoped caller sees only its own
+    // tenant's; a caller with no tenant scope (and no admin) sees none. Untagged
+    // destinations are admin-only.
     let items = state
         .destination_store
         .list(filter.kind)
         .into_iter()
+        .filter(|d| destination_visible_to(&caller, d))
         .map(DestinationResponse::from)
         .collect();
     Json(items)
@@ -285,6 +441,11 @@ pub async fn list_destinations(
     tag = "alert-destinations"
 )]
 pub async fn create_destination(
+    // AAASM-3911: reverts the AAASM-3894 admin-gate stopgap back to Write scope.
+    // Safe now because the destination is stamped with (and later confined to)
+    // the creating caller's tenant, so a Write key can only manage its own
+    // tenant's notification targets (incl. the egressing test-fire).
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<DestinationResponse>), ProblemDetail> {
@@ -296,7 +457,16 @@ pub async fn create_destination(
     }
     validate_config(&req.config).map_err(validation_error_to_problem)?;
 
-    let d = state.destination_store.create(req.name, req.config, req.enabled);
+    // AAASM-3911: stamp the owning tenant from the authenticated caller. An
+    // admin / bypass caller has no tenant → the destination is untagged
+    // (admin-only). The tenant is never taken from the request body.
+    let d = state.destination_store.create(
+        req.name,
+        req.config,
+        req.enabled,
+        caller.tenant.team_id.clone(),
+        caller.tenant.org_id.clone(),
+    );
     Ok((StatusCode::CREATED, Json(d.into())))
 }
 
@@ -315,10 +485,13 @@ pub async fn create_destination(
     tag = "alert-destinations"
 )]
 pub async fn get_destination(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<DestinationResponse>, ProblemDetail> {
     let d = state.destination_store.get(&id).ok_or_else(not_found_problem)?;
+    // AAASM-3911: tenant ownership before exposing the destination.
+    authorize_destination_owner(&caller, &d)?;
     Ok(Json(d.into()))
 }
 
@@ -340,20 +513,35 @@ pub async fn get_destination(
     tag = "alert-destinations"
 )]
 pub async fn update_destination(
+    // AAASM-3911: Write scope — see `create_destination`.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Json<DestinationResponse>, ProblemDetail> {
-    let req = parse_update_body(&body)?;
-    if let Some(cfg) = &req.config {
-        validate_config(cfg).map_err(validation_error_to_problem)?;
-    }
+    // AAASM-3911: tenant ownership on the existing destination before mutating.
+    let existing = state.destination_store.get(&id).ok_or_else(not_found_problem)?;
+    authorize_destination_owner(&caller, &existing)?;
+
+    let mut req = parse_update_body(&body)?;
     if let Some(name) = &req.name {
         if name.trim().is_empty() {
             return Err(validation_error_to_problem(ValidationError::InvalidConfig(
                 "name must be non-empty",
             )));
         }
+    }
+
+    // AAASM-3751 / AAASM-3843: restore any masked secret field from the stored
+    // config *before* validation. A masked Slack `webhook_url` (the sentinel)
+    // would otherwise fail URL validation, and a masked value of any kind must
+    // never overwrite the real stored secret on a GET → edit → PUT round-trip.
+    if let Some(cfg) = &mut req.config {
+        restore_masked_secrets(cfg, Some(existing.config.clone()));
+    }
+
+    if let Some(cfg) = &req.config {
+        validate_config(cfg).map_err(validation_error_to_problem)?;
     }
 
     let updated = state
@@ -383,9 +571,15 @@ pub async fn update_destination(
     tag = "alert-destinations"
 )]
 pub async fn delete_destination(
+    // AAASM-3911: Write scope — see `create_destination`.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ProblemDetail> {
+    // AAASM-3911: tenant ownership on the existing destination before deleting.
+    let existing = state.destination_store.get(&id).ok_or_else(not_found_problem)?;
+    authorize_destination_owner(&caller, &existing)?;
+
     state.destination_store.delete(&id).map_err(|e| match e {
         StoreError::NotFound => not_found_problem(),
         StoreError::InUse => in_use_problem(),
@@ -412,6 +606,9 @@ pub async fn delete_destination(
     tag = "alert-destinations"
 )]
 pub async fn test_destination(
+    // AAASM-3911: Write scope — see `create_destination`. The test-fire egresses,
+    // so tenant ownership is enforced below before any network dispatch.
+    RequireWrite(caller): RequireWrite,
     Extension(state): Extension<AppState>,
     Path(id): Path<String>,
     body: Option<Json<TestDestinationRequest>>,
@@ -421,6 +618,48 @@ pub async fn test_destination(
         .get(&id)
         .ok_or_else(|| TestDestinationFailure::NotFound(not_found_problem()))?;
 
+    // AAASM-3911: tenant ownership before firing (a 403 is surfaced as a
+    // rejection, mapped to its ProblemDetail status).
+    authorize_destination_owner(&caller, &destination).map_err(TestDestinationFailure::Rejected)?;
+
+    // AAASM-3789 / AAASM-3868: SSRF egress guard. Before dispatching a test-fire,
+    // reject targets that resolve to an internal address (loopback / RFC1918 /
+    // link-local incl. the cloud-metadata endpoint / ULA). The resolution does
+    // a blocking DNS lookup, so it runs on the blocking pool.
+    //
+    // Both the generic webhook `url` and the Slack `webhook_url` are
+    // attacker-controlled targets that egress on test-fire and must pass the
+    // guard. PagerDuty / OpsGenie POST to hard-coded vendor endpoints, so they
+    // carry no caller-controlled SSRF surface and are exempt.
+    let egress_url = match &destination.config {
+        DestinationConfig::Webhook { url, .. } => Some(url::Url::parse(url).map_err(|_| {
+            TestDestinationFailure::Rejected(validation_error_to_problem(ValidationError::InvalidConfig(
+                "webhook.url is not a valid URL",
+            )))
+        })?),
+        DestinationConfig::Slack { webhook_url, .. } => Some(url::Url::parse(webhook_url).map_err(|_| {
+            TestDestinationFailure::Rejected(validation_error_to_problem(ValidationError::InvalidConfig(
+                "slack.webhook_url is not a valid URL",
+            )))
+        })?),
+        DestinationConfig::PagerDuty { .. } | DestinationConfig::OpsGenie { .. } => None,
+    };
+    // Vetted addresses the dispatch must pin to (AAASM-3826). Empty for vendor
+    // hosts (PagerDuty / OpsGenie) and when the operator has opted out of the
+    // egress guard — both mean "resolve normally, do not pin".
+    let pinned: Vec<std::net::SocketAddr> = if let Some(parsed) = egress_url {
+        let egress = tokio::task::spawn_blocking(move || validate_webhook_egress(&parsed))
+            .await
+            .map_err(|_| {
+                TestDestinationFailure::Rejected(
+                    ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail("egress_check_failed"),
+                )
+            })?;
+        egress.map_err(|e| TestDestinationFailure::Rejected(validation_error_to_problem(e)))?
+    } else {
+        Vec::new()
+    };
+
     let req_in = body.map(|Json(b)| b).unwrap_or_default();
     let dispatch = DispatchRequest {
         severity: req_in.severity.unwrap_or_else(|| "LOW".to_string()),
@@ -428,7 +667,7 @@ pub async fn test_destination(
     };
 
     let connector = connector_for(destination.config.kind());
-    match connector.dispatch(&destination, &dispatch).await {
+    match connector.dispatch(&destination, &dispatch, &pinned).await {
         Ok(outcome) => Ok((
             StatusCode::OK,
             Json(TestDestinationResponse {
@@ -447,5 +686,277 @@ pub async fn test_destination(
             connector_status: 0,
             connector_body: msg,
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::scope::Scope;
+    use crate::auth::{AuthenticatedCaller, Tenant};
+
+    // AAASM-3911: the mutation handlers now gate on Write scope + tenant
+    // ownership (reverting the AAASM-3894 admin-gate). This admin caller (Admin
+    // satisfies Write) with no tenant scope owns untagged destinations, so the
+    // existing SSRF / masking tests still exercise the handlers unchanged.
+    fn admin() -> RequireWrite {
+        RequireWrite(AuthenticatedCaller {
+            key_id: "k".to_string(),
+            scopes: vec![Scope::Admin],
+            tenant: Tenant::default(),
+        })
+    }
+
+    #[test]
+    fn connector_for_resolves_builtin_kinds() {
+        // Webhook + Slack are always compiled in; the factory must not panic.
+        let _webhook = connector_for(DestinationKind::Webhook);
+        let _slack = connector_for(DestinationKind::Slack);
+    }
+
+    #[tokio::test]
+    async fn connector_for_unsupported_kind_fails_closed() {
+        // OpsGenie has no compiled backend in the default build, so dispatch must
+        // return a transport error rather than panic.
+        let conn = connector_for(DestinationKind::OpsGenie);
+        let dest = Destination {
+            id: "dst_x".to_string(),
+            name: "og".to_string(),
+            config: DestinationConfig::OpsGenie {
+                api_key: "k".to_string(),
+                team_id: "t".to_string(),
+            },
+            enabled: true,
+            created_at: String::new(),
+            updated_at: String::new(),
+            team_id: None,
+            org_id: None,
+        };
+        let req = DispatchRequest {
+            severity: "LOW".to_string(),
+            message: "m".to_string(),
+        };
+        assert!(conn.dispatch(&dest, &req, &[]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_destination_rejects_internal_webhook_target() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let dest = state.destination_store.create(
+            "internal".to_string(),
+            DestinationConfig::Webhook {
+                url: "http://127.0.0.1:9/hook".to_string(),
+                secret_header: None,
+            },
+            true,
+            None,
+            None,
+        );
+        // SSRF egress guard (AAASM-3789): a loopback target is refused before dispatch.
+        let failure = test_destination(admin(), Extension(state), Path(dest.id), None)
+            .await
+            .expect_err("loopback target rejected");
+        assert_eq!(failure.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_destination_rejects_internal_slack_target() {
+        // AAASM-3868: the Slack `webhook_url` is attacker-controlled and must be
+        // routed through the same SSRF egress guard as the generic webhook. A
+        // loopback / cloud-metadata target is refused (400) before dispatch.
+        for url in [
+            "http://127.0.0.1:9/services/x",
+            "http://169.254.169.254/latest/meta-data/",
+        ] {
+            let state = AppState::local_in_memory().expect("state builds");
+            let dest = state.destination_store.create(
+                "internal-slack".to_string(),
+                DestinationConfig::Slack {
+                    webhook_url: url.to_string(),
+                    channel_override: None,
+                },
+                true,
+                None,
+                None,
+            );
+            let failure = test_destination(admin(), Extension(state), Path(dest.id), None)
+                .await
+                .expect_err("internal slack target rejected before dispatch");
+            assert_eq!(
+                failure.into_response().status(),
+                StatusCode::BAD_REQUEST,
+                "{url} must be rejected with 400"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn update_preserves_stored_secret_when_masked() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let dest = state.destination_store.create(
+            "wh".to_string(),
+            DestinationConfig::Webhook {
+                url: "https://example.com/hook".to_string(),
+                secret_header: Some("real-secret".to_string()),
+            },
+            true,
+            None,
+            None,
+        );
+        // A GET → edit → PUT round-trip ships back the masked sentinel; it must not
+        // clobber the real stored secret.
+        let body = serde_json::to_vec(&serde_json::json!({
+            "kind": "webhook",
+            "config": { "url": "https://example.com/hook", "secret_header": "********" }
+        }))
+        .unwrap();
+        let _ = update_destination(
+            admin(),
+            Extension(state.clone()),
+            Path(dest.id.clone()),
+            Bytes::from(body),
+        )
+        .await
+        .expect("update applies");
+
+        let stored = state.destination_store.get(&dest.id).expect("still present");
+        match stored.config {
+            DestinationConfig::Webhook { secret_header, .. } => {
+                assert_eq!(secret_header.as_deref(), Some("real-secret"));
+            }
+            other => panic!("expected webhook config, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_unknown_destination_is_404() {
+        let state = AppState::local_in_memory().expect("state builds");
+        let body = serde_json::to_vec(&serde_json::json!({ "name": "x" })).unwrap();
+        let err = update_destination(
+            admin(),
+            Extension(state),
+            Path("dst_missing".to_string()),
+            Bytes::from(body),
+        )
+        .await
+        .expect_err("not found");
+        assert_eq!(err.status, StatusCode::NOT_FOUND.as_u16());
+    }
+
+    #[test]
+    fn from_destination_masks_every_connector_secret() {
+        // AAASM-3843: every connector kind's secret-bearing field is masked on
+        // read; non-secret fields are preserved.
+        let cases = [
+            DestinationConfig::Webhook {
+                url: "https://example.com/hook".to_string(),
+                secret_header: Some("real-secret".to_string()),
+            },
+            DestinationConfig::Slack {
+                webhook_url: "https://hooks.slack.com/services/T/B/secret".to_string(),
+                channel_override: Some("#ops".to_string()),
+            },
+            DestinationConfig::PagerDuty {
+                routing_key: "real-routing-key".to_string(),
+                severity_map: None,
+            },
+            DestinationConfig::OpsGenie {
+                api_key: "real-api-key".to_string(),
+                team_id: "team-1".to_string(),
+            },
+        ];
+        for config in cases {
+            let dest = Destination {
+                id: "dst_1".to_string(),
+                name: "d".to_string(),
+                config,
+                enabled: true,
+                created_at: String::new(),
+                updated_at: String::new(),
+                team_id: None,
+                org_id: None,
+            };
+            match DestinationResponse::from(dest).config {
+                DestinationConfig::Webhook { secret_header, .. } => {
+                    assert_eq!(secret_header.as_deref(), Some(SECRET_MASK));
+                }
+                DestinationConfig::Slack {
+                    webhook_url,
+                    channel_override,
+                } => {
+                    assert_eq!(webhook_url, SECRET_MASK);
+                    assert_eq!(channel_override.as_deref(), Some("#ops"));
+                }
+                DestinationConfig::PagerDuty { routing_key, .. } => {
+                    assert_eq!(routing_key, SECRET_MASK);
+                }
+                DestinationConfig::OpsGenie { api_key, team_id } => {
+                    assert_eq!(api_key, SECRET_MASK);
+                    assert_eq!(team_id, "team-1");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restore_masked_secrets_preserves_stored_for_all_kinds() {
+        // AAASM-3843: a masked sentinel on PUT is restored from the stored
+        // secret for every kind; a genuinely-rotated value is left untouched.
+        let mut slack = DestinationConfig::Slack {
+            webhook_url: SECRET_MASK.to_string(),
+            channel_override: None,
+        };
+        restore_masked_secrets(
+            &mut slack,
+            Some(DestinationConfig::Slack {
+                webhook_url: "https://hooks.slack.com/services/real".to_string(),
+                channel_override: None,
+            }),
+        );
+        assert!(matches!(slack, DestinationConfig::Slack { webhook_url, .. }
+            if webhook_url == "https://hooks.slack.com/services/real"));
+
+        let mut pd = DestinationConfig::PagerDuty {
+            routing_key: SECRET_MASK.to_string(),
+            severity_map: None,
+        };
+        restore_masked_secrets(
+            &mut pd,
+            Some(DestinationConfig::PagerDuty {
+                routing_key: "real-key".to_string(),
+                severity_map: None,
+            }),
+        );
+        assert!(matches!(pd, DestinationConfig::PagerDuty { routing_key, .. }
+            if routing_key == "real-key"));
+
+        let mut og = DestinationConfig::OpsGenie {
+            api_key: SECRET_MASK.to_string(),
+            team_id: "t".to_string(),
+        };
+        restore_masked_secrets(
+            &mut og,
+            Some(DestinationConfig::OpsGenie {
+                api_key: "real-genie".to_string(),
+                team_id: "t".to_string(),
+            }),
+        );
+        assert!(matches!(og, DestinationConfig::OpsGenie { api_key, .. }
+            if api_key == "real-genie"));
+
+        // A non-masked incoming secret is a genuine rotation and must survive.
+        let mut rotated = DestinationConfig::OpsGenie {
+            api_key: "rotated-key".to_string(),
+            team_id: "t".to_string(),
+        };
+        restore_masked_secrets(
+            &mut rotated,
+            Some(DestinationConfig::OpsGenie {
+                api_key: "old-key".to_string(),
+                team_id: "t".to_string(),
+            }),
+        );
+        assert!(matches!(rotated, DestinationConfig::OpsGenie { api_key, .. }
+            if api_key == "rotated-key"));
     }
 }

@@ -5,6 +5,7 @@ use axum::{Extension, Json};
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::auth::scope::{RequireRead, Scope};
 use crate::state::AppState;
 
 /// Per-agent cost entry within the budget summary.
@@ -29,6 +30,13 @@ pub struct TeamCostEntry {
     pub daily_spend_usd: String,
     /// Total spend this month in USD for this team (if monthly tracking is enabled).
     pub monthly_spend_usd: Option<String>,
+    /// Configured per-team calendar-month budget limit in USD, if set
+    /// (AAASM-5087). This is the tracker-wide team envelope — the same limit
+    /// applies to every team — surfaced so the Teams monthly-budget card can
+    /// render spend against limit. `None` when no team monthly limit is
+    /// configured. This is a calendar-month window, not a rolling window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monthly_limit_usd: Option<String>,
     /// Calendar date (YYYY-MM-DD) the daily spend applies to.
     pub date: String,
 }
@@ -60,39 +68,74 @@ pub struct CostSummary {
 ///
 /// Retrieve the current daily and monthly cost and budget summary,
 /// including per-agent breakdown and configured budget limits.
+///
+/// Per-tenant filtering (AAASM-3139): an admin caller sees every tenant's
+/// per-agent and per-team breakdown; a tenant-scoped caller sees only its own
+/// team's row; a caller with neither admin scope nor a team scope receives the
+/// aggregate totals only, with the breakdowns elided rather than leaking every
+/// tenant's spend (the cross-tenant IDOR that AAASM-3126 admin-gated).
 #[utoipa::path(
     get,
     path = "/api/v1/costs",
     responses(
-        (status = 200, description = "Cost and budget summary", body = CostSummary)
+        (status = 200, description = "Cost and budget summary", body = CostSummary),
+        (status = 401, description = "Missing or invalid credentials"),
     ),
     tag = "costs"
 )]
-pub async fn get_cost_summary(Extension(state): Extension<AppState>) -> (StatusCode, Json<CostSummary>) {
+pub async fn get_cost_summary(
+    RequireRead(caller): RequireRead,
+    Extension(state): Extension<AppState>,
+) -> (StatusCode, Json<CostSummary>) {
     let snapshot = state.budget_tracker.snapshot();
 
-    let per_agent: Vec<AgentCostEntry> = snapshot
-        .per_agent
-        .iter()
-        .map(|entry| AgentCostEntry {
-            agent_id: entry.agent_id_hex.clone(),
-            daily_spend_usd: entry.state.spent_usd.to_string(),
-            monthly_spend_usd: entry.state.monthly_spent_usd.map(|d| d.to_string()),
-            date: entry.state.date.to_string(),
-        })
-        .collect();
+    // Per-tenant filtering (AAASM-3139, completing AAASM-3126's deferral):
+    // * Admin callers see every tenant's breakdown.
+    // * A tenant-scoped caller sees ONLY its own team's row (and no per-agent
+    //   breakdown — the snapshot's per-agent list is not keyed by team, so
+    //   including it would leak other tenants' agents).
+    // * A caller with neither admin scope nor a team scope sees aggregate
+    //   totals only — the breakdowns stay empty rather than leaking spend.
+    let is_admin = caller.scopes.contains(&Scope::Admin);
+    let caller_team = caller.tenant.team_id.as_deref();
 
-    let mut per_team: Vec<TeamCostEntry> = snapshot
-        .team_budgets
-        .iter()
-        .map(|(team_id, state)| TeamCostEntry {
-            team_id: team_id.clone(),
-            daily_spend_usd: state.spent_usd.to_string(),
-            monthly_spend_usd: state.monthly_spent_usd.map(|d| d.to_string()),
-            date: state.date.to_string(),
-        })
-        .collect();
-    per_team.sort_by(|a, b| a.team_id.cmp(&b.team_id));
+    let per_agent: Vec<AgentCostEntry> = if is_admin {
+        snapshot
+            .per_agent
+            .iter()
+            .map(|entry| AgentCostEntry {
+                agent_id: entry.agent_id_hex.clone(),
+                daily_spend_usd: entry.state.spent_usd.to_string(),
+                monthly_spend_usd: entry.state.monthly_spent_usd.map(|d| d.to_string()),
+                date: entry.state.date.to_string(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // AAASM-5087 — the per-team calendar-month limit is a single tracker-wide
+    // envelope, so resolve it once and stamp it on every team row.
+    let team_monthly_limit = state.budget_tracker.team_monthly_limit_usd().map(|d| d.to_string());
+    let per_team: Vec<TeamCostEntry> = if is_admin || caller_team.is_some() {
+        let mut rows: Vec<TeamCostEntry> = snapshot
+            .team_budgets
+            .iter()
+            // Non-admin tenant callers see only their own team's row.
+            .filter(|(team_id, _)| is_admin || caller_team == Some(team_id.as_str()))
+            .map(|(team_id, state)| TeamCostEntry {
+                team_id: team_id.clone(),
+                daily_spend_usd: state.spent_usd.to_string(),
+                monthly_spend_usd: state.monthly_spent_usd.map(|d| d.to_string()),
+                monthly_limit_usd: team_monthly_limit.clone(),
+                date: state.date.to_string(),
+            })
+            .collect();
+        rows.sort_by(|a, b| a.team_id.cmp(&b.team_id));
+        rows
+    } else {
+        Vec::new()
+    };
 
     let summary = CostSummary {
         daily_spend_usd: snapshot.global.spent_usd.to_string(),
@@ -181,6 +224,7 @@ mod tests {
                 team_id: "platform".to_string(),
                 daily_spend_usd: "12.00".to_string(),
                 monthly_spend_usd: None,
+                monthly_limit_usd: None,
                 date: "2026-04-30".to_string(),
             }],
         };
@@ -189,5 +233,23 @@ mod tests {
         assert_eq!(json["per_team"][0]["team_id"], "platform");
         assert_eq!(json["per_team"][0]["daily_spend_usd"], "12.00");
         assert!(json["per_team"][0]["monthly_spend_usd"].is_null());
+        // AAASM-5087: an unset team monthly limit is omitted from the wire.
+        assert!(json["per_team"][0].get("monthly_limit_usd").is_none());
+    }
+
+    // AAASM-5087 — when a team monthly limit is configured it is surfaced on
+    // every team row so the Teams monthly-budget card can render spend/limit.
+    #[test]
+    fn team_cost_entry_surfaces_configured_monthly_limit() {
+        let entry = TeamCostEntry {
+            team_id: "platform".to_string(),
+            daily_spend_usd: "12.00".to_string(),
+            monthly_spend_usd: Some("340.00".to_string()),
+            monthly_limit_usd: Some("2000.00".to_string()),
+            date: "2026-04-30".to_string(),
+        };
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["monthly_limit_usd"], "2000.00");
+        assert_eq!(json["monthly_spend_usd"], "340.00");
     }
 }

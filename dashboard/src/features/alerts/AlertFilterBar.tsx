@@ -1,11 +1,11 @@
-import type { AlertFilters, AlertStatus, Severity, TimeRangePreset } from './types'
+import type { AlertFilters, AlertSeverity, AlertStatus, TimeRangePreset } from './types'
 
 interface AlertFilterBarProps {
   value: AlertFilters
   onChange: (next: AlertFilters) => void
 }
 
-const ALL_SEVERITIES: readonly Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+const ALL_SEVERITIES: readonly AlertSeverity[] = ['CRITICAL', 'WARNING', 'INFO']
 const ALL_STATUSES: readonly AlertStatus[] = ['FIRING', 'RESOLVED', 'SUPPRESSED']
 const TIME_RANGES: readonly TimeRangePreset[] = ['24h', '7d', '30d', 'custom']
 
@@ -13,7 +13,7 @@ function toggle<T>(list: readonly T[], item: T): readonly T[] {
   return list.includes(item) ? list.filter((v) => v !== item) : [...list, item]
 }
 
-export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
+export function AlertFilterBar({ value, onChange }: Readonly<AlertFilterBarProps>) {
   return (
     <div
       data-testid="alerts-filter-bar"
@@ -90,7 +90,27 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
       <label
         style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
       >
-        Agent
+        <span>Search</span>
+        <input
+          data-testid="alerts-filter-q"
+          type="search"
+          placeholder="search message or agent…"
+          value={value.q}
+          onChange={(e) => onChange({ ...value, q: e.target.value })}
+          style={{
+            padding: '2px 8px',
+            border: '1px solid var(--form-input-border)',
+            borderRadius: '4px',
+            fontSize: '0.75rem',
+            minWidth: '12rem',
+          }}
+        />
+      </label>
+
+      <label
+        style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
+      >
+        <span>Agent</span>
         <input
           data-testid="alerts-filter-agent"
           type="search"
@@ -110,7 +130,7 @@ export function AlertFilterBar({ value, onChange }: AlertFilterBarProps) {
       <label
         style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', color: 'var(--text-muted)' }}
       >
-        Range
+        <span>Range</span>
         <select
           data-testid="alerts-filter-range"
           value={value.timeRange}

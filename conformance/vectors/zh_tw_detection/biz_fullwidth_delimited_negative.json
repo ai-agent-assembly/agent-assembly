@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5353 negative, added after delta review: FULL-WIDTH machine delimiters must not bound a bare 統一編號 either. The first boundary fix admitted any non-ASCII character as 'prose', which re-opened the identical defect in the one locale this pack exists for - U+FF1A U+FF1D U+FF0C U+FF0E are what a CJK input method produces and are the delimiters in zh-TW logs, form dumps and TSV exports. Note U+FF0E and U+FF0C are the full-width decimal point and thousands separator, so 3.12345675 written full-width slipped straight past reasoning that had carefully handled the ASCII forms.",
+  "input_text": "日期：20260801 值＝12345675 狀態，12345675 ３．12345675 ２，12345675 編號；12345675",
+  "expected_findings": [],
+  "expected_redacted": "日期：20260801 值＝12345675 狀態，12345675 ３．12345675 ２，12345675 編號；12345675"
+}

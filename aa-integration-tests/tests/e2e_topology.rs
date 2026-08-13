@@ -83,7 +83,6 @@ fn make_record(
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: vec![],
         recent_events: VecDeque::new(),
         recent_traces: vec![],
@@ -102,6 +101,7 @@ fn make_record(
         children: vec![],
         parent_key,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }

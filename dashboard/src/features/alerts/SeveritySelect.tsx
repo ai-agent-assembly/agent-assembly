@@ -1,9 +1,9 @@
 import { useFormContext } from 'react-hook-form'
 import { SeverityBadge } from './SeverityBadge'
-import type { Severity } from './types'
+import type { RuleSeverity } from './types'
 import type { RuleFormValues } from './ruleFormSchema'
 
-const OPTIONS: readonly Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+const OPTIONS: readonly RuleSeverity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
 
 export function SeveritySelect() {
   const { register, formState } = useFormContext<RuleFormValues>()

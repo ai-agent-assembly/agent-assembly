@@ -186,6 +186,12 @@ pub struct ResolvedRecord {
     /// Optional free-text rationale recorded with the decision. `None` for
     /// approvals with no reason and for `"timed_out"` records.
     pub decision_reason: Option<String>,
+    /// Structured approval conditions recorded with an approval (AAASM-5095).
+    ///
+    /// Carries the [`ApprovalDecision::Approved::conditions`] slugs through to
+    /// the resolved record. Always empty for `"rejected"` and `"timed_out"`
+    /// records and for unconditional approvals.
+    pub decision_conditions: Vec<String>,
     /// Team identifier carried from the originating request, if any.
     pub team_id: Option<String>,
 }
@@ -203,6 +209,14 @@ pub enum ApprovalDecision {
         by: String,
         /// Optional free-text rationale.
         reason: Option<String>,
+        /// Structured approval conditions attached to the grant (AAASM-5095).
+        ///
+        /// Each entry is a machine-readable condition slug such as
+        /// `"this-once"`, `"policy-exception"`, or `"time-boxed"`, recorded
+        /// verbatim on the resolved decision so downstream consumers (audit,
+        /// dashboard) can render the qualified nature of the approval. Empty
+        /// when the operator approved unconditionally.
+        conditions: Vec<String>,
     },
     /// A human operator rejected the action.
     Rejected {
@@ -258,8 +272,11 @@ impl std::error::Error for ApprovalError {}
 /// decides which decisions to forward — timeouts are reported here too but the
 /// gateway only broadcasts genuine human verdicts (spec line 7699 / AAASM-2378).
 pub trait ApprovalResolvedNotifier: Send + Sync {
-    /// Called after `request_id` is resolved with `decision`.
-    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision);
+    /// Called after `request_id` is resolved with `decision`. `tenant` is the
+    /// resolved request's owning team (if any), so a tenant-aware implementor
+    /// can scope the notification to that tenant and never leak one tenant's
+    /// resolution to another (AAASM-3890).
+    fn notify_resolved(&self, request_id: &str, decision: &ApprovalDecision, tenant: Option<&str>);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +285,7 @@ pub trait ApprovalResolvedNotifier: Send + Sync {
 
 /// Concurrent, in-memory store of pending approval requests.
 ///
-/// Constructed via [`ApprovalQueue::new`], which returns an [`Arc`] so the
+/// Constructed via [`ApprovalQueue::new`], which returns an `Arc` so the
 /// queue can be cloned cheaply across tasks (e.g., the timeout spawner holds
 /// a back-reference).
 pub struct ApprovalQueue {
@@ -311,7 +328,7 @@ fn hash_to_16(s: &str) -> [u8; 16] {
 }
 
 impl ApprovalQueue {
-    /// Creates a new, empty queue wrapped in an [`Arc`].
+    /// Creates a new, empty queue wrapped in an `Arc`.
     pub fn new() -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
         let (expiry_event_tx, _) = broadcast::channel(APPROVAL_EVENT_CHANNEL_CAPACITY);
@@ -544,6 +561,40 @@ impl ApprovalQueue {
         self.record_routing(id, status, None, None, None, Some(entry))
     }
 
+    /// Forward (reassign) a still-pending request to a different approver
+    /// target (AAASM-5095).
+    ///
+    /// Unlike [`decide`](Self::decide), forwarding does **not** resolve the
+    /// request — it remains pending so the new target must still approve or
+    /// reject it. The current target becomes the `from_role` of a `"forwarded"`
+    /// routing-history entry and `to` becomes the new `target_role`; the
+    /// routing status is set to `"forwarded_to_<to>"`.
+    ///
+    /// Returns `true` if the request was still pending and was reassigned,
+    /// `false` if the id is unknown or already resolved (no-op) — mirroring the
+    /// contract of [`record_routing`](Self::record_routing).
+    pub fn forward(&self, id: ApprovalRequestId, to: &str) -> bool {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let from_role = self.routing_meta.get(&id).and_then(|m| m.target_role.clone());
+        let entry = RoutingHistoryEntry {
+            at: now,
+            action: "forwarded".to_string(),
+            from_role,
+            to_role: to.to_string(),
+        };
+        self.record_routing(
+            id,
+            format!("forwarded_to_{to}"),
+            Some(to.to_string()),
+            None,
+            None,
+            Some(entry),
+        )
+    }
+
     /// Apply an [`ApprovalDecision`] to the request identified by `id`.
     ///
     /// Returns:
@@ -569,6 +620,112 @@ impl ApprovalQueue {
         }
     }
 
+    /// Capture the resolved record into `resolved_history` before any
+    /// audit/broadcast work so the HTTP `GET /approvals/{id}` + `?status=…`
+    /// filter can observe the decision (AAASM-1477). Evicts the oldest entry
+    /// once the history cap is reached.
+    fn record_resolution(&self, req: &ApprovalRequest, decision: &ApprovalDecision, decided_by: &str) {
+        let (status_str, decision_reason, decision_conditions) = match decision {
+            ApprovalDecision::Approved { reason, conditions, .. } => ("approved", reason.clone(), conditions.clone()),
+            ApprovalDecision::Rejected { reason, .. } => ("rejected", Some(reason.clone()), Vec::new()),
+            ApprovalDecision::TimedOut { .. } => ("timed_out", None, Vec::new()),
+        };
+        let decided_at = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let record = ResolvedRecord {
+            request_id: req.request_id,
+            agent_id: req.agent_id.clone(),
+            action: req.action.clone(),
+            condition_triggered: req.condition_triggered.clone(),
+            submitted_at: req.submitted_at,
+            decided_at,
+            status: status_str.to_string(),
+            decided_by: decided_by.to_string(),
+            decision_reason,
+            decision_conditions,
+            team_id: req.team_id.clone(),
+        };
+        if let Ok(mut guard) = self.resolved_history.lock() {
+            if guard.len() >= self.resolved_history_cap {
+                guard.pop_front();
+            }
+            guard.push_back(record);
+        }
+    }
+
+    /// Emit a hash-chained audit entry for an approval decision over `audit_tx`
+    /// when an audit channel is configured. No-op when none is set.
+    fn emit_resolution_audit(&self, req: &ApprovalRequest, decision: &ApprovalDecision, decided_by: &str) {
+        let Some(audit_tx) = &self.audit_tx else {
+            return;
+        };
+        let audit_event_type = match decision {
+            ApprovalDecision::Approved { .. } => AuditEventType::ApprovalGranted,
+            ApprovalDecision::Rejected { .. } => AuditEventType::ApprovalDenied,
+            ApprovalDecision::TimedOut { .. } => AuditEventType::ApprovalTimedOut,
+        };
+        let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
+        let agent_id = AgentId::from_bytes(hash_to_16(&req.agent_id));
+        let session_id = SessionId::from_bytes(hash_to_16(&req.request_id.to_string()));
+        let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
+
+        let payload = serde_json::json!({
+            "request_id": req.request_id.to_string(),
+            "agent_id": &req.agent_id,
+            "action": &req.action,
+            "condition_triggered": &req.condition_triggered,
+            "decided_by": decided_by,
+        })
+        .to_string();
+
+        // Use try_lock to avoid blocking the resolve path; fall back to
+        // a broken chain link rather than deadlocking.
+        let (entry, hash_updated) = match self.audit_last_hash.try_lock() {
+            Ok(mut guard) => {
+                let entry = AuditEntry::new(
+                    seq,
+                    timestamp_ns,
+                    audit_event_type,
+                    agent_id,
+                    session_id,
+                    payload,
+                    *guard,
+                );
+                *guard = *entry.entry_hash();
+                (entry, true)
+            }
+            Err(_) => {
+                let entry = AuditEntry::new(
+                    seq,
+                    timestamp_ns,
+                    audit_event_type,
+                    agent_id,
+                    session_id,
+                    payload,
+                    [0u8; 32],
+                );
+                (entry, false)
+            }
+        };
+
+        if !hash_updated {
+            tracing::debug!(seq, "audit hash chain lock contended — entry uses zero previous_hash");
+        }
+
+        if let Err(e) = audit_tx.try_send(entry) {
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(seq, "audit channel full — approval event dropped");
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    tracing::error!("audit channel closed — AuditWriter task has exited");
+                }
+            }
+        }
+    }
+
     /// Remove and settle the request identified by `id`.
     ///
     /// Returns `true` if the entry existed and the sender was consumed, `false`
@@ -582,36 +739,7 @@ impl ApprovalQueue {
                 ApprovalDecision::Rejected { by, .. } => ("ApprovalDenied", by.clone()),
                 ApprovalDecision::TimedOut { .. } => ("ApprovalTimedOut", "timeout".to_string()),
             };
-            // Capture the resolved record before any audit/broadcast work
-            // so the HTTP `GET /approvals/{id}` + `?status=…` filter can
-            // observe the decision (AAASM-1477).
-            let (status_str, decision_reason) = match &decision {
-                ApprovalDecision::Approved { reason, .. } => ("approved", reason.clone()),
-                ApprovalDecision::Rejected { reason, .. } => ("rejected", Some(reason.clone())),
-                ApprovalDecision::TimedOut { .. } => ("timed_out", None),
-            };
-            let decided_at = SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let record = ResolvedRecord {
-                request_id: req.request_id,
-                agent_id: req.agent_id.clone(),
-                action: req.action.clone(),
-                condition_triggered: req.condition_triggered.clone(),
-                submitted_at: req.submitted_at,
-                decided_at,
-                status: status_str.to_string(),
-                decided_by: decided_by.clone(),
-                decision_reason,
-                team_id: req.team_id.clone(),
-            };
-            if let Ok(mut guard) = self.resolved_history.lock() {
-                if guard.len() >= self.resolved_history_cap {
-                    guard.pop_front();
-                }
-                guard.push_back(record);
-            }
+            self.record_resolution(&req, &decision, &decided_by);
             tracing::info!(
                 event_type = event_type_str,
                 request_id = %req.request_id,
@@ -621,72 +749,7 @@ impl ApprovalQueue {
                 "approval decision recorded"
             );
 
-            // Record an audit entry for the approval decision.
-            if let Some(audit_tx) = &self.audit_tx {
-                let audit_event_type = match &decision {
-                    ApprovalDecision::Approved { .. } => AuditEventType::ApprovalGranted,
-                    ApprovalDecision::Rejected { .. } => AuditEventType::ApprovalDenied,
-                    ApprovalDecision::TimedOut { .. } => AuditEventType::ApprovalTimedOut,
-                };
-                let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
-                let agent_id = AgentId::from_bytes(hash_to_16(&req.agent_id));
-                let session_id = SessionId::from_bytes(hash_to_16(&req.request_id.to_string()));
-                let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
-
-                let payload = serde_json::json!({
-                    "request_id": req.request_id.to_string(),
-                    "agent_id": &req.agent_id,
-                    "action": &req.action,
-                    "condition_triggered": &req.condition_triggered,
-                    "decided_by": &decided_by,
-                })
-                .to_string();
-
-                // Use try_lock to avoid blocking the resolve path; fall back to
-                // a broken chain link rather than deadlocking.
-                let (entry, hash_updated) = match self.audit_last_hash.try_lock() {
-                    Ok(mut guard) => {
-                        let entry = AuditEntry::new(
-                            seq,
-                            timestamp_ns,
-                            audit_event_type,
-                            agent_id,
-                            session_id,
-                            payload,
-                            *guard,
-                        );
-                        *guard = *entry.entry_hash();
-                        (entry, true)
-                    }
-                    Err(_) => {
-                        let entry = AuditEntry::new(
-                            seq,
-                            timestamp_ns,
-                            audit_event_type,
-                            agent_id,
-                            session_id,
-                            payload,
-                            [0u8; 32],
-                        );
-                        (entry, false)
-                    }
-                };
-
-                if !hash_updated {
-                    tracing::debug!(seq, "audit hash chain lock contended — entry uses zero previous_hash");
-                }
-
-                if let Err(e) = audit_tx.try_send(entry) {
-                    match e {
-                        mpsc::error::TrySendError::Full(_) => {
-                            tracing::warn!(seq, "audit channel full — approval event dropped");
-                        }
-                        mpsc::error::TrySendError::Closed(_) => {
-                            tracing::error!("audit channel closed — AuditWriter task has exited");
-                        }
-                    }
-                }
-            }
+            self.emit_resolution_audit(&req, &decision, &decided_by);
 
             // Broadcast auto-expiration so subscribers (WS dashboard,
             // audit consumers) can surface the transition without polling.
@@ -701,7 +764,7 @@ impl ApprovalQueue {
             // gateway hub forwards only genuine human verdicts as
             // `ApprovalResolved`; timeouts are ignored there. AAASM-2378.
             if let Some(notifier) = self.resolved_notifier.get() {
-                notifier.notify_resolved(&req.request_id.to_string(), &decision);
+                notifier.notify_resolved(&req.request_id.to_string(), &decision, req.team_id.as_deref());
             }
 
             // Ignore send errors: the receiver may have been dropped (caller
@@ -722,7 +785,7 @@ impl ApprovalQueue {
     /// # Timeout behaviour
     ///
     /// A `tokio::spawn`ed task sleeps for `request.timeout_secs` seconds, then
-    /// calls `resolve(TimedOut)`. Because [`resolve`] is idempotent, a human
+    /// calls `resolve(TimedOut)`. Because `resolve` is idempotent, a human
     /// decision that arrives before the timeout simply wins the race; the
     /// timeout task's subsequent `resolve` call becomes a no-op.
     pub fn submit(self: &Arc<Self>, request: ApprovalRequest) -> (ApprovalRequestId, ApprovalFuture) {
@@ -835,10 +898,12 @@ mod tests {
         let d = ApprovalDecision::Approved {
             by: "alice".to_string(),
             reason: Some("looks safe".to_string()),
+            conditions: vec!["this-once".to_string()],
         };
-        if let ApprovalDecision::Approved { by, reason } = d {
+        if let ApprovalDecision::Approved { by, reason, conditions } = d {
             assert_eq!(by, "alice");
             assert_eq!(reason, Some("looks safe".to_string()));
+            assert_eq!(conditions, vec!["this-once".to_string()]);
         } else {
             panic!("wrong variant");
         }
@@ -928,6 +993,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         );
         assert_eq!(result, Err(ApprovalError::NotFound));
@@ -950,6 +1016,222 @@ mod tests {
         }
     }
 
+    /// Submit a fresh 60s pending request and return its id — the submit
+    /// boilerplate the decide/forward/conditions tests would otherwise repeat
+    /// (AAASM-5095). The returned future is dropped; these tests inspect queue
+    /// state rather than await the caller side.
+    fn submit_pending(q: &Arc<ApprovalQueue>) -> ApprovalRequestId {
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+        id
+    }
+
+    // --- routing metadata (record_routing / update_routing_status) ---
+
+    #[tokio::test]
+    async fn record_routing_inserts_then_updates_pending_metadata() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        // First record: or_insert path — fresh RoutingMeta with one history entry.
+        assert!(q.record_routing(
+            id,
+            "routed".to_string(),
+            Some("oncall".to_string()),
+            Some(1_700_000_100),
+            Some(1_700_000_400),
+            Some(RoutingHistoryEntry {
+                at: 1_700_000_100,
+                action: "routed".to_string(),
+                from_role: None,
+                to_role: "oncall".to_string(),
+            }),
+        ));
+
+        let p = q
+            .list()
+            .into_iter()
+            .find(|p| p.request_id == id)
+            .expect("still pending");
+        assert_eq!(p.routing_status.as_deref(), Some("routed"));
+        assert_eq!(p.target_role.as_deref(), Some("oncall"));
+        assert_eq!(p.routed_at, Some(1_700_000_100));
+        assert_eq!(p.escalate_at, Some(1_700_000_400));
+        assert_eq!(p.routing_history.len(), 1);
+
+        // Second record: and_modify path — status changes, history appends, and
+        // the None target_role leaves the prior role intact.
+        assert!(q.record_routing(
+            id,
+            "escalated".to_string(),
+            None,
+            None,
+            None,
+            Some(RoutingHistoryEntry {
+                at: 1_700_000_500,
+                action: "escalated".to_string(),
+                from_role: Some("oncall".to_string()),
+                to_role: "manager".to_string(),
+            }),
+        ));
+        let p = q.list().into_iter().find(|p| p.request_id == id).unwrap();
+        assert_eq!(p.routing_status.as_deref(), Some("escalated"));
+        assert_eq!(p.target_role.as_deref(), Some("oncall"), "None must not clear the role");
+        assert_eq!(p.routing_history.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn update_routing_status_classifies_action_and_appends_history() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        // A non-"escalated" status is classified as a "routed" history action.
+        assert!(q.update_routing_status(id, "routed:oncall".to_string()));
+        let p = q.list().into_iter().find(|p| p.request_id == id).unwrap();
+        assert_eq!(p.routing_status.as_deref(), Some("routed:oncall"));
+        assert_eq!(p.routing_history.len(), 1);
+        assert_eq!(p.routing_history[0].action, "routed");
+
+        // An "escalated"-prefixed status is classified as an "escalated" action.
+        assert!(q.update_routing_status(id, "escalated:manager".to_string()));
+        let p = q.list().into_iter().find(|p| p.request_id == id).unwrap();
+        assert_eq!(p.routing_status.as_deref(), Some("escalated:manager"));
+        assert_eq!(p.routing_history.len(), 2);
+        assert_eq!(p.routing_history[1].action, "escalated");
+    }
+
+    #[tokio::test]
+    async fn routing_updates_are_noop_after_resolution() {
+        let q = ApprovalQueue::new();
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+        q.decide(
+            id,
+            ApprovalDecision::Rejected {
+                by: "alice".to_string(),
+                reason: "denied".to_string(),
+            },
+        )
+        .expect("decide");
+
+        // Both routing entry points must report false for a resolved request.
+        assert!(!q.update_routing_status(id, "routed:oncall".to_string()));
+        assert!(!q.record_routing(id, "routed".to_string(), None, None, None, None));
+    }
+
+    // --- forward / reassign (AAASM-5095) ---
+
+    #[tokio::test]
+    async fn forward_reassigns_pending_request_and_keeps_it_pending() {
+        let q = ApprovalQueue::new();
+        let id = submit_pending(&q);
+
+        // Establish an initial target role so the forward records a from_role.
+        assert!(q.record_routing(id, "routed".to_string(), Some("oncall".to_string()), None, None, None,));
+
+        assert!(q.forward(id, "manager"), "forward of a pending request must succeed");
+
+        // The request must still be pending — forwarding does not resolve it.
+        let p = q
+            .list()
+            .into_iter()
+            .find(|p| p.request_id == id)
+            .expect("request must remain pending after forward");
+        assert_eq!(p.routing_status.as_deref(), Some("forwarded_to_manager"));
+        assert_eq!(p.target_role.as_deref(), Some("manager"));
+        let last = p.routing_history.last().expect("forward appends a history entry");
+        assert_eq!(last.action, "forwarded");
+        assert_eq!(last.from_role.as_deref(), Some("oncall"));
+        assert_eq!(last.to_role, "manager");
+    }
+
+    #[tokio::test]
+    async fn forward_is_noop_for_unknown_or_resolved_request() {
+        let q = ApprovalQueue::new();
+        // Unknown id.
+        assert!(!q.forward(Uuid::new_v4(), "manager"));
+
+        // Resolved id.
+        let id = submit_pending(&q);
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+                conditions: vec![],
+            },
+        )
+        .expect("decide");
+        assert!(
+            !q.forward(id, "manager"),
+            "forward of a resolved request must be a no-op"
+        );
+    }
+
+    // --- approve-with-conditions (AAASM-5095) ---
+
+    #[tokio::test]
+    async fn approve_with_conditions_carries_conditions_into_resolved_record() {
+        let q = ApprovalQueue::new();
+        let id = submit_pending(&q);
+
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: Some("one-time exception".to_string()),
+                conditions: vec!["this-once".to_string(), "time-boxed".to_string()],
+            },
+        )
+        .expect("decide should succeed");
+
+        let history = snapshot_resolved(&q);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, "approved");
+        assert_eq!(
+            history[0].decision_conditions,
+            vec!["this-once".to_string(), "time-boxed".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_and_unconditional_approval_have_empty_conditions() {
+        let q = ApprovalQueue::new();
+        let approved_id = submit_pending(&q);
+        let rejected_id = submit_pending(&q);
+
+        q.decide(
+            approved_id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+                conditions: vec![],
+            },
+        )
+        .unwrap();
+        q.decide(
+            rejected_id,
+            ApprovalDecision::Rejected {
+                by: "bob".to_string(),
+                reason: "denied".to_string(),
+            },
+        )
+        .unwrap();
+
+        for r in q.list_resolved(None, None) {
+            assert!(
+                r.decision_conditions.is_empty(),
+                "conditions must be empty for unconditional/ rejected decisions"
+            );
+        }
+    }
+
     // --- ApprovalQueue::submit ---
 
     #[tokio::test]
@@ -964,6 +1246,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1004,6 +1287,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("first decide should succeed");
@@ -1063,6 +1347,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1092,6 +1377,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1137,6 +1423,7 @@ mod tests {
                 ApprovalDecision::Approved {
                     by: "operator".to_string(),
                     reason: None,
+                    conditions: vec![],
                 },
             )
             .expect("decide should succeed for each request");
@@ -1183,6 +1470,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1248,6 +1536,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1276,6 +1565,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1304,6 +1594,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: Some("looks good".to_string()),
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1385,6 +1676,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .expect("decide should succeed");
@@ -1420,6 +1712,7 @@ mod tests {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .unwrap();
@@ -1462,6 +1755,7 @@ mod tests {
                 ApprovalDecision::Approved {
                     by: "tester".to_string(),
                     reason: None,
+                    conditions: vec![],
                 },
             )
             .unwrap();
@@ -1488,6 +1782,7 @@ mod tests {
                 ApprovalDecision::Approved {
                     by: "tester".to_string(),
                     reason: None,
+                    conditions: vec![],
                 },
             )
             .expect("decide should succeed");

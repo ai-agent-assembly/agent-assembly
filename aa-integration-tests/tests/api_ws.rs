@@ -54,6 +54,8 @@ fn make_pipeline_event(agent_id: &str) -> PipelineEvent {
         agent_id: agent_id.to_string(),
         connection_id: 0,
         sequence_number: 0,
+        observed_sdk_identity: Default::default(),
+        tamper: None,
     }))
 }
 
@@ -94,6 +96,8 @@ fn make_governance_event(id: u64) -> GovernanceEvent {
         agent_id: "test-agent".to_string(),
         payload: serde_json::json!({}),
         timestamp: Utc::now(),
+        team_id: None,
+        org_id: None,
     }
 }
 

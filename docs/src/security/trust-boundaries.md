@@ -105,3 +105,12 @@ boundary itself — the SDK's assertions stop there. See
 [ADR 0002](../adr/0002-sdk-security-boundary.md) for the full decision record and
 the boundary-first migration order that ensured SDK-side scanning was never
 removed before the runtime became authoritative.
+
+## Reviewing boundary changes per release
+
+This page is the authority on *where* trust sits. To check whether a **specific
+release** moved any boundary, fill in the
+[trust-boundary review checklist](trust-boundary-review-checklist.md) — a
+per-release delta form with one row per boundary above, including the guarded
+"no wire trust marker stays NO" invariant. It is run as part of the
+`/release-security-gate` release gate.

@@ -1,0 +1,26 @@
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: audit-only
+  version: "1.0.0"
+  description: >
+    Observe everything, enforce nothing. Every tool is allowed and the
+    sensitive-data scanner only raises an alert without modifying or blocking
+    the payload. Use this to map an agent's behaviour before tightening rules.
+spec:
+  scope: global
+
+  # No `network:` clause → egress is unrestricted (default-open).
+  # No `budget:` clause → no spend cap is enforced.
+
+  data:
+    # alert_only: forward the unmodified payload and raise an alert side-effect.
+    # Deliberate downgrade documented for low-risk, audit-only modes.
+    credential_action: alert_only
+    sensitive_patterns:
+      - "sk-[A-Za-z0-9]{20,}"
+
+  tools:
+    # Wildcard allow: every tool is permitted; findings are logged, not enforced.
+    "*":
+      allow: true

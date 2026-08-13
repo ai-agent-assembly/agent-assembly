@@ -136,7 +136,7 @@ const RECENT_EVENTS = [
 ]
 
 async function injectToken(page: Page) {
-  await page.addInitScript(() => localStorage.setItem('aa_token', 'fidelity-token'))
+  await page.addInitScript(() => sessionStorage.setItem('aa_token', 'fidelity-token'))
 }
 
 interface TopologyShape {

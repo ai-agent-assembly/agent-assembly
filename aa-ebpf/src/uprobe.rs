@@ -37,7 +37,7 @@ impl UprobeManager {
     ///
     /// # Arguments
     ///
-    /// * `bpf` — live [`Ebpf`] handle from [`crate::loader::EbpfLoader::load`].
+    /// * `bpf` — live `Ebpf` handle from [`crate::loader::EbpfLoader::load`].
     /// * `target_pid` — PID to attach to, or `None` for system-wide.
     #[cfg(target_os = "linux")]
     pub fn attach(bpf: &mut Ebpf, target_pid: Option<i32>) -> Result<Self, EbpfError> {

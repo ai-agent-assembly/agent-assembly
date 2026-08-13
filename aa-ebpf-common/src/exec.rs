@@ -34,7 +34,89 @@ pub struct ExecEvent {
     /// Null-terminated executable path (up to [`MAX_FILENAME_LEN`] bytes).
     pub filename: [u8; MAX_FILENAME_LEN],
     /// Space-separated argv string (up to [`MAX_ARGS_LEN`] bytes).
+    ///
+    /// **Known limitation (AAASM-3872):** the `sched_process_exec` tracepoint
+    /// that fills this carries only the executable path + pids — it does **not**
+    /// expose argv — so the live probe currently records the truncated 16-byte
+    /// `comm` here, meaning `/bin/sh -c '…'` logs only `sh`. Genuine argv
+    /// capture needs a `syscalls:sys_enter_execve` tracepoint that reads the
+    /// `const char *const *argv` pointer array; [`flatten_argv_bounded`] is the
+    /// shared bounding primitive for that follow-up.
     pub args: [u8; MAX_ARGS_LEN],
+}
+
+/// Flatten an argv vector into the fixed-size, space-separated [`ExecEvent::args`]
+/// buffer, bounded so neither the eBPF verifier nor userspace ever reads past
+/// [`MAX_ARGS_LEN`].
+///
+/// Arguments are joined with a single `0x20` space and the result is truncated
+/// to at most [`MAX_ARGS_LEN`] bytes (no trailing NUL is appended — callers
+/// zero the buffer first and use the returned length). Returns the number of
+/// bytes written.
+///
+/// This is the bounding contract for genuine argv capture (see
+/// [`ExecEvent::args`]); it is unit-tested as plain Rust because the kernel
+/// probe itself cannot run off-Linux.
+#[must_use]
+pub fn flatten_argv_bounded(argv: &[&[u8]], out: &mut [u8; MAX_ARGS_LEN]) -> usize {
+    let mut written = 0usize;
+    for (idx, arg) in argv.iter().enumerate() {
+        if written >= MAX_ARGS_LEN {
+            break;
+        }
+        if idx > 0 {
+            out[written] = b' ';
+            written += 1;
+            if written >= MAX_ARGS_LEN {
+                break;
+            }
+        }
+        for &byte in arg.iter() {
+            if written >= MAX_ARGS_LEN {
+                break;
+            }
+            out[written] = byte;
+            written += 1;
+        }
+    }
+    written
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joins_args_with_single_space() {
+        let mut out = [0u8; MAX_ARGS_LEN];
+        let n = flatten_argv_bounded(&[b"/bin/sh", b"-c", b"echo hi"], &mut out);
+        assert_eq!(&out[..n], b"/bin/sh -c echo hi");
+    }
+
+    #[test]
+    fn empty_argv_writes_nothing() {
+        let mut out = [0u8; MAX_ARGS_LEN];
+        assert_eq!(flatten_argv_bounded(&[], &mut out), 0);
+    }
+
+    #[test]
+    fn truncates_at_max_args_len() {
+        let big = [b'a'; MAX_ARGS_LEN + 64];
+        let mut out = [0u8; MAX_ARGS_LEN];
+        let n = flatten_argv_bounded(&[&big], &mut out);
+        assert_eq!(n, MAX_ARGS_LEN);
+        assert!(out.iter().all(|&b| b == b'a'));
+    }
+
+    #[test]
+    fn truncation_can_drop_a_trailing_separator() {
+        // Fill the buffer exactly, then a further arg cannot even add its
+        // separator — bounding must not panic or overflow.
+        let exact = [b'x'; MAX_ARGS_LEN];
+        let mut out = [0u8; MAX_ARGS_LEN];
+        let n = flatten_argv_bounded(&[&exact, b"dropped"], &mut out);
+        assert_eq!(n, MAX_ARGS_LEN);
+    }
 }
 
 // ---------------------------------------------------------------------------

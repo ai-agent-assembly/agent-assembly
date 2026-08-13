@@ -2,6 +2,11 @@
 
 use rust_decimal::Decimal;
 
+/// Environment variable naming a custom pricing overrides JSON file
+/// (AAASM-4793). Read by [`PricingTable::from_env`]; unset means
+/// [`PricingTable::default_table`].
+pub const PRICING_FILE_ENV_VAR: &str = "AA_PRICING_FILE";
+
 /// USD cost per 1,000 tokens for one direction (input or output).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PricingEntry {
@@ -28,6 +33,11 @@ struct PricingJsonRow {
 #[derive(Debug, Clone)]
 pub struct PricingTable {
     entries: std::collections::HashMap<(crate::budget::types::Provider, crate::budget::types::Model), PricingEntry>,
+    /// Conservative price applied to a call whose model name does not resolve
+    /// to a known `(Provider, Model)` pair (AAASM-4069). Set to the most
+    /// expensive known rate so an unrecognized model can never be cheaper than
+    /// a metered one — the budget cap fails closed instead of open.
+    fallback: PricingEntry,
 }
 
 impl PricingTable {
@@ -62,7 +72,18 @@ impl PricingTable {
             })
             .collect();
 
-        Self { entries }
+        Self {
+            entries,
+            // AAASM-4069 fail-closed fallback: mirror the costliest default
+            // entry (Claude 3 Opus, "0.015"/"0.075") so a model outside the
+            // table is priced at least as high as any known model. Priced
+            // through `fallback_cost_usd`, this keeps unknown-model spend
+            // metered and the budget reservation reachable.
+            fallback: PricingEntry {
+                input_per_1k_usd: d("0.015"),
+                output_per_1k_usd: d("0.075"),
+            },
+        }
     }
 
     /// Load pricing overrides from a JSON string, merging on top of the defaults.
@@ -85,14 +106,40 @@ impl PricingTable {
     pub fn load_from_file(path: &std::path::Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(json) => Self::load_from_json_str(&json).unwrap_or_else(|e| {
-                eprintln!("aa-gateway: pricing.json parse error ({e}); using defaults");
+                eprintln!(
+                    "aa-gateway: failed to parse pricing file {} ({e}); using defaults",
+                    path.display()
+                );
                 Self::default_table()
             }),
             Err(_) => Self::default_table(),
         }
     }
 
-    /// Compute USD cost for a completed LLM call. Returns `Decimal::ZERO` for unknown pairs.
+    /// Build the pricing table for this process (AAASM-4793).
+    ///
+    /// [`load_from_file`](Self::load_from_file) and [`load_from_json_str`](Self::load_from_json_str)
+    /// had no production caller — every `BudgetTracker` construction site hardcoded
+    /// [`default_table`](Self::default_table), so a custom pricing table (and with
+    /// it, the AAASM-4744 partial-table fail-closed fallback) was unreachable
+    /// outside tests. This is the wiring: when [`PRICING_FILE_ENV_VAR`] is set, load
+    /// the operator-supplied overrides from that path; otherwise fall back to
+    /// `default_table()` unchanged, so unset behaviour is identical to before.
+    pub fn from_env() -> Self {
+        match std::env::var_os(PRICING_FILE_ENV_VAR) {
+            Some(path) => Self::load_from_file(std::path::Path::new(&path)),
+            None => Self::default_table(),
+        }
+    }
+
+    /// Compute USD cost for a completed LLM call.
+    ///
+    /// Fail-closed (AAASM-4744): a `(provider, model)` pair absent from the table
+    /// is priced through [`fallback_cost_usd`](Self::fallback_cost_usd) at the
+    /// costliest-known rate, never `$0`. A partial custom pricing table (an
+    /// override JSON that lists only some models) must not silently zero-price
+    /// the models it omits — a `$0` cost would trip the `cost <= 0` accrual
+    /// short-circuit in the gateway and bypass the budget cap entirely.
     pub fn cost_usd(
         &self,
         provider: crate::budget::types::Provider,
@@ -106,8 +153,29 @@ impl PricingTable {
                 let output_cost = entry.output_per_1k_usd * Decimal::from(output_tokens) / Decimal::from(1_000u64);
                 input_cost + output_cost
             }
-            None => Decimal::ZERO,
+            None => self.fallback_cost_usd(input_tokens, output_tokens),
         }
+    }
+
+    /// Price a call whose model did not resolve to a known `(Provider, Model)`
+    /// pair, using the conservative fallback rate (AAASM-4069).
+    ///
+    /// Fail-closed: an unrecognized model name must NOT price to `$0`, or the
+    /// `cost <= 0.0` accrual short-circuit in the gateway skips the budget
+    /// reservation entirely and the daily/monthly cap is bypassed. Charging the
+    /// costliest-known rate keeps spend accruing so the cap still engages for
+    /// any current model outside the built-in table (o1/o3, gemini-*, llama-*,
+    /// "gpt-5", …). Cost is token-proportional, so a genuinely empty call
+    /// (0 tokens) still prices to zero — the token count is trusted separately.
+    pub fn fallback_cost_usd(&self, input_tokens: u64, output_tokens: u64) -> Decimal {
+        let input_cost = self.fallback.input_per_1k_usd * Decimal::from(input_tokens) / Decimal::from(1_000u64);
+        let output_cost = self.fallback.output_per_1k_usd * Decimal::from(output_tokens) / Decimal::from(1_000u64);
+        input_cost + output_cost
+    }
+
+    /// The conservative fallback pricing entry applied to unrecognized models.
+    pub fn fallback_entry(&self) -> &PricingEntry {
+        &self.fallback
     }
 
     /// Look up pricing for a `(provider, model)` pair.
@@ -166,14 +234,69 @@ mod tests {
     }
 
     #[test]
-    fn cost_usd_unknown_pair_returns_zero() {
+    fn cost_usd_unknown_pair_prices_via_fail_closed_fallback() {
         use crate::budget::types::{Model, Provider};
+        fn d(s: &str) -> rust_decimal::Decimal {
+            s.parse().unwrap()
+        }
         let table = PricingTable::default_table();
-        // Anthropic + CommandR is not a valid pair
+        // AAASM-4744: Anthropic + CommandR is not a tabled pair. It must price
+        // through the costliest-known fallback (Opus: $0.015 in + $0.075 out),
+        // never $0 — a zero cost would bypass the budget cap.
         assert_eq!(
             table.cost_usd(Provider::Anthropic, Model::CommandR, 1_000, 1_000),
-            rust_decimal::Decimal::ZERO,
+            d("0.09"),
         );
+        assert_eq!(
+            table.cost_usd(Provider::Anthropic, Model::CommandR, 1_000, 1_000),
+            table.fallback_cost_usd(1_000, 1_000),
+        );
+    }
+
+    #[test]
+    fn fallback_cost_usd_is_nonzero_and_uses_costliest_rate() {
+        // AAASM-4069: an unknown model must price at the costliest known rate
+        // (Claude 3 Opus) so it can never be cheaper than a metered call.
+        fn d(s: &str) -> rust_decimal::Decimal {
+            s.parse().unwrap()
+        }
+        let table = PricingTable::default_table();
+        // 10,000 input tokens × $0.015/1k = $0.15 (Opus input rate).
+        assert_eq!(table.fallback_cost_usd(10_000, 0), d("0.15"));
+        // 1,000 input + 1,000 output = $0.015 + $0.075 = $0.09.
+        assert_eq!(table.fallback_cost_usd(1_000, 1_000), d("0.09"));
+        // The fallback rate matches the most expensive default entry.
+        let opus = table
+            .entry(
+                crate::budget::types::Provider::Anthropic,
+                crate::budget::types::Model::Claude3Opus,
+            )
+            .unwrap();
+        assert_eq!(table.fallback_entry().input_per_1k_usd, opus.input_per_1k_usd);
+        assert_eq!(table.fallback_entry().output_per_1k_usd, opus.output_per_1k_usd);
+    }
+
+    #[test]
+    fn partial_custom_table_prices_omitted_model_via_fallback_not_zero() {
+        // AAASM-4744: an override JSON that redefines only OpenAI models leaves
+        // Cohere's CommandRPlus in place via the merged defaults, but a *removed*
+        // pair would fall through. Prove the fail-closed path: a pair the table
+        // does not know is priced via the costliest-known fallback, never $0, so
+        // a partial custom table cannot silently zero-price and bypass the cap.
+        use crate::budget::types::{Model, Provider};
+        fn d(s: &str) -> rust_decimal::Decimal {
+            s.parse().unwrap()
+        }
+        let json = r#"[
+          { "provider": "open_ai", "model": "gpt4o",
+            "input_per_1k_usd": "0.001", "output_per_1k_usd": "0.002" }
+        ]"#;
+        let table = PricingTable::load_from_json_str(json).unwrap();
+        // A pair absent from the table (Cohere CommandR + wrong provider mix).
+        let cost = table.cost_usd(Provider::Anthropic, Model::CommandR, 10_000, 0);
+        assert_ne!(cost, rust_decimal::Decimal::ZERO, "omitted model must not price to $0");
+        assert_eq!(cost, table.fallback_cost_usd(10_000, 0));
+        assert_eq!(cost, d("0.15"), "priced at the Opus fallback input rate");
     }
 
     #[test]
@@ -182,6 +305,50 @@ mod tests {
         let table = PricingTable::load_from_file(path);
         use crate::budget::types::{Model, Provider};
         assert!(table.entry(Provider::OpenAi, Model::Gpt4o).is_some());
+    }
+
+    #[test]
+    fn from_env_loads_custom_pricing_file_when_env_var_set() {
+        // AAASM-4793: this is the wiring the BudgetTracker construction sites
+        // now call — prove the env var actually reaches a loaded custom table,
+        // not just `default_table()`.
+        use crate::budget::types::{Model, Provider};
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("aa-pricing-test-{}.json", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"[
+              { "provider": "open_ai", "model": "gpt4o",
+                "input_per_1k_usd": "0.001", "output_per_1k_usd": "0.002" }
+            ]"#,
+        )
+        .unwrap();
+        std::env::set_var(PRICING_FILE_ENV_VAR, &path);
+
+        let table = PricingTable::from_env();
+
+        std::env::remove_var(PRICING_FILE_ENV_VAR);
+        std::fs::remove_file(&path).ok();
+
+        let entry = table.entry(Provider::OpenAi, Model::Gpt4o).expect("gpt4o present");
+        assert_eq!(entry.input_per_1k_usd, "0.001".parse().unwrap());
+        assert_eq!(entry.output_per_1k_usd, "0.002".parse().unwrap());
+    }
+
+    #[test]
+    fn from_env_falls_back_to_default_table_when_unset() {
+        std::env::remove_var(PRICING_FILE_ENV_VAR);
+        use crate::budget::types::{Model, Provider};
+        let table = PricingTable::from_env();
+        let default_entry = PricingTable::default_table()
+            .entry(Provider::OpenAi, Model::Gpt4o)
+            .unwrap()
+            .input_per_1k_usd;
+        assert_eq!(
+            table.entry(Provider::OpenAi, Model::Gpt4o).unwrap().input_per_1k_usd,
+            default_entry,
+            "unset env var must behave identically to default_table()"
+        );
     }
 
     #[test]

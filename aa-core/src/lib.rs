@@ -26,6 +26,8 @@ pub mod agent;
 #[cfg(feature = "alloc")]
 pub mod approval;
 #[cfg(feature = "alloc")]
+pub mod attestation;
+#[cfg(feature = "alloc")]
 pub mod audit;
 #[cfg(feature = "alloc")]
 pub mod capability;
@@ -34,6 +36,12 @@ pub mod config;
 pub mod dev_tool;
 pub mod evaluators;
 pub mod identity;
+pub mod identity_attribution;
+#[cfg(feature = "std")]
+pub mod integration;
+#[cfg(feature = "alloc")]
+pub mod llm;
+pub mod net;
 pub mod policy;
 pub mod risk_tier;
 #[cfg(feature = "std")]
@@ -45,6 +53,9 @@ pub mod types;
 
 pub use dev_tool::GovernanceLevel;
 pub use identity::{AgentId, SessionId};
+pub use identity_attribution::AgentIdentityAssurance;
+#[cfg(feature = "alloc")]
+pub use identity_attribution::AgentIdentityAttribution;
 pub use policy::{EnforcementMode, FileMode, PolicyDecision, PolicyError};
 pub use risk_tier::RiskTier;
 
@@ -60,6 +71,9 @@ pub use dev_tool::McpServerInfo;
 pub use dev_tool::{AdapterError, DevToolAdapter, DevToolInfo};
 
 #[cfg(feature = "alloc")]
+pub use llm::{Model, Provider};
+
+#[cfg(feature = "alloc")]
 pub use policy::{ArgsJson, GovernanceAction, PolicyDocument, PolicyEvaluator, PolicyResult, PolicyRule};
 
 #[cfg(all(feature = "alloc", feature = "test-utils"))]
@@ -68,9 +82,13 @@ pub use evaluators::{DenyAllEvaluator, PermitAllEvaluator};
 #[cfg(feature = "alloc")]
 pub use audit::{AuditEntry, AuditEventType, AuditLog, AuditLogError, Lineage};
 
+#[cfg(feature = "std")]
+pub use audit::{GovernanceMutationAudit, GovernanceMutationError};
+
 #[cfg(feature = "alloc")]
 pub use capability::{
-    action_to_capability, merge_capabilities, Capability, CapabilitySet, EffectivePermissions, PermissionSource,
+    action_to_capability, capability_is_denied, merge_capabilities, Capability, CapabilitySet, EffectivePermissions,
+    PermissionSource,
 };
 
 #[cfg(feature = "std")]

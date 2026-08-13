@@ -65,6 +65,8 @@ mod tests {
     fn from_runtime_config_maps_fields() {
         let rc = crate::config::RuntimeConfig {
             agent_id: "test".to_string(),
+            agent_team_id: String::new(),
+            agent_org_id: String::new(),
             worker_threads: 0,
             shutdown_timeout_secs: 30,
             ipc_max_connections: 64,
@@ -80,6 +82,9 @@ mod tests {
             nats_config_path: None,
             audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
             enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
+            gateway_fail_closed: true,
+            gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
+            devint_enabled: false,
         };
 
         let config = CorrelationConfig::from_runtime_config(&rc);

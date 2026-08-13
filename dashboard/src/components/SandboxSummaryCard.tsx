@@ -26,6 +26,13 @@ export interface SandboxSummaryTopRule {
   count: number
 }
 
+function handleClick(handler: (() => void) | undefined) {
+  return (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    handler?.()
+  }
+}
+
 export interface SandboxSummaryCardProps {
   /** Policy name surfaced in the card title. */
   readonly policyName: string
@@ -70,13 +77,6 @@ export function SandboxSummaryCard({
   onExportCsv,
   onEnableLiveEnforcement,
 }: SandboxSummaryCardProps) {
-  function handleClick(handler: (() => void) | undefined) {
-    return (event: MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault()
-      handler?.()
-    }
-  }
-
   return (
     <section
       className="sandbox-summary-card"

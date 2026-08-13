@@ -95,13 +95,22 @@ impl AnomalyDetector {
         if allowlist.is_empty() {
             return None;
         }
-        let host = url
+        let host_port = url
             .split_once("://")
             .map(|x| x.1)
             .unwrap_or(url)
             .split('/')
             .next()
             .unwrap_or("");
+        // AAASM-3367: `convert.rs` builds the URL as `proto://host:port`, so the
+        // authority extracted above still carries the `:port` suffix. Allowlist
+        // entries are bare hosts, so comparing `host:port` against them always
+        // failed. Strip a trailing numeric `:port` before the allowlist compare,
+        // mirroring the engine network stage (AAASM-3350, `engine/decision.rs`).
+        let host = match host_port.rsplit_once(':') {
+            Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => host_port,
+        };
         if allowlist.iter().any(|entry| entry == host) {
             return None;
         }
@@ -242,32 +251,9 @@ impl AnomalyDetector {
         network_allowlist: &[String],
         credential_owner_id: Option<AgentId>,
     ) -> Option<AnomalyEvent> {
-        // 1. Child process execution (Block) — highest priority
-        if let aa_core::GovernanceAction::ProcessExec { command } = action {
-            if let Some(event) = self.check_child_process(agent_id, command) {
-                return Some(event);
-            }
-        }
-
-        // 2. Unknown external connection (Block)
-        if let aa_core::GovernanceAction::NetworkRequest { url, .. } = action {
-            if let Some(event) = self.check_unknown_connection(agent_id, url, network_allowlist) {
-                return Some(event);
-            }
-        }
-
-        // 3. Data exfiltration attempt (Block)
-        if let aa_core::GovernanceAction::NetworkRequest { url, .. } = action {
-            if let Some(event) = self.check_data_exfiltration(agent_id, has_pii, url) {
-                return Some(event);
-            }
-        }
-
-        // 4. Loop runaway (Pause)
-        if let aa_core::GovernanceAction::ToolCall { name, args } = action {
-            if let Some(event) = self.check_loop_runaway(agent_id, name, args) {
-                return Some(event);
-            }
+        // Checks 1-4 are action-shape-specific (Block, then Pause).
+        if let Some(event) = self.detect_for_action(agent_id, action, has_pii, network_allowlist) {
+            return Some(event);
         }
 
         // 5. Behavior spike (Pause)
@@ -288,6 +274,29 @@ impl AnomalyDetector {
         }
 
         None
+    }
+
+    /// Run the action-shape-specific anomaly checks (process exec, unknown
+    /// connection, data exfiltration, loop runaway), short-circuiting on the
+    /// first detected anomaly in severity order (Block before Pause).
+    fn detect_for_action(
+        &self,
+        agent_id: AgentId,
+        action: &aa_core::GovernanceAction,
+        has_pii: bool,
+        network_allowlist: &[String],
+    ) -> Option<AnomalyEvent> {
+        match action {
+            // Child process execution (Block) — highest priority.
+            aa_core::GovernanceAction::ProcessExec { command } => self.check_child_process(agent_id, command),
+            // Unknown external connection (Block), then data exfiltration (Block).
+            aa_core::GovernanceAction::NetworkRequest { url, .. } => self
+                .check_unknown_connection(agent_id, url, network_allowlist)
+                .or_else(|| self.check_data_exfiltration(agent_id, has_pii, url)),
+            // Loop runaway (Pause).
+            aa_core::GovernanceAction::ToolCall { name, args } => self.check_loop_runaway(agent_id, name, args),
+            _ => None,
+        }
     }
 
     /// Compute a stable hash for a (tool_name, args) pair.
@@ -380,6 +389,24 @@ mod tests {
         assert!(detector
             .check_unknown_connection(id, "https://api.openai.com/v1", &allowlist)
             .is_none());
+    }
+
+    #[test]
+    fn unknown_connection_allowlisted_host_with_port_is_in_allowlist() {
+        // AAASM-3367: the gateway builds URLs as `proto://host:port`. A bare
+        // allowlist entry must still match when the URL carries a numeric port.
+        let detector = default_detector();
+        let id = agent(4);
+        let allowlist = vec!["api.openai.com".to_string()];
+
+        assert!(detector
+            .check_unknown_connection(id, "https://api.openai.com:443/v1", &allowlist)
+            .is_none());
+
+        // A non-allowlisted host (also with a port) is still flagged.
+        let result = detector.check_unknown_connection(id, "https://evil.com:8443/data", &allowlist);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
     }
 
     #[test]

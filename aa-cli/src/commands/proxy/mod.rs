@@ -1,11 +1,13 @@
 //! `aasm proxy` — manage the aa-proxy sidecar: lifecycle, CA, and log tailing.
 
 pub mod ca;
+pub mod identity;
 pub mod logs;
 pub mod pid;
 pub mod start;
 pub mod status;
 pub mod stop;
+pub mod trust;
 
 use std::process::ExitCode;
 

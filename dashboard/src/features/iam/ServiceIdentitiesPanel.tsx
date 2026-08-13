@@ -119,7 +119,7 @@ export function ServiceIdentitiesPanel() {
       {/* Defensive: if both modals close together, ensure escape-route is clean. */}
       {!reveal.current && confirmDiscardOpen && (
         // Should not be reachable, but ensures the destroy modal cannot orphan.
-        <button hidden onClick={attemptCloseReveal} />
+        <button type="button" hidden onClick={attemptCloseReveal} />
       )}
     </section>
   )

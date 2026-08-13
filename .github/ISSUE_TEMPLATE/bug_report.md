@@ -6,6 +6,9 @@ labels: ["🐛 bug"]
 assignees: ""
 ---
 
+> No Jira ticket required — the `AAASM` tracker is private. Just file this issue;
+> a maintainer will create and link an `AAASM` tracking ticket during triage.
+
 ## Description
 
 A clear, concise description of the bug.

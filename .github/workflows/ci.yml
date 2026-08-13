@@ -5,51 +5,112 @@ permissions:
 
 on:
   push:
-    branches: [master]
+    branches: [main]
     paths:
-      - "aa-*/**"
-      - "proto/**"
-      - "conformance/**"
+      - "aa-*/**/*.rs"
+      - "aa-*/**/*.sql"
+      - "aa-*/**/*.toml"
+      - "aa-*/**/*.py"
+      - "aa-*/**/*.ts"
+      - "aa-*/**/*.js"
+      - "aa-*/**/*.mjs"
+      - "aa-*/**/*.go"
+      - "aa-*/**/*.wat"
+      - "aa-*/**/*.sh"
+      - "aa-*/**/*.json"
+      - "aa-*/**/*.jsonl"
+      - "proto/**/*.proto"
+      - "conformance/**/*.rs"
+      - "conformance/**/*.json"
+      - "conformance/**/*.bin"
+      - "conformance/**/*.toml"
+      - "conformance/**/*.py"
+      - "conformance/runner/requirements.txt"
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
-      - "openapi/**"
-      - "schemas/**"
+      # AAASM-5385: the Rust jobs' own shell implementations, by exact filename.
+      # Without these, editing a gate's script does not re-run the gate that the
+      # script IS. Named individually rather than `.ci/*.sh` because the other
+      # four scripts in `.ci/` belong to docs.yml, release.yml and
+      # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
+      - ".ci/verify-range-builds.sh"
+      - ".ci/check-compatibility-matrix.sh"
+      - "openapi/v1.yaml"
+      - "schemas/**/*.json"
+      - "schemas/**/*.yaml"
       - ".spectral.yaml"
       - ".github/workflows/ci.yml"
-      - "dashboard/**"
+      - "dashboard/**/*.ts"
+      - "dashboard/**/*.tsx"
+      - "dashboard/**/*.css"
+      - "dashboard/**/*.js"
+      - "dashboard/**/*.mjs"
+      - "dashboard/**/*.cjs"
+      - "dashboard/package.json"
+      - "dashboard/tsconfig.json"
+      - "dashboard/.npmrc"
+      - "dashboard/pnpm-lock.yaml"
+      - "dashboard/index.html"
       - "sonar-project.properties"
-      - "!**/*.md"
-      - "!**/LICENSE"
-      - "!**/*.png"
-      - "!**/*.jpg"
-      - "!**/*.jpeg"
-      - "!**/*.gif"
-      - "!**/*.webp"
-      - "!**/*.ico"
+      # AAASM-5282: the DI-API TypeScript reference client and its Rust
+      # contract-test harness. Paired with the `devint_client` router filter
+      # below — a router filter without a matching `on.*.paths` entry is a dead
+      # trigger, and a trigger that looks like coverage but is not is worse than
+      # no trigger at all (ADR 0028).
+      - "examples/aa-devint-reference-client/**/*.ts"
+      - "examples/aa-devint-reference-client/**/*.mjs"
+      - "examples/aa-devint-reference-client/**/*.rs"
+      - "examples/aa-devint-reference-client/**/*.json"
+      - "examples/aa-devint-reference-client/**/*.yaml"
+      - "examples/aa-devint-reference-client/**/*.cjs"
+      - "examples/aa-devint-reference-client/**/*.toml"
+      - "examples/aa-devint-reference-client/.npmrc"
+      # AAASM-5714: the isolation-backend license/provenance gate's own inputs.
+      # Paired with the `backend_license` router filter below — a router filter
+      # without a matching `on.*.paths` entry is a dead trigger (ADR 0028).
+      # `deny.toml` is included because the manifest's allowlist mirrors it; a
+      # license added to one and not the other is exactly the drift this catches.
+      - "metadata/isolation-backends.json"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/check-backend-license-compliance.sh"
+      # AAASM-5714: the files that actually DECIDE what each channel ships.
+      # These matter more than the manifest itself. Without them the gate fires
+      # only when someone edits the manifest — i.e. only when they are already
+      # doing the right thing — while a PR that bundles a backend binary by
+      # editing the release pipeline alone never triggers this workflow at all,
+      # so the job never runs and `ci-success` counts the skip as a pass.
+      # Listed by exact filename, never a bare `dir/**` (CONTRIBUTING.md).
+      - ".github/workflows/release.yml"
+      - ".github/workflows/docker.yml"
+      - "scripts/install-cli.sh"
+      - "scripts/install.sh"
+      - "metadata/versions.rb"
+      - "scripts/check-release-completeness.sh"
   pull_request:
-    branches: [master]
-    paths:
-      - "aa-*/**"
-      - "proto/**"
-      - "conformance/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      - "openapi/**"
-      - "schemas/**"
-      - ".spectral.yaml"
-      - ".github/workflows/ci.yml"
-      - "dashboard/**"
-      - "sonar-project.properties"
-      - "!**/*.md"
-      - "!**/LICENSE"
-      - "!**/*.png"
-      - "!**/*.jpg"
-      - "!**/*.jpeg"
-      - "!**/*.gif"
-      - "!**/*.webp"
-      - "!**/*.ico"
+    branches: [main]
+    # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
+    #
+    # `main` carried no required status checks at all, so a pull request could
+    # merge with every check red. Requiring the `CI Success` aggregator is the
+    # fix, and it only works if that check reliably reports: a workflow that
+    # never triggers produces no check run, and a required check that never
+    # arrives leaves the pull request waiting forever. A docs-only or
+    # governance-only change hits exactly that.
+    #
+    # Job selection does not live in this filter — it lives in the `changes`
+    # router below. But it was NOT the only thing gating every job:
+    # `commit-range-build` has no router condition and never has, and this
+    # filter was what kept it off unrelated pull requests. It deliberately
+    # stays ungated (see the comment on that job for why a net-diff router
+    # would reopen the AAASM-5385 hole), so it now runs on every pull request
+    # and the cost is disclosed there rather than hidden.
+    #
+    # **If you add a job here, gate it on `needs.changes.outputs.*`** — this
+    # filter is no longer a backstop.
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -70,25 +131,55 @@ jobs:
       schema: ${{ steps.filter.outputs.schema }}
       openapi: ${{ steps.filter.outputs.openapi }}
       storage: ${{ steps.filter.outputs.storage }}
+      conformance: ${{ steps.filter.outputs.conformance }}
+      devint_client: ${{ steps.filter.outputs.devint_client }}
+      backend_license: ${{ steps.filter.outputs.backend_license }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
             rust:
-              - 'aa-*/**'
-              - 'proto/**'
-              - 'conformance/**'
+              - 'aa-*/**/*.rs'
+              - 'aa-*/**/*.sql'
+              - 'aa-*/**/*.toml'
+              - 'aa-*/**/*.py'
+              - 'aa-*/**/*.ts'
+              - 'aa-*/**/*.js'
+              - 'aa-*/**/*.mjs'
+              - 'aa-*/**/*.go'
+              - 'aa-*/**/*.wat'
+              - 'aa-*/**/*.sh'
+              - 'aa-*/**/*.json'
+              - 'aa-*/**/*.jsonl'
+              - 'proto/**/*.proto'
+              - 'conformance/**/*.rs'
+              - 'conformance/**/*.json'
+              - 'conformance/**/*.bin'
+              - 'conformance/**/*.toml'
+              - 'conformance/**/*.py'
+              - 'conformance/runner/requirements.txt'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
+              - '.ci/verify-range-builds.sh'
+              - '.ci/check-compatibility-matrix.sh'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
-              - 'schemas/**'
               - '.github/workflows/ci.yml'
             dashboard:
-              - 'dashboard/**'
+              - 'dashboard/**/*.ts'
+              - 'dashboard/**/*.tsx'
+              - 'dashboard/**/*.css'
+              - 'dashboard/**/*.js'
+              - 'dashboard/**/*.mjs'
+              - 'dashboard/**/*.cjs'
+              - 'dashboard/package.json'
+              - 'dashboard/tsconfig.json'
+              - 'dashboard/.npmrc'
+              - 'dashboard/pnpm-lock.yaml'
+              - 'dashboard/index.html'
               - 'openapi/v1.yaml'
               - 'sonar-project.properties'
               - '.github/workflows/ci.yml'
@@ -97,27 +188,89 @@ jobs:
             # broad `rust` set above, so this can never lose coverage). Always
             # include this workflow so editing CI re-runs everything.
             proto:
-              - 'proto/**'
-              - 'aa-proto/**'
+              - 'proto/**/*.proto'
+              - 'aa-proto/**/*.rs'
+              - 'aa-proto/**/Cargo.toml'
               - '.github/workflows/ci.yml'
             schema:
-              - 'schemas/**'
+              - 'schemas/**/*.json'
+              - 'schemas/**/*.yaml'
               - '.github/workflows/ci.yml'
             openapi:
-              - 'aa-api/**'
-              - 'openapi/**'
+              - 'aa-api/**/*.rs'
+              - 'aa-api/**/Cargo.toml'
+              - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
             storage:
-              - 'aa-gateway/**'
-              - 'aa-storage*/**'
+              - 'aa-gateway/**/*.rs'
+              - 'aa-gateway/**/Cargo.toml'
+              - 'aa-gateway/**/*.sql'
+              - 'aa-storage*/**/*.rs'
+              - 'aa-storage*/**/Cargo.toml'
+              - 'aa-storage*/**/*.sql'
+              - '.github/workflows/ci.yml'
+            # AAASM-4454: explicit, self-documenting trigger for the
+            # integration-surface contract tests, which police that the gRPC
+            # registration surface the SDK dials stays present on the server(s)
+            # the CLI starts. These paths are a strict subset of `rust` above
+            # (so this never loses coverage); the conformance job ORs the two,
+            # so the contract still runs if `rust` is ever narrowed. Every path
+            # here is covered by an `on.*.paths` entry (`aa-*/**/*.rs`,
+            # `conformance/**/*.rs`), so this is a live trigger, not a dead one.
+            # AAASM-5282: the DI-API TypeScript reference client. Its contract
+            # tests run against the real `aa_runtime::devint` server through the
+            # `aa-devint-harness` binary, so the proto and the runtime's DI-API
+            # module are inputs too — a change to either can break the client
+            # without touching a single file under `examples/`. Every path here
+            # has a matching `on.*.paths` entry above, so this is a live trigger.
+            devint_client:
+              - 'examples/aa-devint-reference-client/**'
+              - 'proto/devint.proto'
+              - 'aa-runtime/src/devint/**'
+              - '.github/workflows/ci.yml'
+            conformance:
+              - 'aa-cli/src/commands/start.rs'
+              - 'aa-gateway/src/local_mode.rs'
+              - 'aa-gateway/src/main.rs'
+              - 'aa-api/src/**/*.rs'
+              - 'conformance/**/*.rs'
+              - 'conformance/**/*.json'
+              - 'conformance/**/*.bin'
+              - 'conformance/**/*.toml'
+              - 'proto/**/*.proto'
               - '.github/workflows/ci.yml'
             # AAASM-2580: gate the slow eBPF --release jobs (fat-LTO BPF build +
             # bpf-linker compile) so they only run when eBPF code — or this
             # workflow — actually changes. Non-eBPF PRs skip them.
             ebpf:
-              - 'aa-ebpf*/**'
+              - 'aa-ebpf*/**/*.rs'
+              - 'aa-ebpf*/**/*.toml'
               - '.github/workflows/ci.yml'
+              - 'scripts/build-ebpf-probes.sh'
+              - '.github/workflows/release.yml'
+            # AAASM-5714: the isolation-backend license/provenance gate. Its
+            # inputs are NOT a subset of `rust` — `metadata/isolation-backends.json`
+            # and `THIRD_PARTY_NOTICES.md` match no `aa-*/**` pattern — so this
+            # needs its own filter and its own `on.*.paths` entries (added
+            # above) rather than riding on the Rust matrix.
+            backend_license:
+              - 'metadata/isolation-backends.json'
+              - 'THIRD_PARTY_NOTICES.md'
+              - 'scripts/check-backend-license-compliance.sh'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
+              # The channel-deciding files. A backend enters a distribution
+              # channel by a change to one of THESE, not to the manifest — the
+              # manifest is only where an honest author records it. Gating on
+              # the manifest alone would mean the gate fires exclusively for
+              # people already doing the right thing.
+              - '.github/workflows/release.yml'
+              - '.github/workflows/docker.yml'
+              - 'scripts/install-cli.sh'
+              - 'scripts/install.sh'
+              - 'metadata/versions.rb'
+              - 'scripts/check-release-completeness.sh'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
@@ -130,13 +283,13 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Build dashboard assets
@@ -144,7 +297,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Upload dashboard dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -161,15 +314,15 @@ jobs:
       # not a global RUSTFLAGS, on purpose.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
         run: sudo apt-get install -y mold
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -178,13 +331,100 @@ jobs:
         # It is validated by the dedicated ebpf-build job.
         run: cargo build --workspace --exclude aa-ebpf
 
+  # AAASM-5385. Every other Rust job builds exactly one tree: the merge result.
+  # That is the right tree to build (this repository never overrides `ref:`, so
+  # `actions/checkout` gives `refs/pull/N/merge` on a pull_request, not the PR
+  # head), but building only it leaves every INTERMEDIATE commit unbuilt, and an
+  # intermediate commit that a later commit repairs reaches `main` with every
+  # check green. c596246a2 did exactly that. `git bisect` then cannot run a test
+  # at that point in history, which is the cost CONTRIBUTING's "keep commits
+  # small and bisectable" was meant to buy.
+  #
+  # This job asserts behaviour — does each commit compile — so per CONTRIBUTING
+  # ("Which CI jobs block a merge") it is a member of `ci-success` and blocks.
+  #
+  # It deliberately does NOT gate on `needs.changes.outputs.rust`. That router is
+  # `dorny/paths-filter` over the PR's NET three-dot diff, which is blind to
+  # intermediate commits by construction — and this job exists precisely because
+  # intermediate commits differ from the net diff. Gating on it would reopen the
+  # hole: a PR whose net diff touches only `dashboard/**` sets `rust=false`, so
+  # the job would skip, `ci-success` treats a skipped need as passing, and a
+  # sequence of `break aa-gateway` -> `revert it` -> `dashboard work` would land
+  # an unbuildable commit on `main` with every check green. `is_skippable` in the
+  # script already skips non-build commits, per commit, where the decision is
+  # actually sound; a job-level allow-list only subtracts coverage.
+  #
+  # pull_request-only is a COST choice, not a capability one: `main`'s commits
+  # are merges (`HEAD^1..HEAD` would walk fine on push), but every commit in that
+  # range was already walked by this job on the PR that introduced it.
+  commit-range-build:
+    # AAASM-5675 — COST DISCLOSURE, deliberately not a router gate.
+    #
+    # Removing `on.pull_request.paths` removed this job's only gating: it has
+    # never carried a `needs.changes.outputs.*` condition. So it now runs on
+    # every pull request, including a one-line README fix. That cost is real and
+    # is stated here rather than left to be discovered:
+    #
+    #   * ~1m07s of `cargo check` on a warm cache — the FLOOR for any pull
+    #     request, because `is_skippable()` never skips a merge commit and the
+    #     synthetic `refs/pull/N/merge` head is always the last element of the
+    #     range. Every PR builds at least that one commit.
+    #   * 6m43s measured on this branch's own head run (2 build-relevant commits).
+    #   * ~5m for a cold first commit, per this job's own env comment.
+    #
+    # A first review asked for either a gate or an explicit justification of the
+    # cost. **The gate is not available**, and the paragraph directly above says
+    # why: `needs.changes.outputs.rust` is a `dorny/paths-filter` over the PR's
+    # NET three-dot diff, and this job exists precisely because intermediate
+    # commits differ from that diff. An earlier revision of this PR added exactly
+    # that gate; it would have reopened the AAASM-5385 hole (break -> revert ->
+    # dashboard work lands an unbuildable commit with every check green) and it
+    # also silently dropped coverage of `schemas/**` and the two `examples/`
+    # workspace members, which `.ci/verify-range-builds.sh` classifies MUST BUILD.
+    #
+    # `CONTRIBUTING.md` "No filter at all" is satisfied by the `pull_request`
+    # condition below; `CONTRIBUTING.md` (`ci-success` treats a skipped need as
+    # passing — "if your job can be broken by a change outside its own filter, it
+    # needs a different guard") is what rules the net-diff router out. A
+    # range-aware guard would be the real answer and does not exist yet; until it
+    # does, paying the floor cost is the correct trade against landing an
+    # unbuildable commit on `main`.
+    if: github.event_name == 'pull_request'
+    name: Every commit in the range builds
+    runs-on: ubuntu-latest
+    env:
+      # AAASM-2581: select mold for host-target links only.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      # Must sit inside the workspace: `Swatinem/rust-cache` caches
+      # `$GITHUB_WORKSPACE/target` and nothing else. The script otherwise
+      # defaults this to a temp dir it deletes on exit, which leaves the cache
+      # unpopulated and re-pays the cold dependency build on EVERY run, forever.
+      # Measured on the first run of this job: 5m03s for the first commit vs
+      # ~33s for each subsequent one — that 5m03s is the part being cached.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole job is a walk over history, so the default shallow clone
+          # cannot serve it: `git rev-list HEAD^1..HEAD` needs the base's
+          # ancestry present. No `ref:` — the default merge ref is the point.
+          fetch-depth: 0
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+      - name: Install mold linker
+        run: sudo apt-get install -y mold
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Build every commit the merge introduces
+        run: .ci/verify-range-builds.sh
+
   fmt:
     needs: [changes]
     if: needs.changes.outputs.rust == 'true'
     name: Format check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt
@@ -200,7 +440,7 @@ jobs:
       # AAASM-2581: select mold for host-target links only.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
@@ -208,9 +448,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -225,9 +465,9 @@ jobs:
     name: Rustdoc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Check rustdoc (no undocumented public items)
         env:
           RUSTDOCFLAGS: "-D warnings"
@@ -260,9 +500,9 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ai-agent-assembly/node-sdk
           path: node-sdk
@@ -282,21 +522,21 @@ jobs:
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: |
             dashboard/pnpm-lock.yaml
             aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -341,7 +581,36 @@ jobs:
           # in-test command builders honour AASM_BIN_PATH; absent it they
           # fall back to cargo run for local dev.
           AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
-        run: cargo nextest run --workspace --no-tests=pass --exclude aa-ebpf
+        # AAASM-5334: `--no-fail-fast` so a red run reports EVERY failing test,
+        # not just the ones that happened to be dispatched before nextest
+        # cancelled. Without it the reported blast radius is arbitrary and
+        # misleadingly small: run 30689213155 (main, 2026-08-01) cancelled after
+        # `1681/6267 tests run` — 73% of the suite, including every integration
+        # binary, never executed, so the job reported 1 failure out of an unknown
+        # true total. A reviewer reasonably reads that as "localised" and it may
+        # not be.
+        #
+        # The runner-minute cost is small and bounded, because fail-fast cannot
+        # skip the expensive part. nextest compiles all 328 test binaries before
+        # running any test; on that run compilation was ~8m30s of the 8m43s step.
+        # Only the test phase is truncated, and a complete test phase is 191.7s
+        # (run 30686659787) against 13.2s truncated — so the worst case is ~3
+        # extra minutes, paid only on runs that are already failing.
+        run: cargo nextest run --workspace --no-tests=pass --exclude aa-ebpf --no-fail-fast
+      - name: Run aa-gateway doctests
+        # AAASM-5354: nextest does not execute doctests, and nothing else in
+        # this workflow ran `cargo test --doc`, so every doctest in the
+        # workspace has always been dead weight in CI. That matters here
+        # specifically: `engine::detection::DetectionPass` carries the
+        # `compile_fail` case that is the evidence for ADR 0032 validation
+        # requirement 10 — the out-of-process provider boundary — and it was
+        # never being executed.
+        #
+        # Scoped to aa-gateway on purpose. Workspace-wide doctests have never
+        # run, so enabling them all at once would surface unrelated pre-existing
+        # breakage in a PR that has nothing to do with it. Widening this is
+        # worth its own ticket.
+        run: cargo test --doc -p aa-gateway
 
   coverage:
     name: Coverage
@@ -374,9 +643,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
           sudo docker image prune --all --force || true
           df -h /
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Checkout sibling node-sdk (for e2e_sdk_node fixtures)
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ai-agent-assembly/node-sdk
           path: node-sdk
@@ -387,23 +656,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@3f7f2bd74f95d407a45d96b106f26d4f6c238fab # cargo-llvm-cov
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: |
             dashboard/pnpm-lock.yaml
             aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -459,24 +728,27 @@ jobs:
             --no-tests=pass \
             -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
           cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
-          cargo llvm-cov --no-run --codecov --output-path codecov.xml
           cargo llvm-cov --no-run --lcov --output-path lcov.info
       - name: Upload to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
-          files: ./codecov.xml
+          files: ./lcov.info
           name: Rust unit tests
           slug: ai-agent-assembly/agent-assembly
           token: ${{ secrets.CODECOV_TOKEN }}
-          flags: unit
+          flags: rust
           verbose: true
           fail_ci_if_error: false
       - name: Upload Rust coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rust-coverage-lcov
           path: lcov.info
-          retention-days: 1
+          # AAASM-3829: 14d (not 1d) so the AAASM-3197 cross-run backfill in the
+          # `sonar` job reliably finds this artifact when a Rust-less main push
+          # (dashboard-only / dep bump) path-skips the `coverage` job — otherwise
+          # the scan silently runs without Rust LCOV (dashboard-only, ~5k lines).
+          retention-days: 14
 
   # AAASM-1858: dedicated TimescaleDB job for env-gated tests in
   # aa-gateway. Sibling tests (in storage::timescale::tests and
@@ -506,11 +778,11 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run TimescaleDB tests
@@ -529,11 +801,11 @@ jobs:
     name: Migration drift check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run gateway migration drift test
@@ -544,16 +816,74 @@ jobs:
 
   deny:
     needs: [changes]
+    # AAASM-3565 supply-chain advisory gate. The `rust` filter already matches
+    # aa-*/** (so aa-devtool*/** and aa-devtool-contract/**), Cargo.toml,
+    # Cargo.lock and deny.toml — any devtool or manifest change runs this job.
     if: needs.changes.outputs.rust == 'true'
     name: Dependency checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
+      # AAASM-3565 devtool contract boundary guard: every aa-devtool-* plugin
+      # must depend on aa-devtool-contract (the capability-restricted facade),
+      # never on aa-core directly. A PR re-adding a raw aa-core dependency would
+      # re-open the full-surface hole, so fail here rather than rely on review.
+      - name: Enforce devtool contract boundary (no direct aa-core dep)
+        run: |
+          set -euo pipefail
+          # The aa-devtool-contract facade is the ONE crate allowed to depend on
+          # aa-core; every other aa-devtool-* plugin must go through it.
+          status=0
+          for manifest in aa-devtool*/Cargo.toml; do
+            case "$manifest" in
+              aa-devtool-contract/Cargo.toml) continue ;;
+            esac
+            if grep -qE '^[[:space:]]*aa-core\b' "$manifest"; then
+              echo "::error file=$manifest::declares a direct aa-core dependency; depend on aa-devtool-contract instead (AAASM-3565)"
+              status=1
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            exit 1
+          fi
+          echo "OK: no aa-devtool-* plugin depends on aa-core directly."
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check
           arguments: --all-features
+
+  backend-license:
+    needs: [changes]
+    # AAASM-5714. The `deny` job above is the license gate for the CARGO GRAPH.
+    # It cannot see an execution-isolation backend that ships as a prebuilt
+    # binary — bundled into a release tarball, fetched by install-cli.sh, or
+    # baked into a container image — because such an artifact never becomes a
+    # crate. That class had no gate at all; this job is it.
+    #
+    # Deliberately NOT folded into the `deny` job: that job is gated on
+    # `changes.rust`, and this gate's inputs (the manifest, the notices file)
+    # match no Rust path, so a manifest-only PR would skip the check entirely
+    # while the required aggregate still went green.
+    if: needs.changes.outputs.backend_license == 'true'
+    name: Backend license and provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No toolchain needed — the gate reads JSON and Markdown. `jq` is
+      # preinstalled on ubuntu-latest (scripts/check-release-completeness.sh
+      # already relies on this).
+
+      # The negative control runs FIRST and in the same job. A gate proven only
+      # against a manifest it accepts may be passing vacuously; this asserts it
+      # still rejects each violation class, and for the stated reason. If the
+      # gate is ever weakened, this fails before the real check can report OK.
+      - name: Self-test the gate (negative control)
+        run: bash scripts/check-backend-license-compliance.sh --self-test
+
+      - name: Run backend license and provenance gate
+        run: bash scripts/check-backend-license-compliance.sh
 
   no-std:
     needs: [changes]
@@ -566,11 +896,11 @@ jobs:
           - target: wasm32-unknown-unknown
           - target: thumbv7em-none-eabihf
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build aa-core (no_std + alloc)
         env:
           TARGET: ${{ matrix.target }}
@@ -586,10 +916,10 @@ jobs:
     name: Proto lint & breaking check (buf)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # full history needed for buf breaking --against
-      - uses: bufbuild/buf-setup-action@v1.50.0
+      - uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Lint proto files
@@ -597,12 +927,20 @@ jobs:
         working-directory: proto
       - name: Create local base branch for buf breaking check
         if: github.event_name == 'pull_request'
-        run: git fetch origin ${{ github.base_ref }}:${{ github.base_ref }}
+        # AAASM-4022: route github.base_ref through a quoted env var instead of
+        # expanding it directly into the shell command (workflow-injection
+        # hardening — the ${{ }} expansion is otherwise pasted verbatim into the
+        # run script).
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git fetch origin "$BASE_REF:$BASE_REF"
       - name: Check breaking changes against base branch
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           buf breaking \
-            --against "../.git#branch=${{ github.base_ref }},subdir=proto"
+            --against "../.git#branch=$BASE_REF,subdir=proto"
         working-directory: proto
 
 
@@ -612,14 +950,34 @@ jobs:
     name: Schema lint & validation (ajv)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install ajv-cli
         run: npm install -g ajv-cli
-      - name: Validate schema is self-consistent (ajv --strict)
-        run: ajv compile --strict -s schemas/policy/v1/policy-document.schema.json
+      - name: Validate every schema is self-consistent (ajv --strict)
+        # AAASM-5531: this step used to name policy-document.schema.json alone,
+        # so schemas/simulation/ and schemas/capability-manifest/ were never
+        # compiled here and a new schemas/<domain>/v1/ directory silently got no
+        # coverage from the job whose name implies it. Globbing means the next
+        # one is picked up without anyone remembering to add a line.
+        run: |
+          shopt -s nullglob
+          found=0
+          for schema in schemas/*/v1/*.schema.json; do
+            echo "::group::ajv compile --strict $schema"
+            ajv compile --strict -s "$schema"
+            echo "::endgroup::"
+            found=$((found + 1))
+          done
+          # A glob that matches nothing would otherwise pass silently — the
+          # exact shape of a gate that looks green because it ran on nothing.
+          if [ "$found" -eq 0 ]; then
+            echo "no schemas matched schemas/*/v1/*.schema.json — the glob is wrong" >&2
+            exit 1
+          fi
+          echo "compiled $found schema(s)"
       - name: Validate example policy documents against schema
         run: |
           ajv validate \
@@ -638,11 +996,11 @@ jobs:
     name: OpenAPI spec drift check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Generate OpenAPI spec from code
         run: cargo run -p aa-api --bin generate_openapi > /tmp/generated-v1.yaml
       - name: Check spec is up to date
@@ -654,10 +1012,10 @@ jobs:
     name: OpenAPI spec lint (Spectral)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
       - name: Install Spectral CLI
         run: npm install -g @stoplight/spectral-cli
       - name: Lint OpenAPI spec
@@ -669,7 +1027,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Check compatibility matrix is updated when versions change
@@ -677,46 +1035,93 @@ jobs:
 
   ebpf-build:
     needs: [changes]
-    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
-    if: needs.changes.outputs.ebpf == 'true'
+    # AAASM-2580: per-PR/push, only run when aa-ebpf* (or this workflow) changed.
+    # AAASM-3446: also run on the weekly schedule and on manual dispatch so the
+    # Layer 3 suite keeps standing main coverage despite the path-filter.
+    if: needs.changes.outputs.ebpf == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: eBPF probes build (Linux nightly)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: aa-ebpf-probes
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         # Required by aa-proto (transitive dep of aa-runtime) for the
         # multi-layer integration test step.
         run: sudo apt-get install -y protobuf-compiler
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
+          # AAASM-5311: pin the actual nightly *release* date, not just the
+          # wrapper action commit above — the action SHA only pins which
+          # version of the GitHub Action runs; without an explicit `toolchain`
+          # input it still installs whatever nightly is current on the day the
+          # job runs. That floating nightly is what silently broke this job
+          # (a Cargo build-directory-layout change landed between 2026-07-26
+          # and 2026-07-30) with no repository change, and the AAASM-3446
+          # weekly schedule means the next `schedule` run would have hit it
+          # again with nothing to bisect. Bump this date **in its own PR**
+          # when a newer nightly feature is needed, and confirm CI is green
+          # on that PR before merging it — a stale pin fails safe (an older
+          # but working toolchain keeps building); a silent/untested bump
+          # does not.
+          toolchain: nightly-2026-07-30
           # Do NOT add bpfel-unknown-none to targets: there is no precompiled rust-std
           # for this target. BPF programs are built from source via -Zbuild-std=core
           # (configured in aa-ebpf-probes/.cargo/config.toml). Only rust-src is needed.
           # clippy is required for the "Clippy on eBPF probes" step below.
           components: rust-src,clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: aa-ebpf-probes
+      - name: Resolve pinned bpf-linker version
+        # AAASM-5735: read the version from scripts/build-ebpf-probes.sh rather
+        # than repeating it here. The cache key and the install MUST come from
+        # one literal — when they were separate, the key stayed at 0.10.3 while
+        # an unpinned `cargo install` drifted to 0.11.0, so a cache hit passed
+        # and a cache miss failed on the very same commit.
+        id: bpf-linker-version
+        working-directory: .
+        run: |
+          v="$(bash scripts/build-ebpf-probes.sh --print-version)"
+          test -n "$v" || { echo "::error::could not resolve pinned bpf-linker version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Cache bpf-linker binary
         # Cache the compiled bpf-linker binary so subsequent CI runs skip the
-        # slow bundled-LLVM compile (~5-10 min). Key includes the version so a
-        # version bump automatically invalidates the cache.
-        uses: actions/cache@v5
+        # slow bundled-LLVM compile (~5-10 min). The key carries the resolved
+        # version, so bumping the pin in the script invalidates the cache.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-bpf-linker
         with:
           path: ~/.cargo/bin/bpf-linker
-          key: bpf-linker-${{ runner.os }}-0.10.3
+          # AAASM-5735: `-r2` is a one-time key-generation bump. Without it the
+          # resolved version is unchanged (0.10.3), the old cache still hits, and
+          # the corrected `cargo install --version` line would never execute — the
+          # PR would go green having proved nothing, since the cache-hit path was
+          # never the broken one. Bumping forces one real cold install.
+          key: bpf-linker-r2-${{ runner.os }}-${{ steps.bpf-linker-version.outputs.version }}
       - name: Install bpf-linker
         # bpf-linker is the custom linker required for the bpfel-unknown-none target.
         # Using the bundled-LLVM default (no --no-default-features) avoids fragile
         # system-LLVM package discovery. Only runs on cache miss.
+        # `--version` is load-bearing: `--locked` alone pins bpf-linker's
+        # dependency tree, not bpf-linker itself.
+        # The version goes through `env:` rather than `${{ }}` inside `run:` —
+        # on a fork `pull_request` the script it is read from is attacker-
+        # controlled, and interpolating that straight into a shell command is
+        # the workflow-injection pattern.
         if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
-        run: cargo install bpf-linker
+        env:
+          BPF_LINKER_VERSION: ${{ steps.bpf-linker-version.outputs.version }}
+        run: cargo install bpf-linker --version "$BPF_LINKER_VERSION" --locked
       - name: Build eBPF probes
-        run: cargo build --release
+        # AAASM-3712: build via the shared script — the SINGLE SOURCE OF TRUTH
+        # also used by release.yml's AAASM-3601 step, so the two recipes can
+        # never diverge again. Run from the repo root (overriding this job's
+        # working-directory: aa-ebpf-probes default) so the scripts/ path
+        # resolves; the script then cd's into aa-ebpf-probes/ itself.
+        working-directory: .
+        run: bash scripts/build-ebpf-probes.sh
       - name: Clippy on eBPF probes
         # --all-targets would try to build test harness binaries, which require the
         # `test` crate — unavailable on the no_std bpfel-unknown-none target.
@@ -758,8 +1163,10 @@ jobs:
 
   e2e-ebpf-linux:
     needs: [changes]
-    # AAASM-2580: only run when aa-ebpf* (or this workflow) changed.
-    if: needs.changes.outputs.ebpf == 'true'
+    # AAASM-2580: per-PR/push, only run when aa-ebpf* (or this workflow) changed.
+    # AAASM-3446: also run on the weekly schedule and on manual dispatch so the
+    # Layer 3 e2e suite keeps standing main coverage despite the path-filter.
+    if: needs.changes.outputs.ebpf == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # AAASM-1520 / F116 ST-H — Layer 3 (eBPF) end-to-end interception suite.
     # Linux-only, runs as root for CAP_BPF + CAP_PERFMON; the test source is
     # `#[cfg(all(target_os = "linux", feature = "integration-test"))]` so it
@@ -774,7 +1181,7 @@ jobs:
     name: e2e — Layer 3 eBPF (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         # Required by aa-proto (transitive dep of aa-runtime/aa-gateway).
         run: sudo apt-get install -y protobuf-compiler
@@ -792,22 +1199,46 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y curl
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
+          # AAASM-5311: pin the nightly release date — same rationale as the
+          # `ebpf-build` job above (this job runs the very `e2e_ebpf` test
+          # that a floating nightly's layout change broke). Bump in its own
+          # PR, verified green, when a newer nightly feature is needed.
+          toolchain: nightly-2026-07-30
           # Same justification as the `ebpf-build` job: bpfel-unknown-none has
           # no precompiled rust-std, so the BPF probes build via
           # `-Zbuild-std=core` which needs rust-src on nightly.
           components: rust-src,clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve pinned bpf-linker version
+        # AAASM-5735: same single-literal rule as the ebpf-build job — the
+        # version comes from scripts/build-ebpf-probes.sh, never from a second
+        # copy maintained here.
+        id: bpf-linker-version
+        run: |
+          v="$(bash scripts/build-ebpf-probes.sh --print-version)"
+          test -n "$v" || { echo "::error::could not resolve pinned bpf-linker version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - name: Cache bpf-linker binary
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-bpf-linker
         with:
           path: ~/.cargo/bin/bpf-linker
-          key: bpf-linker-${{ runner.os }}-0.10.3
+          # AAASM-5735: `-r2` is a one-time key-generation bump. Without it the
+          # resolved version is unchanged (0.10.3), the old cache still hits, and
+          # the corrected `cargo install --version` line would never execute — the
+          # PR would go green having proved nothing, since the cache-hit path was
+          # never the broken one. Bumping forces one real cold install.
+          key: bpf-linker-r2-${{ runner.os }}-${{ steps.bpf-linker-version.outputs.version }}
       - name: Install bpf-linker
+        # See the ebpf-build job: `--version` pins bpf-linker, `--locked` only
+        # pins its dependency tree. The value goes via `env:` to keep untrusted
+        # fork content out of the shell command.
         if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
-        run: cargo install bpf-linker
+        env:
+          BPF_LINKER_VERSION: ${{ steps.bpf-linker-version.outputs.version }}
+        run: cargo install bpf-linker --version "$BPF_LINKER_VERSION" --locked
       - name: Build BPF probes
         # Pre-builds the BPF ELF objects that `aa-ebpf`'s build.rs embeds
         # via `include_bytes_aligned!`. Doing it explicitly here surfaces
@@ -890,11 +1321,11 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-benchmark'))
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Run criterion benchmarks
         run: |
           cargo bench -p aa-security --bench scanner_bench
@@ -914,15 +1345,19 @@ jobs:
 
   conformance:
     needs: [changes]
-    if: needs.changes.outputs.rust == 'true'
+    # AAASM-4454: run on the broad `rust` set OR the narrow surface-contract
+    # `conformance` filter, so the registration-surface contract is guaranteed to
+    # re-run when start.rs / aa-gateway main+local_mode / aa-api / the conformance
+    # crate change, even if `rust` is later narrowed.
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.conformance == 'true'
     name: Rust conformance suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Run conformance suite (all categories)
         run: cargo test -p conformance
 
@@ -937,8 +1372,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install runner dependencies
@@ -956,10 +1391,10 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Node.js SDK conformance (not yet implemented)
         run: |
           echo "Node.js SDK conformance runner not yet implemented."
@@ -973,8 +1408,8 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.22"
       - name: Go SDK conformance (not yet implemented)
@@ -993,13 +1428,13 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1020,13 +1455,13 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1036,7 +1471,7 @@ jobs:
       - name: Build production bundle
         run: pnpm build
       - name: Upload dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dashboard-dist
           path: dashboard/dist/
@@ -1051,13 +1486,13 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1067,11 +1502,14 @@ jobs:
       - name: Run tests with coverage
         run: pnpm test:coverage
       - name: Upload TypeScript coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage/lcov.info
-          retention-days: 1
+          # AAASM-3829: 14d for parity with rust-coverage-lcov (Codecov + any
+          # backfill consumer); the sonar job regenerates dashboard LCOV in-job
+          # (AAASM-3803 Option C), so this is a non-critical safety margin.
+          retention-days: 14
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -1079,6 +1517,80 @@ jobs:
           name: Dashboard (TypeScript)
           flags: dashboard
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # AAASM-5192: the dashboard Playwright suite had no CI job at all, so the
+  # 31-file breakage in AAASM-5191 sat undetected for 19 days — every e2e result
+  # in the programme was author-run evidence that nothing re-checked. This job
+  # is the thing that was missing.
+  #
+  # It runs `playwright.ci.config.ts`, which is the normal config plus a
+  # quarantine list (see that file for why, and AAASM-5195 for the backlog).
+  # Specs are gated by default and must be named to opt out, so a spec added by
+  # anyone else is covered automatically.
+  #
+  # It consumes `dashboard-build`'s dist artifact rather than rebuilding: a
+  # failed build then cannot leave `vite preview` serving a stale bundle that
+  # the suite passes against, because the artifact only exists if the build
+  # succeeded.
+  dashboard-e2e:
+    name: Dashboard e2e (Playwright)
+    needs: [changes, dashboard-build]
+    if: needs.changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # AAASM-5191: the whole outage was specs seeding `aa_token` into
+      # localStorage while `tokenStorage.ts` reads sessionStorage. Worse than
+      # the timeouts: localStorage is a state production cannot reach, because
+      # AAASM-4322 removed the token from it as XSS-exfiltration hardening — so
+      # a spec seeding both stores would keep passing if that hardening were
+      # ever reverted, and the gate would certify the vulnerability. Cheap grep,
+      # runs before the browser is even provisioned.
+      - name: Guard — aa_token is seeded into sessionStorage only
+        run: pnpm e2e:check-seeds
+      - name: Generate API types from OpenAPI spec
+        run: pnpm generate:api
+      - name: Download dashboard dist artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dashboard-dist
+          path: dashboard/dist/
+      - name: Install Playwright chromium + OS deps
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run e2e suite
+        run: pnpm exec playwright test --config=playwright.ci.config.ts
+      # `always()` so a red run still publishes its evidence — the HTML report,
+      # the failure screenshots, the retry traces and the JUnit XML. A failure
+      # that can only be understood by reproducing it locally is the failure
+      # mode this gate is meant to remove.
+      - name: Upload Playwright HTML report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-e2e-report
+          path: dashboard/playwright-report/
+          retention-days: 14
+      - name: Upload Playwright traces, screenshots + JUnit XML
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-e2e-results
+          path: dashboard/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
 
   dashboard-codegen-drift:
     name: Dashboard codegen drift check
@@ -1089,13 +1601,13 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -1111,17 +1623,17 @@ jobs:
     if: needs.changes.outputs.dashboard == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: Download dashboard dist artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dashboard-dist
           path: dashboard/dist/
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
@@ -1134,13 +1646,65 @@ jobs:
   # — either coverage producer may be skipped (path-gated), so the Rust steps run
   # only when `coverage` succeeded and the TS download only when `dashboard-test`
   # succeeded. Runs in the pull_request context so PR decoration works (AAASM-2542).
+  #
+  # AAASM-3197: SonarCloud treats every main-branch analysis as a FULL snapshot
+  # that REPLACES the project's coverage. A push that touches only one side (e.g.
+  # dashboard-only → `coverage` skipped) would otherwise publish a partial report
+  # that wipes the other side's coverage to 0. On pushes, whichever producer was
+  # skipped/failed is backfilled from the last successful main run so the
+  # snapshot is always complete. PR analysis (new-code-only) is left unchanged.
+  devint-reference-client:
+    name: DI-API reference client (typecheck, lint, bindings drift, contract tests)
+    needs: [changes]
+    if: needs.changes.outputs.devint_client == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/aa-devint-reference-client
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: examples/aa-devint-reference-client/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check the bindings still match proto/devint.proto
+        run: pnpm generate:check
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Build the DI-API test harness
+        # The contract suite talks to the real `aa_runtime::devint` server over a
+        # real Unix socket. Without this binary the suite fails loudly rather
+        # than silently degrading to a mock.
+        working-directory: .
+        run: cargo build -p aa-devint-harness
+      - name: Unit, guard and contract tests
+        run: pnpm test
+
   sonar:
     name: SonarCloud analysis
     needs: [changes, coverage, dashboard-test]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage')) }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && github.actor != 'dependabot[bot]' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage') || needs.changes.outputs.dashboard == 'true') }}
     runs-on: ubuntu-latest
+    # AAASM-3197: actions:read lets `gh run download` pull the last successful
+    # main LCOV when a coverage producer was skipped this run (see fallback
+    # steps below). contents:read mirrors the workflow default for checkout.
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # ---- Rust coverage + clippy (only when the Rust side ran) --------------
@@ -1151,27 +1715,92 @@ jobs:
         if: needs.coverage.result == 'success'
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: needs.coverage.result == 'success'
       - name: Generate Clippy report
         if: needs.coverage.result == 'success'
         run: cargo clippy --all-targets --all-features --exclude aa-ebpf --message-format=json 2>&1 | tee clippy-report.json || true
       - name: Download Rust coverage (LCOV) from the Coverage job
         if: needs.coverage.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: rust-coverage-lcov
           path: .
-      # ---- TypeScript coverage (only when the dashboard side ran) ------------
+      # AAASM-3197: main-branch analysis is a FULL snapshot — a partial report
+      # wipes the other side's coverage to 0. When the `coverage` job was skipped
+      # or failed on a push (non-Rust change), backfill `lcov.info` from the most
+      # recent successful main CI run so the snapshot stays complete. PR runs are
+      # new-code-decorated and intentionally left untouched.
+      - name: Backfill Rust coverage (LCOV) from last successful main run
+        if: ${{ github.event_name == 'push' && needs.coverage.result != 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --workflow ci.yml --branch main \
+            --status success --limit 1 --json databaseId \
+            --jq '.[0].databaseId')"
+          if [ -z "$run_id" ]; then
+            echo "::warning::No prior successful main CI run found; scanning without backfilled Rust LCOV."
+            exit 0
+          fi
+          echo "Backfilling rust-coverage-lcov from main run ${run_id}."
+          gh run download "$run_id" --name rust-coverage-lcov --dir . \
+            || echo "::warning::rust-coverage-lcov artifact unavailable on run ${run_id} (expired/absent); scanning without it."
+      # ---- TypeScript coverage ---------------------------------------------
+      # AAASM-3803 (Option C): prefer the SAME-RUN `dashboard-test` artifact and
+      # only regenerate in-job when that job did not run this build. Same-run
+      # artifacts never expire, so the download is reliable — unlike the previous
+      # cross-run backfill, which degraded to a soft `::warning:: ... scanning
+      # without it` when the artifact was expired/absent (common on the
+      # billing-throttled scan), letting Sonar scan with 0.0% dashboard coverage.
+      # This avoids re-running the dashboard tests on the common path (a dashboard
+      # PR, where `dashboard-test` already ran) while still guaranteeing coverage
+      # on a Rust-only main push (where `dashboard-test` is path-skipped but the
+      # AAASM-3197 full-snapshot invariant still requires dashboard coverage).
       - name: Download TypeScript coverage (LCOV) from the Dashboard test job
         if: needs.dashboard-test.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage
+      # Fallback — regenerate only when `dashboard-test` was skipped/failed.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        if: needs.dashboard-test.result != 'success'
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: needs.dashboard-test.result != 'success'
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+      - name: Install dashboard dependencies (fallback)
+        if: needs.dashboard-test.result != 'success'
+        working-directory: dashboard
+        run: pnpm install --frozen-lockfile
+      - name: Generate API types from OpenAPI spec (fallback)
+        if: needs.dashboard-test.result != 'success'
+        working-directory: dashboard
+        run: pnpm generate:api
+      - name: Generate TypeScript coverage (LCOV) for SonarCloud (fallback)
+        if: needs.dashboard-test.result != 'success'
+        working-directory: dashboard
+        run: pnpm test:coverage
       # ---- Scan -------------------------------------------------------------
+      # AAASM-3819: derive sonar.projectVersion from the workspace Cargo version
+      # so SonarCloud's reported project version tracks the release automatically
+      # and the static value in sonar-project.properties can never silently go
+      # stale. Passed to every scan attempt below via the scanner `args` input,
+      # which overrides the file value.
+      - name: Resolve sonar.projectVersion from Cargo version
+        id: sonar-version
+        run: |
+          version="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved sonar.projectVersion=${version}"
       - name: Cache SonarCloud analysis state
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar-${{ hashFiles('sonar-project.properties') }}
@@ -1180,7 +1809,9 @@ jobs:
       - name: SonarCloud scan (attempt 1)
         id: sonar-scan-attempt-1
         continue-on-error: true
-        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        with:
+          args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -1193,7 +1824,9 @@ jobs:
         id: sonar-scan-attempt-2
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
         continue-on-error: true
-        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        with:
+          args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -1204,7 +1837,9 @@ jobs:
           sleep 30
       - name: SonarCloud scan (attempt 3 — final)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
-        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        with:
+          args: -Dsonar.projectVersion=${{ steps.sonar-version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -1223,6 +1858,11 @@ jobs:
       - changes
       - dashboard-assets
       - build
+      # AAASM-5385: asserts behaviour (does every commit in the range compile),
+      # not a metric, so it blocks — see CONTRIBUTING, "Which CI jobs block a
+      # merge". A gate that catches an unbuildable commit but does not block is
+      # a report nobody reads, which is the condition it exists to end.
+      - commit-range-build
       - fmt
       - clippy
       - docs
@@ -1230,6 +1870,10 @@ jobs:
       - timescaledb-tests
       - migration-drift-check
       - deny
+      # AAASM-5714: blocks, like `deny`. It asserts a distribution-boundary
+      # property (no unreviewed license reaches a channel), not a metric, so an
+      # advisory version of it would be a report nobody acts on.
+      - backend-license
       - no-std
       - buf-lint
       - schema-lint
@@ -1246,8 +1890,23 @@ jobs:
       - dashboard-typecheck
       - dashboard-build
       - dashboard-test
+      # AAASM-5192: gated here deliberately, not left advisory. The exclusions
+      # above are quality/acceptance signals; this one asserts functional
+      # behaviour (routes render, client-side behaviour holds, the rendered app
+      # still works against a stubbed backend) exactly as `dashboard-test` does,
+      # so it belongs in the same bucket. Note what it does NOT assert: all 44
+      # gated specs stub every call, so this is not an API-contract check and
+      # cannot see backend drift; real-backend coverage is zero because the one
+      # spec that talks to a live gateway needs `cargo` (dashboard/tests/e2e/
+      # README.md, "What this gate does not prove"). An advisory e2e job would reproduce the condition
+      # that caused AAASM-5191 — a suite nothing acts on — with extra steps. It
+      # is credible as a gate only because its config quarantines the known-red
+      # specs (AAASM-5195) and ratchets that list against a frozen baseline
+      # (QUARANTINE_BASELINE in playwright.quarantine.ts).
+      - dashboard-e2e
       - dashboard-codegen-drift
       - aa-cli-compat
+      - devint-reference-client
     steps:
       - name: Verify no required job failed or was cancelled
         run: |

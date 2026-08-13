@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5345: a full-width 16-digit run whose final check digit is altered fails Luhn and must stay clean. Full-width digits are ordinary content in CJK text — order numbers, quantities, dates — so widening what reaches the checksum must not widen what passes it. Without this vector, normalisation could be made to satisfy the two detection vectors by flagging any long full-width digit run, which would redact routine text in exactly the locales the fix serves.",
+  "input_text": "訂單編號=４５３２０１５１１２８３０３６７",
+  "expected_findings": [],
+  "expected_redacted": "訂單編號=４５３２０１５１１２８３０３６７"
+}

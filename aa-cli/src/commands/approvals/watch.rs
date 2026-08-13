@@ -14,6 +14,7 @@ use super::models::{compute_timeout_color, format_countdown, TimeoutColor};
 
 use crate::config::ResolvedContext;
 use crate::error::CliError;
+use crate::sanitize::sanitize_terminal;
 
 use super::client;
 use super::models::ApprovalResponse;
@@ -128,6 +129,16 @@ pub fn handle_keypress(key: KeyEvent, state: &mut InteractiveState) -> KeyAction
     }
 }
 
+/// Sanitize and shorten a server-supplied approval id for compact display.
+///
+/// Strips terminal escapes BEFORE truncation — a CSI such as `\x1b[2K` fits
+/// within 8 bytes, so truncating first would leave a live escape — then takes
+/// at most 8 *characters* (not bytes) so the result always lands on a UTF-8
+/// boundary; a raw byte slice could panic on multi-byte input.
+fn short_id(id: &str) -> String {
+    sanitize_terminal(id).chars().take(8).collect()
+}
+
 /// Render the interactive view to stdout.
 ///
 /// Clears the terminal and draws the approval list with the current selection
@@ -167,11 +178,15 @@ pub fn render_interactive_view(state: &InteractiveState) {
         };
         let countdown = format_countdown(remaining);
 
+        // `id`, `agent_id`, and `action` are server-supplied; strip terminal
+        // escapes so a malicious agent cannot repaint the line to spoof the
+        // operator.
+        let id = short_id(&item.id);
+        let agent = sanitize_terminal(&item.agent_id);
+        let action = sanitize_terminal(&item.action);
+
         println!(
             "  {marker} {id}  {agent:<20} {action:<30} {color}{cd}\x1b[0m",
-            id = &item.id[..8.min(item.id.len())],
-            agent = item.agent_id,
-            action = item.action,
             color = color_code,
             cd = countdown,
         );
@@ -189,11 +204,19 @@ pub async fn run_watch_stream(mut ws: WsStream) {
         match msg {
             Ok(Message::Text(text)) => {
                 if let Ok(approval) = serde_json::from_str::<ApprovalResponse>(&text) {
+                    // All four fields are server-supplied; strip terminal
+                    // escapes to prevent approve/reject decision spoofing.
                     println!(
                         "  \x1b[1;33mNEW\x1b[0m  {} | agent={} | action={} | condition={}",
-                        approval.id, approval.agent_id, approval.action, approval.reason
+                        sanitize_terminal(&approval.id),
+                        sanitize_terminal(&approval.agent_id),
+                        sanitize_terminal(&approval.action),
+                        sanitize_terminal(&approval.reason)
                     );
-                    println!("        run: aasm approvals approve {} --reason \"...\"", approval.id);
+                    println!(
+                        "        run: aasm approvals approve {} --reason \"...\"",
+                        sanitize_terminal(&approval.id)
+                    );
                     println!();
                 }
             }
@@ -232,47 +255,8 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
         if event::poll(Duration::from_millis(100)).unwrap_or(false) {
             if let Ok(Event::Key(key)) = event::read() {
                 match handle_keypress(key, &mut state) {
-                    KeyAction::Approve => {
-                        if let Some(id) = state.selected_id().map(String::from) {
-                            terminal::disable_raw_mode().ok();
-                            let result = client::approve_action(ctx, &id, Some("approved via watch")).await;
-                            match result {
-                                Ok(_) => {
-                                    state.items.retain(|i| i.id != id);
-                                    if state.selected > 0 && state.selected >= state.items.len() {
-                                        state.selected = state.items.len().saturating_sub(1);
-                                    }
-                                }
-                                Err(e) => eprintln!("approve error: {e}"),
-                            }
-                            terminal::enable_raw_mode().ok();
-                            state.dirty = true;
-                        }
-                    }
-                    KeyAction::Reject => {
-                        if let Some(id) = state.selected_id().map(String::from) {
-                            terminal::disable_raw_mode().ok();
-                            print!("Rejection reason: ");
-                            std::io::stdout().flush().ok();
-                            let mut reason = String::new();
-                            std::io::stdin().read_line(&mut reason).ok();
-                            let reason = reason.trim();
-                            if !reason.is_empty() {
-                                let result = client::reject_action(ctx, &id, reason).await;
-                                match result {
-                                    Ok(_) => {
-                                        state.items.retain(|i| i.id != id);
-                                        if state.selected > 0 && state.selected >= state.items.len() {
-                                            state.selected = state.items.len().saturating_sub(1);
-                                        }
-                                    }
-                                    Err(e) => eprintln!("reject error: {e}"),
-                                }
-                            }
-                            terminal::enable_raw_mode().ok();
-                            state.dirty = true;
-                        }
-                    }
+                    KeyAction::Approve => handle_approve_key(&mut state, ctx).await,
+                    KeyAction::Reject => handle_reject_key(&mut state, ctx).await,
                     KeyAction::Quit => break,
                     KeyAction::None => {}
                 }
@@ -280,15 +264,8 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
         }
 
         // Check for new WebSocket messages (non-blocking).
-        match ws.next().now_or_never() {
-            Some(Some(Ok(Message::Text(text)))) => {
-                if let Ok(approval) = serde_json::from_str::<ApprovalResponse>(&text) {
-                    state.items.push(approval);
-                    state.dirty = true;
-                }
-            }
-            Some(Some(Ok(Message::Close(_)))) | Some(None) => break,
-            _ => {}
+        if poll_ws_message(&mut ws, &mut state) {
+            break;
         }
 
         if state.dirty {
@@ -299,6 +276,71 @@ pub async fn run_watch_interactive(mut ws: WsStream, ctx: &ResolvedContext) {
 
     terminal::disable_raw_mode().ok();
     println!();
+}
+
+/// Non-blocking poll of the WebSocket: append a newly-received approval to the
+/// interactive list (marking it dirty) and report whether the loop should break
+/// (server-side close or stream end). `false` when nothing actionable arrived.
+fn poll_ws_message(ws: &mut WsStream, state: &mut InteractiveState) -> bool {
+    match ws.next().now_or_never() {
+        Some(Some(Ok(Message::Text(text)))) => {
+            if let Ok(approval) = serde_json::from_str::<ApprovalResponse>(&text) {
+                state.items.push(approval);
+                state.dirty = true;
+            }
+            false
+        }
+        Some(Some(Ok(Message::Close(_)))) | Some(None) => true,
+        _ => false,
+    }
+}
+
+/// Drop the resolved approval `id` from the interactive list and clamp the
+/// selection cursor to the new bounds.
+fn remove_resolved(state: &mut InteractiveState, id: &str) {
+    state.items.retain(|i| i.id != id);
+    if state.selected > 0 && state.selected >= state.items.len() {
+        state.selected = state.items.len().saturating_sub(1);
+    }
+}
+
+/// Approve the currently-selected pending request over the API, removing it
+/// from the list on success. No-op when nothing is selected. Toggles raw mode
+/// off/on around the call so error output renders normally.
+async fn handle_approve_key(state: &mut InteractiveState, ctx: &ResolvedContext) {
+    let Some(id) = state.selected_id().map(String::from) else {
+        return;
+    };
+    terminal::disable_raw_mode().ok();
+    match client::approve_action(ctx, &id, Some("approved via watch")).await {
+        Ok(_) => remove_resolved(state, &id),
+        Err(e) => eprintln!("approve error: {e}"),
+    }
+    terminal::enable_raw_mode().ok();
+    state.dirty = true;
+}
+
+/// Reject the currently-selected pending request, prompting on stdin for a
+/// reason. An empty reason cancels the rejection. No-op when nothing is
+/// selected. Toggles raw mode off/on around the prompt and call.
+async fn handle_reject_key(state: &mut InteractiveState, ctx: &ResolvedContext) {
+    let Some(id) = state.selected_id().map(String::from) else {
+        return;
+    };
+    terminal::disable_raw_mode().ok();
+    print!("Rejection reason: ");
+    std::io::stdout().flush().ok();
+    let mut reason = String::new();
+    std::io::stdin().read_line(&mut reason).ok();
+    let reason = reason.trim();
+    if !reason.is_empty() {
+        match client::reject_action(ctx, &id, reason).await {
+            Ok(_) => remove_resolved(state, &id),
+            Err(e) => eprintln!("reject error: {e}"),
+        }
+    }
+    terminal::enable_raw_mode().ok();
+    state.dirty = true;
 }
 
 /// Execute the `aasm approvals watch` subcommand.
@@ -322,5 +364,28 @@ pub fn run_watch(args: WatchArgs, ctx: &ResolvedContext) -> std::process::ExitCo
             eprintln!("error: {e}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_id_strips_escape_before_truncation() {
+        // A CSI clear-line fits within 8 bytes; truncating first would leave a
+        // live escape, so it must be stripped before the 8-char cut.
+        let out = short_id("\x1b[2K0123456789");
+        assert!(!out.contains('\x1b'), "escape must be stripped: {out:?}");
+        assert_eq!(out, "01234567");
+    }
+
+    #[test]
+    fn short_id_truncation_is_char_safe_on_multibyte_input() {
+        // A raw byte slice `[..8]` would panic mid-character on 3-byte chars;
+        // char truncation must keep 8 whole characters without panicking.
+        let out = short_id("世界世界世界世界世界");
+        assert_eq!(out.chars().count(), 8);
+        assert!(out.chars().all(|c| c == '世' || c == '界'));
     }
 }

@@ -51,6 +51,10 @@
 .kpi-card__delta {
   font-size: 0.8125rem;
   font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .kpi-card__error {

@@ -1,5 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { PolicyEditorOverlay } from './PolicyEditorOverlay'
 import { ToastProvider } from '../../../components/ToastProvider'
@@ -18,7 +19,7 @@ function makeDraft(patch: Partial<PolicyDraft> = {}): PolicyDraft {
   }
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return <ToastProvider>{children}</ToastProvider>
 }
 
@@ -29,6 +30,7 @@ describe('PolicyEditorOverlay — header', () => {
         initialDraft={makeDraft({ status: 'active' })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -46,6 +48,7 @@ describe('PolicyEditorOverlay — header', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -63,6 +66,7 @@ describe('PolicyEditorOverlay — draft callout', () => {
         initialDraft={makeDraft({ status: 'proposed' })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -75,6 +79,7 @@ describe('PolicyEditorOverlay — draft callout', () => {
         initialDraft={makeDraft({ status: 'active' })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -89,6 +94,7 @@ describe('PolicyEditorOverlay — body', () => {
         initialDraft={makeDraft({ rules: [defaultRule(), defaultRule()] })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -104,6 +110,7 @@ describe('PolicyEditorOverlay — body', () => {
         initialDraft={makeDraft({ rules: [defaultRule()] })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -119,6 +126,7 @@ describe('PolicyEditorOverlay — body', () => {
         initialDraft={makeDraft({ rules: [defaultRule(), defaultRule()] })}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -135,6 +143,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -148,6 +157,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -164,6 +174,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={onSave}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -180,6 +191,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={onClose}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -194,6 +206,7 @@ describe('PolicyEditorOverlay — footer', () => {
         initialDraft={makeDraft()}
         onSave={() => {}}
         onClose={() => {}}
+        onSimulate={() => {}}
       />,
       { wrapper: Wrapper },
     )
@@ -203,5 +216,296 @@ describe('PolicyEditorOverlay — footer', () => {
     await user.click(screen.getByTestId('editor-revert-btn'))
     expect(screen.queryByTestId('editor-revert-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('editor-scope-input')).toHaveValue('global')
+  })
+
+  it('Save does not fire onSave while isSaving and shows the saving label', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={onSave}
+        onClose={() => {}}
+        onSimulate={() => {}}
+        isSaving
+      />,
+      { wrapper: Wrapper },
+    )
+    const saveBtn = screen.getByTestId('editor-save-btn')
+    expect(saveBtn).toBeDisabled()
+    expect(saveBtn).toHaveTextContent('Saving…')
+    await user.click(saveBtn)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+})
+
+describe('PolicyEditorOverlay — simulate + DSL + dirty', () => {
+  it('Simulate opens the shipped simulator instead of claiming it is unbuilt', async () => {
+    const user = userEvent.setup()
+    const onSimulate = vi.fn()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={onSimulate}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    expect(onSimulate).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument()
+  })
+
+  it('Simulate warns to fix validation errors, and does not open the simulator', async () => {
+    const user = userEvent.setup()
+    const onSimulate = vi.fn()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={onSimulate}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Remove the only verb to force a validation error.
+    await user.click(screen.getByTestId('editor-rule-0-verb-read'))
+    await user.click(screen.getByTestId('editor-simulate-btn'))
+    expect(
+      await screen.findByText(/Fix validation errors before simulating/),
+    ).toBeInTheDocument()
+    expect(onSimulate).not.toHaveBeenCalled()
+  })
+
+  it('DSL toggle switches to a read-only Rego preview of the draft', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft({ id: 'pol-preview', name: 'preview-policy' })}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Form view initially — no preview node.
+    expect(screen.queryByTestId('editor-dsl-preview')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('editor-view-dsl'))
+
+    const preview = screen.getByTestId('editor-dsl-preview')
+    expect(preview).toBeInTheDocument()
+    expect(preview).toHaveTextContent('policy "pol-preview" {')
+    expect(preview).toHaveTextContent('rule R1 {')
+    // The DSL tab is selected and the form sections are gone.
+    expect(screen.getByTestId('editor-view-dsl')).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.queryByTestId('editor-rule-0')).not.toBeInTheDocument()
+
+    // Toggling back restores the form.
+    await user.click(screen.getByTestId('editor-view-form'))
+    expect(screen.getByTestId('editor-rule-0')).toBeInTheDocument()
+    expect(screen.queryByTestId('editor-dsl-preview')).not.toBeInTheDocument()
+  })
+
+  it('reflects live draft edits in the DSL preview', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-rule-0-verb-write'))
+    await user.click(screen.getByTestId('editor-view-dsl'))
+    expect(screen.getByTestId('editor-dsl-preview')).toHaveTextContent(
+      'verb in ["read", "write"]',
+    )
+  })
+
+  it('shows a per-rule dirty-dot only for rules changed since open', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft({
+          rules: [defaultRule(), defaultRule()],
+        })}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Clean on open: neither rule shows a dot.
+    expect(screen.queryByTestId('editor-rule-0-dirty-dot')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('editor-rule-1-dirty-dot')).not.toBeInTheDocument()
+
+    // Edit rule 0 only.
+    await user.click(screen.getByTestId('editor-rule-0-verb-write'))
+    expect(screen.getByTestId('editor-rule-0-dirty-dot')).toBeInTheDocument()
+    expect(screen.queryByTestId('editor-rule-1-dirty-dot')).not.toBeInTheDocument()
+  })
+
+  it('publishes onDirtyChange(true) when the draft becomes dirty', async () => {
+    const user = userEvent.setup()
+    const onDirtyChange = vi.fn()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+      { wrapper: Wrapper },
+    )
+    // Initial effect publishes the starting (clean) state.
+    expect(onDirtyChange).toHaveBeenCalledWith(false)
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    await waitFor(() => expect(onDirtyChange).toHaveBeenCalledWith(true))
+  })
+
+  it('clears the dirty flag on unmount', () => {
+    const onDirtyChange = vi.fn()
+    const { unmount } = render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+        onDirtyChange={onDirtyChange}
+      />,
+      { wrapper: Wrapper },
+    )
+    onDirtyChange.mockClear()
+    unmount()
+    expect(onDirtyChange).toHaveBeenCalledWith(false)
+  })
+
+  it('duplicates a rule card via the rule duplicate button', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={makeDraft({ rules: [defaultRule()] })}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    expect(screen.queryByTestId('editor-rule-1')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('editor-rule-0-duplicate'))
+    expect(screen.getByTestId('editor-rule-1')).toBeInTheDocument()
+  })
+})
+
+describe('PolicyEditorOverlay — footer blast radius (AAASM-5141)', () => {
+  /** A four-rule policy, each rule distinguishable by id. */
+  function fourRuleDraft(): PolicyDraft {
+    return makeDraft({
+      status: 'active',
+      rules: [defaultRule(), defaultRule(), defaultRule(), defaultRule()],
+    })
+  }
+
+  it('reports one modified rule after one rule is edited in a four-rule policy', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      'Active · 4 rule(s)',
+    )
+
+    await user.click(screen.getByTestId('editor-rule-1-verb-write'))
+
+    // Exactly one rule card carries a dirty dot, and the footer must agree.
+    expect(screen.getAllByTitle('unsaved change')).toHaveLength(1)
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '1 rule(s) modified',
+    )
+  })
+
+  it('counts a second edited rule without counting the untouched ones', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-rule-0-verb-write'))
+    await user.click(screen.getByTestId('editor-rule-3-verb-write'))
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '2 rule(s) modified',
+    )
+  })
+
+  it('counts an added rule as one modification, not as the new total', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-add-rule'))
+    expect(screen.getByTestId('editor-rule-4')).toBeInTheDocument()
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '1 rule(s) modified',
+    )
+  })
+
+  it('counts a removed rule as one modification, not as the shortened total', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.click(screen.getByTestId('editor-rule-1-remove'))
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '1 rule(s) modified',
+    )
+  })
+
+  it('reports zero modified rules when only policy metadata changed', async () => {
+    const user = userEvent.setup()
+    render(
+      <PolicyEditorOverlay
+        initialDraft={fourRuleDraft()}
+        onSave={() => {}}
+        onClose={() => {}}
+        onSimulate={() => {}}
+      />,
+      { wrapper: Wrapper },
+    )
+    await user.type(screen.getByTestId('editor-scope-input'), '!')
+    expect(screen.getByTestId('editor-dirty-chip')).toBeInTheDocument()
+    expect(screen.getByTestId('editor-footer-status')).toHaveTextContent(
+      '0 rule(s) modified',
+    )
   })
 })

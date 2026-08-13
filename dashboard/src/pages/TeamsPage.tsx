@@ -1,227 +1,135 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  flexRender,
-  createColumnHelper,
-  type SortingState,
-} from '@tanstack/react-table'
+import { ignorePromise } from '../lib/ignorePromise'
+import { absent, certainFromShapedQuery, mapCertain } from '../lib/truthfulness'
 import {
   joinTeamRows,
   useCostSummaryQuery,
+  useTopologyAgentsQuery,
   useTopologyOverviewQuery,
-  type TeamListRow,
+  type TopologyOverview,
 } from '../features/teams/api'
+import { decodeTopologyNodes } from '../features/agents/schema'
+import { decodeTopologyOverview } from '../features/teams/schema'
+import { reconcileAgentCensus, selectOrphanAgents } from '../features/teams/orphans'
+import { TeamListPane } from '../features/teams/TeamListPane'
+import { TeamDetailPane } from '../features/teams/TeamDetailPane'
+import { TeamOrphanDetail } from '../features/teams/TeamOrphanDetail'
+import './TeamsPage.css'
 
-const PAGE_SIZE = 25
+// Sentinel selection id for the "unclaimed" orphan section — distinct from any
+// real team_id so it can share the single selection state with team rows.
+const ORPHAN_ID = '__orphan__'
 
-function SkeletonRows({ cols }: { cols: number }) {
-  return (
-    <>
-      {Array.from({ length: 5 }).map((_, i) => (
-        <tr key={i} data-testid="team-row-skeleton">
-          {Array.from({ length: cols }).map((_, j) => (
-            <td key={j} style={{ padding: '0.5rem' }}>
-              <span
-                style={{
-                  display: 'block',
-                  height: '1rem',
-                  background: 'var(--surface-skeleton-shimmer)',
-                  borderRadius: '4px',
-                }}
-              />
-            </td>
-          ))}
-        </tr>
-      ))}
-    </>
-  )
-}
-
-function BurnCell({ pct }: { pct: number | null }) {
-  if (pct == null) return <span style={{ color: 'var(--text-muted)' }}>—</span>
-  const color =
-    pct >= 90
-      ? 'var(--status-danger-solid)'
-      : pct >= 70
-        ? 'var(--status-caution-solid)'
-        : 'var(--status-success-solid)'
-  return (
-    <span style={{ color, fontFamily: 'JetBrains Mono, monospace' }}>
-      {pct.toFixed(1)}%
-    </span>
-  )
-}
-
-const columnHelper = createColumnHelper<TeamListRow>()
-
-const columns = [
-  columnHelper.accessor('team_id', {
-    header: 'Team ID',
-    cell: info => (
-      <Link to={`/teams/${encodeURIComponent(info.getValue())}`}>{info.getValue()}</Link>
-    ),
-  }),
-  columnHelper.accessor('agent_count', { header: 'Member Count' }),
-  columnHelper.accessor('root_agent_count', { header: 'Root Agents' }),
-  columnHelper.accessor('burn_pct', {
-    header: 'Avg Budget Burn %',
-    cell: info => <BurnCell pct={info.getValue()} />,
-    sortUndefined: 'last',
-  }),
-  columnHelper.display({
-    id: 'created_at',
-    header: 'Created At',
-    cell: () => <span style={{ color: 'var(--text-muted)' }}>—</span>,
-  }),
-]
-
+/**
+ * Teams page — two-pane view (AAASM-5044, per `design/v2/hi-fi/teams.jsx`,
+ * authoritative under ADR 0025): a selectable team list on the left and the
+ * selected team's detail cards (budget usage, approval routing, members) on the
+ * right. Assembled entirely from existing endpoints (topology graph, topology
+ * overview, cost rollup, budget tree, approvals queue); no new backend surface.
+ *
+ * Every agent must be reachable from exactly one grouping here — a team row or
+ * the unclaimed section. That invariant is the page's whole purpose, so it is
+ * cross-checked against the registry's own tally rather than assumed
+ * (AAASM-5157).
+ */
 export function TeamsPage() {
   const overviewQuery = useTopologyOverviewQuery()
   const costsQuery = useCostSummaryQuery()
-  const [sorting, setSorting] = useState<SortingState>([{ id: 'agent_count', desc: true }])
-  const [search, setSearch] = useState('')
+  const agentsQuery = useTopologyAgentsQuery()
+  const [picked, setPicked] = useState<string | undefined>(undefined)
 
   const rows = useMemo(
-    () => joinTeamRows(overviewQuery.data, costsQuery.data).slice(0, 100),
+    () => joinTeamRows(overviewQuery.data, costsQuery.data),
     [overviewQuery.data, costsQuery.data],
   )
 
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: { sorting, globalFilter: search },
-    onSortingChange: setSorting,
-    onGlobalFilterChange: setSearch,
-    globalFilterFn: (row, _columnId, filterValue: string) => {
-      const needle = filterValue.trim().toLowerCase()
-      if (!needle) return true
-      return row.original.team_id.toLowerCase().startsWith(needle)
-    },
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize: PAGE_SIZE } },
-  })
+  // Orphans come from the whole fleet, not the overview's root-only
+  // `standalone_root_agents` (AAASM-5157) — see `orphans.ts` for why. Kept as a
+  // `Certain` all the way to the chip and the pane so a failed topology request
+  // renders as "unavailable" rather than as a reassuring `0 unclaimed`.
+  //
+  // AAASM-5380: the node list is folded through `decodeTopologyNodes` rather
+  // than cast — a `200` whose body has no `nodes` or a non-array `nodes` now
+  // reports an absence naming the field, rather than a fabricated "0 unclaimed"
+  // chip or a `.filter` crash. The outcome carries the raw `nodes` body (the
+  // hook no longer `?? []`s it); its error/pending flags come from the query.
+  const orphans = mapCertain(
+    certainFromShapedQuery(
+      { isError: agentsQuery.isError, isPending: agentsQuery.isPending, data: agentsQuery.data?.nodes },
+      decodeTopologyNodes,
+    ),
+    nodes => selectOrphanAgents(nodes),
+  )
+  // AAASM-5183: whether the caller's scope can observe unclaimed agents at all.
+  // A team-scoped caller cannot (its topology response structurally excludes
+  // `team_id: None` agents), so an empty orphan set must read as "not available
+  // in your scope" rather than a confident "no unclaimed agents". Defaults to
+  // `false` (fail-closed) until the fleet loads.
+  const unclaimedObservable = agentsQuery.data?.unclaimedObservable ?? false
 
-  const isLoading = overviewQuery.isLoading || costsQuery.isLoading
+  // The census compares two independently-fetched snapshots, and TanStack keeps
+  // serving the *previous* payload throughout a background refetch. So while
+  // either query is in flight the two sides can be minutes apart — an overview
+  // that already includes a freshly-spawned child against a fleet list that does
+  // not — and their difference would say nothing about governance. Withholding
+  // the registry side until both are settled removes that class of skew; it
+  // cannot remove all of it, since two responses are never simultaneous, which
+  // is why the notice itself only ever reports the disagreement.
+  //
+  // AAASM-5380: the overview is folded through `decodeTopologyOverview`
+  // (features/teams/schema.ts) rather than cast — `useTopologyOverviewQuery` is a
+  // bare `data as TopologyOverview`, so a `200` missing `total_agent_count` used
+  // to reach `reconcileAgentCensus` intact and make `unaccountedFor` compute to
+  // `NaN` (`undefined - grouped`) rather than reporting that the registry tally
+  // could not be read. The decoder requires `total_agent_count` as a number, so
+  // a schema-invalid body now folds to `unknown` before the census sees it.
+  const refreshing = overviewQuery.isFetching || agentsQuery.isFetching
+  const census = reconcileAgentCensus(
+    refreshing
+      ? absent<TopologyOverview>('unknown', 'Both sources are being refreshed')
+      : certainFromShapedQuery(overviewQuery, decodeTopologyOverview),
+    orphans,
+  )
+
+  // Derive the effective selection rather than syncing it into state from an
+  // effect: default to the first team until the operator picks one, and fall
+  // back to the default if the picked team drops out of the (refetched) list.
+  // The orphan section is a valid pick and never drops out, so it short-circuits
+  // the team fallback.
+  const orphanPicked = picked === ORPHAN_ID
+  const pickedExists = picked != null && rows.some(r => r.team_id === picked)
+  const selectedTeam = pickedExists ? picked : rows[0]?.team_id
+  const selected = orphanPicked ? undefined : selectedTeam
+
   const isError = overviewQuery.isError
-  const totalRows = table.getFilteredRowModel().rows.length
-  const pageIndex = table.getState().pagination.pageIndex
-  const pageCount = table.getPageCount()
 
   return (
-    <main style={{ padding: '1.5rem' }}>
-      <h1>Teams</h1>
-
+    <main>
       {isError && (
         <div
           data-testid="teams-error"
-          style={{ color: 'var(--status-danger-solid)', marginBottom: '1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
+          style={{ color: 'var(--status-danger-solid)', padding: '0.75rem 1rem', display: 'flex', gap: '1rem', alignItems: 'center' }}
         >
           <span>Failed to load teams.</span>
-          <button onClick={() => void overviewQuery.refetch()}>Retry</button>
+          <button type="button" onClick={() => ignorePromise(overviewQuery.refetch())}>Retry</button>
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '0.75rem' }}>
-        <input
-          data-testid="teams-search"
-          aria-label="Search teams by ID prefix"
-          placeholder="Filter by team ID prefix…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          style={{
-            padding: '0.4rem 0.6rem',
-            border: '1px solid var(--form-input-border)',
-            borderRadius: '4px',
-            minWidth: '16rem',
-          }}
+      <div className="teams-two-pane" data-testid="teams-two-pane">
+        <TeamListPane
+          rows={rows}
+          selectedId={selected}
+          onSelect={setPicked}
+          isLoading={overviewQuery.isLoading}
+          isError={isError}
+          orphanCount={mapCertain(orphans, list => list.length)}
+          isOrphanSelected={orphanPicked}
+          onSelectOrphan={() => setPicked(ORPHAN_ID)}
         />
-        <span data-testid="teams-count" style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-          {totalRows} team{totalRows === 1 ? '' : 's'}
-        </span>
+        {orphanPicked
+          ? <TeamOrphanDetail orphans={orphans} census={census} unclaimedObservable={unclaimedObservable} />
+          : <TeamDetailPane teamId={selected} />}
       </div>
-
-      {!isLoading && !isError && rows.length === 0 && (
-        <p data-testid="teams-empty" style={{ color: 'var(--text-muted)' }}>
-          No teams registered yet.
-        </p>
-      )}
-
-      <table data-testid="teams-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          {table.getHeaderGroups().map(hg => (
-            <tr key={hg.id}>
-              {hg.headers.map(header => (
-                <th
-                  key={header.id}
-                  style={{
-                    textAlign: 'left',
-                    padding: '0.5rem',
-                    borderBottom: '2px solid var(--surface-card-border)',
-                    cursor: header.column.getCanSort() ? 'pointer' : undefined,
-                  }}
-                  onClick={header.column.getToggleSortingHandler()}
-                >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                  {header.column.getIsSorted() === 'asc'
-                    ? ' ↑'
-                    : header.column.getIsSorted() === 'desc'
-                      ? ' ↓'
-                      : ''}
-                </th>
-              ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {isLoading ? (
-            <SkeletonRows cols={columns.length} />
-          ) : (
-            table.getRowModel().rows.map(row => (
-              <tr key={row.id} data-testid="team-row" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
-                {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} style={{ padding: '0.5rem' }}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-
-      {pageCount > 1 && (
-        <div
-          data-testid="teams-pagination"
-          style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.75rem' }}
-        >
-          <button
-            data-testid="teams-prev"
-            onClick={() => table.previousPage()}
-            disabled={!table.getCanPreviousPage()}
-          >
-            ←
-          </button>
-          <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-            Page {pageIndex + 1} of {pageCount}
-          </span>
-          <button
-            data-testid="teams-next"
-            onClick={() => table.nextPage()}
-            disabled={!table.getCanNextPage()}
-          >
-            →
-          </button>
-        </div>
-      )}
     </main>
   )
 }

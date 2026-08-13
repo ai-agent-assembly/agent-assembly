@@ -11,6 +11,14 @@ use lru::LruCache;
 use crate::error::ProxyError;
 use crate::tls::ca::{CaStore, CertifiedKey};
 
+/// Fallback capacity used when a caller passes `0`.
+///
+/// A zero-capacity LRU is meaningless and `NonZeroUsize::new(0)` would panic, so
+/// a misconfiguration such as `AA_PROXY_CERT_CACHE_CAPACITY=0` must degrade to a
+/// sane default rather than abort the proxy at boot. Mirrors the config-layer
+/// default in `crate::config::parse_cert_cache_capacity`.
+const DEFAULT_CERT_CACHE_CAPACITY: usize = 1000;
+
 /// Thread-safe LRU cache mapping domain names to their signed [`CertifiedKey`].
 pub struct CertCache {
     inner: Mutex<LruCache<String, Arc<CertifiedKey>>>,
@@ -19,14 +27,16 @@ pub struct CertCache {
 impl CertCache {
     /// Create a new cache with the given `capacity` (maximum number of entries).
     ///
-    /// # Panics
-    ///
-    /// Panics if `capacity` is zero.
+    /// A `capacity` of `0` is clamped up to [`DEFAULT_CERT_CACHE_CAPACITY`]
+    /// rather than panicking, so an operator setting
+    /// `AA_PROXY_CERT_CACHE_CAPACITY=0` gets a working (default-sized) cache
+    /// instead of a crash at startup.
     pub fn new(capacity: usize) -> Self {
+        let capacity = NonZeroUsize::new(capacity).unwrap_or_else(|| {
+            NonZeroUsize::new(DEFAULT_CERT_CACHE_CAPACITY).expect("default cert cache capacity is non-zero")
+        });
         Self {
-            inner: Mutex::new(LruCache::new(
-                NonZeroUsize::new(capacity).expect("cert cache capacity must be non-zero"),
-            )),
+            inner: Mutex::new(LruCache::new(capacity)),
         }
     }
 
@@ -66,6 +76,21 @@ mod tests {
         let ck2 = cache.get_or_insert("api.openai.com", &ca).unwrap();
         // Identical Arc pointer proves cache hit — no re-signing occurred.
         assert!(Arc::ptr_eq(&ck1, &ck2), "second call must return the cached Arc");
+    }
+
+    #[tokio::test]
+    async fn zero_capacity_falls_back_to_default_without_panicking() {
+        // AAASM-4829: an operator setting AA_PROXY_CERT_CACHE_CAPACITY=0 must not
+        // crash the proxy at boot. `new(0)` clamps to the default capacity and
+        // yields a working, caching store.
+        let dir = TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let cache = CertCache::new(0);
+        let ck1 = cache.get_or_insert("api.openai.com", &ca).unwrap();
+        let ck2 = cache.get_or_insert("api.openai.com", &ca).unwrap();
+        // A default-sized (non-zero) cache retains the entry, so the second call
+        // is a hit returning the same Arc.
+        assert!(Arc::ptr_eq(&ck1, &ck2), "zero-capacity must clamp to a caching default");
     }
 
     #[tokio::test]

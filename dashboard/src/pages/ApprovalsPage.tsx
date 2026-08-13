@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ignorePromise } from '../lib/ignorePromise'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApprovalRoutingBadge } from '../components/ApprovalRoutingBadge'
 import { EmptyState } from '../components/EmptyState'
@@ -26,6 +27,12 @@ import './ApprovalsPage.css'
 
 const APPROVAL_ROW_COL_COUNT = 8
 
+const SKELETON_ROW_KEYS = Array.from({ length: 3 }, (_, i) => `approval-skeleton-row-${i}`)
+const SKELETON_CELL_KEYS = Array.from(
+  { length: APPROVAL_ROW_COL_COUNT },
+  (_, j) => `approval-skeleton-cell-${j}`,
+)
+
 // ── Reject dialog ─────────────────────────────────────────────────────────────
 
 interface RejectDialogProps {
@@ -34,7 +41,7 @@ interface RejectDialogProps {
   onCancel: () => void
 }
 
-function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
+function RejectDialog({ count, onConfirm, onCancel }: Readonly<RejectDialogProps>) {
   const [reason, setReason] = useState('')
   return (
     <div
@@ -52,8 +59,7 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
           Reject {count > 1 ? `${count} requests` : 'request'}
         </h2>
         <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.875rem' }}>
-          Reason (required)
-          <textarea
+          Reason (required)<textarea
             data-testid="reject-reason-input"
             rows={3}
             value={reason}
@@ -63,19 +69,21 @@ function RejectDialog({ count, onConfirm, onCancel }: RejectDialogProps) {
         </label>
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
           <button
+            type="button"
             onClick={onCancel}
             style={{ padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: '1px solid var(--line)', cursor: 'pointer' }}
           >
             Cancel
           </button>
           <button
+            type="button"
             data-testid="reject-confirm-btn"
             disabled={!reason.trim()}
             onClick={() => onConfirm(reason.trim())}
             style={{
               padding: '0.4rem 0.75rem', borderRadius: '0.25rem', border: 'none',
-              background: !reason.trim() ? 'var(--ink-4)' : 'var(--danger)',
-              color: 'var(--paper-2)', cursor: !reason.trim() ? 'not-allowed' : 'pointer',
+              background: reason.trim() ? 'var(--danger)' : 'var(--ink-4)',
+              color: 'var(--paper-2)', cursor: reason.trim() ? 'pointer' : 'not-allowed',
               fontWeight: 600,
             }}
           >
@@ -94,12 +102,12 @@ function TabBar({
   pendingCount,
   decidedCount,
   onChange,
-}: {
+}: Readonly<{
   active: 'pending' | 'decided'
   pendingCount: number
   decidedCount: number
   onChange: (t: 'pending' | 'decided') => void
-}) {
+}>) {
   function tabStyle(t: 'pending' | 'decided') {
     return {
       padding: '0.5rem 1rem',
@@ -115,10 +123,10 @@ function TabBar({
 
   return (
     <div style={{ display: 'flex', borderBottom: '1px solid var(--line)', marginBottom: '1rem' }} data-testid="tab-bar">
-      <button style={tabStyle('pending')} onClick={() => onChange('pending')} data-testid="tab-pending">
+      <button type="button" style={tabStyle('pending')} onClick={() => onChange('pending')} data-testid="tab-pending">
         Pending ({pendingCount})
       </button>
-      <button style={tabStyle('decided')} onClick={() => onChange('decided')} data-testid="tab-decided">
+      <button type="button" style={tabStyle('decided')} onClick={() => onChange('decided')} data-testid="tab-decided">
         Decided ({decidedCount})
       </button>
     </div>
@@ -180,7 +188,7 @@ export function ApprovalsPage() {
       queryClient.setQueryData<Approval[]>(['approvals'], (prev) => [...failedRows, ...(prev ?? [])])
       toast(`Approved ${succeededIds.length}, failed ${failedIds.length}.`, 'error')
     } else {
-      toast(`Approved ${succeededIds.length} request${succeededIds.length !== 1 ? 's' : ''}.`, 'success')
+      toast(`Approved ${succeededIds.length} request${succeededIds.length === 1 ? '' : 's'}.`, 'success')
     }
 
     const succeededRows = targets.filter((a) => succeededIds.includes(a.id))
@@ -204,7 +212,7 @@ export function ApprovalsPage() {
       queryClient.setQueryData<Approval[]>(['approvals'], (prev) => [...failedRows, ...(prev ?? [])])
       toast(`Rejected ${succeededIds.length}, failed ${failedIds.length}.`, 'error')
     } else {
-      toast(`Rejected ${succeededIds.length} request${succeededIds.length !== 1 ? 's' : ''}.`, 'success')
+      toast(`Rejected ${succeededIds.length} request${succeededIds.length === 1 ? '' : 's'}.`, 'success')
     }
 
     const succeededRows = targets.filter((a) => succeededIds.includes(a.id))
@@ -253,6 +261,7 @@ export function ApprovalsPage() {
             >
               <span style={{ color: 'var(--info)', fontWeight: 500 }}>{selected.size} selected</span>
               <button
+                type="button"
                 data-testid="bulk-approve-btn"
                 onClick={() => void handleApprove(Array.from(selected))}
                 style={{
@@ -263,6 +272,7 @@ export function ApprovalsPage() {
                 Approve selected
               </button>
               <button
+                type="button"
                 data-testid="bulk-reject-btn"
                 onClick={() => setRejectFor(Array.from(selected))}
                 style={{
@@ -276,7 +286,7 @@ export function ApprovalsPage() {
           )}
 
           {isError && (
-            <ErrorState kind="generic" onRetry={() => void refetch()} />
+            <ErrorState kind="generic" onRetry={() => ignorePromise(refetch())} />
           )}
 
           {!isLoading && !isError && pending.length === 0 && (
@@ -313,10 +323,10 @@ export function ApprovalsPage() {
               </thead>
               <tbody>
                 {isLoading
-                  ? Array.from({ length: 3 }).map((_, i) => (
-                    <tr key={i} data-testid="approval-row-skeleton">
-                      {Array.from({ length: 8 }).map((_, j) => (
-                        <td key={j} style={{ padding: '8px 12px' }}>
+                  ? SKELETON_ROW_KEYS.map((rowKey) => (
+                    <tr key={rowKey} data-testid="approval-row-skeleton">
+                      {SKELETON_CELL_KEYS.map((cellKey) => (
+                        <td key={cellKey} style={{ padding: '8px 12px' }}>
                           <span style={{ display: 'block', height: '0.875rem', background: 'var(--line)', borderRadius: '4px' }} />
                         </td>
                       ))}
@@ -360,6 +370,7 @@ export function ApprovalsPage() {
                       </td>
                       <td style={{ display: 'flex', gap: '0.375rem' }} onClick={(e) => e.stopPropagation()}>
                         <button
+                          type="button"
                           data-testid="approve-btn"
                           onClick={() => void handleApprove([row.id])}
                           style={{
@@ -370,6 +381,7 @@ export function ApprovalsPage() {
                           Approve
                         </button>
                         <button
+                          type="button"
                           data-testid="reject-btn"
                           onClick={() => setRejectFor([row.id])}
                           style={{

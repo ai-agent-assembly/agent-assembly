@@ -1,26 +1,32 @@
 //! HTTP client functions for the `aasm approvals` subcommand.
+//!
+//! These delegate to the shared [`crate::client`] helpers so approvals — a
+//! high-risk governance surface (approve/reject) — gets the same auth behavior
+//! as every other remote command: stored-session JWT with silent refresh, the
+//! `--api-key` fallback, and `401`/`403` translated into actionable errors
+//! (AAASM-5508 / AAASM-5513). The request paths are built relative to
+//! `ctx.api_url` because the shared helpers prepend it.
 
 use url::Url;
 
+use crate::client;
 use crate::config::ResolvedContext;
 use crate::error::CliError;
 
 use super::models::{ApprovalResponse, PaginatedResponse};
 
-/// Build the base URL for the approvals API endpoint.
-///
-/// Strips trailing slashes from the base URL and appends
-/// `/api/v1/approvals`.
+/// Build the approvals API path (relative to `ctx.api_url`, which the shared
+/// [`crate::client`] helpers prepend).
 pub fn build_approvals_url(base: &str) -> String {
     let base = base.trim_end_matches('/');
     format!("{base}/api/v1/approvals")
 }
 
-/// Build the list-approvals URL with optional `?status=` and `?agent=`
-/// query parameters. Pure function so the URL composition is testable
+/// Build the approvals request path with optional `?status=` and `?agent=`
+/// query parameters. Pure function so the path composition is testable
 /// independently from the network call.
-pub fn build_list_approvals_url(base: &str, status: Option<&str>, agent: Option<&str>) -> String {
-    let mut url = build_approvals_url(base);
+pub fn build_list_approvals_path(status: Option<&str>, agent: Option<&str>) -> String {
+    let mut path = "/api/v1/approvals".to_string();
     let mut params: Vec<String> = Vec::new();
     if let Some(s) = status {
         params.push(format!("status={s}"));
@@ -29,10 +35,10 @@ pub fn build_list_approvals_url(base: &str, status: Option<&str>, agent: Option<
         params.push(format!("agent={a}"));
     }
     if !params.is_empty() {
-        url.push('?');
-        url.push_str(&params.join("&"));
+        path.push('?');
+        path.push_str(&params.join("&"));
     }
-    url
+    path
 }
 
 /// Fetch approval requests from the API, optionally filtered (AAASM-1477).
@@ -45,28 +51,13 @@ pub async fn list_approvals(
     status: Option<&str>,
     agent: Option<&str>,
 ) -> Result<PaginatedResponse<ApprovalResponse>, CliError> {
-    let url = build_list_approvals_url(&ctx.api_url, status, agent);
-    let client = reqwest::Client::new();
-    let mut req = client.get(&url);
-    if let Some(ref key) = ctx.api_key {
-        req = req.bearer_auth(key);
-    }
-    let resp = req.send().await?.error_for_status()?;
-    let body = resp.json::<PaginatedResponse<ApprovalResponse>>().await?;
-    Ok(body)
+    let path = build_list_approvals_path(status, agent);
+    client::get_json(ctx, &path).await
 }
 
 /// Fetch a single pending approval request by ID.
 pub async fn get_approval(ctx: &ResolvedContext, id: &str) -> Result<ApprovalResponse, CliError> {
-    let url = format!("{}/{id}", build_approvals_url(&ctx.api_url));
-    let client = reqwest::Client::new();
-    let mut req = client.get(&url);
-    if let Some(ref key) = ctx.api_key {
-        req = req.bearer_auth(key);
-    }
-    let resp = req.send().await?.error_for_status()?;
-    let body = resp.json::<ApprovalResponse>().await?;
-    Ok(body)
+    client::get_json(ctx, &format!("/api/v1/approvals/{id}")).await
 }
 
 /// Approve a pending approval request by ID.
@@ -75,36 +66,14 @@ pub async fn approve_action(
     id: &str,
     reason: Option<&str>,
 ) -> Result<ApprovalResponse, CliError> {
-    let url = format!("{}/{id}/approve", build_approvals_url(&ctx.api_url));
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "by": "cli",
-        "reason": reason,
-    });
-    let mut req = client.post(&url).json(&body);
-    if let Some(ref key) = ctx.api_key {
-        req = req.bearer_auth(key);
-    }
-    let resp = req.send().await?.error_for_status()?;
-    let result = resp.json::<ApprovalResponse>().await?;
-    Ok(result)
+    let body = serde_json::json!({ "by": "cli", "reason": reason });
+    client::post_json(ctx, &format!("/api/v1/approvals/{id}/approve"), &body).await
 }
 
 /// Reject a pending approval request by ID.
 pub async fn reject_action(ctx: &ResolvedContext, id: &str, reason: &str) -> Result<ApprovalResponse, CliError> {
-    let url = format!("{}/{id}/reject", build_approvals_url(&ctx.api_url));
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "by": "cli",
-        "reason": reason,
-    });
-    let mut req = client.post(&url).json(&body);
-    if let Some(ref key) = ctx.api_key {
-        req = req.bearer_auth(key);
-    }
-    let resp = req.send().await?.error_for_status()?;
-    let result = resp.json::<ApprovalResponse>().await?;
-    Ok(result)
+    let body = serde_json::json!({ "by": "cli", "reason": reason });
+    client::post_json(ctx, &format!("/api/v1/approvals/{id}/reject"), &body).await
 }
 
 /// Convert an HTTP(S) base URL to a WebSocket URL for the events endpoint.
@@ -196,30 +165,27 @@ mod tests {
     }
 
     #[test]
-    fn build_list_approvals_url_omits_query_when_no_filters() {
-        let url = build_list_approvals_url("http://localhost:8080", None, None);
-        assert_eq!(url, "http://localhost:8080/api/v1/approvals");
+    fn build_list_approvals_path_omits_query_when_no_filters() {
+        let path = build_list_approvals_path(None, None);
+        assert_eq!(path, "/api/v1/approvals");
     }
 
     #[test]
-    fn build_list_approvals_url_adds_status_only() {
-        let url = build_list_approvals_url("http://localhost:8080", Some("approved"), None);
-        assert_eq!(url, "http://localhost:8080/api/v1/approvals?status=approved");
+    fn build_list_approvals_path_adds_status_only() {
+        let path = build_list_approvals_path(Some("approved"), None);
+        assert_eq!(path, "/api/v1/approvals?status=approved");
     }
 
     #[test]
-    fn build_list_approvals_url_adds_agent_only() {
-        let url = build_list_approvals_url("http://localhost:8080", None, Some("alice-agent"));
-        assert_eq!(url, "http://localhost:8080/api/v1/approvals?agent=alice-agent");
+    fn build_list_approvals_path_adds_agent_only() {
+        let path = build_list_approvals_path(None, Some("alice-agent"));
+        assert_eq!(path, "/api/v1/approvals?agent=alice-agent");
     }
 
     #[test]
-    fn build_list_approvals_url_combines_status_and_agent() {
-        let url = build_list_approvals_url("http://localhost:8080", Some("rejected"), Some("bob-agent"));
-        assert_eq!(
-            url,
-            "http://localhost:8080/api/v1/approvals?status=rejected&agent=bob-agent"
-        );
+    fn build_list_approvals_path_combines_status_and_agent() {
+        let path = build_list_approvals_path(Some("rejected"), Some("bob-agent"));
+        assert_eq!(path, "/api/v1/approvals?status=rejected&agent=bob-agent");
     }
 
     #[tokio::test]

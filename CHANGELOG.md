@@ -5,6 +5,561 @@ All notable changes to **AI Agent Assembly** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+> Merged since `0.0.1-rc.6` and **not yet released**. Everything below is the
+> Developer Integration programme (Epic
+> [AAASM-5272](https://lightning-dust-mite.atlassian.net/browse/AAASM-5272)):
+> governing an AI *dev tool* — Claude Code, Codex, Copilot, Windsurf — as a
+> first-class lifecycle rather than a one-shot launch wrapper. The whole surface
+> is **off by default** and **absent from the published crate**; see *Changed*.
+
+### Added
+
+- **`changed`/`unchanged`/`refused`/`failed` outcome on `aasm integrations`**
+  (AAASM-5499) — the ratified public contract for telling a no-op from a
+  mutation. The exit code answers *did the command succeed?*; a new, separately
+  reported **outcome** answers *did the world change?*. **No exit code was
+  minted**: a legitimate no-op is a successful idempotent outcome and still
+  exits `0`, which is why the distinction had to live somewhere else — `aasm
+  integrations repair X && echo repaired` printing "repaired" for a tool that
+  was never installed (AAASM-5455) is what overloading one code with both
+  questions cost. `repair` and `remove` now report `changed` or `unchanged` on
+  the result's first line and as `outcome` in `--output json` / `--output
+  yaml`; refusals and failures name `refused` or `failed` on stderr beside
+  their existing exit code, and stdout stays empty there so a QA harness has no
+  result to record from a run that refused (AAASM-5628). `--dry-run` reports
+  `null` rather than guessing, except against a tool with no integration at
+  all, whose end state is settled before any plan is previewed. The two ad-hoc
+  markers this replaces — `repair`'s `nothing_to_repair` (AAASM-5455) and
+  `remove`'s `plan_id: null` (AAASM-5629) — are unchanged in JSON and now set
+  by the same constructor call as the outcome, so they cannot contradict it.
+  **`install` does not report the outcome yet**: the runtime computes whether an
+  apply mutated anything but the DI-API's `ApplyView` does not carry it, and
+  inferring it from a receipt timestamp would produce a wrong `unchanged`.
+  Documented at `docs/src/cli/integrations.md` and in `aasm integrations
+  --help`.
+- **`aasm integrations` lifecycle** (AAASM-5280) — seven subcommands (`list`,
+  `plan`, `install`, `status`, `verify`, `repair`, `remove`) covering the whole
+  journey for an AI dev tool, with an **eleven-value exit-code vocabulary** so a
+  wrapper branches on the code rather than on stderr prose (`2` is left to
+  `clap`). The CLI is a *client only*: it holds no per-tool knowledge, performs
+  no mutation of its own, and never derives a protection state locally.
+  Mutating verbs preview the material changes first and refuse to proceed
+  without a terminal or `--yes`. Documented at `docs/src/cli/integrations.md`.
+- **Developer Integration API (DI-API)** (AAASM-5279) — a second Unix-domain
+  socket (`~/.aa/run/devint.sock`, `0700` dir / `0600` socket) and wire schema
+  `proto/devint.proto` (`assembly.devint.v1`) carrying the lifecycle verbs. It
+  is **opt-in and off by default**: `AA_DEVINT_ENABLED` is read at runtime
+  startup and nothing binds the socket without it. It carries no policy
+  decisions and no agent-action traffic — those stay on the SDK fast path, on a
+  different socket with a different verb space.
+- **Capability and protection-state model** (AAASM-5277, ADR 0030) —
+  `DevToolIntegration` replaces the all-or-nothing `DevToolAdapter` with a
+  declared `IntegrationCapability` set plus optional mechanism surfaces, so a
+  tool without MCP or without a launch command implements nothing instead of a
+  misleading no-op. Undeclared capabilities are **absent**, never supported, and
+  `capability_conformance` makes "declared but not implemented" a test failure.
+  Protection state is **derived from evidence on every read**, never set:
+  `NotInstalled` → `DetectedNotIntegrated` → `PartiallyIntegrated` →
+  `Integrated` → `GatewayProtected` → `HostEnforced`, with `Drifted`,
+  `Degraded` and `Incompatible` overriding. Missing evidence lowers the reported
+  state and never raises it. `LegacyAdapterShim` bridges unmigrated adapters and
+  caps them at `Integrated`.
+- **Receipts, drift detection and rollback** (AAASM-5278) — every applied plan
+  writes a receipt under `${AASM_STATE_DIR:-~/.aasm}/integrations/` (`0700`
+  directory, `0600` files, modes re-asserted on every load). Removal is derived
+  from the receipt rather than re-derived from current host state, and anything
+  that cannot be undone is declared as a residual action rather than silently
+  left behind. **Restore is semantics-exact, not byte-exact**: the settings
+  document is reserialised, so non-canonical formatting in a user's file is not
+  reproduced verbatim.
+- **Probe adjudication** (AAASM-5300) — `AdjudicatingProbe` marks its request
+  with a random 32-hex correlation id in `x-agent-assembly-probe`; the proxy
+  reads that id back on the request it resolved to forward, re-inspects the
+  bytes, and answers on the same connection with what it decided. A client on
+  the near side of the proxy cannot see the forwarded body, so `verify` reports
+  only what the proxy adjudicated and never guesses. `verify` exits `0` only
+  when the protected path was **exercised** and the outcome was protective;
+  exit `6` means *not measured*, never *measured and failed*.
+- **Claude Code integration** (AAASM-5281) — the first adapter fully migrated to
+  the lifecycle. An install applies managed settings (four AASM-owned keys, every
+  other key untouched), an AASM-owned proxy CA PEM, **`NODE_EXTRA_CA_CERTS`**
+  for every governed launch — without which the interception handshake fails and
+  nothing is inspected — proxy routing, and a side-channel scope covering
+  Claude Code's telemetry and registry calls, not just `/v1/messages`. Detected
+  bypasses (`bypassPermissions`, `ANTHROPIC_BASE_URL` /
+  `CLAUDE_CODE_API_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX`,
+  `NODE_TLS_REJECT_UNAUTHORIZED`) lower the reported level; undetectable ones are
+  stated in every plan rather than left to be inferred from silence.
+- **Thin reference client** (AAASM-5282) — `examples/aa-devint-reference-client`,
+  a TypeScript DI-API client with socket discovery, capability-token handling and
+  the full verb set, demonstrating that the surface is implementable by a plugin
+  author with no access to core internals. It deliberately does **not** enrol:
+  issuing a token stays an explicit, user-visible step owned by the operator CLI,
+  because a client that could mint its own credential would make enrolment a
+  formality (`src/credential.ts`).
+- **Claude Code lifecycle conformance suite** (AAASM-5283) — an end-to-end suite
+  in `aa-integration-tests` with its own harness, probe and proxy fixtures,
+  exercising the lifecycle against the real adapter.
+- **Developer Integration documentation** (AAASM-5273 / 5275 / 5284) — ADR 0030
+  (boundaries and local trust model), the product capability brief, onboarding
+  walkthrough, protection-levels reference, the limitations-and-known-bypasses
+  page, and the DI-API and CLI references.
+- **Runtime provenance on the DI-API handshake — DI-API v4** (AAASM-5628,
+  ADR 0030 §5.4a) — `HelloAck` now carries a `RuntimeProvenance`
+  (`core_version`, `build_sha`, `build_id_source`, `pid`, `executable_path`,
+  `executable_present`, `source_path`, `started_at_unix_secs`), so a client
+  knows *which build* answered before it records anything. A reachable socket
+  was never evidence that the right thing answered: a runtime from another
+  checkout served an entire QA campaign, and a runtime whose worktree had been
+  deleted reported a healthy Claude Code as `not_installed`.
+
+  The client comparison is **three-state** — `Match`, `Mismatch`,
+  `Unverifiable` — and two `unknown` identities are `Unverifiable`, never a
+  match: absence of provenance on both peers proves only that both are unknown.
+  An identity counts only when `build_id_source` names a real mechanism
+  (`injected`, `checkout`, `packaged`). `pid`, executable name, executable path,
+  DI-API version and package version are **not** proof of identical build
+  content and cannot upgrade a verdict.
+
+  Two new exit codes: **`10` `runtime_unverified`** when the runtime was shown
+  *not* to be this build (a different commit, a deleted executable, or more than
+  one listening) — refused by every command; and **`11`
+  `runtime_unverifiable`** when its identity could be neither confirmed nor
+  refuted — refused by `install`, `verify`, `repair` and `remove`, while `list`,
+  `plan` and `status` answer and report the standing on stderr and in
+  `--output json`. `Unverifiable` is never rendered as verified, on any surface
+  or in JSON. `--allow-unverified-runtime` downgrades the refusal to a warning
+  for a deliberately mixed installation without changing what is reported.
+
+  v4 adds **no verb**, so a v1–v3 peer is `SUPPORTED` rather than `DEGRADED` and
+  keeps every verb it had; a peer too old to state provenance is told which
+  version could not answer, and nothing is invented in the field's place.
+
+### Changed
+
+- **`aasm integrations` is stripped from the published crate** (AAASM-5309) —
+  it joins `aasm run` and `aasm tools` in the `devtool` region removed by
+  `.ci/strip-for-publish.sh`. The strip is not cosmetic: the published
+  `aa-runtime` never binds the DI-API socket, so the command would have nothing
+  to connect to. The strip runs in the `publish-crates` job only, so all three
+  exist in a source build, in the GitHub Release tarballs and in a Homebrew
+  install, and not in `cargo install aasm`. A published-surface coherence gate
+  now runs on PRs.
+- **Dev-tool adapters reconciled onto one contract** (AAASM-5274) — one adapter
+  per tool, with mechanisms a tool cannot use declared `Unsupported` with a
+  reason at plan time instead of failing at run time.
+- **Adapters depend on `aa-devtool-contract`, never on `aa-core`** — the
+  capability-restricted facade now re-exports the lifecycle contract as well as
+  the legacy adapter surface. Every `aa-devtool-*` crate and the facade itself
+  are `publish = false`, so out-of-tree adapters are supported **as a source
+  crate consumed by a build of AASM** (ADR 0030 §6.3), not as a crates.io
+  dependency. `docs/src/devtools/plugins.md` was rewritten accordingly and now
+  renders as part of the book.
+
+### Security
+
+- **Administrator-managed settings write** (AAASM-5298) — the **only**
+  privileged, root-owned write the product performs. macOS only, **off by
+  default**, and reachable solely through the explicit
+  `--install-managed-settings` opt-in; `--scope managed` on its own is refused
+  because it says nothing about administrator authorization. It elevates for the
+  single file placement and nothing else — `aasm` never runs as root, and no
+  other plan step asks for authorization. The plan discloses the exact path, the
+  exact content and its SHA-256, the diff, any conflict, and the backup and
+  rollback behaviour before consent is requested. It refuses to replace a
+  managed-settings file Agent Assembly did not write, fails immediately without a
+  terminal rather than waiting for credentials, and rolls the write back if the
+  read-back does not match rather than trusting the authorization mechanism's
+  word. This is the only route to `Host Enforced` — which means *"the managed
+  policy is installed at the OS-managed path, owned as expected and not writable
+  by you"*, and **not** *"this bypass has been demonstrated to fail"*: the
+  enforcement half of AAASM-5276 condition C6 remains unmeasured on every host,
+  and is tracked by AAASM-5308.
+- **Adjudication is the only thing that can claim protection** —
+  `GatewayProtected` requires adjudicated **exercised** evidence. Read-back of a
+  configuration file justifies at most `Integrated`; `ModelPathInterception` is
+  the sole mechanism whose evidence can justify `GatewayProtected`, because the
+  AAASM-5276 spike measured base-URL redirection (`ModelGatewayBaseUrl`)
+  delivering a raw synthetic secret to the provider with no AASM component
+  anywhere in the path. `observe_only` is never rendered as protection.
+- **Redaction and disclosure boundaries** — no DI-API response type has a field
+  able to hold a rendered settings body, an environment-variable value, a policy
+  document or a credential, so neither the human nor the `--output json`
+  rendering can leak one; a policy is named by reference (id, display name,
+  digest), never carried. The verification probe uses a **synthetic** secret
+  chosen by the adapter and run by the service — no real credential is read, sent
+  or printed.
+- **DI-API authentication is two-layer and fails closed** — a `0700` directory,
+  a `0600` socket and a peer-credential UID check, plus a per-client capability
+  token written `0600`. A token file readable by more than its owner is
+  **refused rather than used**, so a filesystem mistake cannot become a silent
+  authentication downgrade. There is no anonymous tier and no loopback-TCP
+  option.
+- **Known bypasses are published as measured versus believed** — three
+  demonstrated by the AAASM-5276 harness and eleven inferred but not measured,
+  kept as two separate lists so a reader can tell a measurement from a documented
+  belief. Neither list is asserted to be exhaustive: "no finding" is not "no
+  bypass".
+
+## [0.0.1-rc.6] — 2026-07-16 (pre-release)
+
+> **Not for production use.** Sixth **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). A **test-quality + tooling-hardening** cut:
+> dashboard test/quality fixes clearing the outstanding SonarCloud findings,
+> a `DOCS_RS` guard so the eBPF crate builds on docs.rs, a handful of
+> correctness/authz fixes in the API and CLI surface, and release-process /
+> CI-docs improvements. No API, ABI, or wire-protocol stability commitment at
+> `0.x.y`; `protocol/v1` unchanged.
+
+### Added
+
+- **`/health` alias endpoint** (`aa-api`) — a `/health` route returning the same
+  health JSON as the existing health endpoint, for probes that expect that path.
+
+### Fixed
+
+- **`aasm run` accepts the tool ids `aasm integrations list` prints**
+  (AAASM-5503) — the two commands named the same four tools with disjoint
+  vocabularies, so copying an id off the discovery surface failed on the
+  execution surface for three of the four (`aasm run claude-code` →
+  `error: unknown tool: claude-code`). Both spellings now resolve to the same
+  tool; the canonical short ids (`claude`, `codex`, `copilot`, `windsurf`) are
+  unchanged, so no working invocation changes. The refusal for a genuine typo
+  now lists both spellings.
+- **Tenant ownership enforced in `register_op`** (`aa-api`) — the op-registration
+  path now rejects cross-tenant registration instead of trusting the request's
+  tenant, closing a cross-tenant authorization gap (regression test added).
+- **`OpsRegistry::register` preserves an existing op** (`aa-gateway`) — registering
+  a name that already exists no longer clobbers the prior op.
+- **`aa-cli` sends the `Authorization` header on audit/logs requests** — the audit
+  and logs subcommands now attach the auth header so they work against an
+  authenticated gateway.
+- **`aa-ebpf` skips its probe subprocess build under `DOCS_RS`** (AAASM-4715) —
+  the read-only docs.rs sandbox cannot run the probe build step, so it is skipped
+  when `DOCS_RS` is set, unbreaking the docs.rs build.
+- **Dashboard test-quality / SonarCloud fixes** (AAASM-4694) — parameterized the
+  `ApprovalAnalyticsPanel`, `FilterBar`, and `FleetHealthPanel` tests (S5976),
+  keyed heatmap cells by date rather than index (S6479), named a `useState` setter
+  symmetrically (S6754), switched base64url decoding to `replaceAll` (S7781), and
+  used `Set.has` for JWT scope validation (S7776).
+- **Docs link fixes** — repointed the README architecture/CLI/dashboard links and
+  fixed dead introduction/architecture `README.html` links after the docs reorg;
+  corrected the `McpDecision::Redact` doc to match the proxy-scanner redaction.
+
+### Changed
+
+- **Release-process & CI-docs improvements** (AAASM-4670 / 4671 / 4674 / 4679 /
+  4724) — unified branch naming onto the 3-part `<release-or-phase>/<ticket>/<short_summary>`
+  scheme, added a DCO sign-off checkbox to the PR template and a no-ticket
+  community contribution path, added an internal README doc-link check in CI,
+  reminded `release-tag-cut` to advance the Jira Fix Version ladder, and extended
+  `release-docs-sync` to cover the README maturity/version string.
+- Dependency bumps: `clap`, `which`, `regex`, `redis`, `toml`,
+  `SonarSource/sonarqube-scan-action`, and `actions/setup-node`.
+- Workspace version bumped `0.0.1-rc.5` → `0.0.1-rc.6` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
+## [0.0.1-rc.5] — 2026-07-14 (pre-release)
+
+> **Not for production use.** Fifth **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). A **dashboard-embedding + onboarding-docs** cut:
+> the dashboard SPA is now compiled into the `aa-api` binary so local serving no
+> longer 404s, `aasm` fails loudly on a missing API key before it claims to be
+> serving, and the mdBook docs gain a tabs widget with tabbed, anchor-stable
+> installation instructions. No API, ABI, or wire-protocol stability commitment
+> at `0.x.y`; `protocol/v1` unchanged.
+
+### Added
+
+- **Embedded dashboard SPA** (AAASM-4517) — the built dashboard is embedded into
+  the `aa-api` binary at compile time via a `build.rs` + `include_dir!`, so a
+  locally-served gateway ships its UI in-process instead of returning a 404 for
+  the dashboard route (the rc.4 dashboard-404 regression).
+- **mdBook tabs widget** (AAASM-4566) — a reusable tabbed-content widget for the
+  docs site, used to present per-platform / per-tool instructions side by side.
+- **Tabbed installation instructions** (AAASM-4567) — `installation.md` reworked
+  onto the new tabs widget, with stable per-tab anchors (AAASM-4573 / 4574) so
+  deep links to a specific install method survive re-rendering.
+- **Homebrew tap via `versions.rb` generator** (AAASM-4520) — the tap formula is
+  now produced by a `versions.rb` generator rather than hand-maintained.
+
+### Fixed
+
+- **API-key validated before the serving banner** (AAASM-4572) — `aasm` now
+  validates `AASM_API_KEY` up front and fails loudly on a missing/invalid key
+  instead of printing a "serving" banner it cannot honor.
+
+### Changed
+
+- Dependency bumps: `rustls`, `tokio-tungstenite`, `uuid`, `open`,
+  `EmbarkStudios/cargo-deny-action`, and `softprops/action-gh-release`.
+- Workspace version bumped `0.0.1-rc.4` → `0.0.1-rc.5` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
+## [0.0.1-rc.4] — 2026-07-12 (pre-release)
+
+> **Not for production use.** Fourth **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). Primarily a **release-artifact completeness** cut
+> — the `aa-api-server` binary and the `aa-gateway` container image are now part
+> of the published release set — folded together with the accumulated
+> security-hardening sweeps and the local-mode gRPC registration surface merged
+> since `rc.3`. No API, ABI, or wire-protocol stability commitment at `0.x.y`;
+> `protocol/v1` unchanged.
+
+### Added
+
+- **Local-mode gRPC agent registration** (AAASM-4447) — `aa-api` now serves the
+  gRPC `AgentLifecycleService` on loopback in local mode, backed by a durable
+  SQLite registry, so an SDK-registered agent is visible over REST without a
+  full gateway. Covered by new conformance registration-surface contract tests.
+- **Analytics API + dashboard** (AAASM-4131 / 4138 / 4142 / 4155 / 4158) — seven
+  `/api/v1/analytics/*` endpoints (KPIs, cost-breakdown, action-volume,
+  tool-usage, approvals, policy-effectiveness, fleet-health) with the dashboard
+  Analytics/Costs pages wired to live data, per-panel error isolation, and
+  server-side windowed audit reads.
+- **`aa-gateway` container image** (AAASM-4480) — distroless `cargo-chef`
+  Dockerfile, built on PR validation and published to GHCR on tag.
+- **`file_delete` capability governance** (Epic AAASM-4092) — `FileMode::Delete`
+  → `Capability::FileDelete`, an allow-write-deny-delete policy example, and
+  RBAC-gated mutating dashboard controls.
+
+### Fixed
+
+- **Release-artifact completeness** (the rc.4 driver) — `aa-api-server` is now
+  built (`-p aa-api`), verified, and packaged into the `api` component tarball;
+  the `components.json` glob includes `aasm-api` (AAASM-4449). A
+  release-artifact completeness gate script now runs on PRs (AAASM-4456).
+- **Hardcoded error messages** (AAASM-4457) — `aasm start` / `observe` and the
+  copilot launch path now name the real `aasm` binary and the actual config
+  paths in their error output instead of stale placeholders.
+- Dashboard chart/analytics guards against non-finite values, invalid dates, and
+  out-of-range time domains; accessibility fixes on scrim/modal elements.
+
+### Security
+
+- **`tools: "*"` wildcard** now honored across all three tool stages (allow /
+  rate-limit / approval) on both the single-file and cascade paths (Epics
+  AAASM-4149 / 4163) — previously fail-open.
+- **Rate-limit bypass fixes** — anonymous shared-bucket path (AAASM-4190),
+  multiple-policy application, and per-tenant bucket keying (AAASM-4171 / 4173).
+- **Policy loader fails closed** on unknown top-level and nested section keys
+  (AAASM-4189 / 4330).
+- **Budget fail-closed** — conservative fallback price for unknown LLM models,
+  org/team tier caps and ancestor monthly cap enforced in preflight, negative
+  raw spend clamped at the accrual boundary, `prompt_tokens<=0` floored
+  (Epic AAASM-4092).
+- **Cascade allow-list** fails closed when the merged allow-list is empty; the
+  capability stage is now enforced on the primary and single-file paths
+  (AAASM-4120 / 4123).
+- **Panic-DoS hardening** — agent-id parsing uses `hex::decode` (AAASM-4149 /
+  4150); gRPC `max_decoding_message_size` set; MitM root CA constrained with
+  X.509 NameConstraints.
+- **Credential scanner** detects `gho_` / `ghu_` / `ghr_` / `github_pat_` /
+  `xapp-` / `xoxr-` / `ASIA` prefixes with redaction; overlapping-finding span
+  dedupe.
+- **Proxy** decompresses-then-scans (or withholds) request and MCP response
+  bodies by `Content-Encoding`; credential-DLP runs on all MitM'd request bodies.
+- **Self-registration downgrade** of `enforcement_mode` ignored (AAASM-4121);
+  agent-scoped controls bound to the token-derived id.
+- **Dashboard auth** moved from `localStorage` to `sessionStorage` via a
+  `tokenStorage` helper; identity claim rendered (not the raw token); strict
+  Content-Security-Policy; legacy token purged on logout.
+
+### Changed
+
+- Docs repointed at the canonical `docs.agent-assembly.com` host; generated
+  docs-metadata snippets with a CI drift check; repo-URL references updated
+  after the org prefix rename.
+- Dependency bumps: `ed25519-dalek` 3 (major), `reqwest` 0.13 (major),
+  `crossbeam-epoch` 0.9.20 (RUSTSEC-2024-0587), plus in-range workspace and
+  dashboard updates.
+- Workspace version bumped `0.0.1-rc.3` → `0.0.1-rc.4` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
+## [0.0.1-rc.3] — 2026-07-03 (pre-release)
+
+> **Not for production use.** Third **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). A large security-hardening cut; no API, ABI, or
+> wire-protocol stability commitment at `0.x.y`. `protocol/v1` unchanged.
+
+### Security
+
+- **Epic AAASM-3913** (1 High / 7 Med / 4 Low) — invalidation-subscribe caller
+  binding, dashboard REST-poll terminal sanitization, eBPF descendant-confinement
+  (fork/exec propagation), storage tenant-isolation, SDK fail-open hardening.
+- **Epic AAASM-3979** (2 High / 13 Med / 4 Low) — WebSocket event/alert streams
+  now tenant-isolated (fail-closed per-frame gate); tool-scoped policies now
+  actually evaluated (were dead-loaded); atomic budget reserve (TOCTOU); gateway
+  RPC deadline → fail-closed Deny; proxy host-canonicalization + plaintext DLP
+  refusal; email-scanner linearization; sandbox table/epoch caps; op-control NATS
+  boot posture; SDK codec caps + `resolve_decision` → Deny.
+- **Epic AAASM-4010** (1 High / 6 Med / 5 Low) — eBPF Layer 3 wired to the
+  privileged loaderd (was dormant in prod; validated on a real kernel); file-io
+  attach-list completed; node/python/go SDK enforce fail-closed parity; LangChain
+  co-install governance bypass fixed; aa-sandbox memory/table/instance count caps;
+  release-job GitHub Environment protection; npm OIDC Trusted Publishing; aa-api
+  `parse_agent_id` panic-DoS; tenancy-posture guard; supply-chain CI hardening.
+- **Follow-ups AAASM-4031/4032/4033/4034** — is_sensitive propagated to the audit
+  event; `TenancyMode` wired from config + tenanted registration invariant;
+  runtime→loaderd orchestration e2e (real-kernel validated); langchain-installed
+  `__getattr__` contract test.
+- **Epic AAASM-3898** — aa-auth crate extraction (leaf crate; gateway guards
+  `/admin/status`; zero-config bypass-default preserved).
+
+### Release security posture
+
+Stage-0 `/release-security-gate` (patch tier) **PASS** — see
+[`docs/release/security-signoff/v0.0.1-rc.3.md`](docs/release/security-signoff/v0.0.1-rc.3.md).
+`cargo deny check advisories` ok; 0 open CodeQL / Dependabot; no unaddressed
+Critical/High (every sweep High fixed + adversarially re-verified). Residual items
+are deployment-config (GitHub Environments / npmjs Trusted-Publisher) and tracked
+out-of-scope follow-ups.
+
+### Changed
+
+- Workspace version bumped `0.0.1-rc.2` → `0.0.1-rc.3` (all crates inherit via
+  `version.workspace = true`; `Cargo.lock` + `sonar.projectVersion` realigned).
+
+## [0.0.1-rc.2] — 2026-06-27 (pre-release)
+
+> **Not for production use.** Second **release candidate** in the v0.0.1 series
+> (patch on the `rc` channel). Security-hardening + test-coverage + docs; no API,
+> ABI, or wire-protocol stability commitment at `0.x.y`.
+
+### Security
+
+- **AAASM-3788** — gRPC per-RPC auth + mTLS scaffold on the agent plane
+  (fail-closed interceptor; approval decisions bound to the authenticated caller);
+  closes the unauthenticated-gateway gap (AAASM-3416).
+- **AAASM-3790 / 3824 / 3825** — REST cross-tenant IDOR hardening: tenant
+  ownership + write-scope across agent/alert/op handlers; `get_agent_capabilities`
+  gated; `get_agent_graph` traversal tenant-filtered.
+- **AAASM-3789** webhook SSRF guard + masked-secret round-trip; **AAASM-3787**
+  eval cache key includes action args (prevents wrong-decision cache reuse).
+
+### Documentation
+
+- **AAASM-3774** — every published crate ships a `README.md` (renders on
+  crates.io/docs.rs); release-readiness enforces it. Docs use `docs.agent-assembly.com`.
+
+### Build / quality
+
+- **AAASM-3765** versioned container base images; large test-coverage expansion
+  (aa-api/aa-cli/aa-gateway/aa-proxy/aa-runtime/dashboard); Rust + dashboard
+  coverage stabilisation; SonarCloud smell/deprecation cleanups.
+
+### Changed
+
+- Workspace + inter-crate path-dependency versions bumped `0.0.1-rc.1` → `0.0.1-rc.2`.
+
+## [0.0.1-rc.1] — 2026-06-26 (pre-release)
+
+> **Not for production use.** First **release candidate** in the v0.0.1 series,
+> promoting the channel from `0.0.1-beta.4`. A security-hardening + release-QA
+> cut; no API, ABI, or wire-protocol stability commitment at `0.x.y`.
+
+### Security
+
+- **AAASM-3726** — REST agent-lifecycle handlers (delete/suspend/resume +
+  subtree-burn) gated with write-scope + tenant ownership (IDOR closed).
+- **AAASM-3728** — network egress fails closed on an empty allowlist (cascade
+  and single-file paths share one fail-closed helper).
+- **AAASM-3689** — credential scanner / redaction hardening (case/whitespace
+  variant detection, overlapping-finding coalescing, no fragment leaks).
+- **AAASM-3751** — policy cascade + budget lineage anchored to the credential
+  token's registered owner (defense-in-depth); webhook `secret_header` masked
+  in destination responses and preserved on masked round-trip.
+
+### Fixed
+
+- **AAASM-3732** install script, **AAASM-3733** `latest/` channel alias,
+  **AAASM-3736** dashboard partial-data guards, **AAASM-3719** SonarCloud
+  residuals.
+
+### Changed
+
+- Workspace + inter-crate path-dependency versions bumped `0.0.1-beta.4` →
+  `0.0.1-rc.1` (path-dep pins realigned to the release version).
+
+## [0.0.1-beta.4] — 2026-06-24 (pre-release)
+
+> **Not for production use.** Fourth pre-release in the v0.0.1 beta
+> channel — a forward-roll cut on top of `0.0.1-beta.3` carrying the
+> org-wide security-hardening initiative, the SDK version handshake, and
+> the 2026-06-24 pre-release QA pass. No API, ABI, or wire-protocol
+> stability commitment.
+
+### Added
+
+- **AAASM-3560** (Epic) — core defense-in-depth security hardening across
+  the enforcement stack: eBPF bytecode integrity + least privilege
+  (AAASM-3561), proxy credential isolation (AAASM-3562), sandbox
+  defense-in-depth (AAASM-3563), multi-tenant Postgres row-level-security
+  isolation (AAASM-3564), devtool supply-chain hardening (AAASM-3565),
+  and a release-gated security sign-off process (AAASM-3566).
+- **AAASM-3567** (Epic) — SDK security hardening: distribution
+  supply-chain (AAASM-3568), SDK↔runtime Ed25519 IPC authentication
+  (AAASM-3569), token hygiene (AAASM-3570), and bypass observability
+  (AAASM-3571).
+- **AAASM-3666 / AAASM-3683** — the language-SDK version is now signed
+  into the SDK↔runtime handshake and passed through to the gateway.
+- **AAASM-3508 / AAASM-3509 / AAASM-3510** — dashboard Overview, Costs,
+  and Audit-log pages.
+- **AAASM-3519 / AAASM-3517 / AAASM-3521** — limited-function self-host
+  Docker Compose example, infra dataflow diagram, and self-host /
+  Kubernetes ADR (research-spike only).
+
+### Fixed
+
+- **AAASM-3702 / AAASM-3703** — dashboard defensive guards for
+  partial/missing data (mermaid null guard, partial-data guards).
+- **AAASM-3506 / AAASM-3507** — dashboard dark-theme heatmap tooltip and
+  Monaco theme fixes.
+- **AAASM-3526 / AAASM-3527 / AAASM-3467** — Docker registry-org
+  correction, runtime image entrypoint fix, and node images.
+- **AAASM-3650** — fixed a flaky `healthz` timing test.
+- **AAASM-3677** — resolved SonarCloud code smells.
+- 2026-06-24 pre-release QA pass — docs accuracy, dashboard defensive
+  guards, and example/harness fixes.
+
+### Changed
+
+- **AAASM (release)** — bumped the workspace `[workspace.package].version`
+  from `0.0.1-beta.3` to `0.0.1-beta.4` (all crates inherit via
+  `version.workspace = true`) and regenerated `Cargo.lock`. Coordinated
+  release across agent-assembly + python-sdk + node-sdk + go-sdk; drives
+  `@agent-assembly/sdk@0.0.1-beta.4`, `agent-assembly==0.0.1b4`, and
+  `github.com/ai-agent-assembly/go-sdk@v0.0.1-beta.4` downstream.
+
+## [0.0.1-beta.2] — 2026-06-15 (pre-release)
+
+> **Not for production use.** Second pre-release in the v0.0.1 beta
+> channel — a forward-roll cut on top of `0.0.1-beta.1` carrying the
+> AAASM-3000 IPC deadlock fix. No API, ABI, or wire-protocol stability
+> commitment.
+
+### Fixed
+
+- **AAASM-3000** — `aa-sdk-client` IPC event reporting is now
+  fire-and-forget, closing the deadlock that occurred when the runtime
+  accepted but did not ack the event report. `send_event` returns as
+  soon as the codec has accepted the frame instead of blocking on a
+  runtime ack.
+
+### Changed
+
+- **AAASM-2959** — release pipeline now syncs `aa-ffi-python` and
+  `aa-ffi-node` `Cargo.lock` when bumping the workspace SDK pins, so
+  the published native bindings always match the tagged
+  `aa-sdk-client` revision.
+- **AAASM-3004** — bumped workspace + 16 path-dep version literals from
+  `0.0.1-beta.1` to `0.0.1-beta.2`. Coordinated release across
+  agent-assembly + python-sdk + node-sdk + go-sdk; drives
+  `@agent-assembly/sdk@0.0.1-beta.2`, `agent-assembly==0.0.1b2`, and
+  `github.com/ai-agent-assembly/go-sdk@v0.0.1-beta.2` downstream.
+
 ## [0.0.1-beta.1] — 2026-06-14 (pre-release)
 
 > **Not for production use.** First beta-channel pre-release in the v0.0.1

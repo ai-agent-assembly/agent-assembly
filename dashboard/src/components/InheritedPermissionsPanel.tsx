@@ -9,7 +9,8 @@
  * cascade explicitly denies it, where it was `denied_by_ancestor`.
  */
 import { useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { ignorePromise } from '../lib/ignorePromise'
+import { Link } from 'react-router'
 import { useAgentCapabilitiesQuery } from '../features/agents/api'
 import type { EffectivePermissions, PermissionSource } from '../features/agents/api'
 import { LoadingState } from './LoadingState'
@@ -43,7 +44,7 @@ interface PermissionRow {
   readonly deniedByAncestor: PermissionSource | null
 }
 
-export function InheritedPermissionsPanel({ agentId }: { agentId: string }) {
+export function InheritedPermissionsPanel({ agentId }: Readonly<{ agentId: string }>) {
   const { data, isLoading, isError, refetch } = useAgentCapabilitiesQuery(agentId)
 
   const rows = useMemo<PermissionRow[]>(() => (data ? buildRows(data) : []), [data])
@@ -59,7 +60,7 @@ export function InheritedPermissionsPanel({ agentId }: { agentId: string }) {
   if (isError || !data) {
     return (
       <div className="ipp" data-testid="inherited-permissions-error">
-        <ErrorState onRetry={() => void refetch()} />
+        <ErrorState onRetry={() => ignorePromise(refetch())} />
       </div>
     )
   }
@@ -151,7 +152,7 @@ function buildRows(perms: EffectivePermissions): PermissionRow[] {
   // Union of allow + deny gives every capability touched by the cascade.
   const universe = new Set<string>([...perms.allow, ...perms.deny])
   return Array.from(universe)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .map((cap) => ({
       capability: cap,
       category: categoryFor(cap),

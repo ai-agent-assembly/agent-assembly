@@ -28,11 +28,13 @@
 }
 
 .iam-agent-list__row--selected {
-  background: rgba(37, 99, 235, 0.08);
+  background: var(--shell-surface-subtle);
+  box-shadow: inset 3px 0 0 0 var(--button-primary-bg);
 }
 
 .iam-agent-list__row--selected:hover {
-  background: rgba(37, 99, 235, 0.12);
+  background: var(--shell-surface-muted);
+  box-shadow: inset 3px 0 0 0 var(--button-primary-bg);
 }
 
 .iam-agent-list__loading,
@@ -52,24 +54,25 @@
   font-weight: 600;
 }
 
-.iam-agent-list__error {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  color: var(--status-danger-hover-text);
-  padding: 0.75rem 0;
-}
-
 .iam-agent-status {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 9999px;
   font-size: 0.7rem;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.04em;
+  /* Not uppercased: the value is a Rust variant name whose casing is meaningful
+     (`Suspended(ParentDeregistered)`), and a suspension payload can be long
+     enough to need wrapping rather than to blow out the column. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  max-width: 22ch;
+  overflow-wrap: anywhere;
 }
 
-.iam-agent-status--online { background: var(--status-success-bg); color: var(--status-success-text-strong); }
-.iam-agent-status--offline { background: var(--shell-surface-muted); color: var(--shell-text-strong); }
-.iam-agent-status--degraded { background: var(--badge-amber-bg); color: var(--alert-banner-text); }
+/* Tones for the three outer variants `GET /api/v1/agents` emits. Anything else
+   the gateway sends still renders — it falls through to `--other` rather than
+   borrowing a colour that would assert a state it never claimed. */
+.iam-agent-status--active { background: var(--status-success-bg); color: var(--status-success-text-strong); }
+.iam-agent-status--suspended { background: var(--badge-amber-bg); color: var(--alert-banner-text); }
+.iam-agent-status--deregistered { background: var(--shell-surface-muted); color: var(--shell-text-strong); }
+.iam-agent-status--other { background: var(--shell-surface-muted); color: var(--shell-text-muted); }

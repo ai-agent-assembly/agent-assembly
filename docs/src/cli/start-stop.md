@@ -25,16 +25,27 @@ aasm start [OPTIONS]
 |---|---|---|---|
 | `--mode <MODE>` | `local` \| `remote` | `local` | Deployment mode. `local` binds `127.0.0.1` (loopback only); `remote` binds `0.0.0.0`. |
 | `--port <PORT>` | integer | `7391` | TCP port the gateway listens on. |
-| `--config <CONFIG>` | path | `~/.aasm/config.yaml` | YAML config file consumed by the gateway. |
+| `--config <CONFIG>` | path | `~/.aasm/config.yaml` | Accepted for a stable operator surface but **not yet wired** — the value is currently a no-op and is not read by the spawned process. |
 | `--foreground` | flag | off | Stay in the foreground; do not daemonize. |
-| `--no-dashboard` | flag | off | Disable dashboard serving (even in local mode). |
+| `--no-dashboard` | flag | off | Accepted for a stable operator surface but **not yet wired** — currently a no-op. Dashboard serving is determined by the mode: local mode runs `aa-api-server`, which always serves the dashboard. |
+
+> **Exposure caution.** `--mode remote` binds `0.0.0.0`, putting the API and the
+> operator dashboard on the network. The dashboard is designed for local /
+> self-hosted / operator-controlled use — **do not expose it directly to the
+> public internet** without a trusted authenticating layer (VPN, private network,
+> or an authenticated reverse proxy) in front. See
+> [`SECURITY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/SECURITY.md)
+> and [ADR 0012](../adr/0012-websocket-and-browser-credential-handling.md).
 
 ### Behavior
 
 1. Resolve the listen address from `mode` + `port`.
 2. Exit early (idempotent) if a gateway is already running at that address —
    verified by a live PID file **and** a successful TCP probe.
-3. Spawn `aa-gateway` (background, or foreground with `--foreground`).
+3. Spawn the entrypoint binary for the selected mode (background, or foreground
+   with `--foreground`): local mode launches `aa-api-server` (which serves the
+   dashboard SPA **and** the full `/api/v1/*` REST surface from a single process);
+   remote mode launches `aa-gateway` via `--listen`.
 4. In background mode, write the PID file and wait for the listener before
    printing the success banner.
 
@@ -49,9 +60,10 @@ aasm start --mode local --port 7391
 ```
 
 ```text
-Agent Assembly gateway started (pid 48213)
-  Gateway:    http://localhost:7391
-  Dashboard:  http://localhost:7391
+✓ Agent Assembly gateway started
+  Mode:    local
+  Address: http://localhost:7391
+  PID:     48213
 ```
 
 ---
@@ -83,5 +95,5 @@ aasm stop --timeout 15
 ```
 
 ```text
-Sent SIGTERM to pid 48213; exited gracefully.
+Gateway stopped (PID 48213).
 ```

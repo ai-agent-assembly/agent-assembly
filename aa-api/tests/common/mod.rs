@@ -55,16 +55,22 @@ pub fn test_state_with_auth(mode: AuthMode, entries: &[ApiKeyEntry], rpm: u32) -
     let policy_dir = std::env::temp_dir().join(format!("aa-api-test-policy-{}-{policy_id}", std::process::id()));
     std::fs::create_dir_all(&policy_dir).unwrap();
     let policy_path = policy_dir.join("test-policy.yaml");
+    // AAASM-3351: the validator now fails closed on the legacy rule-list
+    // schema (top-level `spec.rules:` / `kind: GovernancePolicy`), so use a
+    // minimal valid section-based envelope. These tests only need a loadable
+    // PolicyEngine, not specific rules, so an empty section spec preserves
+    // intent (allow-by-default).
     std::fs::write(
         &policy_path,
         r#"
-apiVersion: agent-assembly.dev/v1alpha1
-kind: GovernancePolicy
+apiVersion: agent-assembly/v1
+kind: Policy
 metadata:
   name: test-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 100.0
 "#,
     )
     .unwrap();
@@ -175,17 +181,30 @@ spec:
         topology_stats_cache: moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(10))
             .build(),
-        capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+        capability_store: aa_api::routes::capability::CapabilityStore::new(),
         iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
         ops_registry: Arc::new(OpsRegistry::new()),
         destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
         audit_sender: None,
         saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+        saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
         alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
         destination_registry: Arc::new(DestinationRegistry::seeded()),
         retention_engine: None,
         secrets_store: Arc::new(InMemorySecretsStore::new()),
         tool_registry: ToolRegistry::new(),
+        trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+        // AAASM-5305: in-memory test AppState — native auth is Postgres-gated and
+        // therefore absent here (ADR 0031 D2).
+        auth_store: None,
+        native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+        // AAASM-5306: the no-op logging mailer — tests never send real email.
+        mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+        // AAASM-5359: no projection in the default test wiring, so the
+        // sensitive-data endpoints report "not enabled". The analytics tests
+        // build their own state with a real SQLite projection attached.
+        sensitive_data: None,
+        sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
     }
 }
 
@@ -221,6 +240,19 @@ pub fn test_app_with_auth(entries: &[ApiKeyEntry], rpm: u32) -> Router {
     build_app(test_state_with_auth(AuthMode::On, entries, rpm))
 }
 
+/// Build the full app with a set of agents already registered.
+///
+/// Registry-backed projections (the capability matrix) return rows only for
+/// agents the registry knows about, so a test that exercises one has to seed it.
+#[allow(dead_code)]
+pub fn test_app_with_agents(agents: Vec<aa_gateway::registry::AgentRecord>) -> Router {
+    let state = test_state();
+    for a in agents {
+        state.agent_registry.register(a).expect("test agent should register");
+    }
+    build_app(state)
+}
+
 /// Build the full app with auth disabled (bypass mode).
 #[allow(dead_code)]
 pub fn test_app_no_auth() -> Router {
@@ -237,7 +269,11 @@ pub fn generate_test_api_key(id: &str, scopes: Vec<Scope>) -> (String, ApiKeyEnt
         key_hash: hash,
         scopes,
         created_at: 1700000000,
+        expires_at: None,
         label: Some(format!("test key {id}")),
+        team_id: None,
+        org_id: None,
+        key_lookup: Some(key.lookup()),
     };
     (key.as_str().to_string(), entry)
 }
@@ -247,4 +283,30 @@ pub fn generate_test_api_key(id: &str, scopes: Vec<Scope>) -> (String, ApiKeyEnt
 pub fn generate_test_jwt(key_id: &str, scopes: &[Scope]) -> String {
     let signer = JwtSigner::new(TEST_SECRET);
     signer.sign(key_id, scopes).expect("signing should succeed")
+}
+
+/// Generate a test JWT scoped to a team tenant (AAASM-3139).
+#[allow(dead_code)]
+pub fn generate_test_jwt_for_team(key_id: &str, scopes: &[Scope], team_id: &str) -> String {
+    let signer = JwtSigner::new(TEST_SECRET);
+    signer
+        .sign_with_tenant(key_id, scopes, Some(team_id.to_string()), None)
+        .expect("signing should succeed")
+}
+
+/// Generate a test JWT scoped to an arbitrary (team, org) tenant (AAASM-3483).
+///
+/// Mirrors the bug repro's `sign_with_tenant(.., team, org)`, letting tests
+/// mint org-scoped callers for the topology / audit-log isolation checks.
+#[allow(dead_code)]
+pub fn generate_test_jwt_for_tenant(
+    key_id: &str,
+    scopes: &[Scope],
+    team_id: Option<&str>,
+    org_id: Option<&str>,
+) -> String {
+    let signer = JwtSigner::new(TEST_SECRET);
+    signer
+        .sign_with_tenant(key_id, scopes, team_id.map(str::to_string), org_id.map(str::to_string))
+        .expect("signing should succeed")
 }

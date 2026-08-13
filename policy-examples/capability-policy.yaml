@@ -14,3 +14,4 @@ spec:
     deny:
       - terminal_exec
       - file_write
+      - file_delete

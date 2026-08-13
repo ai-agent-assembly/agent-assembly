@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5353 negative, added after review: a legacy 居留證 whose CHECK DIGIT is wrong. This vector exists because its absence was a real hole - defeating arc_legacy_checksum_ok's arithmetic outright passed the entire suite, since the only legacy negative varied the second LETTER and never the digits. The (second_code % 10) * 8 term and the 7..=1 weighting were therefore untested, and an error there means MISSED residence certificates. AB00000001 is the valid value (A -> 1, B contributes its code's units digit 1 at weight 8 = 8, body 0000000 contributes 0, so the check digit is 1); every other final digit must be refused.",
+  "input_text": "舊式居留證 AB00000005 與 AB00000009 皆非有效證號。",
+  "expected_findings": [],
+  "expected_redacted": "舊式居留證 AB00000005 與 AB00000009 皆非有效證號。"
+}

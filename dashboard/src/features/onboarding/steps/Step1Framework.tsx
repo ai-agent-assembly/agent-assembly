@@ -7,7 +7,7 @@ export interface Step1FrameworkProps {
   onChange: (framework: FrameworkId) => void
 }
 
-export function Step1Framework({ state, onChange }: Step1FrameworkProps) {
+export function Step1Framework({ state, onChange }: Readonly<Step1FrameworkProps>) {
   return (
     <section data-testid="onboarding-step-framework">
       <h2 className="onb-body-title">Pick the framework you&apos;re enrolling.</h2>

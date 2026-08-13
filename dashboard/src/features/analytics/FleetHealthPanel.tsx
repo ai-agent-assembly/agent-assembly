@@ -3,13 +3,14 @@ import { LineChart, Line, ResponsiveContainer } from 'recharts'
 import { useAnalyticsFilters } from './useAnalyticsFilters'
 import { useFleetHealthQuery } from './useFleetHealthQuery'
 import { CHART_CATEGORICAL_PALETTE } from './chartPalette'
+import { clampChartValue } from './chartDomain'
 import type { AgentHealth } from './useFleetHealthQuery'
 
 const SPARKLINE_COLOR = CHART_CATEGORICAL_PALETTE[0]
 
 function currentScore(agent: AgentHealth): number {
-  if (agent.points.length === 0) return 0
-  return agent.points[agent.points.length - 1].score
+  const last = agent.points.at(-1)
+  return last ? last.score : 0
 }
 
 function scoreBadgeClass(score: number): string {
@@ -25,24 +26,28 @@ export function FleetHealthPanel() {
   const rawAgents = data?.agents
   const agents = useMemo(() => rawAgents ?? [], [rawAgents])
 
-  return (
-    <div className="fleet-health-panel" data-testid="fleet-health-panel">
-      <div className="fleet-health-panel__header">
-        <h2 className="fleet-health-panel__title">Fleet Health</h2>
-      </div>
-
-      {isPending ? (
-        <div className="fleet-health-panel__skeleton" aria-hidden />
-      ) : isError ? (
-        <p className="fleet-health-panel__error">Failed to load fleet health data.</p>
-      ) : agents.length === 0 ? (
+  function renderBody() {
+    if (isPending) {
+      return <div className="fleet-health-panel__skeleton" aria-hidden />
+    }
+    if (isError) {
+      return <p className="fleet-health-panel__error">Failed to load fleet health data.</p>
+    }
+    if (agents.length === 0) {
+      return (
         <div className="fleet-health-panel__empty">
           <p>No agents reporting in this window.</p>
         </div>
-      ) : (
-        <ul className="fleet-health-panel__list" aria-label="Agent health">
+      )
+    }
+    return (
+      <ul className="fleet-health-panel__list" aria-label="Agent health">
           {agents.map(agent => {
             const score = currentScore(agent)
+            const sparkPoints = agent.points.map(p => ({
+              ...p,
+              score: clampChartValue(p.score),
+            }))
             return (
               <li
                 key={agent.id}
@@ -54,7 +59,7 @@ export function FleetHealthPanel() {
                 </span>
                 <span className="fleet-health-panel__sparkline" aria-hidden>
                   <ResponsiveContainer width={120} height={32}>
-                    <LineChart data={agent.points}>
+                    <LineChart data={sparkPoints}>
                       <Line
                         type="monotone"
                         dataKey="score"
@@ -73,7 +78,16 @@ export function FleetHealthPanel() {
             )
           })}
         </ul>
-      )}
+    )
+  }
+
+  return (
+    <div className="fleet-health-panel" data-testid="fleet-health-panel">
+      <div className="fleet-health-panel__header">
+        <h2 className="fleet-health-panel__title">Fleet Health</h2>
+      </div>
+
+      {renderBody()}
     </div>
   )
 }

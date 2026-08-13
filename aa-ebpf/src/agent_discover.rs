@@ -4,7 +4,7 @@
 //! but tries to detect AI dev tools that were *not* registered through the SDK
 //! or a managed adapter.  This module provides [`AgentDiscoveryClassifier`], a
 //! cross-platform component that inspects process-exec filenames and classifies
-//! them as a known [`DevToolKind`] (or [`Unknown`][DevToolKind::Custom] with the
+//! them as a known `DevToolKind` (or `Unknown` / `DevToolKind::Custom` with the
 //! raw binary name).
 //!
 //! ## Usage

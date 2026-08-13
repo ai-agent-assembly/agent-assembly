@@ -4,7 +4,7 @@ This page enumerates what the Security Model defends: the **assets** worth
 protecting, the **adversaries** who threaten them, and the concrete **threats**
 each control answers. It is specific to Agent Assembly — the system that governs
 AI agents at the [three interception layers](three-layer-defense.md) and a
-central [gateway](../architecture/README.md).
+central [gateway](../architecture/index.md).
 
 ## Assets
 
@@ -80,3 +80,11 @@ adversaries are:
 | **E**levation of privilege | Agent invokes a tool or egress beyond its grant | Policy engine deny stages; fail-closed empty cascade → `Deny` (`aa-gateway/src/engine/decision.rs`) |
 
 Each control is detailed in [Protection and enforcement](protection-model.md).
+
+## Release-time companion
+
+This page is the **durable** catalogue, refreshed rarely. Its versioned,
+per-release operational counterpart is the
+[release threat model](release-threat-model.md): a versioned document reviewed on
+every release and rewritten in full at every major, with a "what does **this**
+release change about our exposure?" layer map.

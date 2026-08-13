@@ -1,0 +1,40 @@
+name: Contact Metadata Drift Check
+
+# AAASM-5520: the security reporting address and shared response-target SLAs in
+# SECURITY.md and README.md are owned by the canonical org metadata registry in
+# ai-agent-assembly/.github (ADR 0014 / AAASM-5519).
+# scripts/check_contact_metadata.py syncs/audits them against the pinned
+# canonical facts. This gate fails closed if either drifts, so a stale contact
+# literal can never merge. Repo-specific security prose is untouched.
+
+on:
+  pull_request:
+    paths:
+      - "SECURITY.md"
+      - "README.md"
+      - "scripts/check_contact_metadata.py"
+      - ".github/workflows/contact-metadata-check.yml"
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contact-drift:
+    name: contact metadata drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Audit contact literals against the pinned registry
+        run: python scripts/check_contact_metadata.py --check

@@ -6,7 +6,7 @@ export const ONBOARDING_COMPLETED_KEY = 'aa.onboarding.completed'
  * to render the wizard or redirect *before* the first paint — avoiding a
  * flash of the modal for already-set-up users.
  */
-export function isGatewayConfigured(storage: Storage = window.localStorage): boolean {
+export function isGatewayConfigured(storage: Storage = globalThis.localStorage): boolean {
   try {
     return storage.getItem(ONBOARDING_COMPLETED_KEY) === 'true'
   } catch {
@@ -14,7 +14,7 @@ export function isGatewayConfigured(storage: Storage = window.localStorage): boo
   }
 }
 
-export function markGatewayConfigured(storage: Storage = window.localStorage): void {
+export function markGatewayConfigured(storage: Storage = globalThis.localStorage): void {
   try {
     storage.setItem(ONBOARDING_COMPLETED_KEY, 'true')
   } catch {
@@ -22,7 +22,7 @@ export function markGatewayConfigured(storage: Storage = window.localStorage): v
   }
 }
 
-export function clearGatewayConfigured(storage: Storage = window.localStorage): void {
+export function clearGatewayConfigured(storage: Storage = globalThis.localStorage): void {
   try {
     storage.removeItem(ONBOARDING_COMPLETED_KEY)
   } catch {

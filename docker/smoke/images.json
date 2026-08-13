@@ -1,0 +1,23 @@
+{
+  "$comment": [
+    "AAASM-3524 — the per-language base-image smoke matrix.",
+    "One entry per published base image (3 langs x 3 versions = 9 images).",
+    "Source of truth for the runner (run-smoke.sh) and the CI matrix",
+    "(.github/workflows/docker-image-smoke.yml). Mirrors the publish matrix",
+    "in .github/workflows/docker.yml (the `full=[...]` list in the `prep` job):",
+    "if a version is added/removed there, update it here too.",
+    "`is_latest` marks the version that `ghcr.io/ai-agent-assembly/<lang>:latest`",
+    "routes to (python 3.14 / node 24 / go 1.26)."
+  ],
+  "images": [
+    { "lang": "python", "version": "3.14-slim",  "dockerfile": "docker/Dockerfile.python-3.14-slim",  "is_latest": true },
+    { "lang": "python", "version": "3.13-slim",  "dockerfile": "docker/Dockerfile.python-3.13-slim" },
+    { "lang": "python", "version": "3.12-slim",  "dockerfile": "docker/Dockerfile.python-3.12-slim" },
+    { "lang": "node",   "version": "24-slim",    "dockerfile": "docker/Dockerfile.node-24-slim",      "is_latest": true },
+    { "lang": "node",   "version": "22-slim",    "dockerfile": "docker/Dockerfile.node-22-slim" },
+    { "lang": "node",   "version": "20-slim",    "dockerfile": "docker/Dockerfile.node-20-slim" },
+    { "lang": "go",     "version": "1.26-alpine", "dockerfile": "docker/Dockerfile.go-1.26-alpine",   "is_latest": true },
+    { "lang": "go",     "version": "1.25-alpine", "dockerfile": "docker/Dockerfile.go-1.25-alpine" },
+    { "lang": "go",     "version": "1.24-alpine", "dockerfile": "docker/Dockerfile.go-1.24-alpine" }
+  ]
+}

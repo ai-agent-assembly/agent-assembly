@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use clap::Args;
 
+use crate::sanitize::sanitize_terminal;
+
 /// Arguments for `aasm proxy logs`.
 #[derive(Debug, Args)]
 pub struct LogsArgs {
@@ -126,29 +128,14 @@ pub fn dispatch(args: LogsArgs) -> ExitCode {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let should_print = |line: &str| -> bool {
-        if let Some(ref lvl) = args.level {
-            if !line_matches_level(line, lvl) {
-                return false;
-            }
-        }
-        if let Some(cutoff) = since_secs {
-            let oldest_ts = now_secs.saturating_sub(cutoff);
-            // Heuristic: look for an ISO-8601-style timestamp prefix and compare.
-            if let Some(ts) = parse_line_timestamp(line) {
-                if ts < oldest_ts {
-                    return false;
-                }
-            }
-        }
-        true
-    };
+    let should_print = |line: &str| line_should_print(line, args.level.as_deref(), since_secs, now_secs);
 
     // Print the last N lines.
     let tail = last_n_lines(&log_path, args.lines);
     for line in &tail {
         if should_print(line) {
-            println!("{line}");
+            // Log lines embed agent-supplied data; strip terminal escapes.
+            println!("{}", sanitize_terminal(line));
         }
     }
 
@@ -156,8 +143,35 @@ pub fn dispatch(args: LogsArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Follow mode: poll for new content appended to the file.
-    let Ok(mut file) = std::fs::File::open(&log_path) else {
+    follow_log(&log_path, &should_print)
+}
+
+/// Whether a log `line` passes the active level and `--since` filters. A line
+/// with no parseable timestamp is kept under the `--since` filter (the level
+/// filter still applies).
+fn line_should_print(line: &str, level: Option<&str>, since_secs: Option<u64>, now_secs: u64) -> bool {
+    if let Some(lvl) = level {
+        if !line_matches_level(line, lvl) {
+            return false;
+        }
+    }
+    if let Some(cutoff) = since_secs {
+        let oldest_ts = now_secs.saturating_sub(cutoff);
+        // Heuristic: look for an ISO-8601-style timestamp prefix and compare.
+        if let Some(ts) = parse_line_timestamp(line) {
+            if ts < oldest_ts {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Follow mode: seek to end of the log file and poll for appended lines,
+/// printing those that pass `should_print`. Loops indefinitely (never returns
+/// `Ok`); returns `FAILURE` only when the file cannot be opened for tailing.
+fn follow_log(log_path: &std::path::Path, should_print: &impl Fn(&str) -> bool) -> ExitCode {
+    let Ok(mut file) = std::fs::File::open(log_path) else {
         eprintln!("error: could not open log file for tailing");
         return ExitCode::FAILURE;
     };
@@ -170,7 +184,7 @@ pub fn dispatch(args: LogsArgs) -> ExitCode {
         while reader.read_line(&mut line).unwrap_or(0) > 0 {
             let trimmed = line.trim_end_matches('\n');
             if should_print(trimmed) {
-                println!("{trimmed}");
+                println!("{}", sanitize_terminal(trimmed));
             }
             line.clear();
         }

@@ -10,6 +10,7 @@ use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ResolvedContext;
+use crate::sanitize::sanitize_terminal;
 
 /// Request body for `POST /api/v1/policies`.
 #[derive(Debug, Serialize)]
@@ -84,8 +85,9 @@ pub fn run_apply(args: ApplyArgs, ctx: &ResolvedContext) -> ExitCode {
         match crate::client::post_json::<_, PolicyApplyResponse>(ctx, "/api/v1/policies", &body).await {
             Ok(resp) => {
                 println!("Policy applied successfully.");
-                println!("  Version:    {}", resp.name);
-                println!("  Timestamp:  {}", resp.version);
+                // resp.name/version are echoed from the server; sanitize.
+                println!("  Version:    {}", sanitize_terminal(&resp.name));
+                println!("  Timestamp:  {}", sanitize_terminal(&resp.version));
                 println!("  Active:     {}", resp.active);
                 println!("  Rules:      {}", resp.rule_count);
                 ExitCode::SUCCESS

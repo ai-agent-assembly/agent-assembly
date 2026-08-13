@@ -1,16 +1,24 @@
 import { lazy, Suspense, useCallback, useMemo, useState } from 'react'
-import { useParams, useNavigate, useLocation } from 'react-router-dom'
-import { useAgentQuery, useAgentEventsQuery, type Agent } from '../features/agents/api'
+import { ignorePromise } from '../lib/ignorePromise'
+import { useParams, useNavigate, useLocation } from 'react-router'
+import { useAgentQuery, useAgentEventsQuery, useAgentEnforcementQuery, useTrustQuery, type Agent } from '../features/agents/api'
 import { extractSandboxInfo } from '../features/audit/api'
 import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
-import { toFleetAgent } from '../features/agents/fleetTypes'
+import { toFleetAgent, formatLastSeen } from '../features/agents/fleetTypes'
 import { Drawer } from '../components/Drawer'
 import { SuspendReasonDialog } from '../components/SuspendReasonDialog'
 import { StatusChip } from '../components/fleet/StatusChip'
 import { ModeChip } from '../components/fleet/ModeChip'
 import { useToast } from '../components/Toast'
 import { LoadingState } from '../components/LoadingState'
-import { InheritedPermissionsPanel } from '../components/InheritedPermissionsPanel'
+import { AgentTrafficTab } from '../components/agentDetail/AgentTrafficTab'
+import { AgentPoliciesTab } from '../components/agentDetail/AgentPoliciesTab'
+import { AgentLineageTab } from '../components/agentDetail/AgentLineageTab'
+import { AgentCapabilityTab } from '../components/agentDetail/AgentCapabilityTab'
+import { AgentCapabilityOverviewPanel } from '../components/agentDetail/AgentCapabilityOverviewPanel'
+import { AgentPostureSummary } from '../components/agentDetail/AgentPostureSummary'
+import { AgentTrafficMixBar } from '../components/agentDetail/AgentTrafficMixBar'
+import { AgentConfigTab } from '../components/agentDetail/AgentConfigTab'
 // AAASM-1055 "how to approach": "Lazy-load the chart component so the agent
 // detail page does not pay its bundle cost up front" (recharts is large).
 const SubtreeBurnChart = lazy(() =>
@@ -18,7 +26,28 @@ const SubtreeBurnChart = lazy(() =>
 )
 import './AgentDetailDrawer.css'
 
-function TrustGauge({ score }: { score: number | null }) {
+/** Trust score (0-100) to its gauge color token. */
+function trustTone(score: number): string {
+  if (score >= 80) return 'var(--ok)'
+  if (score >= 60) return 'var(--warn)'
+  return 'var(--danger)'
+}
+
+/** Trust score (0-100) to its human-readable standing summary. */
+function trustSummary(score: number): string {
+  if (score < 50) return 'low — needs review'
+  if (score < 75) return 'moderate'
+  return 'good standing'
+}
+
+// ADR 0019 Guardrail 1 — a trust score is only comparable to another computed
+// under the same tenant weight-set, so every place the score is shown in detail
+// carries the "under your configured weights" framing. Rendered as a tooltip on
+// the gauge to keep it light (the score reads at a glance; the caveat is there
+// on hover).
+const TRUST_WEIGHTS_HINT = 'Scored under your tenant’s configured trust weights (ADR 0019)'
+
+function TrustGauge({ score }: Readonly<{ score: number | null }>) {
   if (score === null) {
     return (
       <div className="ad-identity__trust">
@@ -27,10 +56,10 @@ function TrustGauge({ score }: { score: number | null }) {
     )
   }
   const clamped = Math.max(0, Math.min(100, score))
-  const tone = clamped >= 80 ? 'var(--ok)' : clamped >= 60 ? 'var(--warn)' : 'var(--danger)'
+  const tone = trustTone(clamped)
   const dash = (clamped / 100) * 125.6
   return (
-    <div className="ad-identity__trust">
+    <div className="ad-identity__trust" title={TRUST_WEIGHTS_HINT}>
       <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true">
         <circle cx="24" cy="24" r="20" fill="none" stroke="var(--line-2)" strokeWidth="4" />
         <circle
@@ -46,15 +75,20 @@ function TrustGauge({ score }: { score: number | null }) {
       <div className="ad-identity__trust-meta">
         <p className="ad-identity__label">trust score</p>
         <span className="ad-identity__trust-summary">
-          {clamped < 50 ? 'low — needs review' : clamped < 75 ? 'moderate' : 'good standing'}
+          {trustSummary(clamped)}
+        </span>
+        <span className="ad-identity__trust-weights" data-testid="agent-detail-trust-weights">
+          under your configured weights
         </span>
       </div>
     </div>
   )
 }
 
-function IdentityStrip({ agent }: { agent: Agent }) {
-  const fleetAgent = useMemo(() => toFleetAgent(agent), [agent])
+function IdentityStrip({ agent }: Readonly<{ agent: Agent }>) {
+  const { data: enforcement } = useAgentEnforcementQuery('24h')
+  const { data: trust } = useTrustQuery()
+  const fleetAgent = useMemo(() => toFleetAgent(agent, enforcement, trust), [agent, enforcement, trust])
   const ownerSlug = fleetAgent.owner ?? 'agent-assembly'
 
   return (
@@ -64,9 +98,9 @@ function IdentityStrip({ agent }: { agent: Agent }) {
         <p className="ad-identity__did" data-testid="agent-detail-did">
           did:agent:{ownerSlug}:{agent.id}
         </p>
-        {fleetAgent.lastSeen && (
-          <p className="ad-identity__did-meta">last seen {fleetAgent.lastSeen}</p>
-        )}
+        <p className="ad-identity__did-meta" data-testid="agent-detail-last-seen">
+          last seen {formatLastSeen(fleetAgent.lastSeen)}
+        </p>
       </div>
 
       <TrustGauge score={fleetAgent.trust} />
@@ -88,7 +122,7 @@ function IdentityStrip({ agent }: { agent: Agent }) {
           className={`ad-identity__metric${fleetAgent.blocked24h !== null && fleetAgent.blocked24h > 50 ? ' ad-identity__metric--danger' : ''}`}
           data-testid="agent-detail-blocked"
         >
-          {fleetAgent.blocked24h === null ? '—' : fleetAgent.blocked24h}
+          {fleetAgent.blocked24h ?? '—'}
         </p>
         <p className="ad-identity__metric-sub">capability denials</p>
       </div>
@@ -99,7 +133,7 @@ function IdentityStrip({ agent }: { agent: Agent }) {
           className="ad-identity__metric ad-identity__metric--scrub"
           data-testid="agent-detail-scrubbed"
         >
-          {fleetAgent.scrubbed24h === null ? '—' : fleetAgent.scrubbed24h}
+          {fleetAgent.scrubbed24h ?? '—'}
         </p>
         <p className="ad-identity__metric-sub">secrets stripped at L3</p>
       </div>
@@ -111,66 +145,22 @@ type AgentDetailTab = 'overview' | 'capability' | 'traffic' | 'policies' | 'line
 
 const TABS: ReadonlyArray<{ id: AgentDetailTab; label: string }> = [
   { id: 'overview',   label: 'Overview' },
-  { id: 'capability', label: 'Capability' },
-  { id: 'traffic',    label: 'Traffic' },
+  { id: 'capability', label: 'Capability snapshot' },
+  { id: 'traffic',    label: 'Recent traffic' },
   { id: 'policies',   label: 'Policies' },
   { id: 'lineage',    label: 'Lineage' },
   { id: 'config',     label: 'Config' },
 ]
 
-function TabEmpty({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="ad-tab-empty" data-testid={`ad-tab-empty-${title.toLowerCase()}`}>
-      <p className="ad-tab-empty__title">{title}</p>
-      <p className="ad-tab-empty__body">{body}</p>
-    </div>
-  )
-}
-
-interface MiniBarProps {
-  label: string
-  value: number
-  max: number
-  tone: 'ok' | 'warn' | 'deny' | 'info'
-}
-
-function MiniBar({ label, value, max, tone }: MiniBarProps) {
-  const pct = max === 0 ? 0 : Math.min(100, Math.max(0, (value / max) * 100))
-  return (
-    <div className="ad-minibar" data-testid={`ad-minibar-${tone}`}>
-      <div className="ad-minibar__label">{label}</div>
-      <div className="ad-minibar__track">
-        <span
-          className={`ad-minibar__fill ad-minibar__fill--${tone}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div className="ad-minibar__value">{value}</div>
-    </div>
-  )
-}
-
-interface PostureSummaryProps {
-  agent: Agent
-}
-
-function PostureSummary({ agent }: PostureSummaryProps) {
-  // The dashboard has not yet wired a per-decision breakdown endpoint
-  // (cf. AAASM-1280 capability matrix). Until that lands, the panel
-  // derives an approximate decisions-this-session view from the two
-  // counters the API exposes today: total sessions handled and
-  // policy violations recorded.
-  const denyCount = agent.policy_violations_count
-  const allowCount = Math.max(0, agent.session_count - denyCount)
-  const max = Math.max(allowCount, denyCount, 1)
-  return (
-    <div data-testid="agent-detail-posture">
-      <MiniBar label="Allow"    value={allowCount} max={max} tone="ok" />
-      <MiniBar label="Narrow"   value={0}          max={max} tone="warn" />
-      <MiniBar label="Deny"     value={denyCount}  max={max} tone="deny" />
-      <MiniBar label="Approval" value={0}          max={max} tone="info" />
-    </div>
-  )
+/**
+ * The tab a deep link asks for via `?tab=`, or `overview` when the param is
+ * absent or names no known tab. Lets affordances like the Fleet "caps →" row
+ * action open the drawer directly on the capability surface. `close` already
+ * preserves `location.search`, so the parameter round-trips unchanged.
+ */
+function initialTabFromSearch(search: string): AgentDetailTab {
+  const requested = new URLSearchParams(search).get('tab')
+  return TABS.some((t) => t.id === requested) ? (requested as AgentDetailTab) : 'overview'
 }
 
 export function AgentDetailPage() {
@@ -180,7 +170,7 @@ export function AgentDetailPage() {
   const { toast } = useToast()
   const { data: agent, isLoading: agentLoading, isError: agentError, refetch: refetchAgent } = useAgentQuery(id ?? '')
   const { data: events, isLoading: eventsLoading, isError: eventsError } = useAgentEventsQuery(id ?? '')
-  const [tab, setTab] = useState<AgentDetailTab>('overview')
+  const [tab, setTab] = useState<AgentDetailTab>(() => initialTabFromSearch(location.search))
   const [showSuspendDialog, setShowSuspendDialog] = useState(false)
   const [sandboxOnly, setSandboxOnly] = useState(false)
 
@@ -245,7 +235,7 @@ export function AgentDetailPage() {
         {!agentLoading && (agentError || !agent) && (
           <div style={{ padding: '1.5rem' }} data-testid="agent-detail-error">
             <p style={{ color: 'var(--danger)' }}>Failed to load agent.</p>
-            <button onClick={() => void refetchAgent()}>Retry</button>
+            <button type="button" onClick={() => ignorePromise(refetchAgent())}>Retry</button>
             <br />
             <button
               type="button"
@@ -284,6 +274,11 @@ export function AgentDetailPage() {
                     <span className="ad-head__owner">@{toFleetAgent(agent).owner}</span>
                   )}
                 </h1>
+                {toFleetAgent(agent).note && (
+                  <p className="ad-head__note" data-testid="agent-detail-note">
+                    ⚠ {toFleetAgent(agent).note}
+                  </p>
+                )}
               </div>
               <div className="ad-head__actions">
                 <button
@@ -328,7 +323,7 @@ export function AgentDetailPage() {
 
             <IdentityStrip agent={agent} />
 
-            <nav className="ad-tabs" data-testid="agent-detail-tabs" role="tablist" aria-label="Agent detail sections">
+            <div className="ad-tabs" data-testid="agent-detail-tabs" role="tablist" aria-label="Agent detail sections">
               {TABS.map((t) => (
                 <button
                   key={t.id}
@@ -342,23 +337,27 @@ export function AgentDetailPage() {
                   {t.label}
                 </button>
               ))}
-            </nav>
+            </div>
 
             <div className="ad-body" data-testid="agent-detail-body">
               {tab === 'overview' && (
                 <div className="ad-overview" data-testid="agent-profile">
                   <section className="ad-card">
                     <h2 className="ad-card__title">posture summary</h2>
-                    <PostureSummary agent={agent} />
+                    <AgentPostureSummary agentId={agent.id} agentName={agent.name} />
                   </section>
 
                   <section className="ad-card">
                     <h2 className="ad-card__title">traffic mix · last 24h</h2>
-                    <div className="ad-traffic-mix" data-testid="agent-detail-traffic-mix">
-                      <div className="ad-traffic-mix__seg ad-traffic-mix__seg--placeholder">
-                        wired in a follow-up sub-task
-                      </div>
-                    </div>
+                    <AgentTrafficMixBar agentId={agent.id} />
+                  </section>
+
+                  <section
+                    className="ad-card ad-card--span-2"
+                    data-testid="agent-overview-capability"
+                  >
+                    <h2 className="ad-card__title">capability snapshot · click any cell to inspect</h2>
+                    <AgentCapabilityOverviewPanel agentId={agent.id} agentName={agent.name} />
                   </section>
 
                   <section className="ad-card ad-card--span-2" data-testid="agent-subtree-burn">
@@ -379,7 +378,7 @@ export function AgentDetailPage() {
                             checked={sandboxOnly}
                             onChange={(e) => setSandboxOnly(e.target.checked)}
                             data-testid="agent-events-sandbox-toggle"
-                          />
+                          />{' '}
                           Sandbox events only
                         </label>
                       </div>
@@ -435,31 +434,13 @@ export function AgentDetailPage() {
                 </div>
               )}
 
-              {tab === 'capability' && <InheritedPermissionsPanel agentId={agent.id} />}
-              {tab === 'traffic' && (
-                <TabEmpty
-                  title="Traffic"
-                  body="Recent-decisions stream for this agent is on the Live Ops page. Inline view lands in a follow-up sub-task."
-                />
+              {tab === 'capability' && (
+                <AgentCapabilityTab agentId={agent.id} agentName={agent.name} />
               )}
-              {tab === 'policies' && (
-                <TabEmpty
-                  title="Policies"
-                  body="Per-agent policy assignments will reuse the Policies page tagging engine. Inline view lands in a follow-up sub-task."
-                />
-              )}
-              {tab === 'lineage' && (
-                <TabEmpty
-                  title="Lineage"
-                  body="Delegation chain visualisation depends on the Topology graph (AAASM-95). Inline view lands in a follow-up sub-task."
-                />
-              )}
-              {tab === 'config' && (
-                <TabEmpty
-                  title="Config"
-                  body="Read-only YAML view of the agent's current enforcement config. Inline view lands in a follow-up sub-task."
-                />
-              )}
+              {tab === 'traffic' && <AgentTrafficTab agentId={agent.id} />}
+              {tab === 'policies' && <AgentPoliciesTab agentId={agent.id} agentName={agent.name} />}
+              {tab === 'lineage' && <AgentLineageTab agentId={agent.id} />}
+              {tab === 'config' && <AgentConfigTab agent={agent} />}
             </div>
           </>
         )}

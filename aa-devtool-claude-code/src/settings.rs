@@ -1,4 +1,4 @@
-use aa_core::{PolicyDecision, PolicyDocument};
+use aa_devtool_contract::{PolicyDecision, PolicyDocument};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,7 +68,7 @@ pub(crate) fn map_policy_to_settings(policy: &PolicyDocument) -> ClaudeSettings 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::{PolicyDecision, PolicyDocument, PolicyRule};
+    use aa_devtool_contract::{PolicyDecision, PolicyDocument, PolicyRule};
 
     fn rule(pattern: &str, decision: PolicyDecision) -> PolicyRule {
         PolicyRule {
@@ -82,7 +82,7 @@ mod tests {
             version: 1,
             name: "test".to_string(),
             rules,
-            enforcement_mode: aa_core::EnforcementMode::default(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         }
     }
 

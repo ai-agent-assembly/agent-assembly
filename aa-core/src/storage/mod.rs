@@ -17,6 +17,19 @@
 //!
 //! The [`aa-storage`](https://docs.rs/aa-storage) crate re-exports this module
 //! verbatim, so `aa_storage::*` and `aa_core::storage::*` are interchangeable.
+//!
+//! # Tenant isolation guardrail (AAASM-3919)
+//!
+//! These traits carry **no `org_id`/tenant argument**: every method funnels to
+//! the reserved `SYSTEM_ORG` in the Postgres driver (the org-less trait impls in
+//! `aa-storage-postgres` delegate to `SYSTEM_ORG`). The RLS-enforcing,
+//! tenant-safe path is the concrete `*_for_tenant` inherent methods on the
+//! `Pg*` types — `get_policy_for_tenant`, `insert_audit_log_for_tenant`,
+//! `get_secret_for_tenant`, etc. — not this trait surface. Any **multi-tenant
+//! Postgres** deployment MUST call those concrete tenant methods (or thread
+//! `org_id` through these traits) before relying on the `0006`/`0007` RLS
+//! migrations; the trait path alone co-mingles every tenant under `SYSTEM_ORG`.
+//! Single-tenant/self-hosted use is unaffected.
 
 mod audit_sink;
 pub mod conformance;

@@ -10,13 +10,13 @@ use crate::error::EbpfError;
 /// Loads the compiled `aa-ebpf-probes` TLS uprobe ELF object into the Linux kernel.
 ///
 /// The object is embedded at build time by `build.rs`.  `EbpfLoader` is the
-/// entry point for all probe attachment in this crate: obtain an [`Ebpf`]
-/// handle from [`EbpfLoader::load`] and pass it to the individual managers
-/// ([`crate::uprobe::UprobeManager`], [`crate::ringbuf::RingBufReader`], etc.).
+/// entry point for all probe attachment in this crate: obtain an `Ebpf`
+/// handle from `EbpfLoader::load` and pass it to the individual managers
+/// (`crate::uprobe::UprobeManager`, `crate::ringbuf::RingBufReader`, etc.).
 pub struct EbpfLoader;
 
 impl EbpfLoader {
-    /// Load the embedded TLS uprobe ELF bytecode and return a live [`Ebpf`] handle.
+    /// Load the embedded TLS uprobe ELF bytecode and return a live `Ebpf` handle.
     ///
     /// Parses the `aa-tls-probes` BPF ELF embedded via
     /// [`crate::AA_TLS_BPF`] and submits it to the kernel.  The returned
@@ -33,6 +33,9 @@ impl EbpfLoader {
     /// `CAP_BPF` + `CAP_PERFMON` capabilities.
     #[cfg(target_os = "linux")]
     pub fn load() -> Result<Ebpf, EbpfError> {
+        // AAASM-3602: fail-closed integrity check before handing bytes to the
+        // kernel — a tampered or stub TLS probe is refused, not loaded blind.
+        crate::integrity::verify_bytecode("aa-tls-probes", crate::AA_TLS_BPF, crate::integrity::AA_TLS_BPF_SHA256)?;
         Ok(Ebpf::load(crate::AA_TLS_BPF)?)
     }
 }
@@ -52,7 +55,13 @@ use crate::maps::PathPattern;
 /// with the file I/O kprobe subsystem. It is only functional on Linux; on
 /// other platforms it returns [`EbpfError::ProgramLoad`] immediately.
 pub struct FileIoLoader {
-    /// Target PID to monitor (and its descendants).
+    /// Target PID to monitor.
+    ///
+    /// NOTE (AAASM-3916): unlike the exec and syscall-guard loaders, the
+    /// file-I/O probe has **no** `sched_process_fork` propagation, so only this
+    /// exact tgid is monitored — descendants are NOT followed. Descendant
+    /// file-I/O telemetry is a follow-up (a fork tracepoint mirroring
+    /// `PID_FILTER` membership like the syscall guard does).
     #[allow(dead_code)]
     target_pid: u32,
     /// Loaded BPF object handle (Linux only).
@@ -61,7 +70,8 @@ pub struct FileIoLoader {
 }
 
 impl FileIoLoader {
-    /// Create a new loader targeting the given PID and its descendants.
+    /// Create a new loader targeting the given PID (this exact tgid only; see
+    /// the `target_pid` field note on the lack of descendant propagation).
     pub fn new(target_pid: u32) -> Self {
         Self {
             target_pid,
@@ -85,6 +95,12 @@ impl FileIoLoader {
         #[cfg(target_os = "linux")]
         {
             tracing::info!(pid = self.target_pid, "loading eBPF programs");
+            // AAASM-3602: fail-closed integrity check before kernel load.
+            crate::integrity::verify_bytecode(
+                "aa-file-io",
+                crate::AA_FILE_IO_BPF,
+                crate::integrity::AA_FILE_IO_BPF_SHA256,
+            )?;
             let mut bpf = aya::Ebpf::load(crate::AA_FILE_IO_BPF).map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
 
             // Insert the target PID into the PID filter map.
@@ -123,14 +139,14 @@ impl FileIoLoader {
                 .as_mut()
                 .ok_or_else(|| EbpfError::ProbeAttach("BPF not loaded — call load() first".into()))?;
 
-            let probes: &[(&str, &str)] = &[
-                ("aa_sys_openat", "__x64_sys_openat"),
-                ("aa_sys_openat_ret", "__x64_sys_openat"),
-                ("aa_sys_read", "__x64_sys_read"),
-                ("aa_sys_write", "__x64_sys_write"),
-                ("aa_sys_unlink", "__x64_sys_unlinkat"),
-                ("aa_sys_rename", "__x64_sys_renameat2"),
-            ];
+            // Attach the single authoritative probe set shared with
+            // [`crate::kprobe::KprobeManager`] (AAASM-4012). This list pairs an
+            // entry kprobe with a return kretprobe (`*_ret`) for every observed
+            // syscall — read/write/unlink/rename all emit their events from the
+            // kretprobe, so attaching only the entry probes (the prior bug) left
+            // openat as the sole syscall producing events. It also includes the
+            // legacy `unlink(2)` / `rename(2)` glibc entry points (AAASM-1574).
+            let probes = crate::kprobe::KprobeManager::KPROBE_TARGETS;
 
             for (prog_name, fn_name) in probes {
                 let program: &mut KProbe = bpf
@@ -208,8 +224,14 @@ impl FileIoLoader {
                         if buf.len() < core::mem::size_of::<FileIoEventRaw>() {
                             continue;
                         }
-                        let raw = unsafe { &*(buf.as_ptr() as *const FileIoEventRaw) };
-                        match FileIoEvent::from_raw(raw) {
+                        // AAASM-4744: the perf buffer is a `BytesMut` whose
+                        // backing allocation carries no alignment guarantee, so
+                        // forming a `&FileIoEventRaw` to `buf.as_ptr()` is UB when
+                        // the pointer is under-aligned. Copy the bytes out through
+                        // an unaligned read into an owned, properly-aligned value
+                        // (the technique `ringbuf::bytes_to` uses) and borrow that.
+                        let raw = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const FileIoEventRaw) };
+                        match FileIoEvent::from_raw(&raw) {
                             Ok(event) => {
                                 let _ = tx.send(event).await;
                             }
@@ -400,6 +422,12 @@ impl ExecLoader {
         #[cfg(target_os = "linux")]
         {
             tracing::info!(pid = self.target_pid, "loading exec tracepoint BPF programs");
+            // AAASM-3602: fail-closed integrity check before kernel load.
+            crate::integrity::verify_bytecode(
+                "aa-exec-probes",
+                crate::AA_EXEC_BPF,
+                crate::integrity::AA_EXEC_BPF_SHA256,
+            )?;
             let mut bpf = aya::Ebpf::load(crate::AA_EXEC_BPF).map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
 
             // Insert the target PID into the exec PID filter map.
@@ -462,6 +490,220 @@ impl ExecLoader {
     }
 }
 
+// ── Syscall-allowlist enforcement loader (AAASM-3631) ───────────────────
+
+/// Loads + attaches the seccomp-style syscall-allowlist enforcement probe
+/// (`aa-syscall-guard`) and populates its `SYSCALL_ALLOWLIST` map.
+///
+/// Unlike the observe-only loaders, the attached program ENFORCES: a monitored
+/// PID issuing a syscall not in the allowlist is killed in-kernel. This loader
+/// is driven exclusively by the privileged daemon (AAASM-3603/3604); the map
+/// is populated from the policy AST lowering
+/// (`aa_security::policy::lower_to_ebpf().syscall_allowlist`, AAASM-3635).
+pub struct SyscallGuardLoader {
+    /// Target PID to confine (added to the probe's PID filter).
+    #[allow(dead_code)]
+    target_pid: u32,
+    /// Loaded BPF object handle (Linux only).
+    #[cfg(target_os = "linux")]
+    bpf: Option<aya::Ebpf>,
+}
+
+impl SyscallGuardLoader {
+    /// Create a loader confining the given PID.
+    pub fn new(target_pid: u32) -> Self {
+        Self {
+            target_pid,
+            #[cfg(target_os = "linux")]
+            bpf: None,
+        }
+    }
+
+    /// Integrity-verify, load the syscall-guard bytecode, and add the target
+    /// PID to the probe's PID filter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::ProgramLoad`] on non-Linux or if the kernel
+    /// rejects the object / the PID filter map is missing.
+    pub fn load(&mut self) -> Result<(), EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(EbpfError::ProgramLoad("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            tracing::info!(pid = self.target_pid, "loading syscall-guard enforcement BPF program");
+            // AAASM-3602: fail-closed integrity check before kernel load.
+            crate::integrity::verify_bytecode(
+                "aa-syscall-guard",
+                crate::AA_SYSCALL_GUARD_BPF,
+                crate::integrity::AA_SYSCALL_GUARD_BPF_SHA256,
+            )?;
+            let mut bpf =
+                aya::Ebpf::load(crate::AA_SYSCALL_GUARD_BPF).map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
+
+            let mut pid_filter: aya::maps::HashMap<_, u32, u8> = aya::maps::HashMap::try_from(
+                bpf.map_mut("PID_FILTER")
+                    .ok_or_else(|| EbpfError::ProgramLoad("PID_FILTER map not found".into()))?,
+            )
+            .map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
+            pid_filter
+                .insert(self.target_pid, 1, 0)
+                .map_err(|e| EbpfError::ProgramLoad(e.to_string()))?;
+
+            self.bpf = Some(bpf);
+            Ok(())
+        }
+    }
+
+    /// Attach the enforcement tracepoint (`aa_syscall_guard` at
+    /// `raw_syscalls/sys_enter`), the descendant-confinement tracepoint
+    /// (`aa_syscall_guard_fork` at `sched/sched_process_fork`, AAASM-3916), and
+    /// the confinement-cleanup tracepoint (`aa_syscall_guard_exit` at
+    /// `sched/sched_process_exit`, AAASM-3921c).
+    ///
+    /// The fork tracepoint must be attached so that children of a confined
+    /// process inherit `PID_FILTER` membership and cannot run unconfined; the
+    /// exit tracepoint releases those entries so the map cannot exhaust (which
+    /// would make later descendants fail open) and reused pids cannot inherit
+    /// stale confinement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::ProbeAttach`] on non-Linux or if either tracepoint
+    /// fails to attach.
+    pub fn attach(&mut self) -> Result<(), EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(EbpfError::ProbeAttach("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use aya::programs::TracePoint;
+
+            let bpf = self
+                .bpf
+                .as_mut()
+                .ok_or_else(|| EbpfError::ProbeAttach("BPF not loaded — call load() first".into()))?;
+
+            // (program name, tracepoint category, tracepoint name)
+            let tracepoints: &[(&str, &str, &str)] = &[
+                ("aa_syscall_guard", "raw_syscalls", "sys_enter"),
+                ("aa_syscall_guard_fork", "sched", "sched_process_fork"),
+                // Release PID_FILTER entries on exit so the map cannot exhaust
+                // (fail-open) and reused pids cannot inherit stale confinement
+                // (AAASM-3921c).
+                ("aa_syscall_guard_exit", "sched", "sched_process_exit"),
+            ];
+
+            for (prog_name, category, tp_name) in tracepoints {
+                let program: &mut TracePoint = bpf
+                    .program_mut(prog_name)
+                    .ok_or_else(|| EbpfError::ProbeAttach(format!("{prog_name} program not found")))?
+                    .try_into()
+                    .map_err(|e: aya::programs::ProgramError| EbpfError::ProbeAttach(e.to_string()))?;
+
+                program.load().map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+                program
+                    .attach(category, tp_name)
+                    .map_err(|e| EbpfError::ProbeAttach(e.to_string()))?;
+
+                tracing::info!(program = prog_name, tracepoint = %format!("{category}/{tp_name}"), "syscall-guard tracepoint attached");
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Replace the `SYSCALL_ALLOWLIST` map contents with `syscall_numbers`
+    /// (the lowered policy AST output). Clears then reapplies so the map
+    /// reflects exactly the current policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::MapUpdate`] on non-Linux or if the map is missing
+    /// / cannot be updated.
+    pub fn update_syscall_allowlist(&mut self, syscall_numbers: &[u32]) -> Result<(), EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = syscall_numbers;
+            Err(EbpfError::MapUpdate("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            use aa_ebpf_common::syscall::SYSCALL_ALLOWED;
+
+            let bpf = self
+                .bpf
+                .as_mut()
+                .ok_or_else(|| EbpfError::MapUpdate("BPF not loaded — call load() first".into()))?;
+
+            let mut allowlist: aya::maps::HashMap<_, u32, u8> = aya::maps::HashMap::try_from(
+                bpf.map_mut("SYSCALL_ALLOWLIST")
+                    .ok_or_else(|| EbpfError::MapUpdate("SYSCALL_ALLOWLIST map not found".into()))?,
+            )
+            .map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+
+            // Clear stale entries, then reapply the desired set.
+            let existing: Vec<u32> = allowlist.keys().filter_map(|k| k.ok()).collect();
+            for key in &existing {
+                let _ = allowlist.remove(key);
+            }
+            for nr in syscall_numbers {
+                allowlist
+                    .insert(*nr, SYSCALL_ALLOWED, 0)
+                    .map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Sum of fork-propagation drops caused by a full `PID_FILTER` (AAASM-4862).
+    ///
+    /// A non-zero value means at least that many forked children of a confined
+    /// process ran **UNCONFINED** because `PID_FILTER` had hit its 1024-entry
+    /// cap when their `sched_process_fork` fired — the fail-open the fork
+    /// tracepoint cannot prevent (it can neither block the fork nor kill an
+    /// unfiltered child). This accessor is the observability surface for that
+    /// otherwise-silent degradation: it reads the BPF-side `FORK_MAP_FULL_DROPS`
+    /// per-CPU counter and returns the total across CPUs. The count is
+    /// monotonic for the life of the loaded program.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EbpfError::MapUpdate`] on non-Linux or if the map is missing /
+    /// cannot be read.
+    pub fn fork_map_full_drops(&self) -> Result<u64, EbpfError> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(EbpfError::MapUpdate("eBPF is only supported on Linux".into()))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let bpf = self
+                .bpf
+                .as_ref()
+                .ok_or_else(|| EbpfError::MapUpdate("BPF not loaded — call load() first".into()))?;
+
+            let counter: aya::maps::PerCpuArray<_, u64> = aya::maps::PerCpuArray::try_from(
+                bpf.map("FORK_MAP_FULL_DROPS")
+                    .ok_or_else(|| EbpfError::MapUpdate("FORK_MAP_FULL_DROPS map not found".into()))?,
+            )
+            .map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+
+            // Per-CPU array: one slot (index 0) holds a private counter per CPU;
+            // the fleet-wide drop total is their sum.
+            let per_cpu = counter.get(&0, 0).map_err(|e| EbpfError::MapUpdate(e.to_string()))?;
+            Ok(per_cpu.iter().copied().sum())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +712,37 @@ mod tests {
     fn new_stores_target_pid() {
         let loader = FileIoLoader::new(1234);
         assert_eq!(loader.target_pid, 1234);
+    }
+
+    #[test]
+    fn syscall_guard_loader_stores_target_pid() {
+        let loader = SyscallGuardLoader::new(4321);
+        assert_eq!(loader.target_pid, 4321);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn syscall_guard_load_returns_error_on_non_linux() {
+        let mut loader = SyscallGuardLoader::new(1);
+        assert!(matches!(loader.load().unwrap_err(), EbpfError::ProgramLoad(_)));
+        assert!(matches!(loader.attach().unwrap_err(), EbpfError::ProbeAttach(_)));
+        assert!(matches!(
+            loader.update_syscall_allowlist(&[0, 1]).unwrap_err(),
+            EbpfError::MapUpdate(_)
+        ));
+    }
+
+    // Documents the AAASM-4862 observability contract: the fork-map-full drop
+    // counter is readable through the loader. On non-Linux the BPF object is a
+    // stub so the accessor surfaces the map error rather than a bogus zero.
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn fork_map_full_drops_returns_error_on_non_linux() {
+        let loader = SyscallGuardLoader::new(1);
+        assert!(matches!(
+            loader.fork_map_full_drops().unwrap_err(),
+            EbpfError::MapUpdate(_)
+        ));
     }
 
     #[test]

@@ -1,0 +1,56 @@
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: balanced
+  version: "1.0.0"
+  description: >
+    A pragmatic default for trusted internal agents. Allowlist the common
+    tools, cap spend at $20/day, and detect PII / credentials by redacting
+    rather than blocking so workflows keep running.
+spec:
+  scope: global
+
+  network:
+    allowlist:
+      - api.openai.com
+      - "*.anthropic.com"
+      - "*.slack.com"
+      - api.github.com
+
+  schedule:
+    active_hours:
+      start: "08:00"
+      end: "20:00"
+      timezone: "America/New_York"
+
+  budget:
+    daily_limit_usd: 20.0
+    monthly_limit_usd: 400.0
+    timezone: "America/New_York"
+    action_on_exceed: deny
+
+  data:
+    # Redact-only: forward a scrubbed payload upstream instead of refusing it.
+    credential_action: redact_only
+    sensitive_patterns:
+      # PII detection: US SSN and a generic email address.
+      - "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+      - "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+
+  tools:
+    read_file:
+      allow: true
+      limit_per_hour: 120
+    http_get:
+      allow: true
+      limit_per_hour: 60
+    web_search:
+      allow: true
+      limit_per_hour: 30
+    write_file:
+      allow: true
+      requires_approval_if: "path starts_with \"/etc\" OR path contains \"..\""
+    shell:
+      allow: true
+      limit_per_hour: 10
+      requires_approval_if: "command contains \"rm\" OR command contains \"sudo\""

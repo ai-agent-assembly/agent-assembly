@@ -27,6 +27,72 @@ pub(crate) fn status_str(status: &AgentStatus) -> &'static str {
     }
 }
 
+/// Runtime status of an agent node in the topology projection.
+///
+/// AAASM-5218 — constrains the wire vocabulary of [`AgentNode::status`] at the
+/// OpenAPI derive to exactly the three values `status_str` can emit, so the
+/// generated spec (and the TypeScript client) advertises a closed enum instead
+/// of an unconstrained `string`. Serializes lowercase, matching the strings the
+/// registry's [`AgentStatus`] mapped to before this was a free-form field.
+///
+/// Deliberately distinct from the runtime registry [`AgentStatus`], whose
+/// `Suspended(_)` variant carries a parameterised reason an enum cannot express,
+/// and from the capability-view `AgentStatus` — the three agent-status
+/// vocabularies are not reconciled here (that is an ADR question, see AAASM-5209).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentNodeStatus {
+    Active,
+    Suspended,
+    Deregistered,
+}
+
+impl From<&AgentStatus> for AgentNodeStatus {
+    fn from(status: &AgentStatus) -> Self {
+        match status {
+            AgentStatus::Active => AgentNodeStatus::Active,
+            AgentStatus::Suspended(_) => AgentNodeStatus::Suspended,
+            AgentStatus::Deregistered => AgentNodeStatus::Deregistered,
+        }
+    }
+}
+
+/// Enforcement-mode badge value for a node — `enforce`, `shadow`, or `off`.
+///
+/// Derived from the canonical `AgentRecord::enforcement_mode` field — the same
+/// per-agent override the gateway actually consults at
+/// `aa_gateway::engine` (`agent_override.unwrap_or(policy_default)`) — and NOT
+/// the free-form `metadata["mode"]` string (AAASM-5289, ADR 0021 prerequisite).
+/// The badge must not be able to claim "enforce" while enforcement is off, or
+/// vice-versa, which the old `metadata.mode` source allowed because that string
+/// does not drive enforcement.
+///
+/// Mapping mirrors `capability::project_mode` — `Observe` is the server-side
+/// mode the "shadow" UI alias names — but the topology badge has a third value
+/// (`off`) so it can represent `Disabled` truthfully rather than collapsing it:
+///
+/// | `enforcement_mode`       | Badge      |
+/// |--------------------------|------------|
+/// | `Some(Enforce)`          | `enforce`  |
+/// | `Some(Observe)`          | `shadow`   |
+/// | `Some(Disabled)`         | `off`      |
+/// | `None` (no override)     | `enforce`  |
+///
+/// `None` means no per-agent override — the resolver falls through to the policy
+/// default and finally to the server-wide `Enforce` default
+/// (`AgentRecord::enforcement_mode` doc), so `enforce` is the honest badge, not
+/// "unknown". Expiry needs no handling here: an already-expired shadow window is
+/// resolved to the base mode (`enforcement_mode = None`) in the registry
+/// (AAASM-5288), so reading the resolved field is correct.
+pub(crate) fn agent_mode(record: &AgentRecord) -> String {
+    match record.enforcement_mode {
+        Some(aa_core::EnforcementMode::Observe) => "shadow",
+        Some(aa_core::EnforcementMode::Disabled) => "off",
+        Some(aa_core::EnforcementMode::Enforce) | None => "enforce",
+    }
+    .to_owned()
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -43,7 +109,7 @@ pub(crate) fn status_str(status: &AgentStatus) -> &'static str {
 ///   "standalone_root_agents": []
 /// }
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, ToSchema)]
 #[schema(example = json!({
     "team_count": 2,
     "root_agent_count": 3,
@@ -81,6 +147,138 @@ pub struct TeamSummary {
     pub root_agent_count: usize,
 }
 
+/// Per-agent daily budget projection for a topology node (AAASM-5045).
+///
+/// A slim read-only view of the gateway `BudgetTracker` state for one agent —
+/// the same source the `/api/v1/costs` per-agent
+/// breakdown reads. `spend_usd` is today's accrued spend (0 when the agent has
+/// no accrual yet); `limit_usd` is the agent's effective daily limit
+/// (per-agent override, else the server-wide daily limit) or `null` when no
+/// limit is configured. Emitted as `f64` (not the tracker's `Decimal`) because
+/// the dashboard budget bar renders numbers directly — the two decimals of a
+/// USD amount are well within `f64`'s exact range.
+///
+/// # Example JSON
+/// ```json
+/// { "spend_usd": 4.10, "limit_usd": 100.0 }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({ "spend_usd": 4.10, "limit_usd": 100.0 }))]
+pub struct NodeBudget {
+    /// Daily spend accrued for this agent today, in USD.
+    pub spend_usd: f64,
+    /// Effective daily budget limit in USD (per-agent override, else the
+    /// server-wide daily limit), or `null` when no limit is configured.
+    pub limit_usd: Option<f64>,
+}
+
+/// One scope tier of an agent's policy-inheritance chain (AAASM-5099).
+///
+/// A tier is emitted only when the agent actually has that selector: an agent
+/// with no `org_id` has no Org tier, so no Org row appears. The `Tool` tier is
+/// deliberately absent — it is selected per *action* (see
+/// `aa_gateway::engine::action_tool_name`), not per agent, so there is no
+/// agent-level answer to project.
+///
+/// # Example JSON
+/// ```json
+/// { "tier": "team", "scope": "team:platform", "policies": ["team-baseline"] }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({ "tier": "team", "scope": "team:platform", "policies": ["team-baseline"] }))]
+pub struct PolicyChainTier {
+    /// Cascade tier: `global`, `org`, `team`, or `agent`.
+    pub tier: String,
+    /// Wire-format scope selector this tier resolves to, e.g. `team:platform`
+    /// — the same string `PolicyScope`'s `Display` produces, so it matches the
+    /// `scope` a policy document declares.
+    pub scope: String,
+    /// Names of the loaded policy documents at this tier, in cascade order.
+    /// Empty when the tier applies to the agent but carries no policy — that is
+    /// real state ("no team policy"), not missing data.
+    pub policies: Vec<String>,
+}
+
+/// The policy cascade that governs one agent, with per-tier provenance
+/// (AAASM-5099) — the data behind the node-detail Policy-Inheritance panel.
+///
+/// `chain` is the `Global → Org → Team → Agent` walk, broadest first. `allow` /
+/// `deny` are the capability set that walk produces after the *earlier*
+/// enforcement stages are folded in — a capability blocked by the network or
+/// tool stage appears in `deny` and never in `allow`, even though the merged
+/// capability set alone says nothing about it. See
+/// `routes::topology::project_effective_permissions` for exactly which stages are
+/// mirrored and which cannot be.
+///
+/// Two consequences for a reader of this payload:
+///
+/// * `allow_restricted` must be read together with `allow`: an empty `allow` with
+///   `allow_restricted = true` is deny-all, not "unrestricted" (AAASM-4154).
+/// * Absence from `deny` is **not** a grant. A `tools: { "*": { allow: false } }`
+///   cascade denies tools that have never been named, and no list can enumerate
+///   them.
+///
+/// The hi-fi mock (`design/v1/hi-fi/topology.jsx`) additionally draws a
+/// "parent" row. There is no parent tier in the product's scope vocabulary
+/// (`aa_gateway::policy::scope::PolicyScope` is `Global | Org | Team | Agent |
+/// Tool`) — a parent agent's own `agent:`-scoped policies are not inherited by
+/// its children — so no parent row is emitted rather than fabricating one.
+///
+/// Distinct from `agents::EffectivePermissionsResponse`
+/// (`GET /api/v1/agents/{id}/capabilities`), which lists one row per *document*
+/// that declares capabilities. This one lists one row per *tier* — including a
+/// tier that carries no policy, which is what the panel renders as "no team
+/// policy" — and is embedded per node so the graph needs no per-agent fan-out.
+///
+/// # Example JSON
+/// ```json
+/// {
+///   "chain": [{ "tier": "global", "scope": "global", "policies": ["baseline"] }],
+///   "allow": ["file_read"],
+///   "deny": ["terminal_exec"],
+///   "allow_restricted": true
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "chain": [{ "tier": "global", "scope": "global", "policies": ["baseline"] }],
+    "allow": ["file_read"],
+    "deny": ["terminal_exec"],
+    "allow_restricted": true,
+    "cascade_loaded": true
+}))]
+pub struct NodeEffectivePermissions {
+    /// Cascade tiers that apply to this agent, broadest → narrowest.
+    pub chain: Vec<PolicyChainTier>,
+    /// Capabilities the merged cascade explicitly allows, canonical wire names
+    /// (`file_read`, `mcp_tool:<name>`, …), sorted.
+    pub allow: Vec<String>,
+    /// Capabilities the merged cascade explicitly denies, canonical wire names,
+    /// sorted.
+    pub deny: Vec<String>,
+    /// Whether an allow-list restriction is in force — anything absent from
+    /// `allow` is denied, even when `allow` is empty.
+    pub allow_restricted: bool,
+    /// Whether the projecting engine actually carries a policy cascade
+    /// (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: with no cascade
+    /// loaded — every shipped aa-api deployment — the walk resolves nothing, so
+    /// every tier's `policies` is empty and `allow` / `deny` are empty. That is
+    /// **not** the real permission set: enforcement falls back to the primary
+    /// policy slot this projection cannot enumerate. `false` here is the
+    /// loaded/unavailable signal the dashboard renders as "policy inheritance
+    /// unknown — cascade not loaded", so an empty chain never reads as a real
+    /// "no policies apply". Distinct from a *loaded* cascade whose walk carries no
+    /// document at a tier, which is real state ("no team policy"). This changes
+    /// no enforcement; it only annotates the projection's confidence in its own
+    /// output.
+    ///
+    /// Required-but-always-present, matching `AgentNode`'s null discipline for
+    /// unmeasured fields: the key is always on the wire so a client cannot read
+    /// an empty chain as authoritative by omission.
+    #[schema(required = true)]
+    pub cascade_loaded: bool,
+}
+
 /// Minimal agent representation used in list and tree responses.
 ///
 /// # Example JSON
@@ -99,7 +297,13 @@ pub struct TeamSummary {
     "name": "my-agent",
     "depth": 1,
     "status": "active",
-    "team_id": "team-alpha"
+    "team_id": "team-alpha",
+    "mode": "enforce",
+    "flagged": false,
+    "trust": null,
+    "owner": "platform-team",
+    "policy_count": 3,
+    "budget": { "spend_usd": 4.10, "limit_usd": 100.0 }
 }))]
 pub struct AgentNode {
     /// Hex-encoded agent UUID.
@@ -109,12 +313,66 @@ pub struct AgentNode {
     /// Delegation depth — 0 for root agents.
     pub depth: u32,
     /// Runtime status: `active`, `suspended`, or `deregistered`.
-    pub status: String,
+    pub status: AgentNodeStatus,
     /// Team this agent belongs to, if any.
     pub team_id: Option<String>,
     /// Governance level — included only when `show_budget=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_level: Option<String>,
+    /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Derived from the
+    /// canonical `AgentRecord::enforcement_mode` field the gateway actually
+    /// consults (AAASM-5289) — not the free-form `metadata["mode"]` — so the
+    /// badge cannot show a mode enforcement is not in. `None` (no per-agent
+    /// override) resolves to `enforce`, the server-wide default. See
+    /// [`agent_mode`].
+    pub mode: String,
+    /// Whether the agent is policy-flagged — it has recorded at least one
+    /// `PolicyViolation` audit event (`count > 0`, AAASM-5103). Drives the
+    /// danger-tinted node card and ⚑ marker in the topology graph.
+    ///
+    /// Derived from the per-agent audit aggregate
+    /// ([`crate::routes::agent_violations::AgentViolationCounts`]), which the
+    /// topology handlers build once per request and set here — the
+    /// `From<&AgentRecord>` conversion leaves it `false` because the record no
+    /// longer carries a violation counter (the dead field it used to read was
+    /// removed in AAASM-5103).
+    pub flagged: bool,
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
+    /// The registry does not compute a per-agent trust score today, so this is
+    /// currently always `null` — the same placeholder the Fleet page uses. Kept
+    /// present (not omitted) so the client renders an explicit "no data" state
+    /// instead of inferring a misleading default.
+    //
+    // AAASM-5104 — integer, not `f64`: the ratified mock renders a whole number
+    // and a float implies a precision no scoring formula has agreed to. See
+    // [`crate::models::capability::CapabilityAgent::trust`] for the full
+    // rationale behind the shared representation and null contract.
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
+    /// Operator / engineer who owns this agent, read from the agent record's
+    /// `metadata["owner"]` (AAASM-5045). `null` when the registrant supplied no
+    /// owner tag — kept present (not omitted) so the node-detail panel renders an
+    /// explicit "no data" state rather than inferring a value.
+    pub owner: Option<String>,
+    /// Number of governance policies whose scope cascade applies to this agent
+    /// — `Global → Org → Team → Agent`, the same walk `PolicyEngine::evaluate`
+    /// uses (AAASM-5045). `null` when this projection is built without a
+    /// policy-engine lookup: only the whole-fleet graph endpoint
+    /// (`GET /api/v1/topology`) resolves it; the list / tree / team endpoints
+    /// leave it `null` rather than emitting a misleading `0`.
+    pub policy_count: Option<u32>,
+    /// Per-agent daily budget spend / limit (AAASM-5045), or `null` when this
+    /// projection is built without a budget-tracker lookup. Like `policy_count`,
+    /// only the graph endpoint resolves it; the other endpoints leave it `null`.
+    pub budget: Option<NodeBudget>,
+    /// The agent's policy-inheritance chain and merged capability set
+    /// (AAASM-5099), or `null` when this projection is built without a
+    /// policy-engine lookup. Like `policy_count` / `budget`, only the graph
+    /// endpoint resolves it — the list / tree / team endpoints leave it `null`
+    /// so the client renders "no data" rather than an empty-but-authoritative
+    /// chain.
+    pub effective_permissions: Option<NodeEffectivePermissions>,
 }
 
 impl From<&AgentRecord> for AgentNode {
@@ -123,9 +381,119 @@ impl From<&AgentRecord> for AgentNode {
             id: format_id(&r.agent_id),
             name: r.name.clone(),
             depth: r.depth,
-            status: status_str(&r.status).to_owned(),
+            status: AgentNodeStatus::from(&r.status),
             team_id: r.team_id.clone(),
             governance_level: None,
+            mode: agent_mode(r),
+            // Left `false` here: the record no longer carries a violation counter
+            // (AAASM-5103 removed it). The topology handlers enrich `flagged` from
+            // the per-agent audit aggregate so every topology surface flags the
+            // same agents the Fleet page does.
+            flagged: false,
+            trust: None,
+            // `owner` is a pure record field (agent metadata), so it is resolved
+            // here and carried by every AgentNode consumer. `policy_count` /
+            // `budget` need the policy engine / budget tracker, which this
+            // record-only conversion can't reach — the graph handler enriches
+            // them; here they stay `null`.
+            owner: r.metadata.get("owner").cloned(),
+            policy_count: None,
+            budget: None,
+            effective_permissions: None,
+        }
+    }
+}
+
+/// One directed edge in the dashboard topology graph (AAASM-5040, widened in
+/// AAASM-5099).
+///
+/// A slim projection of a stored [`aa_core::topology::Edge`] carrying what the
+/// dashboard graph renders: the two hex-encoded endpoints, the relation `kind`,
+/// and whether the edge crosses a team boundary.
+///
+/// `kind` covers all six stored [`aa_core::topology::EdgeType`] variants. The
+/// two structural kinds keep the graph vocabulary the frontend already renders
+/// (`delegates_to` → `delegation`, `calls` → `call`); the other four pass the
+/// stored wire string through unchanged (`reads`, `writes`, `approves`,
+/// `messages`), matching the frontend `TopologyEdge` 1:1 so the client consumes
+/// edges without remapping.
+///
+/// # Example JSON
+/// ```json
+/// { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation", "cross_team": false }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({
+    "source": "0102030405060708090a0b0c0d0e0f10",
+    "target": "aabbccdd00112233aabbccdd00112233",
+    "kind": "delegation",
+    "cross_team": false
+}))]
+pub struct TopologyGraphEdge {
+    /// Hex-encoded UUID of the source (delegating / calling) agent.
+    pub source: String,
+    /// Hex-encoded UUID of the target agent.
+    pub target: String,
+    /// Relation kind rendered by the graph: `delegation`, `call`, `reads`,
+    /// `writes`, `approves`, or `messages`.
+    pub kind: String,
+    /// Whether the two endpoints belong to different teams. Matches the
+    /// `is_cross_team` rule `/topology/edges` uses (`edges::compute_cross_team`):
+    /// true only when both endpoints carry a `team_id` and the two differ — an
+    /// endpoint with no team is never counted as crossing a boundary.
+    pub cross_team: bool,
+}
+
+/// The whole-fleet topology graph rendered by the dashboard Topology page
+/// (AAASM-5040): every agent visible to the caller as a node, plus every stored
+/// edge between those nodes (all six relation kinds, AAASM-5099).
+///
+/// Nodes reuse the [`AgentNode`] projection (so the per-node enforcement-mode,
+/// flagged, and trust badges from AAASM-5036 are carried through), letting the
+/// dashboard render those badges from live registry data instead of a fixture.
+///
+/// # Example JSON
+/// ```json
+/// { "nodes": [], "edges": [], "unclaimed_observable": true }
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[schema(example = json!({ "nodes": [], "edges": [], "unclaimed_observable": true }))]
+pub struct TopologyGraphResponse {
+    /// All agents visible to the caller, one graph node each (sorted by id).
+    pub nodes: Vec<AgentNode>,
+    /// Edges of every stored relation kind whose endpoints are both visible
+    /// nodes.
+    pub edges: Vec<TopologyGraphEdge>,
+    /// Whether the caller's scope can observe unclaimed (team-less) agents at
+    /// all (AAASM-5183).
+    ///
+    /// Scope-derived, not data-derived: it mirrors what
+    /// [`crate::routes::topology::record_visible_to`] does with a `team_id: None`
+    /// record. An admin, and any caller not confined to a specific team, CAN
+    /// observe unclaimed agents; a team-scoped (non-admin) caller structurally
+    /// CANNOT — `record_visible_to` drops every `team_id: None` record for it —
+    /// so a team-scoped caller's `nodes` never contains an unclaimed agent even
+    /// when the registry holds some.
+    ///
+    /// The Teams page reads this to decide whether an empty unclaimed set is the
+    /// honest "no unclaimed agents" (the caller could have seen them and there
+    /// are none) or "unclaimed agents are not available in your scope" (the
+    /// caller could not have seen them either way). It deliberately carries no
+    /// count: disclosing how many unclaimed agents exist to a caller whose scope
+    /// cannot see them is not authorised (no product/security sign-off).
+    pub unclaimed_observable: bool,
+}
+
+impl Default for TopologyGraphResponse {
+    /// The deny-by-default / empty shape a non-admin caller with no tenant scope
+    /// receives. Such a caller is confined to no tenant at all, so it cannot
+    /// observe unclaimed agents either — `unclaimed_observable` is `false`, the
+    /// fail-closed default that never over-promises visibility.
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            unclaimed_observable: false,
         }
     }
 }
@@ -154,6 +522,9 @@ impl From<&AgentRecord> for AgentNode {
     "team_id": "team-alpha",
     "delegation_reason": null,
     "spawned_by_tool": null,
+    "mode": "enforce",
+    "flagged": false,
+    "trust": null,
     "children": []
 }))]
 pub struct AgentTree {
@@ -174,6 +545,18 @@ pub struct AgentTree {
     /// Governance level — included only when `show_budget=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub governance_level: Option<String>,
+    /// Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same canonical
+    /// `enforcement_mode` derivation as [`AgentNode::mode`] (AAASM-5289).
+    pub mode: String,
+    /// Whether the agent is policy-flagged (`count > 0`). Same derivation and
+    /// audit source as [`AgentNode::flagged`] (AAASM-5103).
+    pub flagged: bool,
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
+    /// Same representation, placeholder, and null contract as
+    /// [`AgentNode::trust`] (AAASM-5104).
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
     /// Direct children of this agent in the delegation tree.
     #[schema(schema_with = agent_tree_children_schema)]
     pub children: Vec<AgentTree>,
@@ -342,14 +725,61 @@ mod tests {
         assert_eq!(*val, back);
     }
 
+    /// Minimal `AgentRecord` for exercising the badge-derivation helpers and the
+    /// `From<&AgentRecord>` impl. Only the `metadata` the `agent_mode` helper
+    /// reads is meaningful here; `flagged` is enriched by the handlers from the
+    /// audit aggregate, not the record (AAASM-5103).
+    fn make_record() -> AgentRecord {
+        AgentRecord {
+            agent_id: [0x01; 16],
+            name: "agent-x".to_string(),
+            framework: "langgraph".to_string(),
+            version: "0.1.0".to_string(),
+            risk_tier: 1,
+            tool_names: vec![],
+            public_key: "test-pubkey".to_string(),
+            credential_token: "test-token".to_string(),
+            metadata: std::collections::BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            active_sessions: Vec::new(),
+            recent_events: std::collections::VecDeque::new(),
+            recent_traces: Vec::new(),
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some("team-alpha".to_string()),
+            org_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: Some([0x01; 16]),
+            children: Vec::new(),
+            parent_key: None,
+            enforcement_mode: None,
+            enforcement_mode_expires_at: None,
+        }
+    }
+
     fn make_agent_node() -> AgentNode {
         AgentNode {
             id: "0102030405060708090a0b0c0d0e0f10".to_string(),
             name: "agent-x".to_string(),
             depth: 1,
-            status: "active".to_string(),
+            status: AgentNodeStatus::Active,
             team_id: Some("team-alpha".to_string()),
             governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: None,
+            owner: None,
+            policy_count: None,
+            budget: None,
+            effective_permissions: None,
         }
     }
 
@@ -363,6 +793,130 @@ mod tests {
         let node = make_agent_node();
         let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&node).unwrap()).unwrap();
         assert!(json.get("governance_level").is_none());
+    }
+
+    #[test]
+    fn agent_node_emits_trust_null_not_omitted() {
+        // `trust` has no data source yet, but the client renders an explicit
+        // "no data" state — so `null` must be present, never omitted.
+        let node = make_agent_node();
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&node).unwrap()).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        // AAASM-5104 — an unmeasured score must be unreadable as a real one.
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+        assert_eq!(json["mode"], "enforce");
+        assert_eq!(json["flagged"], false);
+        // AAASM-5045 — owner / policy_count / budget follow the same "present
+        // null, never omitted" contract as trust so the client renders an
+        // explicit "no data" state instead of a misleading default.
+        for key in ["owner", "policy_count", "budget"] {
+            assert!(json.get(key).is_some(), "{key} key must be present");
+            assert!(json[key].is_null(), "{key} must serialize as null when unset");
+        }
+    }
+
+    #[test]
+    fn node_budget_roundtrip_and_null_limit() {
+        roundtrip(&NodeBudget {
+            spend_usd: 4.10,
+            limit_usd: Some(100.0),
+        });
+        let no_limit = NodeBudget {
+            spend_usd: 0.0,
+            limit_usd: None,
+        };
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&no_limit).unwrap()).unwrap();
+        assert_eq!(json["spend_usd"], 0.0);
+        assert!(json.get("limit_usd").is_some(), "limit_usd key must be present");
+        assert!(
+            json["limit_usd"].is_null(),
+            "limit_usd must serialize as null when unset"
+        );
+    }
+
+    #[test]
+    fn agent_mode_reads_canonical_enforcement_mode() {
+        use aa_core::EnforcementMode;
+        let mut record = make_record();
+
+        record.enforcement_mode = Some(EnforcementMode::Enforce);
+        assert_eq!(agent_mode(&record), "enforce");
+        record.enforcement_mode = Some(EnforcementMode::Observe);
+        assert_eq!(agent_mode(&record), "shadow");
+        record.enforcement_mode = Some(EnforcementMode::Disabled);
+        assert_eq!(agent_mode(&record), "off");
+
+        // `None` = no per-agent override → the server-wide `Enforce` default,
+        // the honest base mode (not "unknown"). An expired shadow window is
+        // already resolved to `None` in the registry (AAASM-5288), so this same
+        // branch covers it.
+        record.enforcement_mode = None;
+        assert_eq!(agent_mode(&record), "enforce");
+    }
+
+    /// AAASM-5289 — the divergence test that is the point of the ticket: when the
+    /// free-form `metadata["mode"]` disagrees with the canonical
+    /// `enforcement_mode` the gateway consults, the badge reports the canonical
+    /// one. A stale/spoofed `metadata.mode = "enforce"` must not mask an agent
+    /// whose enforcement is actually in `Observe` (shadow), and vice-versa.
+    #[test]
+    fn agent_mode_prefers_enforcement_mode_over_diverging_metadata() {
+        use aa_core::EnforcementMode;
+        let mut record = make_record();
+
+        // metadata says "enforce" but enforcement is really Observe → shadow.
+        record.metadata.insert("mode".to_string(), "enforce".to_string());
+        record.enforcement_mode = Some(EnforcementMode::Observe);
+        assert_eq!(
+            agent_mode(&record),
+            "shadow",
+            "badge must follow the canonical enforcement_mode, not metadata.mode"
+        );
+
+        // metadata says "shadow" but enforcement is really Enforce → enforce.
+        record.metadata.insert("mode".to_string(), "shadow".to_string());
+        record.enforcement_mode = Some(EnforcementMode::Enforce);
+        assert_eq!(
+            agent_mode(&record),
+            "enforce",
+            "a stale metadata.mode must not claim shadow while enforcement is on"
+        );
+    }
+
+    #[test]
+    fn agent_node_from_record_leaves_flagged_false_for_handler_enrichment() {
+        // AAASM-5103 — the record carries no violation counter, so the
+        // record-only conversion cannot know whether an agent is flagged. It
+        // leaves `flagged = false`; the topology handlers set it from the audit
+        // aggregate so every surface flags the same agents.
+        let record = make_record();
+        assert!(!AgentNode::from(&record).flagged);
+    }
+
+    #[test]
+    fn agent_node_from_record_derives_badge_fields() {
+        let mut record = make_record();
+        record.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+        let node = AgentNode::from(&record);
+        assert_eq!(node.mode, "shadow");
+        // `flagged` is enriched by the handler, not the conversion (AAASM-5103).
+        assert!(!node.flagged);
+        assert!(node.trust.is_none());
+        // AAASM-5045 — `owner` is a pure record field, resolved from metadata by
+        // the `From` impl; `policy_count` / `budget` need external stores the
+        // record-only conversion can't reach, so they stay `None` here.
+        assert!(node.owner.is_none());
+        assert!(node.policy_count.is_none());
+        assert!(node.budget.is_none());
+    }
+
+    #[test]
+    fn agent_node_from_record_reads_owner_metadata() {
+        let mut record = make_record();
+        record.metadata.insert("owner".to_string(), "platform-team".to_string());
+        assert_eq!(AgentNode::from(&record).owner.as_deref(), Some("platform-team"));
     }
 
     #[test]
@@ -400,6 +954,9 @@ mod tests {
             delegation_reason: Some("sub-task".to_string()),
             spawned_by_tool: None,
             governance_level: None,
+            mode: "shadow".to_string(),
+            flagged: true,
+            trust: None,
             children: vec![],
         };
         let root = AgentTree {
@@ -411,9 +968,61 @@ mod tests {
             delegation_reason: None,
             spawned_by_tool: None,
             governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: None,
             children: vec![leaf],
         };
         roundtrip(&root);
+    }
+
+    /// AAASM-5104 — `AgentTree` carries the same trust contract as `AgentNode`:
+    /// present-and-`null` when unmeasured, and a whole number when scored.
+    #[test]
+    fn agent_tree_emits_trust_null_not_omitted_and_scores_as_an_integer() {
+        let mut tree = AgentTree {
+            id: "aa".to_string(),
+            name: "root".to_string(),
+            depth: 0,
+            status: "active".to_string(),
+            team_id: None,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            governance_level: None,
+            mode: "enforce".to_string(),
+            flagged: false,
+            trust: None,
+            children: vec![],
+        };
+        let json = serde_json::to_value(&tree).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+
+        tree.trust = Some(78);
+        let scored = serde_json::to_value(&tree).unwrap();
+        assert_eq!(scored["trust"], 78);
+        assert!(
+            scored["trust"].is_u64(),
+            "a score is a whole number on a 0–100 scale, not a float: {}",
+            scored["trust"]
+        );
+    }
+
+    /// Same integer contract on `AgentNode`, so one agent cannot serialize as
+    /// `78` on one topology projection and `78.0` on the other.
+    #[test]
+    fn agent_node_scores_as_an_integer() {
+        let mut node = make_agent_node();
+        node.trust = Some(78);
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["trust"], 78);
+        assert!(
+            json["trust"].is_u64(),
+            "a score is a whole number on a 0–100 scale, not a float: {}",
+            json["trust"]
+        );
     }
 
     #[test]
@@ -457,6 +1066,43 @@ mod tests {
                     team_id: Some("team-alpha".to_string()),
                 },
             ],
+        });
+    }
+
+    #[test]
+    fn topology_graph_edge_roundtrip() {
+        roundtrip(&TopologyGraphEdge {
+            source: "0102030405060708090a0b0c0d0e0f10".to_string(),
+            target: "aabbccdd00112233aabbccdd00112233".to_string(),
+            kind: "delegation".to_string(),
+            cross_team: false,
+        });
+    }
+
+    #[test]
+    fn topology_graph_response_roundtrip_and_default_is_empty() {
+        // Default is the deny-by-default / empty-registry shape the handler
+        // returns; it must serialize as two empty arrays. AAASM-5183 — a caller
+        // with no tenant scope can observe no unclaimed agents either, so the
+        // default fails closed with `unclaimed_observable: false`.
+        let empty = TopologyGraphResponse::default();
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&empty).unwrap()).unwrap();
+        assert!(json["nodes"].as_array().unwrap().is_empty());
+        assert!(json["edges"].as_array().unwrap().is_empty());
+        assert_eq!(
+            json["unclaimed_observable"], false,
+            "the deny-by-default shape must never promise it could see unclaimed agents"
+        );
+
+        roundtrip(&TopologyGraphResponse {
+            nodes: vec![make_agent_node()],
+            edges: vec![TopologyGraphEdge {
+                source: "aa".to_string(),
+                target: "bb".to_string(),
+                kind: "call".to_string(),
+                cross_team: true,
+            }],
+            unclaimed_observable: true,
         });
     }
 

@@ -4,6 +4,7 @@ use aa_core::DevToolInfo;
 use axum::{Extension, Json};
 use utoipa::ToSchema;
 
+use crate::auth::scope::RequireRead;
 use crate::error::ProblemDetail;
 use crate::state::AppState;
 
@@ -18,7 +19,16 @@ type ToolsList = Vec<ToolInfoSchema>;
 /// entry without requiring [`DevToolInfo`] itself to implement `ToSchema`.
 #[allow(dead_code)] // fields are only used by utoipa's macro for OpenAPI schema generation
 #[derive(ToSchema)]
-struct ToolInfoSchema {
+pub struct ToolInfoSchema {
+    // Mirrors `DevToolInfo::kind` (`aa_core::DevToolKind`, an externally-tagged
+    // enum). The four built-in unit variants (ClaudeCode/Codex/GitHubCopilot/
+    // WindsurfCascade) serialize as plain strings, so `String` is accurate for
+    // every adapter that ships today. `DevToolKind::Custom(name)` would instead
+    // serialize as an object (`{"Custom": "…"}`), which this `String` schema
+    // would not describe — but no out-of-tree/Custom adapter is exposed yet, so
+    // it is unreachable.
+    // TODO(AAASM-4937): when a Custom adapter ships, widen this to a oneOf (or a
+    // dedicated schema) so the OpenAPI contract stays accurate.
     kind: String,
     version: Option<String>,
     install_path: String,
@@ -39,7 +49,13 @@ struct ToolInfoSchema {
         (status = 200, description = "Discovered tools", body = Vec<ToolInfoSchema>)
     )
 )]
-pub async fn list_tools(Extension(state): Extension<AppState>) -> Result<Json<Vec<DevToolInfo>>, ProblemDetail> {
+pub async fn list_tools(
+    // AAASM-3894: require read scope. The discovered tool list includes each
+    // tool's on-host `install_path`, which must not be enumerable by any
+    // unauthenticated/unscoped principal.
+    _auth: RequireRead,
+    Extension(state): Extension<AppState>,
+) -> Result<Json<Vec<DevToolInfo>>, ProblemDetail> {
     let tools = state.discovery.discover_all().await;
     Ok(Json(tools))
 }

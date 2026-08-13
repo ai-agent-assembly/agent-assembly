@@ -124,7 +124,7 @@ impl PolicyCache {
     ///
     /// * `config.enabled = false` → returns [`PolicyCache::Disabled`].
     /// * `config.enabled = true` and the `redis-cache` feature is on → tries
-    ///   to open a [`RedisPolicyCache`]. On connection failure, logs a
+    ///   to open a `RedisPolicyCache`. On connection failure, logs a
     ///   `tracing::warn!` and returns [`PolicyCache::Disabled`] so the
     ///   gateway can still serve requests via the authoritative store.
     /// * `config.enabled = true` and the feature is off → logs a warning
@@ -245,7 +245,7 @@ impl RedisPolicyCache {
     /// Establish a Redis connection from `config` and wrap it in a
     /// [`ConnectionManager`].
     ///
-    /// Returns [`StorageError::ConnectionFailed`] when `config.url` is `None`
+    /// Returns `StorageError` when `config.url` is `None`
     /// or the URL cannot be parsed, and when the connection manager cannot
     /// complete its initial handshake.
     pub async fn connect(config: &RedisConfig) -> StorageResult<Self> {

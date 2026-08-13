@@ -1,0 +1,41 @@
+/*
+ * Mini budget-burn bar for the Costs KPI cards (design/v1/hi-fi/costs.jsx).
+ * Colours are theme tokens only so the bar inverts under
+ * :root[data-theme="dark"] — never hardcode hex here.
+ */
+
+.costs-budget-bar {
+  height: 4px;
+  background: var(--paper-3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.costs-budget-bar__fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  background: var(--ok);
+}
+
+.costs-budget-bar__fill[data-threshold-bucket='warn'] {
+  background: var(--warn);
+}
+
+.costs-budget-bar__fill[data-threshold-bucket='danger'] {
+  background: var(--danger);
+}
+
+/*
+ * Unmeasured track (AAASM-5127): no spend figure, or no configured ceiling.
+ * A plain empty track is indistinguishable from a real budget at 0% burn, so
+ * the absence is drawn — a faint hatch — rather than left to read as headroom.
+ * Tokens only, so it inverts with the theme like the rest of the bar.
+ */
+.costs-budget-bar[data-truth-state] {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--paper-3) 0 3px,
+    transparent 3px 6px
+  );
+}

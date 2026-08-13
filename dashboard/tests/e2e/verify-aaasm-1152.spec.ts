@@ -82,7 +82,7 @@ const TRACE_EVENTS = [
 ]
 
 async function injectToken(page: Page) {
-  await page.addInitScript(() => localStorage.setItem('aa_token', 'verify-token'))
+  await page.addInitScript(() => sessionStorage.setItem('aa_token', 'verify-token'))
 }
 
 async function mockApi(page: Page) {

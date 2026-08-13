@@ -132,7 +132,7 @@ const PAGES = [
 async function seed(page: Page, theme?: Theme) {
   await page.addInitScript(
     (opts: { key: string; theme: string | null }) => {
-      localStorage.setItem('aa_token', 'theme-e2e-token')
+      sessionStorage.setItem('aa_token', 'theme-e2e-token')
       if (opts.theme) localStorage.setItem(opts.key, opts.theme)
     },
     { key: THEME_KEY, theme: theme ?? null },

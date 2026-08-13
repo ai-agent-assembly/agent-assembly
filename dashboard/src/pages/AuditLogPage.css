@@ -1,0 +1,555 @@
+/*
+ * Audit Log page (AAASM-3510) — per design/v1/hi-fi/audit-log.jsx.
+ *
+ * Theme-token only: every colour resolves through the dashboard's CSS custom
+ * properties (--paper*, --ink*, --line*, --danger/--ok/--warn/--info) so the
+ * page inverts automatically under :root[data-theme="dark"]. No hardcoded
+ * hex / white / black — that was the exact regression class fixed in
+ * AAASM-3506 / 3507.
+ */
+
+.audit-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--ink);
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+.audit-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.audit-head__title {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.audit-head__sub {
+  margin: 0.35rem 0 0;
+  max-width: 60ch;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--ink-3);
+}
+
+.audit-head__actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.audit-btn {
+  appearance: none;
+  border: 1px solid var(--line-2);
+  background: var(--paper-2);
+  color: var(--ink);
+  padding: 0.4rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.audit-btn:hover {
+  background: var(--paper-3);
+}
+
+.audit-btn--primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper-2);
+}
+
+.audit-btn--primary:hover {
+  opacity: 0.9;
+  background: var(--ink);
+}
+
+/* ── Coverage banner ─────────────────────────────────────────────────────
+   States how much of the trail is loaded (AAASM-5120). The partial variant
+   carries the warn token rather than danger: a short window is a limitation of
+   the read, not a fault — but it must never be visually quiet enough to skim
+   past, because every count below it is scoped to that window. */
+.audit-coverage {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  color: var(--ink-3);
+  font-size: 0.74rem;
+  flex-shrink: 0;
+}
+
+.audit-coverage--partial {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-bottom-color: var(--warn);
+}
+
+.audit-coverage__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.audit-coverage__more {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.6rem;
+}
+
+.audit-coverage__more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── Stats strip — clickable type filters ────────────────────────────── */
+.audit-stats {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.audit-stat {
+  appearance: none;
+  border: 0;
+  text-align: left;
+  background: var(--paper-2);
+  padding: 0.6rem 0.9rem;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.audit-stat--active {
+  background: var(--ink);
+}
+
+.audit-stat__count {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.audit-stat--active .audit-stat__count {
+  color: var(--paper-2);
+}
+
+.audit-stat__count--danger {
+  color: var(--danger);
+}
+
+.audit-stat__label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.56rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.audit-stat--active .audit-stat__label {
+  color: var(--ink-5);
+}
+
+/* ── Filter bar ──────────────────────────────────────────────────────── */
+.audit-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.audit-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--paper-2);
+  padding: 0 0.5rem;
+  height: 28px;
+}
+
+.audit-search input {
+  appearance: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.8rem;
+  width: 16rem;
+  max-width: 40vw;
+}
+
+.audit-search input::placeholder {
+  color: var(--ink-4);
+}
+
+.audit-filter-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--ink-4);
+}
+
+.audit-select {
+  height: 28px;
+  padding: 0 0.5rem;
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.audit-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+}
+
+/* ── Type filter button row ──────────────────────────────────────────── */
+.audit-type-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* Type-filter pills use the shared sans `.btn.btn-sm` sizing (24px tall, 11px
+   body font) rather than a mono chip, so they read as controls — matching the
+   header buttons — not as data tokens like the table chips. */
+.audit-type-btn {
+  appearance: none;
+  height: 24px;
+  padding: 0 0.5rem;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 0.69rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.audit-type-btn:hover {
+  background: var(--paper-3);
+}
+
+.audit-type-btn--active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper-2);
+}
+
+.audit-type-btn--active:hover {
+  background: var(--ink);
+}
+
+.audit-count {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--ink-4);
+}
+
+/* ── Table ───────────────────────────────────────────────────────────── */
+.audit-table-wrap {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.audit-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  background: var(--paper-3);
+  border-bottom: 1px solid var(--line-2);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+  font-weight: 600;
+}
+
+.audit-table tbody td {
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.audit-row {
+  cursor: pointer;
+}
+
+.audit-row:hover {
+  background: var(--paper-3);
+}
+
+.audit-row--expanded {
+  background: var(--paper-3);
+}
+
+/* A violation row is tinted with a ~3% danger wash rather than the full
+   `--danger-bg` swatch — enough to scan a red band down the table without the
+   solid fill fighting the danger chip/summary that already carry the signal. */
+.audit-row--violation {
+  background: rgba(184, 41, 30, 0.03);
+}
+
+.audit-mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.audit-cell-time {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: var(--ink-2);
+}
+
+.audit-cell-date {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6rem;
+  color: var(--ink-5);
+}
+
+/* The audit agent id is a digest, not a name and not a link — it is styled as
+   inert data (no underline, no pointer) so nothing suggests it navigates to an
+   agent page it cannot resolve. See AAASM-5151. */
+.audit-agent-id {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  cursor: help;
+}
+
+.audit-summary {
+  font-size: 0.74rem;
+  color: var(--ink-2);
+}
+
+.audit-summary--violation {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.audit-summary--mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.audit-session {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6rem;
+  color: var(--ink-4);
+}
+
+.audit-event-link {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--info);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.audit-event-link:hover {
+  text-decoration: underline;
+}
+
+.audit-expand-toggle {
+  color: var(--ink-4);
+  font-size: 0.65rem;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  text-align: center;
+}
+
+.audit-expand-glyph {
+  color: var(--ink-4);
+  font-size: 0.65rem;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  margin-right: 0.4rem;
+}
+
+/* ── Chips ───────────────────────────────────────────────────────────── */
+.audit-chip {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: var(--paper-3);
+  color: var(--ink-2);
+  border: 1px solid var(--line-2);
+  white-space: nowrap;
+}
+
+.audit-chip--info {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.audit-chip--ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.audit-chip--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.audit-chip--danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Redaction/scrub verdict — carries the L3 scrub token (purple), distinct from
+   the amber `warn` used for file-op events, so a redacted payload never reads as
+   a mere warning. */
+.audit-chip--scrub {
+  background: var(--scrub-bg);
+  color: var(--scrub);
+  border-color: var(--scrub);
+}
+
+/* Observe-mode suppression (AAASM-5117 review). Danger-coloured because a
+   suppressed denial is a risk signal, but *dashed and unfilled* so it never
+   reads as an enforced deny — the whole point is that nothing was blocked. It
+   sits beside the enforced `allow` chip rather than replacing it. */
+.audit-chip--observe {
+  background: transparent;
+  color: var(--danger);
+  border: 1px dashed var(--danger);
+}
+
+.audit-decision-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* ── Expanded detail row ─────────────────────────────────────────────── */
+.audit-detail-cell {
+  padding: 0 !important;
+  background: var(--paper-3);
+  border-bottom: 2px solid var(--line-2) !important;
+}
+
+.audit-detail {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 1.25rem;
+  padding: 0.9rem 1.1rem;
+}
+
+.audit-detail__section-title {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+  margin-bottom: 0.5rem;
+}
+
+.audit-kv {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 0.3rem 0.6rem;
+  align-items: baseline;
+}
+
+.audit-kv__k {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+
+.audit-kv__v {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.7rem;
+  color: var(--ink-2);
+  word-break: break-all;
+}
+
+/* Raw payload renders as a fixed dark "terminal" surface (per design/v1
+   `.trc-payload`): the literal #0e0e0e/#e6e1d4 are intentional — a governance
+   payload must read as verbatim machine output in BOTH themes, so it is one of
+   the few surfaces deliberately exempt from the theme-token invert rule. */
+.audit-payload {
+  max-height: 130px;
+  overflow: auto;
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 3px;
+  background: #0e0e0e;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  line-height: 1.6;
+  color: #e6e1d4;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Status states ───────────────────────────────────────────────────── */
+.audit-state {
+  padding: 3rem 1.5rem;
+  text-align: center;
+  color: var(--ink-4);
+  font-size: 0.85rem;
+}
+
+.audit-state--error {
+  color: var(--danger);
+}
+
+.audit-state button {
+  margin-top: 0.75rem;
+}
+
+.audit-empty-cell {
+  text-align: center;
+  padding: 3rem;
+  color: var(--ink-4);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.72rem;
+}

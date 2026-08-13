@@ -1,5 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '../../api/client'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { iamQueryKeys } from './queryKeys'
+import type { LiveRoleGrant } from './roleCapabilities'
 import type { InviteMemberInput, Member, MemberPage, UpdateMemberRoleInput } from './types'
 
 /**
@@ -13,11 +16,11 @@ import type { InviteMemberInput, Member, MemberPage, UpdateMemberRoleInput } fro
  * endpoints exist — the public hook signatures will not change.
  */
 const SEED_MEMBERS: Member[] = [
-  { id: 'me', email: 'alice@agent-assembly.dev', name: 'Alice Owner', role: 'Owner', status: 'active', last_active: '2026-05-13T10:14:00Z' },
-  { id: 'mbr-2', email: 'bob@agent-assembly.dev', name: 'Bob Admin', role: 'Admin', status: 'active', last_active: '2026-05-12T22:01:00Z' },
-  { id: 'mbr-3', email: 'carol@agent-assembly.dev', name: 'Carol Member', role: 'Member', status: 'active', last_active: '2026-05-11T08:30:00Z' },
-  { id: 'mbr-4', email: 'dave@agent-assembly.dev', name: 'Dave Viewer', role: 'Viewer', status: 'active', last_active: null },
-  { id: 'mbr-5', email: 'eve@partner.example', name: 'Eve Partner', role: 'Viewer', status: 'invited', last_active: null },
+  { id: 'me', email: 'alice@agent-assembly.dev', name: 'Alice Owner', role: 'org_admin', status: 'active', last_active: '2026-05-13T10:14:00Z', teams: ['platform'] },
+  { id: 'mbr-2', email: 'bob@agent-assembly.dev', name: 'Bob Admin', role: 'team_admin', status: 'active', last_active: '2026-05-12T22:01:00Z', teams: ['platform', 'cx'] },
+  { id: 'mbr-3', email: 'carol@agent-assembly.dev', name: 'Carol Member', role: 'developer', status: 'active', last_active: '2026-05-11T08:30:00Z', teams: ['analytics'] },
+  { id: 'mbr-4', email: 'dave@agent-assembly.dev', name: 'Dave Viewer', role: 'viewer', status: 'active', last_active: null, teams: ['cx'] },
+  { id: 'mbr-5', email: 'eve@partner.example', name: 'Eve Partner', role: 'viewer', status: 'invited', last_active: null, teams: [] },
 ]
 
 const store: { members: Member[] } = { members: [...SEED_MEMBERS] }
@@ -36,6 +39,28 @@ export function useMembersQuery(page = 1, pageSize = DEFAULT_PAGE_SIZE) {
   return useQuery({
     queryKey: iamQueryKeys.membersPage(page, pageSize),
     queryFn: () => fetchMembersPage(page, pageSize),
+  })
+}
+
+/**
+ * Live role→capability grants from `GET /api/v1/iam/roles` (AAASM-5046).
+ *
+ * Unlike the members store above, this is a real gateway endpoint via the typed
+ * `openapi-fetch` client. The Identity → Roles cards use it as their grant
+ * source; when it is unavailable they fall back to the static built-in
+ * catalogue (see `RoleCapabilityCards`). React Query's default no-throw-on-error
+ * behaviour means an unreachable gateway simply leaves `data` undefined, which
+ * the caller treats as "no live grants".
+ */
+export function useRoleCapabilitiesQuery() {
+  return useQuery<LiveRoleGrant[]>({
+    queryKey: iamQueryKeys.roles(),
+    queryFn: async () => {
+      const { data, error } = await api.GET('/api/v1/iam/roles', {})
+      if (error) throw new Error('Failed to fetch role capabilities')
+      if (!data) throw new Error('Role capabilities response was empty')
+      return data
+    },
   })
 }
 
@@ -62,6 +87,7 @@ function inviteMember(input: InviteMemberInput): Promise<Member> {
     role: input.role,
     status: 'invited',
     last_active: null,
+    teams: [],
   }
   store.members = [...store.members, created]
   return Promise.resolve(created)
@@ -72,7 +98,7 @@ export function useInviteMemberMutation() {
   return useMutation({
     mutationFn: (input: InviteMemberInput) => inviteMember(input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() }))
     },
   })
 }
@@ -125,7 +151,7 @@ export function useUpdateMemberRoleMutation() {
       }
     },
     onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.members() }))
     },
   })
 }

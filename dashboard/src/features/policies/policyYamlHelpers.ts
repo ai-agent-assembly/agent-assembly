@@ -60,3 +60,44 @@ export function withEnforcementMode(yaml: string, mode: EnforcementMode): string
 function isEnforcementMode(value: string): value is EnforcementMode {
   return value === 'enforce' || value === 'observe' || value === 'disabled'
 }
+
+/**
+ * The scope shown when a policy declares none. The gateway treats a policy
+ * with no `metadata.scope` as applying globally, so `'global'` is the safe
+ * label both the list row and the editor fall back to.
+ */
+export const DEFAULT_SCOPE = 'global'
+
+/**
+ * Read `metadata.scope` out of an already-parsed policy document, falling
+ * back to {@link DEFAULT_SCOPE} when the field is absent, blank, or the shape
+ * is unexpected. Split out from `extractScope` so callers that have already
+ * parsed the YAML (the editor's `draftFromPolicy`) don't parse it twice.
+ */
+export function scopeFromMetadata(
+  doc: Record<string, unknown> | null | undefined,
+): string {
+  const meta = doc?.['metadata']
+  if (typeof meta === 'object' && meta !== null) {
+    const scope = (meta as Record<string, unknown>)['scope']
+    if (typeof scope === 'string' && scope.trim().length > 0) return scope.trim()
+  }
+  return DEFAULT_SCOPE
+}
+
+/**
+ * Parse `policy_yaml` and return its `metadata.scope`, or {@link DEFAULT_SCOPE}
+ * when the body is empty / unparseable / scope-less. Lets the policy list row
+ * label its scope without re-implementing the editor's scope parse.
+ */
+export function extractScope(yaml: string): string {
+  if (!yaml.trim()) return DEFAULT_SCOPE
+  let parsed: unknown
+  try {
+    parsed = parseDocument(yaml).toJS({ maxAliasCount: 0 }) as unknown
+  } catch {
+    return DEFAULT_SCOPE
+  }
+  if (typeof parsed !== 'object' || parsed === null) return DEFAULT_SCOPE
+  return scopeFromMetadata(parsed as Record<string, unknown>)
+}

@@ -48,12 +48,24 @@ Agent Assembly Status
   Health:    ✓ ok
 ─────────────────────────────────────
 
-Active Agents
-  ID        NAME            FRAMEWORK   STATUS   SESSIONS   VIOLATIONS   LAST EVENT
-  a1b2…     research-bot    langgraph   active   3          0            2m ago tool_call
+ACTIVE AGENTS
+─────────────
+┌──────────┬──────────────┬───────────┬───────────┬──────────┬──────────────────┬──────────────────┬───────┐
+│ AGENT_ID │ NAME         │ STATUS    │ FRAMEWORK │ SESSIONS │ LAST_EVENT       │ VIOLATIONS_TODAY │ LAYER │
+╞══════════╪══════════════╪═══════════╪═══════════╪══════════╪══════════════════╪══════════════════╪═══════╡
+│ a1b2c3d4 │ research-bot │ ● Running │ langgraph │ 3        │ 2m ago tool_call │ 0                │ sdk   │
+└──────────┴──────────────┴───────────┴───────────┴──────────┴──────────────────┴──────────────────┴───────┘
 
-Pending Approvals: 1  (oldest 2m 15s)
-Budget: $12.50 / $50.00 daily  ███████░░░░░░░░░░░░░  25%
+PENDING APPROVALS
+─────────────────
+  Count:  1
+  Oldest: 2m ago
+
+BUDGET STATUS
+─────────────
+  Daily spend : $12.50 / $50.00  █████░░░░░░░░░░░░░░░  25%
+  Date:           2026-04-30
+  (no per-agent data)
 ```
 
 Continuously refresh:

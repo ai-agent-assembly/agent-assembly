@@ -11,6 +11,8 @@ fn make_event(id: u64, event_type: EventType) -> GovernanceEvent {
         agent_id: "test-agent".to_string(),
         payload: serde_json::json!({"test": true}),
         timestamp: Utc::now(),
+        team_id: None,
+        org_id: None,
     }
 }
 

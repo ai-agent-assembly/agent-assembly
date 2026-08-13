@@ -92,6 +92,7 @@ impl SimulationEngine {
         let mut allowed = 0usize;
         let mut denied = 0usize;
         let mut approval_required = 0usize;
+        let mut errored = 0usize;
         let mut flagged_outcomes = Vec::new();
 
         for (i, event) in events.iter().enumerate() {
@@ -107,7 +108,9 @@ impl SimulationEngine {
                     flagged_outcomes.push(outcome);
                 }
                 _ => {
-                    // "error" or unknown — treat as flagged
+                    // "error" or unknown — an event that could not be evaluated.
+                    // Counted so an exit-gated run can fail on an unparseable log.
+                    errored += 1;
                     flagged_outcomes.push(outcome);
                 }
             }
@@ -118,6 +121,7 @@ impl SimulationEngine {
             denied,
             allowed,
             approval_required,
+            errored,
             budget_impact_usd: None,
             flagged_outcomes,
         }
@@ -164,16 +168,12 @@ mod tests {
         }
     }
 
-    const ALLOW_ALL_POLICY: &str = r#"
-        tier: low
-        rules:
-          - id: allow-all
-            description: Allow everything
-            match:
-              actions: ["*"]
-            effect: allow
-            audit: true
-    "#;
+    // AAASM-3351: the section-based engine allows by default when no section
+    // restricts an action, so a minimal valid document is an allow-all policy.
+    // (Previously this fixture used the unsupported top-level `rules:` schema,
+    // which the validator now rejects rather than silently loading as
+    // allow-all.)
+    const ALLOW_ALL_POLICY: &str = "version: \"1.0\"\n";
 
     #[test]
     fn simulate_event_allow() {

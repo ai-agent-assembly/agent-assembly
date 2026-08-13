@@ -69,5 +69,5 @@ aasm alerts resolve al-301 --reason "raised team cap" --force
 ```
 
 ```text
-Resolved al-301.
+Alert al-301 resolved.
 ```

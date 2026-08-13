@@ -804,12 +804,17 @@ mod proxy_e2e {
             ca_dir: ca_dir.to_path_buf(),
             cert_cache_capacity: 10,
             llm_only: false,
+            mitm_hosts: Vec::new(),
             denied_hosts: Vec::new(),
             network_allowlist: Vec::new(),
             skip_upstream_tls_verify: true,
             credential_action: CredentialAction::default(),
             upstream_override: Some(upstream_override),
             gateway_endpoint: Some(format!("http://{gateway_addr}")),
+            mcp_fail_open: false,
+            // CONNECT host is a public name redirected via `upstream_override`,
+            // so the SSRF guard stays fully active.
+            allow_private_connect_targets: false,
         };
         let bind_addr = config.bind_addr;
         let (tx, rx) = broadcast::channel(64);

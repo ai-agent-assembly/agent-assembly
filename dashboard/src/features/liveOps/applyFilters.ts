@@ -1,3 +1,4 @@
+import { isKnown } from '../../lib/truthfulness'
 import type { LiveOperation, LiveOpsFilters } from './types'
 
 /**
@@ -17,7 +18,12 @@ export function applyFilters(
 function matchesAll(op: LiveOperation, f: LiveOpsFilters): boolean {
   if (isSet(f.agent) && op.agent !== f.agent) return false
   if (isSet(f.team) && op.team !== f.team) return false
-  if (isSet(f.opType) && op.opType !== f.opType) return false
+  // AAASM-5129: an op whose event never carried a verb matches no verb. It
+  // drops out of a narrowed view rather than being counted as a match for
+  // whichever verb the operator picked.
+  if (isSet(f.opType) && !(isKnown(op.opType) && op.opType.value === f.opType)) {
+    return false
+  }
   if (isSet(f.status) && op.status !== f.status) return false
   return true
 }

@@ -175,7 +175,7 @@ describe('RetentionPolicyPage', () => {
     await user.click(saveBtn)
 
     await waitFor(() => {
-      expect(client.calls.update.length).toBe(1)
+      expect(client.calls.update).toHaveLength(1)
     })
     expect(client.calls.update[0]?.hot_days).toBe(15)
     expect(client.calls.update[0]?.warm_days).toBe(90)

@@ -1,0 +1,116 @@
+name: Release completeness
+
+permissions:
+  contents: read
+
+# AAASM-4456: fail a PR that adds a binary-producing crate without wiring it
+# into the release pipeline (or explicitly allowlisting it as unreleased).
+# Triggers on the workspace manifests + the release workflow + the gate itself,
+# so the gap is caught before it ships, not at tag-cut time (which is how the
+# AAASM-4449 aa-api-server gap went undetected across every rc).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "*/Cargo.toml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-completeness.yml"
+      - "scripts/check-release-completeness.sh"
+      # AAASM-5309: the publish-surface gate reads the post-strip shape of the
+      # CLI's dispatch table and the runtime's DI-API bring-up, so it must run
+      # when either of those — or the strip itself — changes.
+      - ".ci/strip-for-publish.sh"
+      - "scripts/check-publish-surface.sh"
+      - "aa-cli/src/commands/mod.rs"
+      - "aa-runtime/src/runtime.rs"
+      # AAASM-5315/5316: the packaged-artifact gate below is decided by what
+      # cargo's file enumeration sees, so it must run when anything that moves
+      # that boundary moves — a crate's `include`/manifest, a .gitignore that
+      # can silently drop a staged directory, the offline query cache that has
+      # to be staged into a crate, or either staging script.
+      - "**/Cargo.toml"
+      - "**/.gitignore"
+      - ".sqlx/**"
+      - ".ci/**"
+      - "scripts/**"
+  workflow_dispatch:
+
+jobs:
+  completeness:
+    name: Release-artifact completeness gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Toolchain only — the gate runs `cargo metadata` (resolve, no compile),
+      # so no protobuf/system deps are needed. `jq` is preinstalled on
+      # ubuntu-latest.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Run release-artifact completeness gate
+        run: bash scripts/check-release-completeness.sh
+
+  publish-surface:
+    # AAASM-5309: the sibling gate above proves the release *ships* what it
+    # should. This one proves what ships is coherent — that the published CLI
+    # does not advertise a command family whose server the strip removes. No
+    # toolchain: the gate strips a throwaway copy of the tree and reads it.
+    name: Published-surface coherence gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run published-surface coherence gate
+        run: bash scripts/check-publish-surface.sh
+
+  packaged-artifacts:
+    # AAASM-5315/5316: the two gates above reason about the SOURCE tree. This one
+    # reasons about the tarball. `release.yml` publishes with `--no-verify`
+    # (it has to — see the comment on that call), so nothing ever unpacked a
+    # crate and compiled it in isolation, and two defects of exactly that class
+    # shipped: aa-cli with no dashboard, aa-gateway that could not compile for
+    # any consumer. This job reconstructs what verify would have proved.
+    #
+    # It lives on `pull_request` so a packaging defect surfaces before the tag
+    # — one found at tag-cut time is already a broken release with a burned
+    # version number. `release.yml` runs the same script again as a
+    # `packaged-artifact-gate` job that `publish-crates` needs, because this
+    # run is path-filtered and sees a PR head rather than the tree that ships,
+    # so it cannot itself be the precondition of an irreversible publish.
+    name: Packaged-artifact gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # aa-proto's build.rs (which stages _embedded/proto/) compiles protobuf.
+      - name: Install protobuf compiler
+        run: sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Same dashboard build release.yml runs before staging into
+      # aa-cli/_embedded — the gate asserts the real bundle ships, not a stub.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Build dashboard
+        working-directory: dashboard
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Run packaged-artifact gate
+        run: bash scripts/check-packaged-artifacts.sh

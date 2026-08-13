@@ -44,8 +44,8 @@
 
 use std::path::PathBuf;
 
-use aa_core::DevToolAdapter;
 use aa_devtool_claude_code::ClaudeCodeAdapter;
+use aa_devtool_contract::DevToolAdapter;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -186,7 +186,7 @@ fn build_launch_command_errors_when_binary_not_found() {
     let adapter = ClaudeCodeAdapter::with_overrides(Some(PathBuf::from("/no/such/binary")), None);
     let result = adapter.build_launch_command(&["--bypassPermissions".to_string()], "agent-1", None, None);
     assert!(
-        matches!(result, Err(aa_core::AdapterError::ToolNotFound)),
+        matches!(result, Err(aa_devtool_contract::AdapterError::ToolNotFound)),
         "must return ToolNotFound when binary does not exist"
     );
 }

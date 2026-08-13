@@ -30,7 +30,7 @@ updates:
   # The workspace resolver means a single Cargo.lock at "/" tracks them all.
   - package-ecosystem: "cargo"
     directory: "/"
-    target-branch: "master"
+    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "rust"]
@@ -58,7 +58,7 @@ updates:
   # Covers: react, react-dom, vite, typescript, @vitejs/plugin-react, @types/*.
   - package-ecosystem: "npm"
     directory: "/dashboard"
-    target-branch: "master"
+    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "dashboard", "pnpm"]
@@ -76,7 +76,7 @@ updates:
   #         EmbarkStudios/cargo-deny-action, SonarSource/sonarqube-scan-action.
   - package-ecosystem: "github-actions"
     directory: "/"
-    target-branch: "master"
+    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "github-actions"]

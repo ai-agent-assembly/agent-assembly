@@ -11,8 +11,8 @@
 //! own process, but the five tests within that binary share a process and must
 //! not run concurrently — pass `-- --test-threads=1` if not using nextest.
 
-use aa_core::DevToolAdapter;
 use aa_devtool_claude_code::ClaudeCodeAdapter;
+use aa_devtool_contract::DevToolAdapter;
 
 // Serialize all tests in this binary: set_current_dir is process-global state
 // and cargo-llvm-cov runs tests in parallel threads within the same process.

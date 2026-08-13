@@ -16,7 +16,7 @@ export function WindowSeverityRow({
   severity,
   onWindowChange,
   onSeverityChange,
-}: WindowSeverityRowProps) {
+}: Readonly<WindowSeverityRowProps>) {
   return (
     <div className="editor__clause" data-testid="editor-window-severity">
       <span className="editor__clause-label">window</span>

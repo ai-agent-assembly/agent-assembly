@@ -1,0 +1,9 @@
+{
+  "_comment": "Registry of repos that consume the agent-assembly core aa-* crates by git rev. policy=lockstep MUST all share one rev (the SDKs, released in lockstep). policy=independent moves on its own cadence (enterprise) - reported for visibility, a differing rev is NOT drift. Add new consumers here. See ADR 0003 / AAASM-3187.",
+  "consumers": [
+    { "repo": "python-sdk", "manifest": "native/aa-ffi-python/Cargo.toml", "visibility": "public", "policy": "lockstep" },
+    { "repo": "node-sdk",   "manifest": "native/aa-ffi-node/Cargo.toml",   "visibility": "public", "policy": "lockstep" },
+    { "repo": "go-sdk",     "manifest": "native/aa-ffi-go/Cargo.toml",     "visibility": "public", "policy": "lockstep" },
+    { "repo": "agent-assembly-enterprise", "manifest": "Cargo.toml", "visibility": "private", "policy": "independent" }
+  ]
+}

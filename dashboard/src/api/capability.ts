@@ -4,71 +4,36 @@ import type {
   OverrideRequest,
   OverrideResponse,
 } from '../features/capability/types'
-import { CAPABILITY_MATRIX_FIXTURE } from '../features/capability/fixtures'
 import { api } from './client'
-
-const MOCK_LATENCY_MS = 120
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
-}
 
 export interface CapabilityClient {
   getMatrix(): Promise<CapabilityMatrix>
   applyOverride(req: OverrideRequest): Promise<OverrideResponse>
 }
 
-function applyOverrideToAgents(
-  agents: CapabilityAgent[],
-  req: OverrideRequest,
-): CapabilityAgent[] {
-  return agents.map((agent) => {
-    if (!req.agentIds.includes(agent.id)) return agent
-    const existing = agent.caps[req.resourceId]
-    if (!existing) return agent
-    return {
-      ...agent,
-      caps: {
-        ...agent.caps,
-        [req.resourceId]: { ...existing, [req.verb]: req.decision },
-      },
-    }
-  })
-}
-
-export function createMockCapabilityClient(
-  options: { latencyMs?: number; failOverride?: boolean } = {},
-): CapabilityClient {
-  const latency = options.latencyMs ?? MOCK_LATENCY_MS
-  let state: CapabilityMatrix = clone(CAPABILITY_MATRIX_FIXTURE)
-  return {
-    async getMatrix() {
-      await delay(latency)
-      return clone(state)
-    },
-    async applyOverride(req) {
-      await delay(latency)
-      if (options.failOverride) {
-        throw new Error('capability override rejected by gateway (mock)')
-      }
-      state = { ...state, agents: applyOverrideToAgents(state.agents, req) }
-      const updated = state.agents.filter((a) => req.agentIds.includes(a.id))
-      return { updated: clone(updated) }
-    },
-  }
-}
-
 /**
- * Live `CapabilityClient` backed by the generated `openapi-fetch` client
- * (AAASM-1433). The hand-written feature-side types in `features/capability/types`
- * and the codegen'd types in `api/generated/schema` are structurally identical
- * for these payloads, so the response body casts at the API boundary are safe.
+ * Live `CapabilityClient` backed by the generated `openapi-fetch` client.
+ *
+ * As of AAASM-5090 `GET /api/v1/capability/matrix` is a real projection of the
+ * agent registry and the policy capability cascade, so there is no mock client
+ * left to fall back to. The hand-written feature-side types in
+ * `features/capability/types` and the codegen'd types in `api/generated/schema`
+ * are structurally identical for these payloads, but that is a compile-time
+ * claim about shape, not a runtime guarantee about content — "structurally
+ * identical" was previously (mis)cited here as making the response body casts
+ * below "safe" outright (AAASM-5217 audit). It doesn't: `data as
+ * CapabilityMatrix` still hands every consumer raw wire values wearing
+ * unenforced `Decision` / `Verb` / `AgentStatus` annotations.
+ *
+ * The cast is accepted-risk only because every field it produces that is ever
+ * used as an object/Map lookup key is validated downstream before that lookup
+ * happens: `Decision` values read off `caps[...]` go through
+ * `decisionMeta()`/`decisionWeight()` (`features/capability/types.ts`,
+ * `features/capability/sort.ts`), which check membership in the `Decision`
+ * union before indexing. Every other field on this payload (ids, names,
+ * timestamps, trust scores) is rendered as opaque display value, never used as
+ * a key, so an unrecognised or prototype-inherited value there is a display
+ * glitch, not a lookup hazard.
  */
 export function createApiCapabilityClient(): CapabilityClient {
   return {
@@ -91,7 +56,7 @@ export function createApiCapabilityClient(): CapabilityClient {
       if (error || !data) {
         throw new Error('capability override rejected by gateway')
       }
-      return data as OverrideResponse
+      return { updated: (data.updated ?? []) as CapabilityAgent[] }
     },
   }
 }

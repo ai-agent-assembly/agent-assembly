@@ -1,0 +1,10 @@
+# Terraform local-value + state artifacts for the DNS config (AAASM-5517).
+# The Workspace mail runbook (README.md) instructs the owner to keep
+# tenant-issued values in a *.tfvars at apply time; these MUST never be
+# committed, nor may resolved state. Root .gitignore does not cover these.
+*.tfvars
+*.auto.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl

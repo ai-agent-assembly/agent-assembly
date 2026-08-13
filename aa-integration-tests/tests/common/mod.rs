@@ -76,7 +76,7 @@ use aa_gateway::engine::PolicyEngine;
 use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig};
 use aa_gateway::registry::{AgentRegistry, OrphanMode};
 use aa_gateway::routes::healthz::{healthz, HealthzState};
-use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore};
+use aa_gateway::secrets::{InMemorySecretsStore, Secret, SecretsStore, TenantScopedStore};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use aa_sandbox::registry::ToolRegistry;
@@ -247,12 +247,19 @@ impl TopologyTestEnv {
         let (mut state, audit_dir, alert_store, key_store) = build_test_state()?;
 
         // Replace the empty store with one pre-populated for this scenario.
+        // AAASM-3845: secret resolution is now scoped to the caller's tenant.
+        // The harness runs in bypass mode (untenanted admin), so the secrets
+        // must be registered under the untenanted namespace for the
+        // `dispatch_tool` route to resolve them.
         let populated = Arc::new(InMemorySecretsStore::new());
-        for (name, value) in entries {
-            (*populated).register(Secret {
-                name: (*name).to_owned(),
-                value: (*value).to_owned(),
-            })?;
+        {
+            let scoped = TenantScopedStore::for_tenant(populated.as_ref(), None, None);
+            for (name, value) in entries {
+                scoped.register(Secret {
+                    name: (*name).to_owned(),
+                    value: (*value).to_owned(),
+                })?;
+            }
         }
         state.secrets_store = populated as Arc<dyn SecretsStore>;
 
@@ -835,7 +842,8 @@ metadata:
   name: topology-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
@@ -923,17 +931,32 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+            saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
+            trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -964,7 +987,8 @@ metadata:
   name: auth-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
@@ -1061,17 +1085,32 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+            saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
+            trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -1103,7 +1142,8 @@ metadata:
   name: auth-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
@@ -1200,17 +1240,32 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+            saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
+            trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -1243,7 +1298,8 @@ metadata:
   name: budget-it-policy
   version: "0.1.0"
 spec:
-  rules: []
+  budget:
+    daily_limit_usd: 1000.0
 "#,
     )?;
 
@@ -1331,17 +1387,32 @@ spec:
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+            saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
+            trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,
@@ -1360,7 +1431,11 @@ pub fn make_api_key(id: &str, scopes: Vec<aa_api::auth::scope::Scope>) -> (Strin
         key_hash: hash,
         scopes,
         created_at: 1_700_000_000,
+        expires_at: None,
         label: Some(format!("test key {id}")),
+        team_id: None,
+        org_id: None,
+        key_lookup: Some(key.lookup()),
     };
     (key.as_str().to_string(), entry)
 }
@@ -1452,17 +1527,32 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             topology_stats_cache: moka::future::Cache::builder()
                 .time_to_live(Duration::from_secs(10))
                 .build(),
-            capability_store: aa_api::routes::capability::CapabilityStore::new_seeded(),
+            capability_store: aa_api::routes::capability::CapabilityStore::new(),
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
             audit_sender: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
+            saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
             destination_registry: Arc::new(DestinationRegistry::seeded()),
             retention_engine: None,
             secrets_store: Arc::new(InMemorySecretsStore::new()),
             tool_registry: ToolRegistry::new(),
+            trust_config: Arc::new(aa_api::trust::TrustConfigStore::new()),
+            // AAASM-5305: the harness is the in-memory (no-Postgres) deployment,
+            // so native email/password auth is unavailable — auth_store is None
+            // and the endpoints degrade honestly (ADR 0031 D2).
+            auth_store: None,
+            native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
+            // AAASM-5306: the no-op logging mailer — tests never send real email.
+            mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+            // AAASM-5359: these fixtures wire no sensitive-data projection, so
+            // the /sensitive-data endpoints report "not enabled" here rather
+            // than an empty window. The projection's own coverage lives in
+            // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
+            sensitive_data: None,
+            sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
         },
         audit_dir,
         alert_store_handle,

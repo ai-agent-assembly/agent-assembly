@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 
+use crate::anomaly::{AnomalyConfig, AnomalyDetector, AnomalyEvent};
 use crate::audit::AuditWriter;
 use crate::edges::InMemoryEdgeRepo;
 use crate::engine::PolicyEngine;
@@ -14,7 +16,7 @@ use crate::registry::AgentRegistry;
 use crate::secrets::InMemorySecretsStore;
 use crate::service::{
     AgentLifecycleServiceImpl, ApprovalServiceImpl, AuditServiceImpl, PolicyServiceImpl, SecretsServiceImpl,
-    TopologyServiceImpl,
+    TenancyMode, TopologyServiceImpl,
 };
 use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleServiceServer;
@@ -37,6 +39,15 @@ use crate::budget::persistence::{
 };
 use crate::budget::{BudgetAlert, BudgetTracker, BudgetWindow};
 use tokio_util::sync::CancellationToken;
+
+/// Explicit inbound gRPC message-size cap for every gateway service (AAASM-4133).
+///
+/// tonic defaults `max_decoding_message_size` to 4 MiB; pin it explicitly on
+/// each service so the ceiling is intentional and centrally tunable rather than
+/// an implicit library default an agent-supplied payload could quietly rely on.
+/// The value matches the current default, so existing traffic is unaffected —
+/// only the bound is now owned in-tree.
+const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 /// Default audit directory.
 ///
@@ -76,13 +87,20 @@ async fn setup_audit(
     agent_id: &str,
     session_id: &str,
     storage: Option<Arc<dyn crate::storage::StorageBackend>>,
-) -> Result<(tokio::sync::mpsc::Sender<AuditEntry>, Arc<AtomicU64>, [u8; 32]), Box<dyn std::error::Error>> {
+) -> Result<(tokio::sync::mpsc::Sender<AuditEntry>, Arc<AtomicU64>, [u8; 32], u64), Box<dyn std::error::Error>> {
     let audit_dir = default_audit_dir();
 
-    // Read the last hash from the existing JSONL file (if any) so the hash
-    // chain is maintained across process restarts.
+    // Read the last hash AND seq from the existing JSONL file (if any) so both
+    // the hash chain and the monotonic sequence counter are maintained across
+    // process restarts. AAASM-3356: recovering only the hash (not the seq) made
+    // the seq counter restart at 0 and emit duplicate sequence numbers.
     let audit_path = audit_file_path(&audit_dir, agent_id, session_id);
     let initial_hash = AuditWriter::read_last_hash(&audit_path).await?.unwrap_or([0u8; 32]);
+    // `initial_seq` is the *next* seq to emit: last persisted seq + 1, or 0 for
+    // a fresh chain.
+    let initial_seq = AuditWriter::read_last_seq(&audit_path)
+        .await?
+        .map_or(0, |last| last + 1);
 
     let (audit_tx, audit_rx) = tokio::sync::mpsc::channel::<AuditEntry>(4096);
     let audit_drops = Arc::new(AtomicU64::new(0));
@@ -93,7 +111,142 @@ async fn setup_audit(
     }
     tokio::spawn(writer.run());
 
-    Ok((audit_tx, audit_drops, initial_hash))
+    Ok((audit_tx, audit_drops, initial_hash, initial_seq))
+}
+
+/// Path of the SQLite file the durable sensitive-data projection is written to
+/// (AAASM-5440).
+///
+/// Unset means the tier is off, which is the default ADR 0032 §8 requires: the
+/// projection must be switchable without touching existing audit behaviour, and
+/// defaulting it on would make the safe state the one an operator opts into.
+///
+/// A path rather than a boolean over the gateway's own database. The projection
+/// is a second writer with a different retention story and a documented rollback
+/// of "drop the tables"; giving it its own file keeps that rollback to deleting
+/// one file, and keeps its write traffic off the pool the audit path shares.
+///
+/// # Not a stable configuration surface
+///
+/// `aa-gateway` is in the crates.io publish set, so a `pub` item here would
+/// otherwise read as public API carrying the usual compatibility promise. This
+/// one does not: the variable is an **internal deployment setting** for a tier
+/// that is off by default and has no documented operator-facing contract — it
+/// appears nowhere in `docs/`, unlike `AA_POLICY` and friends, which do.
+///
+/// It is `pub` only because the integration tests that boot a real `serve_tcp`
+/// live outside the crate and must name the same variable the production path
+/// reads, rather than re-spelling the literal and passing while the real key
+/// drifts. `#[doc(hidden)]` keeps it out of the published documentation so the
+/// visibility does not become an advertisement.
+///
+/// Promoting this to a supported configuration surface means naming it in the
+/// operator docs, fixing its precedence against any future config file, and
+/// committing to its failure behaviour — none of which this ticket did.
+#[doc(hidden)]
+pub const SENSITIVE_DATA_PROJECTION_DB_ENV: &str = "AA_SENSITIVE_DATA_PROJECTION_DB";
+
+/// How many projected decisions may await persistence — see
+/// [`SensitiveDataProjectionSink::channel`](crate::engine::sensitive_data::SensitiveDataProjectionSink::channel).
+const SENSITIVE_DATA_PROJECTION_CAPACITY: usize = crate::engine::sensitive_data::DEFAULT_PROJECTION_CAPACITY;
+
+/// Wire the durable sensitive-data projection onto `engine` (AAASM-5440).
+///
+/// Both serve paths call this and nothing else does, so the sink's construction,
+/// the drain's spawn and the engine's attachment are one decision made in one
+/// place — the arrangement that makes "is the projection actually wired?" a
+/// question a single test can answer.
+///
+/// Returns the engine unchanged and `None` when
+/// [`SENSITIVE_DATA_PROJECTION_DB_ENV`] is unset.
+///
+/// # Ownership
+///
+/// The returned [`SensitiveDataProjectionService`](crate::engine::sensitive_data::SensitiveDataProjectionService)
+/// owns the spawned drain. A caller must hold it for as long as it serves and
+/// call `shutdown().await` afterwards; dropping it instead leaks a task that
+/// keeps a database handle open, and — because the engine holds a live sender —
+/// would never end on its own.
+///
+/// # Errors
+///
+/// Fails the boot when the configured database cannot be opened or migrated. A
+/// warning-and-continue would leave a governance surface empty for as long as
+/// nobody read the log, and an empty table is indistinguishable from a quiet
+/// period.
+pub async fn attach_sensitive_data_projection(
+    engine: PolicyEngine,
+) -> Result<
+    (
+        PolicyEngine,
+        Option<crate::engine::sensitive_data::SensitiveDataProjectionService>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let Some(path) = std::env::var_os(SENSITIVE_DATA_PROJECTION_DB_ENV).filter(|p| !p.is_empty()) else {
+        return Ok((engine, None));
+    };
+    let path = PathBuf::from(path);
+
+    let store = crate::storage::SqliteBackend::open(&crate::storage::SqliteConfig { path: path.clone() })
+        .await
+        .map_err(|e| {
+            format!(
+                "sensitive-data projection database {} could not be opened: {e}",
+                path.display()
+            )
+        })?;
+    let writer = crate::storage::sensitive_data::SensitiveDataProjectionWriter::new(
+        Arc::new(store),
+        crate::storage::sensitive_data::SensitiveDataProjectionConfig::enabled(),
+    );
+    writer.migrate().await.map_err(|e| {
+        format!(
+            "sensitive-data projection schema could not be applied to {}: {e}",
+            path.display()
+        )
+    })?;
+
+    let service = crate::engine::sensitive_data::SensitiveDataProjectionService::spawn(
+        writer,
+        SENSITIVE_DATA_PROJECTION_CAPACITY,
+    );
+    tracing::info!(
+        database = %path.display(),
+        "durable sensitive-data projection enabled"
+    );
+    let engine = engine.with_sensitive_data_sink(service.sink().clone());
+    Ok((engine, Some(service)))
+}
+
+/// Return the YAML of the first Global-scoped `*.yaml` document in a cascade
+/// directory (alphabetical order), or empty string if none parses as Global.
+///
+/// AAASM-3499 — the budget tracker the gateway's persistence loop owns must
+/// reflect the same limits `load_cascade_from_dir` derives, which come from
+/// the Global-scoped document. Returning empty on absence makes the limits
+/// default to `None`, identical to the cascade loader's own behaviour.
+fn read_global_doc_yaml(dir: &Path) -> String {
+    let mut entries: Vec<PathBuf> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("yaml"))
+            .collect(),
+        Err(_) => return String::new(),
+    };
+    entries.sort();
+    for path in &entries {
+        let Ok(yaml) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
+            if matches!(output.document.scope, crate::policy::scope::PolicyScope::Global) {
+                return yaml;
+            }
+        }
+    }
+    String::new()
 }
 
 /// Load persisted budget state from `~/.aa/budget.json`, construct a
@@ -115,34 +268,67 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     });
 
     // Extract limits and rollover window from the policy YAML so the tracker
-    // enforces them.
-    let yaml = std::fs::read_to_string(policy_path).unwrap_or_default();
-    let (daily_limit, monthly_limit, window) = if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
-        let daily = output
-            .document
-            .budget
-            .as_ref()
-            .and_then(|bp| bp.daily_limit_usd)
-            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
-        let monthly = output
-            .document
-            .budget
-            .as_ref()
-            .and_then(|bp| bp.monthly_limit_usd)
-            .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
-        let window = output.document.budget.as_ref().and_then(|bp| bp.window);
-        (daily, monthly, window)
+    // enforces them. For a cascade directory (AAASM-3499) the limits live in
+    // the first Global-scoped document, mirroring `load_cascade_from_dir`;
+    // for a single file we read it directly.
+    let yaml = if policy_path.is_dir() {
+        read_global_doc_yaml(policy_path)
     } else {
-        (None, None, None)
+        std::fs::read_to_string(policy_path).unwrap_or_default()
     };
+    #[allow(clippy::type_complexity)]
+    let (daily_limit, monthly_limit, team_daily_limit, team_monthly_limit, window) =
+        if let Ok(output) = crate::policy::PolicyValidator::from_yaml(&yaml) {
+            let daily = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.daily_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            let monthly = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.monthly_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            // AAASM-5087 — Lift the team-tier limits so the shipped `serve`
+            // path enforces the same team caps the cascade loaders derive.
+            // Without this the team limit stays test-only dead code, since
+            // `with_state_and_alert_sender` hardcodes it to `None` and
+            // `load_*_with_budget` adopts this tracker as-is.
+            let team_daily = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.team_daily_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            let team_monthly = output
+                .document
+                .budget
+                .as_ref()
+                .and_then(|bp| bp.team_monthly_limit_usd)
+                .and_then(|v| rust_decimal::Decimal::try_from(v).ok());
+            let window = output.document.budget.as_ref().and_then(|bp| bp.window);
+            (daily, monthly, team_daily, team_monthly, window)
+        } else {
+            (None, None, None, None, None)
+        };
 
     let mut tracker = BudgetTracker::with_state_and_alert_sender(
-        crate::budget::PricingTable::default_table(),
+        // AAASM-4793: honours AA_PRICING_FILE when the operator has set it,
+        // falling back to default_table() unchanged when unset.
+        crate::budget::PricingTable::from_env(),
         daily_limit,
         monthly_limit,
         persisted,
         budget_alert_tx,
     );
+    if let Some(limit) = team_daily_limit {
+        tracker = tracker.with_team_daily_limit(limit);
+    }
+    if let Some(limit) = team_monthly_limit {
+        tracker = tracker.with_team_monthly_limit(limit);
+    }
     if let Some(d) = window {
         tracker = tracker.with_window(crate::budget::BudgetWindow::Duration(d));
         tracing::info!(
@@ -155,6 +341,26 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
     tracing::info!(path = %budget_path.display(), "budget state loaded");
 
     (tracker, budget_path)
+}
+
+/// Build the [`PolicyEngine`] from `policy_path`, routing on whether the path
+/// is a directory.
+///
+/// AAASM-3499 — a directory activates the multi-document Global/Org/Team/Agent
+/// cascade via `PolicyEngine::load_cascade_from_dir_with_budget`; a single
+/// file preserves the long-standing `PolicyEngine::load_from_file_with_budget`
+/// behaviour unchanged (back-compat). Both adopt the pre-built `tracker` so the
+/// gateway's persistence loop owns the same budget state either way.
+fn load_policy_engine(
+    policy_path: &Path,
+    tracker: Arc<BudgetTracker>,
+) -> Result<PolicyEngine, crate::engine::PolicyLoadError> {
+    if policy_path.is_dir() {
+        tracing::info!(dir = %policy_path.display(), "loading policy cascade from directory");
+        PolicyEngine::load_cascade_from_dir_with_budget(policy_path, tracker)
+    } else {
+        PolicyEngine::load_from_file_with_budget(policy_path, tracker)
+    }
 }
 
 /// Spawn a periodic flush task when the tracker is configured with a
@@ -172,6 +378,114 @@ fn maybe_spawn_window_flush(tracker: Arc<BudgetTracker>) -> Option<tokio::task::
             let flush_interval = std::cmp::max(interval / 4, std::time::Duration::from_millis(50));
             Some(start_window_flush_task(tracker, flush_interval))
         }
+    }
+}
+
+/// Construct the live anomaly-detection hook for the gateway serve path
+/// (AAASM-3378).
+///
+/// The `aa-gateway::anomaly` engine was fully implemented and unit-tested but
+/// had **zero production callers** — the serve path never attached it, so the
+/// shipped gateway ran with anomaly detection OFF and no `AnomalyEvent` could
+/// ever fire on live traffic. This builds an [`AnomalyDetector`] with the
+/// default config plus the broadcast channel it publishes detections on, so
+/// `serve_tcp` / `serve_uds` can opt the live service in via
+/// [`PolicyServiceImpl::with_anomaly_detection`].
+///
+/// The returned [`broadcast::Receiver`] is retained by the caller so the
+/// channel is not immediately closed (the detector's `send` would otherwise
+/// always error with no subscribers); future work can route it to alert sinks.
+fn setup_anomaly() -> (
+    Arc<AnomalyDetector>,
+    broadcast::Sender<AnomalyEvent>,
+    broadcast::Receiver<AnomalyEvent>,
+) {
+    let detector = Arc::new(AnomalyDetector::new(AnomalyConfig::default()));
+    let (event_tx, event_rx) = broadcast::channel::<AnomalyEvent>(256);
+    tracing::info!("anomaly detection enabled on the gateway serve path");
+    (detector, event_tx, event_rx)
+}
+
+/// Build the in-process op-control broadcast for the gRPC `op_control_stream`,
+/// and — when cross-process delivery is configured — spawn the NATS bridge that
+/// feeds it (AAASM-3883).
+///
+/// The returned [`SharedOpControlPublisher`] is attached to
+/// [`PolicyServiceImpl::with_ops_publisher`] so `op_control_stream` is live (no
+/// longer `Unavailable`) for in-process / co-located halts. When
+/// `AA_OPCONTROL_NATS_URL` is set, a bridge task subscribes to
+/// `assembly.opcontrol.>` and forwards every halt published by the aa-api process
+/// into this broadcast, so an operator halt issued on the HTTP endpoints reaches
+/// the runtimes streamed from this gateway. See ADR 0011.
+fn setup_op_control() -> crate::ops::SharedOpControlPublisher {
+    let publisher = Arc::new(crate::ops::OpControlPublisher::new());
+    match crate::ops::OpControlNatsConfig::from_env() {
+        Some(config) => {
+            tracing::info!(
+                url = %config.url,
+                "op-control NATS bridge enabled — cross-process halts will be delivered to op_control_stream"
+            );
+            crate::ops::nats::spawn_bridge(config, Arc::clone(&publisher));
+        }
+        None => {
+            tracing::info!(
+                "op-control NATS bridge disabled (AA_OPCONTROL_NATS_URL unset) — \
+                 op_control_stream serves in-process halts only"
+            );
+        }
+    }
+    publisher
+}
+
+/// Select the registration-challenge store backend from the gateway's Redis
+/// config (AAASM-3884).
+///
+/// Mirrors [`PolicyCache::from_config_async`](crate::storage::PolicyCache::from_config_async):
+/// when the shared Redis cache backend is enabled **and** the `redis-cache`
+/// feature is compiled in, connect a replica-shared
+/// `RedisChallengeStore` so a
+/// multi-replica gateway can issue a registration nonce on one replica and
+/// consume it on another. Returns `None` when Redis is disabled, the feature is
+/// not built in, or the connection fails — the caller then keeps the in-memory
+/// default. Connection failure is fail-soft (logged, `None`) so a transient
+/// Redis outage never blocks gateway startup, matching the policy cache's
+/// fallback-to-disabled behaviour. The `redis-cache` feature gate and the same
+/// `storage.redis` config are reused — no new config surface is added.
+async fn select_challenge_store(
+    redis: &aa_core::config::RedisConfig,
+) -> Option<Arc<dyn crate::service::lifecycle_service::ChallengeStoreLike>> {
+    if !redis.enabled {
+        return None;
+    }
+    #[cfg(feature = "redis-cache")]
+    {
+        let cfg = crate::storage::RedisConfig {
+            enabled: redis.enabled,
+            url: redis.url.clone(),
+            policy_cache_ttl_secs: redis.policy_cache_ttl_secs,
+            max_connections: redis.max_connections,
+        };
+        match crate::storage::RedisChallengeStore::connect(&cfg).await {
+            Ok(store) => {
+                tracing::info!("redis-backed registration challenge store selected (replica-shared)");
+                Some(Arc::new(store))
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "redis challenge store connect failed — falling back to in-memory challenge store"
+                );
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "redis-cache"))]
+    {
+        tracing::warn!(
+            "storage.redis.enabled = true but the `redis-cache` feature is not compiled in; \
+             using the in-memory registration challenge store"
+        );
+        None
     }
 }
 
@@ -351,6 +665,43 @@ fn final_budget_save(tracker: &BudgetTracker, budget_path: &Path) {
     }
 }
 
+/// Build the standard gRPC Health Checking Protocol service
+/// (`grpc.health.v1.Health`) with every gateway service — and the overall
+/// server (`""`) — reported as `SERVING`.
+///
+/// AAASM-4759: the published `aa-gateway` container previously exposed no
+/// health endpoint, so `Health/Check` answered `Unimplemented` and
+/// orchestrators/liveness probes had nothing to call. This is registered
+/// **without** the credential interceptor (unlike every agent-plane service)
+/// so an unauthenticated probe can confirm liveness — the health protocol
+/// carries no sensitive data.
+///
+/// `health_reporter()` seeds the overall server (`""`) as `Serving`; we also
+/// advertise each registered service by name so a per-service `Check` returns
+/// `SERVING` rather than `NotFound`. The trait bound is spelled via
+/// `tonic_health::pb::health_server::Health` because `tonic_health::server`
+/// only re-exports the trait privately.
+async fn serving_health_service(
+) -> tonic_health::pb::health_server::HealthServer<impl tonic_health::pb::health_server::Health + use<>> {
+    let (reporter, health_service) = tonic_health::server::health_reporter();
+    reporter.set_serving::<PolicyServiceServer<PolicyServiceImpl>>().await;
+    reporter.set_serving::<AuditServiceServer<AuditServiceImpl>>().await;
+    reporter
+        .set_serving::<AgentLifecycleServiceServer<AgentLifecycleServiceImpl>>()
+        .await;
+    reporter
+        .set_serving::<ApprovalServiceServer<ApprovalServiceImpl>>()
+        .await;
+    reporter
+        .set_serving::<TopologyServiceServer<TopologyServiceImpl>>()
+        .await;
+    reporter.set_serving::<SecretsServiceServer<SecretsServiceImpl>>().await;
+    reporter
+        .set_serving::<InvalidationServiceServer<InvalidationServiceImpl>>()
+        .await;
+    health_service
+}
+
 /// Start the gRPC server on a TCP address.
 ///
 /// Loads the policy from `policy_path`, wraps it in a `PolicyServiceImpl`, and
@@ -368,22 +719,33 @@ pub async fn serve_tcp(
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
-    let engine = Arc::new(
-        PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
+    // AAASM-5440 — the projection is attached before the engine is shared, so
+    // every service that later evaluates through this engine writes the tier.
+    let (engine, projection) = attach_sensitive_data_projection(
+        load_policy_engine(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
-    );
+    )
+    .await?;
+    let engine = Arc::new(engine);
     // Reuse the push channel for approval notifications: a dashboard verdict
     // (POST /approvals/{id}/approve|reject → ApprovalQueue::decide) fans out as
     // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
-    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
+    let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
     spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+
+    // AAASM-3378: enable the live anomaly detector on the shipped serve path.
+    let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
+
+    // AAASM-3883: attach the op-control broadcast so `op_control_stream` is live,
+    // and (when AA_OPCONTROL_NATS_URL is set) bridge cross-process halts into it.
+    let op_control_publisher = setup_op_control();
 
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
@@ -394,28 +756,104 @@ pub async fn serve_tcp(
         Arc::clone(&audit_drops),
         initial_hash,
     )
-    .with_db_scheduler(db_scheduler.clone());
-    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
+    .with_initial_seq(initial_seq)
+    .with_db_scheduler(db_scheduler.clone())
+    .with_anomaly_detection(anomaly_detector, anomaly_tx)
+    .with_ops_publisher(op_control_publisher);
+    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
+        .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
+    // AAASM-4032: resolve the deployment tenancy posture once at boot. It now
+    // gates only team-less agent *registration* (see `AgentLifecycleServiceImpl`);
+    // cross-tenant access is fail-safe unconditionally (AAASM-4140). Default is
+    // Untenanted so OSS/single-tenant registration (and existing tests) are
+    // unchanged.
+    let tenancy_mode = TenancyMode::from_env();
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
-    let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
+    // AAASM-3788 — build the agent-plane auth interceptors from the shared
+    // registry before it is moved into the lifecycle service. `auth` is
+    // fail-closed (applied to the previously-unauthenticated services); `enrich`
+    // never rejects (applied to lifecycle/policy, which self-validate the body
+    // token authoritatively, so a verified identity is available without
+    // breaking bootstrap Register / policy optional-enrichment).
+    let auth = crate::iam::auth_interceptor(Arc::clone(&registry));
+    let enrich = crate::iam::enrich_interceptor(Arc::clone(&registry));
+    // AAASM-3884: activate the AAASM-3882 seam — select the registration-
+    // challenge store from config. When the shared Redis backend is enabled
+    // (and the `redis-cache` feature is built in) a replica-shared
+    // `RedisChallengeStore` is injected so a horizontally-scaled gateway can
+    // issue a nonce on one replica and consume it on another; otherwise the
+    // in-memory default is kept. Mirrors how `PolicyCache` selects Redis.
+    let challenge_store = match aa_core::config::GatewayConfig::load() {
+        Ok(cfg) => select_challenge_store(&cfg.storage.redis).await,
+        Err(e) => {
+            tracing::warn!(error = %e, "gateway config load failed — using in-memory challenge store");
+            None
+        }
+    };
+    let lifecycle_svc = match challenge_store {
+        Some(store) => AgentLifecycleServiceImpl::new(registry)
+            .with_challenge_store(store)
+            .with_tenancy_mode(tenancy_mode),
+        None => AgentLifecycleServiceImpl::new(registry).with_tenancy_mode(tenancy_mode),
+    };
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
     let addr = listen_addr.parse()?;
-    tracing::info!(%addr, "starting gRPC server on TCP");
+
+    // AAASM-3788 — mTLS wire point. The credential-token interceptor above is
+    // the always-on authentication layer; mTLS is optional transport hardening.
+    // The live handshake is a follow-up under AAASM-3418, so when TLS is
+    // *requested* via the environment we fail closed rather than serve plaintext
+    // on a socket the operator believes is encrypted.
+    if let Some(tls) = crate::iam::GrpcTlsConfig::from_env() {
+        return Err(format!(
+            "gRPC TLS requested (mutual={}) via {}/{} but TLS support is not yet \
+             compiled into aa-gateway (tracked under AAASM-3418). Refusing to start \
+             plaintext; unset the TLS env vars to run the default loopback posture.",
+            tls.is_mutual(),
+            crate::iam::grpc_tls::GrpcTlsConfig::ENV_CERT,
+            crate::iam::grpc_tls::GrpcTlsConfig::ENV_KEY,
+        )
+        .into());
+    }
+
+    tracing::info!(%addr, "starting gRPC server on TCP (per-RPC credential auth enforced)");
 
     Server::builder()
-        .add_service(PolicyServiceServer::new(policy_svc))
-        .add_service(AuditServiceServer::new(audit_svc))
-        .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
-        .add_service(ApprovalServiceServer::new(approval_svc))
-        .add_service(TopologyServiceServer::new(topology_svc))
-        .add_service(SecretsServiceServer::new(secrets_svc))
-        .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
-            Arc::clone(&invalidation_hub),
-        )))
+        // AAASM-4759: unauthenticated liveness endpoint — see `serving_health_service`.
+        .add_service(serving_health_service().await)
+        .add_service(InterceptedService::new(
+            PolicyServiceServer::new(policy_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            enrich.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            AuditServiceServer::new(audit_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            AgentLifecycleServiceServer::new(lifecycle_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            enrich.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            ApprovalServiceServer::new(approval_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            TopologyServiceServer::new(topology_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            SecretsServiceServer::new(secrets_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            InvalidationServiceServer::new(InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)))
+                .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
         .serve_with_shutdown(addr, async move {
             shutdown_signal().await;
             db_token.cancel();
@@ -424,8 +862,38 @@ pub async fn serve_tcp(
 
     // Final flush so the last ≤60 s of spend is not lost.
     final_budget_save(&tracker, &budget_path);
+    drain_sensitive_data_projection(projection).await;
 
     Ok(())
+}
+
+/// Stop the projection drain and report what the tier managed to record
+/// (AAASM-5440).
+///
+/// Called after the server has stopped accepting requests, so the queue is
+/// already at its final contents. Cancelling before the last decisions were
+/// written would discard rows the producer had already accepted — the same
+/// silent loss the counters exist to make visible, arriving at shutdown instead
+/// of at runtime.
+async fn drain_sensitive_data_projection(
+    projection: Option<crate::engine::sensitive_data::SensitiveDataProjectionService>,
+) {
+    let Some(projection) = projection else {
+        return;
+    };
+    let outcome = projection.shutdown().await;
+    if outcome.write_failures > 0 || outcome.dropped > 0 || outcome.refused > 0 || outcome.drain_panicked {
+        tracing::warn!(
+            written = outcome.written,
+            write_failures = outcome.write_failures,
+            dropped = outcome.dropped,
+            refused = outcome.refused,
+            drain_panicked = outcome.drain_panicked,
+            "the sensitive-data projection is incomplete for this run"
+        );
+    } else {
+        tracing::info!(written = outcome.written, "sensitive-data projection drained");
+    }
 }
 
 /// Start the gRPC server on a Unix domain socket.
@@ -445,22 +913,33 @@ pub async fn serve_uds(
     let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
-    let engine = Arc::new(
-        PolicyEngine::load_from_file_with_budget(policy_path, Arc::clone(&tracker))
+    // AAASM-5440 — the same wiring `serve_tcp` performs; see
+    // `attach_sensitive_data_projection` for why it is one function.
+    let (engine, projection) = attach_sensitive_data_projection(
+        load_policy_engine(policy_path, Arc::clone(&tracker))
             .map_err(|e| format!("failed to load policy: {e:?}"))?
             .with_invalidation_hub(Arc::clone(&invalidation_hub)),
-    );
+    )
+    .await?;
+    let engine = Arc::new(engine);
     // Reuse the push channel for approval notifications: a dashboard verdict
     // (POST /approvals/{id}/approve|reject → ApprovalQueue::decide) fans out as
     // an `ApprovalResolved` event so blocked agents need not poll. AAASM-2378.
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
-    let (audit_tx, audit_drops, initial_hash) = setup_audit("gateway", "default", storage).await?;
+    let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
     spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+
+    // AAASM-3378: enable the live anomaly detector on the shipped serve path.
+    let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
+
+    // AAASM-3883: attach the op-control broadcast so `op_control_stream` is live,
+    // and (when AA_OPCONTROL_NATS_URL is set) bridge cross-process halts into it.
+    let op_control_publisher = setup_op_control();
 
     let policy_svc = PolicyServiceImpl::with_registry_approval_and_escalation(
         Arc::clone(&engine),
@@ -471,16 +950,49 @@ pub async fn serve_uds(
         Arc::clone(&audit_drops),
         initial_hash,
     )
-    .with_db_scheduler(db_scheduler.clone());
-    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry));
+    .with_initial_seq(initial_seq)
+    .with_db_scheduler(db_scheduler.clone())
+    .with_anomaly_detection(anomaly_detector, anomaly_tx)
+    .with_ops_publisher(op_control_publisher);
+    let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
+        .with_initial_seq(initial_seq);
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
+    // AAASM-4032: resolve the deployment tenancy posture once at boot. It now
+    // gates only team-less agent *registration* (see `AgentLifecycleServiceImpl`);
+    // cross-tenant access is fail-safe unconditionally (AAASM-4140). Default is
+    // Untenanted so OSS/single-tenant registration (and existing tests) are
+    // unchanged.
+    let tenancy_mode = TenancyMode::from_env();
     let topology_svc = TopologyServiceImpl::new(Arc::clone(&registry), edge_repo);
-    let lifecycle_svc = AgentLifecycleServiceImpl::new(registry);
+    // AAASM-3788 — agent-plane auth interceptors (see serve_tcp for the
+    // fail-closed vs enrich rationale). UDS is additionally protected by
+    // filesystem permissions; the credential interceptor is enforced regardless.
+    let auth = crate::iam::auth_interceptor(Arc::clone(&registry));
+    let enrich = crate::iam::enrich_interceptor(Arc::clone(&registry));
+    // AAASM-3884: activate the AAASM-3882 seam — select the registration-
+    // challenge store from config. When the shared Redis backend is enabled
+    // (and the `redis-cache` feature is built in) a replica-shared
+    // `RedisChallengeStore` is injected so a horizontally-scaled gateway can
+    // issue a nonce on one replica and consume it on another; otherwise the
+    // in-memory default is kept. Mirrors how `PolicyCache` selects Redis.
+    let challenge_store = match aa_core::config::GatewayConfig::load() {
+        Ok(cfg) => select_challenge_store(&cfg.storage.redis).await,
+        Err(e) => {
+            tracing::warn!(error = %e, "gateway config load failed — using in-memory challenge store");
+            None
+        }
+    };
+    let lifecycle_svc = match challenge_store {
+        Some(store) => AgentLifecycleServiceImpl::new(registry)
+            .with_challenge_store(store)
+            .with_tenancy_mode(tenancy_mode),
+        None => AgentLifecycleServiceImpl::new(registry).with_tenancy_mode(tenancy_mode),
+    };
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
-    tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS");
+    tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS (per-RPC credential auth enforced)");
 
     if socket_path.exists() {
         std::fs::remove_file(socket_path)?;
@@ -490,15 +1002,37 @@ pub async fn serve_uds(
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(uds);
 
     Server::builder()
-        .add_service(PolicyServiceServer::new(policy_svc))
-        .add_service(AuditServiceServer::new(audit_svc))
-        .add_service(AgentLifecycleServiceServer::new(lifecycle_svc))
-        .add_service(ApprovalServiceServer::new(approval_svc))
-        .add_service(TopologyServiceServer::new(topology_svc))
-        .add_service(SecretsServiceServer::new(secrets_svc))
-        .add_service(InvalidationServiceServer::new(InvalidationServiceImpl::new(
-            Arc::clone(&invalidation_hub),
-        )))
+        // AAASM-4759: unauthenticated liveness endpoint — see `serving_health_service`.
+        .add_service(serving_health_service().await)
+        .add_service(InterceptedService::new(
+            PolicyServiceServer::new(policy_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            enrich.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            AuditServiceServer::new(audit_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            AgentLifecycleServiceServer::new(lifecycle_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            enrich.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            ApprovalServiceServer::new(approval_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            TopologyServiceServer::new(topology_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            SecretsServiceServer::new(secrets_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
+        .add_service(InterceptedService::new(
+            InvalidationServiceServer::new(InvalidationServiceImpl::new(Arc::clone(&invalidation_hub)))
+                .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+            auth.clone(),
+        ))
         .serve_with_incoming_shutdown(incoming, async move {
             shutdown_signal().await;
             db_token.cancel();
@@ -507,6 +1041,229 @@ pub async fn serve_uds(
 
     // Final flush so the last ≤60 s of spend is not lost.
     final_budget_save(&tracker, &budget_path);
+    drain_sensitive_data_projection(projection).await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_core::identity::{AgentId, SessionId};
+    use aa_core::time::Timestamp;
+    use aa_core::{AgentContext, GovernanceAction, PolicyResult};
+    use std::collections::BTreeMap;
+
+    /// AAASM-4759 — the gRPC Health Checking service must answer `Health/Check`
+    /// with `SERVING` (not `Unimplemented`) once the gateway is up, so
+    /// orchestrators/liveness probes can health-check the published container.
+    /// Exercises the real wire path: serve the same `serving_health_service()`
+    /// that `serve_tcp`/`serve_uds` register, then Check it with a gRPC client.
+    #[tokio::test]
+    async fn health_check_reports_serving() {
+        use tonic::server::NamedService;
+        use tonic_health::pb::health_check_response::ServingStatus;
+        use tonic_health::pb::health_client::HealthClient;
+        use tonic_health::pb::HealthCheckRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(serving_health_service().await)
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        // Build the channel via aa-gateway's own tonic transport: tonic-health
+        // itself is compiled without the transport feature, so `HealthClient::
+        // connect` does not exist — construct the channel here and hand it in.
+        let channel = tonic::transport::Channel::from_shared(format!("http://{addr}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut client = HealthClient::new(channel);
+
+        // Overall server health ("") — what a k8s gRPC liveness probe checks.
+        let overall = client
+            .check(HealthCheckRequest { service: String::new() })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(overall.status, ServingStatus::Serving as i32);
+
+        // A specific registered service resolves too (not NotFound).
+        let policy_name = <PolicyServiceServer<PolicyServiceImpl> as NamedService>::NAME;
+        let per_service = client
+            .check(HealthCheckRequest {
+                service: policy_name.to_string(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(per_service.status, ServingStatus::Serving as i32);
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+    }
+
+    fn new_tracker() -> Arc<BudgetTracker> {
+        Arc::new(BudgetTracker::new(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+        ))
+    }
+
+    fn ctx_in_org(agent_byte: u8, org: &str) -> AgentContext {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("org_id".to_string(), org.to_string());
+        AgentContext {
+            agent_id: AgentId::from_bytes([agent_byte; 16]),
+            session_id: SessionId::from_bytes([2u8; 16]),
+            pid: 1,
+            started_at: Timestamp::from_nanos(0),
+            metadata,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+        }
+    }
+
+    fn bash_call() -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: "bash".to_string(),
+            args: String::new(),
+        }
+    }
+
+    fn write_cascade_dir() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("000-global.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: srv-global\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("100-org.yaml"),
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: srv-org\n  version: \"0.1.0\"\n\
+             spec:\n  scope: org:acme\n  tools:\n    bash:\n      allow: false\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    /// AAASM-3499 — `load_policy_engine` must route a *directory* to the
+    /// multi-document cascade loader, making the documented Org/Team/Agent
+    /// cascade reachable from the shipped `aa-gateway` binary. Asserted
+    /// behaviourally: the org-acme `bash` deny overrides the Global allow for
+    /// an org-acme agent, while a different org falls through to allow.
+    #[test]
+    fn load_policy_engine_routes_directory_to_cascade() {
+        let tmp = write_cascade_dir();
+        let engine = load_policy_engine(tmp.path(), new_tracker()).expect("directory loads");
+
+        assert_eq!(
+            engine.evaluate(&ctx_in_org(0xac, "acme"), &bash_call()).decision,
+            PolicyResult::Deny {
+                reason: "tool denied by policy".into()
+            },
+            "org-acme bash must be denied by the cascade loaded from the directory"
+        );
+        assert_eq!(
+            engine.evaluate(&ctx_in_org(0x07, "other"), &bash_call()).decision,
+            PolicyResult::Allow,
+            "a non-matching org must fall through to the Global allow-all"
+        );
+    }
+
+    /// A single file preserves the long-standing single-policy behaviour: with
+    /// no cascade loaded, the same org-acme agent is not subject to any
+    /// org-scoped deny (the directory document is never consulted).
+    #[test]
+    fn load_policy_engine_routes_file_to_single_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("policy.yaml");
+        std::fs::write(
+            &file,
+            "apiVersion: agent-assembly.dev/v1alpha1\n\
+             kind: GovernancePolicy\n\
+             metadata:\n  name: srv-single\n  version: \"0.1.0\"\n\
+             spec:\n  tools: {}\n",
+        )
+        .unwrap();
+
+        let engine = load_policy_engine(&file, new_tracker()).expect("file loads");
+        assert_eq!(
+            engine.evaluate(&ctx_in_org(0xac, "acme"), &bash_call()).decision,
+            PolicyResult::Allow,
+            "single-file load must not apply any org-scoped cascade deny"
+        );
+    }
+
+    /// AAASM-3884: with Redis disabled (the default posture), boot keeps the
+    /// in-memory registration-challenge store — `select_challenge_store`
+    /// returns `None`, so `AgentLifecycleServiceImpl` keeps its default.
+    #[tokio::test]
+    async fn select_challenge_store_keeps_in_memory_default_when_redis_disabled() {
+        let redis = aa_core::config::RedisConfig::default();
+        assert!(!redis.enabled, "default posture must be Redis-disabled");
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "disabled Redis must keep the in-memory challenge store default",
+        );
+    }
+
+    /// AAASM-3884: a Redis connect failure falls back to the in-memory default
+    /// (fail-soft) rather than blocking gateway startup — mirrors
+    /// `PolicyCache::from_config_async`'s fallback-to-disabled behaviour.
+    #[cfg(feature = "redis-cache")]
+    #[tokio::test]
+    async fn select_challenge_store_falls_back_to_default_on_connect_failure() {
+        // 127.0.0.1:1 is reserved and refuses connections, exercising the
+        // runtime connect-failure branch (not the URL-parse branch).
+        let redis = aa_core::config::RedisConfig {
+            enabled: true,
+            url: Some("redis://127.0.0.1:1".into()),
+            ..aa_core::config::RedisConfig::default()
+        };
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "connect failure must fall back to the in-memory default, not panic",
+        );
+    }
+
+    /// AAASM-3884: when the `redis-cache` feature is not compiled in, an enabled
+    /// Redis config still resolves to the in-memory default — the feature gate
+    /// (mirrored from the policy cache) decides availability.
+    #[cfg(not(feature = "redis-cache"))]
+    #[tokio::test]
+    async fn select_challenge_store_in_memory_without_redis_feature() {
+        let redis = aa_core::config::RedisConfig {
+            enabled: true,
+            url: Some("redis://example:6379".into()),
+            ..aa_core::config::RedisConfig::default()
+        };
+        assert!(
+            select_challenge_store(&redis).await.is_none(),
+            "without the redis-cache feature the in-memory default is kept",
+        );
+    }
 }

@@ -54,6 +54,44 @@ fn today_in_tz(tz: chrono_tz::Tz) -> chrono::NaiveDate {
     chrono::Utc::now().with_timezone(&tz).date_naive()
 }
 
+/// Accumulate `cost` into the [`BudgetState`] for `key` in `budgets`, resetting
+/// the window first when it has rolled over. Creates a fresh state on first use,
+/// seeding `monthly_spent_usd` when any monthly limit is configured and stamping
+/// `last_reset_at` for duration windows. Shared by the agent, team, and org
+/// tiers of [`BudgetTracker::record_cost`].
+#[allow(clippy::too_many_arguments)]
+fn accumulate_spend<K: Eq + std::hash::Hash>(
+    budgets: &DashMap<K, BudgetState>,
+    key: K,
+    cost: Decimal,
+    has_monthly: bool,
+    now: chrono::DateTime<chrono::Utc>,
+    today: chrono::NaiveDate,
+    window: BudgetWindow,
+    tz: chrono_tz::Tz,
+) {
+    budgets
+        .entry(key)
+        .and_modify(|s| {
+            s.maybe_reset_window(now, window, tz);
+            s.spent_usd += cost;
+            if let Some(m) = s.monthly_spent_usd.as_mut() {
+                *m += cost;
+            }
+        })
+        .or_insert_with(|| {
+            let mut s = BudgetState::new_for_date(today);
+            s.spent_usd += cost;
+            if has_monthly {
+                s.monthly_spent_usd = Some(cost);
+            }
+            if matches!(window, BudgetWindow::Duration(_)) {
+                s.last_reset_at = Some(now);
+            }
+            s
+        });
+}
+
 /// Per-agent and global budget tracker. All methods take `&self` — safe to share via `Arc`.
 pub struct BudgetTracker {
     /// Per-agent daily spend. `pub(crate)` for test date manipulation.
@@ -85,6 +123,14 @@ pub struct BudgetTracker {
     /// Per-ancestor mutex used to serialise concurrent check_and_decrement calls
     /// that share an ancestor. Keyed by ancestor `AgentId`; acquired root-down.
     pub(crate) parent_locks: DashMap<AgentId, std::sync::Arc<parking_lot::Mutex<()>>>,
+    /// AAASM-4124 — per-tenant mutex serialising concurrent `reserve_spend`
+    /// calls that roll spend into the same team or org envelope. Keyed by a
+    /// namespaced tenant id (`"team:<id>"` / `"org:<id>"`) so a team and an org
+    /// that share a name never collide. Acquired *after* the agent/ancestor
+    /// locks (team before org) so every caller observes one global lock order —
+    /// this makes the tenant check-then-commit atomic without deadlocking
+    /// against the agent-tier lock domain.
+    pub(crate) tenant_locks: DashMap<String, std::sync::Arc<parking_lot::Mutex<()>>>,
     /// Per-agent daily spend history (in-memory; not persisted across restarts).
     /// Powers the subtree-burn time-series surface (AAASM-1055). Keyed by
     /// agent, then by calendar date (in `timezone`). Values are the
@@ -134,6 +180,7 @@ impl BudgetTracker {
             org_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
+            tenant_locks: DashMap::new(),
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
@@ -192,7 +239,7 @@ impl BudgetTracker {
     /// Create a tracker pre-loaded with persisted state that sends alerts on an
     /// externally-owned channel.
     ///
-    /// Combines [`with_state`] (restoring prior spend) with [`new_with_alert_sender`]
+    /// Combines `with_state` (restoring prior spend) with `new_with_alert_sender`
     /// (sharing a broadcast channel created upstream).
     pub fn with_state_and_alert_sender(
         pricing: PricingTable,
@@ -230,6 +277,7 @@ impl BudgetTracker {
             org_monthly_limit_usd: None,
             agent_limits: DashMap::new(),
             parent_locks: DashMap::new(),
+            tenant_locks: DashMap::new(),
             spend_history: DashMap::new(),
             alert_tx,
             timezone,
@@ -259,6 +307,20 @@ impl BudgetTracker {
         use std::sync::Arc;
         self.parent_locks
             .entry(ancestor_id)
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+            .value()
+            .clone()
+    }
+
+    /// Return an `Arc` wrapping the per-tenant `parking_lot::Mutex`, creating it
+    /// if absent. `key` must be the namespaced tenant id (`"team:<id>"` /
+    /// `"org:<id>"`). Callers acquire these *after* the agent/ancestor locks
+    /// (team before org) so all reservations share one global lock order and the
+    /// tenant check-then-commit stays atomic without deadlock (AAASM-4124).
+    fn get_or_create_tenant_lock(&self, key: String) -> std::sync::Arc<parking_lot::Mutex<()>> {
+        use std::sync::Arc;
+        self.tenant_locks
+            .entry(key)
             .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
             .value()
             .clone()
@@ -305,6 +367,59 @@ impl BudgetTracker {
         self.monthly_limit_usd
     }
 
+    /// Returns the per-team daily spend limit applied to each team, if set.
+    ///
+    /// This is the tracker-wide team envelope (the same cap applies to every
+    /// team), not a per-team override — it is read-only accounting metadata
+    /// exposed so the budget-tree observability surface (AAASM-5032) can show
+    /// each team node's configured limit without duplicating the private
+    /// enforcement path.
+    pub fn team_daily_limit_usd(&self) -> Option<Decimal> {
+        self.team_daily_limit_usd
+    }
+
+    /// Returns the per-team calendar-month spend limit applied to each team, if set.
+    ///
+    /// Read-only companion to [`team_daily_limit_usd`](Self::team_daily_limit_usd)
+    /// for the monthly window (AAASM-5087). Like the daily variant it is the
+    /// tracker-wide team envelope, exposed so the Costs monthly KPI and the
+    /// Teams monthly-budget card can render each team's configured monthly limit
+    /// without touching the private enforcement path.
+    pub fn team_monthly_limit_usd(&self) -> Option<Decimal> {
+        self.team_monthly_limit_usd
+    }
+
+    /// Returns the per-org daily spend limit applied to each org, if set.
+    ///
+    /// Read-only companion to [`team_daily_limit_usd`](Self::team_daily_limit_usd)
+    /// at the org tier (AAASM-5032). `None` leaves the org node's limit unset,
+    /// in which case the tree falls back to the global daily limit.
+    pub fn org_daily_limit_usd(&self) -> Option<Decimal> {
+        self.org_daily_limit_usd
+    }
+
+    /// Returns the per-agent daily spend override for `agent_id`, if one was
+    /// configured via [`with_agent_limit`](Self::with_agent_limit).
+    ///
+    /// This exposes only the explicit per-agent override for the read-only
+    /// budget-tree surface (AAASM-5032); it does NOT apply the global/team/org
+    /// fallback that the private enforcement path
+    /// ([`resolve_limit`](Self::resolve_limit)) layers on — callers that want an
+    /// effective limit fall back to [`daily_limit_usd`](Self::daily_limit_usd)
+    /// themselves. Returns `None` when the agent has no override.
+    pub fn agent_daily_limit_usd(&self, agent_id: &AgentId) -> Option<Decimal> {
+        self.agent_limits.get(agent_id).and_then(|l| l.daily_usd)
+    }
+
+    /// Borrow the tracker's [`PricingTable`].
+    ///
+    /// AAASM-3353 — lets the service layer price an LLM call from the same
+    /// table the tracker uses for `record_usage`, so spend accrual and the
+    /// in-tracker cost lookup never diverge.
+    pub fn pricing(&self) -> &PricingTable {
+        &self.pricing
+    }
+
     /// Returns `true` if the agent has met or exceeded the given daily limit.
     ///
     /// Automatically resets spend to zero when the stored date is before today
@@ -349,6 +464,12 @@ impl BudgetTracker {
         org_id: Option<&str>,
         amount_usd: Decimal,
     ) -> BudgetStatus {
+        // AAASM-4132 — clamp non-positive amounts to zero at the accrual
+        // boundary. `Decimal::try_from(-x)` succeeds, so a negative amount
+        // reaching here would *decrement* accrued spend and reopen headroom
+        // (e.g. after an exhausted budget). No caller supplies a credit today;
+        // clamp defensively before any is ever wired.
+        let amount_usd = amount_usd.max(Decimal::ZERO);
         self.record_cost(agent_id, team_id, org_id, amount_usd)
     }
 
@@ -364,7 +485,15 @@ impl BudgetTracker {
         input_tokens: u64,
         output_tokens: u64,
     ) -> BudgetStatus {
-        let cost = self.pricing.cost_usd(provider, model, input_tokens, output_tokens);
+        // AAASM-4744 — clamp a non-positive computed cost to zero. A custom
+        // pricing override (JSON table) can carry a negative rate; the resulting
+        // cost would *decrement* accrued spend and reopen budget headroom, the
+        // same hazard `record_raw_spend` already clamps. Clamp here so both
+        // accrual entry points are fail-safe before folding into `record_cost`.
+        let cost = self
+            .pricing
+            .cost_usd(provider, model, input_tokens, output_tokens)
+            .max(Decimal::ZERO);
         self.record_cost(agent_id, team_id, org_id, cost)
     }
 
@@ -390,6 +519,46 @@ impl BudgetTracker {
         status
     }
 
+    /// Enforce a tier's (team or org) monthly-then-daily limits for the budget
+    /// state keyed by `key` in `budgets`, emitting threshold alerts via
+    /// [`Self::check_limit_and_alert`]. `alert_team_id` is the team label carried
+    /// on emitted alerts (`Some(team)` for the team tier, `None` for org).
+    /// Returns `true` on the first limit exceeded (monthly takes precedence).
+    fn tier_limit_exceeded(
+        &self,
+        budgets: &DashMap<String, BudgetState>,
+        key: &str,
+        agent_id: AgentId,
+        alert_team_id: Option<&str>,
+        monthly_limit: Option<Decimal>,
+        daily_limit: Option<Decimal>,
+    ) -> bool {
+        // Monthly takes precedence: only the recorded monthly spend (when set)
+        // participates, then today's spend against the daily limit.
+        let monthly_spent = monthly_limit
+            .zip(budgets.get(key).and_then(|s| s.monthly_spent_usd))
+            .map(|(limit, spent)| (spent, limit));
+        if let Some((spent, limit)) = monthly_spent {
+            if self.spend_exceeds(agent_id, alert_team_id, spent, limit) {
+                return true;
+            }
+        }
+        let daily = daily_limit.and_then(|limit| budgets.get(key).map(|s| (s.spent_usd, limit)));
+        if let Some((spent, limit)) = daily {
+            if self.spend_exceeds(agent_id, alert_team_id, spent, limit) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Run [`Self::check_limit_and_alert`] for one `(spent, limit)` pair and
+    /// report whether the limit is exceeded (emitting any threshold alert as a
+    /// side effect).
+    fn spend_exceeds(&self, agent_id: AgentId, alert_team_id: Option<&str>, spent: Decimal, limit: Decimal) -> bool {
+        self.check_limit_and_alert(agent_id, alert_team_id, spent, limit) == BudgetStatus::LimitExceeded
+    }
+
     /// Shared cost-recording logic used by both [`record_usage`](Self::record_usage)
     /// and [`record_raw_spend`](Self::record_raw_spend).
     ///
@@ -412,26 +581,7 @@ impl BudgetTracker {
         let window = self.window;
         let tz = self.timezone;
 
-        self.per_agent
-            .entry(agent_id)
-            .and_modify(|s| {
-                s.maybe_reset_window(now, window, tz);
-                s.spent_usd += cost;
-                if let Some(m) = s.monthly_spent_usd.as_mut() {
-                    *m += cost;
-                }
-            })
-            .or_insert_with(|| {
-                let mut s = BudgetState::new_for_date(today);
-                s.spent_usd += cost;
-                if has_monthly {
-                    s.monthly_spent_usd = Some(cost);
-                }
-                if matches!(window, BudgetWindow::Duration(_)) {
-                    s.last_reset_at = Some(now);
-                }
-                s
-            });
+        accumulate_spend(&self.per_agent, agent_id, cost, has_monthly, now, today, window, tz);
 
         // Append to per-agent daily history (AAASM-1055). In-memory only; not
         // persisted across restarts. The subtree-burn endpoint reads this to
@@ -445,48 +595,26 @@ impl BudgetTracker {
             .or_insert(cost);
 
         if let Some(tid) = team_id {
-            self.team_budgets
-                .entry(tid.to_string())
-                .and_modify(|s| {
-                    s.maybe_reset_window(now, window, tz);
-                    s.spent_usd += cost;
-                    if let Some(m) = s.monthly_spent_usd.as_mut() {
-                        *m += cost;
-                    }
-                })
-                .or_insert_with(|| {
-                    let mut s = BudgetState::new_for_date(today);
-                    s.spent_usd += cost;
-                    if has_monthly {
-                        s.monthly_spent_usd = Some(cost);
-                    }
-                    if matches!(window, BudgetWindow::Duration(_)) {
-                        s.last_reset_at = Some(now);
-                    }
-                    s
-                });
-
-            // Check team monthly limit and emit alert.
-            if let Some(team_monthly_limit) = self.team_monthly_limit_usd {
-                if let Some(team_state) = self.team_budgets.get(tid) {
-                    if let Some(team_monthly) = team_state.monthly_spent_usd {
-                        let status = self.check_limit_and_alert(agent_id, Some(tid), team_monthly, team_monthly_limit);
-                        if status == BudgetStatus::LimitExceeded {
-                            return BudgetStatus::LimitExceeded;
-                        }
-                    }
-                }
-            }
-
-            // Check team daily limit and emit alert.
-            if let Some(team_daily_limit) = self.team_daily_limit_usd {
-                if let Some(team_state) = self.team_budgets.get(tid) {
-                    let status =
-                        self.check_limit_and_alert(agent_id, Some(tid), team_state.spent_usd, team_daily_limit);
-                    if status == BudgetStatus::LimitExceeded {
-                        return BudgetStatus::LimitExceeded;
-                    }
-                }
+            accumulate_spend(
+                &self.team_budgets,
+                tid.to_string(),
+                cost,
+                has_monthly,
+                now,
+                today,
+                window,
+                tz,
+            );
+            // Team-tier enforcement: monthly precedes daily by convention.
+            if self.tier_limit_exceeded(
+                &self.team_budgets,
+                tid,
+                agent_id,
+                Some(tid),
+                self.team_monthly_limit_usd,
+                self.team_daily_limit_usd,
+            ) {
+                return BudgetStatus::LimitExceeded;
             }
         }
 
@@ -494,47 +622,25 @@ impl BudgetTracker {
         // accumulate per-org spend into `org_budgets`, then enforce the
         // monthly limit (precedes daily by convention).
         if let Some(oid) = org_id {
-            self.org_budgets
-                .entry(oid.to_string())
-                .and_modify(|s| {
-                    s.maybe_reset_window(now, window, tz);
-                    s.spent_usd += cost;
-                    if let Some(m) = s.monthly_spent_usd.as_mut() {
-                        *m += cost;
-                    }
-                })
-                .or_insert_with(|| {
-                    let mut s = BudgetState::new_for_date(today);
-                    s.spent_usd += cost;
-                    if has_monthly {
-                        s.monthly_spent_usd = Some(cost);
-                    }
-                    if matches!(window, BudgetWindow::Duration(_)) {
-                        s.last_reset_at = Some(now);
-                    }
-                    s
-                });
-
-            // Check org monthly limit and emit alert.
-            if let Some(org_monthly_limit) = self.org_monthly_limit_usd {
-                if let Some(org_state) = self.org_budgets.get(oid) {
-                    if let Some(org_monthly) = org_state.monthly_spent_usd {
-                        let status = self.check_limit_and_alert(agent_id, None, org_monthly, org_monthly_limit);
-                        if status == BudgetStatus::LimitExceeded {
-                            return BudgetStatus::LimitExceeded;
-                        }
-                    }
-                }
-            }
-
-            // Check org daily limit and emit alert.
-            if let Some(org_daily_limit) = self.org_daily_limit_usd {
-                if let Some(org_state) = self.org_budgets.get(oid) {
-                    let status = self.check_limit_and_alert(agent_id, None, org_state.spent_usd, org_daily_limit);
-                    if status == BudgetStatus::LimitExceeded {
-                        return BudgetStatus::LimitExceeded;
-                    }
-                }
+            accumulate_spend(
+                &self.org_budgets,
+                oid.to_string(),
+                cost,
+                has_monthly,
+                now,
+                today,
+                window,
+                tz,
+            );
+            if self.tier_limit_exceeded(
+                &self.org_budgets,
+                oid,
+                agent_id,
+                None,
+                self.org_monthly_limit_usd,
+                self.org_daily_limit_usd,
+            ) {
+                return BudgetStatus::LimitExceeded;
             }
         }
 
@@ -583,22 +689,84 @@ impl BudgetTracker {
         let now = chrono::Utc::now();
         for &ancestor_bytes in ancestors {
             let ancestor_id = AgentId::from_bytes(ancestor_bytes);
+            // Snapshot the ancestor's window-reset spend once so the monthly and
+            // daily checks below observe the same accumulated totals. Descendant
+            // spend rolls up into the ancestor's `monthly_spent_usd` across daily
+            // resets, so gating only the daily window (the original behaviour)
+            // let cumulative monthly spend exceed a root cap when spread across
+            // children/days — AAASM-4132.
+            let (daily_spent, monthly_spent) = self
+                .per_agent
+                .get(&ancestor_id)
+                .map(|s| {
+                    let mut copy = s.clone();
+                    copy.maybe_reset_window(now, self.window, self.timezone);
+                    (copy.spent_usd, copy.monthly_spent_usd.unwrap_or(Decimal::ZERO))
+                })
+                .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+            // Monthly precedes daily by convention (matches the tenant/self
+            // preflight ordering).
+            if let Some(limit) = self.resolve_limit(&ancestor_id, BudgetKind::Monthly) {
+                if monthly_spent + amount > limit {
+                    return Err(BudgetError::AncestorBudgetExhausted {
+                        ancestor_id: ancestor_bytes,
+                        kind: BudgetKind::Monthly,
+                    });
+                }
+            }
             if let Some(limit) = self.resolve_limit(&ancestor_id, BudgetKind::Daily) {
-                let spent = self
-                    .per_agent
-                    .get(&ancestor_id)
-                    .map(|s| {
-                        let mut copy = s.clone();
-                        copy.maybe_reset_window(now, self.window, self.timezone);
-                        copy.spent_usd
-                    })
-                    .unwrap_or(Decimal::ZERO);
-                if spent + amount > limit {
+                if daily_spent + amount > limit {
                     return Err(BudgetError::AncestorBudgetExhausted {
                         ancestor_id: ancestor_bytes,
                         kind: BudgetKind::Daily,
                     });
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Preflight one tenant tier (team or org) without mutating state: return
+    /// `Err(TenantBudgetExhausted)` when the tier's already-accumulated spend
+    /// has reached its monthly or daily cap (monthly precedes daily, matching
+    /// [`Self::tier_limit_exceeded`]). The `spent >= limit` test and ordering
+    /// mirror the agent-self preflight in [`Self::reserve_spend`], so a
+    /// reservation is denied the instant the tenant envelope sits at or over a
+    /// configured cap — the verdict `reserve_spend` previously computed inside
+    /// `record_cost` and then discarded (AAASM-4124). Must run under the tenant
+    /// lock so the check and the subsequent commit stay atomic.
+    fn preflight_tenant(
+        &self,
+        budgets: &DashMap<String, BudgetState>,
+        key: &str,
+        tier: &'static str,
+        monthly_limit: Option<Decimal>,
+        daily_limit: Option<Decimal>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        let (daily_spent, monthly_spent) = budgets
+            .get(key)
+            .map(|s| {
+                let mut copy = s.clone();
+                copy.maybe_reset_window(now, self.window, self.timezone);
+                (copy.spent_usd, copy.monthly_spent_usd.unwrap_or(Decimal::ZERO))
+            })
+            .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+        if let Some(limit) = monthly_limit {
+            if monthly_spent >= limit {
+                return Err(BudgetError::TenantBudgetExhausted {
+                    tier,
+                    kind: BudgetKind::Monthly,
+                });
+            }
+        }
+        if let Some(limit) = daily_limit {
+            if daily_spent >= limit {
+                return Err(BudgetError::TenantBudgetExhausted {
+                    tier,
+                    kind: BudgetKind::Daily,
+                });
             }
         }
         Ok(())
@@ -666,6 +834,148 @@ impl BudgetTracker {
                 });
         }
 
+        Ok(())
+    }
+
+    /// AAASM-3986 — atomically check the agent's (and its ancestors') budget and,
+    /// when there is headroom for `amount`, commit that spend across the agent,
+    /// its ancestors, and the team / org / global tiers — all under the same
+    /// per-ancestor lock set used by `check_and_decrement`.
+    ///
+    /// This closes the check→record TOCTOU in the live LLM-call path. The
+    /// previous flow read accumulated spend (Stage 7) and only recorded it
+    /// *after* the response was built, so N concurrent checks for one tenant
+    /// could all observe under-limit before any recorded — a bounded overspend
+    /// proportional to in-flight concurrency. Here the check and the commit are
+    /// inseparable: a reservation is rejected (`Err`, nothing committed) the
+    /// instant `spent + amount` would cross a configured daily or monthly limit,
+    /// so the recorded total never exceeds the limit regardless of concurrency.
+    ///
+    /// Limits are resolved via [`Self::resolve_limit`] (per-agent override then
+    /// the tracker-wide limit lifted from the policy budget), matching
+    /// `check_and_decrement`. `team_id` / `org_id` must be the *authoritative*
+    /// tenancy the engine resolves from the registered owner (AAASM-3138), never
+    /// the client-supplied values, so spend is never billed to a forged tenant.
+    pub fn reserve_spend(
+        &self,
+        agent_id: AgentId,
+        ancestors: &[[u8; 16]],
+        team_id: Option<&str>,
+        org_id: Option<&str>,
+        amount: Decimal,
+    ) -> Result<(), crate::budget::types::BudgetError> {
+        use crate::budget::types::{BudgetError, BudgetKind};
+
+        // Acquire the per-ancestor locks root-down, then the agent's own lock,
+        // so concurrent reservations that share any node serialise in a single
+        // deterministic order (no A-then-B vs B-then-A deadlock). The agent's
+        // own lock makes concurrent same-agent reservations serialise even when
+        // the ancestor chain is empty.
+        let mut lock_ids: Vec<AgentId> = ancestors.iter().rev().map(|&b| AgentId::from_bytes(b)).collect();
+        if !lock_ids.contains(&agent_id) {
+            lock_ids.push(agent_id);
+        }
+        let lock_arcs: Vec<_> = lock_ids.iter().map(|id| self.get_or_create_parent_lock(*id)).collect();
+        let lock_wait_start = std::time::Instant::now();
+        let _guards: Vec<_> = lock_arcs.iter().map(|arc| arc.lock()).collect();
+        metrics::histogram!("budget_parent_lock_wait_seconds").record(lock_wait_start.elapsed().as_secs_f64());
+
+        // AAASM-4124 — serialise reservations that share a team/org envelope so
+        // the tenant check-then-commit below is atomic. Acquired *after* the
+        // agent/ancestor locks (team before org), giving every caller one global
+        // lock order (agent-domain → team → org) — no cross-domain deadlock. The
+        // arcs outlive the guards (separate Vec) so the guards borrow validly.
+        let mut tenant_lock_arcs: Vec<std::sync::Arc<parking_lot::Mutex<()>>> = Vec::new();
+        if let Some(tid) = team_id {
+            tenant_lock_arcs.push(self.get_or_create_tenant_lock(format!("team:{tid}")));
+        }
+        if let Some(oid) = org_id {
+            tenant_lock_arcs.push(self.get_or_create_tenant_lock(format!("org:{oid}")));
+        }
+        let _tenant_guards: Vec<_> = tenant_lock_arcs.iter().map(|arc| arc.lock()).collect();
+
+        // Phase 1: preflight the agent's own monthly-then-daily limit, then
+        // every ancestor's daily limit. The agent check uses `spent >= limit`
+        // — identical to the Stage-7 read-check (`check_daily` / `check_monthly`)
+        // — so the *decision output* is unchanged: a call is allowed while the
+        // agent is still under its limit and denied once it reaches it. Doing
+        // this check and the commit together under the lock is what removes the
+        // concurrency-proportional overspend (AAASM-3986): concurrent
+        // reservations serialise, so only calls made while under-limit commit,
+        // exactly as they would sequentially. Monthly precedes daily by
+        // convention, matching the Stage-7 read-check.
+        let now = chrono::Utc::now();
+        let (agent_daily, agent_monthly) = self
+            .per_agent
+            .get(&agent_id)
+            .map(|s| {
+                let mut copy = s.clone();
+                copy.maybe_reset_window(now, self.window, self.timezone);
+                (copy.spent_usd, copy.monthly_spent_usd.unwrap_or(Decimal::ZERO))
+            })
+            .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+        if let Some(limit) = self.resolve_limit(&agent_id, BudgetKind::Monthly) {
+            if agent_monthly >= limit {
+                return Err(BudgetError::SelfBudgetExhausted {
+                    kind: BudgetKind::Monthly,
+                });
+            }
+        }
+        if let Some(limit) = self.resolve_limit(&agent_id, BudgetKind::Daily) {
+            if agent_daily >= limit {
+                return Err(BudgetError::SelfBudgetExhausted {
+                    kind: BudgetKind::Daily,
+                });
+            }
+        }
+        self.preflight_ancestors(ancestors, amount)?;
+
+        // Tenant-tier preflight (AAASM-4124): deny before commit when the team
+        // or org envelope is already at/over a configured cap. This restores the
+        // team/org verdict that `record_cost` computes and this method used to
+        // discard, closing the org/team budget fail-open. Runs under the tenant
+        // locks acquired above so the check and the commit are atomic.
+        if let Some(tid) = team_id {
+            self.preflight_tenant(
+                &self.team_budgets,
+                tid,
+                "team",
+                self.team_monthly_limit_usd,
+                self.team_daily_limit_usd,
+                now,
+            )?;
+        }
+        if let Some(oid) = org_id {
+            self.preflight_tenant(
+                &self.org_budgets,
+                oid,
+                "org",
+                self.org_monthly_limit_usd,
+                self.org_daily_limit_usd,
+                now,
+            )?;
+        }
+
+        // Phase 2: commit. `record_cost` folds the spend into the agent, team,
+        // org, and global tiers (plus history + threshold alerts); the ancestor
+        // chain is accumulated here because `record_cost` does not walk it.
+        self.record_cost(agent_id, team_id, org_id, amount);
+        let today = today_in_tz(self.timezone);
+        let has_monthly = self.monthly_limit_usd.is_some()
+            || self.team_monthly_limit_usd.is_some()
+            || self.org_monthly_limit_usd.is_some();
+        for &ancestor_bytes in ancestors {
+            accumulate_spend(
+                &self.per_agent,
+                AgentId::from_bytes(ancestor_bytes),
+                amount,
+                has_monthly,
+                now,
+                today,
+                self.window,
+                self.timezone,
+            );
+        }
         Ok(())
     }
 
@@ -747,6 +1057,42 @@ impl BudgetTracker {
                 (date, amount)
             })
             .collect()
+    }
+
+    /// Sum the last `days` calendar days of recorded daily spend across the
+    /// given `agent_ids`, in oldest-first order.
+    ///
+    /// Each entry is `(date, summed_spent_usd)` over exactly the same dense,
+    /// zero-filled date axis as [`agent_spend_history`](Self::agent_spend_history)
+    /// so callers get a gap-free series regardless of which agents recorded
+    /// spend on which day. `days = 0` (or an empty `agent_ids`) returns an
+    /// all-zero series of the requested length. Agents absent from the history
+    /// map simply contribute nothing.
+    ///
+    /// This powers the 7-day spend-history observability surface (AAASM-5032):
+    /// the caller passes the agent ids it is authorized to see (org-wide for an
+    /// admin, a single team's members for a tenant-scoped caller), so the same
+    /// aggregation serves every tenant scope without leaking cross-tenant spend.
+    /// In-memory only — like `agent_spend_history`, it does not survive restarts.
+    pub fn spend_history_totals_for(&self, agent_ids: &[AgentId], days: u32) -> Vec<(chrono::NaiveDate, Decimal)> {
+        if days == 0 {
+            return Vec::new();
+        }
+        let today = today_in_tz(self.timezone);
+        let start = today - chrono::Duration::days(i64::from(days) - 1);
+        let mut series: Vec<(chrono::NaiveDate, Decimal)> = (0..days)
+            .map(|d| (start + chrono::Duration::days(i64::from(d)), Decimal::ZERO))
+            .collect();
+        for agent_id in agent_ids {
+            if let Some(history) = self.spend_history.get(agent_id) {
+                for (date, amount) in series.iter_mut() {
+                    if let Some(day_spend) = history.get(date) {
+                        *amount += *day_spend;
+                    }
+                }
+            }
+        }
+        series
     }
 
     /// Return a snapshot of the current global (all-agents combined) budget state.
@@ -860,11 +1206,108 @@ mod tests {
     }
 
     #[test]
+    fn record_usage_clamps_negative_custom_rate_to_zero() {
+        // AAASM-4744: a custom pricing override with a negative rate must not
+        // decrement accrued spend. record_usage clamps the computed cost to
+        // zero, so today's spend stays at zero rather than going negative.
+        let json = r#"[
+          { "provider": "open_ai", "model": "gpt4o",
+            "input_per_1k_usd": "-0.005", "output_per_1k_usd": "-0.015" }
+        ]"#;
+        let pricing = PricingTable::load_from_json_str(json).unwrap();
+        let t = BudgetTracker::new(pricing, None, None, chrono_tz::UTC);
+        let aid = agent(0xAB);
+        t.record_usage(
+            aid,
+            None,
+            None,
+            crate::budget::types::Provider::OpenAi,
+            crate::budget::types::Model::Gpt4o,
+            10_000,
+            10_000,
+        );
+        let history = t.agent_spend_history(&aid, 1);
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].1,
+            Decimal::ZERO,
+            "a negative custom rate must clamp to zero, never decrement spend"
+        );
+    }
+
+    #[test]
     fn agent_spend_history_zero_days_returns_empty_vec() {
         let t = new_tracker();
         let aid = AgentId::from_bytes([0xAA; 16]);
         t.record_raw_spend(aid, None, None, Decimal::ONE);
         assert!(t.agent_spend_history(&aid, 0).is_empty());
+    }
+
+    #[test]
+    fn spend_history_totals_for_sums_across_agents_zero_filled() {
+        let t = new_tracker();
+        let a = agent(0x01);
+        let b = agent(0x02);
+        t.record_raw_spend(a, None, None, Decimal::new(250, 2)); // $2.50 today
+        t.record_raw_spend(b, None, None, Decimal::new(150, 2)); // $1.50 today
+
+        let series = t.spend_history_totals_for(&[a, b], 7);
+        assert_eq!(series.len(), 7, "dense series of one entry per requested day");
+        // Only today (the last entry) has spend; earlier days are zero-filled.
+        for (_, amount) in &series[..6] {
+            assert_eq!(*amount, Decimal::ZERO);
+        }
+        assert_eq!(series[6].1, Decimal::new(400, 2), "today sums both agents");
+        // Dates strictly ascending (oldest-first).
+        for win in series.windows(2) {
+            assert!(win[0].0 < win[1].0);
+        }
+    }
+
+    #[test]
+    fn spend_history_totals_for_ignores_unlisted_agents() {
+        let t = new_tracker();
+        let a = agent(0x01);
+        let b = agent(0x02);
+        t.record_raw_spend(a, None, None, Decimal::new(500, 2));
+        t.record_raw_spend(b, None, None, Decimal::new(999, 2));
+
+        // Only agent `a` is in scope, so `b`'s spend must not be counted.
+        let series = t.spend_history_totals_for(&[a], 1);
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].1, Decimal::new(500, 2));
+    }
+
+    #[test]
+    fn spend_history_totals_for_zero_days_or_no_agents_is_empty_or_zero() {
+        let t = new_tracker();
+        let a = agent(0x01);
+        t.record_raw_spend(a, None, None, Decimal::ONE);
+        assert!(t.spend_history_totals_for(&[a], 0).is_empty());
+        // No agents in scope → all-zero series of the requested length.
+        let series = t.spend_history_totals_for(&[], 3);
+        assert_eq!(series.len(), 3);
+        assert!(series.iter().all(|(_, amt)| *amt == Decimal::ZERO));
+    }
+
+    #[test]
+    fn agent_daily_limit_usd_returns_override_or_none() {
+        let a = agent(0x01);
+        let b = agent(0x02);
+        let t = new_tracker().with_agent_limit(a, Some(Decimal::new(2000, 2)), None);
+        assert_eq!(t.agent_daily_limit_usd(&a), Some(Decimal::new(2000, 2)));
+        assert_eq!(t.agent_daily_limit_usd(&b), None, "no override → None");
+    }
+
+    #[test]
+    fn team_and_org_daily_limit_getters_return_configured_values() {
+        let t = new_tracker()
+            .with_team_daily_limit(Decimal::new(5000, 2))
+            .with_org_daily_limit(Decimal::new(10000, 2));
+        assert_eq!(t.team_daily_limit_usd(), Some(Decimal::new(5000, 2)));
+        assert_eq!(t.org_daily_limit_usd(), Some(Decimal::new(10000, 2)));
+        assert_eq!(new_tracker().team_daily_limit_usd(), None);
+        assert_eq!(new_tracker().org_daily_limit_usd(), None);
     }
 
     #[test]
@@ -1189,6 +1632,29 @@ mod tests {
         t.record_raw_spend(id, None, None, "9.50".parse().unwrap());
         let alert = rx.try_recv().expect("expected 95% alert");
         assert_eq!(alert.threshold_pct, 95);
+    }
+
+    #[test]
+    fn record_raw_spend_clamps_negative_amount_to_no_op() {
+        // AAASM-4132 — a negative raw amount must not claw back accrued spend or
+        // reopen headroom; it is clamped to a no-op at the accrual boundary.
+        let t = tracker_with_limit("10.00");
+        let id = agent(37);
+        t.record_raw_spend(id, None, None, "9.00".parse().unwrap());
+        assert!(t.check_daily(&id, "9.00".parse().unwrap()), "seeded $9 accrued");
+
+        // Attempt to claw back $5 with a negative amount.
+        t.record_raw_spend(id, None, None, "-5.00".parse().unwrap());
+
+        // Accrued spend is unchanged — headroom is not reopened.
+        assert!(
+            t.check_daily(&id, "9.00".parse().unwrap()),
+            "negative amount must not decrement accrued spend"
+        );
+        assert_eq!(
+            t.per_agent.get(&id).unwrap().spent_usd,
+            "9.00".parse::<Decimal>().unwrap()
+        );
     }
 
     #[test]
@@ -1613,5 +2079,99 @@ mod tests {
         let alert = rx.try_recv().expect("expected 80% monthly team alert");
         assert_eq!(alert.threshold_pct, 80);
         assert_eq!(alert.team_id.as_deref(), Some("team-zeta"));
+    }
+
+    // ── AAASM-4124: org/team tier caps must deny in reserve_spend ──────
+
+    #[test]
+    fn reserve_spend_denies_when_org_daily_cap_reached() {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        // Regression: reserve_spend used to discard record_cost's tier verdict,
+        // so a configured org daily cap accumulated but never blocked. Accrue
+        // the org envelope to its cap across two agents, then assert the next
+        // reservation is denied and nothing is committed past the cap.
+        let t = BudgetTracker::new(PricingTable::default_table(), None, None, chrono_tz::UTC)
+            .with_org_daily_limit("5.00".parse().unwrap());
+        let a = agent(70);
+        let b = agent(71);
+        let org = Some("org-acme");
+
+        t.reserve_spend(a, &[], None, org, "3.00".parse().unwrap()).unwrap();
+        t.reserve_spend(b, &[], None, org, "2.00".parse().unwrap()).unwrap();
+
+        // Envelope now sits at the $5.00 cap — the next reservation must deny.
+        let err = t
+            .reserve_spend(a, &[], None, org, "0.01".parse().unwrap())
+            .expect_err("org daily cap reached — reservation must be denied");
+        assert_eq!(
+            err,
+            BudgetError::TenantBudgetExhausted {
+                tier: "org",
+                kind: BudgetKind::Daily,
+            }
+        );
+        // The denied reservation committed nothing: org spend stays at the cap.
+        let five: Decimal = "5.00".parse().unwrap();
+        assert_eq!(t.org_state("org-acme").unwrap().spent_usd, five);
+    }
+
+    // ── AAASM-4132: ancestor monthly cap must be enforced ──────────────
+
+    #[test]
+    fn reserve_spend_ancestor_monthly_cap_trips_when_spread_across_days() {
+        use crate::budget::types::{BudgetError, BudgetKind};
+        // Regression: preflight_ancestors gated only the ancestor's *daily*
+        // window, so descendant spend rolling up into the ancestor's monthly
+        // bucket across daily resets never blocked. Spread $3/day over two days
+        // (each day under any daily cap) so the cumulative $6 monthly total
+        // crosses the root's $5 monthly cap and must be denied.
+        let root = agent(90);
+        let child = agent(91);
+        let grandchild = agent(92);
+
+        // Tracker-wide monthly ($1000) makes ancestor monthly accrue
+        // (has_monthly) and keeps grandchild/child within budget; root's low
+        // $5 monthly override is the only binding cap. No daily limits anywhere.
+        let t = BudgetTracker::new(
+            PricingTable::default_table(),
+            None,
+            Some("1000.00".parse().unwrap()),
+            chrono_tz::UTC,
+        )
+        .with_agent_limit(root, None, Some("5.00".parse().unwrap()));
+
+        let ancestors = [*child.as_bytes(), *root.as_bytes()];
+        let three: Decimal = "3.00".parse().unwrap();
+
+        // Day 1: $3 accrues to grandchild, child, and root (monthly). Under $5.
+        t.reserve_spend(grandchild, &ancestors, None, None, three).unwrap();
+        assert_eq!(t.per_agent.get(&root).unwrap().monthly_spent_usd, Some(three));
+
+        // Backdate every entry one day so the DAILY window resets but the
+        // MONTHLY accumulator persists (same technique as
+        // monthly_accumulates_across_daily_resets).
+        for id in [grandchild, child, root] {
+            t.per_agent.alter(&id, |_, mut s| {
+                s.date = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+                s
+            });
+        }
+
+        // Day 2: another $3 would push root's monthly to $6 > $5. Must be denied
+        // in preflight before any spend commits.
+        let result = t.reserve_spend(grandchild, &ancestors, None, None, three);
+        assert!(
+            matches!(
+                result,
+                Err(BudgetError::AncestorBudgetExhausted {
+                    kind: BudgetKind::Monthly,
+                    ..
+                })
+            ),
+            "expected ancestor Monthly exhaustion, got: {:?}",
+            result
+        );
+        // The denied reservation committed nothing: root monthly stays at $3.
+        assert_eq!(t.per_agent.get(&root).unwrap().monthly_spent_usd, Some(three));
     }
 }

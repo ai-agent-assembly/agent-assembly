@@ -14,6 +14,13 @@ use moka::sync::Cache;
 
 use crate::engine::decision::PolicyDecision;
 
+/// A cached cascade verdict: the merged [`PolicyDecision`] plus the content
+/// digest of the deciding policy document (AAASM-5107). The digest is part of
+/// the cached value so a cache hit carries the same document attribution a fresh
+/// evaluation would have produced — the deciding document is fixed for a given
+/// `(agent, epoch, action)` key within one policy epoch.
+pub type CachedVerdict = (PolicyDecision, Option<String>);
+
 /// Stable key identifying one (agent, epoch, action) evaluation result.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CacheKey {
@@ -22,7 +29,11 @@ pub struct CacheKey {
     /// Policy epoch at the time of evaluation. Stale entries are invalidated
     /// when the epoch advances (via `load_policy` or `apply_yaml`).
     pub policy_epoch: u64,
-    /// FNV-1a hash of a canonical `"{action_kind}:{action_discriminant}"` string.
+    /// Hash of the action's kind tag **and** its full evaluated payload (tool
+    /// name + args, network URL + method, file path + mode, …). The payload is
+    /// part of the key because stage-5 `requires_approval_if` predicates evaluate
+    /// over it — a key that ignored args would serve a benign payload's cached
+    /// `Allow` for a dangerous one (AAASM-3787). See [`action_discriminant`].
     pub action_hash: u64,
 }
 
@@ -44,13 +55,23 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
 
     let mut h = AHasher::default();
     match action {
-        aa_core::GovernanceAction::ToolCall { name, .. } => {
+        aa_core::GovernanceAction::ToolCall { name, args } => {
             "tool".hash(&mut h);
             name.hash(&mut h);
+            // Hash the full args payload: stage-5 `requires_approval_if`
+            // predicates (e.g. `args.amount > 1000`) are evaluated against the
+            // args, so two calls to the same tool with different args must not
+            // collide on the cache key (AAASM-3787).
+            args.hash(&mut h);
         }
-        aa_core::GovernanceAction::ToolResult { tool_name, .. } => {
+        aa_core::GovernanceAction::ToolResult { tool_name, result } => {
             "tool_result".hash(&mut h);
             tool_name.hash(&mut h);
+            // Hash the full result payload: response-side `tool_result.<key>`
+            // predicates evaluate over it (the mirror of `args.<key>`), so two
+            // results for the same tool with different bodies must not collide
+            // on the cache key (AAASM-3787).
+            result.hash(&mut h);
         }
         aa_core::GovernanceAction::NetworkRequest { url, method } => {
             "net".hash(&mut h);
@@ -86,7 +107,7 @@ fn action_discriminant(action: &aa_core::GovernanceAction) -> u64 {
 /// Hit and miss counters are tracked via `AtomicU64` for observability.
 #[derive(Clone)]
 pub struct DecisionCache {
-    inner: Cache<CacheKey, PolicyDecision>,
+    inner: Cache<CacheKey, CachedVerdict>,
     hits: Arc<AtomicU64>,
     misses: Arc<AtomicU64>,
 }
@@ -106,7 +127,7 @@ impl DecisionCache {
     }
 
     /// Look up an existing decision. Increments hit/miss counters.
-    pub fn get(&self, key: &CacheKey) -> Option<PolicyDecision> {
+    pub fn get(&self, key: &CacheKey) -> Option<CachedVerdict> {
         let result = self.inner.get(key);
         if result.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
@@ -118,8 +139,9 @@ impl DecisionCache {
         result
     }
 
-    /// Insert a decision. `PolicyDecision` is `Clone` so callers can keep a copy.
-    pub fn insert(&self, key: CacheKey, value: PolicyDecision) {
+    /// Insert a decision and its deciding-document digest. Both are `Clone` so
+    /// callers can keep a copy.
+    pub fn insert(&self, key: CacheKey, value: CachedVerdict) {
         self.inner.insert(key, value);
     }
 
@@ -166,8 +188,8 @@ mod tests {
     fn cache_hit_after_insert() {
         let cache = DecisionCache::new(128);
         let key = CacheKey::new(&[1u8; 16], 1, &tool_action("bash"));
-        cache.insert(key.clone(), PolicyDecision::Allow);
-        assert_eq!(cache.get(&key), Some(PolicyDecision::Allow));
+        cache.insert(key.clone(), (PolicyDecision::Allow, None));
+        assert_eq!(cache.get(&key), Some((PolicyDecision::Allow, None)));
         assert_eq!(cache.cache_hits(), 1);
         assert_eq!(cache.cache_misses(), 0);
     }
@@ -194,5 +216,144 @@ mod tests {
         let key_e1 = CacheKey::new(&[1u8; 16], 1, &action);
         let key_e2 = CacheKey::new(&[1u8; 16], 2, &action);
         assert_ne!(key_e1, key_e2);
+    }
+
+    #[test]
+    fn different_tool_args_produce_different_keys() {
+        // AAASM-3787: same tool name, different args must not collide — a
+        // benign payload's cached verdict must not be served for a dangerous one.
+        let benign = aa_core::GovernanceAction::ToolCall {
+            name: "transfer".to_string(),
+            args: r#"{"amount":1}"#.to_string(),
+        };
+        let dangerous = aa_core::GovernanceAction::ToolCall {
+            name: "transfer".to_string(),
+            args: r#"{"amount":1000000}"#.to_string(),
+        };
+        let key_benign = CacheKey::new(&[1u8; 16], 1, &benign);
+        let key_dangerous = CacheKey::new(&[1u8; 16], 1, &dangerous);
+        assert_ne!(key_benign, key_dangerous);
+    }
+
+    #[test]
+    fn different_tool_results_produce_different_keys() {
+        // AAASM-3787: response-side mirror — same tool, different result bodies
+        // must not collide, since `tool_result.<key>` predicates read the body.
+        let ok = aa_core::GovernanceAction::ToolResult {
+            tool_name: "lookup".to_string(),
+            result: r#"{"ok":true}"#.to_string(),
+        };
+        let err = aa_core::GovernanceAction::ToolResult {
+            tool_name: "lookup".to_string(),
+            result: r#"{"ok":false}"#.to_string(),
+        };
+        let key_ok = CacheKey::new(&[1u8; 16], 1, &ok);
+        let key_err = CacheKey::new(&[1u8; 16], 1, &err);
+        assert_ne!(key_ok, key_err);
+    }
+
+    #[test]
+    fn distinct_action_kinds_hash_to_distinct_keys() {
+        // Each GovernanceAction variant tags its discriminant before hashing the
+        // payload, so the five non-tool kinds must never collapse onto one key.
+        let actions = [
+            aa_core::GovernanceAction::NetworkRequest {
+                url: "https://api.openai.com".to_string(),
+                method: "POST".to_string(),
+            },
+            aa_core::GovernanceAction::FileAccess {
+                path: "/etc/passwd".to_string(),
+                mode: aa_core::FileMode::Read,
+            },
+            aa_core::GovernanceAction::ProcessExec {
+                command: "rm -rf /".to_string(),
+            },
+            aa_core::GovernanceAction::SendMessage {
+                source_team_id: Some("eng".to_string()),
+                target_team_id: Some("ops".to_string()),
+                channel_id: Some("c1".to_string()),
+            },
+            tool_action("bash"),
+        ];
+        let keys: Vec<_> = actions.iter().map(|a| CacheKey::new(&[1u8; 16], 1, a)).collect();
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                assert_ne!(keys[i], keys[j], "action kinds {i} and {j} collided");
+            }
+        }
+    }
+
+    #[test]
+    fn network_request_payload_fields_are_part_of_the_key() {
+        let base = aa_core::GovernanceAction::NetworkRequest {
+            url: "https://a.example.com".to_string(),
+            method: "GET".to_string(),
+        };
+        let other_url = aa_core::GovernanceAction::NetworkRequest {
+            url: "https://b.example.com".to_string(),
+            method: "GET".to_string(),
+        };
+        let other_method = aa_core::GovernanceAction::NetworkRequest {
+            url: "https://a.example.com".to_string(),
+            method: "POST".to_string(),
+        };
+        let k = |a| CacheKey::new(&[1u8; 16], 1, a);
+        assert_ne!(k(&base), k(&other_url), "url must affect the key");
+        assert_ne!(k(&base), k(&other_method), "method must affect the key");
+    }
+
+    #[test]
+    fn file_access_mode_is_part_of_the_key() {
+        // The mode is hashed via its Debug form, so read vs write on the same
+        // path must produce distinct keys.
+        let read = aa_core::GovernanceAction::FileAccess {
+            path: "/data/x".to_string(),
+            mode: aa_core::FileMode::Read,
+        };
+        let write = aa_core::GovernanceAction::FileAccess {
+            path: "/data/x".to_string(),
+            mode: aa_core::FileMode::Write,
+        };
+        assert_ne!(
+            CacheKey::new(&[1u8; 16], 1, &read),
+            CacheKey::new(&[1u8; 16], 1, &write)
+        );
+    }
+
+    #[test]
+    fn send_message_channel_is_part_of_the_key() {
+        let c1 = aa_core::GovernanceAction::SendMessage {
+            source_team_id: Some("eng".to_string()),
+            target_team_id: Some("ops".to_string()),
+            channel_id: Some("alpha".to_string()),
+        };
+        let c2 = aa_core::GovernanceAction::SendMessage {
+            source_team_id: Some("eng".to_string()),
+            target_team_id: Some("ops".to_string()),
+            channel_id: Some("beta".to_string()),
+        };
+        assert_ne!(CacheKey::new(&[1u8; 16], 1, &c1), CacheKey::new(&[1u8; 16], 1, &c2));
+    }
+
+    #[test]
+    fn invalidate_all_evicts_every_entry() {
+        let cache = DecisionCache::new(128);
+        let key = CacheKey::new(&[1u8; 16], 1, &tool_action("bash"));
+        cache.insert(key.clone(), (PolicyDecision::Allow, None));
+        assert!(cache.get(&key).is_some());
+        cache.invalidate_all();
+        cache.inner.run_pending_tasks();
+        assert_eq!(cache.get(&key), None, "invalidate_all must drop the entry");
+    }
+
+    #[test]
+    fn invalidate_for_agent_evicts_the_agents_entry() {
+        let cache = DecisionCache::new(128);
+        let key = CacheKey::new(&[7u8; 16], 1, &tool_action("deploy"));
+        cache.insert(key.clone(), (PolicyDecision::Allow, None));
+        assert!(cache.get(&key).is_some());
+        cache.invalidate_for_agent(&[7u8; 16]);
+        cache.inner.run_pending_tasks();
+        assert_eq!(cache.get(&key), None, "invalidate_for_agent must drop the entry");
     }
 }

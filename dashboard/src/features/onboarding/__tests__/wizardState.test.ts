@@ -11,19 +11,23 @@ import {
 
 describe('wizardState helpers', () => {
   describe('canAdvance', () => {
-    it('blocks every step on EMPTY_STATE', () => {
+    it('blocks every step that asks something of the operator on EMPTY_STATE', () => {
       expect(canAdvance(EMPTY_STATE, 'framework')).toBe(false)
       expect(canAdvance(EMPTY_STATE, 'install')).toBe(false)
-      expect(canAdvance(EMPTY_STATE, 'identity')).toBe(false)
       expect(canAdvance(EMPTY_STATE, 'policy')).toBe(false)
       expect(canAdvance(EMPTY_STATE, 'enroll')).toBe(false)
+    })
+
+    it('never gates on the identity step, which the browser cannot complete', () => {
+      // AAASM-5179: no keypair can be issued here, so a gate on it would be a
+      // gate nothing can ever satisfy.
+      expect(canAdvance(EMPTY_STATE, 'identity')).toBe(true)
     })
 
     it('unblocks each step when its slice of state is set', () => {
       const filled: WizardState = {
         framework: 'langchain',
-        installVerified: true,
-        identity: { did: 'did:aa:abc', alg: 'Ed25519', fingerprint: 'AA', issuedAt: 'x' },
+        gatewayHealthy: true,
         policyPreset: 'read-only',
         enrolled: true,
       }
@@ -44,7 +48,7 @@ describe('wizardState helpers', () => {
     })
 
     it('returns null past the final step', () => {
-      expect(nextStep('enroll')).toBe(null)
+      expect(nextStep('enroll')).toBeNull()
     })
 
     it('walks backward through the 5 steps', () => {
@@ -55,7 +59,7 @@ describe('wizardState helpers', () => {
     })
 
     it('returns null before the first step', () => {
-      expect(prevStep('framework')).toBe(null)
+      expect(prevStep('framework')).toBeNull()
     })
   })
 

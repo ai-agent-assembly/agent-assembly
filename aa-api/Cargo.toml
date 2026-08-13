@@ -14,10 +14,15 @@ connector-opsgenie = []
 
 [dependencies]
 aa-core = { path = "../aa-core" }
+aa-auth = { path = "../aa-auth" }
 aa-security = { path = "../aa-security", features = ["serde"] }
 aa-devtool       = { path = "../aa-devtool" }
 aa-devtool-saas  = { path = "../aa-devtool-saas" }
 aa-gateway = { path = "../aa-gateway" }
+# AAASM-5305: the native-account auth endpoints (ADR 0031) are Postgres-gated and
+# persist users / invites / refresh sessions through PgUserStore. `publish = false`
+# like aa-api itself, so this within-workspace path dep is not a crates.io concern.
+aa-storage-postgres = { path = "../aa-storage-postgres" }
 aa-proto = { path = "../aa-proto" }
 aa-runtime = { path = "../aa-runtime" }
 aa-sandbox = { path = "../aa-sandbox" }
@@ -30,40 +35,67 @@ hyper = { workspace = true, features = ["full"] }
 jsonwebtoken = { workspace = true }
 rand = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
-reqwest = { workspace = true, features = ["rustls-tls", "json"] }
+reqwest = { workspace = true, features = ["rustls", "json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true }
-tower-http = { workspace = true, features = ["trace", "cors", "compression-gzip", "request-id", "util", "set-header"] }
+tower-http = { workspace = true, features = ["trace", "cors", "compression-gzip", "request-id", "util", "set-header", "catch-panic"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 chrono = { workspace = true, features = ["serde"] }
+chrono-tz = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
+# AAASM-4517: embed the dashboard SPA into `aa-api-server` so a bare release
+# tarball serves the UI at GET / with no adjacent dashboard/dist. `include_dir!`
+# bakes _embedded/dashboard/dist (staged by build.rs / release.yml) into the
+# binary; `tempfile` extracts it at boot for the ServeDir-based SPA router.
+include_dir = "0.7"
 moka = { workspace = true, features = ["future"] }
+tempfile = { workspace = true }
 rust_decimal = { workspace = true, features = ["serde-str"] }
-tokio-stream = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true }
+# AAASM-4447: serve the gRPC AgentLifecycleService on loopback :50051 in local
+# mode so SDK agent registration reaches the same process the dashboard reads.
+tonic = { workspace = true }
 ulid = "1"
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+# AAASM-5305: SHA-256 for hashing opaque refresh/invite tokens before they are
+# handed to PgUserStore (which stores only the hash). Promoted from a
+# dev-dependency to a runtime dependency for the auth endpoints.
+sha2 = { workspace = true }
+# AAASM-5306 (FLAGGED new dependency): pluggable SMTP mailer for the ADR 0031 §Q4
+# password-reset flow. `default-features = false` drops lettre's native-tls stack
+# and its sync/file transports; we opt into only the async tokio SMTP transport
+# over rustls (reusing the rustls stack reqwest already pulls in) plus the message
+# builder. Apache-2.0 / MIT — within the deny.toml allow list.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1-rustls-tls",
+    "builder",
+    "hostname",
+    "pool",
+] }
 
 [dev-dependencies]
-axum-test = "20"
-chrono-tz = { workspace = true }
+# AAASM-3980: WS tenant-isolation tests construct AuditEvent to set team_id.
+aa-proto = { path = "../aa-proto" }
+axum-test = "21"
 futures = { workspace = true }
 hmac = { workspace = true }
 httpmock = "0.8"
 rstest = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
-tonic = { workspace = true }
+aa-sdk-client = { path = "../aa-sdk-client" }
 tower = { workspace = true }
 
 [lints]

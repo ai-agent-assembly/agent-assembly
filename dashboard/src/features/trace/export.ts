@@ -1,9 +1,22 @@
+import { isKnown, known, propagateAbsence, type Certain } from '../../lib/truthfulness'
 import type { TraceEvent } from './types'
 import type { TraceExport } from './exportSchema'
 
 /**
+ * Copy a certain readonly array into the mutable shape the inferred
+ * `TraceExport` type uses. Same data, no aliasing; an absence passes through
+ * with its state and detail intact.
+ */
+function exportableList(value: Certain<readonly string[]>): Certain<string[]> {
+  return isKnown(value) ? known([...value.value]) : propagateAbsence(value)
+}
+
+/**
  * Build a versioned, schema-shaped trace export object from raw events.
  * Pure function so it can be unit-tested without DOM access.
+ *
+ * The `Certain` envelopes are written out as-is, so the downloaded file states
+ * which values the gateway actually supplied and why the rest are missing.
  */
 export function buildTraceExport(
   agentId: string,
@@ -12,15 +25,13 @@ export function buildTraceExport(
   now: Date = new Date(),
 ): TraceExport {
   return {
-    version: '1',
+    version: '2',
     exportedAt: now.toISOString(),
     agentId,
     sessionId,
-    // Spread to mutable copies — TraceEvent uses readonly arrays, the
-    // schema-inferred TraceExport uses mutable arrays. Same data, no aliasing.
     events: events.map(e => ({
       ...e,
-      redactedFields: e.redactedFields ? [...e.redactedFields] : undefined,
+      redactedFields: exportableList(e.redactedFields),
     })),
   }
 }
@@ -45,6 +56,6 @@ export function downloadTraceJson(
   anchor.download = `trace-${agentId}-${sessionId}.json`
   document.body.appendChild(anchor)
   anchor.click()
-  document.body.removeChild(anchor)
+  anchor.remove()
   URL.revokeObjectURL(url)
 }

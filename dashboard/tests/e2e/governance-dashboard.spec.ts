@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 // Injects a valid auth token so ProtectedRoute lets us through.
 async function injectToken(page: import('@playwright/test').Page) {
   await page.addInitScript(() => {
-    localStorage.setItem('aa_token', 'e2e-test-token')
+    sessionStorage.setItem('aa_token', 'e2e-test-token')
   })
 }
 
@@ -18,13 +18,6 @@ const APPROVAL = {
   created_at: '2026-05-12T10:00:00Z',
   routing_status: null,
   team_id: null,
-}
-
-const POLICY = {
-  name: 'e2e-policy',
-  version: '1.0.0',
-  rule_count: 2,
-  active: true,
 }
 
 const AGENT = {

@@ -254,6 +254,7 @@ async fn full_lifecycle_route_escalate_approve() {
             ApprovalDecision::Approved {
                 by: "org-admin".to_string(),
                 reason: Some("escalated approval granted".to_string()),
+                conditions: vec![],
             },
         )
         .unwrap();
@@ -401,6 +402,7 @@ async fn full_lifecycle_with_db_scheduler_and_fake_clock() {
             ApprovalDecision::Approved {
                 by: "org-admin".to_string(),
                 reason: Some("escalated approval".to_string()),
+                conditions: vec![],
             },
         )
         .unwrap();
@@ -470,6 +472,7 @@ async fn negative_case_team_admin_approves_before_escalation() {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: Some("looks fine".to_string()),
+                conditions: vec![],
             },
         )
         .unwrap();

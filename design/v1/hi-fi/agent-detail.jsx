@@ -1,4 +1,22 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Agent-detail (AAASM-5073 / AAASM-5077, ratified 2026-07-25) ─
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; the mock behavior noted is superseded):
+ *   • Paradigm — shipped opens agent detail as a master-detail DRAWER over Fleet
+ *     (preserves Fleet context + deep-link); this mock's FULL-PAGE paradigm is
+ *     superseded.
+ *   • Overview — shipped KEEPS the burn-chart + recent-events blocks as an additive
+ *     evolution.
+ *
+ * NOT superseded: the FE-parity spec sections in this file (capability matrix, config
+ * YAML, recommendation) remain the reference for in-flight FE work — do not delete.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const { useState: useSAD } = React;
 
 // ============================================================

@@ -8,12 +8,12 @@
 //! - Webhook ingestion: via the `aa-api` route that calls [`crate::signature`].
 //! - MCP advisory overlay: [`crate::overlay::claude_ai::ClaudeAiOverlay`] (Claude.ai only).
 //!
-//! [`DevToolAdapter`]: aa_core::DevToolAdapter
-//! [`GovernanceLevel::L1Observe`]: aa_core::GovernanceLevel::L1Observe
+//! [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
+//! [`GovernanceLevel::L1Observe`]: aa_devtool_contract::GovernanceLevel::L1Observe
 
 use std::path::PathBuf;
 
-use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+use aa_devtool_contract::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
 use async_trait::async_trait;
 
 use crate::provider::{SaasProvider, SaasProviderConfig};
@@ -23,7 +23,7 @@ use crate::provider::{SaasProvider, SaasProviderConfig};
 /// Governance level is always [`GovernanceLevel::L1Observe`]; L2/L3 are
 /// structurally unreachable for SaaS-boundary tools.
 ///
-/// [`DevToolAdapter`]: aa_core::DevToolAdapter
+/// [`DevToolAdapter`]: aa_devtool_contract::DevToolAdapter
 #[derive(Debug, Clone)]
 pub struct SaasCodingAgentAdapter {
     config: SaasProviderConfig,
@@ -74,7 +74,7 @@ impl DevToolAdapter for SaasCodingAgentAdapter {
     /// SaaS adapters do not support managed settings generation.
     async fn generate_managed_settings(
         &self,
-        _policy: &aa_core::policy::PolicyDocument,
+        _policy: &aa_devtool_contract::PolicyDocument,
     ) -> Result<String, AdapterError> {
         Err(AdapterError::SettingsGenerationFailed(
             "SaaS adapters do not support managed settings".into(),

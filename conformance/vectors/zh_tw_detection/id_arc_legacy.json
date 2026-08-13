@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353: pre-2021 居留證, two letters and eight digits, a separate grammar and a separate weighting. Synthetic: A -> 1; second letter B contributes only the units digit of its code (11 -> 1) at weight 8, so 8; body 0000000 contributes 0; check digit 1 gives 10.",
+  "input_text": "舊式居留證號碼 AB00000001 需要換發。",
+  "expected_findings": [
+    {
+      "category": "NATIONAL_ID[zh-TW/arc_legacy]",
+      "offset": 22,
+      "end": 32,
+      "confidence": "high"
+    }
+  ],
+  "expected_redacted": "舊式居留證號碼 [REDACTED] 需要換發。"
+}

@@ -17,6 +17,8 @@
 //! assembly::approval::v1 — human-in-the-loop approval queue
 //! assembly::topology::v1 — agent tree, lineage, and team-member queries
 //! assembly::gateway::v1  — L1 cache push-invalidation channel
+//! assembly::ipc::v1      — local SDK ↔ runtime UDS handshake (AAASM-3569)
+//! assembly::devint::v1   — local Developer Integration API (AAASM-5279)
 //! ```
 
 pub mod assembly {
@@ -74,6 +76,26 @@ pub mod assembly {
     pub mod gateway {
         pub mod v1 {
             tonic::include_proto!("assembly.gateway.v1");
+        }
+    }
+
+    pub mod ipc {
+        // Local SDK ↔ runtime UDS handshake messages (AAASM-3569). Carried as
+        // prost payloads behind the hand-rolled IPC codec's wire tags, not gRPC.
+        pub mod v1 {
+            tonic::include_proto!("assembly.ipc.v1");
+        }
+    }
+
+    pub mod devint {
+        // Developer Integration API wire schema (ADR 0030 Decision 5,
+        // AAASM-5279). Served on its own UDS (`~/.aa/run/devint.sock`) behind
+        // the same length-delimited IPC codec — deliberately not a gRPC service
+        // and deliberately not the SDK fast-path socket, so agent-action and
+        // policy-decision traffic is unreachable from a DI client by
+        // construction.
+        pub mod v1 {
+            tonic::include_proto!("assembly.devint.v1");
         }
     }
 }

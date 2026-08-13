@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Agent } from './api'
-import { FLEET_FLAGGED_THRESHOLD, toFleetAgent } from './fleetTypes'
+import { formatLastSeen, toFleetAgent } from './fleetTypes'
 
 function makeAgent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -16,6 +16,7 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     active_sessions: [],
     session_count: 0,
     policy_violations_count: 0,
+    is_flagged: false,
     tool_names: [],
     metadata: {},
     pid: null,
@@ -51,10 +52,9 @@ describe('toFleetAgent', () => {
     expect(toFleetAgent(makeAgent({ metadata: {} })).mode).toBe('enforce')
   })
 
-  it('marks the agent flagged at or above the violations threshold', () => {
-    expect(toFleetAgent(makeAgent({ policy_violations_count: FLEET_FLAGGED_THRESHOLD - 1 })).flagged).toBe(false)
-    expect(toFleetAgent(makeAgent({ policy_violations_count: FLEET_FLAGGED_THRESHOLD })).flagged).toBe(true)
-    expect(toFleetAgent(makeAgent({ policy_violations_count: FLEET_FLAGGED_THRESHOLD + 100 })).flagged).toBe(true)
+  it('reflects the backend is_flagged decision (AAASM-5103, count>0)', () => {
+    expect(toFleetAgent(makeAgent({ is_flagged: false })).flagged).toBe(false)
+    expect(toFleetAgent(makeAgent({ is_flagged: true })).flagged).toBe(true)
   })
 
   it('surfaces last_event as lastSeen; null when absent', () => {
@@ -62,10 +62,91 @@ describe('toFleetAgent', () => {
     expect(toFleetAgent(makeAgent({ last_event: null })).lastSeen).toBeNull()
   })
 
-  it('leaves unwired analytics metrics as null so tables render an em-dash', () => {
+  it('leaves analytics metrics null without a lookup so tables render an em-dash', () => {
     const fa = toFleetAgent(makeAgent())
+    // No enforcement/trust lookup supplied — every analytics metric is null.
     expect(fa.trust).toBeNull()
     expect(fa.blocked24h).toBeNull()
     expect(fa.scrubbed24h).toBeNull()
+  })
+
+  it('fills trust from the trust lookup when the agent has a real score', () => {
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['id-1', 78]]))
+    expect(fa.trust).toBe(78)
+  })
+
+  it('keeps trust null for a cold-start agent (explicit null in the lookup)', () => {
+    // ADR 0019 Guardrail 2: an agent below MIN_ACTIONS is present in the lookup
+    // with a `null` score. It must render `—`, never `0`.
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['id-1', null]]))
+    expect(fa.trust).toBeNull()
+  })
+
+  it('keeps trust null for an agent absent from the trust lookup', () => {
+    // No governed actions (or a truncated window) omits the agent entirely — `—`.
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['other', 90]]))
+    expect(fa.trust).toBeNull()
+  })
+
+  it('does not coerce a trust score of 0 away, and distinguishes it from null', () => {
+    // 0 is a real, meaningful worst-case score — it must survive as 0, distinct
+    // from the `—` that null renders.
+    const zero = toFleetAgent(makeAgent({ id: 'id-1' }), undefined, new Map([['id-1', 0]]))
+    expect(zero.trust).toBe(0)
+  })
+
+  it('fills blocked24h / scrubbed24h from the enforcement lookup when present', () => {
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), new Map([['id-1', { blocked: 7, scrubbed: 3 }]]))
+    expect(fa.blocked24h).toBe(7)
+    expect(fa.scrubbed24h).toBe(3)
+  })
+
+  it('leaves blocked24h / scrubbed24h null when the agent is absent from the lookup', () => {
+    // An agent with no blocked/scrubbed decisions in the window is omitted from
+    // the endpoint response, so it must render `—`, not a fabricated 0.
+    const fa = toFleetAgent(makeAgent({ id: 'id-1' }), new Map([['other-agent', { blocked: 2, scrubbed: 1 }]]))
+    expect(fa.blocked24h).toBeNull()
+    expect(fa.scrubbed24h).toBeNull()
+  })
+
+  it('retrieves an inherited-prototype agent id via .get() instead of colliding with it', () => {
+    // AAASM-5237: agent_id is raw wire input. With a plain-object accumulator,
+    // a `constructor` key would read back `Object` and a `__proto__` key would
+    // write through the prototype setter instead of storing an ordinary entry.
+    // A Map treats both as ordinary keys.
+    const ctorLookup = new Map([['constructor', { blocked: 9, scrubbed: 2 }]])
+    const ctorAgent = toFleetAgent(makeAgent({ id: 'constructor' }), ctorLookup)
+    expect(ctorAgent.blocked24h).toBe(9)
+    expect(ctorAgent.scrubbed24h).toBe(2)
+
+    const protoLookup = new Map([['__proto__', { blocked: 4, scrubbed: 1 }]])
+    const protoAgent = toFleetAgent(makeAgent({ id: '__proto__' }), protoLookup)
+    expect(protoAgent.blocked24h).toBe(4)
+    expect(protoAgent.scrubbed24h).toBe(1)
+
+    // A real, unrelated agent id must still resolve normally.
+    const realAgent = toFleetAgent(makeAgent({ id: 'id-1' }), new Map([['id-1', { blocked: 7, scrubbed: 3 }]]))
+    expect(realAgent.blocked24h).toBe(7)
+    expect(realAgent.scrubbed24h).toBe(3)
+  })
+})
+
+describe('formatLastSeen', () => {
+  const now = Date.parse('2026-05-13T12:00:00Z')
+
+  it('renders an em-dash for null and the raw string for unparseable input', () => {
+    expect(formatLastSeen(null, now)).toBe('—')
+    expect(formatLastSeen('not-a-date', now)).toBe('not-a-date')
+  })
+
+  it('humanizes into the largest whole unit (s / m / h / d)', () => {
+    expect(formatLastSeen('2026-05-13T11:59:48Z', now)).toBe('12s ago')
+    expect(formatLastSeen('2026-05-13T11:55:00Z', now)).toBe('5m ago')
+    expect(formatLastSeen('2026-05-13T10:00:00Z', now)).toBe('2h ago')
+    expect(formatLastSeen('2026-05-10T12:00:00Z', now)).toBe('3d ago')
+  })
+
+  it('clamps future timestamps to "0s ago"', () => {
+    expect(formatLastSeen('2026-05-13T12:01:00Z', now)).toBe('0s ago')
   })
 })

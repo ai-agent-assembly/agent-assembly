@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
 import { PolicyEffectivenessPanel } from './PolicyEffectivenessPanel'
 import {
@@ -9,6 +9,7 @@ import {
   collectDates,
   ratioToColor,
   sortRulesByBlocks,
+  formatDate,
 } from './policyEffectivenessUtils'
 import type { PolicyRule } from './policyEffectivenessUtils'
 
@@ -18,7 +19,7 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeQC()}>
       <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>
@@ -30,7 +31,7 @@ function mockFetch(rules: PolicyRule[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ rules }),
-  } as Response)
+  })
 }
 
 // 2-rule × 7-day fixture
@@ -126,6 +127,19 @@ describe('sortRulesByBlocks', () => {
   })
 })
 
+// ── formatDate guard tests ────────────────────────────────────────────────────
+
+describe('formatDate', () => {
+  it('formats a valid ISO date', () => {
+    expect(formatDate('2026-01-15')).not.toBe('—')
+  })
+
+  it('returns a placeholder for an unparseable date string', () => {
+    expect(formatDate('not-a-date')).toBe('—')
+    expect(formatDate('')).toBe('—')
+  })
+})
+
 // ── PolicyEffectivenessPanel integration tests ────────────────────────────────
 
 describe('PolicyEffectivenessPanel', () => {
@@ -150,7 +164,7 @@ describe('PolicyEffectivenessPanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<PolicyEffectivenessPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load policy data/)).toBeInTheDocument()
   })
@@ -210,5 +224,21 @@ describe('PolicyEffectivenessPanel', () => {
     render(<PolicyEffectivenessPanel />, { wrapper: Wrapper })
     expect(await screen.findByText('Deny PII egress')).toBeInTheDocument()
     expect(screen.getByText('Rate limit burst')).toBeInTheDocument()
+  })
+
+  it('renders the grid without throwing when a day carries an unparseable date', async () => {
+    const badDate: PolicyRule[] = [
+      {
+        id: 'r1',
+        name: 'Bad date rule',
+        days: [{ date: 'not-a-date', blocks: 1, warns: 0, passes: 0 }],
+      },
+    ]
+    mockFetch(badDate)
+    render(<PolicyEffectivenessPanel />, { wrapper: Wrapper })
+    // Panel renders its grid (no whole-view crash); the header shows the
+    // placeholder rather than throwing "Invalid time value".
+    expect(await screen.findByRole('grid')).toBeInTheDocument()
+    expect(screen.getByText('—')).toBeInTheDocument()
   })
 })

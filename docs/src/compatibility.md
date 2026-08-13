@@ -74,11 +74,35 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 | v0.0.1-alpha.2 | v0.0.1-alpha.2 (PyPI `0.0.1a2`) ✓ | v0.0.1-alpha.2 ✓ | v0.0.1-alpha.2 ✓ | protocol/v1 |
 | v0.0.1-alpha.3 | v0.0.1-alpha.3 (PyPI `0.0.1a3`) ✓ | v0.0.1-alpha.3 ✓ | v0.0.1-alpha.3 ✓ | protocol/v1 |
 | v0.0.1 | v0.0.1 ✓ | v0.0.1 ✓ | v0.0.1 ✓ | protocol/v1 |
+| v0.0.1-beta.1 | v0.0.1-beta.1 (PyPI `0.0.1b1`) ✓ | v0.0.1-beta.1 ✓ | v0.0.1-beta.1 ✓ | protocol/v1 |
+| v0.0.1-beta.2 | v0.0.1-beta.2 (PyPI `0.0.1b2`) ✓ | v0.0.1-beta.2 ✓ | v0.0.1-beta.2 ✓ | protocol/v1 |
+| v0.0.1-beta.3 | v0.0.1-beta.3 (PyPI `0.0.1b3`) ✓ | v0.0.1-beta.3 ✓ | v0.0.1-beta.3 ✓ | protocol/v1 |
+| v0.0.1-beta.4 | v0.0.1-beta.5 (PyPI `0.0.1b5`) ✓ | v0.0.1-beta.5 ✓ | v0.0.1-beta.3 ✓ | protocol/v1 |
+| v0.0.1-rc.1 | v0.0.1-rc.1 (PyPI `0.0.1rc1`) ✓ | v0.0.1-rc.1 ✓ | v0.0.1-rc.1 ✓ | protocol/v1 |
+| v0.0.1-rc.2 | v0.0.1-rc.2 (PyPI `0.0.1rc2`) ✓ | v0.0.1-rc.2 ✓ | v0.0.1-rc.2 ✓ | protocol/v1 |
+| v0.0.1-rc.3 | v0.0.1-rc.3 (PyPI `0.0.1rc3`) ✓ | v0.0.1-rc.3 ✓ | v0.0.1-rc.3 ✓ | protocol/v1 |
+| v0.0.1-rc.4 | v0.0.1-rc.4 (PyPI `0.0.1rc4`) ✓ | v0.0.1-rc.4 ✓ | v0.0.1-rc.4 ✓ | protocol/v1 |
+| v0.0.1-rc.5 | v0.0.1-rc.5 (PyPI `0.0.1rc5`) ✓ | v0.0.1-rc.5 ✓ | v0.0.1-rc.5 ✓ | protocol/v1 |
+| v0.0.1-rc.6 | v0.0.1-rc.6 (PyPI `0.0.1rc6`) ✓ | v0.0.1-rc.6 ✓ | v0.0.1-rc.6 ✓ | protocol/v1 |
 
 **Legend:**
 - ✓ Compatible — fully supported
 - ⚠️ Partial — works with known limitations (see notes)
 - ✗ Incompatible — do not use together
+
+> **Note (v0.0.1-beta.4):** components version independently — each repo advances its own pre-release iterator — so one `aa-runtime` release pairs with differently-numbered SDK releases while staying `protocol/v1`-compatible. `aa-runtime` v0.0.1-beta.4 ships alongside python-sdk `0.0.1b5` (git `v0.0.1-beta.5`) and node-sdk `v0.0.1-beta.5`; go-sdk remains at `v0.0.1-beta.3` (no new cut this wave).
+
+> **Note (v0.0.1-rc.1):** first release-candidate cut — a coordinated promotion to the `rc` channel across all components. `aa-runtime` v0.0.1-rc.1 pairs with python-sdk `0.0.1rc1`, node-sdk `v0.0.1-rc.1`, and go-sdk `v0.0.1-rc.1`, all `protocol/v1`-compatible. The SDK `rc.1` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
+
+> **Note (v0.0.1-rc.2):** second release candidate (patch on the `rc` channel) — security-hardening + coverage cut. `aa-runtime` v0.0.1-rc.2 pairs with python-sdk `0.0.1rc2`, node-sdk `v0.0.1-rc.2`, and go-sdk `v0.0.1-rc.2`, all `protocol/v1`-compatible. SDK `rc.2` cuts follow this tag's `release.yml` fan-out.
+
+> **Note (v0.0.1-rc.3):** third release candidate (patch on the `rc` channel) — a large security-hardening cut (Epics AAASM-3913 / 3979 / 4010 + follow-ups; eBPF Layer 3 brought online). No wire-protocol change. `aa-runtime` v0.0.1-rc.3 pairs with python-sdk `0.0.1rc3`, node-sdk `v0.0.1-rc.3`, and go-sdk `v0.0.1-rc.3`, all `protocol/v1`-compatible. SDK `rc.3` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
+
+> **Note (v0.0.1-rc.4):** fourth release candidate (patch on the `rc` channel) — a release-pipeline completeness cut. Ships the previously-omitted `aa-api-server` binary (AAASM-4449) and publishes the `aa-gateway` container image (AAASM-4480); adds a release-artifact completeness gate (AAASM-4456); the SDK release matrices now build every supported Python interpreter — cp312/cp313/cp314 (AAASM-4446/4453) — and bundle the Node native `.node` binding (AAASM-4467). Local-mode `aasm start` also serves gRPC agent registration on loopback `127.0.0.1:50051` (AAASM-4447). No wire-protocol change. `aa-runtime` v0.0.1-rc.4 pairs with python-sdk `0.0.1rc4`, node-sdk `v0.0.1-rc.4`, and go-sdk `v0.0.1-rc.4`, all `protocol/v1`-compatible. SDK `rc.4` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
+
+> **Note (v0.0.1-rc.5):** fifth release candidate (patch on the `rc` channel) — a dashboard-embedding + onboarding-docs cut. The dashboard SPA is now embedded into the `aa-api` binary at build time (AAASM-4517, `build.rs` + `include_dir!`), fixing the rc.4 dashboard-404 when serving locally; `aasm` validates `AASM_API_KEY` before printing the serving banner (AAASM-4572); the mdBook docs gain a tabs widget (AAASM-4566) with tabbed installation instructions and stable anchors (AAASM-4567 / 4573 / 4574); and the Homebrew tap formula is generated via a `versions.rb` generator (AAASM-4520). No wire-protocol change. `aa-runtime` v0.0.1-rc.5 pairs with python-sdk `0.0.1rc5`, node-sdk `v0.0.1-rc.5`, and go-sdk `v0.0.1-rc.5`, all `protocol/v1`-compatible. SDK `rc.5` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
+
+> **Note (v0.0.1-rc.6):** sixth release candidate (patch on the `rc` channel) — a test-quality + tooling-hardening cut. Dashboard SonarCloud/test-quality fixes (AAASM-4694 — parameterized component tests, date-keyed heatmap cells, `Set.has` scope validation, `replaceAll` base64url decode); `aa-ebpf` skips its probe subprocess build under `DOCS_RS` so docs.rs builds succeed (AAASM-4715); tenant-ownership enforcement in `register_op` and a non-clobbering `OpsRegistry::register`; the `aa-cli` audit/logs client now sends its `Authorization` header; a `/health` alias endpoint; and release-process/CI-docs improvements (AAASM-4670/4671/4674/4679/4724 — 3-part branch naming, DCO sign-off checkbox, README doc-link check, Fix-Version ladder reminder, README coverage in release-docs-sync) plus dependency bumps. No wire-protocol change. `aa-runtime` v0.0.1-rc.6 pairs with python-sdk `0.0.1rc6`, node-sdk `v0.0.1-rc.6`, and go-sdk `v0.0.1-rc.6`, all `protocol/v1`-compatible. SDK `rc.6` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
 
 ---
 
@@ -89,6 +113,14 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 | Python SDK (`aa-ffi-python`) v0.0.1 | aa-runtime v0.0.1 |
 | Node.js SDK (`aa-ffi-node`) v0.0.1 | aa-runtime v0.0.1 |
 | Go SDK (`aa-ffi-go`) v0.0.1 | aa-runtime v0.0.1 |
+| Python SDK (`aa-ffi-python`) v0.0.1-beta.2 | aa-runtime v0.0.1-beta.1 |
+| Node.js SDK (`aa-ffi-node`) v0.0.1-beta.2 | aa-runtime v0.0.1-beta.1 |
+| Go SDK (`aa-ffi-go`) v0.0.1-beta.2 | aa-runtime v0.0.1-beta.1 |
+| Python SDK (`aa-ffi-python`) v0.0.1-beta.3 | aa-runtime v0.0.1-beta.1 |
+| Node.js SDK (`aa-ffi-node`) v0.0.1-beta.3 | aa-runtime v0.0.1-beta.1 |
+| Go SDK (`aa-ffi-go`) v0.0.1-beta.3 | aa-runtime v0.0.1-beta.1 |
+| Python SDK (`aa-ffi-python`) v0.0.1-beta.5 (PyPI `0.0.1b5`) | aa-runtime v0.0.1-beta.1 |
+| Node.js SDK (`aa-ffi-node`) v0.0.1-beta.5 | aa-runtime v0.0.1-beta.1 |
 
 ---
 
@@ -102,6 +134,118 @@ A runtime version may support multiple protocol versions to allow SDK upgrades w
 | v0.0.1-alpha.2 | protocol/v1 |
 | v0.0.1-alpha.3 | protocol/v1 |
 | v0.0.1 | protocol/v1 |
+| v0.0.1-beta.1 | protocol/v1 |
+| v0.0.1-beta.2 | protocol/v1 |
+| v0.0.1-beta.3 | protocol/v1 |
+| v0.0.1-beta.4 | protocol/v1 |
+| v0.0.1-rc.1 | protocol/v1 |
+| v0.0.1-rc.2 | protocol/v1 |
+
+---
+
+## Dual-URL SDK configuration
+
+Starting with the v0.0.1 SDK line, every SDK accepts **two** endpoint fields so
+a single install can target either a single-host OSS deployment or a split
+enterprise deployment (gRPC gateway and HTTP control plane on different hosts).
+
+| Field (Python / Node / Go) | What it addresses | Scheme |
+|---|---|---|
+| `gateway_url` / `gatewayUrl` / `WithGatewayURL` | gRPC endpoint of the gateway | `host:port`, no scheme |
+| `control_plane_url` / `controlPlaneUrl` / `WithControlPlaneURL` | HTTP base URL for the control plane — `aa-api` (OSS) or the FastAPI cloud (enterprise) | full URL with scheme |
+
+The HTTP control plane serves agent registration, policy checks, and topology
+edges (`POST /agents/{id}/register`, `POST /agents/{id}/policy/check`,
+`POST /topology/edges`). The gRPC transport carries the streaming op-control,
+lifecycle, audit, and approval flows and always reads `gateway_url`.
+
+### Backwards-compatible default
+
+`control_plane_url` is **optional**. When it is not set, each SDK defaults it to
+the resolved `gateway_url`, so a single-host OSS dev install keeps working with
+only one endpoint configured — the pre-feature behaviour is preserved exactly.
+It only needs a distinct value when the HTTP control plane and the gRPC gateway
+live on separate hosts (the production enterprise topology).
+
+### Resolution order and environment variables
+
+Each field resolves as **explicit init argument > environment variable > unset**:
+
+| Field | Environment variable |
+|---|---|
+| `gateway_url` / `gatewayUrl` / `WithGatewayURL` | `AA_GATEWAY_URL` |
+| `control_plane_url` / `controlPlaneUrl` / `WithControlPlaneURL` | `AA_CONTROL_PLANE_URL` |
+
+If `control_plane_url` is still unset after this chain, it falls back to
+`gateway_url` as described above.
+
+#### Canonical `AA_*` prefix and the deprecated `AAASM_*` alias (SDK env vars only)
+
+This canonical/deprecated distinction applies **only to the SDK connection env
+vars** listed above — `AA_GATEWAY_URL`, `AA_CONTROL_PLANE_URL`, and
+`AA_API_KEY`. It does **not** apply to the core config vars (see the next
+section, where `AAASM_*` is the sole non-aliased name).
+
+For those SDK env vars, `AA_*` is the **canonical** prefix and new configuration
+should always use it.
+
+The legacy **`AAASM_*`** prefix — used by the older zero-config gateway resolver
+in each SDK — is a **deprecated alias** for those same SDK env vars. It is still
+honoured for backwards-compatibility, but reading a value from an `AAASM_*`
+variable emits a deprecation warning, and the alias will be removed in a future
+major version. Migrate to the `AA_*` names.
+
+This prefix reconciliation is tracked across the SDKs under
+[AAASM-3019](https://lightning-dust-mite.atlassian.net/browse/AAASM-3019);
+sibling subtasks update the Python, Node, and Go resolvers.
+
+#### Core (`aa-runtime` / gateway) config env vars use `AAASM_*` as the sole name
+
+The `AA_*`-canonical / `AAASM_*`-deprecated-alias story above is **SDK-only**. The
+core runtime's own configuration env vars are a **separate namespace**: they read
+`AAASM_*` as the **sole, non-aliased** name, with **no `AA_*` fallback** and **no
+deprecation warning**. There is no `AA_DATABASE_URL` / `AA_GATEWAY_PORT` / etc. —
+those spellings are read nowhere in the core and are silently ignored. Use the
+`AAASM_*` names below when configuring a self-hosted gateway:
+
+| Core config env var | Configures |
+|---|---|
+| `AAASM_DATABASE_URL` | PostgreSQL connection URL (overrides `storage.postgres.database_url`) |
+| `AAASM_REDIS_URL` | Redis connection URL |
+| `AAASM_SQLITE_PATH` | SQLite event-buffer path |
+| `AAASM_STORAGE_BACKEND` | Storage backend selector (`sqlite` or `postgres`) |
+| `AAASM_GATEWAY_PORT` | Gateway listen port |
+| `AAASM_RETENTION_HOT_DAYS` / `AAASM_RETENTION_WARM_DAYS` / `AAASM_RETENTION_COLD_ACTION` | Audit-retention tiering |
+| `AAASM_TLS_CERT` / `AAASM_TLS_KEY` | Gateway TLS certificate / key paths |
+| `AAASM_DASHBOARD_DIST` | Operator override for the dashboard `dist/` directory served by the gateway |
+
+These are the names the core actually reads (`aa-core/src/config.rs`,
+`aa-gateway/src/storage/postgres.rs`, `aa-gateway/src/dashboard_server.rs`); they
+predate the SDK prefix reconciliation and were never given an `AA_*` alias.
+
+### Per-SDK notes
+
+- **Python** ([AAASM-2028](https://lightning-dust-mite.atlassian.net/browse/AAASM-2028)) —
+  `control_plane_url` is a keyword argument on `init_assembly`, threaded into
+  `GatewayClient` (httpx). The gRPC path (`op_control`) continues to read
+  `gateway_url`.
+- **Node** ([AAASM-2029](https://lightning-dust-mite.atlassian.net/browse/AAASM-2029)) —
+  `controlPlaneUrl` is an optional field on `AssemblyConfig`. When set, the
+  gateway client routes its HTTP traffic at it; the gRPC transport
+  (`op-control`) keeps using `gatewayUrl`.
+- **Go** ([AAASM-2030](https://lightning-dust-mite.atlassian.net/browse/AAASM-2030)) —
+  `assembly.WithControlPlaneURL` stores the value on the runtime options for
+  parity with the other SDKs. The Go SDK has no HTTP control-plane caller today
+  (lifecycle is delegated to the `aasm` runtime), so the field is in place ready
+  for the first HTTP caller; gRPC dial behaviour is unchanged.
+
+### Authoritative strategy source
+
+The enterprise-vs-OSS connectivity strategy — why the second field exists, the
+transport split, and the per-SDK survey — is owned by
+`agent-assembly-enterprise/docs/sdk-compatibility.md` (filed under AAASM-1953).
+This section documents the OSS-visible surface of that convention; the
+enterprise doc is the authoritative source for the strategy.
 
 ---
 
@@ -167,6 +311,7 @@ See [versioning.md](versioning.md) for the full versioning and deprecation polic
 | AAASM-2805 | Bumped workspace + 35 historical path-dep version literals AND 8 newly added storage/cache path-dep version literals (AAASM-2797 / PR #1024) from `0.0.1-alpha.7` to `0.0.1-alpha.8`. Eighth pre-release in the v0.0.1 dry-run series. Re-runs the full release pipeline with the AAASM-2797 fix baked into master — 5 storage/cache crates (`aa-storage`, `aa-storage-memory`, `aa-storage-redis`, `aa-storage-sqlite-buffer`, `aa-cache`) had path-deps without the `version = "..."` literal that cargo publish demands. alpha-7's `publish-crates` died after publishing only `aa-core@0.0.1-alpha.7` because of this latent bug. On crates.io, all 14 publishable crates are expected to land for the first time end-to-end: the 9 historical (re-publish at alpha-8 alongside existing rows) plus the 5 storage/cache crates (publish for the first time ever). Still-open follow-up: Homebrew `brew install + test (macOS)` silent-SIGKILL investigation (the AAASM-2792 revert didn't fix it; `--release` post-AAASM-2575 is the fast profile, not size-optimized; suspect is a new transitive dep added since alpha-5 such as redis 1.2 / deadpool-redis 0.23 via aa-storage-redis). | None — pre-release version bump; AAASM-2340 behaviour delta (held-back `aasm run` / `aasm tools` on crates.io) carries forward unchanged. |
 | AAASM-2849 | Bumped workspace + 43 path-dep version literals from `0.0.1-alpha.8` to `0.0.1-alpha.9`. Ninth pre-release in the v0.0.1 dry-run series. First coordinated release after the AAASM-2851 SDK release decoupling chapter — validates that the `repository_dispatch` fan-out still works end-to-end after the restructure of `release-node.yml` (publish_mode gating, dry-run input, Resolve refactor) and `release-python.yml` (resolve job, sync-version composite action rename). Carries agent-assembly docs polish (AAASM-2199, 2827, 2833, 2841, 2858) and drives `@agent-assembly/sdk@0.0.1-alpha.9` (full AAASM-2851 chain + AAASM-2842 public GatewayClient + AAASM-2870 README polish) and `agent-assembly==0.0.1a9` (symmetric python-sdk content + AAASM-2863 PEP 440 test + AAASM-2868 docs CI gate + AAASM-2869 runbook) downstream via repository_dispatch. On crates.io, all 14 publishable crates re-publish at `0.0.1-alpha.9` alongside their existing `0.0.1-alpha.8` rows. | None — pre-release version bump; AAASM-2340 behaviour delta (held-back `aasm run` / `aasm tools` on crates.io) carries forward unchanged. |
 | AAASM-2951 | Bumped workspace + 16 path-dep version literals from `0.0.1-alpha.9` to `0.0.1-beta.1`. First **beta-channel** pre-release in the v0.0.1 series — promotes the pre-release channel up from alpha after the alpha-1 → alpha-9 dry-run series stabilised every release channel. Coordinated release across agent-assembly + python-sdk + node-sdk + go-sdk; drives `@agent-assembly/sdk@0.0.1-beta.1`, `agent-assembly==0.0.1b1`, and `github.com/ai-agent-assembly/go-sdk@v0.0.1-beta.1` downstream. Carries the AAASM-2934 SDK Examples documentation chapter (multi-page Examples sections in the node/python/go SDK docs + an agent-assembly core-docs Examples pointer). On crates.io, all 14 publishable crates re-publish at `0.0.1-beta.1` alongside their existing `0.0.1-alpha.9` rows. | None — pre-release version bump; AAASM-2340 behaviour delta (held-back `aasm run` / `aasm tools` on crates.io) carries forward unchanged. |
+| AAASM-3004 | Bumped workspace + 16 path-dep version literals from `0.0.1-beta.1` to `0.0.1-beta.2`. Second pre-release in the v0.0.1 beta channel — a forward-roll cut on top of `0.0.1-beta.1` (no channel promotion, no scope expansion) carrying the AAASM-3000 IPC deadlock fix in `aa-sdk-client` (event reporting is now fire-and-forget, closing the deadlock against a runtime that doesn't ack) plus the AAASM-2959 release-tooling sync that keeps `aa-ffi-python` and `aa-ffi-node` `Cargo.lock` consistent with the bumped `aa-sdk-client` revision. Coordinated release across agent-assembly + python-sdk + node-sdk + go-sdk; drives `@agent-assembly/sdk@0.0.1-beta.2`, `agent-assembly==0.0.1b2`, and `github.com/ai-agent-assembly/go-sdk@v0.0.1-beta.2` downstream. On crates.io, all 14 publishable crates re-publish at `0.0.1-beta.2` alongside their existing `0.0.1-beta.1` rows. | None — pre-release version bump + a behaviour-preserving deadlock fix on the SDK event-report path (the prior code blocked on an ack that the runtime didn't send; consumers that already worked still work). AAASM-2340 behaviour delta (held-back `aasm run` / `aasm tools` on crates.io) carries forward unchanged. |
 | AAASM-2372 | Added `aa-storage-redis` workspace crate (Redis L2 shared-cache driver implementing `SessionStore`, `RateLimitCounter`, and `PolicyStore` from `aa-core::storage`; `redis` 1.2 + `deadpool-redis` 0.23 pooling; `RateLimitCounter` uses an atomic Lua `INCRBY`+`EXPIRE` script). No version change. | None — new driver crate, no changes to existing public API surface. `xxhash-rust` BSL-1.0 (transitive via `redis`) is already allow-listed in `deny.toml`. |
 | AAASM-2369 | Added `aa-storage-postgres` workspace crate (L3 primary PostgreSQL storage driver — ships sqlx migrations for the four MVP tables `orgs`/`agents`/`policies`/`audit_logs` and a `[storage.postgres]` connection-pool config; `publish = false` until the storage-driver subsystem is feature-complete). The `aa_core::storage` trait impls (`PgPolicyStore` / `PgAuditSink` / `PgCredentialStore` / `PgLifecycleStore`) land in AAASM-2370. No version change. | None — new internal driver crate; no existing public API, protocol, or ABI change |
 | AAASM-2575 | Split the default `[profile.release]` into a fast build (`opt-level=2`, `lto="thin"`, `codegen-units=16`; `strip` + `panic="abort"` unchanged) and added a size-optimized `[profile.dist]` (inherits `release`; `opt-level="z"`, fat `lto`, `codegen-units=1`). `release.yml` now ships the binary with `--profile dist`. Build-profile change only, no version bump. | None — affects build speed and which profile produces the shipped binary; `dist` reproduces the previous size-optimized output. No API, protocol, or ABI change. |
@@ -175,3 +320,12 @@ See [versioning.md](versioning.md) for the full versioning and deprecation polic
 | AAASM-2623 | Added `aa-sdk-client` workspace crate (Story AAASM-2570 — the shared, FFI-agnostic SDK runtime-client: UDS transport, IPC wire codec, `AssemblyClient` lifecycle, and advisory non-authoritative credential preflight, extracted from `aa-ffi-python`). Scaffold only in this PR (`publish = false` until AAASM-2559 makes the shared crates pinnable); modules land in AAASM-2624/2625/2626. `aa-ffi-python` is untouched — its migration onto this crate is AAASM-2561. | None — new internal crate, no existing public API, protocol, or ABI change |
 | AAASM-2646 | Removed the fat `aa-ffi-python` + `aa-ffi-node` members from root `Cargo.toml` and deleted the crates (Epic AAASM-2552 final story). The thin Node/Python shims now live in the sibling `node-sdk` / `python-sdk` repos on the pinned `aa-sdk-client` (AAASM-2560 / AAASM-2561); `aa-ffi-go` (C-ABI staticlib artifact consumed by go-sdk) and `aa-sdk-client` are retained, as is `workspace.exclude = ["node-sdk"]` (the `e2e_sdk_node` tests still build the sibling thin shim). Shrinks `cargo build --workspace` by dropping the pyo3 / napi / napi-derive / napi-build dep subtrees. | None — workspace member removal only; the Python/Node/Go SDKs ship from their own repos and keep their versions + protocol/v1 compatibility. No aa-runtime version, protocol, or ABI change |
 | AAASM-2703 | Removed the `aa-ffi-go` member from root `Cargo.toml`, deleted the crate, and deleted its `ffi-go-staticlib.yml` build workflow (Epic AAASM-2552). The thin Go cgo shim now lives in the sibling `go-sdk` repo (`native/aa-ffi-go`) on the pinned `aa-sdk-client` (AAASM-2704), matching the Node/Python model — the monorepo no longer hosts any FFI shim. Amends ADR 0002 (which had kept `aa-ffi-go` in the workspace). | None — workspace member removal only; the Go SDK ships from its own repo and keeps its version + protocol/v1 compatibility. No aa-runtime version, protocol, or ABI change |
+| AAASM-3562 | Added `zeroize` (with `zeroize_derive`) to the root `Cargo.toml` `[workspace.dependencies]` table and consumed it (plus the already-declared workspace `libc`) in `aa-proxy` for the egress credential-injection path (zeroizing `CredentialStore`, `mlock`/`PR_SET_DUMPABLE` process hardening). New third-party workspace dependency only — no version bump. | None — internal dependency addition; no public API, protocol, or ABI change. The proxy forwards the agent's request unchanged unless an operator configures `AA_PROXY_PROVIDER_KEYS`, so the default data path is backward compatible. |
+| PR #1059 (Dependabot) | Bumped the workspace `tower-http` dependency from `0.6.11` to `0.7.0` in root `Cargo.toml` (HTTP middleware used by `aa-api` / `aa-gateway`). Compiles and passes the full workspace test suite + clippy unchanged. A transitive `tower-http 0.6` remains in `Cargo.lock` via an upstream dependency; both coexist. No version bump. | None — internal third-party dependency bump; no public API, protocol, or ABI change |
+| AAASM-5309 | Added `aasm integrations` to the surface `.ci/strip-for-publish.sh` removes before publish (the existing `devtool` region in `aa-cli/Cargo.toml` and `aa-cli/src/commands/mod.rs`, alongside `aasm run` and `aasm tools`), and extended the strip to remove the Developer Integration API bring-up (`spawn_devint` and its only call site) from `aa-runtime`. A published-surface coherence gate now runs on PRs. Note that the AAASM-2340 row above says "flip the three `aa-devtool*` crates' `publish` flags" — there are now **seven** (`aa-devtool`, `-contract`, `-claude-code`, `-codex`, `-copilot`, `-saas`, `-windsurf`), all `publish = false`, plus `examples/aa-devtool-sample-myeditor`. | **Behavior delta** — the published `aasm` binary omits `aasm integrations` in addition to `run` and `tools`, and a published `aa-runtime` never binds the DI-API socket. Local source builds (`cargo build -p aa-cli`) expose the full surface unchanged. The two halves were stripped together deliberately: keeping the CLI client without the socket would leave a command that can only fail, and keeping the socket without any publishable adapter crate would leave a surface that can only answer "no tools detected". No public Rust API, protocol, or ABI change. |
+| AAASM-5628 | Raised the Developer Integration API to **v4** (`DI_API_MAX_SUPPORTED = 4`): `HelloAck` gained an optional `RuntimeProvenance` message (`proto/devint.proto`) stating which build is answering, and `aa-runtime`'s build script now emits `AA_BUILD_IDENTITY_SOURCE` beside `AA_BUILD_SHA`. `aasm integrations` gained **two** new exit codes — `10` (`runtime_unverified`) and `11` (`runtime_unverifiable`); neither existed before this change, the family's highest code was `9` — and a global `--allow-unverified-runtime` flag. | **Additive protocol change, no break.** v4 adds **no verb**: a v1-v3 peer negotiates `SUPPORTED`, keeps every verb, and simply does not receive the new message — presence, not an empty value, is what distinguishes "cannot say" from "has no identity", and nothing is fabricated in its place. Proved by the version-contract suite in `aa-runtime/src/devint/version_contract.rs`, which negotiates each version in the window over a real socket. **Behavior delta for `aasm integrations`:** where a runtime cannot be shown to be the build the CLI ships with, `install`/`verify`/`repair`/`remove` now exit `11` instead of producing a report, and `list`/`plan`/`status` answer with `runtime.provenance.standing = "unverifiable"`. Where a runtime is *shown* not to be that build — a different commit, a deleted executable, or more than one runtime reachable — **every** command exits `10`, read-only included. A wrapper that branched only on `0` vs non-zero is unaffected; one that recorded a result without checking provenance should now read `standing`. No public Rust API removal and no ABI change — but **this row originally stopped there and was incomplete** (AAASM-5669): `aa_runtime::devint::DevIntServices` gained a `provenance` field and `aa_cli::commands::integrations::session::Session` gained `provenance` and `multiplicity`. Both are `pub` structs with `pub` fields, so adding a field is a **source break** for any out-of-crate struct-literal construction, even though nothing was removed and no ABI changed. See the AAASM-5669 row below for the correction. |
+| AAASM-5668 | `aa-runtime/build.rs` now refuses a `checkout` build identity unless `git rev-parse --show-toplevel` resolves to the source root itself, and clears `GIT_DIR`/`GIT_WORK_TREE` before consulting `git`. Git discovery ascends, so a vendored copy, an extracted tarball or a build under an unrelated checkout previously baked *that* repository's HEAD into the binary and labelled it authoritative. The git half of the script moved to `aa-runtime/build_support/git_identity.rs` so a test target can exercise it. | None on any public API, protocol or ABI. **Identity delta:** a build whose source root is not itself a git checkout now resolves `AA_BUILD_IDENTITY_SOURCE` to `packaged` or `absent` instead of `checkout`. That can only *lower* a provenance comparison — `absent` yields `Unverifiable`, never `Match` — so it removes fabricated agreement rather than creating a new refusal. An ordinary source build in its own checkout is unaffected. |
+| AAASM-5670 | `BuildIdentity::compare` no longer waives version falsification when either side's `core_version` is empty. Equal authoritative SHAs with an unstated version on either side are now `Unverifiable` rather than `Match`; two differing authoritative SHAs are still a `Mismatch`. | None on any public API, protocol or ABI — no wire field, message or verb changed. **Behavior delta:** a peer that sends `RuntimeProvenance` with an empty `core_version` (proto3's default for an unset string) can no longer reach `verified` standing on `build_sha` alone. No shipped `aa-runtime` does this — `RuntimeProvenance::to_wire` always populates the field from `aa_core::integration::core_version()` — so no in-tree peer changes standing. Consistent with ADR 0030 §5.4a: absence is not agreement. |
+| AAASM-5667 | `devint::reachable_runtimes` probes each candidate socket on its own thread under a deadline the whole scan shares, and caps the number of entries probed; `DevIntClient::connect` runs the whole handshake under a 5s bound and reports `ClientError::Transport(Io(TimedOut))` when it expires. On Linux a blocking `connect()` to a listener with a full backlog waits indefinitely, and the `HelloAck` read waits forever against a peer that accepts and says nothing, so a same-UID process that bound a `devint*.sock` without serving it could hang `aasm integrations`. | None on any public API, protocol or ABI — the timeout travels in the existing `ClientError::Transport` variant precisely so the exhaustively-matchable enum gains no variant. **Behavior delta:** a socket that does not answer within the bound is reported as unreachable rather than waited on. `reachable_runtimes` was already documented as one-directional evidence (a count of one never proved uniqueness), so this is a fourth limit of the same kind, not a new class of inaccuracy. Availability only — same-UID is already inside the trust boundary (ADR 0030 §5.1). |
+| AAASM-5669 | Added `#[non_exhaustive]` to `aa_runtime::devint::DevIntServices` and to `aa_cli::commands::integrations::session::Session`, and added `DevIntServices::with_provenance` as the seam that replaces the struct literal. Also corrects the AAASM-5628 row above, which said "no public Rust API removal and no ABI change" — true, and incomplete, because it omitted the source break those two structs' new fields caused. | **Source break, taken deliberately and once.** Out-of-crate struct-literal construction of either struct no longer compiles (`E0639`); `DevIntServices::new(..).with_provenance(..)` replaces it, and `Session` is only ever constructed by `connect_with`. Nothing is removed and no ABI changes. **Semver determination:** for a `0.0.x` crate Cargo treats every release as potentially breaking, so no version-number consequence follows; the change is made now rather than later because each future field would otherwise repeat AAASM-5628's unannounced break. |
+| AAASM-5499 | Ratified the public `aasm integrations` outcome contract and implemented it for `repair` and `remove`. The `RepairReport` and `RemoveReport` JSON/YAML documents gain an **`outcome`** field carrying `changed`, `unchanged` or `null`; `ChangeOutcome` in `aa-cli/src/commands/integrations/exit.rs` is the vocabulary, and `refused`/`failed` are named on stderr on the non-zero paths. **No exit code was added or changed** — the eleven-value table from AAASM-5280/5628 is untouched, and a legitimate no-op still exits `0`. | **Additive, no break.** New JSON keys only: `outcome` on the `repair` and `remove` reports. `nothing_to_repair` (AAASM-5455) and `plan_id` (AAASM-5629) keep their existing shapes and values; they are now set by the same constructor call as `outcome` so the two cannot disagree. **Behavior delta:** `repair --dry-run` against an *installed, undrifted* tool now reports the no-op the way the phase short-circuit already did — first line marked `unchanged (nothing to repair)` and `nothing_to_repair` set instead of `null`. Its exit code is unchanged (`0`), as is `repair --dry-run` with drift (`5`). One stderr line (`outcome: <token> (exit N name)`) is added to every non-zero exit; stdout on those paths stays empty, preserving AAASM-5628's "a refused command leaves a harness no result to record". `install` is **not** covered: `ApplyView` carries no mutation flag, so adding it there would be a DI-API wire change. No public Rust API, protocol, or ABI change. |

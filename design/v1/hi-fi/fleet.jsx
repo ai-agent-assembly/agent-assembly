@@ -1,4 +1,20 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Fleet (AAASM-5078 / AAASM-5077, ratified 2026-07-25) ───────
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; additive supersets kept over the mock):
+ *   • FE columns built AHEAD-OF-DATA — shipped lays out columns whose data is not
+ *     fully wired yet; the layout is correct and authoritative (data is backend-gated).
+ *   • Bulk suspend/resume bar + filters — shipped adds them beyond the mock; kept.
+ *
+ * NOT superseded: the FE-parity spec sections in this file remain the reference for
+ * in-flight FE / backend-blocked work — do not delete them.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const { useState: useSFL, useMemo: useMFL } = React;
 
 /* ── Active Sessions sub-view ─────────────────────────────────────────────── */

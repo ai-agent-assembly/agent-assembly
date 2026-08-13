@@ -32,7 +32,7 @@ const ONBOARDING_SESSION_KEY = 'aa.onboarding.session'
 
 async function injectToken(page: Page) {
   await page.addInitScript(() =>
-    localStorage.setItem('aa_token', 'onboarding-fidelity-token'),
+    sessionStorage.setItem('aa_token', 'onboarding-fidelity-token'),
   )
 }
 
@@ -75,6 +75,34 @@ async function preconfigureGateway(page: Page) {
 
 async function mockApi(page: Page) {
   await page.route('**/api/v1/ws/events**', (route) => route.abort())
+  // Step 5 polls the real agent registry since AAASM-5133 — the happy path only
+  // reaches "connected" when the gateway actually reports a registered agent.
+  await page.route('**/api/v1/agents**', (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: 'agent-1',
+            name: 'research-bot',
+            framework: 'langgraph',
+            version: '0.0.1',
+            status: 'active',
+            tool_names: [],
+            metadata: {},
+            session_count: 0,
+            policy_violations_count: 0,
+            active_sessions: [],
+            recent_events: [],
+            recent_traces: [],
+            last_event: '2026-07-26T09:00:00Z',
+          },
+        ],
+        page: 1,
+        per_page: 100,
+        total: 1,
+      },
+    }),
+  )
 }
 
 async function gotoOnboarding(page: Page) {
@@ -175,15 +203,16 @@ function describeAtViewport(width: number, height: number) {
       expect(bg).toMatch(/rgba?\(8,\s*9,\s*11,\s*0?\.78\)/)
     })
 
-    test('already-configured gateway redirects to / without showing the wizard', async ({
+    test('already-configured gateway redirects to Overview without showing the wizard', async ({
       page,
     }) => {
       await preconfigureGateway(page)
       await page.goto('/onboarding')
       // Wizard must not be present.
       await expect(page.getByTestId('onboarding-wizard')).toHaveCount(0)
-      // Page lands on /; the AppShell stays mounted, so confirm by URL.
-      expect(page.url()).toMatch(/\/$/)
+      // Root now redirects to Overview (AAASM-5144), not the Approvals queue;
+      // the AppShell stays mounted, so confirm the landing route by URL.
+      await expect.poll(() => page.url()).toMatch(/\/overview$/)
     })
 
     test('happy path: framework → install → identity → policy → enroll → finish', async ({
@@ -196,7 +225,8 @@ function describeAtViewport(width: number, height: number) {
       await expect(page.getByTestId('onboarding-continue')).toBeEnabled()
       await page.getByTestId('onboarding-continue').click()
 
-      // Step 2 — install. Skip rather than wait on the simulated terminal.
+      // Step 2 — install. Skip rather than probe the gateway here; the probe's
+      // own contract is covered by review-aaasm-5132.spec.ts.
       await page.getByTestId('onboarding-skip-step').click()
 
       // Step 3 — identity. Skip.

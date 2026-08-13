@@ -6,7 +6,7 @@ interface AlertDetailDrawerProps {
   children?: React.ReactNode
 }
 
-export function AlertDetailDrawer({ open, onClose, children }: AlertDetailDrawerProps) {
+export function AlertDetailDrawer({ open, onClose, children }: Readonly<AlertDetailDrawerProps>) {
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -34,6 +34,12 @@ export function AlertDetailDrawer({ open, onClose, children }: AlertDetailDrawer
       }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose()
+      }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        onClose()
       }}
     >
       <aside

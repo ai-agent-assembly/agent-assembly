@@ -1,0 +1,2528 @@
+//! Mini boolean expression parser for `requires_approval_if` conditions.
+//!
+//! Public surface: [`evaluate`].
+//!
+//! Grammar (flat, no parentheses in v1):
+//! ```text
+//! expr       := clause (combinator clause)*
+//! clause     := field op literal
+//! combinator := "AND" | "OR"
+//! field      := "tool" | "path" | "url" | "method" | "command"
+//!             | "args." dotted_path        # walks ToolCall.args JSON
+//!             | "tool_result." dotted_path # walks ToolResult.result JSON
+//!             | "tool_result"              # whole ToolResult.result body
+//!             | (other identifiers — see KNOWN_VARIABLES)
+//! op         := "==" | "!=" | ">" | ">=" | "<" | "<=" | "contains" | "starts_with"
+//!             | "in" | "not_in"
+//! literal    := quoted_string | integer | float | list
+//! ```
+//!
+//! ## `args.<key>` predicates
+//!
+//! Identifiers prefixed with `args.` walk the JSON object on a
+//! [`GovernanceAction::ToolCall`]'s `args` field via a JSON pointer
+//! synthesised from the dotted path (`args.path` → `/path`,
+//! `args.headers.authorization` → `/headers/authorization`). Resolved
+//! string leaves accept `== != contains starts_with in not_in`;
+//! resolved numeric leaves accept `== != > >= < <=`. Non-`ToolCall`
+//! actions, malformed `args` JSON, and unresolved pointers all surface
+//! as no-match (false) — never fail-safe-true.
+//!
+//! ## `tool_result.<key>` predicates (response side)
+//!
+//! Response-side mirror of `args.<key>`: identifiers prefixed with
+//! `tool_result.` walk the JSON body on a
+//! [`GovernanceAction::ToolResult`]'s `result` field via the same
+//! JSON-pointer translation (`tool_result.foo` → `/foo`,
+//! `tool_result.payload.api_key` → `/payload/api_key`). Op coverage
+//! and null-safety match `args.<key>` exactly.
+//!
+//! The bare identifier `tool_result` (no dotted suffix) is a special
+//! shorthand that treats the entire serialised `result` body as one
+//! string. Only `contains` / `starts_with` against a string literal
+//! are meaningful here — useful for regex-style pattern matches like
+//! `tool_result contains "sk-"` when the body schema is unknown.
+//!
+//! **Fail-safe**: any parse/tokenization error returns `true`
+//! (triggers RequiresApproval — the safe default).
+
+// The private helpers below are only consumed via `evaluate` which is
+// `pub(crate)`.  Until a caller in this crate wires up the evaluator,
+// rustc sees them as dead code.  The allow is intentional and temporary.
+#![allow(dead_code)]
+
+use aa_core::{GovernanceAction, GovernanceLevel};
+
+use crate::context::{ContextError, PolicyContext};
+
+use strsim;
+
+/// All variable names that the expression evaluator recognises.
+///
+/// Used by load-time validation to catch typos before a policy is ever
+/// evaluated.  Any identifier in a `requires_approval_if` expression that is
+/// not in this list and is not a combinator, operator, governance-level literal,
+/// or numeric literal will be rejected with
+/// [`PolicyParseError::UnknownVariable`](crate::error::PolicyParseError::UnknownVariable).
+pub(crate) const KNOWN_VARIABLES: &[&str] = &[
+    "tool",
+    "path",
+    "url",
+    "method",
+    "command",
+    "governance_level",
+    "agent.depth",
+    "agent.risk_tier",
+    "team.active_agents",
+    "team.budget_remaining",
+    "child.tool",
+    "child.risk_tier",
+    "parent.risk_tier",
+    "source.team_id",
+    "target.team_id",
+    "target.channel_id",
+    "agent.age",
+    "team.parallel_agents",
+    "agent.parent_agent_id",
+    "agent.team_id",
+    "agent.children_count",
+    "agent.is_root",
+    "agent.is_leaf",
+];
+
+// ---------------------------------------------------------------------------
+// Internal token types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq)]
+enum FieldRef {
+    Tool,
+    Path,
+    Url,
+    Method,
+    Command,
+    GovernanceLevel,
+    AgentDepth,
+    TeamActiveAgents,
+    TeamBudgetRemaining,
+    ChildTool,
+    ChildRiskTier,
+    AgentRiskTier,
+    ParentRiskTier,
+    SourceTeamId,
+    TargetTeamId,
+    TargetChannelId,
+    AgentAge,
+    TeamParallelAgents,
+    AgentParentId,
+    AgentTeamId,
+    AgentChildrenCount,
+    AgentIsRoot,
+    AgentIsLeaf,
+    /// `args.<key>` / `args.<key>.<nested>` — walks the `args` JSON object on
+    /// a `GovernanceAction::ToolCall` via the carried JSON-pointer path
+    /// (e.g. `args.path` → `"/path"`, `args.config.timeout_ms` →
+    /// `"/config/timeout_ms"`). Surfaces a leaf scalar to the predicate
+    /// evaluator; null-safe no-match when the pointer cannot resolve or the
+    /// `args` payload is not valid JSON.
+    ToolArg(String),
+    /// `tool_result.<key>` / `tool_result.<key>.<nested>` — walks the `result`
+    /// JSON body on a `GovernanceAction::ToolResult` via the carried
+    /// JSON-pointer path. Mirrors `ToolArg`'s null-safety contract: non-
+    /// `ToolResult` actions, malformed `result` JSON, and unresolved
+    /// pointers all surface as no-match (false).
+    ToolResult(String),
+    /// Bare `tool_result` (no dotted path) — treats the entire serialised
+    /// `result` body of a `GovernanceAction::ToolResult` as one string for
+    /// regex-style `contains` / `starts_with` matches. Lets policies write
+    /// `tool_result contains "sk-"` without committing to a specific JSON
+    /// field shape, useful when the response body's schema is unknown.
+    ToolResultWhole,
+}
+
+#[derive(Debug, PartialEq)]
+enum OpKind {
+    Eq,
+    Ne,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    Contains,
+    StartsWith,
+    In,
+    NotIn,
+}
+
+#[derive(Debug, PartialEq)]
+enum LiteralVal {
+    Str(String),
+    Num(f64),
+    Level(GovernanceLevel),
+    Tier(aa_core::RiskTier),
+    StrList(Vec<String>),
+    /// Duration in seconds, parsed from human-readable strings like `24h`, `30m`.
+    Duration(u64),
+}
+
+#[derive(Debug, PartialEq)]
+enum Token {
+    Field(FieldRef),
+    Op(OpKind),
+    Literal(LiteralVal),
+    And,
+    Or,
+}
+
+// ---------------------------------------------------------------------------
+// Tokenizer
+// ---------------------------------------------------------------------------
+
+fn tokenize(expr: &str) -> Option<Vec<Token>> {
+    let mut tokens = Vec::new();
+    let mut chars = expr.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        // Skip whitespace
+        if ch.is_whitespace() {
+            chars.next();
+            continue;
+        }
+
+        // List literal: ["item1", "item2", ...]
+        if ch == '[' {
+            tokens.push(lex_list_literal(&mut chars)?);
+            continue;
+        }
+
+        // Quoted string literal
+        if ch == '"' {
+            tokens.push(lex_quoted_string(&mut chars)?);
+            continue;
+        }
+
+        // Operator tokens that start with '<', '>', '=', '!'
+        if ch == '<' || ch == '>' || ch == '=' || ch == '!' {
+            tokens.push(lex_comparison_op(&mut chars)?);
+            continue;
+        }
+
+        // Word tokens: keywords, field names, operators, numeric literals
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+            tokens.push(lex_word(&mut chars)?);
+            continue;
+        }
+
+        // Unknown character
+        return None;
+    }
+
+    Some(tokens)
+}
+
+/// Type of the char cursor threaded through the sub-lexers.
+type CharCursor<'a> = std::iter::Peekable<std::str::Chars<'a>>;
+
+/// Read a double-quoted string body (opening quote already at the cursor),
+/// handling `\"` and `\\` escapes. Returns the unescaped contents, or `None` on
+/// an unterminated string/escape.
+fn read_quoted_body(chars: &mut CharCursor) -> Option<String> {
+    chars.next(); // consume opening quote
+    let mut s = String::new();
+    loop {
+        match chars.next() {
+            Some('"') => break,
+            Some('\\') => match chars.next() {
+                Some('"') => s.push('"'),
+                Some('\\') => s.push('\\'),
+                Some(c) => {
+                    s.push('\\');
+                    s.push(c);
+                }
+                None => return None, // unterminated escape
+            },
+            Some(c) => s.push(c),
+            None => return None, // unterminated string
+        }
+    }
+    Some(s)
+}
+
+/// Lex a `["a", "b", ...]` list literal (cursor at the opening `[`).
+fn lex_list_literal(chars: &mut CharCursor) -> Option<Token> {
+    chars.next(); // consume '['
+    let mut items: Vec<String> = Vec::new();
+    loop {
+        skip_while(chars, |c| c.is_whitespace());
+        match chars.peek() {
+            Some(&']') => {
+                chars.next();
+                break;
+            }
+            Some(&'"') => {
+                items.push(read_quoted_body(chars)?);
+                // skip whitespace and optional comma
+                skip_while(chars, |c| c.is_whitespace() || c == ',');
+            }
+            _ => return None, // unexpected token in list
+        }
+    }
+    Some(Token::Literal(LiteralVal::StrList(items)))
+}
+
+/// Lex a single double-quoted string literal (cursor at the opening `"`).
+fn lex_quoted_string(chars: &mut CharCursor) -> Option<Token> {
+    Some(Token::Literal(LiteralVal::Str(read_quoted_body(chars)?)))
+}
+
+/// Lex a comparison operator starting with `< > = !` (cursor at that char).
+/// Handles the two-char `<= >= == !=` forms; bare `=`/`!` are invalid.
+fn lex_comparison_op(chars: &mut CharCursor) -> Option<Token> {
+    let ch = chars.next()?;
+    let op = if chars.peek() == Some(&'=') {
+        chars.next();
+        match ch {
+            '<' => OpKind::Lte,
+            '>' => OpKind::Gte,
+            '=' => OpKind::Eq,
+            '!' => OpKind::Ne,
+            _ => return None,
+        }
+    } else {
+        match ch {
+            '<' => OpKind::Lt,
+            '>' => OpKind::Gt,
+            _ => return None, // bare '=' or '!' without '=' is invalid
+        }
+    };
+    Some(Token::Op(op))
+}
+
+/// Advance `chars` past every leading character satisfying `pred`.
+fn skip_while(chars: &mut CharCursor, pred: impl Fn(char) -> bool) {
+    while let Some(&c) = chars.peek() {
+        if pred(c) {
+            chars.next();
+        } else {
+            break;
+        }
+    }
+}
+
+/// Lex a word token: keyword, field name, word-operator, or numeric/duration
+/// literal (cursor at an identifier char).
+fn lex_word(chars: &mut CharCursor) -> Option<Token> {
+    let mut word = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
+            word.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    word_to_token(&word)
+}
+
+/// Map a fully-read word to its [`Token`].
+///
+/// `args.<path>` / `tool_result.<path>` synthesise JSON-pointer field refs (a
+/// bare `args` is rejected; bare `tool_result` maps to the whole result). All
+/// other words resolve via the keyword table, then fall back to an `f64` or, for
+/// digit-leading words, a humantime duration. Returns `None` for unknown words.
+fn word_to_token(word: &str) -> Option<Token> {
+    // `args.<key>` / `args.<key>.<nested>` — JSON pointer into ToolCall args.
+    if let Some(rest) = word.strip_prefix("args.") {
+        if rest.is_empty() {
+            return None;
+        }
+        let pointer = format!("/{}", rest.replace('.', "/"));
+        return Some(Token::Field(FieldRef::ToolArg(pointer)));
+    }
+    // `tool_result.<key>` — response-side mirror of `args.<key>`.
+    if let Some(rest) = word.strip_prefix("tool_result.") {
+        if rest.is_empty() {
+            return None;
+        }
+        let pointer = format!("/{}", rest.replace('.', "/"));
+        return Some(Token::Field(FieldRef::ToolResult(pointer)));
+    }
+    if word == "tool_result" {
+        return Some(Token::Field(FieldRef::ToolResultWhole));
+    }
+
+    let token = match word {
+        "AND" => Token::And,
+        "OR" => Token::Or,
+        "tool" => Token::Field(FieldRef::Tool),
+        "path" => Token::Field(FieldRef::Path),
+        "url" => Token::Field(FieldRef::Url),
+        "method" => Token::Field(FieldRef::Method),
+        "command" => Token::Field(FieldRef::Command),
+        "governance_level" => Token::Field(FieldRef::GovernanceLevel),
+        "agent.depth" => Token::Field(FieldRef::AgentDepth),
+        "team.active_agents" => Token::Field(FieldRef::TeamActiveAgents),
+        "team.budget_remaining" => Token::Field(FieldRef::TeamBudgetRemaining),
+        "child.tool" => Token::Field(FieldRef::ChildTool),
+        "child.risk_tier" => Token::Field(FieldRef::ChildRiskTier),
+        "agent.risk_tier" => Token::Field(FieldRef::AgentRiskTier),
+        "parent.risk_tier" => Token::Field(FieldRef::ParentRiskTier),
+        "source.team_id" => Token::Field(FieldRef::SourceTeamId),
+        "target.team_id" => Token::Field(FieldRef::TargetTeamId),
+        "target.channel_id" => Token::Field(FieldRef::TargetChannelId),
+        "agent.age" => Token::Field(FieldRef::AgentAge),
+        "team.parallel_agents" => Token::Field(FieldRef::TeamParallelAgents),
+        "agent.parent_agent_id" => Token::Field(FieldRef::AgentParentId),
+        "agent.team_id" => Token::Field(FieldRef::AgentTeamId),
+        "agent.children_count" => Token::Field(FieldRef::AgentChildrenCount),
+        "agent.is_root" => Token::Field(FieldRef::AgentIsRoot),
+        "agent.is_leaf" => Token::Field(FieldRef::AgentIsLeaf),
+        "L0" => Token::Literal(LiteralVal::Level(GovernanceLevel::L0Discover)),
+        "L1" => Token::Literal(LiteralVal::Level(GovernanceLevel::L1Observe)),
+        "L2" => Token::Literal(LiteralVal::Level(GovernanceLevel::L2Enforce)),
+        "L3" => Token::Literal(LiteralVal::Level(GovernanceLevel::L3Native)),
+        "Low" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Low)),
+        "Medium" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Medium)),
+        "High" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::High)),
+        "Critical" => Token::Literal(LiteralVal::Tier(aa_core::RiskTier::Critical)),
+        "contains" => Token::Op(OpKind::Contains),
+        "starts_with" => Token::Op(OpKind::StartsWith),
+        "in" => Token::Op(OpKind::In),
+        "not_in" => Token::Op(OpKind::NotIn),
+        other => return word_literal_token(other),
+    };
+    Some(token)
+}
+
+/// Fallback for a non-keyword word: parse an `f64`, or — for words starting
+/// with an ASCII digit — a humantime duration. `None` for anything else.
+fn word_literal_token(word: &str) -> Option<Token> {
+    if let Ok(n) = word.parse::<f64>() {
+        Some(Token::Literal(LiteralVal::Num(n)))
+    } else if word.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        // Only attempt humantime when the word starts with a digit — avoids
+        // false positives (e.g. "in", "contains").
+        humantime::parse_duration(word)
+            .ok()
+            .map(|d| Token::Literal(LiteralVal::Duration(d.as_secs())))
+    } else {
+        None // unknown word
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Field value extraction
+// ---------------------------------------------------------------------------
+
+fn field_value<'a>(field: &FieldRef, action: &'a GovernanceAction) -> &'a str {
+    match (field, action) {
+        (FieldRef::Tool, GovernanceAction::ToolCall { name, .. }) => name.as_str(),
+        (FieldRef::Path, GovernanceAction::FileAccess { path, .. }) => path.as_str(),
+        (FieldRef::Url, GovernanceAction::NetworkRequest { url, .. }) => url.as_str(),
+        (FieldRef::Method, GovernanceAction::NetworkRequest { method, .. }) => method.as_str(),
+        (FieldRef::Command, GovernanceAction::ProcessExec { command }) => command.as_str(),
+        // Field does not match the action variant, or governance_level is
+        // handled out-of-band in `eval_clause_safe` → treat as empty string.
+        _ => "",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Graph-context resolution fail-safety (ADR 0015 §4)
+// ---------------------------------------------------------------------------
+
+/// Clause polarity that determines the fail-safe direction when a graph-context
+/// variable cannot be *resolved* (ADR 0015 §4). The evaluator returns a plain
+/// "does this clause fire?" boolean, so the caller declares which kind of clause
+/// the expression drives:
+///
+/// * `Deny` / `RequireApproval` are **guard** clauses — a resolution failure
+///   makes the clause *fire* (fail closed): the action is denied / escalated.
+/// * `Allow` is a **permit** clause — a resolution failure makes the clause *not
+///   fire*: a failure can never be laundered into a grant.
+///
+/// Note this governs *resolution failures* (`Err`), not legitimate absence
+/// (`Ok(None)`), which keeps its historical null-as-no-match behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClauseKind {
+    /// A conditional `deny` clause.
+    Deny,
+    /// A `requires_approval_if` clause.
+    RequireApproval,
+    /// A conditional `allow` clause.
+    Allow,
+}
+
+impl ClauseKind {
+    /// Whether a fail-safe condition (a graph-context *resolution failure*, or a
+    /// tokenize/parse anomaly) makes a clause of this kind fire. Guards
+    /// (`Deny`/`RequireApproval`) fail closed by firing; a conditional `Allow`
+    /// fails closed by NOT firing (never granting).
+    fn fail_safe_fires(self) -> bool {
+        matches!(self, ClauseKind::Deny | ClauseKind::RequireApproval)
+    }
+
+    /// The fail-safe action label recorded in audit evidence.
+    fn fail_safe_action(self) -> &'static str {
+        match self {
+            ClauseKind::Deny => "deny",
+            ClauseKind::RequireApproval => "require_approval",
+            ClauseKind::Allow => "no_grant",
+        }
+    }
+}
+
+/// Audit evidence for a single graph-context variable that failed to resolve
+/// during policy evaluation (ADR 0015 §4 rule 5). Identifies the unresolved
+/// variable, the clause polarity that referenced it, and — derived from that —
+/// the fail-safe action taken. Never carries the underlying error detail into a
+/// value that could leak secrets; only the variable name and verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionFailure {
+    /// Canonical name of the variable that could not be resolved (e.g.
+    /// `"team.active_agents"`).
+    pub variable: String,
+    /// The clause polarity that referenced the variable.
+    pub clause: ClauseKind,
+}
+
+impl ResolutionFailure {
+    /// The fail-safe action taken for this failure: `"deny"`,
+    /// `"require_approval"`, or `"no_grant"`.
+    pub fn fail_safe_action(&self) -> &'static str {
+        self.clause.fail_safe_action()
+    }
+}
+
+/// Per-evaluation fail-safe state threaded to the context-backed field handlers:
+/// the clause polarity plus the audit sink that collects every resolution
+/// failure. Uses a shared `RefCell` so it can be passed by `&` across the nested
+/// `any`/`all` closures without `&mut` aliasing.
+struct FailSafe<'a> {
+    clause: ClauseKind,
+    failures: &'a std::cell::RefCell<Vec<ResolutionFailure>>,
+}
+
+impl FailSafe<'_> {
+    /// Resolve a context getter into an optional value, or short-circuit with the
+    /// clause's fail-safe verdict on a resolution failure (ADR 0015 §4):
+    ///
+    /// * `policy_ctx == None` (whole context absent) → `Ok(None)`: the historical
+    ///   null-as-no-match path, byte-identical to pre-ADR behavior.
+    /// * getter `Ok(opt)` → `Ok(opt)`: a resolved value or a legitimate absence.
+    /// * getter `Err(_)` → record an audit failure for `var` and return
+    ///   `Err(fail_safe_fires)` — the verdict the caller returns directly.
+    fn resolve<'c, T>(
+        &self,
+        policy_ctx: Option<&'c dyn PolicyContext>,
+        var: &str,
+        getter: impl FnOnce(&'c dyn PolicyContext) -> Result<Option<T>, ContextError>,
+    ) -> Result<Option<T>, bool> {
+        match policy_ctx {
+            None => Ok(None),
+            Some(c) => match getter(c) {
+                Ok(opt) => Ok(opt),
+                Err(_) => Err(self.record(var)),
+            },
+        }
+    }
+
+    /// Record a resolution failure for `var` and return the clause's fail-safe
+    /// verdict (whether the clause fires). Used by handlers whose getter is not
+    /// `Result<Option<T>, _>` (e.g. `child_tools` → `Result<Vec<_>, _>`).
+    fn record(&self, var: &str) -> bool {
+        self.failures.borrow_mut().push(ResolutionFailure {
+            variable: var.to_string(),
+            clause: self.clause,
+        });
+        self.clause.fail_safe_fires()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clause evaluation
+// ---------------------------------------------------------------------------
+
+fn eval_clause_safe(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
+) -> bool {
+    // Each `eval_*` helper owns one field group and returns `Some(verdict)` when
+    // it recognises `field`, or `None` to fall through to the next group. The
+    // final string-field path is the catch-all. This dispatch chain preserves
+    // the original evaluation order and per-group null-safety contracts exactly.
+    if let Some(v) = eval_numeric_ctx_field(field, op, literal, policy_ctx, fs) {
+        return v;
+    }
+    if let Some(v) = eval_child_tool_field(field, op, literal, policy_ctx, fs) {
+        return v;
+    }
+    if let Some(v) = eval_tool_result_field(field, op, literal, action) {
+        return v;
+    }
+    if let Some(v) = eval_tool_arg_field(field, op, literal, action) {
+        return v;
+    }
+    if let Some(v) = eval_risk_tier_field(field, op, literal, policy_ctx, fs) {
+        return v;
+    }
+    if let Some(v) = eval_agent_identity_field(field, op, literal, policy_ctx, fs) {
+        return v;
+    }
+    if let Some(v) = eval_topology_flag_field(field, op, literal, policy_ctx, fs) {
+        return v;
+    }
+    if let Some(v) = eval_send_message_field(field, op, literal, action) {
+        return v;
+    }
+    if let Some(v) = eval_governance_level_field(field, op, literal, agent_level) {
+        return v;
+    }
+
+    eval_string_field(field, op, literal, action)
+}
+
+/// Context-backed numeric fields (`agent.depth`, `team.active_agents`,
+/// `team.parallel_agents`, `team.budget_remaining`, `agent.age`,
+/// `agent.children_count`). All share identical null-safe numeric semantics.
+/// `team.parallel_agents` delegates to the same registry query as
+/// `team.active_agents` by design. Returns `None` for any other field.
+fn eval_numeric_ctx_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
+) -> Option<bool> {
+    // AAASM-4947 / ADR 0015 §4: a `resolve` `Err(fired)` is a *resolution
+    // failure* (the getter reported a backend/lookup error). The failure has
+    // been recorded for audit; return the clause's fail-safe verdict directly.
+    // `Ok(None)` (legitimate absence, or an absent context) falls through to the
+    // preserved numeric no-match handling below.
+    let numeric_ctx_value: Option<f64> = match field {
+        FieldRef::AgentDepth => match fs.resolve(policy_ctx, "agent.depth", |c| c.agent_depth()) {
+            Ok(o) => o.map(|d| d as f64),
+            Err(fired) => return Some(fired),
+        },
+        FieldRef::TeamActiveAgents | FieldRef::TeamParallelAgents => {
+            let var = if matches!(field, FieldRef::TeamParallelAgents) {
+                "team.parallel_agents"
+            } else {
+                "team.active_agents"
+            };
+            match fs.resolve(policy_ctx, var, |c| c.team_active_agents()) {
+                Ok(o) => o.map(|n| n as f64),
+                Err(fired) => return Some(fired),
+            }
+        }
+        FieldRef::TeamBudgetRemaining => {
+            match fs.resolve(policy_ctx, "team.budget_remaining", |c| c.team_budget_remaining()) {
+                Ok(o) => o,
+                Err(fired) => return Some(fired),
+            }
+        }
+        FieldRef::AgentAge => match fs.resolve(policy_ctx, "agent.age", |c| c.agent_age_secs()) {
+            Ok(o) => o.map(|a| a as f64),
+            Err(fired) => return Some(fired),
+        },
+        FieldRef::AgentChildrenCount => {
+            match fs.resolve(policy_ctx, "agent.children_count", |c| c.agent_children_count()) {
+                Ok(o) => o.map(|n| n as f64),
+                Err(fired) => return Some(fired),
+            }
+        }
+        _ => return None,
+    };
+    Some(match numeric_ctx_value {
+        Some(lhs) => compare_numeric(lhs, op, literal),
+        // AAASM-3995(b): this evaluator drives `requires_approval_if`, where a
+        // `false` result means "no approval required". When a context field
+        // (agent.depth / team.*) is legitimately absent, silently returning
+        // `false` let a sole-clause approval guard never fire — the action ran
+        // unguarded (fail-open). A legitimately-absent numeric guard condition
+        // fails CLOSED here: fire the predicate (require approval), mirroring the
+        // fail-closed handling of unparseable ordered comparisons (AAASM-3893).
+        // (A resolution *failure* is handled above, per ADR 0015 §4.)
+        None => true,
+    })
+}
+
+/// `child.tool` — string comparison against the union of tool names across all
+/// direct children of the current agent. `false` when context is absent.
+fn eval_child_tool_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
+) -> Option<bool> {
+    let FieldRef::ChildTool = field else {
+        return None;
+    };
+    let tools = match policy_ctx {
+        // ADR 0015 §4: a resolution failure fails closed (record + fail-safe
+        // verdict) instead of the historical fail-open no-match. `Ok` (including
+        // an empty child set — legitimate absence) keeps the null-as-no-match
+        // behavior below.
+        Some(c) => match c.child_tools() {
+            Ok(t) => t,
+            Err(_) => return Some(fs.record("child.tool")),
+        },
+        None => return Some(false),
+    };
+    let rhs = match literal {
+        LiteralVal::Str(s) => s.as_str(),
+        _ => return Some(false),
+    };
+    Some(match op {
+        OpKind::Eq => tools.iter().any(|t| t == rhs),
+        OpKind::Ne => tools.iter().all(|t| t != rhs),
+        OpKind::Contains => tools.iter().any(|t| t.contains(rhs)),
+        OpKind::StartsWith => tools.iter().any(|t| t.starts_with(rhs)),
+        _ => false,
+    })
+}
+
+/// `tool_result.<key>` — JSON-pointer walk into the ToolResult's `result`
+/// payload, and the bare `tool_result` shorthand for matching the whole
+/// serialised body. Mirrors `args.<key>`'s null-safety contract: non-
+/// `ToolResult` actions, unparseable result JSON, and unresolved pointers
+/// all surface as no-match. The bare `tool_result` arm only accepts
+/// `contains` / `starts_with` against a string literal.
+fn eval_tool_result_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    action: &GovernanceAction,
+) -> Option<bool> {
+    if !matches!(field, FieldRef::ToolResult(_) | FieldRef::ToolResultWhole) {
+        return None;
+    }
+    let result_str = match action {
+        GovernanceAction::ToolResult { result, .. } => result.as_str(),
+        _ => return Some(false),
+    };
+    if let FieldRef::ToolResultWhole = field {
+        return Some(eval_whole_body(result_str, op, literal));
+    }
+    let FieldRef::ToolResult(pointer) = field else {
+        unreachable!()
+    };
+    Some(eval_json_pointer(result_str, pointer, op, literal))
+}
+
+/// `args.<key>` — JSON-pointer walk into the ToolCall's args payload.
+/// Null-safe at every step (see `eval_json_pointer`).
+fn eval_tool_arg_field(field: &FieldRef, op: &OpKind, literal: &LiteralVal, action: &GovernanceAction) -> Option<bool> {
+    let FieldRef::ToolArg(pointer) = field else {
+        return None;
+    };
+    let args_str = match action {
+        GovernanceAction::ToolCall { args, .. } => args.as_str(),
+        _ => return Some(false),
+    };
+    Some(eval_json_pointer(args_str, pointer, op, literal))
+}
+
+/// Risk-tier fields (`agent.risk_tier`, `parent.risk_tier`, `child.risk_tier`)
+/// — ordinal comparison against a Tier literal. Null-safe when context/registry
+/// lookup is absent (or the agent has no parent/child).
+fn eval_risk_tier_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
+) -> Option<bool> {
+    // ADR 0015 §4: `Err(fired)` is a resolution failure (recorded + fail-safe);
+    // `Ok(None)` (legitimate absence — no parent/child/tier) keeps the historical
+    // no-match (`false`).
+    let tier = match field {
+        FieldRef::AgentRiskTier => fs.resolve(policy_ctx, "agent.risk_tier", |c| c.agent_risk_tier()),
+        FieldRef::ParentRiskTier => fs.resolve(policy_ctx, "parent.risk_tier", |c| c.parent_risk_tier()),
+        FieldRef::ChildRiskTier => fs.resolve(policy_ctx, "child.risk_tier", |c| c.child_risk_tier()),
+        _ => return None,
+    };
+    let tier = match tier {
+        Ok(o) => o,
+        Err(fired) => return Some(fired),
+    };
+    let (Some(lhs), LiteralVal::Tier(rhs)) = (tier, literal) else {
+        return Some(false);
+    };
+    Some(compare_ord(lhs, *rhs, op))
+}
+
+/// `agent.parent_agent_id` / `agent.team_id` — string comparison against an
+/// agent identity field. `false` when the field resolves to `None`.
+fn eval_agent_identity_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
+) -> Option<bool> {
+    // ADR 0015 §4: `Err(fired)` is a resolution failure (recorded + fail-safe);
+    // `Ok(None)` (legitimate absence — root agent / no team) keeps the historical
+    // no-match (`false`).
+    let val = match field {
+        FieldRef::AgentParentId => fs.resolve(policy_ctx, "agent.parent_agent_id", |c| c.agent_parent_id()),
+        FieldRef::AgentTeamId => fs.resolve(policy_ctx, "agent.team_id", |c| c.agent_team_id()),
+        _ => return None,
+    };
+    let val = match val {
+        Ok(o) => o,
+        Err(fired) => return Some(fired),
+    };
+    let id = match val {
+        Some(v) => v,
+        None => return Some(false),
+    };
+    // In/NotIn don't apply to these identity fields (preserves prior `_ => false`).
+    Some(match op {
+        OpKind::In | OpKind::NotIn => false,
+        _ => compare_string(&id, op, literal),
+    })
+}
+
+/// `agent.is_root` / `agent.is_leaf` — boolean (0/1) topology flags. is_root
+/// fires when depth == 0; is_leaf fires when children_count == 0. Only Eq/Ne
+/// against numeric 1 or 0 are meaningful; other ops return false.
+fn eval_topology_flag_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
+) -> Option<bool> {
+    // ADR 0015 §4: `Err(fired)` is a resolution failure (recorded + fail-safe);
+    // `Ok(None)` (legitimate absence) keeps the historical no-match (`false`).
+    let flag: Option<bool> = match field {
+        FieldRef::AgentIsRoot => match fs.resolve(policy_ctx, "agent.is_root", |c| c.agent_depth()) {
+            Ok(o) => o.map(|d| d == 0),
+            Err(fired) => return Some(fired),
+        },
+        FieldRef::AgentIsLeaf => match fs.resolve(policy_ctx, "agent.is_leaf", |c| c.agent_children_count()) {
+            Ok(o) => o.map(|n| n == 0),
+            Err(fired) => return Some(fired),
+        },
+        _ => return None,
+    };
+    let lhs = match flag {
+        Some(true) => 1.0_f64,
+        Some(false) => 0.0_f64,
+        None => return Some(false),
+    };
+    let rhs = match numeric_literal(literal) {
+        Some(r) => r,
+        None => return Some(false),
+    };
+    Some(match op {
+        OpKind::Eq => lhs == rhs,
+        OpKind::Ne => lhs != rhs,
+        _ => false,
+    })
+}
+
+/// SendMessage routing fields (`source_team_id`, `target_team_id`,
+/// `target_channel_id`) — string comparison against a per-action id. `false`
+/// when the action is not SendMessage or the field is `None`.
+fn eval_send_message_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    action: &GovernanceAction,
+) -> Option<bool> {
+    let value = match field {
+        FieldRef::SourceTeamId => send_message_field(action, MsgField::SourceTeam),
+        FieldRef::TargetTeamId => send_message_field(action, MsgField::TargetTeam),
+        FieldRef::TargetChannelId => send_message_field(action, MsgField::Channel),
+        _ => return None,
+    };
+    Some(match value {
+        Some(id) => compare_string(&id, op, literal),
+        None => false,
+    })
+}
+
+/// `governance_level` — the only field whose value type is not a string; routed
+/// through an Ord-based comparison. Mismatched literal kinds and an absent agent
+/// level both surface as no-match (the validator rejects malformed literals
+/// before evaluation, so a non-`Level` literal here is treated as no-fire).
+fn eval_governance_level_field(
+    field: &FieldRef,
+    op: &OpKind,
+    literal: &LiteralVal,
+    agent_level: Option<GovernanceLevel>,
+) -> Option<bool> {
+    let FieldRef::GovernanceLevel = field else {
+        return None;
+    };
+    let rhs = match literal {
+        LiteralVal::Level(l) => *l,
+        _ => return Some(false),
+    };
+    let lhs = match agent_level {
+        Some(l) => l,
+        None => return Some(false),
+    };
+    Some(compare_ord(lhs, rhs, op))
+}
+
+/// Catch-all for generic string-valued fields (`tool`, `path`, `url`, `method`,
+/// `command`). Resolves the field's value via [`field_value`] and applies `op`.
+fn eval_string_field(field: &FieldRef, op: &OpKind, literal: &LiteralVal, action: &GovernanceAction) -> bool {
+    let lhs = field_value(field, action);
+
+    match op {
+        OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => eval_string_membership(lhs, op, literal),
+        OpKind::Eq | OpKind::Ne => eval_string_equality(lhs, op, literal),
+        OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte => eval_string_numeric(lhs, op, literal),
+    }
+}
+
+/// Substring / prefix / list-membership operators on a generic string field.
+/// A literal of the wrong shape (e.g. `contains` against a non-string) is a
+/// null-safe no-match (`false`).
+fn eval_string_membership(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    match (op, literal) {
+        (OpKind::Contains, LiteralVal::Str(rhs)) => lhs.contains(rhs.as_str()),
+        (OpKind::StartsWith, LiteralVal::Str(rhs)) => lhs.starts_with(rhs.as_str()),
+        (OpKind::In, LiteralVal::StrList(list)) => list.iter().any(|s| s.as_str() == lhs),
+        (OpKind::NotIn, LiteralVal::StrList(list)) => !list.iter().any(|s| s.as_str() == lhs),
+        _ => false,
+    }
+}
+
+/// Equality / inequality on a generic string field. A numeric literal compares
+/// numerically (after parsing `lhs`); a string literal compares textually. A
+/// level/tier/list/duration literal can never equal a generic string field, so
+/// `Eq` is `false` and `Ne` is the symmetric `true`.
+fn eval_string_equality(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    let eq = match literal {
+        LiteralVal::Num(rhs) => lhs.parse::<f64>().map(|n| n == *rhs).unwrap_or(false),
+        LiteralVal::Str(rhs) => lhs == rhs.as_str(),
+        LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) | LiteralVal::Duration(_) => false,
+    };
+    match op {
+        OpKind::Ne => !eq,
+        _ => eq,
+    }
+}
+
+/// Ordered numeric operators (`> >= < <=`) on a generic string field. Both
+/// sides must resolve to a number (`lhs` parsed from the string, `rhs` via
+/// [`numeric_literal`]).
+///
+/// AAASM-3893: when either operand cannot be coerced to a number the magnitude
+/// comparison is undefined. This evaluator drives `requires_approval_if`, where
+/// a returned `false` means "no approval required" — so silently returning
+/// `false` on a coercion failure let a security guard not-match and the action
+/// proceed unguarded, a fail-open. Fail CLOSED instead: an unresolvable ordered
+/// comparison fires the predicate (requires approval), consistent with the
+/// module-level fail-safe-true posture for ambiguous evaluation. (Equality is
+/// unaffected — a non-numeric string is genuinely not equal to a number, so
+/// `eval_string_equality` correctly returns `false`.)
+fn eval_string_numeric(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    match (lhs.parse::<f64>().ok(), numeric_literal(literal)) {
+        (Some(l), Some(r)) => compare_ord(l, r, op),
+        _ => true,
+    }
+}
+
+fn numeric_literal(lit: &LiteralVal) -> Option<f64> {
+    match lit {
+        LiteralVal::Num(n) => Some(*n),
+        LiteralVal::Str(s) => s.parse::<f64>().ok(),
+        // Duration participates in numeric comparisons (as seconds).
+        LiteralVal::Duration(secs) => Some(*secs as f64),
+        // Level, tier, and list literals never participate in numeric comparisons.
+        LiteralVal::Level(_) | LiteralVal::Tier(_) | LiteralVal::StrList(_) => None,
+    }
+}
+
+/// Apply a comparison `op` to two values of an ordered type. String operators
+/// (`contains` / `starts_with` / `in` / `not_in`) never apply to an ordered
+/// scalar and yield `false`. Shared by the numeric, risk-tier, and
+/// governance-level field handlers.
+fn compare_ord<T: PartialOrd>(lhs: T, rhs: T, op: &OpKind) -> bool {
+    match op {
+        OpKind::Eq => lhs == rhs,
+        OpKind::Ne => lhs != rhs,
+        OpKind::Gt => lhs > rhs,
+        OpKind::Gte => lhs >= rhs,
+        OpKind::Lt => lhs < rhs,
+        OpKind::Lte => lhs <= rhs,
+        OpKind::Contains | OpKind::StartsWith | OpKind::In | OpKind::NotIn => false,
+    }
+}
+
+/// Compare a context-resolved numeric `lhs` against a numeric `literal`.
+/// `false` (null-safe no-match) when the literal isn't numeric.
+fn compare_numeric(lhs: f64, op: &OpKind, literal: &LiteralVal) -> bool {
+    match numeric_literal(literal) {
+        Some(rhs) => compare_ord(lhs, rhs, op),
+        None => false,
+    }
+}
+
+/// Compare a resolved string `lhs` against a string/list `literal` for the
+/// identity-style fields. Supports `eq` / `ne` / `contains` / `starts_with`
+/// (string literal) and `in` / `not_in` (list literal); other shapes → `false`.
+fn compare_string(lhs: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    match (op, literal) {
+        (OpKind::In, LiteralVal::StrList(list)) => list.iter().any(|s| s == lhs),
+        (OpKind::NotIn, LiteralVal::StrList(list)) => !list.iter().any(|s| s == lhs),
+        (OpKind::Eq, LiteralVal::Str(rhs)) => lhs == rhs,
+        (OpKind::Ne, LiteralVal::Str(rhs)) => lhs != rhs,
+        (OpKind::Contains, LiteralVal::Str(rhs)) => lhs.contains(rhs.as_str()),
+        (OpKind::StartsWith, LiteralVal::Str(rhs)) => lhs.starts_with(rhs.as_str()),
+        _ => false,
+    }
+}
+
+/// Evaluate a whole-body (`tool_result`) match: only `contains` / `starts_with`
+/// against a string literal are meaningful; everything else is no-match.
+fn eval_whole_body(body: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    let LiteralVal::Str(lit) = literal else {
+        return false;
+    };
+    match op {
+        OpKind::Contains => body.contains(lit.as_str()),
+        OpKind::StartsWith => body.starts_with(lit.as_str()),
+        _ => false,
+    }
+}
+
+/// Parse `json_str`, walk `pointer`, and compare the resolved value against
+/// `literal` via [`compare_json_value`]. Null-safe: unparseable JSON or an
+/// unresolved pointer surfaces as no-match (`false`).
+fn eval_json_pointer(json_str: &str, pointer: &str, op: &OpKind, literal: &LiteralVal) -> bool {
+    let value: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    match value.pointer(pointer) {
+        Some(resolved) => compare_json_value(resolved, op, literal),
+        None => false,
+    }
+}
+
+/// Which `SendMessage` routing field to read in [`send_message_field`].
+enum MsgField {
+    SourceTeam,
+    TargetTeam,
+    Channel,
+}
+
+/// Extract one routing field from a `SendMessage` action. Returns `None` for any
+/// other action or when the chosen field is absent.
+fn send_message_field(action: &GovernanceAction, which: MsgField) -> Option<String> {
+    let GovernanceAction::SendMessage {
+        source_team_id,
+        target_team_id,
+        channel_id,
+        ..
+    } = action
+    else {
+        return None;
+    };
+    let field = match which {
+        MsgField::SourceTeam => source_team_id,
+        MsgField::TargetTeam => target_team_id,
+        MsgField::Channel => channel_id,
+    };
+    field.clone()
+}
+
+/// Compare a JSON value `resolved` (from an `args.<ptr>` / `tool_result.<ptr>`
+/// walk) against a `literal`. Type-strict: string ops require a JSON string,
+/// numeric ops a JSON number, `in`/`not_in` a JSON string against a list.
+/// Mismatched types are no-match (`false`).
+fn compare_json_value(resolved: &serde_json::Value, op: &OpKind, literal: &LiteralVal) -> bool {
+    match (op, resolved, literal) {
+        // Equality is type-strict: string-vs-string or number-vs-number only.
+        (OpKind::Eq, serde_json::Value::String(s), LiteralVal::Str(lit)) => s == lit,
+        (OpKind::Ne, serde_json::Value::String(s), LiteralVal::Str(lit)) => s != lit,
+        (OpKind::Eq, serde_json::Value::Number(n), LiteralVal::Num(lit)) => {
+            n.as_f64().is_some_and(|v| (v - *lit).abs() < f64::EPSILON)
+        }
+        (OpKind::Ne, serde_json::Value::Number(n), LiteralVal::Num(lit)) => {
+            n.as_f64().is_some_and(|v| (v - *lit).abs() >= f64::EPSILON)
+        }
+        // Substring ops require a JSON string and a string literal.
+        (OpKind::Contains, _, LiteralVal::Str(lit)) => resolved.as_str().is_some_and(|v| v.contains(lit.as_str())),
+        (OpKind::StartsWith, _, LiteralVal::Str(lit)) => resolved.as_str().is_some_and(|v| v.starts_with(lit.as_str())),
+        // Membership ops require a JSON string and a list literal.
+        (OpKind::In, _, LiteralVal::StrList(list)) => resolved.as_str().is_some_and(|v| list.iter().any(|i| i == v)),
+        (OpKind::NotIn, _, LiteralVal::StrList(list)) => resolved.as_str().is_some_and(|v| list.iter().all(|i| i != v)),
+        // Ordered numeric comparisons require a JSON number and a numeric literal.
+        (OpKind::Gt | OpKind::Gte | OpKind::Lt | OpKind::Lte, _, LiteralVal::Num(rhs)) => {
+            resolved.as_f64().is_some_and(|lhs| compare_ord(lhs, *rhs, op))
+        }
+        // Mismatched value/literal types are no-match.
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Token evaluation  (AND binds tighter than OR)
+// ---------------------------------------------------------------------------
+
+/// A single parsed clause: `field op literal`.
+struct Clause<'t> {
+    field: &'t FieldRef,
+    op: &'t OpKind,
+    literal: &'t LiteralVal,
+}
+
+fn eval_tokens(
+    tokens: &[Token],
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+    fs: &FailSafe,
+) -> bool {
+    // Parse tokens into OR-groups of AND-connected clauses, then evaluate:
+    // OR across groups, AND within each group. A parse anomaly is fail-safe
+    // per the clause polarity (ADR 0015 §4): a `Deny`/`RequireApproval` guard
+    // fires, but a conditional `Allow` does NOT fire — an anomaly can never
+    // grant. `fs.clause.fail_safe_fires()` encodes that direction.
+    let or_groups = match parse_or_groups(tokens) {
+        Some(g) => g,
+        None => return fs.clause.fail_safe_fires(), // unexpected structure → fail-safe
+    };
+
+    // If nothing was parsed, that's a fail-safe trigger (empty expr)
+    if or_groups.is_empty() || or_groups.iter().all(|g| g.is_empty()) {
+        return fs.clause.fail_safe_fires();
+    }
+
+    or_groups.iter().any(|group| {
+        group
+            .iter()
+            .all(|c| eval_clause_safe(c.field, c.op, c.literal, action, agent_level, policy_ctx, fs))
+    })
+}
+
+/// Parse a flat token stream into OR-groups of AND-connected [`Clause`]s.
+///
+/// Grammar: `Clause (AND|OR Clause)*` where a `Clause` is three consecutive
+/// `Field Op Literal` tokens. `AND` keeps the next clause in the current group;
+/// `OR` starts a new group. Returns `None` on any structural anomaly so the
+/// caller can apply its fail-safe (treat the expression as firing).
+fn parse_or_groups(tokens: &[Token]) -> Option<Vec<Vec<Clause<'_>>>> {
+    let mut or_groups: Vec<Vec<Clause>> = vec![Vec::new()];
+    let mut i = 0;
+    while i < tokens.len() {
+        // Expect: Field Op Literal
+        let (Token::Field(f), Some(Token::Op(op)), Some(Token::Literal(lit))) =
+            (&tokens[i], tokens.get(i + 1), tokens.get(i + 2))
+        else {
+            return None; // unexpected structure
+        };
+        or_groups.last_mut().unwrap().push(Clause {
+            field: f,
+            op,
+            literal: lit,
+        });
+        i += 3;
+
+        // Now expect AND | OR | end.
+        match tokens.get(i) {
+            None => break,
+            Some(Token::And) => i += 1, // continue in the same OR group
+            Some(Token::Or) => {
+                i += 1;
+                or_groups.push(Vec::new()); // start a new OR group
+            }
+            _ => return None, // unexpected token
+        }
+    }
+    Some(or_groups)
+}
+
+// ---------------------------------------------------------------------------
+// Variable extraction for load-time validation
+// ---------------------------------------------------------------------------
+
+/// Extract every identifier-like word from `expr` that could be a field
+/// reference (skipping quoted strings, numeric literals, and combinators).
+///
+/// Used by [`validate_variables`] to find unknown variable names without
+/// running the full tokenizer.
+pub(crate) fn extract_field_names(expr: &str) -> Vec<String> {
+    const SKIP_WORDS: &[&str] = &[
+        "AND",
+        "OR",
+        "true",
+        "false",
+        "contains",
+        "starts_with",
+        "in",
+        "not_in",
+        "L0",
+        "L1",
+        "L2",
+        "L3",
+        "Low",
+        "Medium",
+        "High",
+        "Critical",
+    ];
+
+    let mut names = Vec::new();
+    let mut chars = expr.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        // Skip whitespace and operator chars
+        if ch.is_whitespace() || matches!(ch, '<' | '>' | '=' | '!') {
+            chars.next();
+            continue;
+        }
+
+        // Skip list literals: [...] — contents are string values, not field names
+        if ch == '[' {
+            skip_list_literal(&mut chars);
+            continue;
+        }
+
+        // Skip quoted string literals
+        if ch == '"' {
+            skip_quoted_string(&mut chars);
+            continue;
+        }
+
+        // Collect word token (letters, digits, underscore, hyphen, dot)
+        if is_word_char(ch) {
+            let word = take_word(&mut chars);
+            // Skip combinators, boolean keywords, and numeric literals
+            if SKIP_WORDS.contains(&word.as_str()) || word.parse::<f64>().is_ok() {
+                continue;
+            }
+            names.push(word);
+            continue;
+        }
+
+        chars.next();
+    }
+
+    names
+}
+
+/// Characters that may appear in a field-reference word: letters, digits,
+/// underscore, hyphen, and dot (for `args.<key>` / `tool_result.<key>`).
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
+}
+
+/// Consume the opening `[` and everything up to and including the closing `]`
+/// (or end of input). List contents are string values, not field names.
+fn skip_list_literal(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    chars.next(); // opening '['
+    for c in chars.by_ref() {
+        if c == ']' {
+            break;
+        }
+    }
+}
+
+/// Consume the opening `"` and everything up to and including the closing `"`
+/// (or end of input), honouring `\`-escaped characters.
+fn skip_quoted_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    chars.next(); // opening '"'
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                chars.next();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Collect a contiguous run of [`is_word_char`] characters into a `String`,
+/// leaving the iterator positioned on the first non-word character.
+fn take_word(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut word = String::new();
+    while let Some(&c) = chars.peek() {
+        if is_word_char(c) {
+            word.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    word
+}
+
+/// Return the closest entry in `KNOWN_VARIABLES` to `name` when the edit
+/// distance is at most 2, or `None` when no candidate is close enough.
+fn suggest_variable(name: &str) -> Option<&'static str> {
+    KNOWN_VARIABLES
+        .iter()
+        .copied()
+        .filter(|&v| strsim::levenshtein(name, v) <= 2)
+        .min_by_key(|&v| strsim::levenshtein(name, v))
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Validate that every identifier in `expr` is a member of [`KNOWN_VARIABLES`].
+///
+/// Returns [`PolicyParseError::UnknownVariable`] on the first unknown name
+/// found, with a typo suggestion when the Levenshtein distance to the closest
+/// known variable is ≤ 2.
+pub(crate) fn validate_variables(expr: &str) -> Result<(), crate::error::PolicyParseError> {
+    for name in extract_field_names(expr) {
+        // Dynamic structural identifiers (args.*, tool_result, tool_result.*)
+        // have no static key list — defer their null-safety to the runtime.
+        if is_dynamic_field_name(&name) {
+            continue;
+        }
+        if !KNOWN_VARIABLES.contains(&name.as_str()) {
+            let suggestion = suggest_variable(&name).map(str::to_owned);
+            let available = KNOWN_VARIABLES.iter().map(|s| s.to_string()).collect();
+            return Err(crate::error::PolicyParseError::UnknownVariable {
+                name,
+                suggestion,
+                available,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Whether `name` is a dynamic structural field identifier whose keys are not in
+/// any static list: `args.<key>` (→ `FieldRef::ToolArg`), `tool_result.<key>`
+/// (→ `FieldRef::ToolResult`), or the bare `tool_result`
+/// (→ `FieldRef::ToolResultWhole`). Such names skip the membership check.
+fn is_dynamic_field_name(name: &str) -> bool {
+    if name.starts_with("args.") && name.len() > "args.".len() {
+        return true;
+    }
+    name == "tool_result" || (name.starts_with("tool_result.") && name.len() > "tool_result.".len())
+}
+
+/// Validate that every `governance_level` literal in `expr` is one of the
+/// four known levels (L0..L3).
+///
+/// Returns the spec-mandated error message
+/// `unknown governance level: <value>; valid values: L0, L1, L2, L3` when the
+/// expression mentions an unknown level (e.g. `L4` or `LX`). Other shapes are
+/// not rejected here — the runtime evaluator is fail-safe for everything else.
+pub(crate) fn validate_governance_levels(expr: &str) -> Result<(), String> {
+    let mut chars = expr.chars().peekable();
+    while let Some(&ch) = chars.peek() {
+        if ch == 'L' {
+            let word = take_identifier(&mut chars);
+            validate_level_word(&word)?;
+            continue;
+        }
+        chars.next();
+    }
+    Ok(())
+}
+
+/// Collect a contiguous run of identifier characters (alphanumeric or `_`) into
+/// a `String`, leaving the iterator on the first non-identifier character.
+fn take_identifier(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut word = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    word
+}
+
+/// Reject an `L<digit>+` word that is not one of the four valid governance
+/// levels. Only `L`-prefixed all-digit suffixes are treated as level literals;
+/// anything else (`Logger`, `Limit`, …) is left for the runtime tokenizer.
+fn validate_level_word(word: &str) -> Result<(), String> {
+    let rest = &word[1..];
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(());
+    }
+    match word {
+        "L0" | "L1" | "L2" | "L3" => Ok(()),
+        _ => Err(format!(
+            "unknown governance level: {word}; valid values: L0, L1, L2, L3"
+        )),
+    }
+}
+
+/// Evaluate a flat boolean expression against a [`GovernanceAction`] and the
+/// governing agent's [`GovernanceLevel`].
+///
+/// `agent_level` is consulted only by clauses referencing the
+/// `governance_level` field; pass `None` when the caller does not know the
+/// agent's level (e.g. legacy code paths) — clauses that depend on the
+/// level are then treated as unknown comparisons (no-match).
+///
+/// Returns `true` if the expression matches (approval required).
+/// Returns `true` on ANY parse/tokenization error (fail-safe).
+///
+/// Thin wrapper over [`evaluate_clause`] for the common `requires_approval_if`
+/// caller: fixes the clause polarity to [`ClauseKind::RequireApproval`] and
+/// discards the resolution-failure audit records. Use [`evaluate_clause`]
+/// directly when the caller needs the audit evidence or a different polarity.
+pub(crate) fn evaluate(
+    expr: &str,
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+) -> bool {
+    let mut failures = Vec::new();
+    evaluate_clause(
+        expr,
+        action,
+        agent_level,
+        policy_ctx,
+        ClauseKind::RequireApproval,
+        &mut failures,
+    )
+}
+
+/// Evaluate a flat boolean expression, applying the ADR 0015 §4 graph-context
+/// resolution fail-safety for the given clause polarity.
+///
+/// Behaves like [`evaluate`] for resolved / legitimately-absent variables, but
+/// additionally: on a graph-context **resolution failure** the referencing
+/// clause fails closed according to `clause` (a `Deny`/`RequireApproval` guard
+/// fires; a conditional `Allow` does not fire, so a failure can never grant),
+/// and every such failure is appended to `failures` as audit evidence.
+///
+/// Returns `true` when the expression matches (the clause fires). A
+/// parse/tokenization anomaly is fail-safe **per clause polarity** (ADR 0015
+/// §4): a `Deny`/`RequireApproval` guard fires (fail-closed), but a conditional
+/// `Allow` does **not** fire — an anomaly can never be laundered into a grant.
+pub fn evaluate_clause(
+    expr: &str,
+    action: &GovernanceAction,
+    agent_level: Option<GovernanceLevel>,
+    policy_ctx: Option<&dyn PolicyContext>,
+    clause: ClauseKind,
+    failures: &mut Vec<ResolutionFailure>,
+) -> bool {
+    let tokens = match tokenize(expr) {
+        Some(t) if !t.is_empty() => t,
+        // AAASM-4950 / ADR 0015 §4: a tokenize anomaly follows the clause's
+        // fail-safe polarity. Firing unconditionally would GRANT on an `Allow`
+        // clause — the exact fail-open §4 forbids ("allow + failure ⇒ never grant").
+        _ => return clause.fail_safe_fires(),
+    };
+    let sink = std::cell::RefCell::new(Vec::new());
+    let fs = FailSafe {
+        clause,
+        failures: &sink,
+    };
+    let fired = eval_tokens(&tokens, action, agent_level, policy_ctx, &fs);
+    failures.append(&mut sink.into_inner());
+    fired
+}
+
+/// AAASM-3995(c) — whether `expr` references any field whose value is resolved
+/// from live, mutable runtime state (the agent registry graph or the budget
+/// tracker) rather than from the request's action.
+///
+/// The decision cache keys only on `(agent_id, policy_epoch, action)`, so a
+/// verdict that depends on live context (e.g. `team.active_agents`,
+/// `team.budget_remaining`) would be frozen for the cache TTL. Callers use this
+/// to evaluate such verdicts fresh instead of serving a stale cached one.
+///
+/// Action-derived fields (`tool`, `path`, `url`, `method`, `command`,
+/// `governance_level`, `args.*`, `tool_result*`, `source.*`, `target.*`) are
+/// already captured by the cache key and are NOT treated as live context.
+pub fn references_live_context(expr: &str) -> bool {
+    let Some(tokens) = tokenize(expr) else {
+        return false;
+    };
+    tokens
+        .iter()
+        .any(|t| matches!(t, Token::Field(f) if is_live_context_field(f)))
+}
+
+/// Classify a [`FieldRef`] as backed by live runtime state (registry / budget)
+/// for [`references_live_context`].
+fn is_live_context_field(field: &FieldRef) -> bool {
+    matches!(
+        field,
+        FieldRef::AgentDepth
+            | FieldRef::TeamActiveAgents
+            | FieldRef::TeamParallelAgents
+            | FieldRef::TeamBudgetRemaining
+            | FieldRef::AgentAge
+            | FieldRef::AgentChildrenCount
+            | FieldRef::ChildTool
+            | FieldRef::ChildRiskTier
+            | FieldRef::AgentRiskTier
+            | FieldRef::ParentRiskTier
+            | FieldRef::AgentParentId
+            | FieldRef::AgentTeamId
+            | FieldRef::AgentIsRoot
+            | FieldRef::AgentIsLeaf
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aa_core::{FileMode, GovernanceAction};
+
+    fn tool(name: &str) -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: name.to_string(),
+            args: String::new(),
+        }
+    }
+
+    /// Build a `ToolCall` whose `args` is a JSON-encoded body — used by the
+    /// `args.<key>` predicate tests below.
+    fn tool_with_args(name: &str, args: &str) -> GovernanceAction {
+        GovernanceAction::ToolCall {
+            name: name.to_string(),
+            args: args.to_string(),
+        }
+    }
+
+    fn file(path: &str) -> GovernanceAction {
+        GovernanceAction::FileAccess {
+            path: path.to_string(),
+            mode: FileMode::Read,
+        }
+    }
+
+    fn network(url: &str, method: &str) -> GovernanceAction {
+        GovernanceAction::NetworkRequest {
+            url: url.to_string(),
+            method: method.to_string(),
+        }
+    }
+
+    fn process(command: &str) -> GovernanceAction {
+        GovernanceAction::ProcessExec {
+            command: command.to_string(),
+        }
+    }
+
+    #[test]
+    fn eq_operator_matches_tool_name() {
+        assert!(evaluate(r#"tool == "search""#, &tool("search"), None, None));
+    }
+
+    #[test]
+    fn ne_operator_false_when_equal() {
+        assert!(!evaluate(r#"tool != "search""#, &tool("search"), None, None));
+    }
+
+    #[test]
+    fn contains_operator_on_url() {
+        assert!(evaluate(
+            r#"url contains "evil""#,
+            &network("https://evil.com", "GET"),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn starts_with_operator_on_path() {
+        assert!(evaluate(r#"path starts_with "/etc""#, &file("/etc/passwd"), None, None));
+    }
+
+    #[test]
+    fn and_combinator_all_true() {
+        assert!(evaluate(
+            r#"tool == "search" AND tool == "search""#,
+            &tool("search"),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn and_combinator_short_circuits() {
+        assert!(!evaluate(
+            r#"tool == "search" AND tool == "other""#,
+            &tool("search"),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn or_combinator_first_true() {
+        assert!(evaluate(
+            r#"tool == "x" OR tool == "search""#,
+            &tool("search"),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn fail_safe_on_bad_expr() {
+        assert!(evaluate("not valid @@@ expr", &tool("anything"), None, None));
+    }
+
+    #[test]
+    fn ordered_numeric_comparison_on_unparseable_field_fails_closed() {
+        // AAASM-3893: an ordered numeric comparison whose operand cannot be
+        // coerced to a number is undefined. Because this evaluator drives
+        // `requires_approval_if` (where `false` = "no approval required"), a
+        // silent `false` here would let a security guard not-match and the
+        // action run unguarded — a fail-open. The undefined comparison must
+        // fail CLOSED: fire the predicate (require approval).
+        assert!(evaluate("command > 1000", &process("/usr/bin/deploy"), None, None));
+        // Equality is unaffected: a non-numeric command genuinely is not the
+        // number 5, so `==` correctly does not fire.
+        assert!(!evaluate("command == 5", &process("/usr/bin/deploy"), None, None));
+    }
+
+    #[test]
+    fn field_absent_for_action_variant_returns_false() {
+        // `tool` field is "" for ProcessExec → should NOT match "foo"
+        assert!(!evaluate(r#"tool == "foo""#, &process("ls"), None, None));
+    }
+
+    #[test]
+    fn rule_with_ge_l2_fires_for_l2_agent() {
+        // An L2 agent satisfies `governance_level >= L2`.
+        assert!(evaluate(
+            "governance_level >= L2",
+            &tool("any"),
+            Some(GovernanceLevel::L2Enforce),
+            None,
+        ));
+    }
+
+    #[test]
+    fn rule_with_ge_l2_does_not_fire_for_l1_agent() {
+        // An L1 agent does not satisfy `governance_level >= L2`.
+        assert!(!evaluate(
+            "governance_level >= L2",
+            &tool("any"),
+            Some(GovernanceLevel::L1Observe),
+            None,
+        ));
+    }
+
+    #[test]
+    fn rule_without_level_condition_fires_for_all_levels() {
+        // Backward compat: a condition that does not mention
+        // `governance_level` evaluates the same way at every level.
+        for level in [
+            GovernanceLevel::L0Discover,
+            GovernanceLevel::L1Observe,
+            GovernanceLevel::L2Enforce,
+            GovernanceLevel::L3Native,
+        ] {
+            assert!(
+                evaluate(r#"tool == "search""#, &tool("search"), Some(level), None),
+                "tool-only condition unexpectedly skipped for {level:?}"
+            );
+        }
+    }
+
+    fn fake_ctx(depth: Option<u32>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            depth,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agent_depth_gt_matches_when_deeper() {
+        let ctx = fake_ctx(Some(3));
+        assert!(evaluate("agent.depth > 2", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_depth_gt_no_match_when_shallower() {
+        let ctx = fake_ctx(Some(1));
+        assert!(!evaluate("agent.depth > 2", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_depth_eq_matches_exact() {
+        let ctx = fake_ctx(Some(0));
+        assert!(evaluate("agent.depth == 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    fn fake_team_ctx(active: Option<u64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            team_active: active,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn team_active_agents_gt_matches() {
+        let ctx = fake_team_ctx(Some(6));
+        assert!(evaluate("team.active_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_active_agents_gt_no_match() {
+        let ctx = fake_team_ctx(Some(3));
+        assert!(!evaluate("team.active_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    fn fake_budget_ctx(remaining: Option<f64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            team_budget: remaining,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn team_budget_remaining_lt_matches_when_low() {
+        let ctx = fake_budget_ctx(Some(50.0));
+        assert!(evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_budget_remaining_lt_no_match_when_sufficient() {
+        let ctx = fake_budget_ctx(Some(200.0));
+        assert!(!evaluate("team.budget_remaining < 100", &tool("any"), None, Some(&ctx)));
+    }
+
+    fn fake_child_ctx(tools: Vec<&str>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            child_tools: tools.into_iter().map(String::from).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn child_tool_eq_matches_when_present() {
+        let ctx = fake_child_ctx(vec!["bash", "search"]);
+        assert!(evaluate(r#"child.tool == "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_tool_eq_no_match_when_absent() {
+        let ctx = fake_child_ctx(vec!["search"]);
+        assert!(!evaluate(r#"child.tool == "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_tool_ne_true_when_all_differ() {
+        let ctx = fake_child_ctx(vec!["search"]);
+        assert!(evaluate(r#"child.tool != "bash""#, &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn unresolved_team_active_fires_approval_fail_closed() {
+        // AAASM-3995(b): team_active = None (unresolvable in this approval
+        // context) must FAIL CLOSED — the guard fires (require approval) rather
+        // than silently letting the action run unguarded.
+        let ctx = crate::context::FakePolicyContext::default();
+        assert!(evaluate("team.active_agents > 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn unresolved_context_fires_approval_fail_closed() {
+        // AAASM-3995(b): no context at all → the context-dependent guard cannot
+        // be evaluated, so it fails closed (require approval).
+        assert!(evaluate("agent.depth > 0", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn sole_clause_context_approval_fails_closed_when_unresolved() {
+        // A `requires_approval_if` whose only clause references live context must
+        // not become an implicit Allow when that context is unresolved.
+        assert!(evaluate("team.budget_remaining < 100", &tool("any"), None, None));
+        assert!(evaluate("agent.children_count > 3", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn references_live_context_flags_registry_and_budget_fields() {
+        // AAASM-3995(c): registry / budget-backed fields are live context.
+        assert!(references_live_context("team.active_agents > 1"));
+        assert!(references_live_context("team.budget_remaining < 100"));
+        assert!(references_live_context("agent.depth > 2 OR tool == \"x\""));
+        assert!(references_live_context("agent.children_count > 0"));
+        // Action-derived fields are captured by the cache key — not live context.
+        assert!(!references_live_context("tool == \"bash\""));
+        assert!(!references_live_context("path starts_with \"/etc\""));
+        assert!(!references_live_context("governance_level >= trusted"));
+    }
+
+    // ── risk tier tests ──────────────────────────────────────────────────
+
+    fn fake_tier_ctx(
+        agent: Option<aa_core::RiskTier>,
+        parent: Option<aa_core::RiskTier>,
+    ) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            agent_risk_tier: agent,
+            parent_risk_tier: parent,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agent_risk_tier_eq_matches_same_tier() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::Medium), None);
+        assert!(evaluate("agent.risk_tier == Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_risk_tier_eq_no_match_different_tier() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::Low), None);
+        assert!(!evaluate("agent.risk_tier == Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_risk_tier_gt_detects_escalation() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::High), Some(aa_core::RiskTier::Medium));
+        // agent is High, parent is Medium → child tier > parent tier
+        assert!(evaluate("agent.risk_tier > Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn parent_risk_tier_eq_matches() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::High), Some(aa_core::RiskTier::Medium));
+        assert!(evaluate("parent.risk_tier == Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn parent_risk_tier_returns_false_when_no_parent() {
+        let ctx = fake_tier_ctx(Some(aa_core::RiskTier::Low), None);
+        assert!(!evaluate("parent.risk_tier == Low", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn risk_tier_null_safe_no_context() {
+        assert!(!evaluate("agent.risk_tier == High", &tool("any"), None, None));
+    }
+
+    // ── child.risk_tier tests ────────────────────────────────────────────────
+
+    fn fake_child_tier_ctx(child: Option<aa_core::RiskTier>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            child_risk_tier: child,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn child_risk_tier_gt_denies_escalation() {
+        // Spawn proposes High; parent is Medium → child.risk_tier > Medium fires.
+        let ctx = fake_child_tier_ctx(Some(aa_core::RiskTier::High));
+        assert!(evaluate("child.risk_tier > Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_same_tier_does_not_fire() {
+        // Spawn proposes Medium; parent is Medium → child.risk_tier > Medium does not fire.
+        let ctx = fake_child_tier_ctx(Some(aa_core::RiskTier::Medium));
+        assert!(!evaluate("child.risk_tier > Medium", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_eq_matches_exact() {
+        let ctx = fake_child_tier_ctx(Some(aa_core::RiskTier::Critical));
+        assert!(evaluate("child.risk_tier == Critical", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_null_safe_when_no_spawn_context() {
+        // No spawn context supplied → condition does not fire (null-safe no-match).
+        let ctx = fake_child_tier_ctx(None);
+        assert!(!evaluate("child.risk_tier > Low", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn child_risk_tier_null_safe_no_context_at_all() {
+        assert!(!evaluate("child.risk_tier == High", &tool("any"), None, None));
+    }
+
+    // ── validate_variables tests ──────────────────────────────────────────
+
+    #[test]
+    fn validate_variables_accepts_known_variable() {
+        assert!(validate_variables("agent.depth > 2").is_ok());
+        assert!(validate_variables("team.active_agents == 5").is_ok());
+        assert!(validate_variables("child.tool == \"bash\"").is_ok());
+        assert!(validate_variables("child.risk_tier > Medium").is_ok());
+        assert!(validate_variables("child.risk_tier == Critical").is_ok());
+    }
+
+    #[test]
+    fn validate_variables_rejects_unknown_variable() {
+        let err = validate_variables("agent.xyz > 0").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("agent.xyz"), "message should name the unknown var: {msg}");
+        assert!(msg.contains("agent.depth"), "message should list known vars: {msg}");
+    }
+
+    #[test]
+    fn validate_variables_suggests_typo_correction() {
+        let err = validate_variables("agent.depht > 0").unwrap_err();
+        match err {
+            crate::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
+                assert_eq!(name, "agent.depht");
+                assert_eq!(suggestion.as_deref(), Some("agent.depth"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_variables_no_suggestion_when_too_different() {
+        let err = validate_variables("completely_unknown > 0").unwrap_err();
+        match err {
+            crate::error::PolicyParseError::UnknownVariable { suggestion, .. } => {
+                assert!(
+                    suggestion.is_none(),
+                    "should not suggest a match for a very different name"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    // ── agent.age and team.parallel_agents tests ─────────────────────────────
+
+    fn fake_age_ctx(age_secs: Option<u64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            agent_age_secs: age_secs,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agent_age_gt_24h_fires_when_agent_is_old() {
+        // 25 hours old → 90000 s; rule threshold is 24h = 86400 s
+        let ctx = fake_age_ctx(Some(90_000));
+        assert!(evaluate("agent.age > 24h", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_age_gt_24h_no_match_when_agent_is_young() {
+        // 10 hours old → 36000 s; does not exceed 24h
+        let ctx = fake_age_ctx(Some(36_000));
+        assert!(!evaluate("agent.age > 24h", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn team_parallel_agents_gt_matches() {
+        let ctx = crate::context::FakePolicyContext {
+            team_active: Some(8),
+            ..Default::default()
+        };
+        assert!(evaluate("team.parallel_agents > 5", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_age_fails_closed_without_context() {
+        // AAASM-3995(b): unresolved agent.age in an approval clause fails closed.
+        assert!(evaluate("agent.age > 24h", &tool("any"), None, None));
+    }
+
+    // ── inter-team message condition tests ───────────────────────────────────
+
+    fn send_message(source: Option<&str>, target: Option<&str>, channel: Option<&str>) -> GovernanceAction {
+        GovernanceAction::SendMessage {
+            source_team_id: source.map(String::from),
+            target_team_id: target.map(String::from),
+            channel_id: channel.map(String::from),
+        }
+    }
+
+    #[test]
+    fn source_team_id_eq_matches_same_team_message() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(r#"source.team_id == "team-alpha""#, &msg, None, None));
+    }
+
+    #[test]
+    fn target_team_id_and_channel_id_eq_match_cross_team_message() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(r#"target.team_id == "team-beta""#, &msg, None, None));
+        assert!(evaluate(r#"target.channel_id == "ops""#, &msg, None, None));
+    }
+
+    #[test]
+    fn channel_id_eq_no_match_when_different_channel() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(!evaluate(r#"target.channel_id == "dev""#, &msg, None, None));
+    }
+
+    #[test]
+    fn null_safety_non_message_action_returns_false_for_message_fields() {
+        // A ToolCall is not a SendMessage; message field conditions must not fire.
+        assert!(!evaluate(r#"source.team_id == "team-alpha""#, &tool("any"), None, None));
+        assert!(!evaluate(r#"target.team_id == "team-beta""#, &tool("any"), None, None));
+        assert!(!evaluate(r#"target.channel_id == "ops""#, &tool("any"), None, None));
+    }
+
+    #[test]
+    fn null_safety_none_fields_in_send_message_return_false() {
+        // All three fields are None → conditions must not fire (null-safe no-match).
+        let msg = send_message(None, None, None);
+        assert!(!evaluate(r#"source.team_id == "team-alpha""#, &msg, None, None));
+        assert!(!evaluate(r#"target.team_id == "team-beta""#, &msg, None, None));
+        assert!(!evaluate(r#"target.channel_id == "ops""#, &msg, None, None));
+    }
+
+    // ── in / not_in operator tests ────────────────────────────────────────────
+
+    #[test]
+    fn channel_id_in_list_matches_when_present() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(r#"target.channel_id in ["ops", "general"]"#, &msg, None, None));
+    }
+
+    #[test]
+    fn channel_id_in_list_no_match_when_absent() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("private"));
+        assert!(!evaluate(
+            r#"target.channel_id in ["ops", "general"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn channel_id_not_in_list_no_match_when_in_list() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(!evaluate(
+            r#"target.channel_id not_in ["ops", "general"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn channel_id_not_in_list_matches_when_not_in_list() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("private"));
+        assert!(evaluate(
+            r#"target.channel_id not_in ["ops", "general"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn source_team_id_in_list_matches_known_team() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(
+            r#"source.team_id in ["team-alpha", "team-gamma"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn target_team_id_not_in_allows_non_restricted_team() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(evaluate(
+            r#"target.team_id not_in ["team-restricted"]"#,
+            &msg,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn in_operator_null_safe_for_non_message_action() {
+        // ToolCall is not a SendMessage; channel_id resolves to None → false.
+        assert!(!evaluate(r#"target.channel_id in ["ops"]"#, &tool("any"), None, None));
+        assert!(!evaluate(
+            r#"target.channel_id not_in ["ops"]"#,
+            &tool("any"),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn in_list_with_empty_list_never_matches() {
+        let msg = send_message(Some("team-alpha"), Some("team-beta"), Some("ops"));
+        assert!(!evaluate(r#"target.channel_id in []"#, &msg, None, None));
+        assert!(evaluate(r#"target.channel_id not_in []"#, &msg, None, None));
+    }
+
+    #[test]
+    fn validate_variables_suggests_source_team_id_for_typo() {
+        let err = validate_variables(r#"source.team_d == "team-alpha""#).unwrap_err();
+        match err {
+            crate::error::PolicyParseError::UnknownVariable { name, suggestion, .. } => {
+                assert_eq!(name, "source.team_d");
+                assert_eq!(suggestion.as_deref(), Some("source.team_id"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_accepts_l0_through_l3() {
+        // Each named level parses and compares equal against an agent of the
+        // same level — covering all four members of the `GovernanceLevel`
+        // enum in a single test.
+        for (literal, level) in [
+            ("L0", GovernanceLevel::L0Discover),
+            ("L1", GovernanceLevel::L1Observe),
+            ("L2", GovernanceLevel::L2Enforce),
+            ("L3", GovernanceLevel::L3Native),
+        ] {
+            let expr = format!("governance_level == {literal}");
+            assert!(
+                evaluate(&expr, &tool("any"), Some(level), None),
+                "{literal} did not parse / compare equal for matching agent level"
+            );
+        }
+    }
+
+    // ── agent.parent_id, agent.team_id, agent.children_count tests ──────────
+
+    fn fake_topology_ctx(
+        parent_id: Option<&str>,
+        team_id: Option<&str>,
+        children_count: Option<u32>,
+    ) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            agent_parent_id: parent_id.map(String::from),
+            agent_team_id: team_id.map(String::from),
+            agent_children_count: children_count,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agent_parent_id_eq_matches_known_parent() {
+        let ctx = fake_topology_ctx(Some("parent-abc"), None, None);
+        assert!(evaluate(
+            r#"agent.parent_agent_id == "parent-abc""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
+    }
+
+    #[test]
+    fn agent_parent_id_eq_no_match_different_parent() {
+        let ctx = fake_topology_ctx(Some("parent-xyz"), None, None);
+        assert!(!evaluate(
+            r#"agent.parent_agent_id == "parent-abc""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
+    }
+
+    #[test]
+    fn agent_parent_id_null_safe_when_no_parent() {
+        let ctx = fake_topology_ctx(None, None, None);
+        assert!(!evaluate(
+            r#"agent.parent_agent_id == "parent-abc""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
+    }
+
+    #[test]
+    fn agent_team_id_eq_matches_known_team() {
+        let ctx = fake_topology_ctx(None, Some("team-alpha"), None);
+        assert!(evaluate(
+            r#"agent.team_id == "team-alpha""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
+    }
+
+    #[test]
+    fn agent_team_id_eq_no_match_different_team() {
+        let ctx = fake_topology_ctx(None, Some("team-beta"), None);
+        assert!(!evaluate(
+            r#"agent.team_id == "team-alpha""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
+    }
+
+    #[test]
+    fn agent_team_id_null_safe_when_no_team() {
+        let ctx = fake_topology_ctx(None, None, None);
+        assert!(!evaluate(
+            r#"agent.team_id == "team-alpha""#,
+            &tool("any"),
+            None,
+            Some(&ctx)
+        ));
+    }
+
+    #[test]
+    fn agent_children_count_gt_matches_when_has_children() {
+        let ctx = fake_topology_ctx(None, None, Some(3));
+        assert!(evaluate("agent.children_count > 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_children_count_eq_zero_matches_leaf() {
+        let ctx = fake_topology_ctx(None, None, Some(0));
+        assert!(evaluate("agent.children_count == 0", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_children_count_fails_closed_without_context() {
+        // AAASM-3995(b): unresolved agent.children_count in an approval clause fails closed.
+        assert!(evaluate("agent.children_count > 0", &tool("any"), None, None));
+    }
+
+    // ── agent.is_root, agent.is_leaf tests ───────────────────────────────────
+
+    fn fake_depth_children_ctx(depth: Option<u32>, children: Option<u32>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            depth,
+            agent_children_count: children,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn agent_is_root_eq_1_matches_root_agent() {
+        let ctx = fake_depth_children_ctx(Some(0), None);
+        assert!(evaluate("agent.is_root == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_root_eq_1_no_match_non_root_agent() {
+        let ctx = fake_depth_children_ctx(Some(2), None);
+        assert!(!evaluate("agent.is_root == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_root_null_safe_without_context() {
+        assert!(!evaluate("agent.is_root == 1", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn agent_is_leaf_eq_1_matches_agent_with_no_children() {
+        let ctx = fake_depth_children_ctx(None, Some(0));
+        assert!(evaluate("agent.is_leaf == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_leaf_eq_1_no_match_agent_with_children() {
+        let ctx = fake_depth_children_ctx(None, Some(2));
+        assert!(!evaluate("agent.is_leaf == 1", &tool("any"), None, Some(&ctx)));
+    }
+
+    #[test]
+    fn agent_is_leaf_null_safe_without_context() {
+        assert!(!evaluate("agent.is_leaf == 1", &tool("any"), None, None));
+    }
+
+    #[test]
+    fn validate_variables_accepts_new_topology_variables() {
+        assert!(validate_variables(r#"agent.parent_agent_id == "abc""#).is_ok());
+        assert!(validate_variables(r#"agent.team_id == "t1""#).is_ok());
+        assert!(validate_variables("agent.children_count > 0").is_ok());
+        assert!(validate_variables("agent.is_root == 1").is_ok());
+        assert!(validate_variables("agent.is_leaf == 1").is_ok());
+    }
+
+    // ── compound AND rule: equivalent of AAASM-225 example rule 3 ───────────
+    //
+    // Original rule 3 used `action.model_cost * 0.2` which requires arithmetic
+    // not supported by the flat grammar. The equivalent supported form combines
+    // agent.depth and team.budget_remaining with AND — testing the same
+    // compound-condition path.
+
+    fn fake_depth_budget_ctx(depth: Option<u32>, budget: Option<f64>) -> crate::context::FakePolicyContext {
+        crate::context::FakePolicyContext {
+            depth,
+            team_budget: budget,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn compound_and_depth_budget_fires_when_both_clauses_true() {
+        // depth=2 satisfies `agent.depth > 0`; budget=50 satisfies `team.budget_remaining < 100`
+        let ctx = fake_depth_budget_ctx(Some(2), Some(50.0));
+        assert!(evaluate(
+            "agent.depth > 0 AND team.budget_remaining < 100",
+            &tool("any"),
+            None,
+            Some(&ctx),
+        ));
+    }
+
+    #[test]
+    fn compound_and_depth_budget_no_fire_when_depth_clause_false() {
+        // depth=0 fails `agent.depth > 0`; AND short-circuits → no fire
+        let ctx = fake_depth_budget_ctx(Some(0), Some(50.0));
+        assert!(!evaluate(
+            "agent.depth > 0 AND team.budget_remaining < 100",
+            &tool("any"),
+            None,
+            Some(&ctx),
+        ));
+    }
+
+    #[test]
+    fn compound_and_depth_budget_no_fire_when_budget_clause_false() {
+        // depth=2 satisfies first clause; budget=200 fails `team.budget_remaining < 100` → no fire
+        let ctx = fake_depth_budget_ctx(Some(2), Some(200.0));
+        assert!(!evaluate(
+            "agent.depth > 0 AND team.budget_remaining < 100",
+            &tool("any"),
+            None,
+            Some(&ctx),
+        ));
+    }
+
+    // ── FieldRef::ToolArg — args.<key> predicate tests ──────────────────────
+
+    #[test]
+    fn args_field_eq_matches_string_value() {
+        let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
+        assert!(evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_starts_with_matches_etc_path_prefix() {
+        // The flagship AAASM-1930 ST-Q-1 predicate shape.
+        let action = tool_with_args("read_file", r#"{"path": "/etc/passwd"}"#);
+        assert!(evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_starts_with_no_match_outside_etc_prefix() {
+        // The negative side of the same rule: a path the policy should allow.
+        let action = tool_with_args("read_file", r#"{"path": "/home/user/file.txt"}"#);
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_walks_nested_json_pointer() {
+        // `args.headers.authorization` → JSON pointer "/headers/authorization".
+        let action = tool_with_args("http_fetch", r#"{"headers": {"authorization": "Bearer abc"}}"#);
+        assert!(evaluate(
+            r#"args.headers.authorization starts_with "Bearer""#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn args_missing_key_is_null_safe_no_match() {
+        // Pointer doesn't resolve → no-match (NOT a fail-safe true).
+        let action = tool_with_args("read_file", r#"{"other": "value"}"#);
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &action, None, None));
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &action, None, None));
+    }
+
+    #[test]
+    fn args_malformed_json_is_null_safe_no_match() {
+        // Args body that doesn't parse as JSON (default empty string, garbage,
+        // truncated, etc.) is treated as null-safe no-match — policies don't
+        // fire and policies don't fail-safe `true` either.
+        let empty = tool_with_args("read_file", "");
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &empty, None, None));
+
+        let garbage = tool_with_args("read_file", "{not valid json");
+        assert!(!evaluate(r#"args.path == "/etc/passwd""#, &garbage, None, None));
+    }
+
+    #[test]
+    fn args_in_list_matches_when_value_is_member() {
+        let action = tool_with_args("invoke", r#"{"action": "delete"}"#);
+        assert!(evaluate(
+            r#"args.action in ["delete", "drop", "truncate"]"#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn args_not_in_list_matches_when_value_outside_allowlist() {
+        // The allowlist shape: deny when args.action is not in the allowed set.
+        let action = tool_with_args("invoke", r#"{"action": "execute_bash"}"#);
+        assert!(evaluate(r#"args.action not_in ["read", "write"]"#, &action, None, None,));
+    }
+
+    #[test]
+    fn args_numeric_comparison_against_json_number() {
+        // Numeric ops (`>`, `>=`, `<`, `<=`) work against JSON number values.
+        let action = tool_with_args("rpc_call", r#"{"timeout_ms": 30000}"#);
+        assert!(evaluate("args.timeout_ms > 1000", &action, None, None));
+        assert!(evaluate("args.timeout_ms <= 30000", &action, None, None));
+        assert!(!evaluate("args.timeout_ms < 100", &action, None, None));
+    }
+
+    #[test]
+    fn args_predicate_against_non_toolcall_action_is_no_match() {
+        // A FileAccess action carries no `args` payload; the same expression
+        // that fires on a ToolCall must surface as no-match for non-ToolCall
+        // variants so policies don't leak across action types.
+        assert!(!evaluate(
+            r#"args.path starts_with "/etc""#,
+            &file("/etc/passwd"),
+            None,
+            None
+        ));
+        assert!(!evaluate(r#"args.path starts_with "/etc""#, &process("ls"), None, None));
+        assert!(!evaluate(
+            r#"args.path starts_with "/etc""#,
+            &network("https://example.com", "GET"),
+            None,
+            None,
+        ));
+    }
+
+    // ── FieldRef::ToolResult — tool_result.<key> + bare tool_result tests ───
+
+    /// Build a `ToolResult` action against a known `tool_name` whose `result`
+    /// is a JSON-encoded body — used by the response-side predicate tests
+    /// below.
+    fn tool_result_with_body(tool_name: &str, body: &str) -> GovernanceAction {
+        GovernanceAction::ToolResult {
+            tool_name: tool_name.to_string(),
+            result: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn tool_result_field_eq_matches_string_leaf() {
+        let action = tool_result_with_body("read_file", r#"{"contents": "hello"}"#);
+        assert!(evaluate(r#"tool_result.contents == "hello""#, &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_field_contains_matches_substring_in_leaf() {
+        // The ST-Q-3 acceptance criterion's predicate shape — a credential
+        // pattern fragment inside a nested string field.
+        let action = tool_result_with_body("read_file", r#"{"contents": "key=sk-abc123"}"#);
+        assert!(evaluate(r#"tool_result.contents contains "sk-""#, &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_walks_nested_json_pointer() {
+        // `tool_result.payload.api_key` → JSON pointer "/payload/api_key".
+        let action = tool_result_with_body("http_fetch", r#"{"payload": {"api_key": "sk-test-xyz"}}"#);
+        assert!(evaluate(
+            r#"tool_result.payload.api_key starts_with "sk-""#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn bare_tool_result_contains_pattern_in_whole_body() {
+        // The ST-Q-3 shorthand: `tool_result contains "sk-"` matches against
+        // the entire serialised result body — useful when the schema is
+        // unknown but the secret prefix is.
+        let action = tool_result_with_body(
+            "search",
+            r#"{"items": [{"snippet": "leaked key: sk-test-123 in log"}]}"#,
+        );
+        assert!(evaluate(r#"tool_result contains "sk-""#, &action, None, None));
+    }
+
+    #[test]
+    fn bare_tool_result_starts_with_against_whole_body() {
+        // Whole-body starts_with is rarer but sometimes useful — e.g. asserting
+        // a response is JSON-shaped (`{...}`) before any further predicate runs.
+        let action = tool_result_with_body("ping", r#"{"ok": true}"#);
+        assert!(evaluate(r#"tool_result starts_with "{""#, &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_missing_key_is_null_safe_no_match() {
+        // The pointer fails to resolve — predicate must be no-match, NOT
+        // fail-safe true.
+        let action = tool_result_with_body("read_file", r#"{"other": "value"}"#);
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &action, None, None,));
+        assert!(!evaluate(
+            r#"tool_result.contents starts_with "h""#,
+            &action,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn tool_result_malformed_json_is_null_safe_no_match() {
+        // A result body that doesn't parse as JSON (default empty string,
+        // truncated, etc.) is no-match for dotted predicates — but the bare
+        // `tool_result contains "..."` still matches the raw bytes because
+        // it never parses the body.
+        let empty = tool_result_with_body("read_file", "");
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &empty, None, None,));
+
+        let garbage = tool_result_with_body("read_file", "{not valid json");
+        assert!(!evaluate(r#"tool_result.contents == "hello""#, &garbage, None, None,));
+        assert!(evaluate(r#"tool_result contains "not valid""#, &garbage, None, None));
+    }
+
+    #[test]
+    fn tool_result_numeric_comparison_against_json_number() {
+        // Numeric ops (`>`, `>=`, `<`, `<=`, ==, !=) work against JSON
+        // numbers — mirror of args.<key>'s numeric path so policies can
+        // gate on response-side numeric fields (counts, sizes, scores).
+        let action = tool_result_with_body("score", r#"{"score": 95}"#);
+        assert!(evaluate("tool_result.score > 90", &action, None, None));
+        assert!(evaluate("tool_result.score <= 95", &action, None, None));
+        assert!(!evaluate("tool_result.score < 50", &action, None, None));
+        assert!(evaluate("tool_result.score == 95", &action, None, None));
+    }
+
+    #[test]
+    fn tool_result_predicate_against_non_toolresult_action_is_no_match() {
+        // A ToolCall / FileAccess / NetworkRequest / ProcessExec action carries
+        // no `result` payload; tool_result predicates must surface as no-match
+        // so policies don't leak across request/response sides. The same shape
+        // applies to the bare `tool_result` whole-body predicate.
+        assert!(!evaluate(
+            r#"tool_result.contents == "hello""#,
+            &tool("read_file"),
+            None,
+            None,
+        ));
+        assert!(!evaluate(
+            r#"tool_result contains "sk-""#,
+            &file("/etc/passwd"),
+            None,
+            None
+        ));
+        assert!(!evaluate(
+            r#"tool_result.api_key starts_with "sk-""#,
+            &network("https://example.com", "GET"),
+            None,
+            None,
+        ));
+        assert!(!evaluate(r#"tool_result contains "x""#, &process("ls"), None, None));
+    }
+}

@@ -16,6 +16,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { routeScrubApi } from './_fixtures/scrub-routes'
 
 const EVIDENCE_DIR = resolve(process.cwd(), 'docs/verification/aaasm-1392')
 
@@ -31,17 +32,30 @@ const HIFI_TOKENS = {
 
 async function injectToken(page: Page) {
   await page.addInitScript(() =>
-    localStorage.setItem('aa_token', 'scrub-fidelity-token'),
+    sessionStorage.setItem('aa_token', 'scrub-fidelity-token'),
   )
 }
 
 async function mockApi(page: Page) {
   await page.route('**/api/v1/ws/events**', (route) => route.abort())
+  // AAASM-5347: the detector catalogue is fetched rather than compiled in, so
+  // with nothing seeded the page renders its loading state, retries, and
+  // settles on an error — and none of the layout, the diff or the summary this
+  // spec measures is ever mounted. The fixture covers all seven categories the
+  // stylesheet colours, which is also what makes the severity-chip check below
+  // bite instead of skipping every selector for want of a row.
+  await routeScrubApi(page)
 }
 
 async function gotoScrub(page: Page) {
   await page.goto('/scrub')
-  await page.getByTestId('scrub-page').waitFor()
+  // `scrub-page` is on the <main> and is therefore already present while the
+  // catalogue request is in flight — since AAASM-5347 it wraps the loading
+  // skeleton too. Waiting on it alone let a test read an unmounted page and,
+  // for the non-retrying `.count()` below, fail under parallel load. The body
+  // grid only exists once the catalogue has arrived, so it is the honest
+  // ready signal.
+  await page.locator('.scrub-body').waitFor()
 }
 
 function describeAtViewport(width: number, height: number) {
@@ -77,11 +91,14 @@ function describeAtViewport(width: number, height: number) {
     test('severity chips resolve to the documented token RGBs', async ({ page }) => {
       await gotoScrub(page)
 
+      // AAASM-5156: the `severity` scale these chips rendered existed nowhere
+      // behind the product, so the column now carries the scanner's own
+      // category grouping. Same four token colours, same visual contract.
       const expectations: Array<[string, string]> = [
-        ['.scrub-patterns-sev--critical', HIFI_TOKENS.danger],
-        ['.scrub-patterns-sev--high', HIFI_TOKENS.warn],
-        ['.scrub-patterns-sev--medium', HIFI_TOKENS.info],
-        ['.scrub-patterns-sev--low', HIFI_TOKENS.ink3],
+        ['.scrub-patterns-cat--api-key', HIFI_TOKENS.danger],
+        ['.scrub-patterns-cat--auth-token', HIFI_TOKENS.warn],
+        ['.scrub-patterns-cat--pii', HIFI_TOKENS.info],
+        ['.scrub-patterns-cat--generic', HIFI_TOKENS.ink3],
       ]
       for (const [selector, expected] of expectations) {
         const locator = page.locator(selector).first()
@@ -131,9 +148,11 @@ function describeAtViewport(width: number, height: number) {
       )
       expect(color).toBe(HIFI_TOKENS.scrub)
 
-      // Placeholder text follows the [REDACTED:XXX] pattern.
+      // Placeholder text is the label `aa-security` actually emits —
+      // `[REDACTED:<CredentialKind>]`, CamelCase (AAASM-5156). The previous
+      // SHOUT_CASE ids were labels the gateway never wrote.
       const text = await redacted.textContent()
-      expect(text).toMatch(/^\[REDACTED:[A-Z0-9_]+\]$/)
+      expect(text).toMatch(/^\[REDACTED:[A-Za-z]+\]$/)
 
       await page.screenshot({
         path: `${EVIDENCE_DIR}/scrub-${width}-payload-diff.png`,

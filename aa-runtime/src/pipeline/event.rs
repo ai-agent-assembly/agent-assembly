@@ -1,6 +1,31 @@
 //! Enriched event type produced by the pipeline ingestion stage.
 
 use aa_proto::assembly::audit::v1::AuditEvent;
+use aa_security::sdk_identity::{ObservedSdkIdentity, SdkIdentityVerdict};
+
+/// Reserved `AuditEvent.labels` key carrying the SDK version an agent *claims*.
+///
+/// The SDK controls the `labels` map, so this is an **untrusted claim**: it is
+/// transported to the server-side classifier (AAASM-3621) to be recomputed
+/// against the verified identity, never honoured at face value. Unlike the
+/// trust-marker keys stripped in enforcement (AAASM-3630), this key is
+/// preserved — it is a claim to be verified, not a trust grant.
+pub const SDK_VERSION_LABEL: &str = "aa.sdk_version";
+
+/// Server-recomputed SDK bypass/tamper signal attached to an event (AAASM-3637).
+///
+/// Set on an [`EnrichedEvent`] when the runtime suspects the SDK was stripped,
+/// forged, or downgraded — or forged trust markers were stripped. Carries only
+/// the recomputed verdict and the count of stripped markers (no agent free
+/// text), so it can ride into the audit payload as a queryable record without a
+/// proto change. `None` on an event means no tamper signal was computed for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TamperSignal {
+    /// The server-recomputed SDK-identity verdict.
+    pub verdict: SdkIdentityVerdict,
+    /// How many SDK-supplied trust-marker labels were stripped (AAASM-3630).
+    pub forged_trust_markers: usize,
+}
 
 /// The input source that delivered the raw event to the pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +63,19 @@ pub struct EnrichedEvent {
     /// buffer overflow (`RecvError::Lagged(n)` tells how many were dropped but not
     /// which ones — sequence numbers identify the missing range).
     pub sequence_number: u64,
+    /// The SDK identity the agent *claimed* on the wire, read from the
+    /// (attacker-controlled) `inner.labels` map at ingest (AAASM-3625).
+    ///
+    /// This is the **observed** signal only: it is recomputed server-side
+    /// against the verified handshake identity (AAASM-3640) by the classifier
+    /// before any tamper verdict is drawn. Never granted trust at face value.
+    pub observed_sdk_identity: ObservedSdkIdentity,
+    /// Server-recomputed SDK bypass/tamper signal (AAASM-3637).
+    ///
+    /// `Some` on the distinct tamper governance event the pipeline emits when a
+    /// flagged verdict / forged trust markers are detected; carried into the
+    /// audit payload's `sdk_identity` section. `None` on ordinary events.
+    pub tamper: Option<TamperSignal>,
 }
 
 /// Top-level event type carried by the pipeline broadcast channel.
@@ -88,6 +126,8 @@ mod tests {
             agent_id: agent_id.clone(),
             connection_id,
             sequence_number: 0,
+            observed_sdk_identity: ObservedSdkIdentity::present("1.2.3"),
+            tamper: None,
         };
 
         assert_eq!(enriched_event.inner, audit_event);
@@ -96,6 +136,8 @@ mod tests {
         assert_eq!(enriched_event.agent_id, agent_id);
         assert_eq!(enriched_event.connection_id, connection_id);
         assert_eq!(enriched_event.sequence_number, 0);
+        assert!(enriched_event.observed_sdk_identity.present);
+        assert_eq!(enriched_event.observed_sdk_identity.version.as_deref(), Some("1.2.3"));
     }
 
     #[test]
@@ -115,6 +157,8 @@ mod tests {
             agent_id: "original-agent".to_string(),
             connection_id: 7,
             sequence_number: 3,
+            observed_sdk_identity: ObservedSdkIdentity::missing(),
+            tamper: None,
         };
 
         let cloned = original.clone();
@@ -143,6 +187,8 @@ mod tests {
             agent_id: "a".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: ObservedSdkIdentity::default(),
+            tamper: None,
         }));
         assert!(matches!(event, PipelineEvent::Audit(_)));
     }
@@ -166,6 +212,8 @@ mod tests {
             agent_id: "a".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: ObservedSdkIdentity::default(),
+            tamper: None,
         }));
         let cloned = event.clone();
         assert!(matches!(cloned, PipelineEvent::Audit(_)));

@@ -1,13 +1,16 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, it, expect, afterEach, vi, type Mock } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest'
 import type { UseQueryResult } from '@tanstack/react-query'
 import { FleetPage } from './FleetPage'
+import { GrantScopes } from '../auth/GrantScopes'
+import { WRITE_SCOPES } from '../auth/testScopes'
 import { ToastProvider } from '../components/ToastProvider'
 import * as agentsApi from '../features/agents/api'
 import * as client from '../api/client'
-import type { Agent } from '../features/agents/api'
+import type { Agent, FleetActiveSession } from '../features/agents/api'
+import type { AgentEnforcementLookup } from '../features/agents/fleetTypes'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -26,14 +29,16 @@ function LocationProbe({ onChange }: { onChange: (search: string) => void }) {
 function renderFleet(initialPath = '/agents', onLocation?: (search: string) => void) {
   return render(
     <QueryClientProvider client={makeClient()}>
-      <ToastProvider>
-        <MemoryRouter initialEntries={[initialPath]}>
-          <Routes>
-            <Route path="/agents" element={<FleetPage />} />
-          </Routes>
-          {onLocation && <LocationProbe onChange={onLocation} />}
-        </MemoryRouter>
-      </ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>
+          <MemoryRouter initialEntries={[initialPath]}>
+            <Routes>
+              <Route path="/agents" element={<FleetPage />} />
+            </Routes>
+            {onLocation && <LocationProbe onChange={onLocation} />}
+          </MemoryRouter>
+        </ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>,
   )
 }
@@ -52,12 +57,21 @@ function makeAgent(overrides: Partial<Agent> = {}): Agent {
     active_sessions: [],
     session_count: 0,
     policy_violations_count: 0,
-    tool_names: [],
+    is_flagged: false,    tool_names: [],
     metadata: {},
     pid: null,
     ...overrides,
   }
 }
+
+// FleetPage reads the active-session count for the tab badge on every render;
+// default it to empty so agent-focused tests don't hit a real fetch. Tests that
+// exercise the sessions tab re-spy this with their own data.
+beforeEach(() => {
+  vi.spyOn(agentsApi, 'useActiveSessionsQuery').mockReturnValue(
+    mockQuery<FleetActiveSession[]>({ data: [], isLoading: false, isError: false, refetch: vi.fn() }),
+  )
+})
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -72,7 +86,7 @@ describe('FleetPage chrome', () => {
       }),
     )
     renderFleet()
-    await waitFor(() => expect(screen.getByTestId('fleet-page-head')).toBeInTheDocument())
+    expect(await screen.findByTestId('fleet-page-head')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-page-count').textContent).toContain('2 of 2 agents')
     expect(screen.getByTestId('fleet-action-register')).toBeDisabled()
     expect(screen.getByTestId('fleet-action-export')).toBeDisabled()
@@ -84,7 +98,7 @@ describe('FleetPage chrome', () => {
     )
     renderFleet()
     fireEvent.click(screen.getByTestId('fleet-tab-sessions'))
-    await waitFor(() => expect(screen.getByTestId('fleet-sessions-empty')).toBeInTheDocument())
+    expect(await screen.findByTestId('sessions-empty')).toBeInTheDocument()
     expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
   })
 })
@@ -130,8 +144,8 @@ describe('FleetPage filter bar', () => {
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
       mockQuery<Agent[]>({
         data: [
-          makeAgent({ id: '1', policy_violations_count: 0 }),
-          makeAgent({ id: '2', policy_violations_count: 200 }),
+          makeAgent({ id: '1', is_flagged: false }),
+          makeAgent({ id: '2', is_flagged: true }),
         ],
         isLoading: false,
         isError: false,
@@ -181,8 +195,25 @@ describe('FleetPage URL filter sync', () => {
 
 describe('FleetPage loading and error states', () => {
   it('renders skeleton rows while loading', () => {
+    // `isPending` alongside `isLoading`: the page reads the former, so without
+    // it this mock reached the skeleton via the empty-payload fallback rather
+    // than the pending branch it means to exercise (AAASM-5130).
+    //
+    // `certainFromQuery` resolves error -> pending -> empty payload
+    // (`query.ts:103-111`), so of the two cases below only the `isError: true`
+    // one is genuinely flag-independent: error outranks pending. `data: []` is
+    // *not* — adding `isPending: true` to it yields `unknown` and the
+    // empty-state callout disappears. It is left without the flag because
+    // omitting it reads as not-pending, which is the settled success that test
+    // describes; it is incomplete, not wrong.
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
-      mockQuery<Agent[]>({ data: undefined, isLoading: true, isError: false, refetch: vi.fn() }),
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: true,
+        isPending: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
     )
     renderFleet()
     expect(screen.getAllByTestId('agent-row-skeleton')).toHaveLength(5)
@@ -194,6 +225,33 @@ describe('FleetPage loading and error states', () => {
     )
     renderFleet()
     expect(screen.getByTestId('agents-empty')).toBeInTheDocument()
+  })
+
+  it('reports a schema-invalid 200 as absence, never as an empty fleet (AAASM-5573)', () => {
+    // A 200 whose body is an array of rows missing the required fields the grid
+    // reads. Before the decoder the old `?? []` cast rendered "No agents
+    // registered yet" — an affirmative claim about the fleet from an unread body
+    // — and a non-array reached the grid's `.map`. `decodeFleetAgents` now folds
+    // it to `unknown`, which the classifier treats as not-yet-known (skeleton),
+    // never as `fleet-empty`.
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [{ id: 'x' } as unknown as Agent],
+        isLoading: false,
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    // Vacuity guard: the page renders something rather than crashing.
+    expect(screen.getAllByTestId('agent-row-skeleton').length).toBeGreaterThan(0)
+
+    // Explicit absence, not a fabricated empty fleet or a counted zero.
+    expect(screen.queryByTestId('agents-empty')).toBeNull()
+    expect(screen.queryByTestId('agents-error')).toBeNull()
+    expect(screen.getByTestId('fleet-tab-agents-count')).toHaveTextContent('—')
   })
 
   it('renders the error banner with retry when the query fails', () => {
@@ -239,6 +297,80 @@ describe('FleetPage table interactions', () => {
     expect(sortIndicator).toHaveClass('fleet-table__sort--inactive')
   })
 
+  it('defaults to trust ascending (least-trusted agent first) — AAASM-5069 / characterization AAASM-5697', async () => {
+    const trust: Map<string, number> = new Map([
+      ['low', 12],
+      ['high', 95],
+      ['mid', 60],
+    ])
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'high', name: 'high-trust' }),
+          makeAgent({ id: 'low', name: 'low-trust' }),
+          makeAgent({ id: 'mid', name: 'mid-trust' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useTrustQuery').mockReturnValue(
+      mockQuery<Map<string, number>>({ data: trust, isLoading: false, isError: false }),
+    )
+    renderFleet()
+    const rows = await screen.findAllByTestId('agent-row')
+    // Ascending trust: 12 < 60 < 95 → low, mid, high.
+    expect(rows[0]).toHaveTextContent('low-trust')
+    expect(rows[1]).toHaveTextContent('mid-trust')
+    expect(rows[2]).toHaveTextContent('high-trust')
+    // The trust header shows the active ascending indicator by default.
+    expect(screen.getByTestId('fleet-sort-trust').textContent).toBe('▲')
+    expect(screen.getByTestId('fleet-sort-trust')).not.toHaveClass('fleet-table__sort--inactive')
+  })
+
+  it('preserves row selection across a sort toggle (characterization AAASM-5697)', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'a', name: 'zeta' }),
+          makeAgent({ id: 'b', name: 'alpha' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+    fireEvent.click(await screen.findByTestId('fleet-select-a'))
+    await waitFor(() => expect(screen.getByTestId('fleet-select-a')).toBeChecked())
+    // Sorting by name must not drop the existing selection.
+    fireEvent.click(screen.getByRole('columnheader', { name: /Agent/ }))
+    await waitFor(() => expect(screen.getByTestId('fleet-sort-name')).not.toHaveClass('fleet-table__sort--inactive'))
+    expect(screen.getByTestId('fleet-select-a')).toBeChecked()
+    expect(screen.getByTestId('fleet-select-b')).not.toBeChecked()
+  })
+
+  it('keeps the select/mode/actions columns non-sortable (characterization AAASM-5697)', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: 'a' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+    await screen.findByTestId('agent-row')
+    // Non-sortable columns render no sort indicator element.
+    expect(screen.queryByTestId('fleet-sort-select')).toBeNull()
+    expect(screen.queryByTestId('fleet-sort-mode')).toBeNull()
+    expect(screen.queryByTestId('fleet-sort-actions')).toBeNull()
+    // Sortable ones do.
+    expect(screen.getByTestId('fleet-sort-name')).toBeInTheDocument()
+    expect(screen.getByTestId('fleet-sort-trust')).toBeInTheDocument()
+  })
+
   it('navigates to /agents/:id when a row body is clicked', async () => {
     let lastPath = ''
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
@@ -253,7 +385,7 @@ describe('FleetPage table interactions', () => {
 
     const row = await screen.findByTestId('agent-row')
     fireEvent.click(row)
-    await waitFor(() => expect(window.location.pathname + lastPath).toBeDefined())
+    await waitFor(() => expect(globalThis.location.pathname + lastPath).toBeDefined())
 
     // Use findByTestId on a body cell to bypass the row's onClick? Just verify the navigation
     // by checking that the row click reached the navigate hook via a route effect:
@@ -277,6 +409,25 @@ describe('FleetPage table interactions', () => {
     // Clicking the link should be allowed; the row handler should detect the <a> and skip navigation
     expect(nameLink.tagName).toBe('A')
     expect(nameLink.getAttribute('href')).toBe('/agents/abc-123')
+  })
+
+  it('deep-links the caps → row action to the capability tab, not the agent name target (AAASM-5162)', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: 'abc-123', name: 'alpha' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+    const capsAction = await screen.findByTestId('fleet-row-action')
+    expect(capsAction.tagName).toBe('A')
+    expect(capsAction.getAttribute('href')).toBe('/agents/abc-123?tab=capability')
+    // The label's promise must differ from the plain agent-name link's target.
+    expect(capsAction.getAttribute('href')).not.toBe(
+      screen.getByTestId('fleet-row-name').getAttribute('href'),
+    )
   })
 
   it('toggles individual row selection via the row checkbox', async () => {
@@ -321,6 +472,87 @@ describe('FleetPage table interactions', () => {
   })
 })
 
+describe('FleetPage blocked/scrubbed column tone', () => {
+  it('tones blocked24h as danger above 50, and leaves it untoned at/below 50', async () => {
+    const enforcement: AgentEnforcementLookup = new Map([
+      ['danger', { blocked: 51, scrubbed: 0 }],
+      ['boundary', { blocked: 50, scrubbed: 0 }],
+    ])
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'danger', name: 'danger-agent' }),
+          makeAgent({ id: 'boundary', name: 'boundary-agent' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEnforcementQuery').mockReturnValue(
+      mockQuery<AgentEnforcementLookup>({ data: enforcement, isLoading: false, isError: false }),
+    )
+    renderFleet()
+
+    expect(await screen.findByText('51')).toHaveClass('fleet-table__numeric--danger')
+    expect(screen.getByText('50')).not.toHaveClass('fleet-table__numeric--danger')
+  })
+
+  it('tones scrubbed24h as scrub above 0, and leaves it untoned at 0', async () => {
+    const enforcement: AgentEnforcementLookup = new Map([
+      ['scrubbed', { blocked: 0, scrubbed: 3 }],
+      ['clean', { blocked: 0, scrubbed: 0 }],
+    ])
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [
+          makeAgent({ id: 'scrubbed', name: 'scrubbed-agent' }),
+          makeAgent({ id: 'clean', name: 'clean-agent' }),
+        ],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEnforcementQuery').mockReturnValue(
+      mockQuery<AgentEnforcementLookup>({ data: enforcement, isLoading: false, isError: false }),
+    )
+    renderFleet()
+
+    expect(await screen.findByText('3')).toHaveClass('fleet-table__numeric--scrub')
+    // Both agents' `blocked` (0) and the clean agent's `scrubbed` (0) render as
+    // the literal digit "0" via NumericCell; none of them carry the scrub tone.
+    for (const zero of screen.getAllByText('0')) {
+      expect(zero).not.toHaveClass('fleet-table__numeric--scrub')
+    }
+  })
+
+  it('renders neither tone for an agent absent from the enforcement lookup', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: 'unknown', name: 'unknown-agent' })],
+        isLoading: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    vi.spyOn(agentsApi, 'useAgentEnforcementQuery').mockReturnValue(
+      mockQuery<AgentEnforcementLookup>({ data: new Map(), isLoading: false, isError: false }),
+    )
+    renderFleet()
+
+    const placeholders = await screen.findAllByText('—')
+    const numericPlaceholders = placeholders.filter((el) =>
+      el.classList.contains('fleet-table__numeric'),
+    )
+    expect(numericPlaceholders).toHaveLength(2)
+    for (const el of numericPlaceholders) {
+      expect(el).not.toHaveClass('fleet-table__numeric--danger')
+      expect(el).not.toHaveClass('fleet-table__numeric--scrub')
+    }
+  })
+})
+
 describe('FleetPage bulk action bar', () => {
   it('hides when nothing is selected and appears once at least one row is checked', async () => {
     vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
@@ -335,7 +567,7 @@ describe('FleetPage bulk action bar', () => {
     expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId('fleet-select-a'))
-    await waitFor(() => expect(screen.getByTestId('fleet-bulkbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('fleet-bulkbar')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
   })
 
@@ -368,7 +600,7 @@ describe('FleetPage bulk action bar', () => {
     )
     renderFleet()
     fireEvent.click(screen.getByTestId('fleet-select-all'))
-    await waitFor(() => expect(screen.getByTestId('fleet-bulkbar-shadow')).toBeInTheDocument())
+    expect(await screen.findByTestId('fleet-bulkbar-shadow')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-suspend')).toBeInTheDocument()
   })
 })
@@ -395,7 +627,7 @@ describe('FleetPage bulk suspend fan-out', () => {
     fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'budget' } })
     fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
 
-    await waitFor(() => expect(screen.getByText('2 suspended')).toBeInTheDocument())
+    expect(await screen.findByText('2 suspended')).toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(2)
     await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
   })
@@ -429,7 +661,7 @@ describe('FleetPage bulk suspend fan-out', () => {
     fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'budget' } })
     fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
 
-    await waitFor(() => expect(screen.getByText('2 suspended, 1 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 suspended, 1 failed')).toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(3)
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
     expect(screen.getByTestId('fleet-select-b')).toBeChecked()
@@ -456,7 +688,7 @@ describe('FleetPage bulk suspend fan-out', () => {
     fireEvent.change(await screen.findByTestId('suspend-dialog-input'), { target: { value: 'noop' } })
     fireEvent.click(screen.getByTestId('suspend-dialog-confirm'))
 
-    await waitFor(() => expect(screen.getByText('2 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 failed')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('2 selected')
   })
 })
@@ -481,7 +713,7 @@ describe('FleetPage bulk resume fan-out', () => {
     fireEvent.click(await screen.findByTestId('fleet-select-all'))
     fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
 
-    await waitFor(() => expect(screen.getByText('2 resumed')).toBeInTheDocument())
+    expect(await screen.findByText('2 resumed')).toBeInTheDocument()
     expect(post).toHaveBeenCalledTimes(2)
     expect(post.mock.calls[0]?.[0]).toBe('/api/v1/agents/{id}/resume')
     await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
@@ -514,7 +746,7 @@ describe('FleetPage bulk resume fan-out', () => {
     fireEvent.click(await screen.findByTestId('fleet-select-all'))
     fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
 
-    await waitFor(() => expect(screen.getByText('2 resumed, 1 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 resumed, 1 failed')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('1 selected')
     expect(screen.getByTestId('fleet-select-b')).toBeChecked()
   })
@@ -538,7 +770,7 @@ describe('FleetPage bulk resume fan-out', () => {
     fireEvent.click(await screen.findByTestId('fleet-select-all'))
     fireEvent.click(screen.getByTestId('fleet-bulkbar-resume'))
 
-    await waitFor(() => expect(screen.getByText('2 failed')).toBeInTheDocument())
+    expect(await screen.findByText('2 failed')).toBeInTheDocument()
     expect(screen.getByTestId('fleet-bulkbar-count').textContent).toContain('2 selected')
   })
 
@@ -564,5 +796,123 @@ describe('FleetPage bulk resume fan-out', () => {
 
     releaseResolve({ data: { agent_id: 'a', previous_status: 'suspended', new_status: 'active' } })
     await waitFor(() => expect(screen.queryByTestId('fleet-bulkbar')).not.toBeInTheDocument())
+  })
+})
+
+/**
+ * AAASM-5130: the four reasons the agents view can show no rows are different
+ * facts and must not render alike. One test per state, each asserting both what
+ * that state says *and* that it does not borrow another state's affordance.
+ */
+describe('FleetPage no-rows states are distinguishable', () => {
+  it('explains a filter that matched nothing and offers to clear it', async () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [makeAgent({ id: '1', name: 'alpha' }), makeAgent({ id: '2', name: 'beta' })],
+        isLoading: false,
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    let lastSearch = ''
+    renderFleet('/agents?q=no-such-agent', (s) => { lastSearch = s })
+
+    expect(screen.getByTestId('fleet-filter-empty')).toBeInTheDocument()
+    // A filter that excluded everything is a successful result, so neither the
+    // onboarding copy nor the failure banner may appear.
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-error')).not.toBeInTheDocument()
+    expect(screen.queryAllByTestId('agent-row')).toHaveLength(0)
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· 0 of 2 agents')
+
+    fireEvent.click(screen.getByTestId('fleet-filter-empty-clear'))
+
+    await waitFor(() => expect(lastSearch).toBe(''))
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('agent-row')).toHaveLength(2)
+  })
+
+  it('shows the onboarding copy and no table when the fleet is genuinely empty', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: [],
+        isLoading: false,
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.getByTestId('agents-empty')).toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    // Column headers over blank space beneath the callout is the ambiguity the
+    // callout exists to remove.
+    expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· 0 of 0 agents')
+  })
+
+  it('never states a fleet size when the request failed', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: false,
+        isPending: false,
+        isError: true,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.getByTestId('agents-error')).toBeInTheDocument()
+    expect(screen.queryByTestId('agents-table')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    // "0 of 0 agents" would be a business claim the failed request never made.
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
+    expect(screen.getByTestId('fleet-tab-agents-count')).toHaveTextContent('—')
+  })
+
+  it('never states a fleet size while the request is in flight', () => {
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: true,
+        isPending: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.getAllByTestId('agent-row-skeleton')).toHaveLength(5)
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
+  })
+
+  it('does not report a paused request as a failed one', () => {
+    // TanStack derives `isLoading = isPending && isFetching`, so a query paused
+    // by the default `networkMode: 'online'` while the browser is offline is
+    // pending with `isLoading === false` — the shape that used to fall through
+    // to the failure banner and announce "Failed to load agents." over a
+    // request that was never sent. `unknown` is not `unavailable`.
+    vi.spyOn(agentsApi, 'useAgentsQuery').mockReturnValue(
+      mockQuery<Agent[]>({
+        data: undefined,
+        isLoading: false,
+        isPending: true,
+        isError: false,
+        refetch: vi.fn(),
+      }),
+    )
+    renderFleet()
+
+    expect(screen.queryByTestId('agents-error')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('agent-row-skeleton')).toHaveLength(5)
+    expect(screen.queryByTestId('agents-empty')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('fleet-filter-empty')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fleet-page-count')).toHaveTextContent('· — of — agents')
   })
 })

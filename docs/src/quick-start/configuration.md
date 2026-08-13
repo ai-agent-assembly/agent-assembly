@@ -98,17 +98,136 @@ value, the precedence is noted.
 
 | Variable | Used by | Precedence |
 |---|---|---|
+| `AASM_API_KEY` | every `aasm` command (global `--api-key`) | The flag wins when both are set — but **prefer the env var**. See the warning below |
 | `AASM_DASHBOARD_PORT` | `aasm dashboard` | Highest — beats `--port` and `dashboard.port` in config |
 | `AASM_VERSION` / `AASM_INSTALL_DIR` | the [install script](installation.md) | Installer only |
-| `AA_POLICY` | `aasm gateway start` | Default policy path; overridden by `--policy` |
+| `AA_POLICY` | `aasm gateway start`, `aasm run` | Default policy path; overridden by `--policy`. `aasm run` refuses to launch when neither this nor any other source resolves — see [Policy YAML Reference](../policy-reference.md#where-a-governed-launch-finds-this-file) |
 | `AA_DATA_DIR` | gateway / proxy / dashboard | Directory for PID files and managed-process state |
 | `AA_PROXY_ADDR` | `aasm proxy start` | Proxy listen address (default `127.0.0.1:8899`) |
-| `AA_GATEWAY_URL` | `aasm proxy start` | Gateway URL the proxy reports to |
+| `AA_PROXY_GATEWAY_ENDPOINT` | `aasm proxy start` | Upstream gateway endpoint the proxy reports to (e.g. `http://127.0.0.1:50051`) |
 | `AA_CA_DIR` | `aasm proxy` | Per-host CA material directory |
+| `AASM_STATE_DIR` | `aasm uninstall`, `aa-proxy`, the integration receipt store | Root of Agent Assembly's local state (default `~/.aasm`). See below |
+| `AA_DEVINT_ENABLED` | `aa-runtime` | Turns the Developer Integration API on. **Off by default**; nothing binds the socket unless this is set |
+| `AA_DEVINT_SOCKET` | `aa-runtime` + DI-API clients | Overrides the DI-API socket path (default `~/.aa/run/devint.sock`) |
+| `AA_DEVINT_TOKEN_FILE` | `aa-runtime` + DI-API clients | Overrides the DI-API capability-token (enrolment) file path (default: beside the socket) |
 
-> Note the two prefixes: **`AASM_*`** variables configure the CLI surface, while
-> **`AA_*`** variables configure the underlying daemons the CLI launches
-> (gateway, proxy). They are not interchangeable.
+> **Pass the API key through the environment, not the command line.** `--api-key`
+> puts the operator bearer token into `argv`, where it is readable by any local
+> user via `ps` and `/proc/<pid>/cmdline`, and where your shell will persist it
+> to history. `AASM_API_KEY` avoids all three. The flag still takes precedence
+> when both are set, so existing scripts keep working — but a script that sets
+> the variable is the one to write.
+
+> The prefixes are a **rough** guide, not a rule: **`AASM_*`** is mostly the CLI
+> surface and **`AA_*`** mostly the daemons the CLI launches. `AASM_STATE_DIR`
+> is the clear exception — it names one state root shared by the CLI, the proxy
+> and the dev-tool integration receipt store, so treat the prefix as a hint and
+> the "Used by" column as the answer.
+
+### `AASM_STATE_DIR` and the integration receipt store
+
+`AASM_STATE_DIR` (default `~/.aasm`) is where Agent Assembly keeps local state
+that is not configuration: the managed-gateway PID file, the installer's
+self-copy that [`aasm uninstall`](../cli/uninstall.md) forwards to, the proxy's
+per-integration MitM host lists, and the **Developer Integration receipts** under
+`${AASM_STATE_DIR:-~/.aasm}/integrations/`.
+
+A receipt names every file Agent Assembly governs on this host, which mechanism
+it relies on, and where the trust material sits — a useful map for anyone
+planning to defeat the integration. So the directory is held to **`0700`** and
+each file to **`0600`**, and — as with the proxy's CA loader — the mode is
+**re-asserted on every load**, not only at creation. A receipt restored from a
+backup or copied in with loose permissions is tightened rather than silently
+trusted across a restart.
+
+The receipts deliberately do **not** live inside the tool's own configuration
+tree: a record whose job is to say what `~/.claude/` should contain cannot itself
+be one of the files being described, and removal has to be able to empty that
+directory without deleting its own evidence.
+
+> **Not a tamper control.** Each receipt carries a hash over its canonical form.
+> That catches truncated writes, partial syncs and hand-edits — a corrupt receipt
+> is *reported* rather than silently misread — but it is not a MAC. Anyone with
+> the developer's UID can recompute it, and host-level tamper prevention is an
+> explicit non-goal.
+
+### The Developer Integration API variables
+
+`AA_DEVINT_ENABLED`, `AA_DEVINT_SOCKET` and `AA_DEVINT_TOKEN_FILE` configure the
+[Developer Integration API](../devtools/developer-integration-api.md) — the
+separate Unix socket that [`aasm integrations`](../cli/integrations.md) and other
+local clients use to install and inspect dev-tool integrations. It carries **no**
+policy decisions and no agent-action traffic, and it is **off by default**:
+`AA_DEVINT_ENABLED` is read at runtime startup and nothing binds the socket
+without it.
+
+If you relocate the socket with `AA_DEVINT_SOCKET`, you must preserve its
+permissions — a `0700` directory and a `0600` socket. They are load-bearing: with
+them gone the OS layer of the two-layer authentication is gone and only the
+capability token remains. The token file (`AA_DEVINT_TOKEN_FILE`) is likewise
+`0600`, and a token in a file readable by more than its owner is **refused rather
+than used**, so a filesystem mistake cannot become a silent authentication
+downgrade.
+
+`AASM_CLAUDE_MANAGED_ROOT` is read by shipped code but is **not** a
+configuration knob: it redirects where the Claude Code adapter *addresses* the
+administrator-managed settings file, for tests. It cannot be used to escalate —
+the macOS authority refuses to elevate for any target that is not the canonical
+managed-settings path, so a redirected root makes the write ordinary and
+unprivileged rather than pointing an authorized write somewhere else, and a plan
+that sees a non-canonical root says so in a warning.
+
+> Three similarly-named gateway-endpoint variables are **distinct** and not
+> interchangeable: `AA_PROXY_GATEWAY_ENDPOINT` (the proxy's upstream gateway,
+> above), `AA_GATEWAY_ENDPOINT` (used by the runtime / SDK client), and
+> `AA_GATEWAY_URL` (used by the Windsurf devtool). Only
+> `AA_PROXY_GATEWAY_ENDPOINT` affects `aasm proxy start`.
+
+### `aa-api` server environment variables
+
+The REST API server (`aa-api`) — the process the dashboard reads through — reads
+its own set of `AA_*` variables at boot. These configure the server itself, not
+the CLI.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AA_POLICY` | _(unset)_ | Policy source for the API's dashboard projections. See [Policy source](#policy-source-for-aa-api) below. |
+| `AA_AUTH_OPEN_REGISTRATION` | `false` | Opt into open self-registration for [native accounts](../usage-guide/authentication.md#opening-self-registration-optional). Only `1` / `true` / `yes` (case-insensitive) enable it; the default is closed (first-user-then-invite). |
+| `AA_SMTP_HOST` | _(unset)_ | SMTP relay host. Its presence switches on real password-reset email delivery; when unset, `aa-api` falls back to a logging mailer that sends nothing. See [Password-reset email](../usage-guide/authentication.md#password-reset-email-smtp). |
+| `AA_SMTP_PORT` | `587` | SMTP port (submission with STARTTLS). |
+| `AA_SMTP_USER` | _(unset)_ | Username for authenticated SMTP submission. Optional. |
+| `AA_SMTP_PASS` | _(unset)_ | Password for authenticated SMTP submission. Optional. |
+| `AA_SMTP_FROM` | `no-reply@localhost` | The `From:` address stamped on outbound mail. The `localhost` default is a safe unconfigured placeholder; production must set a real authenticated sender (canonical hosted value `no-reply@mail.agent-assembly.com`). See [Canonical production sender](../usage-guide/authentication.md#canonical-production-sender-aaasm-5521). |
+
+> Native email/password accounts also require a **Postgres-backed** deployment.
+> The `AA_SMTP_*` and `AA_AUTH_OPEN_REGISTRATION` variables only take effect once
+> native accounts are available. See [Authentication](../usage-guide/authentication.md).
+
+#### Policy source for `aa-api`
+
+`aa-api` reads `AA_POLICY` the same way `aa-gateway` does — routing on the
+**shape** of the path it points at — to decide what the dashboard's
+capability-matrix, topology-chain, and team-policy projections display:
+
+| `AA_POLICY` | What `aa-api` loads | What the projections show |
+|---|---|---|
+| **A directory** | The multi-document [policy cascade](../operations/policy-cascade-loader.md) (Global / Org / Team / Agent scopes) | Real cascade data — the enforced org/team/agent rules |
+| **A single file** | That one policy document | The single policy's rules only (no cascade) |
+| _(unset / empty / non-existent path)_ | A generated budget-only bootstrap policy | `Unknown` / `Unconfigured` — never a fabricated allow |
+
+When `AA_POLICY` is unset, the projections render an honest "Unconfigured"
+signal rather than presenting the generated bootstrap as though it were an
+operator-authored policy. Point `AA_POLICY` at a directory to see the full
+cascade in the dashboard.
+
+#### Trust score tuning
+
+The dashboard's per-agent **trust score** (a policy-friction score served at
+`GET /api/v1/analytics/trust`) needs no configuration to work — every tenant
+starts on sensible defaults. Its penalty-signal weights are optionally tunable
+per tenant at runtime via `GET` / `PUT /api/v1/analytics/trust/config`; there is
+no environment variable for it. An agent with fewer than the minimum number of
+governed actions shows `—` (not enough data) rather than a misleading number.
 
 ## Output format
 
@@ -120,7 +239,7 @@ $ aasm version --output json
 [
   {
     "component": "cli",
-    "version": "0.0.1-alpha.5",
+    "version": "0.0.1-beta.4",
     "status": "-"
   },
   ...
@@ -132,7 +251,7 @@ $ aasm version --output json
 The CLI config above is about *how the CLI connects*. The **gateway** itself
 reads a separate runtime config — `agent-assembly.toml` — that selects its
 persistence backends. A starter file ships at the repo root as
-[`agent-assembly.toml.example`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/agent-assembly.toml.example):
+[`agent-assembly.toml.example`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/agent-assembly.toml.example):
 
 ```toml
 # agent-assembly.toml — example runtime configuration

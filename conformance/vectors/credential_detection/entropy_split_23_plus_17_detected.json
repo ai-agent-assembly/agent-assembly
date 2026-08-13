@@ -1,0 +1,9 @@
+{
+  "description": "AAASM-5368: a 40-character secret split 23+17, the case an earlier form of this rule missed entirely. That version declined any run of 23 or more on the reasoning that the contiguous base64 rule would score it — but that rule scores a run only when it clears the entropy gate, which a random 23-24 character run does about 5% of the time. The 23-character half here scores 4.4366 bits, below the gate, so no earlier pass took it and the split rule declined it: zero findings, both halves in the clear. Measured at 400 trials per cell, 99.8% of 23+17 splits were fully missed, against 1.5-2.2% for 18+22 through 22+18, and the total length was irrelevant - at 44 characters, 23+21 missed 95.2% while 22+22 missed 0.5%. Admission now asks what an earlier pass actually found rather than what one particular pass might have found.",
+  "input_text": "token: aB3dEf7hJk9mNp2qRs5tUva 8wXy4zC6gLhQ1VjD0 end",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 7 },
+    { "kind": "GenericHighEntropy", "offset": 31 }
+  ],
+  "expected_redacted": "token: [REDACTED:GenericHighEntropy] [REDACTED:GenericHighEntropy] end"
+}

@@ -1,0 +1,33 @@
+.acfg {
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 18px;
+}
+
+.acfg__eyebrow {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+  margin-bottom: 8px;
+}
+
+.acfg__yaml {
+  margin: 0;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+
+.acfg__line {
+  display: block;
+}
+
+.acfg__line--pending {
+  color: var(--ink-4);
+  font-style: italic;
+}

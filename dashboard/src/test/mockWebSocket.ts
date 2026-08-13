@@ -25,9 +25,9 @@
  * the `MockWebSocket.instances` registry doesn't leak across cases.
  */
 export class MockWebSocket {
-  static instances: MockWebSocket[] = []
-  static OPEN = 1
-  static CLOSED = 3
+  static readonly instances: MockWebSocket[] = []
+  static readonly OPEN = 1
+  static readonly CLOSED = 3
 
   readyState = 0
   url: string
@@ -76,5 +76,7 @@ export class MockWebSocket {
  * Call this in `beforeEach` to prevent cross-test pollution.
  */
 export function resetMockWebSockets(): void {
-  MockWebSocket.instances = []
+  // Mutate in place rather than reassigning so `instances` can stay readonly
+  // (the registry identity is stable; only its contents are cleared).
+  MockWebSocket.instances.length = 0
 }

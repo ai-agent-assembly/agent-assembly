@@ -22,14 +22,14 @@ describe('ApprovalCountdown', () => {
     render(<ApprovalCountdown expiresAt={plus(10 * 60 * 1000)} />)
     const el = screen.getByTestId('approval-countdown')
     expect(el).toHaveTextContent('10:00')
-    expect(el.getAttribute('data-tier')).toBe('low')
+    expect(el.dataset.tier).toBe('low')
     expect((el as HTMLElement).style.color).toBe('var(--ink-3)')
   })
 
   it('renders medium-tier colour when 1min <= remaining < 5min', () => {
     render(<ApprovalCountdown expiresAt={plus(3 * 60 * 1000)} />)
     const el = screen.getByTestId('approval-countdown')
-    expect(el.getAttribute('data-tier')).toBe('medium')
+    expect(el.dataset.tier).toBe('medium')
     expect((el as HTMLElement).style.color).toBe('var(--warn)')
   })
 
@@ -37,7 +37,7 @@ describe('ApprovalCountdown', () => {
     render(<ApprovalCountdown expiresAt={plus(30 * 1000)} />)
     const el = screen.getByTestId('approval-countdown')
     expect(el).toHaveTextContent('00:30')
-    expect(el.getAttribute('data-tier')).toBe('high')
+    expect(el.dataset.tier).toBe('high')
     expect((el as HTMLElement).style.color).toBe('var(--danger)')
   })
 

@@ -4,11 +4,20 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aa_sdk_client::codec::{TAG_ACK, TAG_EVENT_REPORT, TAG_HEARTBEAT};
+use aa_sdk_client::codec::{TAG_ACK, TAG_EVENT_REPORT, TAG_HANDSHAKE_CHALLENGE, TAG_HANDSHAKE_PROOF, TAG_HEARTBEAT};
 use aa_sdk_client::ipc::spawn_ipc_thread;
 use aa_sdk_client::AssemblyClient;
+use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
+
+/// The agent id the e2e client handshakes as.
+const TEST_AGENT_ID: &str = "e2e-agent";
+
+/// A distinctive language-package version forwarded into `spawn_ipc_thread`, so
+/// the e2e asserts the FFI-passed version (not the crate version) reaches the
+/// signed handshake (AAASM-3683).
+const TEST_SDK_VERSION: &str = "node-1.2.3-rc.4";
 
 /// Read a prost varint length prefix from `reader`.
 async fn read_varint<R: AsyncReadExt + Unpin>(reader: &mut R) -> usize {
@@ -25,20 +34,77 @@ async fn read_varint<R: AsyncReadExt + Unpin>(reader: &mut R) -> usize {
     result as usize
 }
 
+/// Server side of the AAASM-3587 session handshake: send a nonce challenge, read
+/// the client's signed proof, and verify it under the agent's deterministic key.
+///
+/// Returns the `sdk_version` the client signed into the proof so the caller can
+/// assert the FFI-forwarded version reached the handshake (AAASM-3683).
+async fn server_handshake<S>(stream: &mut S, agent_id: &str) -> String
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use ed25519_dalek::{Signature, Verifier};
+    use sha2::{Digest, Sha256};
+
+    // Value-returning CSPRNG so no constant literal (e.g. `[0u8; 32]`) flows
+    // into the signed nonce — CodeQL's hard-coded-crypto rule does not model
+    // getrandom's in-place `&mut` fill as sanitizing the zero-init buffer.
+    let nonce = rand::random::<[u8; 32]>().to_vec();
+    let challenge = aa_proto::assembly::ipc::v1::HandshakeChallenge { nonce: nonce.clone() };
+    let payload = challenge.encode_to_vec();
+    stream.write_u8(TAG_HANDSHAKE_CHALLENGE).await.unwrap();
+    stream.write_u8(payload.len() as u8).await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.flush().await.unwrap();
+
+    assert_eq!(stream.read_u8().await.unwrap(), TAG_HANDSHAKE_PROOF);
+    let len = read_varint(stream).await;
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await.unwrap();
+    let proof = aa_proto::assembly::ipc::v1::HandshakeProof::decode(buf.as_ref()).unwrap();
+
+    let seed: [u8; 32] = Sha256::digest(agent_id.as_bytes()).into();
+    let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+    assert_eq!(proof.public_key, hex::encode(vk.to_bytes()));
+    // AAASM-3666: the signature covers `nonce || sdk_version`; reconstruct that
+    // payload from the received nonce + the proof's claimed version.
+    let mut signed_payload = nonce.clone();
+    signed_payload.extend_from_slice(proof.sdk_version.as_bytes());
+    let sig: [u8; 64] = proof.signature.as_slice().try_into().unwrap();
+    vk.verify(&signed_payload, &Signature::from_bytes(&sig))
+        .expect("client handshake proof must verify");
+
+    proof.sdk_version
+}
+
 #[tokio::test]
 async fn client_ships_event_to_mock_runtime_and_shuts_down() {
     let socket_path = format!("/tmp/aa-sdk-client-e2e-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path).unwrap();
 
-    let ipc = spawn_ipc_thread(PathBuf::from(&socket_path)).unwrap();
+    let ipc = spawn_ipc_thread(
+        PathBuf::from(&socket_path),
+        TEST_AGENT_ID.to_string(),
+        TEST_SDK_VERSION.to_string(),
+    )
+    .unwrap();
     let client = Arc::new(AssemblyClient::new(ipc, vec!["openai".to_string()]));
     assert_eq!(client.detected_frameworks(), vec!["openai".to_string()]);
 
-    let (stream, _) = listener.accept().await.unwrap();
+    let (mut stream, _) = listener.accept().await.unwrap();
+
+    // 0. AAASM-3587: complete the session handshake before any application frame.
+    //    AAASM-3683: the FFI-forwarded version reaches the signed proof.
+    let signed_version = server_handshake(&mut stream, TEST_AGENT_ID).await;
+    assert_eq!(
+        signed_version, TEST_SDK_VERSION,
+        "the FFI-passed sdk_version must reach the signed handshake"
+    );
+
     let (mut reader, mut writer) = tokio::io::split(stream);
 
-    // 1. Heartbeat handshake.
+    // 1. Heartbeat.
     assert_eq!(reader.read_u8().await.unwrap(), TAG_HEARTBEAT);
     writer.write_all(&[TAG_ACK, 0x00]).await.unwrap();
     writer.flush().await.unwrap();

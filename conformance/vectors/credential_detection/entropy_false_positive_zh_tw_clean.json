@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5344: clean Traditional-Chinese prose — no findings. Chinese does not delimit words with spaces, so each clause is one whitespace token whose multi-byte length lands inside the 20–64 window the entropy gate was calibrated on characters for; scoring its UTF-8 bytes then puts Han above the 4.5 bits/char gate and reports ordinary prose as leaked secrets. All three clauses here sit in that window and score 4.63–4.85 bits/byte, so this vector fires the defect directly unless the entropy pass narrows to ASCII runs before scoring.",
+  "input_text": "代理程式在執行工具前先詢問政策決策。 若政策拒絕，該次呼叫不會發生。 稽核記錄會保留完整原因。",
+  "expected_findings": [],
+  "expected_redacted": "代理程式在執行工具前先詢問政策決策。 若政策拒絕，該次呼叫不會發生。 稽核記錄會保留完整原因。"
+}

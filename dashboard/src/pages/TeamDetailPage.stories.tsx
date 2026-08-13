@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { TeamDetailPage } from './TeamDetailPage'
 import type { CostSummary, TeamTopology } from '../features/teams/api'
@@ -8,11 +8,11 @@ const FIVE_MEMBER_TEAM: TeamTopology = {
   team_id: 'team-alpha',
   agent_count: 5,
   members: [
-    { id: '11111111111111111111111111111111', name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha' },
-    { id: '22222222222222222222222222222222', name: 'planner', status: 'active', depth: 1, team_id: 'team-alpha' },
-    { id: '33333333333333333333333333333333', name: 'researcher', status: 'suspended', depth: 1, team_id: 'team-alpha' },
-    { id: '44444444444444444444444444444444', name: 'writer', status: 'active', depth: 2, team_id: 'team-alpha' },
-    { id: '55555555555555555555555555555555', name: 'reviewer', status: 'active', depth: 2, team_id: 'team-alpha' },
+    { id: '11111111111111111111111111111111', name: 'orchestrator', status: 'active', depth: 0, team_id: 'team-alpha', mode: 'enforce', flagged: false, trust: null },
+    { id: '22222222222222222222222222222222', name: 'planner', status: 'active', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false, trust: null },
+    { id: '33333333333333333333333333333333', name: 'researcher', status: 'suspended', depth: 1, team_id: 'team-alpha', mode: 'enforce', flagged: false, trust: null },
+    { id: '44444444444444444444444444444444', name: 'writer', status: 'active', depth: 2, team_id: 'team-alpha', mode: 'enforce', flagged: false, trust: null },
+    { id: '55555555555555555555555555555555', name: 'reviewer', status: 'active', depth: 2, team_id: 'team-alpha', mode: 'enforce', flagged: false, trust: null },
   ],
 }
 
@@ -33,7 +33,7 @@ interface MockArgs {
   team: TeamTopology
 }
 
-function MockedTeamDetailPage({ team }: MockArgs) {
+function MockedTeamDetailPage({ team }: Readonly<MockArgs>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   client.setQueryData(['topology', 'team', team.team_id], team)
   client.setQueryData(['costs', 'summary'], COSTS)

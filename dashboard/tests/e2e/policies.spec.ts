@@ -34,7 +34,7 @@ const PROPOSED_POLICY = {
 
 async function injectToken(page: Page) {
   await page.addInitScript(() => {
-    localStorage.setItem('aa_token', 'e2e-test-token')
+    sessionStorage.setItem('aa_token', 'e2e-test-token')
   })
 }
 

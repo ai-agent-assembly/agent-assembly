@@ -36,6 +36,8 @@ async fn admin_status_returns_documented_storage_block_through_router() {
     let app = aa_gateway::remote_mode::router(
         Some(backend),
         Some("postgresql://aasm:secret@db.internal:5432/aasm".to_string()),
+        // Loopback bind: bypass-mode admin status stays mounted (AAASM-4744).
+        "127.0.0.1:0".parse().expect("listen_addr"),
     )
     .into_make_service();
 

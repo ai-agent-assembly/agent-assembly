@@ -33,7 +33,7 @@ interface DrawerProps {
  * scrim was rendered in-tree). On the server / pre-mount, falls back to
  * in-tree rendering to avoid SSR mismatches.
  */
-export function Drawer({ open, onClose, children, ariaLabel }: DrawerProps) {
+export function Drawer({ open, onClose, children, ariaLabel }: Readonly<DrawerProps>) {
   const onCloseRef = useRef(onClose)
   useEffect(() => {
     onCloseRef.current = onClose
@@ -61,7 +61,10 @@ export function Drawer({ open, onClose, children, ariaLabel }: DrawerProps) {
       className="drawer-scrim"
       data-testid="drawer-scrim"
       onClick={handleScrimClick}
-      role="presentation"
+      onKeyDown={(e) => { if (e.key === 'Escape') onClose() }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close drawer"
     >
       <aside
         className="drawer-panel"

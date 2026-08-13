@@ -106,3 +106,24 @@
   align-items: center;
   gap: 0.5rem;
 }
+
+.iam-teams-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.iam-teams-cell__empty {
+  color: var(--shell-text-muted);
+}
+
+.iam-team-chip {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  font-size: 0.7rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  background: var(--shell-surface-muted);
+  border: 1px solid var(--shell-border-subtle);
+  color: var(--shell-text);
+}

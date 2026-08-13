@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod host_fn;
 pub mod policy;
 pub mod registry;
 pub mod runtime;

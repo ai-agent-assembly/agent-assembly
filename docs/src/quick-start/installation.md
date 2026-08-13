@@ -5,33 +5,39 @@ then how to verify it works. Pick **one** method:
 
 | Method | Best for | Needs a published release? |
 |---|---|---|
-| [Quick-install script](#quick-install-script) | Fast, reproducible install on macOS / Linux | Yes |
-| [Homebrew tap](#homebrew-macos--linux) | macOS / Linux users who already use Homebrew | Yes |
-| [Pre-built binaries](#pre-built-binaries-manual) | Air-gapped or scripted installs, custom verification | Yes |
-| [`cargo install` / from source](#build-from-source) | Contributors and bleeding-edge builds | No |
+| **Quick-install script** | Fast, reproducible install on macOS / Linux | Yes |
+| **Homebrew tap** | macOS / Linux users who already use Homebrew | Yes |
+| **Pre-built binaries** | Air-gapped or scripted installs, custom verification | Yes |
+| **`cargo install` / from source** | Contributors and bleeding-edge builds | No |
 
 > **Alpha note.** Agent Assembly is in the `v0.0.1` pre-release series; published
 > releases are GitHub **pre-releases**. The public API and wire protocol are not
 > yet stable — do not use in production.
 
-## Quick-install script
+<div class="aaasm-tabs">
+
+<div class="aaasm-tab" id="quick-install-script" data-title="Quick-install script">
 
 The one-line installer downloads the matching pre-built tarball plus its
 `SHA256SUMS` file from the GitHub Release, verifies the checksum, and installs
 the `aasm` binary:
 
 ```sh
-curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 By default the binary is installed to `/usr/local/bin` if that directory is
 writable, otherwise to `~/.local/bin` (always user-writable, no `sudo` needed).
 The installer script lives in the repo at
-[`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/scripts/install-cli.sh).
+[`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/scripts/install-cli.sh).
 
-> A short hosted alias (`https://install.ai-agent-assembly.dev` — hosted install
-> script, coming soon) is planned but not yet live — use the
-> `raw.githubusercontent.com` URL above for now.
+> **Hosted installer endpoint.** The one-liner above fetches from the canonical
+> `https://agent-assembly.com/install.sh` (served by the official website — see
+> [ADR 0007](../adr/0007-public-domain-and-url-contract.md)); `https://tool.agent-assembly.dev`
+> is a kept alternate that serves the same script. Prefer to fetch the installer
+> straight from GitHub? The
+> [`raw.githubusercontent.com`](https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/HEAD/scripts/install-cli.sh)
+> URL serves the identical script.
 
 If the install directory is not on your `PATH`, the script prints the line to add
 to your shell profile, for example:
@@ -46,10 +52,10 @@ The installer honors these environment variables:
 
 ```sh
 # Install a specific release tag (default: latest)
-AASM_VERSION=v0.0.1-alpha.5 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_VERSION=v0.0.1-rc.6 curl -sSf https://agent-assembly.com/install.sh | sh
 
 # Install to a custom directory
-AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 | Variable | Default | Purpose |
@@ -69,23 +75,27 @@ installer verifies that signature against the release workflow's identity before
 trusting the checksums. To make a missing/unverifiable signature fatal:
 
 ```sh
-AASM_REQUIRE_SIGNATURE=1 curl -sSf https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/master/scripts/install-cli.sh | sh
+AASM_REQUIRE_SIGNATURE=1 curl -sSf https://agent-assembly.com/install.sh | sh
 ```
 
 > Releases published before signing was added carry no cosign bundle; with the
 > default `AASM_REQUIRE_SIGNATURE=0` the installer warns and falls back to
 > checksum-only (the SHA-256 check is never skipped).
 
-## Homebrew (macOS / Linux)
+</div>
+
+<div class="aaasm-tab" id="homebrew-macos--linux" data-title="Homebrew">
 
 Install the latest tagged `aasm` release from the
-[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-agent-assembly):
+[Homebrew tap](https://github.com/ai-agent-assembly/homebrew-tap):
 
 ```sh
-brew install ai-agent-assembly/homebrew-agent-assembly/aasm
+brew install ai-agent-assembly/tap/aasm
 ```
 
-## Pre-built binaries (manual)
+</div>
+
+<div class="aaasm-tab" id="pre-built-binaries-manual" data-title="Pre-built binaries">
 
 Each [GitHub Release](https://github.com/ai-agent-assembly/agent-assembly/releases)
 publishes per-platform tarballs plus a `SHA256SUMS` file and a
@@ -96,7 +106,7 @@ publishes per-platform tarballs plus a `SHA256SUMS` file and a
 To install and verify by hand:
 
 ```sh
-VERSION=v0.0.1-alpha.5
+VERSION=v0.0.1-rc.6
 ASSET=aasm-aarch64-apple-darwin.tar.gz   # adjust for your platform
 BASE="https://github.com/ai-agent-assembly/agent-assembly/releases/download/${VERSION}"
 
@@ -118,7 +128,9 @@ tar -xzf "${ASSET}" aasm
 install -m755 aasm ~/.local/bin/aasm
 ```
 
-## Build from source
+</div>
+
+<div class="aaasm-tab" id="build-from-source" data-title="Build from source">
 
 Contributors and anyone who wants the bleeding edge can build from the Cargo
 workspace. This needs the [build prerequisites](requirements.md#building-from-source)
@@ -141,13 +153,17 @@ cargo install --path aa-cli      # installs `aasm` into ~/.cargo/bin
 > outside the workspace and are **not** built by `cargo build -p aa-cli`. See
 > [Requirements](requirements.md#requirements-per-interception-layer).
 
+</div>
+
+</div>
+
 ## Verify the install
 
 Confirm the binary is on your `PATH` and runs:
 
 ```console
 $ aasm --version
-aasm 0.0.1-alpha.5
+aasm 0.0.1-rc.6
 ```
 
 A fuller report — the CLI version plus whether a gateway and API are reachable —
@@ -159,7 +175,7 @@ $ aasm version
 +-----------+---------------+-------------+
 | COMPONENT | VERSION       | STATUS      |
 +=========================================+
-| cli       | 0.0.1-alpha.5 | -           |
+| cli       | 0.0.1-rc.6    | -           |
 |-----------+---------------+-------------|
 | gateway   | -             | unreachable |
 |-----------+---------------+-------------|

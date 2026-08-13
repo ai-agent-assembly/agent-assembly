@@ -2,6 +2,11 @@
 // Mirrors the hi-fi prototype's mock shape in
 // design/v1/hi-fi/policy-editor.jsx.
 
+import type { components } from '../../../api/generated/schema'
+
+/** The list/detail policy shape the gateway serves (raw `policy_yaml` + meta). */
+type PolicyResponse = components['schemas']['PolicyResponse']
+
 export type ResourceOption =
   | 'gmail'
   | 'gdrive'
@@ -70,6 +75,14 @@ export interface RuleDraft {
   scrubFields?: string[]
   timeWindow: WindowKind
   severity: Severity
+  /**
+   * True when the rule's body could not be recovered from the loaded
+   * policy's YAML (e.g. an operator-authored policy that isn't in the
+   * editor's own `spec.rules` schema, or an empty snapshot). Such a rule is
+   * shown read-only and skipped by validation — we surface that the rule
+   * exists without fabricating a fake body (AAASM-5059).
+   */
+  unknown?: boolean
 }
 
 export type PolicyStatus = 'active' | 'proposed'
@@ -93,9 +106,13 @@ export interface ValidationIssue {
   message: string
 }
 
-/** Payload published into OverlayContext when the editor is opened. */
-export interface PolicyEditorOverlayProps {
-  mode: 'new' | 'edit'
-  name?: string
-  version?: string
-}
+/**
+ * Payload published into OverlayContext when the editor is opened.
+ *
+ * `edit` carries the full `PolicyResponse` the list already holds so the
+ * editor can load the real rules/status/scope from its `policy_yaml`
+ * (AAASM-5059) rather than re-deriving a stub from name/version alone.
+ */
+export type PolicyEditorOverlayProps =
+  | { mode: 'new' }
+  | { mode: 'edit'; policy: PolicyResponse }

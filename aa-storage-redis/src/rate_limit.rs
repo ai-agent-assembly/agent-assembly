@@ -37,6 +37,13 @@ impl RedisRateLimitCounter {
     }
 }
 
+// TODO(AAASM-3919): namespace this key by the verified tenant/org id
+// (e.g. `aa:ratelimit:<org_id>:<key>`) once org context is threaded into the
+// RateLimitCounter path. The shared L2 cache currently has no tenant boundary;
+// caller-supplied keys are expected to be globally unique so there is no
+// collision today, but also no isolation. Deferred here because
+// RateLimitCounter::increment/current/reset carry only an opaque key — adding a
+// prefix without the org id would break lookups.
 fn counter_key(key: &str) -> String {
     format!("aa:ratelimit:{key}")
 }

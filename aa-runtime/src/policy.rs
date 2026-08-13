@@ -158,6 +158,26 @@ mod tests {
     }
 
     #[test]
+    fn load_policy_returns_io_error_for_non_notfound_failure() {
+        // Pointing at a directory makes read_to_string fail with a non-NotFound
+        // I/O error, which must surface as PolicyLoadError::Io (not be swallowed
+        // as "absent → no enforcement").
+        let dir = tempfile::tempdir().expect("tempdir");
+        let result = load_policy(dir.path());
+        assert!(matches!(result, Err(PolicyLoadError::Io(_))));
+    }
+
+    #[test]
+    fn policy_load_error_display_renders_both_variants() {
+        let io = PolicyLoadError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "nope"));
+        assert!(io.to_string().contains("I/O error"), "got: {io}");
+
+        let parse_err = toml::from_str::<PolicyRules>("rules = 5").expect_err("type mismatch is a parse error");
+        let parse = PolicyLoadError::Parse(parse_err);
+        assert!(parse.to_string().contains("parse error"), "got: {parse}");
+    }
+
+    #[test]
     fn load_policy_errors_on_malformed_toml() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");

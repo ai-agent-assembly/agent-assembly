@@ -1,4 +1,21 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Live-Ops (AAASM-5074 / AAASM-5077, ratified 2026-07-25) ────
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; the mock behavior noted is superseded):
+ *   • LIVE pill — shipped exposes a 5-STATE pill (strictly more informative); this
+ *     mock's 2-state pill is superseded.
+ *   • Pipeline — shipped renders the pipeline as a CLIENT-SIDE SIMULATION (honest v0
+ *     until the live op-stream backend lands).
+ *
+ * NOT superseded: the FE-parity spec sections in this file (stream, approvals queue,
+ * op-control affordances) remain the reference for in-flight FE work — do not delete.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const { useEffect: useELO, useRef: useRLO, useState: useSLO } = React;
 
 // ============================================================

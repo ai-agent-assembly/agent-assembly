@@ -9,8 +9,10 @@ pub mod approval_sink;
 pub mod audit_publisher;
 pub mod config;
 pub mod correlation;
+pub mod devint;
 #[cfg(target_os = "linux")]
 pub mod ebpf_bridge;
+pub mod ebpf_control;
 pub mod gateway_client;
 pub mod health;
 pub mod invalidation_client;
@@ -18,8 +20,10 @@ pub mod ipc;
 pub mod l1_cache;
 pub mod layer;
 pub mod lifecycle;
+pub mod op_control;
 pub mod pipeline;
 pub mod policy;
+pub mod privilege;
 pub mod runtime;
 
 pub use runtime::run;

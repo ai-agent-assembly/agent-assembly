@@ -1,14 +1,20 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
 import { FleetHealthPanel } from './FleetHealthPanel'
 import type { AgentHealth } from './useFleetHealthQuery'
 
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub
 
@@ -16,7 +22,7 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeQC()}>
       <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>
@@ -35,7 +41,7 @@ function mockFetch(agents: AgentHealth[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ agents }),
-  } as Response)
+  })
 }
 
 // ── FleetHealthPanel integration tests ───────────────────────────────────────
@@ -62,7 +68,7 @@ describe('FleetHealthPanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<FleetHealthPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load fleet health data/)).toBeInTheDocument()
   })
@@ -96,30 +102,16 @@ describe('FleetHealthPanel', () => {
     expect(screen.getByText('91')).toBeInTheDocument()
   })
 
-  it('badge for score >= 90 has green class', async () => {
+  it.each([
+    { label: 'score >= 90 has green class', rowId: 'agent-1', variant: 'green', score: '97' },
+    { label: 'score 70-89 has amber class', rowId: 'agent-2', variant: 'amber', score: '75' },
+    { label: 'score < 70 has red class', rowId: 'agent-3', variant: 'red', score: '58' },
+  ])('badge for $label', async ({ rowId, variant, score }) => {
     mockFetch(FOUR_AGENTS)
     render(<FleetHealthPanel />, { wrapper: Wrapper })
-    const row = await screen.findByTestId('fleet-health-row-agent-1')
-    const badge = row.querySelector('.fleet-health-panel__badge--green')
+    const row = await screen.findByTestId(`fleet-health-row-${rowId}`)
+    const badge = row.querySelector(`.fleet-health-panel__badge--${variant}`)
     expect(badge).not.toBeNull()
-    expect(badge).toHaveTextContent('97')
-  })
-
-  it('badge for score 70-89 has amber class', async () => {
-    mockFetch(FOUR_AGENTS)
-    render(<FleetHealthPanel />, { wrapper: Wrapper })
-    const row = await screen.findByTestId('fleet-health-row-agent-2')
-    const badge = row.querySelector('.fleet-health-panel__badge--amber')
-    expect(badge).not.toBeNull()
-    expect(badge).toHaveTextContent('75')
-  })
-
-  it('badge for score < 70 has red class', async () => {
-    mockFetch(FOUR_AGENTS)
-    render(<FleetHealthPanel />, { wrapper: Wrapper })
-    const row = await screen.findByTestId('fleet-health-row-agent-3')
-    const badge = row.querySelector('.fleet-health-panel__badge--red')
-    expect(badge).not.toBeNull()
-    expect(badge).toHaveTextContent('58')
+    expect(badge).toHaveTextContent(score)
   })
 })

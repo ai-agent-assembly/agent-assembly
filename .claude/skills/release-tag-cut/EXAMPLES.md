@@ -112,3 +112,45 @@ JOBS
 
 At this point the skill is done. The remainder of the release flow runs
 inside `release.yml` and is verified by `/release-validate-channels`.
+
+## Downstream SDK verification (after `git push remote v<X>`)
+
+> The tag-cut skill ends at the push above. Before dispatching any SDK
+> release workflow for the matching version, the operator MUST verify the
+> downstream fan-out completed per the SOP in `SKILL.md` § "Downstream SDK
+> coordination" (AAASM-3007).
+
+**1. Confirm `notify-downstream` and the three pin-bumper jobs ran green.**
+
+```bash
+$ RUN_ID=$(gh run list --repo ai-agent-assembly/agent-assembly --workflow release.yml \
+    --branch v0.0.1-alpha.10 --limit 1 --json databaseId --jq '.[0].databaseId')
+
+$ gh api "repos/ai-agent-assembly/agent-assembly/actions/runs/$RUN_ID/jobs" \
+    --jq '.jobs[] | {name, conclusion}'
+# Each of these jobs MUST be conclusion: success before proceeding:
+#   "Notify downstream SDK repos"             (AAASM-2336)
+#   "Update node-sdk aa-ffi-node pin"         (AAASM-2883)
+#   "Update python-sdk aa-ffi-python pin"     (AAASM-2883)
+#   "Update go-sdk aa-ffi-go pin"             (AAASM-3006)
+```
+
+**2. Confirm the `bot/aa-ffi-pin-v<X>` PR was opened on each SDK.**
+
+```bash
+$ for repo in node-sdk python-sdk go-sdk; do
+    echo "--- $repo ---"
+    gh pr list --repo ai-agent-assembly/$repo --head bot/aa-ffi-pin-v0.0.1-alpha.10 \
+      --json number,title,mergedAt
+  done
+# Each repo should show exactly one PR matching the branch. If any is
+# missing, investigate the corresponding pin-bumper job before proceeding.
+```
+
+**3. Wait until each auto-bump PR is reviewed + merged.**
+
+Only after all three (or two, if go-sdk is out of scope this cycle) have
+merged is the SDK side allowed to dispatch its release workflow for `v<X>`.
+Pre-dispatching against the previous agent-assembly content burns the
+npm / PyPI version slot and ships stale code to users — see AAASM-3007 for
+the 2026-06-15 incident that motivated this gate.

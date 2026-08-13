@@ -287,6 +287,38 @@ pub trait DevToolAdapter: Send + Sync {
     ///   the wiring.
     /// * Sync (no I/O performed) — the returned `Command` is *built*,
     ///   not spawned. Spawning is the launcher's job.
+    ///
+    /// ### The environment on the returned command is part of the contract
+    ///
+    /// The launcher **must** apply [`Command::get_envs`] to the child it
+    /// spawns. The environment is not advisory decoration on top of a
+    /// program and its arguments: `NODE_EXTRA_CA_CERTS` is the only
+    /// mechanism by which an Electron/Node tool's runtime trusts the
+    /// intercepting proxy's CA, so a launcher that rebuilds the child from
+    /// [`Command::get_program`] and [`Command::get_args`] alone starts a
+    /// tool the proxy cannot terminate TLS for and reports it as governed.
+    /// That is AAASM-5327, and it violated nothing that had been written
+    /// down — which is why it is written down here.
+    ///
+    /// A `None` value from [`Command::get_envs`] means **remove that
+    /// variable from the child**, never "set it to the empty string": an
+    /// adapter unsets a variable to switch a tool behaviour off, and an
+    /// empty-but-present variable is one the tool may still honour.
+    ///
+    /// The child's environment is the union of the launcher's own
+    /// environment and this one, and on a collision **the adapter's value
+    /// wins** — it is the layer that knows the tool's requirements and the
+    /// layer that normalises values (the gateway's bare `host:port` proxy
+    /// address is not a proxy URL an HTTP client accepts). An adapter may
+    /// rely on that, but must not assume it is the sole source of the
+    /// child's variables.
+    ///
+    /// The same obligation is stated at length on the lifecycle successor,
+    /// [`LaunchableTool::build_launch_command`](crate::integration::LaunchableTool::build_launch_command).
+    ///
+    /// [`Command::get_envs`]: std::process::Command::get_envs
+    /// [`Command::get_program`]: std::process::Command::get_program
+    /// [`Command::get_args`]: std::process::Command::get_args
     fn build_launch_command(
         &self,
         tool_args: &[String],

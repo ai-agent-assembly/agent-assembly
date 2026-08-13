@@ -1,4 +1,4 @@
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router'
 
 /**
  * Placeholder page rendered for canonical AAASM-94 routes that
@@ -6,9 +6,9 @@ import { Link, useLocation } from 'react-router-dom'
  * Subtask. Keeps the nav and routing surface complete so users
  * never hit a 404 inside the shell (AAASM-94 AC #5, #6).
  */
-export function ComingSoon({ name }: { name?: string }) {
+export function ComingSoon({ name }: Readonly<{ name?: string }>) {
   const location = useLocation()
-  const fromPath = location.pathname.replace(/^\//, '').replace(/-/g, ' ')
+  const fromPath = location.pathname.replace(/^\//, '').replaceAll('-', ' ')
   const heading = name ?? (fromPath || 'this page')
 
   return (

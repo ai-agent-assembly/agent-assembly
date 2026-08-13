@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-3870: hex-encoded secret — a 64-char contiguous [0-9a-fA-F] run is flagged as GenericHighEntropy even though hex entropy caps at 4.0 bits/char (below the Shannon gate)",
+  "input_text": "secret=deadbeefcafebabe0123456789abcdef0123456789abcdeffedcba9876543210",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 7 }
+  ],
+  "expected_redacted": "secret=[REDACTED:GenericHighEntropy]"
+}

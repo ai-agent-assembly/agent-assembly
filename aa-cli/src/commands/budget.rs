@@ -11,6 +11,7 @@ use crate::client;
 use crate::config::ResolvedContext;
 use crate::error::CliError;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// One row of the rollup, mirroring `aa_api::routes::agents::BudgetRowResponse`.
 #[derive(Debug, Clone, Deserialize)]
@@ -101,17 +102,19 @@ fn render_text<W: std::io::Write>(rollup: &BudgetRollup, w: &mut W) -> std::io::
         .set_header(vec!["Scope", "Period", "Spent", "Limit", "Remaining", "Used %"]);
 
     for row in &rollup.rows {
+        // scope/period and the USD strings come from the server; strip terminal
+        // escapes (format_usd echoes the raw input on its malformed fallback).
         table.add_row(vec![
-            row.scope.clone(),
-            row.period.clone(),
-            format_usd(&row.spent_usd),
+            sanitize_terminal(&row.scope),
+            sanitize_terminal(&row.period),
+            sanitize_terminal(&format_usd(&row.spent_usd)),
             row.limit_usd
                 .as_deref()
-                .map(format_usd)
+                .map(|s| sanitize_terminal(&format_usd(s)))
                 .unwrap_or_else(|| "—".to_string()),
             row.remaining_usd
                 .as_deref()
-                .map(format_usd)
+                .map(|s| sanitize_terminal(&format_usd(s)))
                 .unwrap_or_else(|| "—".to_string()),
             row.percent_used
                 .map(|p| format!("{p:.1}%"))

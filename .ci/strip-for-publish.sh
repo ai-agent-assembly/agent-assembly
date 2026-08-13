@@ -3,9 +3,12 @@
 #
 # WHY this exists.
 # ----------------
-# `aa-cli` wires `aasm run` + `aasm tools` to the `aa-devtool*` adapter
-# crates. The dev-tool subsystem isn't ready to ship in v0.0.1-alpha, so
-# the `aa-devtool*` crates are `publish = false`. Cargo's publish
+# `aa-cli` wires `aasm run`, `aasm tools` and `aasm integrations` to the
+# dev-tool subsystem — the first two directly to the `aa-devtool*` adapter
+# crates, the third (AAASM-5309) to the runtime's Developer Integration
+# API, whose bring-up this script also strips. The subsystem isn't ready to
+# ship in v0.0.1-alpha, so the `aa-devtool*` crates are
+# `publish = false`. Cargo's publish
 # verification rejects every dep with a `version = "..."` literal whose
 # target isn't on crates.io — including optional, feature-gated, and
 # target-cfg-conditional deps (empirically verified — see PR #843
@@ -34,6 +37,12 @@
 # ------
 #   bash .ci/strip-for-publish.sh
 #
+# Set `STRIP_FOR_PUBLISH_VERIFY=0` to skip the trailing `cargo check`s.
+# Only `scripts/check-publish-surface.sh` does that: it runs this script on a
+# throwaway copy of the tree to *inspect* the stripped result, and the checks
+# would cost it several minutes of compilation. The release workflow never sets
+# it — the publish path always verifies.
+#
 # Exits 0 on success, non-zero on any failure. Idempotent: re-running on
 # an already-stripped tree is a no-op.
 
@@ -54,17 +63,52 @@ MARKED_FILES=(
     # audit-consumer feature. Without this strip, cargo-workspaces resolution
     # fails at publish time on the dangling feature reference (alpha-6 release).
     "${REPO_ROOT}/aa-integration-tests/Cargo.toml"
+    # AAASM-5280: the DI-API lifecycle service registers the built-in dev-tool
+    # adapters through `aa-devtool` (publish = false). Removed so the published
+    # runtime has no held-back deps.
+    #
+    # AAASM-5309: what is removed here is the WHOLE DI-API bring-up — the
+    # `spawn_devint` definition in `runtime.rs` and its only call site — so a
+    # published aa-runtime never binds the DI-API socket. Nothing else does:
+    # after the strip the only surviving `DevIntServer::bind` is in
+    # `devint/testkit.rs`, which is `#[cfg(test)]`. That is precisely why
+    # `aasm integrations` — the CLI client of that socket — must be stripped
+    # from aa-cli too, and it is (region `devtool` in
+    # `aa-cli/src/commands/mod.rs`). Keeping the bind and shipping an honest
+    # empty registry was considered and rejected: no built-in adapter crate
+    # publishes, so that surface could only ever answer "no tools detected".
+    "${REPO_ROOT}/aa-runtime/Cargo.toml"
+    "${REPO_ROOT}/aa-runtime/src/devint/mod.rs"
+    "${REPO_ROOT}/aa-runtime/src/runtime.rs"
 )
 
 # ---- Files to delete outright (they consume held-back deps) ----
 DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/run.rs"
+    # AAASM-5323: `aasm run`'s gateway registration. Consumes `aa-sdk-client`
+    # (publish = false), stripped from aa-cli/Cargo.toml by the `sdkclient`
+    # region, so the module that imports it has to go with the dep.
+    "${REPO_ROOT}/aa-cli/src/commands/run_registration.rs"
+    # AAASM-5349: the audit record a governed launch emits. Consumes `tonic`
+    # (stripped by the `sdkclient` region) and only ever runs on the `aasm run`
+    # path, so it goes with the two files above rather than being left behind
+    # importing a dependency the published manifest no longer declares.
+    "${REPO_ROOT}/aa-cli/src/commands/run_audit.rs"
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run.rs"
+    # AAASM-5309: the `aasm integrations` CLI suites. `integrations_command.rs`
+    # drives the subcommand that no longer exists post-strip;
+    # `integrations_claude_code.rs` additionally imports
+    # `aa_runtime::devint::adapters`, which is deleted just below — it would
+    # fail to compile, not merely fail to pass.
+    "${REPO_ROOT}/aa-cli/tests/integrations_command.rs"
+    "${REPO_ROOT}/aa-cli/tests/integrations_claude_code.rs"
     # AAASM-2388: the audit consumer module + its integration test.
     "${REPO_ROOT}/aa-gateway/src/audit_consumer.rs"
     "${REPO_ROOT}/aa-gateway/tests/audit_consumer_e2e.rs"
+    # AAASM-5280: the built-in adapter bridge consumes the stripped aa-devtool dep.
+    "${REPO_ROOT}/aa-runtime/src/devint/adapters.rs"
 )
 
 # Strip region. Uses awk to drop lines from any
@@ -105,6 +149,12 @@ for f in "${DELETED_FILES[@]}"; do
         echo "  - deleted ${f#$REPO_ROOT/}"
     fi
 done
+
+if [[ "${STRIP_FOR_PUBLISH_VERIFY:-1}" != "1" ]]; then
+    echo ""
+    echo "strip-for-publish: STRIP_FOR_PUBLISH_VERIFY=0 — skipping the cargo checks"
+    exit 0
+fi
 
 # Sanity check: aa-cli must still compile without dev-tool surface.
 echo ""

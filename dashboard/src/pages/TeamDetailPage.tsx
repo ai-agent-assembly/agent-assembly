@@ -1,128 +1,32 @@
 import { useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router'
 import {
   teamCostFor,
-  useAgentLineageQuery,
   useCostSummaryQuery,
   useResumeTeam,
   useSuspendTeam,
+  useTeamPoliciesQuery,
   useTeamTopologyQuery,
-  type AgentNode,
   type TeamTopology,
 } from '../features/teams/api'
+import { useBudgetTreeQuery } from '../features/costs/api'
+import { useApprovalsQuery } from '../features/approvals/api'
+import { selectTeamApprovals, selectTeamBudget } from '../features/teams/detailData'
+import { TeamBudgetCard } from '../features/teams/TeamBudgetCard'
+import { TeamApprovalRoutingCard } from '../features/teams/TeamApprovalRoutingCard'
+import { TeamActivePoliciesCard } from '../features/teams/TeamActivePoliciesCard'
+import { TeamMembersCard } from '../features/teams/TeamMembersCard'
 import { useCanManageTeam } from '../features/teams/permissions'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { NotFoundPage } from './NotFoundPage'
-
-const STATUS_COLOR: Record<string, string> = {
-  active: 'var(--status-success-solid)',
-  suspended: 'var(--status-warning-solid)',
-  deregistered: 'var(--text-muted)',
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLOR[status] ?? 'var(--text-muted)'
-  return (
-    <span
-      data-testid="team-member-status"
-      style={{
-        display: 'inline-block',
-        padding: '2px 8px',
-        borderRadius: '9999px',
-        fontSize: '0.75rem',
-        fontWeight: 600,
-        color: 'var(--text-on-accent)',
-        background: color,
-      }}
-    >
-      {status}
-    </span>
-  )
-}
-
-function ShortId({ id }: { id: string }) {
-  return (
-    <code style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.8125rem' }}>
-      {id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id}
-    </code>
-  )
-}
-
-function OpenInTopologyButton({ agentId }: { agentId: string }) {
-  const lineage = useAgentLineageQuery(agentId)
-  const navigate = useNavigate()
-  const rootId = lineage.data?.ancestors?.[0]?.id ?? agentId
-  return (
-    <button
-      data-testid="open-in-topology"
-      onClick={() => navigate(`/topology?root=${encodeURIComponent(rootId)}`)}
-      disabled={lineage.isLoading}
-      style={{ padding: '0.2rem 0.6rem' }}
-    >
-      Open in topology
-    </button>
-  )
-}
-
-function MemberRow({ member }: { member: AgentNode }) {
-  return (
-    <tr data-testid="team-member-row" style={{ borderBottom: '1px solid var(--surface-hover-bg)' }}>
-      <td style={{ padding: '0.5rem' }}>
-        <Link to={`/agents/${encodeURIComponent(member.id)}`}>
-          <ShortId id={member.id} />
-        </Link>
-        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{member.name}</div>
-      </td>
-      <td style={{ padding: '0.5rem' }}>
-        <StatusBadge status={member.status} />
-      </td>
-      <td style={{ padding: '0.5rem', fontFamily: 'JetBrains Mono, monospace' }}>{member.depth}</td>
-      <td style={{ padding: '0.5rem' }}>
-        <OpenInTopologyButton agentId={member.id} />
-      </td>
-    </tr>
-  )
-}
-
-interface ConfirmDialogProps {
-  title: string
-  body: React.ReactNode
-  confirmLabel: string
-  onConfirm: () => void
-  onCancel: () => void
-  busy: boolean
-}
-
-function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel, busy }: ConfirmDialogProps) {
-  return (
-    <div
-      data-testid="confirm-dialog"
-      role="dialog"
-      aria-modal="true"
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-      }}
-    >
-      <div style={{ background: 'var(--surface-card)', padding: '1.5rem', borderRadius: '6px', minWidth: '24rem', maxWidth: '40rem' }}>
-        <h2 style={{ marginTop: 0 }}>{title}</h2>
-        <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>{body}</div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
-          <button data-testid="confirm-cancel" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button data-testid="confirm-ok" onClick={onConfirm} disabled={busy}>
-            {busy ? 'Working…' : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+import '../pages/TeamsPage.css'
 
 interface ActionBarProps {
   team: TeamTopology
   onError: (msg: string) => void
 }
 
-function ActionBar({ team, onError }: ActionBarProps) {
+function ActionBar({ team, onError }: Readonly<ActionBarProps>) {
   const canManage = useCanManageTeam()
   const suspend = useSuspendTeam()
   const resume = useResumeTeam()
@@ -158,44 +62,41 @@ function ActionBar({ team, onError }: ActionBarProps) {
         data-testid="team-action-bar"
         style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}
       >
-        <button data-testid="team-suspend-btn" onClick={() => setPending('suspend')} disabled={suspend.isPending || resume.isPending}>
+        <button type="button" data-testid="team-suspend-btn" onClick={() => setPending('suspend')} disabled={suspend.isPending || resume.isPending}>
           Suspend Team
         </button>
-        <button data-testid="team-resume-btn" onClick={() => setPending('resume')} disabled={suspend.isPending || resume.isPending}>
+        <button type="button" data-testid="team-resume-btn" onClick={() => setPending('resume')} disabled={suspend.isPending || resume.isPending}>
           Resume Team
         </button>
       </div>
-      {pending === 'suspend' && (
-        <ConfirmDialog
-          title="Suspend entire team?"
-          body={
-            <>
-              <p>The following {team.members.length} member{team.members.length === 1 ? '' : 's'} will be suspended:</p>
-              <ul style={{ maxHeight: '12rem', overflow: 'auto', paddingLeft: '1.25rem' }}>
-                {team.members.map(m => (
-                  <li key={m.id}>
-                    <code>{m.name}</code> (<code>{m.id.slice(0, 8)}…</code>)
-                  </li>
-                ))}
-              </ul>
-            </>
-          }
-          confirmLabel="Suspend"
-          busy={suspend.isPending}
-          onCancel={() => setPending(null)}
-          onConfirm={runSuspend}
-        />
-      )}
-      {pending === 'resume' && (
-        <ConfirmDialog
-          title="Resume entire team?"
-          body={<p>All {team.members.length} members will be resumed to active.</p>}
-          confirmLabel="Resume"
-          busy={resume.isPending}
-          onCancel={() => setPending(null)}
-          onConfirm={runResume}
-        />
-      )}
+      <ConfirmDialog
+        open={pending === 'suspend'}
+        title="Suspend entire team?"
+        body={
+          <>
+            <p>The following {team.members.length} member{team.members.length === 1 ? '' : 's'} will be suspended:</p>
+            <ul style={{ maxHeight: '12rem', overflow: 'auto', paddingLeft: '1.25rem' }}>
+              {team.members.map(m => (
+                <li key={m.id}>
+                  <code>{m.name}</code> (<code>{m.id.slice(0, 8)}…</code>)
+                </li>
+              ))}
+            </ul>
+          </>
+        }
+        confirmLabel="Suspend"
+        confirmVariant="danger"
+        onCancel={() => setPending(null)}
+        onConfirm={runSuspend}
+      />
+      <ConfirmDialog
+        open={pending === 'resume'}
+        title="Resume entire team?"
+        body={<p>All {team.members.length} members will be resumed to active.</p>}
+        confirmLabel="Resume"
+        onCancel={() => setPending(null)}
+        onConfirm={runResume}
+      />
     </>
   )
 }
@@ -205,9 +106,20 @@ export function TeamDetailPage() {
   const teamId = encodedTeamId ? decodeURIComponent(encodedTeamId) : undefined
   const teamQuery = useTeamTopologyQuery(teamId)
   const costsQuery = useCostSummaryQuery()
+  const budgetTree = useBudgetTreeQuery()
+  const approvalsQuery = useApprovalsQuery()
+  const policiesQuery = useTeamPoliciesQuery(teamId)
   const [toast, setToast] = useState<string | null>(null)
 
   const teamCost = useMemo(() => teamCostFor(teamId ?? '', costsQuery.data), [teamId, costsQuery.data])
+  const budget = useMemo(
+    () => (teamId ? selectTeamBudget(budgetTree.data, teamId) : null),
+    [budgetTree.data, teamId],
+  )
+  const approvals = useMemo(
+    () => (teamId ? selectTeamApprovals(approvalsQuery.data, teamId) : []),
+    [approvalsQuery.data, teamId],
+  )
 
   if (teamQuery.notFound) {
     return <NotFoundPage />
@@ -231,9 +143,8 @@ export function TeamDetailPage() {
         </div>
       )}
 
-      {teamQuery.isLoading ? (
-        <p data-testid="team-detail-loading">Loading…</p>
-      ) : teamQuery.data ? (
+      {teamQuery.isLoading && <p data-testid="team-detail-loading">Loading…</p>}
+      {!teamQuery.isLoading && teamQuery.data && (
         <>
           <header data-testid="team-detail-header" style={{ marginBottom: '1rem' }}>
             <h1 style={{ marginBottom: '0.25rem' }}>{teamQuery.data.team_id}</h1>
@@ -249,31 +160,22 @@ export function TeamDetailPage() {
 
           <ActionBar team={teamQuery.data} onError={setToast} />
 
-          {teamQuery.data.members.length === 0 ? (
-            <p data-testid="team-members-empty">No members in this team yet.</p>
-          ) : (
-            <table data-testid="team-members-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  {['Agent ID', 'Status', 'Depth', 'Actions'].map(h => (
-                    <th
-                      key={h}
-                      style={{ textAlign: 'left', padding: '0.5rem', borderBottom: '2px solid var(--surface-card-border)' }}
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {teamQuery.data.members.map(m => (
-                  <MemberRow key={m.id} member={m} />
-                ))}
-              </tbody>
-            </table>
-          )}
+          <div className="teams-detail-cards">
+            <TeamBudgetCard budget={budget} isLoading={budgetTree.isLoading} />
+            <TeamApprovalRoutingCard approvals={approvals} isLoading={approvalsQuery.isLoading} />
+            <TeamActivePoliciesCard
+              policies={policiesQuery.data ?? null}
+              isLoading={policiesQuery.isLoading}
+              isError={policiesQuery.isError}
+            />
+            <TeamMembersCard
+              members={teamQuery.data.members}
+              isLoading={teamQuery.isLoading}
+              isError={teamQuery.isError}
+            />
+          </div>
         </>
-      ) : null}
+      )}
     </main>
   )
 }

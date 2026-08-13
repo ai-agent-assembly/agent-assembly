@@ -39,7 +39,11 @@ aasm policy apply ./policies/prod.yaml --applied-by alice@example.com
 ```
 
 ```text
-Applied policy 9f2c1a (version 2026-06-09T14:00:00Z) — active, 12 rules
+Policy applied successfully.
+  Version:    9f2c1a
+  Timestamp:  2026-06-09T14:00:00Z
+  Active:     true
+  Rules:      12
 ```
 
 ---
@@ -107,10 +111,22 @@ aasm policy simulate --policy ./candidate.yaml --against ./audit/session.jsonl
 ```
 
 ```text
-Simulation: 412 events, 3 would-be violations
-  deny  file_write  /etc/passwd   (rule: block-system-paths)
-exit status: 1
+Simulation Report
+--------------------------------------------------
+Total events:       412
+Allowed:            409
+Denied:             3
+Approval required:  0
+Budget impact:      $0.00
+
+EVENT#   ACTION               DECISION     REASON
+----------------------------------------------------------------------
+0        file_write           deny         block-system-paths
 ```
+
+The command exits non-zero when the report has any denied or errored outcome
+(so it can gate CI). The `EVENT#` table is printed only when there are flagged
+outcomes, and the `Budget impact` line only when a budget impact is computed.
 
 ---
 
@@ -128,7 +144,7 @@ aasm policy validate ./policies/prod.yaml
 ```
 
 ```text
-✓ policy valid — 12 rules
+Policy is valid: ./policies/prod.yaml
 ```
 
 ---
@@ -157,9 +173,9 @@ aasm policy list --output json
 ```
 
 ```text
-NAME      VERSION                  ACTIVE   RULES
-9f2c1a    2026-06-09T14:00:00Z     yes      12
-7ab310    2026-06-01T09:30:00Z     no       11
+NAME      STATUS     UPDATED_AT               RULES
+9f2c1a    Active     2026-06-09T14:00:00Z     12
+7ab310    Inactive   2026-06-01T09:30:00Z     11
 ```
 
 ---

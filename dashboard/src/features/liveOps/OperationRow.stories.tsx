@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react'
+import { absent, known } from '../../lib/truthfulness'
 import { OperationRow } from './OperationRow'
 import type { CallStackNode, LiveOperation } from './types'
 
@@ -30,10 +31,10 @@ const CALL_STACK: CallStackNode[] = [
 
 const base: Omit<LiveOperation, 'id' | 'status'> = {
   agent: 'support-agent',
-  opType: 'read',
-  resource: 'gmail.send',
+  opType: known('read'),
+  resource: known('gmail.send'),
   startedAt: '2026-05-13T14:23:01Z',
-  latencyMs: 834,
+  latencyMs: known(834),
   callStack: CALL_STACK,
 }
 
@@ -47,8 +48,8 @@ export const Pending: Story = {
       ...base,
       id: 'op-2',
       status: 'pending',
-      opType: 'write',
-      resource: 'pg.users',
+      opType: known('write'),
+      resource: known('pg.users'),
     },
   },
 }
@@ -59,15 +60,48 @@ export const Blocked: Story = {
       ...base,
       id: 'op-3',
       status: 'blocked',
-      opType: 'exec',
-      resource: 'shell.exec',
-      latencyMs: 4523,
+      opType: known('exec'),
+      resource: known('shell.exec'),
+      latencyMs: known(4523),
     },
   },
 }
 
 export const Completing: Story = {
-  args: { op: { ...base, id: 'op-4', status: 'completing', latencyMs: 2.3 } },
+  args: { op: { ...base, id: 'op-4', status: 'completing', latencyMs: known(2.3) } },
+}
+
+/**
+ * The production shape today: `ViolationPayload.latency_ms` is not populated
+ * yet, so the row must say so rather than claim `<1ms` (AAASM-5129).
+ */
+export const UnmeasuredLatency: Story = {
+  args: {
+    op: {
+      ...base,
+      id: 'op-7',
+      status: 'running',
+      latencyMs: absent<number>(
+        'unknown',
+        'The audit pipeline does not record per-action duration yet',
+      ),
+    },
+  },
+}
+
+/** An `ops_change` row: the payload carries no verb, resource or latency. */
+export const OpsChangeRow: Story = {
+  args: {
+    op: {
+      ...base,
+      id: 'trace-1:span-2',
+      status: 'blocked',
+      opType: absent<string>('not-supported', 'not carried on ops_change events'),
+      resource: absent<string>('not-supported', 'not carried on ops_change events'),
+      latencyMs: absent<number>('not-supported', 'not carried on ops_change events'),
+      callStack: undefined,
+    },
+  },
 }
 
 export const Expanded: Story = {
