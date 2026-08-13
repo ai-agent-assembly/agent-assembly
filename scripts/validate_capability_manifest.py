@@ -284,10 +284,11 @@ def prose_values(row: dict):
 # ── Rules ────────────────────────────────────────────────────────────────────
 
 
-# Every field schemas/capability-manifest/v1 declares as a mapping or a list of
-# mappings. DERIVED from the schema, never transcribed: the first version of
-# this gate carried a hand-written list of five, the schema declares seven
-# array-of-mapping fields and nine mapping fields, and two of the missed ones
+# Every field schemas/capability-manifest/v1 declares as a mapping, a list of
+# mappings, or a list of scalars. DERIVED from the schema, never transcribed:
+# the first version of this gate carried a hand-written list of five, the schema
+# declares seven array-of-mapping fields, nine mapping fields and twenty-two
+# further array fields, and two of the missed ones
 # (`meta.cross_representation.seed.excluded_fields` and
 # `.declared_divergences`) were live AttributeErrors sitting behind a
 # self-referential cross-check that compared the wrong literal to a copy of
@@ -297,23 +298,40 @@ def prose_values(row: dict):
 # growth expressed as a top-level `properties` entry. This walk does not
 # descend into `oneOf`/`anyOf` branches or `additionalProperties` subtrees, and
 # the schema already uses both, so a field arriving that way would be
-# uncovered with every check here still green. Those subtrees hold no mapping
-# or list-of-mapping field today; that is a measured fact about the current
-# schema, not a property of this walk, and it is tracked separately rather than
-# left implied.
+# uncovered with every check here still green. Those subtrees hold no mapping,
+# list-of-mapping or array field today; that is a measured fact about the
+# current schema, not a property of this walk, and it is tracked separately
+# (AAASM-5732) rather than left implied. The sequence list added by AAASM-5729
+# inherits that same blind spot exactly — it is the same traversal reading one
+# more branch, so it widens what is gated at each visited node and not which
+# nodes are visited.
 
 
-def _schema_shape_paths() -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str, ...], ...]]:
-    """(array-of-mapping paths, mapping paths), read out of the JSON Schema.
+def _schema_shape_paths() -> tuple[
+    tuple[tuple[str, ...], ...],
+    tuple[tuple[str, ...], ...],
+    tuple[tuple[tuple[str, ...], frozenset[str]], ...],
+]:
+    """(array-of-mapping paths, mapping paths, sequence paths), from the JSON Schema.
 
     Paths are tuples of key names with `[]` marking "descend into every element",
     so `("capabilities", "[]", "evidence")` reads `capabilities[i].evidence`.
 
     Only fields whose declared type is *exactly* object are treated as mappings.
-    `capabilities[].policy_context` is `oneOf[array, object]` — a list there is
-    legal, and asserting a mapping would be this script inventing a rule the
+    `capabilities[].policy_context` is `oneOf[array, object]` — a mapping there
+    is legal, and asserting a list would be this script inventing a rule the
     schema does not state. The gate's job is to guarantee the precondition the
     rules below rely on, not to re-implement ajv.
+
+    The third list is every remaining field the schema declares as an array —
+    the ones whose items are scalars, which the second list's item check does
+    not reach. Each carries its own declared type set rather than a shared
+    assumption, so `policy_context` is admitted as a list OR a mapping and the
+    other twenty-one as a list only, both read off the schema. A field whose
+    declaration also permits a scalar is excluded here for the same reason: the
+    schema says a scalar is legal, so there is no precondition to assert. That
+    exclusion is a predicate over the declared types, never a list of names —
+    an exclusion literal is the transcription this walk exists to avoid.
     """
     defs: dict[str, object] = {}
 
@@ -344,6 +362,7 @@ def _schema_shape_paths() -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str,
 
     arrays: list[tuple[str, ...]] = []
     objects: list[tuple[str, ...]] = []
+    sequences: list[tuple[tuple[str, ...], frozenset[str]]] = []
 
     def walk(node: object, path: tuple[str, ...], depth: int = 0) -> None:
         if depth > 10:
@@ -362,6 +381,8 @@ def _schema_shape_paths() -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str,
                 if types(item) == {"object"}:
                     arrays.append(here)
                     walk(item, (*here, "[]"), depth + 1)
+                elif declared <= {"array", "object"}:
+                    sequences.append((here, frozenset(declared)))
 
     try:
         schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
@@ -374,17 +395,18 @@ def _schema_shape_paths() -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str,
         raise SystemExit(2) from exc
     defs = schema.get("definitions") or {}
     walk(schema, ())
-    if not arrays or not objects:
+    if not arrays or not objects or not sequences:
         sys.stderr.write(
-            f"validate_capability_manifest: derived {len(arrays)} array-of-mapping and "
-            f"{len(objects)} mapping fields from {SCHEMA_FILE.name}. Both must be non-empty; "
-            "an empty derivation would gate nothing while reporting success.\n"
+            f"validate_capability_manifest: derived {len(arrays)} array-of-mapping, "
+            f"{len(objects)} mapping and {len(sequences)} sequence fields from "
+            f"{SCHEMA_FILE.name}. All three must be non-empty; an empty derivation would "
+            "gate nothing while reporting success.\n"
         )
         raise SystemExit(2)
-    return tuple(arrays), tuple(objects)
+    return tuple(arrays), tuple(objects), tuple(sequences)
 
 
-ARRAY_OF_MAPPING_PATHS, MAPPING_PATHS = _schema_shape_paths()
+ARRAY_OF_MAPPING_PATHS, MAPPING_PATHS, SEQUENCE_PATHS = _schema_shape_paths()
 
 
 def _at_path(
@@ -393,8 +415,9 @@ def _at_path(
     """Yield (label, value) for each concrete instance of a schema path.
 
     Descent stops at a container that is not the shape it should be. That
-    container has its own entry in MAPPING_PATHS and is reported there, so the
-    reader gets the outermost cause once rather than a cascade beneath it.
+    container has its own entry in MAPPING_PATHS, ARRAY_OF_MAPPING_PATHS or
+    SEQUENCE_PATHS and is reported there, so the reader gets the outermost
+    cause once rather than a cascade beneath it.
     """
     if not parts:
         yield label, doc
@@ -432,6 +455,16 @@ def check_document_shape(doc: dict[str, object], rep: Report) -> bool:
       fourteen, and the next field added to the schema arrives uncovered. The
       sixteenth, `capabilities[].owner`, was read without crashing and is
       tracked separately: a silent misread, which is the worse half.
+    * AAASM-5729 closed that worse half for the twenty-two array fields whose
+      items are scalars. There the misread is not a crash at all: a bare string
+      iterates as its characters, so every rule reading the field ran to
+      completion over letters and reported clean at EXIT 0. `known_bypasses`
+      and `policy_context` were the two named in the ticket; measured against
+      valid-minimal.yaml, `released_channels: crates_io` produced NINE
+      confident R9 findings — one per letter of `c r a t e s _ i o`, each
+      reading "released_channels names 'c', which meta.channels_surveyed does
+      not cover". A rule that reports on a value it did not read is the outcome
+      this gate exists to make impossible, in either direction.
     * A structural finding makes the semantic ones meaningless, not merely
       incomplete. A rule that reads past a shape it cannot read either crashes
       or — worse — reports a confident finding derived from a misread.
@@ -482,6 +515,30 @@ def check_document_shape(doc: dict[str, object], rep: Report) -> bool:
                     "so no rule can weigh it",
                 )
                 ok = False
+
+    # AAASM-5729, the other half. The loops above guarantee the shape of every
+    # field the rules dereference with `.get()`; these guarantee the shape of
+    # every field they ITERATE. A bare string is iterable, so the rules do not
+    # crash on one — they enumerate its CHARACTERS and report on those.
+    # `known_bypasses: "one string"` yielded ten prose values, one per letter,
+    # and R8/R8b matched their environment-token regexes against single
+    # characters and reported the row clean. Exit 0, nothing examined.
+    for parts, kinds in SEQUENCE_PATHS:
+        for label, value in _at_path(doc, parts):
+            if value is None:
+                continue
+            if isinstance(value, list) or ("object" in kinds and isinstance(value, dict)):
+                continue
+            allowed = "a list or a mapping" if "object" in kinds else "a list"
+            rep.error(
+                label,
+                "R1",
+                f"is {type(value).__name__}, not {allowed}. The schema declares this field an "
+                "array; a scalar here is not a one-item list, it is a value the rules iterate "
+                "CHARACTER BY CHARACTER — every rule that reads it then reports on letters, "
+                "which is worse than a crash because nothing signals it",
+            )
+            ok = False
     return ok
 
 
