@@ -43,7 +43,7 @@ use aa_proto::assembly::common::v1::{
 use aa_proto::assembly::policy::v1::policy_service_client::PolicyServiceClient;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
 use aa_proto::assembly::policy::v1::{
-    action_context::Action, ActionContext, CheckActionRequest, CheckActionResponse, ToolCallContext,
+    action_context::Action, ActionContext, BatchCheckRequest, CheckActionRequest, CheckActionResponse, ToolCallContext,
 };
 use chrono::Utc;
 use tokio::net::TcpListener;
@@ -389,4 +389,122 @@ async fn a_claim_that_disagrees_with_the_token_owner_is_refused_and_never_bound(
     let p = payload(&next_entry(&mut audit_rx).await);
     assert_eq!(p["claimed_agent_id"], "agent-victim");
     assert_eq!(p["agent_identity_assurance"], "asserted");
+}
+
+// ── F3: the refusal path and the claim predicate must not disagree ───────────
+
+#[tokio::test]
+async fn a_blank_subject_with_a_foreign_token_is_refused_and_recorded_as_claiming_nobody() {
+    // Reported by review of #2016. `validate_credential_token` gates on the
+    // `agent_id` MESSAGE being present; `claimed_agent_id` gates on the STRING
+    // being non-empty. This input separates them: a blank subject plus a token
+    // registered to a different agent.
+    //
+    // The refusal must stand — otherwise a token holder blanks `agent_id` to
+    // dodge a rule scoped to their own id — while the assurance honestly says
+    // no subject was claimed. `identity_claimed` is what makes the row findable,
+    // because filtering on the assurance alone would drop it.
+    let (addr, registry, mut audit_rx) = start_server(ALLOW_ALL_POLICY).await;
+    register(&registry, &proto("agent-owner"), "token-owner");
+
+    let blank_subject = ProtoAgentId {
+        org_id: "org".into(),
+        team_id: "team".into(),
+        agent_id: String::new(),
+    };
+    let resp = check(
+        addr,
+        bash_request(Some(blank_subject), "token-owner", "trace-blank-subject"),
+    )
+    .await;
+
+    assert_eq!(
+        resp.decision,
+        Decision::Deny as i32,
+        "a foreign token must still be refused"
+    );
+    assert_eq!(resp.policy_rule, "a2a_identity_verification");
+    assert_eq!(
+        resp.agent_identity_assurance,
+        ProtoAssurance::Unattributed as i32,
+        "a blank subject claims nobody, so the refusal cannot be ASSERTED"
+    );
+    assert_ne!(resp.agent_identity_assurance, ProtoAssurance::Bound as i32);
+
+    let p = payload(&next_entry(&mut audit_rx).await);
+    assert_eq!(p["agent_identity_assurance"], "unattributed");
+    assert_eq!(
+        p["identity_claimed"], false,
+        "the refusal must record that no subject was claimed, so the row stays findable"
+    );
+    assert_eq!(p["credential_token_present"], true);
+}
+
+#[tokio::test]
+async fn a_named_subject_impersonation_is_recorded_as_claiming_someone() {
+    // Control for the test above: same refusal, but with a subject named. If
+    // `identity_claimed` were hard-coded either way, exactly one of the two
+    // would fail.
+    let (addr, registry, mut audit_rx) = start_server(ALLOW_ALL_POLICY).await;
+    register(&registry, &proto("agent-owner"), "token-owner");
+    register(&registry, &proto("agent-victim"), "token-victim");
+
+    let resp = check(
+        addr,
+        bash_request(Some(proto("agent-victim")), "token-owner", "trace-named-subject"),
+    )
+    .await;
+    assert_eq!(resp.decision, Decision::Deny as i32);
+    assert_eq!(resp.agent_identity_assurance, ProtoAssurance::Asserted as i32);
+
+    let p = payload(&next_entry(&mut audit_rx).await);
+    assert_eq!(p["identity_claimed"], true);
+    assert_eq!(p["claimed_agent_id"], "agent-victim");
+}
+
+// ── F4: batch_check stamps the assurance too ────────────────────────────────
+
+#[tokio::test]
+async fn batch_check_stamps_the_assurance_on_every_entry() {
+    // Reported by review of #2016: nothing constructed a `BatchCheckRequest`,
+    // so deleting the stamp from `batch_check` left the suite green. Batch
+    // emits both a response and an audit entry per entry, so an unstamped batch
+    // is a whole unpinned surface.
+    //
+    // Two entries with different assurance, in one batch, so the test also
+    // catches a stamp applied once to the batch rather than per entry.
+    let (addr, registry, mut audit_rx) = start_server(ALLOW_ALL_POLICY).await;
+    register(&registry, &proto("agent-owner"), "token-owner");
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let batch = BatchCheckRequest {
+        requests: vec![
+            bash_request(Some(proto("agent-owner")), "token-owner", "trace-batch-bound"),
+            bash_request(Some(proto("agent-stranger")), "", "trace-batch-asserted"),
+        ],
+    };
+    let responses = client.batch_check(batch).await.unwrap().into_inner().responses;
+
+    assert_eq!(responses.len(), 2);
+    assert_eq!(
+        responses[0].agent_identity_assurance,
+        ProtoAssurance::Bound as i32,
+        "the registered agent presenting its own token is bound"
+    );
+    assert_eq!(
+        responses[1].agent_identity_assurance,
+        ProtoAssurance::Asserted as i32,
+        "the uncorroborated claim is asserted"
+    );
+    assert_ne!(
+        responses[0].agent_identity_assurance, responses[1].agent_identity_assurance,
+        "a stamp applied once per batch instead of per entry would collapse these"
+    );
+
+    let first = payload(&next_entry(&mut audit_rx).await);
+    let second = payload(&next_entry(&mut audit_rx).await);
+    assert_eq!(first["agent_id_claimed"], "agent-owner");
+    assert_eq!(first["agent_identity_assurance"], "bound");
+    assert_eq!(second["agent_id_claimed"], "agent-stranger");
+    assert_eq!(second["agent_identity_assurance"], "asserted");
 }
