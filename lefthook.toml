@@ -12,7 +12,13 @@ run = "cargo clippy --all-targets --all-features -- -D warnings"
 fail_text = "Clippy warnings found. Run 'cargo clippy --fix' or fix manually."
 
 [pre-commit.commands.deny]
-glob = "Cargo.toml"
+# AAASM-5699: patterns match against the *whole path*, so a wildcard-free
+# `Cargo.toml` is an exact path match — it caught the workspace-root manifest and
+# none of the 35 crate manifests under `aa-*/`. The licence/advisory/banned-crate
+# gate therefore never ran for 35 of the repo's 36 manifests: a commit adding a
+# dependency to `aa-gateway/Cargo.toml` alone printed `deny (skip) no matching
+# staged files`. The leading `*` fixes it because `*` crosses `/` at any depth.
+glob = "*Cargo.toml"
 run = "cargo deny check"
 fail_text = "cargo-deny check failed. Review license or advisory violations."
 
