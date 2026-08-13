@@ -461,6 +461,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-isolation-sandlock"
+version = "0.0.1-rc.6"
+dependencies = [
+ "aa-core",
+ "aa-isolation",
+ "aa-isolation-sandlock",
+]
+
+[[package]]
 name = "aa-policy"
 version = "0.0.1-rc.6"
 dependencies = [
