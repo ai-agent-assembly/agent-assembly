@@ -66,74 +66,67 @@ on:
       - "examples/aa-devint-reference-client/**/*.cjs"
       - "examples/aa-devint-reference-client/**/*.toml"
       - "examples/aa-devint-reference-client/.npmrc"
+      # AAASM-5714: the isolation-backend license/provenance gate's own inputs.
+      # Paired with the `backend_license` router filter below — a router filter
+      # without a matching `on.*.paths` entry is a dead trigger (ADR 0028).
+      # `deny.toml` is included because the manifest's allowlist mirrors it; a
+      # license added to one and not the other is exactly the drift this catches.
+      - "metadata/isolation-backends.json"
+      - "THIRD_PARTY_NOTICES.md"
+      - "scripts/check-backend-license-compliance.sh"
+      # AAASM-5714: the files that actually DECIDE what each channel ships.
+      # These matter more than the manifest itself. Without them the gate fires
+      # only when someone edits the manifest — i.e. only when they are already
+      # doing the right thing — while a PR that bundles a backend binary by
+      # editing the release pipeline alone never triggers this workflow at all,
+      # so the job never runs and `ci-success` counts the skip as a pass.
+      # Listed by exact filename, never a bare `dir/**` (CONTRIBUTING.md).
+      - ".github/workflows/release.yml"
+      - ".github/workflows/docker.yml"
+      - "scripts/install-cli.sh"
+      - "scripts/install.sh"
+      - "metadata/versions.rb"
+      - "scripts/check-release-completeness.sh"
+      # AAASM-5677: inputs of the `governance-coverage` gate below. Paired with
+      # the `governance` router filter — a router filter without a matching
+      # `on.*.paths` entry is a dead trigger, and on `push` that means the gate
+      # never runs on the merge that breaks it.
+      #
+      # `.github/workflows/*.yml` is load-bearing rather than incidental: the
+      # gate reads the workflow files, so re-adding an `on.pull_request.paths`
+      # filter to a governance workflow — the exact regression this closes —
+      # must re-run it. Extension-qualified, never a bare directory wildcard
+      # (CONTRIBUTING). The router keeps the cost down: a workflow-only change
+      # leaves `rust` false, so only `governance-coverage` runs.
+      - "governance/**"
+      - "schemas/capability-manifest/**"
+      - "scripts/validate_capability_manifest.py"
+      - "scripts/check_governance_ci_coverage.py"
+      - "docs/src/adr/**/*.md"
+      - ".github/workflows/*.yml"
+      - "verification-reports/AAASM-5527-capability-coverage-matrix.yaml"
+      - "verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md"
   pull_request:
     branches: [main]
-    paths:
-      - "aa-*/**/*.rs"
-      - "aa-*/**/*.sql"
-      - "aa-*/**/*.toml"
-      - "aa-*/**/*.py"
-      - "aa-*/**/*.ts"
-      - "aa-*/**/*.js"
-      - "aa-*/**/*.mjs"
-      - "aa-*/**/*.go"
-      - "aa-*/**/*.wat"
-      - "aa-*/**/*.sh"
-      - "aa-*/**/*.json"
-      - "aa-*/**/*.jsonl"
-      - "proto/**/*.proto"
-      - "conformance/**/*.rs"
-      - "conformance/**/*.json"
-      - "conformance/**/*.bin"
-      - "conformance/**/*.toml"
-      - "conformance/**/*.py"
-      - "conformance/runner/requirements.txt"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      # AAASM-5385: the Rust jobs' own shell implementations, by exact filename.
-      # Without these, editing a gate's script does not re-run the gate that the
-      # script IS. Named individually rather than `.ci/*.sh` because the other
-      # four scripts in `.ci/` belong to docs.yml, release.yml and
-      # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
-      - ".ci/verify-range-builds.sh"
-      - ".ci/check-compatibility-matrix.sh"
-      - "openapi/v1.yaml"
-      - "schemas/**/*.json"
-      - "schemas/**/*.yaml"
-      - ".spectral.yaml"
-      - ".github/workflows/ci.yml"
-      - "dashboard/**/*.ts"
-      - "dashboard/**/*.tsx"
-      - "dashboard/**/*.css"
-      - "dashboard/**/*.js"
-      - "dashboard/**/*.mjs"
-      - "dashboard/**/*.cjs"
-      - "dashboard/package.json"
-      - "dashboard/tsconfig.json"
-      - "dashboard/.npmrc"
-      - "dashboard/pnpm-lock.yaml"
-      - "dashboard/index.html"
-      - "sonar-project.properties"
-      # AAASM-5282: the DI-API TypeScript reference client and its Rust
-      # contract-test harness. Paired with the `devint_client` router filter
-      # below — a router filter without a matching `on.*.paths` entry is a dead
-      # trigger, and a trigger that looks like coverage but is not is worse than
-      # no trigger at all (ADR 0028).
-      - "examples/aa-devint-reference-client/**/*.ts"
-      - "examples/aa-devint-reference-client/**/*.mjs"
-      - "examples/aa-devint-reference-client/**/*.rs"
-      - "examples/aa-devint-reference-client/**/*.json"
-      - "examples/aa-devint-reference-client/**/*.yaml"
-      - "examples/aa-devint-reference-client/**/*.cjs"
-      - "examples/aa-devint-reference-client/**/*.toml"
-      - "examples/aa-devint-reference-client/.npmrc"
-  # AAASM-3446: the per-PR / per-push path-filter above gates the slow eBPF
-  # jobs (ebpf-build, e2e-ebpf-linux) to aa-ebpf*/** changes for cost control,
-  # which means the Layer 3 (eBPF) / three-layer suite is normally SKIPPED on
-  # main. A weekly schedule + on-demand dispatch restores standing main
-  # coverage for the AAASM-1520/1522/1523 suites at ~1 run/week without
-  # adding per-PR eBPF cost. The eBPF jobs' `if:` opt in to these events.
+    # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
+    #
+    # `main` carried no required status checks at all, so a pull request could
+    # merge with every check red. Requiring the `CI Success` aggregator is the
+    # fix, and it only works if that check reliably reports: a workflow that
+    # never triggers produces no check run, and a required check that never
+    # arrives leaves the pull request waiting forever. A docs-only or
+    # governance-only change hits exactly that.
+    #
+    # Job selection does not live in this filter — it lives in the `changes`
+    # router below. But it was NOT the only thing gating every job:
+    # `commit-range-build` has no router condition and never has, and this
+    # filter was what kept it off unrelated pull requests. It deliberately
+    # stays ungated (see the comment on that job for why a net-diff router
+    # would reopen the AAASM-5385 hole), so it now runs on every pull request
+    # and the cost is disclosed there rather than hidden.
+    #
+    # **If you add a job here, gate it on `needs.changes.outputs.*`** — this
+    # filter is no longer a backstop.
   schedule:
     - cron: "0 3 * * 1" # Mondays 03:00 UTC
   workflow_dispatch:
@@ -159,6 +152,8 @@ jobs:
       storage: ${{ steps.filter.outputs.storage }}
       conformance: ${{ steps.filter.outputs.conformance }}
       devint_client: ${{ steps.filter.outputs.devint_client }}
+      backend_license: ${{ steps.filter.outputs.backend_license }}
+      governance: ${{ steps.filter.outputs.governance }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -274,6 +269,43 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'scripts/build-ebpf-probes.sh'
               - '.github/workflows/release.yml'
+            # AAASM-5714: the isolation-backend license/provenance gate. Its
+            # inputs are NOT a subset of `rust` — `metadata/isolation-backends.json`
+            # and `THIRD_PARTY_NOTICES.md` match no `aa-*/**` pattern — so this
+            # needs its own filter and its own `on.*.paths` entries (added
+            # above) rather than riding on the Rust matrix.
+            backend_license:
+              - 'metadata/isolation-backends.json'
+              - 'THIRD_PARTY_NOTICES.md'
+              - 'scripts/check-backend-license-compliance.sh'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
+              # The channel-deciding files. A backend enters a distribution
+              # channel by a change to one of THESE, not to the manifest — the
+              # manifest is only where an honest author records it. Gating on
+              # the manifest alone would mean the gate fires exclusively for
+              # people already doing the right thing.
+              - '.github/workflows/release.yml'
+              - '.github/workflows/docker.yml'
+              - 'scripts/install-cli.sh'
+              - 'scripts/install.sh'
+              - 'metadata/versions.rb'
+              - 'scripts/check-release-completeness.sh'
+            # AAASM-5677: the governance surface. Before this filter existed, a
+            # change to `governance/capability-manifest.yaml` selected NO job in
+            # this workflow — every `needs` of `ci-success` skipped, and the
+            # aggregate reported the skip as a pass. `CI Success` is the sole
+            # required check, so that was a governance path with no merge gate
+            # at all.
+            governance:
+              - 'governance/**'
+              - 'schemas/capability-manifest/**'
+              - 'scripts/validate_capability_manifest.py'
+              - 'scripts/check_governance_ci_coverage.py'
+              - 'docs/src/adr/**/*.md'
+              - '.github/workflows/*.yml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix.yaml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
@@ -361,6 +393,37 @@ jobs:
   # are merges (`HEAD^1..HEAD` would walk fine on push), but every commit in that
   # range was already walked by this job on the PR that introduced it.
   commit-range-build:
+    # AAASM-5675 — COST DISCLOSURE, deliberately not a router gate.
+    #
+    # Removing `on.pull_request.paths` removed this job's only gating: it has
+    # never carried a `needs.changes.outputs.*` condition. So it now runs on
+    # every pull request, including a one-line README fix. That cost is real and
+    # is stated here rather than left to be discovered:
+    #
+    #   * ~1m07s of `cargo check` on a warm cache — the FLOOR for any pull
+    #     request, because `is_skippable()` never skips a merge commit and the
+    #     synthetic `refs/pull/N/merge` head is always the last element of the
+    #     range. Every PR builds at least that one commit.
+    #   * 6m43s measured on this branch's own head run (2 build-relevant commits).
+    #   * ~5m for a cold first commit, per this job's own env comment.
+    #
+    # A first review asked for either a gate or an explicit justification of the
+    # cost. **The gate is not available**, and the paragraph directly above says
+    # why: `needs.changes.outputs.rust` is a `dorny/paths-filter` over the PR's
+    # NET three-dot diff, and this job exists precisely because intermediate
+    # commits differ from that diff. An earlier revision of this PR added exactly
+    # that gate; it would have reopened the AAASM-5385 hole (break -> revert ->
+    # dashboard work lands an unbuildable commit with every check green) and it
+    # also silently dropped coverage of `schemas/**` and the two `examples/`
+    # workspace members, which `.ci/verify-range-builds.sh` classifies MUST BUILD.
+    #
+    # `CONTRIBUTING.md` "No filter at all" is satisfied by the `pull_request`
+    # condition below; `CONTRIBUTING.md` (`ci-success` treats a skipped need as
+    # passing — "if your job can be broken by a change outside its own filter, it
+    # needs a different guard") is what rules the net-diff router out. A
+    # range-aware guard would be the real answer and does not exist yet; until it
+    # does, paying the floor cost is the correct trade against landing an
+    # unbuildable commit on `main`.
     if: github.event_name == 'pull_request'
     name: Every commit in the range builds
     runs-on: ubuntu-latest
@@ -824,6 +887,38 @@ jobs:
         with:
           command: check
           arguments: --all-features
+
+  backend-license:
+    needs: [changes]
+    # AAASM-5714. The `deny` job above is the license gate for the CARGO GRAPH.
+    # It cannot see an execution-isolation backend that ships as a prebuilt
+    # binary — bundled into a release tarball, fetched by install-cli.sh, or
+    # baked into a container image — because such an artifact never becomes a
+    # crate. That class had no gate at all; this job is it.
+    #
+    # Deliberately NOT folded into the `deny` job: that job is gated on
+    # `changes.rust`, and this gate's inputs (the manifest, the notices file)
+    # match no Rust path, so a manifest-only PR would skip the check entirely
+    # while the required aggregate still went green.
+    if: needs.changes.outputs.backend_license == 'true'
+    name: Backend license and provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No toolchain needed — the gate reads JSON and Markdown. `jq` is
+      # preinstalled on ubuntu-latest (scripts/check-release-completeness.sh
+      # already relies on this).
+
+      # The negative control runs FIRST and in the same job. A gate proven only
+      # against a manifest it accepts may be passing vacuously; this asserts it
+      # still rejects each violation class, and for the stated reason. If the
+      # gate is ever weakened, this fails before the real check can report OK.
+      - name: Self-test the gate (negative control)
+        run: bash scripts/check-backend-license-compliance.sh --self-test
+
+      - name: Run backend license and provenance gate
+        run: bash scripts/check-backend-license-compliance.sh
 
   no-std:
     needs: [changes]
@@ -1970,6 +2065,38 @@ jobs:
   # PRs that legitimately skip whole areas, yet fails if any job failed or was
   # cancelled. Quality/acceptance jobs (coverage, sonar) are deliberately NOT
   # gated here: their failures are advisory and must not block merge.
+  # AAASM-5677: makes "no check ran" a failure instead of a silent pass.
+  #
+  # `ci-success` counts a skipped need as a pass, which is correct given the
+  # router but makes the router's globs load-bearing for merge safety now that
+  # `CI Success` is the only required check. This job cross-checks the
+  # declaration in `governance/ci-coverage.yaml` against the workflow files and
+  # the tracked file tree, so a governance path that has fallen outside every
+  # filter — or a required check that has stopped reporting — turns the merge
+  # gate red rather than disappearing from the checks list.
+  #
+  # Blocks, by CONTRIBUTING's rule: it asserts a property (every
+  # governance-bearing path is inside a required check's trigger surface), not
+  # a metric. Pure Python, no toolchain, so it costs seconds.
+  governance-coverage:
+    needs: [changes]
+    if: needs.changes.outputs.governance == 'true'
+    name: Governance CI coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml
+      # The selftest runs first so a gate that has stopped detecting anything
+      # fails loudly instead of passing everything.
+      - name: Coverage gate still fails closed
+        run: python3 scripts/check_governance_ci_coverage.py --selftest
+      - name: Every governance-bearing path is inside a required check
+        run: python3 scripts/check_governance_ci_coverage.py --verbose
+
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
@@ -1990,6 +2117,10 @@ jobs:
       - timescaledb-tests
       - migration-drift-check
       - deny
+      # AAASM-5714: blocks, like `deny`. It asserts a distribution-boundary
+      # property (no unreviewed license reaches a channel), not a metric, so an
+      # advisory version of it would be a report nobody acts on.
+      - backend-license
       - no-std
       - buf-lint
       - schema-lint
@@ -2028,6 +2159,11 @@ jobs:
       - dashboard-codegen-drift
       - aa-cli-compat
       - devint-reference-client
+      # AAASM-5677: blocks. It asserts that every governance-bearing path is
+      # inside the trigger surface of a required check — a property, not a
+      # metric. Advisory, it would be a report on the health of the merge gate
+      # that the merge gate itself ignores.
+      - governance-coverage
     steps:
       - name: Verify no required job failed or was cancelled
         run: |
