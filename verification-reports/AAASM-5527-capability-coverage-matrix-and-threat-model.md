@@ -103,6 +103,157 @@ text. Where a code comment and the code it describes disagreed, the code won —
 and the disagreement is recorded as a finding, because a comment that contradicts
 its own code is a defect in its own right, not merely a stale note.
 
+### Which half is authoritative (AAASM-5666)
+
+This artifact is two files, and this Markdown's hand-maintained counts had drifted
+in four places. There was no rule
+saying which one wins, so each disagreement was arguable in both directions.
+
+**What this does not override.** `governance/capability-manifest.yaml` is the
+maintained artifact from here on — `governance/README.md`, under *"Migration from
+the AAASM-5527 survey"*, says exactly that, and adds that this survey "should not
+be edited to track code changes". Nothing below displaces it. The corrections
+AAASM-5666 made here are not code-tracking edits: each withdraws a statement that
+was false when it was written, in a point-in-time report other pages quote.
+
+| Kind of fact | Authoritative | Established by |
+|---|---|---|
+| What may be **published** as a capability claim — `coverage`, and counts derived from it | **`governance/capability-manifest.yaml`** | It is the artifact rule R5 gates, and the one AAASM-5588/5600/5609 build public surfaces from. Where it is weaker than this survey, it is deliberately weaker — see below |
+| **Retraction history** — that a claim was withdrawn, and what a row must say instead | **this Markdown** | Not because the YAMLs carry none: **both** carry withdrawal records on **5 rows each** — manifest `S13`·`L1`·`L6`·`I1`·`I5`, seed `S13`·`M1`·`L1`·`C6`·`I1`, and the two `S13` records are verbatim twins. The difference is **coverage**: this Markdown carries the whole population of 16 units over 33 rows, and a row that carries no record cannot be checked against itself — which is true of ~28 rows in either YAML |
+| **Per-row structured values** as measured at the evidence tree `299de3883` | **the seed YAML** | It is the point-in-time record the manifest was seeded from; the prose counts in this Markdown are hand-maintained and had drifted in four places |
+
+**Neither half is machine-validated, and "authoritative" does not mean "gated".**
+`scripts/validate_capability_manifest.py` reads `governance/capability-manifest.yaml`
+only. Pointed at the seed YAML it exits 1 on an `AttributeError`, because the
+seed's `evidence` items are strings and the manifest's are dicts — a documented
+migration, not a defect in the seed, and a category error to run. No CI job reads
+either file in this directory. "Authoritative" here means *the one to quote*,
+never *the one a gate proved*.
+
+**`coverage` is where the direction reverses, and the reversal is intentional.**
+On five rows — `G5`, `G8`, `N4`, `S6`, `S9` — this survey and this Markdown both
+say **Denied before execution** while the manifest says **Evaluated**. That is not
+drift, and here the manifest is the outlier by design. Each of the five carries
+`kind: test_unlocated` in the manifest with a note recording why it was weakened:
+
+- **`G5`, `S6`, `S9`** — the tests are asserted to exist in the SDK repositories,
+  and rule R5 resolves evidence paths only against *this* repo's tree. Each note
+  ends: *"Weakened for unverifiability, NOT because the tests are believed
+  absent"*.
+- **`G8`, `N4`** — located negative evidence, and both notes carry an explicit
+  condition for restoring `denied_before_execution`. As recorded by AAASM-5531
+  review round 1: no located test pins the gateway's startup abort, and both proxy
+  e2e tests run with `mitm_hosts` empty so neither traverses
+  `handle_non_llm_mitm`.
+
+  **`G8`'s supporting count was wrong when it was written, not merely rotted** —
+  the same category this section's own preamble defines. The note says *"0 of the
+  71 files in `aa-gateway/tests/`"* reference `serve_tcp` or `serve_uds`. On the
+  note's own basis, top-level `.rs` files, it was **5 of 71** at `9fbf42985` — the
+  commit that introduced it — and is **6 of 72** at `remote/main`, AAASM-5656
+  having added exactly one of them, `sensitive_data_projection_serve_uds_e2e.rs`;
+  its `_serve_e2e.rs` sibling, which supplies 10 of the references, predates this
+  PR. (A recursive all-entries count gives 90 and 91, which is **not** the note's
+  basis and would imply twenty files were added where the delta is one.)
+  **The conclusion survives, on a broader basis than the note's.** None of the six
+  meets the restoration condition: four reference the symbols only in `//!` or
+  `///` doc comments, and the two real callers invoke
+  `aa_gateway::server::serve_tcp`/`serve_uds` to assert that the sensitive-data
+  projection is written, with `JoinHandle::abort()` teardown *after* the
+  assertion — not an assertion that the gateway refuses to serve on a policy-load
+  failure. So `G8` stays `evaluated`, and AAASM-5531 should re-derive the count
+  rather than re-quote it.
+
+The two files answer different questions: this survey records what the code does
+at `299de3883`; the manifest records what is *evidenced in this repository*, and
+is deliberately the more conservative of the two. **Quote the manifest.**
+
+**An unresolved conflict, surfaced rather than settled.** ADR 0034 still names
+this seed YAML as the T2 capability manifest, while `governance/README.md` and
+`scripts/validate_capability_manifest.py` both name
+`governance/capability-manifest.yaml`. AAASM-5666 does not resolve that — it is a
+decision for the ADR and the governance README, not for a verification report.
+
+### Re-running the retraction comparison
+
+The method is published at [`governance/README.md`](../governance/README.md)
+(AAASM-5531) and is not restated here. AAASM-5666 re-ran it against **this
+artifact pair** rather than the manifest. **Every line number below is pinned to
+the base commit `9fbf42985`**, because adding this section shifts every line
+beneath it in this very file — see the closing note.
+
+- **Marker enumeration reproduces exactly**: 26 line-hits at 18 distinct lines,
+  positive control `AAASM` = 109.
+- **The population is 16, not 15.** The extra unit is not the `:913` disagreement
+  the published grouping rule 3 already settles. It is the blockquote opening
+  *"A citation this artifact inherited, and the note P3 refers to"* (`9fbf42985`
+  `:730-748`), which withdraws the inherited citation
+  `aa-cli/src/commands/integrations/model.rs:1200,1204` and governs **P3** —
+  giving **41 (row, retraction) pairs over 33 distinct rows**.
+- **A fourth limit on marker lists — not a third.** The published list already
+  names two beyond the markers themselves: markerless retractions, and
+  case-sensitivity, which it numbers third. The fourth is **line wrapping across
+  intervening block markup**, and normalising whitespace does not fix it.
+  Measured on the base file, probing the two spellings separately:
+
+  | pass | `earlier revision` — ci / cs | `Earlier revision` — ci / cs |
+  |---|---|---|
+  | raw, per line | 11 / 11 | 11 / 0 |
+  | whitespace-normalised | 11 / 11 | 11 / 0 |
+  | whitespace-normalised **and `>` markers stripped** | **13 / 12** | **13 / 1** |
+
+  Whitespace normalisation alone recovers **nothing**, and the discriminating
+  control is in the table's own right-hand column: case-sensitive
+  `Earlier revision` goes **0 → 0 → 1**, moving only on the strip pass, which is
+  what shows that pass ran and the one before it did not. (An earlier revision of
+  this section offered `AAASM` "109 line-hits to 167 occurrences" as the liveness
+  control. It is not one: `AAASM` is 167 occurrences under *all three* passes, so
+  that movement is a metric change — lines to occurrences — and would have looked
+  identical with no normalisation at all. A control must be something the pass
+  *changes*.) The marker does not move because a `>` blockquote continuation marker
+  sits between "Earlier" and "revisions". Only stripping the marker as well
+  recovers them. **Two** occurrences are hidden, not one: the `:441` one by the
+  wrap alone, and the `:730` one by the wrap *and* by capitalisation
+  independently, since the published marker is lowercase and the text reads
+  *"Earlier revisions"*. The remedy is normalise-**then-strip**.
+- **Correcting an earlier revision of this section.** It claimed a per-line search
+  "returns 0, case-sensitively *or* insensitively". False in both readings: the
+  published lowercase marker returns **11** per line either way, and only the
+  capitalised spelling returns 0, only case-sensitively. It also claimed
+  "capitalisation alone would not have hidden it" — capitalisation alone does
+  hide it.
+- **One apparent second wrapped hit is not a new retraction.** The `:441`
+  occurrence sits in the same blockquote (`9fbf42985` `:441-463`) as the published
+  `:455-459` unit — one blockquote, one withdrawal, per grouping rule 1.
+- **The already-published case limit hides two more markers, now swept.**
+  Lowercase `superseded` occurs twice (`9fbf42985` `:282` and `:1061`) where the
+  published probe tests `Superseded` and reports 0. Both were read, and neither is
+  a retraction of this artifact's own claims — both describe *other* documentation
+  pages still narrating the superseded three-layer model, owned by
+  AAASM-5592/5605. The population is unchanged; the zero had simply never been
+  examined. By contrast `retract` is a genuine zero even under the most relaxed
+  probe, case-insensitive and stripped.
+- **The `WITHDRAWN:` exclusion is phrase-scoped, not field-scoped.** The published
+  rule exempts `evidence[].reason`; applied literally it re-flags a fix recorded
+  in `notes`, reporting the audit trail as the defect. The predicate that works is
+  *"is this occurrence inside a withdrawal record"*, wherever it lives.
+
+**This section invalidates line references into this file.** Adding it shifts
+everything below it. The exact offset is deliberately **not** quoted here: it
+kept changing while this section was being written. Measured at four named
+commits, the anchor delta was 50 at `fa3fc942d`, 116 at `273ba177c`, 118 at
+`12c9deef8` and 132 at `c278f7f8a` — each value invalidated by the very commit
+that recorded the previous one. Those four are history, not the current figure,
+which is deliberately left unquoted here: every edit to this section changes it,
+so any number written down is wrong by the time it is read. That is the whole
+lesson. Recompute it instead — it is the delta of the
+`## Claim vocabulary` anchor, which sits at `:106` in `9fbf42985`. That breaks all
+15 Markdown line references in the
+population table in `governance/README.md`. Those are outside AAASM-5666's
+ownership and are reported to AAASM-5531/5600 rather than edited here. The
+underlying fragility is that the published method keys a reproducible population
+on line numbers in a file other tickets edit — anchor text would not rot.
+
 ## Claim vocabulary
 
 This artifact does **not** define its own vocabulary. The `Coverage` column takes
@@ -304,8 +455,8 @@ crates.io — and two components reach a strict subset of them:
 Two consequences for how this matrix must be read, and for AAASM-5531:
 
 1. **`reachability` records the cause, not just the fact.** `shipped`,
-   `shipped_crates_io_only`, `dead_code`, `absent_mechanism` and
-   `stubbed_default` are different states with different remedies. C3 is
+   `shipped_crates_io_only`, `shipped_with_platform_exception`, `dead_code`,
+   `absent_mechanism` and `stubbed_default` are different states with different remedies. C3 is
    `dead_code` — its binaries ship and no route populates the secrets store —
    so channel scoping tells you nothing about it. Rows like H1, H6, H7, M5, M6,
    M8 and P4 are `absent_mechanism`, where the field is simply not the question.
@@ -363,7 +514,7 @@ Epic exists.
 Reachability is recorded as `released_channels` + `released_platforms` + a
 `reachability` enum, never a boolean — see [the channel-scoping
 note](#reachability-is-per-channel-and-per-platform). By `reachability`:
-**62 shipped · 10 shipped_crates_io_only · 7 absent_mechanism · 1 dead_code**.
+**41 shipped · 21 shipped_with_platform_exception · 10 shipped_crates_io_only · 7 absent_mechanism · 1 dead_code**. An earlier revision reported *"62 shipped"*, folding the 21 platform-exception rows into `shipped` and overstating the reach of every one of them; `stubbed_default` is a defined value with **0** rows.
 **18 rows changed on question 3** and **21 on question 4.**
 
 Platform coverage is not a useful count on its own — most rows are
@@ -382,7 +533,7 @@ fields individually split for machine consumption (AAASM-5531).
 
 Column conventions:
 
-- **Coverage** is **one primary** [ADR 0033 §6](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) term, optionally followed by **named qualifiers** where a single row genuinely covers two aspects — connection versus payload, E3 versus E4, one SDK versus the others. Eight rows need this (`H4`, `N3`, `N8`, `N13`, `C4`, `G5`, `P1`, `P3`); `G5` is the pattern the others follow — *primary* **· qualifier: term**. The YAML models it as `coverage: <primary>` plus `coverage_qualifiers: {aspect: term}`, and the guard validates every qualifier against the same closed enum. A bare list of two terms with no aspect named is a defect, not a style.
+- **Coverage** is **one primary** [ADR 0033 §6](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) term, optionally followed by **named qualifiers** where a single row genuinely covers two aspects — connection versus payload, E3 versus E4, one SDK versus the others. Nine rows need this (`H4`, `N3`, `N5`, `N8`, `N13`, `C4`, `G5`, `P1`, `P3`); `G5` is the pattern the others follow — *primary* **· qualifier: term**. The YAML models it as `coverage: <primary>` plus `coverage_qualifiers: {aspect: term}`, and the guard validates every qualifier against the same closed enum. A bare list of two terms with no aspect named is a defect, not a style.
 - **Timing** is relative to the action taking effect: `pre` (decision precedes the
   effect), `in-line` (decision precedes egress but the caller has already
   committed), `post` (after the effect), `none`.
@@ -560,7 +711,7 @@ CONNECT proxy.
 | **M6** | MCP over SSE (`text/event-stream`) | any · any | all · any · SSE | *none* | — | — · — | `text/event-stream` = **0** matches repo-wide. The SSE leg is raw-copied unscanned | **Unmeasured** ⚠ Q4 | — |
 | **M7** | MCP over Streamable HTTP | any · any | as M1 | parsed, then **emptied** | — | — · — | A chunked/SSE response is re-serialised with `Content-Length: 0` — the client receives an empty 200. `streamable` = **0** matches repo-wide | **Unmeasured**, and functionally broken ⚠ Q4 | — |
 | **M8** | MCP over WebSocket | any · any | all · any · WS | *none* | — | — · — | `Sec-WebSocket` / `101 Switching` = **0** matches in `aa-proxy/src`; no upgrade handling exists | **Unsupported** ⚠ Q4 | — |
-| **M9** | MCP on a built-in LLM host | any · any | as N3 | *none* | — | — · — | `handle_llm_mitm` contains **zero** MCP code (`proxy/mod.rs:1038-1241`), so an MCP endpoint on `api.anthropic.com` is DLP-scanned but never adjudicated | **Redacted** only | — |
+| **M9** | MCP on a built-in LLM host | any · any | as N3 | *none* | — | — · — | `handle_llm_mitm` contains **zero** MCP code (`proxy/mod.rs:1038-1241`), so an MCP endpoint on `api.anthropic.com` is DLP-scanned but never adjudicated | **Redacted** only | B3 (conditional) |
 | **M10** | MCP-server governance by configuration | Claude Code, Copilot, Windsurf · n/a | per-tool · config write · n/a | `enabledMcpjsonServers` / `disabledMcpjsonServers` (`aa-devtool-claude-code/src/lib.rs:385-409`); `chat.mcp.deny`, `chat.mcp.requireApproval` (`aa-devtool-copilot/src/lib.rs:18-19` (the key table), applied by `apply_mcp_governance` at `:403`) | pre (by the tool) | enforce-by-the-tool · sync | Advisory: enforced by the host tool, and any process can launch the server itself | **Unmeasured** — tool-governance, not a data-path claim | B6 (macOS managed only) |
 
 #### D4 · Table 2 — risk and evidence
@@ -606,7 +757,7 @@ evidence rules cap them.
 
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
-| **L1** | Claude Code managed launch | Claude Code · Node | macOS (MVP) · `aasm run` · injects `AA_AGENT_ID`, `AA_TEAM_ID`, the installed launch-env store **including `NODE_EXTRA_CA_CERTS`**, `HTTPS_PROXY`, `HTTP_PROXY` | `aa-devtool-claude-code/src/lib.rs:356-383` | pre (routing established before exec) | enforce · sync | Refuses to launch ungoverned: `resolve_launch_proxy` returns an error unless `--no-proxy` (`aa-cli/src/commands/run.rs:372-388`) | **Denied before execution** for its routed traffic, via `aa-proxy` | B3 (conditional) |
+| **L1** | Claude Code managed launch | Claude Code · Node | macOS (MVP) · `aasm run` · injects `AA_AGENT_ID`, `AA_TEAM_ID`, the installed launch-env store **including `NODE_EXTRA_CA_CERTS`**, `HTTPS_PROXY`, `HTTP_PROXY` | `aa-devtool-claude-code/src/lib.rs:356-383` | pre (routing established before exec) | enforce · sync | Refuses to launch ungoverned: `resolve_launch_proxy` returns an error unless `--no-proxy` (`aa-cli/src/commands/run.rs:372-388`) | **Denied before execution** for its routed traffic, via `aa-proxy` ✅ **Q4 changed the answer in the product's favour** | B3 (conditional) |
 | **L2** | Codex managed launch | Codex · — | macOS + Linux · `aasm run` · injects `AA_AGENT_ID`, `AA_TEAM_ID`, **`HTTPS_PROXY` only** | `aa-devtool-codex/src/lib.rs:281-303` | pre | enforce in shape | **No CA trust is established for the launch.** `NODE_EXTRA_CA_CERTS` count is **0** in this crate against `HTTPS_PROXY` = 1 in the same probe | **Unmeasured** ⚠ Q3 — see the box below | — |
 | **L3** | Windsurf managed launch | Windsurf · Electron/Node | macOS + Linux · `aasm run` · `HTTPS_PROXY` only | `aa-devtool-windsurf/src/lib.rs:295-315` | pre | enforce in shape | as L2 — `NODE_EXTRA_CA_CERTS` = **0**, `HTTPS_PROXY` = 3 | **Unmeasured** ⚠ Q3 | — |
 | **L4** | Copilot managed launch | GitHub Copilot · VS Code extension | — | `build_launch_command` **always returns `AdapterError::LaunchFailed`** (`aa-devtool-copilot/src/lib.rs:347-359`, pinned by the test at `:530-536`) | — | — · — | There is no managed launch; only a settings write | **Unsupported** (launch) ⚠ Q4 | — |
@@ -654,9 +805,9 @@ required before AAASM-5609 writes anything about secrets.
 | ID | Capability / action | Framework · language | Platform · launch · transport | Component | Timing | Mode | Failure posture | Coverage | Bnd |
 |---|---|---|---|---|---|---|---|---|---|
 | **C1** | Outbound credential scan + redact on an inspected request | any · any | Linux + macOS · routed + CA trusted · MitM'd host | `aa-security` scanner via `intercept_request` | in-line | enforce · sync | Default is **`RedactOnly`** — forward with the secret redacted, not block (`aa-proxy/src/config.rs:16-27`, `#[default]` on `RedactOnly` at `:23-24`). `Block` is opt-in; `AlertOnly` forwards the credential **unmodified** and, per E4, raises no alert | **Redacted** ⚠ Q3 | B3 (conditional) |
-| **C2** | Credential substitution at egress — the real provider key never enters the agent | any · any | Linux + macOS · `AA_PROXY_PROVIDER_KEYS=host=key` set in the proxy's environment · MitM'd LLM host | `CredentialStore::from_env` (`aa-proxy/src/credentials.rs:198`) → `authorization_for` (`:238`) → `serialize_http_request_with_auth` (`aa-proxy/src/proxy/http.rs:353`), which **strips the agent's own `Authorization` / `x-api-key`** at `:371-373` and appends the operator's real key at `:379-383` | in-line | enforce · sync | Empty by default; a malformed entry is skipped with a log that never echoes key material (`credentials.rs:213-218`) | **Redacted** — the request proceeds with the agent's `Authorization`/`x-api-key` removed and the operator's substituted, which is §6's *Redacted*, not *Denied before execution*: nothing is refused. Note §6 also requires *"a redaction record naming the fields"*, and this path emits none — the only observable is a `tracing::debug!` at `aa-proxy/src/proxy/mod.rs:1209` ⚠ Q3 | B3 (conditional) |
+| **C2** | Credential substitution at egress — the real provider key never enters the agent | any · any | Linux + macOS · `AA_PROXY_PROVIDER_KEYS=host=key` set in the proxy's environment · MitM'd LLM host | `CredentialStore::from_env` (`aa-proxy/src/credentials.rs:198`) → `authorization_for` (`:238`) → `serialize_http_request_with_auth` (`aa-proxy/src/proxy/http.rs:353`), which **strips the agent's own `Authorization` / `x-api-key`** at `:371-373` and appends the operator's real key at `:379-383` | in-line | enforce · sync | Empty by default; a malformed entry is skipped with a log that never echoes key material (`credentials.rs:213-218`) | **Redacted** — the request proceeds with the agent's `Authorization`/`x-api-key` removed and the operator's substituted, which is §6's *Redacted*, not *Denied before execution*: nothing is refused. Note §6 also requires *"a redaction record naming the fields"*, and this path emits none — the only observable is a `tracing::debug!` at `aa-proxy/src/proxy/mod.rs:1209` ⚠ Q3 ✅ **Q4 changed the answer in the product's favour** | B3 (conditional) |
 | **C3** | Credential injection via `SecretsService.DispatchTool` | any · any | — | `proto/secrets.proto:12`; `aa-api/src/routes/dispatch.rs:125` | — | — · — | **Unreachable.** Both production constructions instantiate a fresh empty `InMemorySecretsStore` (`aa-api/src/state.rs:449`; `aa-gateway/src/server.rs:693`); no registration route; no `aasm secrets` command; every `${NAME}` resolves to `UnknownPlaceholder` | **Unmeasured** ⚠ Q4 | — |
-| **C4** | Model **response** credential scanning | any · any | — | *none* on the LLM path (raw `tokio::io::copy`, `aa-proxy/src/proxy/mod.rs:1233`); present on the MCP path (`redact_response_body`) | — | — · — | Asymmetric by path | **Unmeasured** (LLM) / **Redacted** (MCP) | — |
+| **C4** | Model **response** credential scanning | any · any | — | *none* on the LLM path (raw `tokio::io::copy`, `aa-proxy/src/proxy/mod.rs:1233`); present on the MCP path (`redact_response_body`) | — | — · — | Asymmetric by path | **Unmeasured** (LLM) / **Redacted** (MCP) | B3 (conditional) |
 | **C5** | Environment inheritance by `aasm run` | any · any | all · `aasm run` · — | `std::env::vars().collect()` (`aa-cli/src/commands/run.rs:310`) | — | — · — | The child receives **the entire parent environment**, so a shell or file tool in the agent can read any credential the operator exported. The masking helper is used only for `--dry-run` preview text | **Unmeasured** | — |
 | **C6** | Scanner recall | any · any | all · — · — | `aa-security/src/scanner.rs` | in-line | detect · sync | Bounded to the pattern set: **no Stripe detector** exists; the OpenAI detector keys on `sk-` while Stripe uses `sk_`. A secret split by a separator (`中`, emoji, space, tab, newline) scans clean — accepted residual (AAASM-5368) | **Detected**, bounded | B3 (conditional) |
 
@@ -1084,7 +1235,7 @@ its absence made a claim ambiguous somewhere above.
 | Field | Values | Why the survey needs it |
 |---|---|---|
 | `default_state` | `on` \| `off` \| `open` \| `closed` | Question 3. Six capabilities ship as their default, not as themselves (N1, N4, M2, C1, C2, H2) |
-| `released_channels` · `released_platforms` · `reachability` | channel and platform lists, plus `shipped` \| `shipped_crates_io_only` \| `dead_code` \| `absent_mechanism` \| `stubbed_default` | Question 4. **Replaces a boolean `reachable_in_release`, which was wrong in both directions on roughly a quarter of the rows** because it treated the GitHub Release artifact set as a universal reachability test. It is channel-specific — `aa-ebpf-loaderd` and `aa-proxy` both publish to crates.io while being absent from the release assets — and platform-specific, since `aa-proxy` is packaged on Linux only |
+| `released_channels` · `released_platforms` · `reachability` | channel and platform lists, plus `shipped` \| `shipped_with_platform_exception` \| `shipped_crates_io_only` \| `dead_code` \| `absent_mechanism` \| `stubbed_default` | Question 4. **Replaces a boolean `reachable_in_release`, which was wrong in both directions on roughly a quarter of the rows** because it treated the GitHub Release artifact set as a universal reachability test. It is channel-specific — `aa-ebpf-loaderd` and `aa-proxy` both publish to crates.io while being absent from the release assets — and platform-specific, since `aa-proxy` is packaged on Linux only |
 | `boundary_class` | `B1`…`B7` | Makes "universal" unwritable without a boundary, which is the Epic's security principle |
 | `decision_timing` | `pre` \| `in-line` \| `post` \| `none` | Separates *Denied before execution* from the eBPF guard's post-hoc kill |
 | `failure_posture` | `fail_closed` \| `fail_open` \| `fail_open_silent` | The third value is the finding: G7 and G9 fail open **without** emitting a degradation, which is materially different from G6 |

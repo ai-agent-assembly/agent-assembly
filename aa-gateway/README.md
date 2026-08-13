@@ -1,6 +1,6 @@
 # aa-gateway
 
-Control plane — policy enforcement engine and agent registry for Agent Assembly.
+Control plane — policy evaluation engine and agent registry for Agent Assembly.
 
 [![crates.io](https://img.shields.io/crates/v/aa-gateway?logo=rust&label=crates.io)](https://crates.io/crates/aa-gateway)
 [![docs.rs](https://img.shields.io/docsrs/aa-gateway?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-gateway)
@@ -12,13 +12,15 @@ Control plane — policy enforcement engine and agent registry for Agent Assembl
 `aa-gateway` is the brain of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly),
 the governance-native runtime for AI agents. It is the central coordination point:
 it maintains the **agent registry**, evaluates **governance policies**, tracks
-**per-team budgets**, routes enforcement decisions back to the proxy and SDK
-shims, and writes the audit trail.
+**per-team budgets**, routes policy decisions back to the proxy and SDK shims,
+and writes the audit trail.
 
-Agent Assembly enforces governance through three independently-deployable
-interception layers (in-process SDK shim, sidecar proxy, eBPF). The gateway sits
-behind all of them — exposing **gRPC** for the SDK shims and an **HTTP/OpenAPI**
-surface (via `aa-api`) for the dashboard and operator tooling.
+The gateway is **E1, the Governance Control Plane** (ADR 0033 §1), and only E1: it
+*evaluates* and holds no traffic, so it produces a decision record rather than
+refusing an action itself. Its `Deny` prevents only transitively — it is exactly
+as strong as the caller that blocks on the answer (§2). It exposes **gRPC** for
+the SDK shims and an **HTTP/OpenAPI** surface (via `aa-api`) for the dashboard and
+operator tooling.
 
 The crate ships both a library and the `aa-gateway` binary.
 

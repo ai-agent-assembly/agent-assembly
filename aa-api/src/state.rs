@@ -15,7 +15,8 @@ use aa_gateway::iam::IamApiKeyStore;
 use aa_gateway::policy::history::PolicyHistoryStore;
 use aa_gateway::registry::AgentRegistry;
 use aa_gateway::secrets::SecretsStore;
-use aa_gateway::storage::RetentionEngine;
+use aa_gateway::storage::sensitive_data::SensitiveDataProjection;
+use aa_gateway::storage::{RetentionEngine, StorageBackend as _};
 use aa_gateway::AuditReader;
 use aa_runtime::approval::ApprovalQueue;
 use aa_sandbox::registry::ToolRegistry;
@@ -160,6 +161,23 @@ pub struct AppState {
     /// no-op `LoggingMailer` so an SMTP-less deployment degrades gracefully. The
     /// reset endpoint dispatches through this and never panics on a mail outage.
     pub mailer: Arc<dyn crate::mailer::Mailer>,
+    /// The durable sensitive-data projection (ADR 0032 §8, AAASM-5357/5440)
+    /// backing `/api/v1/sensitive-data/*`.
+    ///
+    /// `None` when the deployment has not enabled the projection — the handlers
+    /// then answer 503 rather than 200-with-zeroes, because "not recording" and
+    /// "nothing happened" are different governance answers and only one of them
+    /// is a clean posture.
+    ///
+    /// Deliberately **not** an `Arc<dyn StorageBackend>`: the projection is a
+    /// separate trait a backend opts into (see
+    /// [`SensitiveDataProjection`]), so a deployment can hold a storage backend
+    /// that never grew the tables.
+    pub sensitive_data: Option<Arc<dyn SensitiveDataProjection>>,
+    /// Where a compliance export is recorded before it is released (ADR 0032
+    /// §9, AAASM-5359). Always present: an export that cannot be attributed
+    /// must not happen, so there is no `None` for the handler to fall through.
+    pub sensitive_data_export_log: Arc<dyn crate::routes::sensitive_data::ExportAccessLog>,
 }
 
 /// Error returned by [`AppState::local_in_memory`] when the in-memory wiring
@@ -461,6 +479,12 @@ impl AppState {
             // wiring so the reset endpoint always has a transport; delivery only
             // actually happens on a Postgres-backed deployment with SMTP set.
             mailer: crate::mailer::build_mailer(),
+            // The in-memory wiring opens no SQLite file, so there is no table to
+            // project into; `local_hardened_at` — which does open one — attaches
+            // it. Left absent here so the endpoints report "not enabled" rather
+            // than an empty window.
+            sensitive_data: None,
+            sensitive_data_export_log: crate::routes::sensitive_data::default_export_access_log(),
         })
     }
 
@@ -623,9 +647,35 @@ impl AppState {
             source,
         })?;
         let db_path = storage_dir.join("local.db");
-        let storage = aa_gateway::storage::open_sqlite_backend(&db_path)
+        // Opened as the concrete backend rather than through
+        // `open_sqlite_backend`, which erases to `Arc<dyn StorageBackend>`:
+        // `SensitiveDataProjection` is a *separate* trait a backend opts into
+        // (AAASM-5357), so the projection handle cannot be recovered from the
+        // erased one. One `Arc` is coerced twice so both views share a pool.
+        let sqlite =
+            aa_gateway::storage::SqliteBackend::open(&aa_gateway::storage::SqliteConfig { path: db_path.clone() })
+                .await
+                .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
+        sqlite
+            .migrate()
             .await
             .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
+        let sqlite = Arc::new(sqlite);
+        let storage: Arc<dyn aa_gateway::storage::StorageBackend> = sqlite.clone();
+
+        // The projection's tables are created separately from the main schema
+        // by design (AAASM-5357): a deployment that never enables it never grows
+        // them, and the documented rollback is a real inverse. The local
+        // single-process entrypoint enables it, because the whole point of that
+        // entrypoint is that the dashboard has something to read.
+        {
+            use aa_gateway::storage::sensitive_data::SensitiveDataProjection as _;
+            sqlite
+                .migrate_sensitive_data_projection()
+                .await
+                .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
+        }
+        state.sensitive_data = Some(sqlite.clone());
 
         // Audit writer (dual-sink) over a dedicated JSONL directory; the reader
         // points at the same directory so reads see what the writer persists.

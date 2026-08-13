@@ -1,9 +1,11 @@
 import { Link, Outlet, useNavigate, useSearchParams } from 'react-router'
 import { ignorePromise } from '../lib/ignorePromise'
 import {
-  useReactTable,
-  getCoreRowModel,
-  getSortedRowModel,
+  useTable,
+  tableFeatures,
+  rowSortingFeature,
+  columnVisibilityFeature,
+  createSortedRowModel,
   flexRender,
   createColumnHelper,
   type ColumnDef,
@@ -35,6 +37,21 @@ import { useSuspendAgent, useResumeAgent } from '../features/agents/mutations'
 import { usePermissions, WRITE_REQUIRED_HINT } from '../auth/usePermissions'
 import { FleetFilterBar } from './FleetFilterBar'
 import './FleetPage.css'
+
+// v9 feature set for the fleet grid: client-side row sorting only. Row
+// selection, filtering, and empty/loading state are all handled outside
+// react-table (external `Set`, `applyFleetFilters`, `FleetTableState`), so no
+// selection/filtering features are registered here. Declared at module scope
+// so it is created once.
+const fleetTableFeatures = tableFeatures({
+  rowSortingFeature,
+  // `row.getVisibleCells()` in the grid body is provided by the
+  // column-visibility feature in v9; no column is hidden, so this keeps the
+  // v8 "render every cell" behavior identical.
+  columnVisibilityFeature,
+  sortedRowModel: createSortedRowModel(),
+})
+type FleetFeatures = typeof fleetTableFeatures
 
 const COLUMN_COUNT = 11
 
@@ -80,7 +97,7 @@ function sortIndicator(sorted: false | 'asc' | 'desc'): { glyph: string; label: 
   return { glyph: '↕', label: 'not sorted' }
 }
 
-const columnHelper = createColumnHelper<FleetAgent>()
+const columnHelper = createColumnHelper<FleetFeatures, FleetAgent>()
 
 interface SelectColumnControls {
   selected: ReadonlySet<string>
@@ -90,7 +107,7 @@ interface SelectColumnControls {
   toggleSelect: (id: string) => void
 }
 
-function buildSelectColumn(ctrl: SelectColumnControls): ColumnDef<FleetAgent> {
+function buildSelectColumn(ctrl: SelectColumnControls): ColumnDef<FleetFeatures, FleetAgent> {
   return columnHelper.display({
     id: 'select',
     header: () => (
@@ -117,7 +134,7 @@ function buildSelectColumn(ctrl: SelectColumnControls): ColumnDef<FleetAgent> {
   })
 }
 
-const baseColumns: ColumnDef<FleetAgent>[] = [
+const baseColumns: ColumnDef<FleetFeatures, FleetAgent>[] = [
   columnHelper.accessor('name', {
     header: 'Agent',
     enableSorting: true,
@@ -205,7 +222,7 @@ const baseColumns: ColumnDef<FleetAgent>[] = [
       </Link>
     ),
   }),
-] as ColumnDef<FleetAgent>[]
+] as ColumnDef<FleetFeatures, FleetAgent>[]
 
 type FleetView = 'agents' | 'sessions'
 
@@ -372,7 +389,7 @@ function FleetBulkBar({
 }
 
 /** The sort-direction glyph for a sortable header, or nothing for a fixed one. */
-function FleetSortIndicator({ header }: Readonly<{ header: Header<FleetAgent, unknown> }>) {
+function FleetSortIndicator({ header }: Readonly<{ header: Header<FleetFeatures, FleetAgent, unknown> }>) {
   if (!header.column.getCanSort()) return null
   const sorted = header.column.getIsSorted()
   const { glyph, label } = sortIndicator(sorted)
@@ -388,7 +405,7 @@ function FleetSortIndicator({ header }: Readonly<{ header: Header<FleetAgent, un
 }
 
 interface FleetAgentsTableProps {
-  readonly table: Table<FleetAgent>
+  readonly table: Table<FleetFeatures, FleetAgent>
   readonly loading: boolean
   readonly filterEmpty: boolean
   readonly totalAgentsText: string
@@ -540,9 +557,20 @@ export function FleetPage() {
   const [bulkSuspendPending, setBulkSuspendPending] = useState(false)
   const [bulkResumePending, setBulkResumePending] = useState(false)
   const knownIds = useRef<Set<string>>(new Set())
+  // Pre-existing selection-pruning effect: drop selected ids for agents that
+  // left the data source. The react-hooks/set-state-in-effect rule only began
+  // flagging it after the react-table v9 migration removed the useReactTable
+  // call that the plugin treated as an incompatible library — which suppressed
+  // hook analysis for this whole component under react-hooks v7. The updater
+  // already returns `prev` unchanged when nothing was pruned, so it does not
+  // cascade renders in the common case. Refactoring it to the set-during-render
+  // pattern is out of scope for a dependency migration (and this behavior is
+  // pinned by the "preserves row selection across a sort toggle" test);
+  // tracked in AAASM-5720.
   useEffect(() => {
     const next = new Set(fleetAgents.map((a) => a.id))
     knownIds.current = next
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelected((prev) => {
       let changed = false
       const filtered = new Set<string>()
@@ -579,7 +607,7 @@ export function FleetPage() {
     })
   }, [visibleIds])
 
-  const columns = useMemo<ColumnDef<FleetAgent>[]>(
+  const columns = useMemo<ColumnDef<FleetFeatures, FleetAgent>[]>(
     () => [
       buildSelectColumn({ selected, allSelected, someSelected, toggleAll, toggleSelect }),
       ...baseColumns,
@@ -587,14 +615,12 @@ export function FleetPage() {
     [selected, allSelected, someSelected, toggleAll, toggleSelect],
   )
 
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
+  const table = useTable({
+    features: fleetTableFeatures,
     data: filteredFleet,
     columns,
     state: { sorting },
     onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
   })
 
   const filteredCount = filteredFleet.length

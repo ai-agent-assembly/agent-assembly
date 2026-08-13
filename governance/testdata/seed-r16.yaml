@@ -1,0 +1,182 @@
+# Fixture seed for rule R16, AAASM-5678.
+#
+# The R16 fixtures need a seed that shares an id with them: the rule compares
+# shared ids only, and every other fixture in this directory carries id T1
+# against the real 80-row seed, shares nothing with it, and is reported as not
+# comparable rather than silently passing. This file is that shared population.
+#
+# `schema` is the real seed's verbatim, because R16 reads the compared field set
+# out of `schema.enums` and partitions the union of both schemas. A trimmed copy
+# would shrink the universe and let the fixtures pass a narrower partition than
+# the manifest has to satisfy.
+#
+# The single row mirrors valid-minimal.yaml's T1 on every compared field except
+# `coverage`, which is the divergence the R16 fixtures turn on.
+meta:
+  ticket: AAASM-5678
+  base_commit: 299de3883
+  companion: governance/testdata/seed-r16-companion.md
+schema:
+  required_fields:
+  - id
+  - capability
+  - framework_or_tool
+  - language
+  - platform
+  - launch_path
+  - transport
+  - interception_component
+  - identity_source
+  - policy_context
+  - decision_timing
+  - observe_or_enforce
+  - sync_or_best_effort
+  - failure_posture
+  - known_bypasses
+  - evidence
+  - current_level
+  - target_level
+  recommended_additions:
+  - default_state
+  - released_channels
+  - released_platforms
+  - reachability
+  - boundary_class
+  - failure_posture
+  - evidence_runs_on_main
+  - deny_signal
+  - redaction_actor
+  - coverage
+  - released_note
+  - evidence_quality
+  - boundary_conditional_on
+  - boundary_attained
+  - coverage_qualifiers
+  - released_matrix
+  - current_level_scope
+  - notes
+  - tickets
+  - response_side_posture
+  - failure_posture_node
+  - q3_changed_answer
+  - q4_changed_answer
+  - q4_changed_answer_in_product_favour
+  - evidence_gate_note
+  enums:
+    coverage:
+    - observed
+    - detected
+    - evaluated
+    - denied_before_execution
+    - redacted
+    - approval_required
+    - degraded
+    - unmeasured
+    - experimental
+    - planned
+    - unsupported
+    decision_timing:
+    - pre
+    - in_line
+    - post
+    - none
+    observe_or_enforce:
+    - enforce
+    - observe
+    - none
+    sync_or_best_effort:
+    - sync
+    - best_effort
+    - none
+    failure_posture:
+    - fail_closed
+    - fail_open
+    - fail_open_silent
+    - silent_truncation
+    - not_applicable
+    default_state:
+    - true
+    - false
+    - open
+    - closed
+    - mixed
+    - not_applicable
+    released_channels:
+    - github_release
+    - homebrew
+    - install_script
+    - crates_io
+    - pypi
+    - npm
+    - go_modules
+    - not_applicable
+    released_platforms:
+    - linux_x86_64
+    - linux_aarch64
+    - macos
+    - windows
+    - not_applicable
+    evidence_runs_on_main:
+    - standing
+    - path_gated_with_schedule
+    - path_gated_no_backstop
+    - manual_only
+    - none
+    reachability:
+    - shipped
+    - shipped_with_platform_exception
+    - shipped_crates_io_only
+    - dead_code
+    - absent_mechanism
+    - stubbed_default
+    boundary_class:
+      B1: universal within one patched function
+      B2: universal within one framework
+      B3: universal within one process
+      B4: universal within one container
+      B5: universal within one host
+      B6: universal within one managed device
+      B7: universal across opaque SaaS agents
+    deny_signal:
+    - raise
+    - sentinel_value
+    - none
+    redaction_actor:
+    - proxy_scanner
+    - gateway_instructions
+    - none
+    current_level:
+    - not_installed
+    - detected_not_integrated
+    - partially_integrated
+    - integrated
+    - gateway_protected
+    - host_enforced
+    - l1_observe
+    - not_applicable
+capabilities:
+- id: T1
+  domain: mcp
+  framework_or_tool:
+  - any_mcp_client
+  language:
+  - any
+  platform:
+  - linux
+  policy_context:
+  - tool_name
+  decision_timing: pre
+  observe_or_enforce: enforce
+  sync_or_best_effort: sync
+  failure_posture: fail_closed
+  coverage: denied_before_execution
+  current_level: not_applicable
+  boundary_class: B3
+  released_channels:
+  - crates_io
+  - ghcr
+  released_platforms:
+  - linux_x86_64
+  default_state: 'off'
+  reachability: shipped
+  evidence_runs_on_main: standing

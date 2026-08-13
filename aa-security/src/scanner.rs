@@ -686,8 +686,30 @@ fn coalesce_findings(findings: &[CredentialFinding]) -> Vec<MergedSpan> {
     let mut merged: Vec<MergedSpan> = Vec::with_capacity(sorted.len());
     for f in sorted {
         match merged.last_mut() {
-            // Overlapping (or touching) the current span — extend it to the
-            // union and adopt the higher-priority kind's label.
+            // Overlapping the current span — extend it to the union and adopt
+            // the higher-priority kind's label.
+            //
+            // `<`, not `<=`: two findings that merely *touch* (`f.offset ==
+            // last.end`) stay separate and produce two labels. That is
+            // deliberate. Adjacent findings of different kinds are genuinely two
+            // findings, and merging them would erase which kinds were present —
+            // `{"key":"<pat>","email":"<addr>"}` scrubbed to one
+            // `[REDACTED:GitHubPat]` would report a PAT and silently lose the
+            // email. Merging is for spans that share bytes, because a partially
+            // replaced region can leave a raw secret fragment on the wire; two
+            // touching spans share no byte and have no such problem.
+            //
+            // This comment previously read "Overlapping (or touching)", which
+            // describes `<=`. Reimplementations are written from it: AAASM-5373's
+            // acceptance criteria required the Python conformance runner to merge
+            // "overlapping and adjacent" spans, and implementing that faithfully
+            // would have made the harness emit one label where this function
+            // emits two. A `<=` variant differs from this code in 3,081 of 32,378
+            // span geometries, and **none** of it would have shown up against the
+            // committed corpus, because no vector has touching spans. Fixing this
+            // function to match the old comment would break the Python runner and
+            // every SDK harness silently — the code is right, the prose was wrong.
+            // `touching_spans_stay_separate` pins the boundary (AAASM-5383).
             Some(last) if f.offset < last.end => {
                 last.end = last.end.max(f.end);
                 if f.kind.priority() > last.kind.priority() {
@@ -903,28 +925,98 @@ pub(crate) fn ascii_digit_of(c: char) -> Option<char> {
 /// pushes the ASCII equivalent into the normalised string while advancing `end`
 /// by the *original* character's width.
 ///
+/// AAASM-5450 adds the full stop `.` and its full-width twin `．` (U+FF0E) to the
+/// hyphen role, for the reasons set out under *The boundary* below.
+///
+/// # What widening this set costs, measured
+///
+/// Every character admitted here lengthens the run [`digit_segment`] joins, and a
+/// longer run is a fresh chance to land in the 13-19 digit window where
+/// [`luhn_valid`] — a mod-10 checksum — passes an arbitrary number roughly one
+/// time in ten. On the enforcement path a coincidental pass redacts or blocks a
+/// legitimate payload, so this set is widened by measurement, never by admitting
+/// a character class.
+///
+/// AAASM-5450 priced all seven candidates the same way: admit one, rebuild, scan
+/// `aaasm5450_machine_payload_v1` (4,194,360 bytes of ordinary machine output —
+/// JSON log lines with float unix timestamps, TSV numeric columns, CSV amounts,
+/// dotted versions and IPv4 addresses, underscore-grouped numeric literals,
+/// slash-formatted dates, bare numeric columns — containing no card and no SSN,
+/// so every finding is a false positive). See
+/// `aa-security/tests/digit_separator_fp_cost.rs`:
+///
+/// | admitted | card false positives | runs it pushed into the window |
+/// |---|---|---|
+/// | `.` U+002E | 1255 | 12,284 |
+/// | `．` U+FF0E | 1193 | 11,963 |
+/// | `_` U+005F | 1207 | 12,127 |
+/// | `/` U+002F | 1253 | 12,176 |
+/// | `,` U+002C | 1175 | 12,265 |
+/// | tab U+0009 | 1218 | 12,265 |
+/// | newline U+000A | 532 | 5,395 |
+///
+/// The ratio is 9.6-10.3% on every row. That is the measurement's actual finding:
+/// **no candidate is intrinsically safer than any other** — each costs the same
+/// ~10% of whatever runs it pushes into the window. So the choice cannot be made
+/// on cost, only on *coverage*: whether a real card or SSN is ever written with
+/// the character. Only the two full stops are.
+///
 /// # The boundary, and why it stops here
 ///
-/// U+2010–U+2015 (hyphen, non-breaking hyphen, figure/en/em dash, horizontal bar)
-/// and U+00A0 (no-break space) were considered and **declined**:
+/// **Admitted, individually:**
 ///
-/// * No input method emits any of them for the hyphen or space key, so admitting
-///   them buys nothing against the evasion this rule exists to close — the threat
-///   is an input-mode switch, not an arbitrary look-alike glyph.
-/// * Each admitted separator lengthens the run [`digit_segment`] will join, and
-///   every additional joined run is an independent ~10% chance of a coincidental
-///   Luhn pass. The en dash is the standard glyph for a numeric *range*
-///   (`1990–2000`, `第 12–15 頁`) — precisely where two unrelated numbers sit
-///   adjacent with a dash between them — so it carries that risk at the highest
-///   rate of the set for no coverage in return.
+/// * `.` (U+002E) — the one candidate with an attested grouping usage. `123.45.6789`
+///   is a standard written form of an SSN, alongside `123-45-6789`, and dot-grouped
+///   card numbers (`4532.0151.1283.0366`) appear on invoices and statements. It is
+///   admitted in the *hyphen* role, not the space role, so a dot-written SSN
+///   normalises to `DDD-DD-DDDD` and satisfies [`is_ssn`]'s exact-11-byte shape.
+/// * `．` (U+FF0E, full-width full stop) — admitted because `.` is. A CJK input
+///   method in full-width mode emits U+FF0E for the period key exactly as it emits
+///   U+FF0D for the hyphen key, so admitting only the ASCII form would catch an
+///   en-US user's dot-written SSN and miss a Taiwanese user's — reopening the
+///   input-mode asymmetry AAASM-5364 existed to remove, one glyph later.
 ///
-/// The boundary is cheap to move if a payload is ever observed using one of them;
-/// `digit_separator_boundary_declines_en_dash_and_nbsp` pins it so the decision
-/// is visible rather than implicit.
+/// **Declined, individually.** Each is priced above at the same ~10% per exposed
+/// run, and none of them groups the digits of a card or an SSN in any written
+/// form, so each is cost without coverage:
+///
+/// * `,` (U+002C) — the thousands separator. Its numeric job is to group the
+///   digits of one number that is not a card (`1,234,567,890,123` is thirteen
+///   joined digits, inside the window).
+/// * `/` (U+002F) — the date and path separator. `2026/08/07 12/30/45` is fourteen
+///   joined digits once the already-admitted space links the two halves.
+/// * `_` (U+005F) — the digit-group separator in Rust and Python numeric literals
+///   (`1_000_000_000_000_000` is sixteen) and a joiner inside identifiers.
+/// * tab (U+0009) — a column delimiter, so joining across it merges two adjacent
+///   numeric *columns* of a TSV row. It is also a space-role glyph, so it could
+///   not produce an SSN shape even if admitted: it would buy card coverage only,
+///   and a tab-grouped card number is a four-column spreadsheet, not a card.
+/// * newline (U+000A) — the *record* delimiter in JSON Lines, CSV and log output,
+///   so joining across it merges two unrelated records. A wrapped card number
+///   wraps at the space, which is already admitted.
+///
+/// `digit_separator_declines_the_candidates_that_buy_no_coverage` pins all five.
+///
+/// **Unchanged from AAASM-5364:** U+2010–U+2015 (hyphen, non-breaking hyphen,
+/// figure/en/em dash, horizontal bar) and U+00A0 (no-break space) stay declined.
+/// No input method emits any of them for the hyphen or space key, and the en dash
+/// is the standard glyph for a numeric *range* (`1990–2000`, `第 12–15 頁`) —
+/// precisely where two unrelated numbers sit adjacent with a dash between them.
+/// AAASM-5450 produced no coverage evidence for them, so it did not reopen the
+/// decision; `digit_separator_boundary_declines_en_dash_and_nbsp` still pins it.
+///
+/// # What this rule cannot do
+///
+/// It cannot close *adversarial* evasion. An attacker who wants a card to slip
+/// past picks a glyph nobody enumerated, and the set of glyphs is unbounded, so
+/// widening by enumeration can never catch up. What it closes is the *natural*
+/// formatting a real payload carries — which is why every entry above is
+/// justified by an attested written form rather than by how plausible the glyph
+/// looks as an evasion.
 fn ascii_separator_of(c: char) -> Option<char> {
     match c {
         ' ' | '\u{3000}' => Some(' '),
-        '-' | '\u{FF0D}' => Some('-'),
+        '-' | '\u{FF0D}' | '.' | '\u{FF0E}' => Some('-'),
         _ => None,
     }
 }
@@ -1353,7 +1445,118 @@ fn is_base64_char(b: u8) -> bool {
 /// [`is_hex_group_separator`]), and every byte of a multi-byte UTF-8 sequence
 /// is ≥ `0x80`, so non-ASCII terminates their runs exactly as whitespace does.
 /// Their runs are therefore ASCII by construction and score correctly already.
+///
+/// # The scanner's own output is not evidence about the payload (AAASM-5441)
+///
+/// Every pass here runs over `text` with the redaction labels this crate writes
+/// masked out ([`mask_redaction_markers`]). Without that, the labels are scored
+/// as if they were payload: `[REDACTED:AnthropicKey]` inside a compact-JSON body
+/// contributes both its length and its punctuation-rich byte distribution to the
+/// enclosing whitespace token, and a **correctly and completely scrubbed** body
+/// re-reads as still carrying a secret. That inverts the meaning of the signal —
+/// the better a redacting proxy behaves, the less protective it looks — and it
+/// does not converge: each re-scan splices another label in, so a payload passing
+/// two inspection points accumulates markers instead of reaching a fixed point.
+///
+/// Masking is length-preserving, so every offset these passes report is still an
+/// offset into the caller's `text`.
 fn scan_high_entropy(text: &str, findings: &mut Vec<CredentialFinding>) {
+    match mask_redaction_markers(text) {
+        Some(masked) => high_entropy_passes(&masked, findings),
+        None => high_entropy_passes(text, findings),
+    }
+}
+
+/// The prefix every redaction label this crate writes begins with.
+///
+/// Used only to find *candidate* positions cheaply; whether a candidate is
+/// actually a label is decided by [`redaction_marker_len_at`] against the closed
+/// set of labels, never by this prefix alone.
+const REDACTION_MARKER_PREFIX: &str = "[REDACTED";
+
+/// Byte length of the redaction label starting at `at`, or `None` if no label
+/// starts there.
+///
+/// # Why this cannot become an evasion
+///
+/// The recognised set is **closed and literal**: the bare `[REDACTED]` that the
+/// locale packs and [`ScanResult::redact`]'s fail-closed branch emit, plus
+/// `[REDACTED:<kind>]` for each `<kind>` in [`CredentialKind::ALL`] and for
+/// `Custom` — the complete set of labels [`CredentialFinding::new`] and
+/// `CanonicalCategory::redaction_label` can produce. It is matched
+/// character-for-character, with no wildcard between the colon and the closing
+/// bracket.
+///
+/// So an attacker who writes marker-shaped text around a secret excises **zero
+/// bytes of their own choosing**: `[REDACTED:AKIAIOSFODNN7EXAMPLE]` is not in the
+/// set, is not masked, and its contents are scanned exactly as before. The only
+/// strings this removes from the scanner's view are 28 fixed constants that carry
+/// no attacker payload, and removing them cannot hide anything adjacent — a
+/// label is bracketed by `[` and `]`, which already terminate every run and token
+/// the passes build, so a genuine secret beside one is a separate candidate
+/// before and after masking. `a_marker_cannot_be_used_to_smuggle_a_secret` and
+/// `marker_shaped_text_is_not_a_marker` pin both halves of that argument.
+fn redaction_marker_len_at(text: &str, at: usize) -> Option<usize> {
+    let rest = text.get(at..)?.strip_prefix(REDACTION_MARKER_PREFIX)?;
+    if rest.starts_with(']') {
+        return Some(REDACTION_MARKER_PREFIX.len() + 1);
+    }
+    let named = rest.strip_prefix(':')?;
+    CredentialKind::ALL
+        .iter()
+        .chain(std::iter::once(&CredentialKind::Custom))
+        .map(CredentialKind::as_str)
+        .find(|name| named.strip_prefix(*name).is_some_and(|tail| tail.starts_with(']')))
+        .map(|name| REDACTION_MARKER_PREFIX.len() + 1 + name.len() + 1)
+}
+
+/// `text` with every redaction label replaced by spaces of the same byte length,
+/// or `None` when it carries no label and the caller can scan it as-is.
+///
+/// A space is the mask because it is a boundary for *every* entropy pass at once:
+/// it ends a `split_whitespace` token, it is neither a hex digit nor a
+/// [`is_base64_char`], and a label is at least ten bytes, so the ten-plus space
+/// gap it leaves can never be the single-separator gap [`is_one_separator`]
+/// requires. The label's bytes therefore contribute neither entropy nor length to
+/// any candidate, rather than being filtered out after the fact — a finding whose
+/// span lay *outside* the label (pass 1 clamps its span at the first delimiter,
+/// which for a scrubbed compact-JSON body was the opening `{`) survives any
+/// post-hoc filter.
+///
+/// Returning `None` for the common case keeps the allocation off every scan of a
+/// payload that has never been through a scrubber.
+fn mask_redaction_markers(text: &str) -> Option<String> {
+    let mut masked: Option<String> = None;
+    // Bytes of `text` already copied into `masked`.
+    let mut copied = 0usize;
+    let mut search = 0usize;
+    while let Some(rel) = text[search..].find(REDACTION_MARKER_PREFIX) {
+        let at = search + rel;
+        match redaction_marker_len_at(text, at) {
+            Some(len) => {
+                let out = masked.get_or_insert_with(|| String::with_capacity(text.len()));
+                out.push_str(&text[copied..at]);
+                // Same byte count in, same byte count out: the offsets the passes
+                // report have to index the caller's original text.
+                for _ in 0..len {
+                    out.push(' ');
+                }
+                copied = at + len;
+                search = copied;
+            }
+            // Marker-shaped but not a marker. Resume past the prefix so an
+            // overlapping real marker later in the text is still found.
+            None => search = at + REDACTION_MARKER_PREFIX.len(),
+        }
+    }
+    let mut out = masked?;
+    out.push_str(&text[copied..]);
+    Some(out)
+}
+
+/// The five entropy passes, over text whose redaction labels [`scan_high_entropy`]
+/// has already masked out.
+fn high_entropy_passes(text: &str, findings: &mut Vec<CredentialFinding>) {
     // Pass 1: whitespace-delimited high-entropy tokens, length 20–64.
     let mut offset = 0usize;
     for token in text.split_whitespace() {
@@ -1976,6 +2179,75 @@ mod tests {
             "the marker no longer trips the repeat bound, so this test proves nothing"
         );
         assert!(CredentialScanner::new().scan(pem).findings.is_empty());
+    }
+
+    /// AAASM-5441 — the exclusion list and the label writer must not drift apart.
+    ///
+    /// A new [`CredentialKind`] arrives with a new `[REDACTED:<kind>]` label the
+    /// moment it is added to `as_str`, and if the exclusion does not recognise it
+    /// then bodies scrubbed of that kind start re-inspecting dirty — silently,
+    /// because nothing else in the suite mentions the new name. This enumerates
+    /// the labels from the same source the writer uses, so the drift is a failing
+    /// test rather than a field report.
+    #[test]
+    fn every_label_this_crate_can_emit_is_excluded() {
+        let labels = CredentialKind::ALL
+            .iter()
+            .chain(std::iter::once(&CredentialKind::Custom))
+            .map(|kind| format!("[REDACTED:{}]", kind.as_str()))
+            .chain(std::iter::once("[REDACTED]".to_string()));
+
+        for label in labels {
+            assert_eq!(
+                redaction_marker_len_at(&label, 0),
+                Some(label.len()),
+                "{label} is a label this crate writes but not one it excludes"
+            );
+            assert_eq!(
+                mask_redaction_markers(&label).as_deref(),
+                Some(" ".repeat(label.len()).as_str()),
+                "{label} was not fully masked"
+            );
+        }
+    }
+
+    /// The masking must be length-preserving, because the offsets the entropy
+    /// passes report over the masked text are handed back to the caller as
+    /// offsets into the *original* text. A mask that changed length would move
+    /// every later finding's span onto the wrong bytes — and `redact` splices by
+    /// span, so the failure mode is a leaked secret, not a cosmetic slip.
+    #[test]
+    fn masking_preserves_every_byte_offset() {
+        for text in [
+            "value [REDACTED:GenericHighEntropy] tail",
+            "{\"a\":\"[REDACTED]\",\"b\":\"[REDACTED:SsnPattern]\"}",
+            "統編[REDACTED] 已登記",
+            "[REDACTED][REDACTED:Custom]",
+        ] {
+            let masked = mask_redaction_markers(text).expect("carries a label");
+            assert_eq!(masked.len(), text.len(), "{text} changed length under masking");
+            for (i, (a, b)) in text.bytes().zip(masked.bytes()).enumerate() {
+                assert!(
+                    a == b || b == b' ',
+                    "byte {i} of {text} changed to something other than the mask"
+                );
+            }
+        }
+    }
+
+    /// Text that merely looks like a label is left alone, and a real label that
+    /// follows it is still found — the resume point after a rejected candidate
+    /// must not skip past the next one.
+    #[test]
+    fn label_shaped_text_is_left_in_place() {
+        assert_eq!(redaction_marker_len_at("[REDACTED:NotAKind]", 0), None);
+        assert_eq!(redaction_marker_len_at("[REDACTEDX]", 0), None);
+        assert_eq!(redaction_marker_len_at("[REDACTED", 0), None);
+        assert_eq!(mask_redaction_markers("[REDACTED:NotAKind]"), None);
+        assert_eq!(
+            mask_redaction_markers("[REDACTED:NotAKind][REDACTED]").as_deref(),
+            Some("[REDACTED:NotAKind]          ")
+        );
     }
     use super::*;
 
@@ -2968,6 +3240,247 @@ mod tests {
             let expected = verdict(ascii);
             assert_eq!(verdict(fullwidth_space), expected, "U+3000 diverged for {ascii:?}");
             assert_eq!(verdict(fullwidth_hyphen), expected, "U+FF0D diverged for {ascii:?}");
+        }
+    }
+
+    // --- AAASM-5450: the full stop `.` and its full-width twin `．` (U+FF0E)
+    //     join digit runs; the other five candidates the ticket named do not.
+    //
+    //     Falsification, so none of the assertions below is trusted unheld:
+    //     each admitted character was removed from `ascii_separator_of` on its
+    //     own, the crate rebuilt, and the surviving failures recorded.
+    //
+    //       * removing `.`      kills `detects_a_card_grouped_by_the_full_stop`,
+    //         `detects_an_ssn_written_with_full_stops`,
+    //         `redacts_full_stop_separated_values_to_exact_bytes`,
+    //         `full_stop_separated_spans_are_char_boundaries_of_the_original_text`
+    //         and `the_trailing_separator_guard_holds_for_the_full_stop_forms`.
+    //       * removing `．`     kills
+    //         `detects_a_card_grouped_by_the_fullwidth_full_stop` and the
+    //         full-width rows of the redaction and span tests.
+    //
+    //     The two mutations kill *disjoint* named tests, so the ASCII and
+    //     full-width forms are separately pinned rather than sharing one proof.
+    //
+    //     All fixtures are synthetic. No real card number or SSN appears. ---
+
+    #[test]
+    fn detects_a_card_grouped_by_the_full_stop() {
+        // The dot-grouped card form, which invoices and statements use where a
+        // card face uses spaces. Its ASCII twin is already detected, so this
+        // asserts the two agree rather than merely that something was found.
+        let scanner = CredentialScanner::new();
+        let spaced = scanner.scan("card=4532 0151 1283 0366");
+        let dotted = scanner.scan("card=4532.0151.1283.0366");
+
+        let kinds = |r: &ScanResult| r.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>();
+        assert_eq!(kinds(&spaced), vec![CredentialKind::CreditCardLuhn]);
+        assert_eq!(kinds(&dotted), kinds(&spaced));
+    }
+
+    #[test]
+    fn detects_a_card_grouped_by_the_fullwidth_full_stop() {
+        // U+FF0E is what a CJK input method emits for the period key, exactly as
+        // U+FF0D is for the hyphen key. Admitting only the ASCII form would catch
+        // the en-US rendering of this number and miss the zh-TW one — the
+        // input-mode asymmetry AAASM-5364 existed to remove.
+        let scanner = CredentialScanner::new();
+        let result = scanner.scan("card=４５３２．０１５１．１２８３．０３６６");
+        assert_eq!(
+            result.findings.iter().map(|f| f.kind.clone()).collect::<Vec<_>>(),
+            vec![CredentialKind::CreditCardLuhn],
+        );
+    }
+
+    #[test]
+    fn detects_an_ssn_written_with_full_stops() {
+        // `123.45.6789` is a standard written form of an SSN alongside the
+        // hyphenated one, which is why the full stop is admitted in the *hyphen*
+        // role: the segment normalises to `DDD-DD-DDDD` and satisfies `is_ssn`'s
+        // exact-11-byte shape rather than merely reaching it.
+        let scanner = CredentialScanner::new();
+        for text in ["ssn=123.45.6789", "ssn=１２３．４５．６７８９", "ssn=123．45．6789"] {
+            assert_eq!(
+                scanner
+                    .scan(text)
+                    .findings
+                    .iter()
+                    .map(|f| f.kind.clone())
+                    .collect::<Vec<_>>(),
+                vec![CredentialKind::SsnPattern],
+                "dot-written SSN not detected: {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_ssn_shape_check_still_demands_exactly_eleven_ascii_bytes() {
+        // The widened separator set feeds `is_ssn` a *normalised* string, so the
+        // shape check itself must not have drifted: it still accepts only
+        // `DDD-DD-DDDD` and still rejects the twelve-byte form that AAASM-4820
+        // was filed about. Asserted against the predicate directly, because the
+        // scan path can reach the same verdict for the wrong reason.
+        assert!(is_ssn("123-45-6789"));
+        assert!(!is_ssn("123-45-6789 "), "a trailing separator must not be accepted");
+        assert!(!is_ssn("123-45-678"), "ten bytes is not the SSN shape");
+        assert!(
+            !is_ssn("123.45.6789"),
+            "the shape check is on the normalised form, not the raw text"
+        );
+    }
+
+    #[test]
+    fn redacts_full_stop_separated_values_to_exact_bytes() {
+        // Counting findings is not enough. U+FF0E is three UTF-8 bytes against
+        // the ASCII full stop's one, so an end offset computed on the normalised
+        // form splices the wrong region — one finding, digits still in the clear.
+        // This is the assertion that catches that, and it is why the full-width
+        // rows are here rather than only the ASCII ones.
+        let scanner = CredentialScanner::new();
+        for (text, expected) in [
+            ("card=4532.0151.1283.0366", "card=[REDACTED:CreditCardLuhn]"),
+            (
+                "card=４５３２．０１５１．１２８３．０３６６",
+                "card=[REDACTED:CreditCardLuhn]",
+            ),
+            ("ssn=123.45.6789", "ssn=[REDACTED:SsnPattern]"),
+            ("ssn=１２３．４５．６７８９", "ssn=[REDACTED:SsnPattern]"),
+            ("ssn=123．45．6789", "ssn=[REDACTED:SsnPattern]"),
+        ] {
+            let redacted = scanner.scan(text).redact(text);
+            assert_eq!(redacted, expected, "wrong redaction for {text:?}");
+            assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+        }
+    }
+
+    #[test]
+    fn full_stop_separated_spans_are_char_boundaries_of_the_original_text() {
+        // The span contract `redact` depends on, asserted directly rather than
+        // inferred from redaction output. A mixed-width form — ASCII digits with
+        // three-byte separators — is where an offset arithmetic that assumed one
+        // width lands mid-character.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "card=4532.0151.1283.0366",
+            "card=４５３２．０１５１．１２８３．０３６６",
+            "card=4532．0151．1283．0366",
+            "ssn=123.45.6789",
+            "ssn=１２３．４５．６７８９",
+            "ssn=123．45．6789",
+        ] {
+            let result = scanner.scan(text);
+            assert!(!result.findings.is_empty(), "no finding for {text:?}");
+            for f in &result.findings {
+                assert!(
+                    text.is_char_boundary(f.offset),
+                    "offset {} splits a character in {text:?}",
+                    f.offset
+                );
+                assert!(
+                    text.is_char_boundary(f.end),
+                    "end {} splits a character in {text:?}",
+                    f.end
+                );
+                // The span must cover the whole value, not a prefix of it.
+                assert!(contains_no_digit(&text[..f.offset]));
+                assert!(contains_no_digit(&text[f.end..]));
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_flag_a_full_stop_separated_number_that_fails_luhn() {
+        // Widening what reaches the checksum must not weaken the checksum. Only
+        // the final digit differs from the detected form above, so the Luhn
+        // result is the sole difference between this and a reported card.
+        let scanner = CredentialScanner::new();
+        for text in ["num=4532.0151.1283.0367", "num=４５３２．０１５１．１２８３．０３６７"] {
+            assert!(
+                !scanner
+                    .scan(text)
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == CredentialKind::CreditCardLuhn),
+                "Luhn gate must reject a dot-separated number too: {text:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_trailing_separator_guard_holds_for_the_full_stop_forms() {
+        // AAASM-4820 generalised. A separator is consumed only between two
+        // digits, so a sentence-ending full stop must not be swallowed into the
+        // segment — which for an SSN would push it to twelve bytes and defeat
+        // `is_ssn` exactly as the trailing space did. The full stop is the form
+        // where this matters most, because ending a sentence with one is the
+        // common case rather than the edge case.
+        let scanner = CredentialScanner::new();
+        for text in [
+            "SSN 123-45-6789. It was leaked.",
+            "SSN 123.45.6789. It was leaked.",
+            "SSN 123．45．6789。 已外洩。",
+        ] {
+            let result = scanner.scan(text);
+            assert!(
+                result.findings.iter().any(|f| f.kind == CredentialKind::SsnPattern),
+                "trailing full stop swallowed the segment: {text:?}",
+            );
+            let redacted = result.redact(text);
+            assert!(contains_no_digit(&redacted), "residual digits: {redacted}");
+        }
+    }
+
+    #[test]
+    fn digit_separator_declines_the_candidates_that_buy_no_coverage() {
+        // Pins the other half of AAASM-5450's boundary, so the decision is
+        // visible rather than implicit — the same discipline
+        // `digit_separator_boundary_declines_en_dash_and_nbsp` applies to the
+        // dash family.
+        //
+        // `_`, `/`, `,`, tab and newline were each measured at 1175-1253 card
+        // false positives per 4 MB of ordinary machine output (newline, 532),
+        // which is the same ~10% of exposed runs the admitted full stop costs —
+        // but none of them groups the digits of a card or an SSN in any written
+        // form, so each is that cost with no coverage in return. The numbers and
+        // the corpus are in `tests/digit_separator_fp_cost.rs`.
+        //
+        // Asserted as **not detected**, deliberately. If a payload is ever
+        // observed using one of these, widen `ascii_separator_of` and rewrite
+        // this test with the new measurement — do not delete it.
+        let scanner = CredentialScanner::new();
+
+        // Positive control. The two values below are the same card and the same
+        // SSN the negatives use, grouped by an *admitted* separator: if these
+        // stopped being detected, every "clean" assertion after them would pass
+        // for the wrong reason and this test would silently stop guarding
+        // anything.
+        assert_eq!(
+            scanner.scan("card=4532.0151.1283.0366").findings.len(),
+            1,
+            "positive control failed; the negatives below would prove nothing",
+        );
+        assert_eq!(
+            scanner.scan("ssn=123.45.6789").findings.len(),
+            1,
+            "positive control failed; the negatives below would prove nothing",
+        );
+
+        for (label, sep) in [
+            ("underscore", "_"),
+            ("solidus", "/"),
+            ("comma", ","),
+            ("tab", "\t"),
+            ("newline", "\n"),
+        ] {
+            for value in [
+                format!("card=4532{sep}0151{sep}1283{sep}0366"),
+                format!("ssn=123{sep}45{sep}6789"),
+            ] {
+                assert!(
+                    scanner.scan(&value).is_clean(),
+                    "separator set widened past its stated boundary for {label}: {value:?}",
+                );
+            }
         }
     }
 
@@ -4309,5 +4822,71 @@ mod tests {
             assert_eq!(a.kind, b.kind);
             assert_eq!(a.offset, b.offset);
         }
+    }
+
+    /// Touching spans stay separate; only overlapping spans merge (AAASM-5383).
+    ///
+    /// This is the boundary a reimplementation gets wrong. `coalesce_findings`
+    /// merges on `f.offset < last.end`, so `f.offset == last.end` — two spans
+    /// that abut with no shared byte — yields **two** labels, not one. The
+    /// inline comment used to say "Overlapping (or touching)", which describes
+    /// `<=`, and AAASM-5373's acceptance criteria were written from it.
+    ///
+    /// Nothing in the committed corpus has touching spans, so this divergence is
+    /// invisible to the conformance vectors — which is exactly why it needs a
+    /// test of its own rather than trust in the suite staying green. Anyone who
+    /// "fixes" the code to match the old prose fails here instead of silently
+    /// desynchronising the Python runner and every SDK harness.
+    ///
+    /// Both halves are asserted: the merge itself still happens when the spans
+    /// genuinely overlap, so a mutation that merged nothing at all would pass the
+    /// touching case alone.
+    #[test]
+    fn touching_spans_stay_separate_and_overlapping_spans_merge() {
+        // `end` of the first is the `offset` of the second: they abut exactly.
+        let touching = vec![
+            CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+            CredentialFinding::new(CredentialKind::EmailAddress, 10, 20),
+        ];
+        let merged = coalesce_findings(&touching);
+        let spans: Vec<(usize, usize)> = merged.iter().map(|s| (s.offset, s.end)).collect();
+        assert_eq!(
+            merged.len(),
+            2,
+            "touching spans must stay separate — merging them erases which kinds \
+             were present: {spans:?}"
+        );
+        assert_eq!((merged[0].offset, merged[0].end), (0, 10));
+        assert_eq!((merged[1].offset, merged[1].end), (10, 20));
+
+        // Positive control: one byte of overlap and they do merge, taking the
+        // higher-priority kind's label.
+        let overlapping = vec![
+            CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+            CredentialFinding::new(CredentialKind::EmailAddress, 9, 20),
+        ];
+        let merged = coalesce_findings(&overlapping);
+        let spans: Vec<(usize, usize)> = merged.iter().map(|s| (s.offset, s.end)).collect();
+        assert_eq!(
+            merged.len(),
+            1,
+            "overlapping spans share bytes, so a partial replacement could leave a \
+             raw secret fragment — they must merge: {spans:?}"
+        );
+        assert_eq!((merged[0].offset, merged[0].end), (0, 20));
+    }
+
+    /// The same boundary through the public surface, since `redact` is what
+    /// callers and reimplementations actually have to match.
+    #[test]
+    fn redact_emits_two_labels_for_touching_findings() {
+        let result = ScanResult {
+            findings: vec![
+                CredentialFinding::new(CredentialKind::GitHubPat, 0, 10),
+                CredentialFinding::new(CredentialKind::EmailAddress, 10, 20),
+            ],
+        };
+        let redacted = result.redact("0123456789abcdefghij");
+        assert_eq!(redacted, "[REDACTED:GitHubPat][REDACTED:EmailAddress]");
     }
 }

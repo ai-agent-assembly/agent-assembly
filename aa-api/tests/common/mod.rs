@@ -200,6 +200,11 @@ spec:
         native_auth: aa_api::native_auth::NativeAuthConfig::from_env(),
         // AAASM-5306: the no-op logging mailer — tests never send real email.
         mailer: Arc::new(aa_api::mailer::LoggingMailer::new()),
+        // AAASM-5359: no projection in the default test wiring, so the
+        // sensitive-data endpoints report "not enabled". The analytics tests
+        // build their own state with a real SQLite projection attached.
+        sensitive_data: None,
+        sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
     }
 }
 

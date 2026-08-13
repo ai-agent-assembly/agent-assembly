@@ -226,6 +226,15 @@ All read in `aa-proxy/src/config.rs`:
 | `AA_PROXY_NETWORK_ALLOWLIST` | Comma-separated egress allowlist. |
 | `AA_PROXY_DENIED_HOSTS` | Comma-separated host denylist. |
 | `AA_PROXY_CREDENTIAL_ACTION` | Action on a detected credential: `block`, `redact_only`, or `alert_only`. |
+| `AA_PROXY_AUDIT_JSONL_PATH` | Path the proxy appends its prevention-evidence JSONL to. Unset means no persistence. |
+| `AA_PROXY_AUDIT_MAX_SEGMENT_BYTES` | Bytes a sink segment may reach before rotating. Default 32 MiB. |
+| `AA_PROXY_AUDIT_RETAINED_SEGMENTS` | Rotated segments kept beside the live sink. Default 3. |
+| `AA_PROXY_AUDIT_RETENTION_DAYS` | Maximum age of a sink segment. Unset means no age bound. |
+| `AA_PROXY_AUDIT_EXPORT_DIR` | Directory rotated segments are sealed into for a collector. Unset means the local ring is the only copy. |
+
+The sink is a bounded ring whose rotation deletes earlier evidence, and every
+deletion is counted in a completeness sidecar beside it. See
+[Proxy Prevention-Evidence Retention](../operations/proxy-audit-retention.md).
 
 ### L3 — eBPF (`aa-ebpf`, Linux-only)
 

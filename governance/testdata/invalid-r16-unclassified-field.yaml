@@ -1,0 +1,153 @@
+# Rule R16, AAASM-5678: a field the schema allows is neither compared nor named
+# as excluded.
+#
+# `known_bypasses` is dropped from the excluded list. Nothing about the rows
+# changes and every comparison still passes — which is exactly what this clause
+# is for: a partial comparison that does not say what it left out is
+# indistinguishable from a complete one. The defect that produced this ticket
+# was a three-field comparison reported as covering every mechanical field.
+manifest_version: 1.0.0
+meta:
+  ticket: AAASM-5531
+  epic: AAASM-5526
+  fix_version: agent-assembly v0.0.1-rc.7
+  evidence_tree: 299de38830b5f1b3a239661c35e7bc98c1a78ee4
+  evidence_date: '2026-08-06'
+  channels_surveyed:
+  - crates_io
+  - github_release
+  - homebrew
+  - ghcr
+  channels_not_surveyed:
+  - channel: install_script
+    reason: Not a registry; the script is served from the release assets.
+  - channel: npm
+    reason: Published from node-sdk; nothing in this repository uploads to it.
+  - channel: pypi
+    reason: Published from python-sdk; nothing in this repository uploads to it.
+  - channel: go_modules
+    reason: A git tag in go-sdk; there is no publish step to find.
+  - channel: not_applicable
+    reason: Not a channel; the value a row uses when the question does not apply.
+  sources:
+    canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
+    protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
+    governance: docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md
+    seed: governance/testdata/seed-r16.yaml
+    seed_companion: governance/testdata/seed-r16-companion.md
+  cross_representation:
+    seed:
+      compared_fields_from_seed_schema: enums
+      additional_compared_fields:
+      - boundary_attained
+      - coverage_qualifiers
+      - domain
+      - evidence_quality
+      - failure_posture_node
+      - framework_or_tool
+      - language
+      - platform
+      - policy_context
+      - protection_state_scope
+      - q3_changed_answer
+      - q4_changed_answer
+      - q4_changed_answer_in_product_favour
+      - released_matrix
+      - response_side_posture
+      field_renames:
+        current_level: protection_state
+        current_level_scope: protection_state_scope
+      excluded_fields:
+      - fields:
+        - boundary_conditional_on
+        - buildable
+        - buildable_conditions
+        - capability
+        - evidence
+        - evidence_date
+        - evidence_gate_note
+        - evidence_tree
+        - findings
+        - governance_level_ceiling
+        - identity_source
+        - interception_component
+        - launch_path
+        - notes
+        - owner
+        - preconditions
+        - public_wording
+        - released_note
+        - target_level
+        - tickets
+        - transport
+        reason: The same partition governance/capability-manifest.yaml declares, collapsed to one group.
+          The per-group reasons and their measured divergence counts live there; what this fixture asserts
+          is that the partition is total, not why each field is in it.
+    seed_companion:
+      compared_fields:
+      - coverage
+      exclusion_reason: Coverage is the only column this fixture companion states, mirroring the real
+        companion where it is the only column present for all 80 rows in a fixed position.
+    declared_divergences:
+    - field: coverage
+      ids:
+      - T1
+      representations:
+      - seed
+      - seed_companion
+      manifest_value: evaluated
+      other_value: denied_before_execution
+      rule: R12
+      ticket: AAASM-5678
+      reason: 'The deliberate case: the manifest is weaker than the seed on purpose. A fixture cannot
+        reproduce R12 forcing it — this row has a located test — so what is asserted here is that a
+        declared divergence PASSES, which is the half of the rule a fixture proving only failure leaves
+        unwitnessed.'
+  retired_ids:
+  - Z9
+capabilities:
+- id: T1
+  domain: mcp
+  capability: A worked example row carrying one of every required field
+  owner:
+    repository: agent-assembly
+    component: aa-proxy
+  framework_or_tool:
+  - any_mcp_client
+  language:
+  - any
+  platform:
+  - linux
+  launch_path: routed through aa-proxy with the gateway endpoint configured
+  preconditions:
+  - kind: env
+    name: AA_PROXY_GATEWAY_ENDPOINT
+    required_value: <set>
+  transport: https POST, HTTP/1.1
+  interception_component: evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614
+  identity_source: PROXY_AGENT_ID constant
+  policy_context:
+  - tool_name
+  decision_timing: pre
+  observe_or_enforce: enforce
+  sync_or_best_effort: sync
+  failure_posture: fail_closed
+  coverage: evaluated
+  protection_state: not_applicable
+  governance_level_ceiling: not_applicable
+  boundary_class: B3
+  released_channels:
+  - crates_io
+  - ghcr
+  released_platforms:
+  - linux_x86_64
+  buildable: packaging_gated
+  default_state: 'off'
+  reachability: shipped
+  known_bypasses:
+  - anything that does not traverse the proxy
+  evidence:
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_interceptor.rs
+  evidence_runs_on_main: standing
+  target_level: hold

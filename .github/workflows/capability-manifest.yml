@@ -1,0 +1,172 @@
+name: Capability Manifest
+
+# AAASM-5531. `governance/capability-manifest.yaml` is the T2 source of truth
+# for what Agent Assembly can be said to do; AAASM-5588, AAASM-5600 and
+# AAASM-5609 generate public surfaces from it, so a wrong row becomes published
+# output. ADR 0034's validation requirement W7 names this gate.
+#
+# Three triggers on purpose, and the third is the point. ADR 0034 records that a
+# path-filtered gate with no backstop "is not evidence of a standing property at
+# all" — a PR-only gate never runs on the merge that breaks it. So:
+#
+#   pull_request  fast feedback on the paths that matter
+#   push to main  the gate runs on the merge itself
+#   schedule      a weekly backstop, which is also what makes the freshness rule
+#                 (R11) bite: evidence quietly ages past 180 days with nobody
+#                 editing a file, and only a time-triggered run notices.
+#
+# This is what lets the manifest honestly record `evidence_runs_on_main:
+# standing` for its own gate rather than the `path_gated_no_backstop` the
+# AAASM-5527 survey had to report about itself.
+
+on:
+  pull_request:
+    # AAASM-5677: deliberately NOT path-filtered — the selection that used to
+    # live here now lives in the `changes` router below.
+    #
+    # This gate is governance-bearing (CONTRIBUTING, "Which CI checks are
+    # governance-bearing"), so it has to be a REQUIRED status check, and a
+    # required check only works if it reliably reports. A path-filtered
+    # workflow that does not trigger produces no check run at all — not a
+    # pending one, an absent one — and a required check that never arrives
+    # leaves the pull request waiting forever. That is the trap AAASM-5675
+    # closed for `ci.yml`; the same shape applies here.
+    #
+    # **If you add a job here, gate it on `needs.changes.outputs.*`** for
+    # `pull_request` only. Non-PR events must stay unconditional: the `push`
+    # and `schedule` triggers below are this gate's backstops, and gating them
+    # on a diff router would reintroduce exactly the `path_gated_no_backstop`
+    # state the header describes.
+  push:
+    branches:
+      - main
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # AAASM-5677: the selection that used to be `on.pull_request.paths`. Only
+  # consulted for `pull_request` — see the `on:` comment for why the push and
+  # schedule backstops must stay unconditional.
+  changes:
+    name: Detect changed areas (Capability Manifest)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      manifest: ${{ steps.filter.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4.0.3
+        id: filter
+        with:
+          filters: |
+            manifest:
+              - 'governance/**'
+              - 'schemas/capability-manifest/**'
+              - 'scripts/validate_capability_manifest.py'
+              - '.github/workflows/capability-manifest.yml'
+              # AAASM-5678. Rule R16 compares the manifest against these two, so
+              # they are gate INPUTS and not merely referenced documents. A PR
+              # that edits the seed alone is exactly how the manifest and the
+              # seed drift apart, and without these entries that PR is the one
+              # the gate never runs on.
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix.yaml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md'
+              # AAASM-5677 review R2: the consistency guard for those two
+              # artifacts. Its own docstring says to run it before any change to
+              # either, so a change to the guard changes what that means.
+              - 'verification-reports/aaasm-5527-scope-guard.py'
+
+  capability-manifest:
+    name: capability manifest schema & evidence
+    needs: [changes]
+    # `!cancelled()` keeps a *skipped* `changes` (every non-PR event) from
+    # force-skipping this job — without a status function in the expression,
+    # GitHub propagates the skip. A *failed* `changes` leaves the condition
+    # false, so this skips and the aggregate below turns red: fail closed.
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.manifest == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Rule R5 runs `git cat-file -t <evidence_tree>:<path>` and rule R4
+          # runs `git merge-base --is-ancestor`. Both need the commit the
+          # evidence names to be present, and the default shallow fetch does not
+          # have it — the checks would fail for the wrong reason.
+          fetch-depth: 0
+          # Rule R15 compares each row's citations against the newest `v*` tag.
+          # `fetch-depth: 0` already fetches tags today, but stated explicitly
+          # because R15's no-tag path can only WARN: a shallow clone with no
+          # tags and a repository with no releases are indistinguishable from
+          # inside the validator, so the gate must not depend on a default.
+          fetch-tags: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: |
+          npm install -g ajv-cli
+          python -m pip install --quiet pyyaml
+
+      - name: Schema is self-consistent
+        run: ajv compile --strict -s schemas/capability-manifest/v1/capability-manifest.schema.json
+
+      - name: Manifest conforms to the schema
+        run: |
+          ajv validate --strict --all-errors \
+            -s schemas/capability-manifest/v1/capability-manifest.schema.json \
+            -d governance/capability-manifest.yaml
+
+      - name: Evidence, vocabulary and distribution rules
+        run: python scripts/validate_capability_manifest.py
+
+      # Proves the gate can still go red. Every rule has a fixture that must
+      # fail for that rule specifically, plus a positive control that must pass;
+      # a rule silently weakened into a no-op turns this step red even though
+      # the manifest itself would still validate.
+      - name: Validator rules still fail closed
+        run: bash governance/testdata/run-validator-tests.sh
+
+  # AAASM-5677: the stable required context for this workflow. It exists so the
+  # branch-protection contract does not name an internal job: renaming
+  # `capability manifest schema & evidence` would otherwise silently remove the
+  # requirement, which is the failure `docs.yml`'s `metadata-drift` comment
+  # already warns about. `if: always()` means it reports a conclusion on every
+  # pull request, including ones where every gated job skipped — an absent
+  # required check blocks the pull request forever.
+  capability-manifest-success:
+    name: Capability Manifest Success
+    needs: [changes, capability-manifest]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A required Capability Manifest job concluded with '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required Capability Manifest jobs passed or were intentionally skipped."

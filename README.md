@@ -123,20 +123,45 @@ brew uninstall aasm            # plus aasm-runtime / aasm-proxy if installed
 
 ## Overview
 
-`agent-assembly` brings governance to AI agents at scale. It intercepts what an
-agent tries to do — call a tool, reach the network, spend budget — at three
-independent layers, sends each action to a central **gateway** for a
-**policy** decision, and records the outcome in an immutable audit trail.
+`agent-assembly` brings governance to AI agents at scale. An action on a governed
+path — a tool call, a network request, a budget spend — is checked against your
+**policy**, by a central **gateway** or by the sidecar proxy's local egress rules,
+and the outcome is recorded in a hash-chained, **tamper-evident** audit trail that
+`aasm audit verify-chain` re-verifies offline. Where nothing inspected the payload,
+the honest state is *unmeasured* — the proxy's transparent-tunnel path records
+"forwarded, and nothing looked at it", never clean. One known defect qualifies that:
+the CONNECT-level event for the same connection is still written as an allow, which
+ADR 0033 §2 logs as a truthfulness bug awaiting a code fix.
 
-The three interception layers, lowest-latency first:
+Governance is assembled from independently-deployable mechanisms rather than a
+fixed pipeline, and each one holds a stated boundary — lowest-latency first:
 
-- **SDK shim** (in-process) — fastest path; requires the agent to adopt an SDK.
-- **Sidecar proxy** (`aa-proxy`) — intercepts outbound HTTPS without code changes.
-- **eBPF** (Linux kernel) — catches everything else, including bypass attempts.
+- **SDK shim** (in-process) — the fastest path, but it needs SDK adoption, an
+  explicit initializer call and a reachable runtime. In this repo it reaches
+  *Evaluated* (advisory); *denied before execution* depends on the out-of-repo
+  shim honouring the answer, and the SDK is not a security boundary (ADR 0002).
+- **Sidecar proxy** (`aa-proxy`) — refuses or redacts outbound HTTPS before it
+  leaves the machine, without changing the *agent's* own code. It must be
+  installed, started, routed to (`HTTPS_PROXY`) and have its CA trusted, and
+  `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
+  Linux and macOS. On macOS no prebuilt binary exists on any channel — not the
+  GitHub Release assets, not the Homebrew tap, not the `install.sh` component
+  installer, not GHCR — so a source build of the `aa-proxy` crate from crates.io
+  (`cargo install aa-proxy`) is the only route.
+- **eBPF** (`aa-ebpf*`) — **Linux only**; there is no macOS or Windows host
+  adapter. Its TLS, file and exec probes reach *observed* / *detected* and no
+  further — a blocked path sets an alert bit and the syscall still proceeds. Its
+  one program that terminates rather than observes, the syscall guard, reaches
+  *detected* plus asynchronous process termination — explicitly **not** *denied
+  before execution*. It is **off by default**, and the offending syscall runs once
+  before the `SIGKILL` lands. Its loader daemon has no prebuilt binary on any
+  channel either; a source build of the `aa-ebpf` crate from crates.io is the
+  only route.
 
-Each layer reports to the same gateway, so you get one unified view no matter
-which layers a deployment runs. See the [Architecture overview](docs/src/architecture/README.md)
-for the full picture, or jump straight to the [Quickstart](#quickstart).
+A mechanism that is not deployed is reported as absent — nothing underneath
+silently picks up what it would have done. See the
+[Architecture overview](docs/src/architecture/README.md) for the full picture, or
+jump straight to the [Quickstart](#quickstart).
 
 ### Governing an AI dev tool
 
@@ -195,7 +220,7 @@ The Cargo workspace declares **30 members** in the top-level `Cargo.toml`. The t
 | `aa-proxy` | Sidecar HTTPS interception proxy (MitM with per-host CA) |
 | `aa-sdk-client` | Shared SDK runtime-client (UDS transport, codec, lifecycle) the language shims wrap |
 | `aa-wasm` | WebAssembly target via wasm-bindgen |
-| `aa-gateway` | Control plane — policy enforcement, agent registry, budget tracking |
+| `aa-gateway` | Control plane — policy evaluation, agent registry, budget tracking |
 | `aa-api` | HTTP presentation layer with OpenAPI spec generation (utoipa) |
 | `aa-cli` | `aasm` command-line tool |
 | `conformance` | Cross-SDK protocol conformance test harness |
@@ -241,19 +266,27 @@ See [`docs/release/`](docs/release/) for the per-tag release notes and the
 
 ## Supported platforms
 
-The interception layers have different platform reach. The SDK shim and sidecar
-proxy run anywhere the runtime builds; kernel-level eBPF interception is
-Linux-only.
+Reach differs per mechanism. The canonical, evidence-cited matrix is §5.3 of
+[ADR 0033](docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md);
+this is a summary of it, and where the two disagree the ADR is right.
 
-| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | eBPF interception |
+| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | Host-level (eBPF) |
 |---|---|---|---|
-| Linux (x86_64 / arm64) | ✅ | ✅ | ✅ — kernel with BTF + nightly toolchain |
-| macOS (Apple Silicon / Intel) | ✅ | ✅ | ❌ — Linux-only |
-| Windows | ⚠️ via WSL2 | ⚠️ via WSL2 | ⚠️ via WSL2 |
+| Linux x86_64 | Implemented | Implemented | Implemented — observation (TLS / file / exec); syscall guard opt-in and asynchronous. Needs kernel ≥ 5.8 with BTF and a nightly toolchain |
+| Linux aarch64 | Implemented | Implemented | Implemented (partial) — TLS and exec only; no file-I/O kprobes, whose attach targets are `__x64_sys_*` |
+| macOS (Apple Silicon / Intel) | Implemented | Implemented, with conditions — no prebuilt binary on any channel, and CA trust is attempted at proxy start via an admin prompt that fails startup if refused | **Unsupported** — no host adapter exists |
+| Windows | **Unsupported** | **Unsupported** | **Unsupported** |
 
-On macOS, governance is enforced through the SDK and proxy layers; the eBPF
-layer is unavailable. See [`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel
-requirements.
+Windows is unsupported in all three columns rather than partial: `aa-proxy` uses
+`tokio::signal::unix` unconditionally so the crate has no Windows build path, `aasm`
+takes `aa-proxy` as an unconditional dependency, no release target is a Windows
+target, and no ETW, WFP or minifilter code exists. WSL2 is Linux — a Linux binary
+in a Linux VM is the Linux row, not Windows support, and reading it the other way
+is what ADR 0033 forbidden design 5 rules out.
+
+Where a mechanism is unsupported it is absent, and absence is reported as absence:
+nothing underneath picks up what it would have done. See
+[`aa-ebpf/README.md`](aa-ebpf/README.md) for kernel requirements.
 
 ## Quickstart
 
@@ -400,7 +433,7 @@ mdbook serve docs --open
 | [Architecture Overview](docs/src/architecture/README.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
 | [API Reference](docs/src/api-reference.md) | rustdoc generation flow and per-crate API surface map |
 | [Command-Line Interface](docs/src/cli/overview.md) | `aasm` global flags, command groups, and examples |
-| [Policy YAML Reference](docs/src/policy-reference.md) | Complete per-section policy field reference, `requires_approval_if` expression syntax, and example policies |
+| [Policy YAML Reference](docs/src/policy-reference.md) | Per-section policy field reference, `requires_approval_if` expression syntax, and example policies |
 | [Dashboard](docs/src/cli/dashboard.md) | Web console and terminal (TUI) governance dashboards |
 | [Local Development](docs/src/development/local-development.md) | From-clone setup, everyday build/test loop, git hooks |
 | [Releases](docs/src/releases.md) | Release state, distribution channels, and process |

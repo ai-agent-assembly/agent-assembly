@@ -21,9 +21,6 @@ use crate::engine::EvaluationResult;
 /// Errors arising from malformed or incomplete proto requests.
 #[derive(Debug, thiserror::Error)]
 pub enum ConvertError {
-    /// The `agent_id` field is missing from the request.
-    #[error("missing agent_id")]
-    MissingAgentId,
     /// The `context` oneof field is missing or empty.
     #[error("missing action context")]
     MissingContext,
@@ -44,20 +41,86 @@ pub fn hash_to_16(s: &str) -> [u8; 16] {
     out
 }
 
+/// The [`AgentId`] used for a check that carried no agent identity
+/// (AAASM-5665).
+///
+/// All-zero, and deliberately **not** `hash_to_16("")`. An absent claim must
+/// not collapse onto a stable, guessable identity: `hash_to_16("")` is one
+/// fixed value, so every unattributed request in a deployment would evaluate —
+/// and be audited — as the same subject, and an agent registered under that
+/// value would collect their decisions. The zero id is reserved for the absence
+/// of identity; `hash_to_16` is not known to produce it for any input.
+///
+/// It is **not** unreachable as a policy scope. `agent:<uuid>` scopes parse
+/// through `Uuid::parse_str`, so the nil UUID resolves to exactly this value
+/// and a document scoped there would apply to every unattributed check. The
+/// guarantee is only that no *registered* agent's id hashes to it.
+pub const UNATTRIBUTED_AGENT_ID: [u8; 16] = [0u8; 16];
+
+/// [`AgentContext::metadata`] key carrying the raw `agentId` string the caller
+/// claimed (AAASM-5665).
+///
+/// [`AgentContext::agent_id`] is SHA-256-truncated, so before this key the
+/// string the caller actually sent was absent from the policy evaluation
+/// context entirely. Deposited alongside `org_id` / `team_id`. No policy
+/// predicate reads it today — it is carried, not matched.
+pub const CLAIMED_AGENT_ID_KEY: &str = "agent_id";
+
+/// [`AgentContext::metadata`] key carrying the lowercase
+/// [`aa_core::AgentIdentityAssurance`] of the claimed id, deposited by the
+/// service layer once the credential token has been resolved.
+pub const AGENT_IDENTITY_ASSURANCE_KEY: &str = "agent_identity_assurance";
+
+/// The `agentId` string a request claimed, or `None` when it claimed none.
+///
+/// `None` covers both shapes an omitted identity takes on the wire: the
+/// `agent_id` message absent entirely (a client that predates the field), and
+/// the message present with an empty `agent_id` string (a client that always
+/// sends the message and leaves the id unset). Both are the *absence* of a
+/// claim and must not be turned into one.
+pub fn claimed_agent_id(req: &CheckActionRequest) -> Option<&str> {
+    req.agent_id
+        .as_ref()
+        .map(|a| a.agent_id.as_str())
+        .filter(|s| !s.is_empty())
+}
+
 /// Convert a [`CheckActionRequest`] into the core domain pair
 /// ([`AgentContext`], [`GovernanceAction`]).
 pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, GovernanceAction), ConvertError> {
     // --- Agent context ---
-    let proto_agent = req.agent_id.as_ref().ok_or(ConvertError::MissingAgentId)?;
-    let agent_id = AgentId::from_bytes(hash_to_16(&proto_agent.agent_id));
+    // AAASM-5665 — an absent `agent_id` is UNATTRIBUTED, not a rejection. A
+    // client that predates the field previously got `InvalidArgument` here,
+    // which under an enforce-posture SDK reads as a deny. It is now evaluated
+    // like any other request carrying no authoritative identity: global,
+    // default and tool-scoped rules still apply, and tenancy is neutralised by
+    // `apply_authoritative_tenancy`.
+    //
+    // The reserved id is NOT outside the agent-scope key space. `PolicyScope`
+    // parses `agent:<uuid>` (`aa-policy/src/scope.rs`), so a document scoped to
+    // the nil UUID resolves to exactly `UNATTRIBUTED_AGENT_ID` and would apply
+    // to every unattributed check as the narrowest cascade tier. What the
+    // reserved value guarantees is only that no *registered* agent's id hashes
+    // to it, so an unattributed request never lands in a registered agent's
+    // scope.
+    let claimed = claimed_agent_id(req);
+    let agent_id = AgentId::from_bytes(match claimed {
+        Some(id) => hash_to_16(id),
+        None => UNATTRIBUTED_AGENT_ID,
+    });
     let session_id = SessionId::from_bytes(hash_to_16(&req.trace_id));
 
     let mut metadata = BTreeMap::new();
-    if !proto_agent.org_id.is_empty() {
-        metadata.insert("org_id".into(), proto_agent.org_id.clone());
+    if let Some(id) = claimed {
+        metadata.insert(CLAIMED_AGENT_ID_KEY.into(), id.to_string());
     }
-    if !proto_agent.team_id.is_empty() {
-        metadata.insert("team_id".into(), proto_agent.team_id.clone());
+    if let Some(proto_agent) = req.agent_id.as_ref() {
+        if !proto_agent.org_id.is_empty() {
+            metadata.insert("org_id".into(), proto_agent.org_id.clone());
+        }
+        if !proto_agent.team_id.is_empty() {
+            metadata.insert("team_id".into(), proto_agent.team_id.clone());
+        }
     }
     if !req.credential_token.is_empty() {
         metadata.insert("credential_token".into(), req.credential_token.clone());
@@ -175,6 +238,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             approval_id: String::new(),
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         };
     }
 
@@ -210,6 +274,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             approval_id: String::new(),
             redact: Some(RedactInstructions { rules }),
             decision_latency_us: latency_us,
+            ..Default::default()
         };
     }
 
@@ -221,6 +286,7 @@ pub fn eval_result_to_response(eval: &EvaluationResult, latency_us: i64, policy_
             approval_id: String::new(),
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         },
         PolicyResult::Deny { .. } => unreachable!("Deny is handled by the short-circuit above"),
         PolicyResult::RequiresApproval { .. } => {
@@ -310,6 +376,7 @@ pub fn approval_decision_to_response(
             approval_id: id_str,
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         },
         ApprovalDecision::Rejected { reason, .. } => CheckActionResponse {
             decision: Decision::Deny as i32,
@@ -318,6 +385,7 @@ pub fn approval_decision_to_response(
             approval_id: id_str,
             redact: None,
             decision_latency_us: latency_us,
+            ..Default::default()
         },
         ApprovalDecision::TimedOut { fallback } => {
             let (proto_decision, reason) = match fallback {
@@ -332,6 +400,7 @@ pub fn approval_decision_to_response(
                 approval_id: id_str,
                 redact: None,
                 decision_latency_us: latency_us,
+                ..Default::default()
             }
         }
     }

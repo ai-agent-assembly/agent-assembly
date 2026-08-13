@@ -25,8 +25,8 @@ vi.mock('./features/approvals/ApprovalsBellButton', () => ({
 }))
 
 describe('CANONICAL_ROUTES config', () => {
-  it('declares 13 routes — the canonical 12 plus analytics', () => {
-    expect(CANONICAL_ROUTES).toHaveLength(13)
+  it('declares 14 routes — the canonical 12 plus analytics and sensitive data', () => {
+    expect(CANONICAL_ROUTES).toHaveLength(14)
   })
 
   it('covers all three groups (monitor, control, manage)', () => {
@@ -63,11 +63,18 @@ describe('CANONICAL_ROUTES config', () => {
     expect(analytics!.group).toBe('monitor')
   })
 
-  it('every num is a zero-padded two-digit sequence 01..13', () => {
+  it('every num is a zero-padded two-digit sequence 01..14', () => {
     const nums = CANONICAL_ROUTES.map((r) => r.num).sort((a, b) => a.localeCompare(b))
     expect(nums).toEqual([
-      '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13',
+      '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14',
     ])
+  })
+
+  it('adds sensitive data as a control-group route beyond the canonical 12 (AAASM-5360)', () => {
+    const sensitive = CANONICAL_ROUTES.find((r) => r.id === 'sensitive')
+    expect(sensitive).toBeDefined()
+    expect(sensitive!.path).toBe('/sensitive-data')
+    expect(sensitive!.group).toBe('control')
   })
 
   it('leaves the alerts route without a nav glyph (AAASM-5066)', () => {

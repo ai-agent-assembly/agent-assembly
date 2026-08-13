@@ -1,0 +1,122 @@
+# INVALID FIXTURE — expects rule R15, and it exists to pin R15's READ SET.
+#
+# `invalid-r15-release-scope-unstated.yaml` cites its main-only path in
+# `evidence[].path`. This one cites it in `notes` instead, and everything R15
+# looked at in round 3 is deliberately clean:
+#
+#   evidence[0].path        aa-integration-tests/tests/e2e_mcp_interceptor.rs  -> blob at rc.6
+#   interception_component  aa-proxy/src/proxy/mod.rs                          -> blob at rc.6
+#   notes                   aa-sdk-client/src/identity_store.rs                -> ABSENT at rc.6
+#
+# Round 3 shipped R15 reading only `evidence[].path` and
+# `interception_component`, while the same rule two lines later used
+# `prose_values` — twelve prose fields plus known_bypasses[],
+# preconditions[].note and evidence[].{reason,describes,control,note} — to
+# decide whether the required scope statement was PRESENT. A read set narrower
+# than the write set is a hole exactly that wide, and three real rows were in
+# it: I7 (`notes`), L6 (`evidence[0].reason`), I5 (`known_bypasses[2]`). The
+# latter two fields are AAASM-5588's publication surface.
+#
+# THE TRUTH TABLE, which is the point of this file. Two candidate read sets:
+#
+#   | read set                                   | this fixture | invalid-r15-release-scope-unstated |
+#   |--------------------------------------------|--------------|------------------------------------|
+#   | evidence[].path + interception_component   | PASSES (bug) | fails [R15]                        |
+#   | evidence[].path + prose_values (shipped)   | fails [R15]  | fails [R15]                        |
+#
+# The two disagree on THIS input and agree on the other one, so this is the
+# fixture that discriminates the read sets — the other proves only that R15 is
+# not a no-op. Per Appendix A: when a rule can plausibly read one of several
+# field sets, fixture the SET, not merely the failure.
+#
+# WHY THIS PATH, and do not "tidy" it:
+#
+#   git cat-file -t 299de3883:aa-sdk-client/src/identity_store.rs  -> blob
+#   git cat-file -t v0.0.1-rc.6:aa-sdk-client/src/identity_store.rs -> exit 128, absent
+#   git cat-file -t v0.0.1-rc.6:aa-sdk-client/src/keypair.rs       -> blob   (POSITIVE CONTROL:
+#                                                the tag probe is live, so the absence is measured)
+#
+# A historical tag cannot retroactively acquire a file, so the discriminating
+# power is stable rather than incidental. Moving the citation into
+# `interception_component`, or swapping it for a path that exists at the tag,
+# silently restores the round-3 blind spot.
+manifest_version: 1.0.0
+meta:
+  ticket: AAASM-5531
+  epic: AAASM-5526
+  fix_version: agent-assembly v0.0.1-rc.7
+  evidence_tree: 299de38830b5f1b3a239661c35e7bc98c1a78ee4
+  evidence_date: '2026-08-06'
+  channels_surveyed:
+  - crates_io
+  - github_release
+  - homebrew
+  - ghcr
+  channels_not_surveyed:
+  - channel: install_script
+    reason: Not a registry; the script is served from the release assets.
+  - channel: npm
+    reason: Published from node-sdk; nothing in this repository uploads to it.
+  - channel: pypi
+    reason: Published from python-sdk; nothing in this repository uploads to it.
+  - channel: go_modules
+    reason: A git tag in go-sdk; there is no publish step to find.
+  - channel: not_applicable
+    reason: Not a channel; the value a row uses when the question does not apply.
+  sources:
+    canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
+    protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
+    governance: docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md
+    seed: verification-reports/AAASM-5527-capability-coverage-matrix.yaml
+  retired_ids:
+  - Z9
+capabilities:
+- id: T1
+  domain: mcp
+  capability: A worked example row carrying one of every required field
+  owner:
+    repository: agent-assembly
+    component: aa-proxy
+  framework_or_tool:
+  - any_mcp_client
+  language:
+  - any
+  platform:
+  - linux
+  launch_path: routed through aa-proxy with the gateway endpoint configured
+  preconditions:
+  - kind: env
+    name: AA_PROXY_GATEWAY_ENDPOINT
+    required_value: <set>
+  transport: https POST, HTTP/1.1
+  interception_component: evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614
+  identity_source: PROXY_AGENT_ID constant
+  policy_context:
+  - tool_name
+  decision_timing: pre
+  observe_or_enforce: enforce
+  sync_or_best_effort: sync
+  failure_posture: fail_closed
+  coverage: denied_before_execution
+  protection_state: not_applicable
+  governance_level_ceiling: not_applicable
+  boundary_class: B3
+  released_channels:
+  - crates_io
+  - ghcr
+  released_platforms:
+  - linux_x86_64
+  buildable: packaging_gated
+  default_state: 'off'
+  reachability: shipped
+  known_bypasses:
+  - anything that does not traverse the proxy
+  evidence:
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_interceptor.rs
+  evidence_runs_on_main: standing
+  target_level: hold
+  notes: >-
+    The possession proof is durable because the key is stored owner-only
+    (aa-sdk-client/src/identity_store.rs). Deliberately says nothing about which release this
+    is true of — that omission is the defect this fixture pins.

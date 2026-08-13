@@ -131,6 +131,7 @@
 - [In-Flight Ops Registry](operations/ops-registry-architecture.md)
 - [Sandbox / Dry-Run Mode](operations/sandbox-dry-run.md)
 - [Compliance Export](operations/compliance-export.md)
+- [Proxy Prevention-Evidence Retention](operations/proxy-audit-retention.md)
 - [Agent-to-Agent Identity](operations/a2a-identity.md)
 - [Tool Sandbox: Network Egress](operations/tool-sandbox-network.md)
 - [Org-Tier Isolation](operations/org-isolation.md)
@@ -155,6 +156,7 @@
 - [Content-Layer Ownership](development/content-ownership.md)
 - [Truth Adoption Record](development/truth-adoption-record.md)
 - [Claim Vocabulary and Waivers](development/claim-vocabulary.md)
+- [Documentation Inventory and Migration Map](development/documentation-inventory.md)
 
 # Architecture Decision Records
 
@@ -191,6 +193,7 @@
   - [0032 - Local-First Sensitive-Data Provider Architecture](adr/0032-local-first-sensitive-data-provider-architecture.md)
   - [0033 - Canonical Governance & Enforcement Architecture](adr/0033-canonical-governance-and-enforcement-architecture.md)
   - [0034 - One Product Truth & Cross-Repository Documentation Governance](adr/0034-one-product-truth-and-cross-repository-documentation-governance.md)
+  - [0035 - Agent Execution Isolation & Pluggable Enforcement Backends](adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
 
 # Research
 
