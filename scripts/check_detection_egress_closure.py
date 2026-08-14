@@ -343,6 +343,26 @@ def selftest() -> int:
 
     truthful = {args: EXPECTED[label] for label, args in SELECTIONS}
 
+    # This case is a TAUTOLOGY with respect to EXPECTED: its input is built
+    # FROM EXPECTED, so it cannot detect a wrong EXPECTED — it hands the table
+    # back to itself and would agree with whatever the table said. Read as
+    # coverage of the pinned closures it is worth nothing; what measures those
+    # is `check()` against cargo, in the CI step beside this one.
+    #
+    # It is not redundant, though, and the reason is worth stating because it
+    # is the opposite of what it looks like. Measured by inverting the
+    # comparison in `check()` (`if not added and not removed` →
+    # `if added or removed`): this case is the ONLY one in this selftest that
+    # catches it. The mutation cases below still pass under that inversion,
+    # because with one selection perturbed the OTHER selection is truthful, and
+    # under a backwards comparison the truthful one is what returns EXIT_DRIFT
+    # — the expected code, arrived at from the wrong selection. So a per-case
+    # EXIT_DRIFT here is not by itself attributable to the crate that case
+    # perturbed; the suite is sound as a whole, and this line is what makes it
+    # so.
+    #
+    # The falsifiability with respect to ADDED and REMOVED crates is in the
+    # mutation cases below, each perturbing the truthful input by a literal.
     if _quiet(here, _stub(truthful)) != EXIT_OK:
         failures.append("check() reported drift on the pinned closures")
 
