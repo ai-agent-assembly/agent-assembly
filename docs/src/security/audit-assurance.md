@@ -73,27 +73,41 @@ path for the agent to alter or suppress its own history.
 
 ## What is retained, and what is deleted
 
-Tamper-*evident* is not immutable, and neither tier keeps everything forever. An
-audit guarantee that does not say what it loses is not a guarantee, so this is
-the complete picture as of the defaults in code.
+Tamper-*evident* is not immutable. An audit guarantee that does not say what it
+loses is not a guarantee, so this is the picture as of the defaults in code.
 
-There are **two** sinks, under different bounds. They are not interchangeable,
-and neither is a backup of the other.
+There are **four** distinct records, not one trail, and a bound that applies to
+one of them does not apply to the others. They are not interchangeable, and none
+is a backup of another. **A retention statement is only true of the record it
+names**, which is why each row below names its own.
 
-| | Gateway trail (`audit_logs`) | Proxy prevention-evidence sink |
-| --- | --- | --- |
-| What it holds | The decision record — governed action, verdict, attribution | Per-request refusal evidence held by the layer that sees the bytes |
-| Bound | Time: `hot_days` then `warm_days`, then `cold_action` | Size: `DEFAULT_MAX_SEGMENT_BYTES` × `DEFAULT_RETAINED_SEGMENTS` |
-| Defaults | 30 days hot, 90 days warm, then **`Drop`** | 32 MiB × 3 segments; `max_age` unset |
-| How records leave | Retention pruning deletes rows past `warm_days` | Oldest segment deleted on rotation; entries dropped when the channel is full |
-| Loss is counted | — | six counters: `dropped_entries`, `discarded_segments`, `expired_segments`, `retention_shortfalls`, `write_failures`, `export_failures` |
+| Record | What it holds | Bound | What deletes it |
+| --- | --- | --- | --- |
+| **Gateway JSONL** — `<audit_dir>/<agent>-<session>.jsonl` (`aa-gateway/src/audit.rs`) | The hash-chained entries. This is the tamper-evident primary record, and the one `GET /api/v1/logs` serves (`aa-gateway/src/audit_reader.rs`) | **None** | **Nothing.** No rotation, size cap or retention pass exists for it in this repository |
+| **Gateway SQL** — `audit_events` (`aa-gateway/migrations/postgres/0001_initial.sql`) | The dual-sink copy of the decision record. Carries **no** chain columns, so it is not the tamper-evident tier | Time: `hot_days` + `warm_days`, then `cold_action` | `apply_retention` issues `DELETE FROM audit_events` (`aa-gateway/src/storage/postgres.rs`, `sqlite.rs`) |
+| **`audit_logs`** (`aa-storage-postgres/migrations/0004_audit_logs.sql`) | The metadata-only row written by the NATS audit consumer (`aa-storage-postgres/src/audit_sink.rs`) | **None** | **Nothing.** No retention pass in this repository targets this table |
+| **Proxy prevention-evidence sink** (`aa-proxy/src/audit_jsonl.rs`) | Per-request refusal evidence held by the layer that sees the bytes | Size: `DEFAULT_MAX_SEGMENT_BYTES` × `DEFAULT_RETAINED_SEGMENTS` — 32 MiB × 3 segments; `max_age` unset | Oldest segment deleted on rotation; entries dropped when the channel is full. Both counted — see below |
 
-Three consequences worth stating plainly, because each one breaks an assumption
+So the honest summary is not "audit records are kept for a bounded time". It is:
+**the tamper-evident record has no bound today, and the two records that are
+bounded are the SQL copy and the proxy's evidence sink.** Anyone who needs the
+chain itself pruned has to do it outside the product.
+
+Four consequences worth stating plainly, because each one breaks an assumption
 an operator can reasonably arrive at from the sections above:
 
-- **The default gateway `cold_action` is `Drop`.** Records older than
-  `warm_days` are deleted, not archived. Archiving is opt-in and requires an
-  `archive_url`.
+- **The gateway SQL cutoff is `hot_days` + `warm_days`, not `warm_days`.**
+  `apply_retention` computes its cold threshold as
+  `now - (hot_days + warm_days)`, so at the defaults (30 and 90) a row is
+  deleted once it is **120 days** old, not 90. The two numbers add; they are not
+  a schedule of one absolute age followed by another.
+- **`cold_action = Archive` is not implemented.** On Postgres it does not
+  archive and it does not prune — `apply_retention` returns
+  `RetentionError` and the whole pass fails
+  (`aa-gateway/src/storage/postgres.rs`). On SQLite it logs a warning and
+  **falls back to dropping the rows** (`aa-gateway/src/storage/sqlite.rs`), so
+  selecting it deletes exactly the data an operator chose it to preserve.
+  `Drop` is the only cold action that behaves as named.
 - **On the proxy sink, size wins over age.** `max_age` is a *maximum* age, never
   a minimum guarantee — a busy proxy rotates a segment away before its age is up.
   That case is not silent: it increments `retention_shortfalls`, so an operator
@@ -102,16 +116,21 @@ an operator can reasonably arrive at from the sections above:
   the `SinkCompleteness` sidecar to find out whether the window you are reading
   is complete. The consumer-visible signal is its `window` field: `sealed()` sets
   it to `WindowCompleteness::Complete` only when `is_lossless()` holds — all six
-  counters above at zero — and to `Lossy` otherwise. A rate computed over a
-  `Lossy` window is a rate over an unknown denominator.
+  of `dropped_entries`, `discarded_segments`, `expired_segments`,
+  `retention_shortfalls`, `write_failures` and `export_failures` at zero — and to
+  `Lossy` otherwise. A rate computed over a `Lossy` window is a rate over an
+  unknown denominator.
 
 Request and response bodies are additionally truncated at
 `MAX_PERSISTED_BODY_BYTES` (8 KiB), so a persisted body is evidence that a
 request occurred and what it began with — not a full transcript of it.
 
 This is why the front-page and overview copy says **tamper-evident** rather than
-immutable or permanent: the chain lets you detect alteration, and says nothing
-about deletion under a retention policy you control
+immutable or permanent. The two words answer different questions and only one of
+them is answered here: the chain lets you detect *alteration*, and says nothing
+at all about *deletion*. Note which way round the gap runs — the tamper-evident
+record is the one with no retention bound, so "tamper-evident" must not be read
+as shorthand for "and therefore pruned on a schedule"
 ([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679)).
 
 ## End-to-end audit data flow
