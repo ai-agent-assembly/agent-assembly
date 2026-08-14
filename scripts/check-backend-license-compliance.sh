@@ -351,7 +351,8 @@ check_pending_backend() {
   forbidden="$(printf '%s' "$b" | jq -r '
     . as $obj
     | [ "upstream_name","version","source_url","release_sha256","spdx_license",
-        "license_text_path","modifications","review","channels","sbom" ]
+        "license_text_path","modifications","review","channels","sbom",
+        "distribution_probe" ]
     | map(. as $k | select($obj | has($k)))
     | join(", ")')"
   if [ -n "$forbidden" ]; then
@@ -425,6 +426,117 @@ check_active_backend() {
   [ -n "$revidence" ] || err "active backend '$id' has no 'review.capability_evidence'. A version bump must not be able to pass review on its own — the evidence that the new version still provides the required isolation capabilities has to be cited."
 
   check_backend_channels "$b" "$id" "$license"
+  check_distribution_claim "$b" "$id"
+}
+
+# Grep $2.. (executable names) across the newline-separated relative paths in
+# $1, printing `file:line: text` for each hit. Case-insensitive fixed strings,
+# deliberately over-broad: a false positive is a loud failure someone reads and
+# resolves, a false negative is the silent hole this file exists to close.
+probe_hits() {
+  local files="$1" names="$2"
+  [ -n "$files" ] || return 0
+  [ -n "$names" ] || return 0
+  # A pattern FILE rather than repeated `-e`: bash 3.2 (the macOS default, and
+  # what a developer runs this under locally) errors on `${#arr[@]}` for an
+  # empty array with `set -u`, so the array form fails on the exact edge case
+  # this function has to survive.
+  local pf f
+  pf="$(mktemp)"
+  printf '%s\n' "$names" > "$pf"
+  # De-duplicated: several channels legitimately share a packaging file
+  # (release.yml owns three), and reporting the same line once per channel
+  # makes a single defect look like several.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    ( cd "$PACKAGING_ROOT" && grep -n -i -F -f "$pf" -- "$f" 2>/dev/null ) \
+      | head -2 | sed "s|^|  $f:|" || true
+  done <<HITS
+$(printf '%s\n' "$files" | sort -u)
+HITS
+  rm -f "$pf"
+}
+
+# ---------------------------------------------------------------------------
+# 4. The distribution claim, checked against the packaging code.
+#
+# AAASM-5714 AC4 asks that SBOM/release checks cover any backend artifact AASM
+# distributes. AASM currently distributes none — every channel's strategy is
+# `system` or `not-distributed`. That answer is only worth something if it can
+# be contradicted, so this check reads the files that decide what each channel
+# ships and requires them to AGREE with the manifest, in both directions:
+#
+#   * a backend claiming non-distribution on every channel must appear NOWHERE
+#     in the packaging surface. A row asserting "we ship nothing" while the
+#     release pipeline names its binary is exactly the lie the row could
+#     otherwise tell forever.
+#   * a backend claiming `bundled`/`downloaded`/`source` must appear SOMEWHERE
+#     in the surface of a channel it claims. Otherwise the claim is stale, or
+#     the surface is declared wrong — either way nothing here is being checked.
+#
+# The two directions share one scanner, so neither verdict can be produced by a
+# scanner that is not actually reading anything.
+# ---------------------------------------------------------------------------
+check_distribution_claim() {
+  local b="$1" id="$2"
+  local names name acq_files all_files hits ch_id strategy
+  local scannable_acq=0 acquiring=0
+
+  if [ "$(printf '%s' "$b" | jq -r '(.distribution_probe.binary_names // []) | length')" -eq 0 ]; then
+    err "active backend '$id' has no 'distribution_probe.binary_names'. Without the executable name(s) AASM would have to write into its packaging code, this backend's per-channel strategy is an assertion nothing can contradict."
+    return
+  fi
+  names="$(printf '%s' "$b" | jq -r '.distribution_probe.binary_names[]')"
+  for name in $names; do
+    case "$name" in
+      *[[:space:]]*|"") err "active backend '$id' has a distribution_probe.binary_names entry containing whitespace; it must be a bare executable name." ; return ;;
+    esac
+  done
+
+  acq_files=""
+  all_files=""
+  while IFS="=" read -r ch_id strategy; do
+    [ -n "$ch_id" ] || continue
+    # Skip ids the manifest does not declare — already reported as unknown.
+    [ "$(jq -r --arg c "$ch_id" '[.channels[] | select(.id == $c)] | length' "$MANIFEST")" -eq 1 ] || continue
+    local ch_files
+    ch_files="$(channel_surface_files "$ch_id")"
+    [ -z "$ch_files" ] || all_files="$all_files$ch_files
+"
+    case " $GATED_STRATEGIES " in
+      *" $strategy "*)
+        acquiring=$((acquiring + 1))
+        if [ -n "$ch_files" ]; then
+          scannable_acq=1
+          acq_files="$acq_files$ch_files
+"
+        fi
+        ;;
+    esac
+  done < <(printf '%s' "$b" | jq -r '(.channels // {}) | to_entries[] | "\(.key)=\(.value)"')
+
+  if [ "$acquiring" -gt 0 ]; then
+    # Acquisition claimed. Nothing to corroborate if every acquiring channel is
+    # owned by another repository — that limit is declared on the channel.
+    [ "$scannable_acq" -eq 1 ] || return
+    hits="$(probe_hits "$acq_files" "$names")"
+    if [ -z "$hits" ]; then
+      err "active backend '$id' claims AASM acquires it on at least one channel, but none of those channels' packaging files reference any of its binary names ($(printf '%s' "$names" | tr '\n' ' ')). Either the claim is stale, or the file that actually does the packaging is not in that channel's packaging_paths — an unscannable claim is not a checked one."
+    fi
+    return
+  fi
+
+  # No acquiring channel: this backend claims AASM distributes nothing.
+  if [ -z "$all_files" ]; then
+    err "active backend '$id' claims non-distribution on every channel, but no channel offers a scannable packaging surface, so the claim rests on nothing. At least one channel must declare packaging_paths that resolve to real files."
+    return
+  fi
+  hits="$(probe_hits "$all_files" "$names")"
+  if [ -n "$hits" ]; then
+    err "active backend '$id' declares 'system'/'not-distributed' on EVERY channel, but its binary name appears in the packaging surface:
+$hits
+A channel that names the backend's executable in the code that builds its artifact is distributing it. Correct the channel strategy (and take on the license, notice and SBOM obligations that follow), or correct the packaging."
+  fi
 }
 
 # The distribution matrix, per backend. Every declared channel must get an
@@ -833,6 +945,42 @@ BASELINE
   run_case "empty_surface_without_external_marker" fail "packaging_owner" \
     "$(mutate empty_surface_without_external_marker \
        'del(.channels[2].packaging_owner)')"
+
+  # --- the distribution claim, checked against the packaging code ------------
+  run_case "no_binary_names_to_probe_with" fail "distribution_probe.binary_names" \
+    "$(mutate no_binary_names_to_probe_with 'del(.backends[0].distribution_probe)')"
+
+  run_case "pending_carries_distribution_probe" fail "carries provenance field" \
+    "$(mutate pending_carries_distribution_probe \
+       '.backends[2].distribution_probe = {"binary_names": ["guess"]}')"
+
+  # THE DISCRIMINATING PAIR. `fixture-absent` claims non-distribution on every
+  # channel and the baseline accepts it, because `absent-backend-bin` appears in
+  # neither fixture packaging file. The single mutation below changes only the
+  # name being probed for — same row, same strategies, same packaging files —
+  # and the verdict flips. A scanner that was not reading the files could not
+  # tell these two apart.
+  run_case "non_distribution_claim_contradicted_by_packaging" fail \
+    "declares 'system'/'not-distributed' on EVERY channel" \
+    "$(mutate non_distribution_claim_contradicted_by_packaging \
+       '.backends[1].distribution_probe.binary_names = ["fixture-backend-bin"]')"
+
+  # The other direction, also one mutation: `fixture-backend` still claims
+  # `bundled`, but under a name nothing packages. A gate that only ever checked
+  # for absence would pass this.
+  run_case "acquisition_claimed_but_nothing_packages_it" fail \
+    "none of those channels' packaging files reference" \
+    "$(mutate acquisition_claimed_but_nothing_packages_it \
+       '.backends[0].distribution_probe.binary_names = ["never-packaged-bin"]')"
+
+  # A non-distribution claim with nothing to read it against is not a checked
+  # claim. Marking every channel external leaves the scanner no files at all.
+  run_case "non_distribution_claim_with_no_scannable_surface" fail \
+    "rests on nothing" \
+    "$(mutate non_distribution_claim_with_no_scannable_surface \
+       '.channels |= map(.packaging_owner = "external-repo" | .packaging_paths = [])
+        | .backends[0].channels |= map_values("not-distributed")
+        | del(.backends[0].sbom)')"
 
   # --- notices + SBOM obligations on bundled bytes --------------------------
   run_case "bundled_without_sbom_statement" fail "sbom.covered_by" \
