@@ -35,6 +35,108 @@ both use the word "sandbox".
 
 ---
 
+## Amendment — AAASM-5751 (2026-08-14): filesystem path scope becomes policy-expressible
+
+**Scope of this amendment: one decision below gains a concrete policy node, and one
+recorded fact about the schema is corrected. No decision is reversed or superseded.**
+
+### Why an amendment rather than a new ADR
+
+The *principle* was already decided here. [Backend capability
+examples](#backend-capability-examples) states that the capability vocabulary must
+distinguish **"Filesystem | read/write/create/delete scope"**, and
+[decision 3](#3-isolation-class-is-not-backend-identity) states that policy describes
+required isolation properties portable across backends. Adding a filesystem path-scope
+node executes a decision this ADR already made; recording it as a *new* ADR would fork
+the record for a question that is already answered.
+
+It is not "no ADR action" either. Until AAASM-5751, no policy node could name a path, so
+`aa_isolation::lowering` reported both filesystem domains at
+`ScopeGranularity::WholeDomainOnly` and its module documentation said the schema carried
+"no path scope". Shipping the node makes that recorded text false, and a decision record
+that has gone stale is worse than one that never existed.
+
+It amends **this** ADR and not [ADR 0033](0033-canonical-governance-and-enforcement-architecture.md):
+0033 stays the canonical source for the §6 claim vocabulary, which this amendment does not
+touch, and it carries a separate open amendment under AAASM-5654. Two concurrent edits to
+0033 would conflict for no benefit — nothing here needs a §6 term that does not already
+exist.
+
+### What is now expressible
+
+A `filesystem:` section on the policy `spec`, with an operator-authored allow-list of
+absolute path prefixes per verb:
+
+```yaml
+spec:
+  filesystem:
+    read:
+      allow: ["/workspace", "/usr/share/dict"]
+    write:
+      allow: ["/workspace/build"]
+```
+
+Normative reading of the three states, which must not collapse into one:
+
+| Authored form | Meaning | Lowers to |
+| --- | --- | --- |
+| Section absent | The operator stated nothing about paths. **Not a grant.** | `DomainCoverage::NotStated`; no requirement from this node |
+| `allow:` present and non-empty | Only these subtrees may be reached; everything else must be prevented | `Lowered { granularity: Enumerated }`, `RequirementScope::Selectors` |
+| `allow:` present and empty | A restriction is in force and permits nothing — the **most** restrictive posture | `Lowered { granularity: WholeDomainOnly }`, `RequirementScope::Whole` |
+
+An empty `allow:` deliberately reads as deny-all rather than as "no restriction". That
+matches `aa_policy::check_network_egress`'s live treatment of an empty egress allowlist
+and refuses to repeat the canonical `NetworkPolicy` doc-comment's opposite reading, which
+is the fail-open shape AAASM-3728/AAASM-3730 already had to close once.
+
+A whole-domain capability denial (`capabilities.deny: [file_read]`) outranks the path
+allow-list, exactly as a `network_outbound` denial outranks `network.allowlist`: lowering
+the narrower node under a broader denial would emit a requirement permitting paths the
+same document forbids.
+
+Across a policy cascade the merge is **most-restrictive-wins**: the effective permitted set
+is the *intersection* of every tier that declared the node, computed over path subtrees
+rather than over strings, so a narrower tier can only ever shrink a broader one. A cascade
+carrying **no documents at all** is a refusal, not an empty intersection —
+[ADR 0024](0024-empty-cascade-semantics.md) §6(2) already settled that an absent cascade is
+*Unconfigured*, never permission.
+
+### What deliberately remains unrepresentable
+
+`NameResolution`, `Ipc`, `Credential` and `Resource` keep reporting
+`DomainCoverage::PolicyCannotExpress`. This is recorded as **accepted, measured risk**,
+not as a set of domains nothing could use: measured against the Sandlock backend's
+`capability.rs`, `Ipc` and `Credential` are `Mediation::Enforce` with
+`SupportLevel::Partial` and `Resource` is `Mediation::Enforce`, so for those three the
+backend can enforce something an operator has no way to ask for. They stay unexpressed
+because no acceptance criterion under Epic AAASM-5702 requires operator-authored control
+of them, and ambient credential authority is handled procedurally by AAASM-5709 rather
+than as a policy node. Speculative schema is a public contract that cannot be withdrawn;
+a named gap can be closed at any time.
+
+Two sources of paths that already exist in the codebase were examined and **rejected** as
+policy sources:
+
+- `SENSITIVE_MUTATION_DENY_DEFAULTS` (`aa-security/src/policy/ebpf.rs`) is the eBPF
+  layer's own implementation floor, not something an operator wrote. Consuming it would
+  make one backend's lowering the policy semantics, which
+  [decision 2](#2-aasm-owns-the-execution-contract-backends-own-mechanism-specific-realization)
+  forbids.
+- `tools[].requires_approval_if` path prefixes *are* operator-authored, but they mean
+  **approval**, not denial. A confined process has no approval channel, so lowering them
+  to a prevention requirement would silently convert "ask a human" into a hard block.
+  Stronger than what the operator wrote is still wrong.
+
+### Consequence for existing text
+
+Where this ADR and code derived from it describe filesystem policy as a whole-domain
+boolean, that description is superseded **for path scope only**. The remaining filesystem
+gaps this ADR names are unchanged and still reported per domain: create/rename/write and
+delete are not separable verbs, and the backend's own sensitive-path defaults are still
+not re-derived as policy.
+
+---
+
 ## Context
 
 Agent Assembly already owns the governance semantics above execution: agent identity and
