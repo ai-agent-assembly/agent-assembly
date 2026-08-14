@@ -2565,6 +2565,10 @@ mod tests {
                 }],
                 enforcement_mode: aa_core::EnforcementMode::default(),
             },
+            // Deliberately the empty canonical document: these tests are about
+            // the policy *state*, and a stub that restricted something would
+            // give every one of them an execution boundary they never asked for.
+            canonical: aa_security::policy::PolicyDocument::default(),
         }
     }
 
@@ -3371,6 +3375,7 @@ mod tests {
                     }],
                     enforcement_mode: aa_core::EnforcementMode::default(),
                 },
+                canonical: aa_security::policy::PolicyDocument::default(),
             },
             run_policy::PolicyResolution::Permissive {
                 source: PathBuf::from("/p.yaml"),
@@ -3383,6 +3388,7 @@ mod tests {
                     }],
                     enforcement_mode: aa_core::EnforcementMode::default(),
                 },
+                canonical: aa_security::policy::PolicyDocument::default(),
             },
             run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] }),
             run_policy::PolicyResolution::LoadFailed {
