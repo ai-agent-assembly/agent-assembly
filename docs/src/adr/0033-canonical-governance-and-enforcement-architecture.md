@@ -969,12 +969,21 @@ can find the field.
 Model-defining or still-referenced — these need a superseded-by reference to this ADR,
 and their vocabulary re-framed if they are reopened:
 
-- [ ] [AAASM-4](https://lightning-dust-mite.atlassian.net/browse/AAASM-4) — "Three-Layer Agent Interception" (the originating item)
-- [ ] [AAASM-44](https://lightning-dust-mite.atlassian.net/browse/AAASM-44) — "interception layer auto-detection and graceful fallback (eBPF → proxy → SDK)"; the *fallback* framing is explicitly rejected in Alternatives
-- [ ] [AAASM-3214](https://lightning-dust-mite.atlassian.net/browse/AAASM-3214), [AAASM-3223](https://lightning-dust-mite.atlassian.net/browse/AAASM-3223) — test cases asserting the three-layer model is "described accurately"; their expected result is now this ADR
-- [ ] [AAASM-3249](https://lightning-dust-mite.atlassian.net/browse/AAASM-3249), [AAASM-3264](https://lightning-dust-mite.atlassian.net/browse/AAASM-3264) — QA verification of the model and its "bypass coverage"
-- [ ] [AAASM-4608](https://lightning-dust-mite.atlassian.net/browse/AAASM-4608) — user-journey "Understand & exercise the three-layer interception model"
-- [ ] [AAASM-4644](https://lightning-dust-mite.atlassian.net/browse/AAASM-4644) — already-filed finding about rival mental models across surfaces; this ADR is its resolution
+- [x] [AAASM-4](https://lightning-dust-mite.atlassian.net/browse/AAASM-4) — "Three-Layer Agent Interception" (the originating item)
+- [x] [AAASM-44](https://lightning-dust-mite.atlassian.net/browse/AAASM-44) — "interception layer auto-detection and graceful fallback (eBPF → proxy → SDK)"; the *fallback* framing is explicitly rejected in Alternatives
+- [x] [AAASM-3214](https://lightning-dust-mite.atlassian.net/browse/AAASM-3214), [AAASM-3223](https://lightning-dust-mite.atlassian.net/browse/AAASM-3223) — test cases asserting the three-layer model is "described accurately"; their expected result is now this ADR
+- [x] [AAASM-3249](https://lightning-dust-mite.atlassian.net/browse/AAASM-3249), [AAASM-3264](https://lightning-dust-mite.atlassian.net/browse/AAASM-3264) — QA verification of the model and its "bypass coverage"
+- [x] [AAASM-4608](https://lightning-dust-mite.atlassian.net/browse/AAASM-4608) — user-journey "Understand & exercise the three-layer interception model"
+- [x] [AAASM-4644](https://lightning-dust-mite.atlassian.net/browse/AAASM-4644) — already-filed finding about rival mental models across surfaces; this ADR is its resolution
+
+All eight annotated by AAASM-5607 with a superseded-by comment linking here, and
+a `superseded-architecture` label where the item is model-defining rather than a
+point-in-time record; see that ticket's closing comment for the per-item notes.
+[AAASM-196](https://lightning-dust-mite.atlassian.net/browse/AAASM-196) and
+[AAASM-201](https://lightning-dust-mite.atlassian.net/browse/AAASM-201) — named in
+AAASM-5607's own scope, not listed above because neither is model-defining (196 is
+an in-progress Epic with valid ongoing work, 201 is a shipped Story) — also carry a
+framing-correction comment without a label or status change.
 
 Point-in-time execution records — annotate with a pointer, do **not** rewrite:
 [AAASM-1232](https://lightning-dust-mite.atlassian.net/browse/AAASM-1232),
@@ -983,7 +992,8 @@ Point-in-time execution records — annotate with a pointer, do **not** rewrite:
 [AAASM-1549](https://lightning-dust-mite.atlassian.net/browse/AAASM-1549),
 [AAASM-1572](https://lightning-dust-mite.atlassian.net/browse/AAASM-1572),
 [AAASM-3252](https://lightning-dust-mite.atlassian.net/browse/AAASM-3252),
-[AAASM-3446](https://lightning-dust-mite.atlassian.net/browse/AAASM-3446).
+[AAASM-3446](https://lightning-dust-mite.atlassian.net/browse/AAASM-3446) —
+all seven annotated with a pointer comment by AAASM-5607; none rewritten.
 
 ---
 
