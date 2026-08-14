@@ -1238,7 +1238,7 @@ mixing a head count with a base count is how the two rows stop adding up.
 > ([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679)).**
 > The figures above are the authoring-time measurement and are retained for the
 > record; they no longer describe the tree. Over §6.5's scope plus that ticket's
-> `design/**` extension, **at `f2d38e204`: 283 files, 4 blocking, 13 finding,
+> `design/**` extension, **at `48b3ebac2`: 283 files, 4 blocking, 13 finding,
 > 32 info.**
 >
 > The commit is named because this is a *point-in-time* measurement of a moving
@@ -1249,6 +1249,14 @@ mixing a head count with a base count is how the two rows stop adding up.
 > `python3 scripts/check_claim_vocabulary.py --report-only` rather than trusting
 > this number; the **blocking** count is the one the §6.6 adoption path turns
 > on, and it is unchanged.
+>
+> The pin has to be a commit that **contains the checker**, which is why it is
+> `48b3ebac2` — this branch's merge of `f2d38e204` — and not `f2d38e204`
+> itself. `scripts/check_claim_vocabulary.py` does not exist on `main` until
+> this ticket lands, so `git checkout f2d38e204 && …` cannot run the command
+> this note tells a reader to re-run. A citation that names a commit where the
+> stated command does not exist is unreproducible in the same way a bare count
+> is, one step further along.
 >
 > Three of the six blocking rows below have since been fixed on `main` —
 > `README.md:129`, `README.md:135` and `aa-proxy/README.md:11-12` all measure
