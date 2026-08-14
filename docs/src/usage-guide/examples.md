@@ -20,6 +20,11 @@ brain, at least one interception layer (SDK shim, `aa-proxy` sidecar, or eBPF),
 and a policy. Pick the language you are integrating, or browse the cross-cutting
 scenarios:
 
+> **Launching a generic agent under `aasm run`, with process-level execution
+> isolation?** That is a CLI-only walkthrough, not an SDK example — see
+> [Execution isolation → Quickstart](../security/execution-isolation.md#quickstart-a-governed-isolated-launch)
+> and the [`aasm run` CLI reference](../cli/run.md).
+
 - **Node** — [examples-repo/node](https://github.com/ai-agent-assembly/examples/tree/HEAD/node)
 - **Python** — [examples-repo/python](https://github.com/ai-agent-assembly/examples/tree/HEAD/python)
 - **Go** — [examples-repo/go](https://github.com/ai-agent-assembly/examples/tree/HEAD/go)

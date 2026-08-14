@@ -170,6 +170,41 @@ the host against the running proxy rather than treating the simulation deny as a
 real block — see the caveat in
 [Enforce an egress policy](enforce-egress-policy.md).
 
+## `aasm run --isolation process` refuses to launch: "cannot be selected on this host"
+
+```console
+$ aasm run exec --isolation process -- python agent.py
+Error: refusing to launch: an execution-isolation boundary was requested and the `sandlock`
+backend cannot be selected on this host — no sandlock executable on PATH; install it or set
+AA_SANDLOCK_BIN.
+
+There is no fallback. A launch that asked for a boundary and quietly ran without one would
+report as governed while being unconfined, which is the failure this mode exists to prevent.
+Install the backend, or re-run with `--isolation none` to launch unconfined deliberately.
+```
+
+**Cause.** Execution isolation is Linux-only, and even on Linux it requires a
+separate backend executable that Agent Assembly does not bundle, download, or
+build on your behalf. `--isolation auto` / `--isolation process` never falls
+back to running unconfined — there is no silent degrade.
+
+**Fix.** On macOS or Windows there is no fix; no backend targets those
+platforms today. On Linux, install the backend and put it on `PATH`, or set
+`AA_SANDLOCK_BIN` to its path. If you just want to see what a run would do
+without the backend installed, `--dry-run` reports the same refusal without
+stopping. Full detail, including every refusal message and the per-capability
+troubleshooting table, is in
+[Execution isolation → Troubleshooting](../security/execution-isolation.md#troubleshooting).
+
+## A policy-required isolation control is refused instead of degraded
+
+If a policy states an execution-isolation requirement with a posture that
+demands prevention and the selected backend cannot provide it, the launch
+refuses before the process starts rather than running with a weaker boundary
+than requested. Check the per-capability table in `aasm run --dry-run`'s
+`--- execution isolation ---` section for the exact domain and reason — see
+[Execution isolation → Requested vs. achieved](../security/execution-isolation.md#requested-vs-achieved-the-report-shape).
+
 ## Quick reference
 
 | Symptom | First thing to check |
@@ -180,3 +215,4 @@ real block — see the caveat in
 | `gateway status` "not running" | Local mode ≠ legacy gRPC; use `status` / `/healthz` |
 | Empty dashboard tables | `--mode local` serves no data routes — run `aa-api-server` |
 | `validate` warnings | Unknown keys ignored — move into a supported section |
+| `aasm run --isolation` refuses to launch | Linux + backend on `PATH`/`AA_SANDLOCK_BIN`? macOS/Windows have no backend at all |
