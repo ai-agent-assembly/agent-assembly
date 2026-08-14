@@ -917,19 +917,23 @@ clean one (ADR 0034 §6.4).
 | | |
 | --- | --- |
 | **Extensions** | `.md`, `.markdown`, `.mdx`, `.html`, `.txt` |
-| **Included in this repository** | `docs/src/**`, `README.md`, `**/README.md` (any depth), `CONTRIBUTING.md`, `.claude/**` |
+| **Included in this repository** | `docs/src/**`, `README.md`, `**/README.md` (any depth), `CONTRIBUTING.md`, `SECURITY.md`, `.claude/**` |
 | **Excluded by default** | `verification-reports/**`, `.ai/**`, `scratchpad/**`, `target/**`, `node_modules/**`, and any path a repository's `TRUTH-ADOPTION.md` excludes |
 
-**Three root pages are deliberately not listed, and the omission is tracked, not
-accidental.** `SECURITY.md`, `RELEASING.md` and `CHANGELOG.md` are reader-facing
-and none is currently known to carry a violation, but adding them moves the
-baseline in [§8.1](#81-two-corpora-and-why-the-baseline-must-cover-the-larger-one)
-and the question deserves deciding on its merits rather than inside this page.
-`SECURITY.md` is the one that matters — a security researcher's first stop, and
-exactly the page that attracts absolute phrasing about what the product prevents.
-Whether the three come into scope is
-[AAASM-5673](https://lightning-dust-mite.atlassian.net/browse/AAASM-5673); until
-it decides, they are out.
+**[AAASM-5673](https://lightning-dust-mite.atlassian.net/browse/AAASM-5673)
+decided the three root pages this page previously parked.** `SECURITY.md` is in
+scope — a security researcher's first stop, and exactly the page that attracts
+absolute phrasing about what the product prevents; the decision applied per the
+[AAASM-5671](https://lightning-dust-mite.atlassian.net/browse/AAASM-5671) owner
+ruling that a banned absolute is never waived into acceptance, only requalified
+or removed, so bringing a page into scope was never conditional on it already
+being clean. It was, measured before the scope change landed (`git show
+30567cad3:SECURITY.md | python3 scripts/check_claim_vocabulary.py -`: 0
+blocking, 0 finding). `RELEASING.md` and `CHANGELOG.md` stay out — both are
+mechanical logs, not claim surfaces a reader consults to evaluate the product,
+and `CHANGELOG.md` additionally records what was said at the time, which
+[§8.1](#81-two-corpora-and-why-the-baseline-must-cover-the-larger-one) already
+treats as a distinct, deliberately-unenforced case for `docs/src/protocol/CHANGELOG.md`.
 
 `verification-reports/**` is excluded because it is an L6 evidence layer whose
 job is to *record measurements*, including quoting overstatements in order to
