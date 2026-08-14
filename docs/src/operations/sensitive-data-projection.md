@@ -53,9 +53,21 @@ That early return is the operative mechanism. `SensitiveDataProjectionConfig`
 also derives `Default` with `enabled: false`, which is consistent but is not
 what gates the tier.
 
-The default is deliberate. ADR 0032 §8 asks for a projection that is switchable
-without touching existing audit behaviour, and defaulting it on would make the
-conservative state the one an operator has to opt into.
+The default is deliberate, but it is not ADR 0032's. §8 decides the *shape* of
+the tier — that a `SensitiveDataDecisionEvent` and its normalized finding rows
+are written **alongside** the existing `audit_entry_to_storage_event` bridge,
+"which is left untouched". It records no switch, no default and no opt-in. (The
+one "off by default" in ADR 0032 is at its Operational-guidance section and
+governs the deep provider path, a post-v1 item unrelated to this projection.)
+
+Defaulting off is this subsystem's own choice, made where the switch was built
+(AAASM-5440) and stated in the rustdoc on
+`SENSITIVE_DATA_PROJECTION_DB_ENV`. The reasoning is that a new writer against a
+path an operator has not chosen is a surprise on upgrade, so the state that
+requires no decision is the state that writes nothing. What §8 supports is the
+weaker property the revert then rests on: because the projection sits beside the
+audit bridge rather than replacing it, switching it off is a decision about this
+table alone.
 
 ## Enabling it
 
@@ -180,8 +192,11 @@ Stating the boundary precisely matters more than stating it flatteringly.
 
 ## Related
 
-- ADR 0032 — local-first sensitive-data architecture; §8 defines the
-  switchability requirement this page documents.
+- ADR 0032 — local-first sensitive-data architecture. §8 defines the event and
+  projection this page operates, and establishes that they are written alongside
+  an audit bridge left untouched. It does not decide the switch or its default;
+  those are AAASM-5440's, recorded in the rustdoc on
+  `SENSITIVE_DATA_PROJECTION_DB_ENV`.
 - [Proxy Prevention-Evidence Retention](proxy-audit-retention.md) — the
   proxy-tier sink, which is a different store under a different retention bound.
 - [Audit assurance](../security/audit-assurance.md) — what is retained and what

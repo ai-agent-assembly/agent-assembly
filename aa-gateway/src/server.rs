@@ -135,7 +135,12 @@ async fn setup_audit(
 /// * **Unset or empty — the default — wires nothing.** The projection is off,
 ///   and `SensitiveDataProjectionConfig` derives `Default` with
 ///   `enabled: false`, so the conservative state is not something an operator
-///   has to opt into (ADR 0032 §8).
+///   has to opt into. Defaulting off is decided here (AAASM-5440), not by ADR
+///   0032: §8 fixes the tier's shape — the event and its finding rows written
+///   *alongside* an `audit_entry_to_storage_event` bridge left untouched — and
+///   records no switch and no default. A new writer against a path nobody chose
+///   is a surprise on upgrade, so the state requiring no decision writes
+///   nothing.
 /// * **Set to a path** — the tables are created if absent
 ///   (`CREATE TABLE IF NOT EXISTS`), and that is all: there is no in-place
 ///   schema evolution. Against tables that already exist the statements are a
