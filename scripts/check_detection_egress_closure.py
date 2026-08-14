@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if the sensitive-data detection fast path gains any new dependency.
+"""Fail if the sensitive-data detection fast path's pinned closure has changed.
 
 AAASM-5738, for AAASM-5270 exit criterion 6 ("Local-only runtime behavior is
 verified under egress-denied testing").
@@ -18,13 +18,23 @@ next one — a new HTTP crate, a vendored socket wrapper, a `libc`-using crate t
 opens a descriptor itself. The list is exactly the thing that rots, and it rots
 invisibly, because a passing run looks identical either way.
 
-So this control keeps no notion of "network-capable" at all. It pins the
-**complete set of crate names** in the detection fast path's normal dependency
-closure and fails on *any* difference. A new transport fails it. So does a new
-CSV parser — deliberately. The detector's closure is three crates by default,
-and a change to it is a thing a human should look at, whatever the crate does.
-The remedy when it fires is one line plus a sentence saying why the new
-dependency is acceptable, which is the review this control exists to force.
+So this control keeps no notion of "network-capable". It pins the **set of
+crate names `cargo tree` resolves for `aa-security`** under the two feature
+selections in `SELECTIONS`, across targets (`--target all`) and following
+normal edges, and it fails on a difference in either direction. Three things
+sit outside that measurement, by construction rather than by oversight:
+
+  * build-dependencies and dev-dependencies, dropped by `--edges normal`
+    (the reasoning is on `SELECTIONS`);
+  * feature combinations other than the two pinned ones;
+  * crates reached only through a different workspace member — see the scope
+    section below, which is where the gateway's regex passes fall.
+
+A new transport fails it. So does a new CSV parser — deliberately. The measured
+closure is 3 crate names without features and 17 under `serde`, and a change to
+either is a thing a human should look at, whatever the crate does. The remedy
+when it fires is one line plus a sentence saying why the new dependency is
+acceptable, which is the review this control exists to force.
 
 # Names, not versions
 
