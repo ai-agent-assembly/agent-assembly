@@ -1,0 +1,45 @@
+# AAASM-5751 — filesystem path scope.
+#
+# `capabilities` can only allow or deny a filesystem verb outright, which is
+# unusable for a coding agent: `file_write: false` stops it working and
+# `file_write: true` states no requirement at all. This section scopes each verb
+# by path instead.
+#
+# Read the three states carefully — they are not the same:
+#   * an absent section or verb  = the operator stated nothing (NOT a grant)
+#   * a non-empty `allow:` list  = only those subtrees may be reached
+#   * an empty `allow:` list     = a restriction permitting nothing (deny-all)
+#
+# Across the Global -> Org -> Team -> Agent -> Tool cascade these intersect:
+# a narrower tier shrinks a broader one and can never add to it.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: filesystem-scoped-example
+  version: "1.0.0"
+  description: Scope filesystem reads and writes to specific path subtrees.
+spec:
+  scope: global
+
+  filesystem:
+    # Paths permit themselves and everything beneath them, matched by path
+    # component: `/workspace` permits `/workspace/src` but not
+    # `/workspace-other`. Entries must be absolute, and a `..` component is a
+    # validation error rather than something that gets resolved.
+    read:
+      allow:
+        - /workspace
+        - /usr/share/dict
+    # `write` covers create, rename, write and delete together — the policy
+    # vocabulary does not separate those verbs. Deliberately narrower than the
+    # read scope: the agent may read its whole checkout but only write build
+    # output.
+    write:
+      allow:
+        - /workspace/build
+
+  # A whole-domain denial would OUTRANK the path scope above, so this document
+  # deliberately denies only what it means to deny outright.
+  capabilities:
+    deny:
+      - terminal_exec
