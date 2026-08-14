@@ -1238,7 +1238,17 @@ mixing a head count with a base count is how the two rows stop adding up.
 > ([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679)).**
 > The figures above are the authoring-time measurement and are retained for the
 > record; they no longer describe the tree. Over §6.5's scope plus that ticket's
-> `design/**` extension: **281 files, 4 blocking, 12 finding, 32 info.**
+> `design/**` extension, **at `f2d38e204`: 283 files, 4 blocking, 13 finding,
+> 32 info.**
+>
+> The commit is named because this is a *point-in-time* measurement of a moving
+> tree, and a bare count with no commit behind it silently becomes false the
+> next time `main` advances — which is the failure this whole page exists to
+> stop. It drifted from `281 / 4 / 12 / 32` to the figure above in the days
+> between the two runs, on two new files and one new `finding`. Re-run
+> `python3 scripts/check_claim_vocabulary.py --report-only` rather than trusting
+> this number; the **blocking** count is the one the §6.6 adoption path turns
+> on, and it is unchanged.
 >
 > Three of the six blocking rows below have since been fixed on `main` —
 > `README.md:129`, `README.md:135` and `aa-proxy/README.md:11-12` all measure
