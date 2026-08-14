@@ -533,6 +533,26 @@ jobs:
         # It is linted by the dedicated ebpf-build job.
         run: cargo clippy --workspace --all-targets --all-features --exclude aa-ebpf -- -D warnings
 
+      # AAASM-5682. The run above cannot see a cfg gate that is too wide: with
+      # every feature on, an item gated to a superset of its uses still has its
+      # uses. That is how 14 clippy errors reached `main` — `-p conformance
+      # --all-targets` exited 101 there while this job stayed green.
+      #
+      # `--all-targets` is deliberately absent from the aa-core selections:
+      # aa-core carries a self dev-dependency with `features = ["serde",
+      # "schemars"]`, so `--all-targets` force-opens both gates and the run
+      # stops discriminating. Lib-only is what moved with the fix.
+      #
+      # Each line below was measured 101-before / 0-after on that change; the
+      # two combinations that were green either side (`--features serde` and
+      # `--features serde,schemars`) are omitted rather than run for symmetry.
+      - name: Clippy — feature-gate selections the all-features run cannot see
+        run: |
+          set -euo pipefail
+          cargo clippy -p aa-core --lib -- -D warnings
+          cargo clippy -p aa-core --lib --features schemars -- -D warnings
+          cargo clippy -p conformance --all-targets -- -D warnings
+
   docs:
     needs: [changes]
     if: needs.changes.outputs.rust == 'true'
