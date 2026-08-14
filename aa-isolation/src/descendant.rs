@@ -201,6 +201,11 @@ fn reaching_child(spec: &ExecutionSpec) -> Vec<&str> {
 /// that understands those selectors. A caller reporting "not widened" on the
 /// strength of this function alone is over-reading it.
 ///
+/// That limitation is not left as prose. It is pinned by
+/// `tests::a_wider_selector_set_is_not_detected_and_this_is_the_known_gap`,
+/// which asserts the gap rather than a protection: implementing scope
+/// comparison fails that test, so this paragraph cannot quietly become false.
+///
 /// Ordering is stable: the lineage check first, then domains in
 /// [`CapabilityDomain::ALL`] order, then credentials. Two runs over the same
 /// pair produce identical output.
@@ -283,7 +288,7 @@ pub fn covers_ordinary_descendants(coverage: DescendantCoverage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::{CredentialPosture, IdentityRef};
+    use crate::spec::{CredentialPosture, IdentityRef, RequirementScope};
 
     fn parent() -> ExecutionSpec {
         ExecutionSpec::new("/bin/agent", IdentityRef::root("parent"))
@@ -456,6 +461,88 @@ mod tests {
             [AuthorityWidening::CredentialWidened {
                 name: "SSH_AUTH_SOCK".to_string()
             }]
+        );
+    }
+
+    /// **A documented limitation, pinned as a measured gap.**
+    ///
+    /// [`authority_widening`] compares intent, posture and descendant scope. It
+    /// does not compare [`RequirementScope::Selectors`], because those strings
+    /// are opaque to this crate by that type's own invariant — interpreting a
+    /// path glob or a destination selector here would put a matching semantics
+    /// in the contract that every backend would then have to reimplement
+    /// identically or silently diverge from.
+    ///
+    /// The consequence is that a sub-agent permitting a strictly wider set of
+    /// destinations passes the check. That is disclosed in
+    /// [`authority_widening`]'s documentation — and **prose is not a test**.
+    /// Without this, a caller could read the disclosure, a later change could
+    /// make it false, and nothing in the suite would notice.
+    ///
+    /// So this asserts the *gap*, not a protection. If scope comparison is ever
+    /// implemented, this test fails, which is the point: whoever implements it
+    /// has to update the disclosure deliberately rather than leave stale prose
+    /// behind. The failure message says so.
+    #[test]
+    fn a_wider_selector_set_is_not_detected_and_this_is_the_known_gap() {
+        let permitted = |hosts: &[&str]| {
+            RequirementScope::Selectors(hosts.iter().map(|h| crate::lowering::permit_only_selector(h)).collect())
+        };
+        let ancestor = ExecutionSpec::new("/bin/agent", IdentityRef::root("parent")).with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(permitted(&["api.internal"])),
+        );
+        let wider = permitted(&["api.internal", "exfiltrate.example.com"]);
+
+        // The fixture's premise, asserted rather than assumed: the descendant
+        // really does permit strictly more. An edit that made the two scopes
+        // equal would otherwise make the gap look closed while proving nothing.
+        let RequirementScope::Selectors(before) = ancestor.requirements()[0].scope() else {
+            panic!("the ancestor's scope is a selector list");
+        };
+        let RequirementScope::Selectors(after) = &wider else {
+            panic!("the descendant's scope is a selector list");
+        };
+        assert!(
+            after.len() > before.len() && before.iter().all(|s| after.contains(s)),
+            "the descendant must permit a strict superset for this test to mean anything: {before:?} \
+             vs {after:?}"
+        );
+
+        let descendant = ExecutionSpec::new("/bin/sub-agent", IdentityRef::root("sub-agent").with_ancestor("parent"))
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(wider.clone()));
+
+        assert_eq!(
+            authority_widening(&ancestor, &descendant),
+            [],
+            "selector scope is now compared. `authority_widening`'s documented limitation, this \
+             crate's residual-risk list and every caller that reported descendant confinement on the \
+             strength of that disclosure are now stale and must be revisited deliberately"
+        );
+        assert!(
+            is_same_or_narrower(&ancestor, &descendant),
+            "the convenience wrapper inherits the same blind spot, which is why its documentation \
+             carries the same limitation"
+        );
+
+        // The control. The identical pair with one *comparable* axis weakened
+        // IS reported, so the emptiness above is specific to selector scope
+        // rather than a comparison that skipped this fixture entirely.
+        let also_weakened =
+            ExecutionSpec::new("/bin/sub-agent", IdentityRef::root("sub-agent").with_ancestor("parent"))
+                .with_requirement(
+                    ControlRequirement::prevent(CapabilityDomain::NetworkEgress)
+                        .with_scope(wider)
+                        .with_posture(RequirementPosture::Optional),
+                );
+        assert_eq!(
+            authority_widening(&ancestor, &also_weakened),
+            [AuthorityWidening::PostureWeakened {
+                domain: CapabilityDomain::NetworkEgress,
+                ancestor: RequirementPosture::Required,
+                descendant: RequirementPosture::Optional,
+            }],
+            "the comparison did not fire on this fixture at all, so the assertion above is not \
+             evidence that selector scope specifically is uncompared"
         );
     }
 
