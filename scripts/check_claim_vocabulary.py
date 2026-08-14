@@ -190,6 +190,7 @@ INCLUDE_GLOBS = (
     "README.md",
     "**/README.md",
     "CONTRIBUTING.md",
+    "SECURITY.md",
     ".claude/**",
 )
 EXTRA_INCLUDES = ("design/**",)
