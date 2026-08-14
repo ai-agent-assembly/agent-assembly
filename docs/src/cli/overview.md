@@ -136,6 +136,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm dashboard`](dashboard.md) | Gateway HTTP/WS + local | TUI dashboard and embedded SPA server. |
 | [`aasm gateway`](gateway.md) | Local process | Manage the `aa-gateway` daemon. |
 | [`aasm proxy`](proxy.md) | Local process | Manage the `aa-proxy` sidecar and its CA. |
+| [`aasm run`](run.md) | Gateway HTTP + local process | Launch a governed AI dev tool or a generic command, with identity, policy, proxy wiring and optional execution isolation. **Not in `cargo install aasm` — see below.** |
 | [`aasm integrations`](integrations.md) | `aa-runtime` DI-API (UDS) | Install, verify, repair, remove Developer Integrations for AI dev tools. **Not in `cargo install aasm` — see below.** |
 | [`aasm start`](start-stop.md) / [`aasm stop`](start-stop.md) | Local process | Start/stop the locally-managed gateway. |
 | [`aasm sandbox`](sandbox.md) | Local | Run a WASM tool under the sandbox. |
@@ -146,11 +147,11 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm version`](version.md) | Gateway HTTP | CLI + gateway/api versions. |
 | [`aasm completion`](completion.md) | Local | Generate shell completion scripts. |
 
-> **Developer-only commands.** Three command groups — `aasm run` (launch a
-> governed AI dev tool), `aasm tools` (discover installed AI dev tools), and
-> [`aasm integrations`](integrations.md) (the Developer Integration lifecycle —
-> added to this set by AAASM-5309) — are gated behind the `devtool` region in
-> `aa-cli/src/commands/mod.rs` and `aa-cli/Cargo.toml`.
+> **Developer-only commands.** Three command groups — [`aasm run`](run.md)
+> (launch a governed AI dev tool), `aasm tools` (discover installed AI dev
+> tools), and [`aasm integrations`](integrations.md) (the Developer Integration
+> lifecycle — added to this set by AAASM-5309) — are gated behind the `devtool`
+> region in `aa-cli/src/commands/mod.rs` and `aa-cli/Cargo.toml`.
 >
 > **Which channel you installed from decides whether you have them.**
 > `.ci/strip-for-publish.sh` removes that region in the `publish-crates` job of
@@ -161,9 +162,9 @@ Some commands give the exit code a documented meaning so it can gate CI:
 > job, so **those `aasm` binaries do have them** — and their `aa-runtime` still
 > carries the Developer Integration API bring-up.
 >
-> `aasm integrations` is documented here because it is a shipped, user-facing
-> surface on every channel except crates.io, and the omission was itself a
-> documentation gap. `aasm run` and `aasm tools` remain undocumented in this
-> reference. Where the strip does apply it is not cosmetic in the `integrations`
-> case: a crates.io `aa-runtime` never binds the Developer Integration API
-> socket, so the command would have nothing to connect to.
+> `aasm integrations` and [`aasm run`](run.md) are documented here because they
+> are shipped, user-facing surfaces on every channel except crates.io. `aasm
+> tools` remains undocumented in this reference. Where the strip does apply it
+> is not cosmetic in the `integrations` case: a crates.io `aa-runtime` never
+> binds the Developer Integration API socket, so the command would have
+> nothing to connect to.

@@ -27,6 +27,21 @@ security rationale, see the [Security Model](../security/overview.md).
 - **[Building & contributing](building.md)** — build, test, and lint basics for
   working on the workspace.
 
+## Execution isolation
+
+`aasm run --isolation` (Epic AAASM-5702) confines an agent's whole native
+process tree at the OS level, on hosts where a backend exists for it. It is
+not a new architectural layer — it occupies four elements of the canonical
+[ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md)
+governance model (E2 Managed Execution Checkpoints, E4 Platform-Specific
+Host-Level Interception Adapters, E5 Credential/Capability Boundary, E6
+Evidence & Protection-State Pipeline). See
+[ADR 0035](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
+for the full decision record and the
+[Execution isolation](../security/execution-isolation.md) security page for
+the operator-facing mental model, threat boundary, and platform/backend
+support matrix.
+
 ## The model in one diagram
 
 ```mermaid

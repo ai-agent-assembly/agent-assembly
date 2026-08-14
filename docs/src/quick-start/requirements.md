@@ -85,6 +85,22 @@ and install only their requirements.
 > macOS. If you are on macOS, you can still run and govern agents through the SDK
 > and proxy layers — you simply do not get the kernel-level layer.
 
+## Execution isolation (`aasm run --isolation`)
+
+This is a separate capability from the three interception layers above, and
+has its own, narrower platform reach: **Linux only**, and even there it
+requires a backend executable Agent Assembly does not bundle.
+
+| Platform | `aasm run --isolation process`/`auto` | Requirement |
+|---|---|---|
+| Linux | ✅ | A separately-installed backend executable on `PATH` (or `AA_SANDLOCK_BIN`) |
+| macOS | ❌ Refused, never silently unconfined | No backend targets macOS |
+| Windows | ❌ Refused, never silently unconfined | No backend targets Windows |
+
+See [Execution isolation](../security/execution-isolation.md#platform-and-backend-support-matrix)
+for the full support matrix, the runtime prerequisites, and what to expect
+when the backend is absent.
+
 ## Next
 
 With the prerequisites in place, continue to [Installation](installation.md).

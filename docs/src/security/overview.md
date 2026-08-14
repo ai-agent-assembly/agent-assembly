@@ -79,3 +79,4 @@ forwarded raw (`aa-runtime/src/pipeline/enforcement.rs`,
 | [Protection and enforcement](protection-model.md) | How are policy, fail-closed, egress, scanning, and budgets enforced? |
 | [Trust boundaries](trust-boundaries.md) | Why is the SDK untrusted and the runtime/gateway authoritative? |
 | [Audit and assurance](audit-assurance.md) | How is the audit trail kept tamper-evident and free of secrets? |
+| [Execution isolation](execution-isolation.md) | What does `aasm run --isolation` confine, on which platforms, and what may — and may not — be claimed about it? |

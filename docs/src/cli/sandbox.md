@@ -5,6 +5,17 @@ filesystem, CPU (instruction fuel), memory, and wall-clock isolation. This
 surfaces the `aa-sandbox` runtime to the CLI without going through the cloud
 `/dispatch_tool` HTTP route.
 
+> **This is not the same boundary as `aasm run --isolation`.** `aa-sandbox`
+> confines a single WASM-marked **tool call** under Wasmtime/WASI, on any
+> platform Wasmtime supports. It does not confine an agent's native process
+> tree. For confining the **whole agent process and its descendants** at the
+> OS level — currently Linux only, via a separate backend — see
+> [Execution isolation](../security/execution-isolation.md#not-the-wasm-tool-sandbox)
+> and the [`aasm run` CLI reference](run.md#isolation-intent---isolation). A
+> native agent may call a WASM tool inside `aa-sandbox` while itself running
+> under execution isolation — that is composition of two boundaries, not
+> evidence that either replaces the other.
+
 ## Synopsis
 
 ```text
