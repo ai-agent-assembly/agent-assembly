@@ -71,6 +71,48 @@ type and metadata-only redaction, is what makes the record **non-repudiable**:
 the governed action and its decision are recorded by trusted components, with no
 path for the agent to alter or suppress its own history.
 
+## Reaching the durable path: the publisher is opt-in
+
+The publish path above is the route from the runtime to `audit_logs`, and it is
+**switched off until an operator switches it on**. `build_audit_publisher`
+(`aa-runtime/src/runtime.rs`) returns no publisher unless the runtime's
+`AA_NATS_CONFIG_PATH` environment variable points at a readable
+`agent-assembly.toml` carrying a `[gateway.nats]` table
+(`aa-runtime/src/config.rs`). With the variable unset, the agent runs and the
+runtime processes events, but the interception records it produces reach the
+in-process broadcast channel and stop there.
+
+```bash
+# On the host running aa-runtime, before the agent starts.
+export AA_NATS_CONFIG_PATH=/etc/aa/agent-assembly.toml   # must contain [gateway.nats]
+export AA_AUDIT_BUFFER_PATH=/var/lib/aa/audit-buffer.db  # optional; defaults under the temp dir
+```
+
+The gateway side needs its NATS audit consumer running against the same server
+and a Postgres instance holding `audit_logs`. That consumer is opt-in too:
+`AuditConsumerConfig::from_env` (`aa-gateway/src/audit_consumer.rs`) returns a
+disabled consumer unless **both** `AA_AUDIT_NATS_URL` and
+`AA_AUDIT_POSTGRES_URL` are set. With both halves up, an interception record
+becomes a durable row; with either half absent, it does not.
+
+Three properties of the switch are worth stating, because each is a way an
+operator can believe retention is on while it is off:
+
+- **A misconfiguration degrades silently by design.** An unreadable path, an
+  invalid config, an unopenable buffer, or a failed initial NATS connection each
+  yield no publisher rather than a startup failure (AAASM-2547). The agent keeps
+  governing; what it loses is retention.
+- **While NATS is unreachable the entries spill to a local SQLite buffer**
+  (`AA_AUDIT_BUFFER_PATH`) and replay when the connection returns. That buffer is
+  on the agent's host, so it is a reconnect cushion rather than a second copy of
+  the trail.
+- **This switch is what an SDK-side claim of ADR 0033 §6 *Observed* rests on.**
+  An SDK hands its record to the runtime's event channel; whether a durable event
+  attributed to the action exists afterwards is decided here, on the runtime
+  host, by this configuration. An SDK that cannot see this setting can claim the
+  handoff and should stop there
+  ([AAASM-5783](https://lightning-dust-mite.atlassian.net/browse/AAASM-5783)).
+
 ## What is retained, and what is deleted
 
 Tamper-*evident* is not immutable. An audit guarantee that does not say what it
