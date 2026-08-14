@@ -3737,4 +3737,196 @@ mod tests {
             assert!(!looks_like_credential_name(name), "{name} must not be swept in");
         }
     }
+
+    // --- the generic command target (AAASM-5706) ---
+
+    /// AC 2 at the CLI boundary: the argv a shell would mangle survives parsing.
+    ///
+    /// Every element here is one a quoting round-trip loses: an embedded space,
+    /// a leading hyphen, a second `--`, an empty string, and a glob character a
+    /// re-parse would expand. `--agent-id` and `--workdir` sit before the `--`
+    /// and must be read as run-options, not as arguments to the program.
+    #[test]
+    fn parse_exec_target_keeps_run_options_and_forwards_argv_verbatim() {
+        let cli = TestCli::try_parse_from([
+            "aasm",
+            "run",
+            "exec",
+            "--agent-id",
+            "a1",
+            "--workdir",
+            "/tmp",
+            "--",
+            "python3",
+            "agent.py",
+            "--flag",
+            "two words",
+            "--",
+            "",
+            "*.py",
+        ])
+        .unwrap();
+        match cli.command {
+            TestCommands::Run(args) => {
+                assert_eq!(args.tool, EXEC_TARGET);
+                assert_eq!(args.agent_id.as_deref(), Some("a1"));
+                assert_eq!(args.workdir.as_deref(), Some(std::path::Path::new("/tmp")));
+                assert_eq!(
+                    args.tool_args,
+                    vec!["python3", "agent.py", "--flag", "two words", "--", "", "*.py"],
+                    "argv must survive parsing element for element"
+                );
+            }
+        }
+    }
+
+    /// The reserved word must not collide with an id a tool already answers to,
+    /// under **either** spelling — the short registry token or the longer
+    /// Developer-Integration id `aasm integrations list` prints.
+    ///
+    /// Driven from the registry rather than a hand-written list, so a tool added
+    /// later is covered without an edit here.
+    #[test]
+    fn exec_target_is_not_an_id_any_supported_tool_answers_to() {
+        assert!(
+            canonical_tool_id(EXEC_TARGET).is_none(),
+            "`{EXEC_TARGET}` resolves to a supported tool, so the generic target would shadow it"
+        );
+        for tool in aa_devtool::registry::SUPPORTED_TOOLS {
+            assert_ne!(tool, EXEC_TARGET, "a tool is registered under the reserved word");
+        }
+    }
+
+    /// `aasm run exec` with nothing after `--` names no program. The two ways to
+    /// paper over that — defaulting to `sh` or to `$SHELL` — would reintroduce
+    /// the shell reconstruction this target exists to avoid, so it refuses.
+    #[test]
+    fn a_generic_target_refuses_an_empty_argv() {
+        let err = plan::RunTarget::command(&[]).expect_err("no program is not a launchable target");
+        assert!(
+            err.to_string().contains("needs a program to launch"),
+            "the refusal must say what is missing; got: {err}"
+        );
+    }
+
+    /// The first element is the program; the rest are its argv, in order, with
+    /// nothing added, removed, joined or re-split.
+    #[test]
+    fn a_generic_target_splits_argv_into_a_program_and_its_arguments() {
+        let argv: Vec<String> = ["python3", "agent.py", "--flag", "two words", "--"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        match plan::RunTarget::command(&argv).expect("a program is present") {
+            plan::RunTarget::Command { program, args } => {
+                assert_eq!(program, std::ffi::OsString::from("python3"));
+                assert_eq!(
+                    args,
+                    vec![
+                        std::ffi::OsString::from("agent.py"),
+                        std::ffi::OsString::from("--flag"),
+                        std::ffi::OsString::from("two words"),
+                        std::ffi::OsString::from("--"),
+                    ]
+                );
+            }
+            other => panic!("expected a command target, got {other:?}"),
+        }
+    }
+
+    /// A generic plan binds the operator's own command **and** this session's
+    /// governance identity.
+    ///
+    /// Both halves matter. The command half is the AC 2 claim at the point the
+    /// child is actually constructed; the identity half is the AC 4/5 claim that
+    /// a generic launch is governed like any other, and asserting only the first
+    /// would let a target that carries no identity pass.
+    #[test]
+    fn a_generic_plan_binds_the_operators_command_with_the_session_identity() {
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = ["python3", "agent.py", "--flag", "two words"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let resolved = plan::RunPlanner::new(&args, target, None)
+            .resolve(plan::PlanPosture::Preview)
+            .expect("a preview reports refusals rather than raising them");
+        let handle = stub_handle(Some("team-a"));
+        let bound = resolved.bind(&handle);
+
+        assert_eq!(bound.command().get_program(), std::ffi::OsStr::new("python3"));
+        assert_eq!(
+            bound.command().get_args().collect::<Vec<_>>(),
+            vec![
+                std::ffi::OsStr::new("agent.py"),
+                std::ffi::OsStr::new("--flag"),
+                std::ffi::OsStr::new("two words"),
+            ],
+            "the bound command must carry the operator's argv unchanged"
+        );
+        assert_eq!(
+            bound.child_env().get("AA_AGENT_ID").map(String::as_str),
+            Some("test-agent"),
+            "a generic child must be handed the same governance identity a dev-tool child is"
+        );
+        assert_eq!(
+            bound.child_env().get("AA_TEAM_ID").map(String::as_str),
+            Some("team-a"),
+            "team lineage must reach a generic child too"
+        );
+        assert!(
+            bound.adapter_error().is_none(),
+            "there is no adapter behind a generic command, so there is no adapter error"
+        );
+    }
+
+    /// `--workdir` is applied where both postures bind, so the directory the
+    /// preview prints is the directory the launch starts in.
+    #[test]
+    fn a_generic_preview_shows_the_working_directory_and_no_managed_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = ["python3", "agent.py"].iter().map(|s| (*s).to_string()).collect();
+        args.workdir = Some(dir.path().to_path_buf());
+        args.dry_run = true;
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            output.contains(&format!("working_dir: {}", dir.path().display())),
+            "the working directory a live launch would use must be visible in the preview: {output}"
+        );
+        assert!(
+            output.contains("python3 agent.py"),
+            "the preview must show the command that would run: {output}"
+        );
+        assert!(
+            output.contains("forwarded verbatim"),
+            "a generic command has no adapter, so the preview must not claim adapter fidelity: {output}"
+        );
+        assert!(
+            output.contains("no dev-tool managed settings"),
+            "the preview must say no settings file is written for a generic command: {output}"
+        );
+    }
+
+    /// A dev-tool preview still reports an inherited working directory when the
+    /// operator names none — the new line must not turn absence into a claim.
+    #[test]
+    fn a_preview_without_workdir_reports_an_inherited_working_directory() {
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = vec!["python3".to_string()];
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            output.contains("working_dir: <inherited from this shell>"),
+            "with no --workdir the preview must say the child inherits this shell's directory: {output}"
+        );
+    }
 }
