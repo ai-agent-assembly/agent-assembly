@@ -48,6 +48,16 @@ aa-devtool           = { path = "../aa-devtool", version = "0.0.1-rc.6" }
 # artifact, and its path plus validator live with that adapter. `aasm run` reads
 # it to decide whether --no-proxy is permitted.
 aa-devtool-claude-code = { path = "../aa-devtool-claude-code", version = "0.0.1-rc.6" }
+# AAASM-5705: the backend-neutral execution-isolation contract (ADR 0035,
+# AAASM-5704). `aasm run`'s planner resolves each launch into an `ExecutionSpec`
+# so a later ticket under Epic AAASM-5702 can negotiate it against a real
+# isolation backend. Nothing here selects, activates or links a backend.
+#
+# In this region rather than a new one: `aa-isolation` is `publish = false`, and
+# its only consumer is `run.rs`, which the `devtool` region already strips. Its
+# crate docs call for exactly this fencing — without it, `cargo publish` for
+# aa-cli fails on a dependency that is not on crates.io.
+aa-isolation         = { path = "../aa-isolation", version = "0.0.1-rc.6" }
 # strip-for-publish:end devtool
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.6" }
 aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.6" }
@@ -91,7 +101,7 @@ clap           = { workspace = true, features = ["derive", "env"] }
 clap_complete  = "4"
 colored        = "3"
 csv            = "1"
-comfy-table    = "7"
+comfy-table    = "8"
 console        = "0.16"
 crossterm      = "0.29"
 dirs           = { workspace = true }

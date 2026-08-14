@@ -402,6 +402,6 @@ async fn st_org_5_cross_org_credential_reuse_is_rejected_with_impersonation_audi
     assert_eq!(entries[0].event_type(), AuditEventType::A2AImpersonationAttempted);
 
     let payload: serde_json::Value = serde_json::from_str(entries[0].payload()).expect("payload JSON");
-    assert_eq!(payload["claimed_agent_id"], "agent-x");
+    assert_eq!(payload["agent_id_claimed"], "agent-x");
     assert_eq!(payload["claimed_org_id"], "org-beta");
 }

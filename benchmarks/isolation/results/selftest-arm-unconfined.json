@@ -1,0 +1,214 @@
+{
+  "schema_version": "1.0.0",
+  "harness_version": "0.1.0",
+  "run_id": "20260813T040544Z-fd93b23a",
+  "label": "selftest-baseline",
+  "started_utc": "2026-08-13T04:05:44.728842+00:00",
+  "finished_utc": "2026-08-13T04:05:48.992066+00:00",
+  "control_experiment": true,
+  "launcher": {
+    "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/unconfined.sh",
+    "argv": [
+      "sh",
+      "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5713/benchmarks/isolation/launchers/unconfined.sh"
+    ],
+    "throttle_env": {}
+  },
+  "config": {
+    "repetitions": 10,
+    "warmups": 2,
+    "families_requested": "startup_nop,process_spawn",
+    "heavy": false,
+    "network": false,
+    "scratch_root": "/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/aabench-lxdl34x4"
+  },
+  "notes": [],
+  "environment": {
+    "captured_utc": "2026-08-13T04:05:44.731989+00:00",
+    "platform": {
+      "system": "Darwin",
+      "release": "25.4.0",
+      "version": "Darwin Kernel Version 25.4.0: Thu Mar 19 19:26:07 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6031",
+      "machine": "arm64",
+      "python": "3.14.0",
+      "python_implementation": "CPython"
+    },
+    "cpu": {
+      "model": "Apple M3 Max",
+      "logical_cores": 16
+    },
+    "memory": {
+      "total_bytes": 137438953472,
+      "ru_maxrss_native_unit": "bytes"
+    },
+    "filesystem": {
+      "scratch_path": "/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/aabench-lxdl34x4",
+      "type": "apfs",
+      "device": "/dev/disk3s5",
+      "source": "df -P + mount"
+    },
+    "toolchains": {
+      "sh": "3.2.57(1)-release"
+    },
+    "repo": {
+      "commit": "ec8646518588554258b87a5b16af3aef02907b53",
+      "branch": "v0.0.1/AAASM-5713/test/isolation_benchmark_harness",
+      "dirty_tracked_files": true,
+      "untracked_file_count": 14
+    },
+    "load_average_at_start": [
+      5.3291015625,
+      7.53125,
+      8.53173828125
+    ],
+    "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+  },
+  "startup_correction_ms": 8.6574165,
+  "results": [
+    {
+      "family": "startup_nop",
+      "dimension_tag": "startup",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "Empty payload. Isolates the launcher's fixed per-invocation cost: sandbox construction plus teardown, paid once for every command an agent shells out to.",
+      "skip_reason": null,
+      "samples_ms": [
+        8.857666,
+        8.0515,
+        8.084,
+        8.8945,
+        9.7745,
+        9.345542,
+        8.615417,
+        8.244083,
+        8.699416,
+        8.439875
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 8.0515,
+        "max": 9.7745,
+        "mean": 8.7006499,
+        "median": 8.6574165,
+        "p95": 9.5814689,
+        "stdev": 0.5494085222692672,
+        "q1": 8.293031,
+        "q3": 8.885291500000001,
+        "iqr": 0.5922605000000019,
+        "rel_iqr": 0.06841076665307738
+      },
+      "steady_state_ms": null,
+      "steady_state_note": null,
+      "cpu_seconds": {
+        "utime_median": 0.002517,
+        "stime_median": 0.004061,
+        "total_median": 0.006616499999999999
+      },
+      "memory": {
+        "max_rss_bytes_median": 1949696.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "bytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "process_spawn",
+      "dimension_tag": "process",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "200 sequential execve plus reap cycles. Every tool an agent runs pays this once.",
+      "skip_reason": null,
+      "samples_ms": [
+        348.07625,
+        330.483917,
+        332.315917,
+        335.76,
+        320.422375,
+        336.409083,
+        337.048375,
+        347.166458,
+        324.596458,
+        314.711834
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 314.711834,
+        "max": 348.07625,
+        "mean": 332.6990667,
+        "median": 334.0379585,
+        "p95": 347.6668436,
+        "stdev": 10.712281904965245,
+        "q1": 326.06832275,
+        "q3": 336.888552,
+        "iqr": 10.820229250000011,
+        "rel_iqr": 0.03239221464107951
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 306.0544175,
+        "max": 339.4188335,
+        "mean": 324.0416502,
+        "median": 325.380542,
+        "p95": 339.0094271,
+        "stdev": 10.712281904965245,
+        "q1": 317.41090625,
+        "q3": 328.2311355,
+        "iqr": 10.820229250000011,
+        "rel_iqr": 0.03325407593057612
+      },
+      "steady_state_note": "startup correction of 8.657 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.10155049999999999,
+        "stime_median": 0.150751,
+        "total_median": 0.25330949999999997
+      },
+      "memory": {
+        "max_rss_bytes_median": 2015232.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "bytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    }
+  ],
+  "denominators": {
+    "families_declared_in_manifest": 9,
+    "families_selected": 2,
+    "families_attempted": 2,
+    "families_ok": 2,
+    "families_skipped": 0,
+    "families_failed": 0,
+    "families_admissible": 2
+  }
+}
