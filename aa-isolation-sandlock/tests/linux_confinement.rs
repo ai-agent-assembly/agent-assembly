@@ -784,6 +784,334 @@ fn the_capability_report_is_backed_by_the_probe_on_this_host() {
 }
 
 // ---------------------------------------------------------------------------
+// Descendant confinement and ambient authority (AAASM-5709).
+// ---------------------------------------------------------------------------
+
+/// AC: the boundary reaches ordinary `fork`/`exec` descendants, at every depth
+/// the mechanism claims to cover.
+///
+/// The existing descendant scenario shows that *a* nested process is confined.
+/// This one shows the claim is about the tree rather than about one extra level:
+/// three processes, at three depths, each attempting the same forbidden write to
+/// its own target. A boundary that stopped inheriting after the first `fork`
+/// would leave the deepest file behind and this would fail.
+///
+/// The control is the identical script with the directory made writable. All
+/// three land, so the absences above are the boundary and not a shell that never
+/// ran the commands — which is the failure mode a nested `sh -c` chain is most
+/// likely to have.
+#[test]
+fn a_child_and_a_grandchild_are_confined_by_the_same_boundary() {
+    let scenario = "descendant confinement at three depths";
+    let Some(backend) = require_confining_backend(scenario) else {
+        return;
+    };
+    let scratch = Scratch::new("depths");
+    let depths: Vec<PathBuf> = (0..3).map(|d| scratch.forbidden().join(format!("depth-{d}"))).collect();
+
+    // `;` between the write and the nested shell keeps a POSIX shell from
+    // exec-optimising itself away, so each level really is a separate process.
+    let script = format!(
+        "printf x > {}; /bin/sh -c {}",
+        quote(&depths[0].to_string_lossy()),
+        quote(&format!(
+            "printf x > {}; /bin/sh -c {}",
+            quote(&depths[1].to_string_lossy()),
+            quote(&format!("printf x > {}", quote(&depths[2].to_string_lossy())))
+        ))
+    );
+
+    run(
+        &backend,
+        &shell_spec(
+            &script,
+            vec![permit_only_selector(&scratch.root.to_string_lossy())],
+            vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
+        ),
+    );
+    for (depth, target) in depths.iter().enumerate() {
+        assert!(
+            !target.exists(),
+            "the process at depth {depth} wrote where the launch did not permit it: {}",
+            target.display()
+        );
+    }
+
+    // Control: the same script, one grant different.
+    run(
+        &backend,
+        &shell_spec(
+            &script,
+            vec![permit_only_selector(&scratch.root.to_string_lossy())],
+            vec![permit_only_selector(&scratch.root.to_string_lossy())],
+        ),
+    );
+    for (depth, target) in depths.iter().enumerate() {
+        assert!(
+            target.exists(),
+            "the control run produced no effect at depth {depth}, so the denial above proves nothing"
+        );
+    }
+    measured(
+        scenario,
+        "three processes at three depths were each denied a forbidden write, and each performed it \
+         under a control policy that permitted it",
+    );
+}
+
+/// AC: non-required inherited descriptors do not reach the confined program.
+///
+/// A descriptor is the one piece of ambient authority an environment plan cannot
+/// touch: it carries its access with no name attached and survives `exec`. The
+/// backend marks every non-standard descriptor close-on-exec while preparing the
+/// boundary, and this is the end-to-end proof that the mark takes effect.
+///
+/// **The control runs first and is load-bearing.** It spawns the identical
+/// command outside the boundary against a descriptor that is deliberately
+/// inheritable, so it establishes that the descriptor *can* be read across an
+/// `exec` on this host. Without it, the confined run's silence would be equally
+/// consistent with a shell that does not support the redirection.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_inherited_descriptor_does_not_reach_the_confined_program() {
+    use std::os::fd::AsRawFd;
+
+    let scenario = "inherited descriptors do not cross the boundary";
+    let Some(backend) = require_confining_backend(scenario) else {
+        return;
+    };
+    let scratch = Scratch::new("fd");
+    let secret_file = scratch.forbidden().join("held-open");
+    std::fs::write(&secret_file, SECRET).expect("fixture");
+    let file = std::fs::File::open(&secret_file).expect("fixture");
+
+    // `dup` returns a descriptor without the close-on-exec flag, whatever the
+    // original carried. That makes the control's premise true by construction
+    // rather than by assuming what `File::open` did.
+    //
+    // SAFETY: `dup` acts on a descriptor owned by the live `File` above and
+    // returns a new one or -1; it dereferences nothing.
+    let inheritable = unsafe { libc::dup(file.as_raw_fd()) };
+    assert!(inheritable >= 0, "the descriptor could not be duplicated");
+
+    let read_it = format!("cat <&{inheritable}");
+
+    // Control, first: outside the boundary the descriptor is readable.
+    let control = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&read_it)
+        .output()
+        .expect("the control command runs");
+    assert!(
+        String::from_utf8_lossy(&control.stdout).contains(SECRET),
+        "the descriptor was not inheritable to begin with, so the confined run below proves nothing. \
+         stderr: {}",
+        String::from_utf8_lossy(&control.stderr)
+    );
+
+    // Test: the same command through the backend, which seals descriptors while
+    // preparing the boundary.
+    let (confined, evidence) = run(&backend, &shell_spec(&as_grandchild(&read_it), Vec::new(), Vec::new()));
+    assert!(
+        !confined.stdout.contains(SECRET),
+        "an inherited descriptor reached the confined program: {:?}",
+        confined.stdout
+    );
+
+    // And the inventory that justifies the claim must be in evidence, with the
+    // completeness of the enumeration attached — an inventory nobody could take
+    // must never read like one that came back clean.
+    let inventory = evidence
+        .records_for(CapabilityDomain::Ipc)
+        .find(|r| r.detail.starts_with("inherited descriptors"))
+        .unwrap_or_else(|| panic!("no descriptor inventory in evidence: {:?}", evidence.records()));
+    assert!(
+        inventory.detail.contains("every one accounted for"),
+        "the boundary was clean and the evidence does not say so: {}",
+        inventory.detail
+    );
+    measured(
+        scenario,
+        "a descriptor readable across exec outside the boundary was unreadable inside it, and the \
+         inventory behind that claim is in evidence",
+    );
+}
+
+/// AC: the child's environment is an explicit plan, and a variable kept for
+/// compatibility is distinguishable from one that was removed.
+///
+/// Two credential-shaped variables, identical in every way except which list the
+/// launch put them in. One reaches the child and one does not, and the evidence
+/// says which is which — the pair is what makes "removed" and "could not be
+/// removed" different observable states rather than two words for one.
+#[test]
+fn a_removed_credential_and_a_kept_one_reach_the_child_differently() {
+    let scenario = "credential environment plan is explicit";
+    let Some(backend) = require_confining_backend(scenario) else {
+        return;
+    };
+    let Some(env_program) = ["/usr/bin/env", "/bin/env"].iter().find(|p| Path::new(p).exists()) else {
+        decline::<()>(
+            scenario,
+            Measurement::ToolAbsent,
+            "no `env` binary was found, and nothing else prints the child's whole environment",
+        );
+        return;
+    };
+
+    // Set on this process so the launch has something to carry. Safe here
+    // because the Linux lane runs under nextest, which gives every test its own
+    // process; the names are unique to this scenario in any case.
+    std::env::set_var("X_AA5709_REMOVED_TOKEN", "removed-value");
+    std::env::set_var("X_AA5709_KEPT_TOKEN", "kept-value");
+
+    let spec = ExecutionSpec::new(*env_program, IdentityRef::root("agent-under-test"))
+        .with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemRead)
+                .with_scope(RequirementScope::Selectors(system_reads())),
+        )
+        .with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["X_AA5709_REMOVED_TOKEN".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: vec!["X_AA5709_KEPT_TOKEN".to_string()],
+        });
+    let (completed, evidence) = run(&backend, &spec);
+
+    assert!(
+        !completed.stdout.contains("X_AA5709_REMOVED_TOKEN"),
+        "a variable reported as removed reached the child: {:?}",
+        completed.stdout
+    );
+    assert!(
+        completed.stdout.contains("X_AA5709_KEPT_TOKEN=kept-value"),
+        "a variable reported as still reaching the child was withheld from it, so the two states are \
+         not distinguishable: {:?}",
+        completed.stdout
+    );
+
+    // The evidence must name the survivor as authority that could not be
+    // removed, and must not present the run as least-authority.
+    let residual = evidence
+        .records_for(CapabilityDomain::Credential)
+        .find(|r| r.detail.starts_with("residual authority"))
+        .unwrap_or_else(|| panic!("no residual-authority record: {:?}", evidence.records()));
+    assert!(
+        residual.detail.contains("X_AA5709_KEPT_TOKEN") && residual.detail.contains("NOT least-authority"),
+        "the kept variable is not reported as unremoved ambient authority: {}",
+        residual.detail
+    );
+    assert!(
+        !residual.detail.contains("X_AA5709_REMOVED_TOKEN"),
+        "a removed variable was reported as residual authority: {}",
+        residual.detail
+    );
+
+    // Negative control: the same two variables with the second one also
+    // removed. It leaves the child, and the evidence stops reporting residue —
+    // so the assertions above are about which list a name is in.
+    let control = ExecutionSpec::new(*env_program, IdentityRef::root("agent-under-test"))
+        .with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemRead)
+                .with_scope(RequirementScope::Selectors(system_reads())),
+        )
+        .with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["X_AA5709_REMOVED_TOKEN".to_string(), "X_AA5709_KEPT_TOKEN".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: Vec::new(),
+        });
+    let (completed, evidence) = run(&backend, &control);
+    assert!(
+        !completed.stdout.contains("X_AA5709_KEPT_TOKEN"),
+        "the variable reached the child even when nothing asked it to: {:?}",
+        completed.stdout
+    );
+    assert!(evidence
+        .records_for(CapabilityDomain::Credential)
+        .any(|r| r.detail.contains("none beyond the three standard descriptors")));
+
+    std::env::remove_var("X_AA5709_REMOVED_TOKEN");
+    std::env::remove_var("X_AA5709_KEPT_TOKEN");
+    measured(
+        scenario,
+        "a removed credential was absent from the child's environment while a documented compatibility \
+         exception was present and reported as unremoved ambient authority",
+    );
+}
+
+/// AC: AASM's own gateway authority is not exposed to the child merely because
+/// the supervisor holds it.
+///
+/// The supervisor runs outside the boundary (ADR 0035 §5) and holds whatever the
+/// operator's shell gave it. The child gets an environment built from nothing,
+/// so possession by the parent is not a route into the child — and the control
+/// is an ordinary variable delegated through the identical mechanism, which does
+/// arrive.
+#[test]
+fn supervisor_authority_is_not_delegated_to_the_child_by_possession() {
+    let scenario = "supervisor credentials do not reach the child";
+    let Some(backend) = require_confining_backend(scenario) else {
+        return;
+    };
+    let Some(env_program) = ["/usr/bin/env", "/bin/env"].iter().find(|p| Path::new(p).exists()) else {
+        decline::<()>(
+            scenario,
+            Measurement::ToolAbsent,
+            "no `env` binary was found, and nothing else prints the child's whole environment",
+        );
+        return;
+    };
+
+    std::env::set_var("AA_GATEWAY_AUTH", "supervisor-bearer-token");
+    std::env::set_var("AA_AGENT_ID", "agent-under-test");
+
+    // The planner is asked to delegate both. One is AASM's gateway authority and
+    // is withheld; the other is the correlation identifier a governed launch is
+    // supposed to hand over.
+    let plan = aa_isolation::EnvironmentPlanner::new()
+        .delegate("AA_GATEWAY_AUTH")
+        .delegate("AA_AGENT_ID")
+        .plan(std::env::vars().map(|(name, _)| name));
+    assert_eq!(
+        plan.withheld_supervisor_credentials(),
+        ["AA_GATEWAY_AUTH"],
+        "the supervisor credential was not withheld before the launch was even built"
+    );
+
+    let spec = ExecutionSpec::new(*env_program, IdentityRef::root("agent-under-test"))
+        .with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemRead)
+                .with_scope(RequirementScope::Selectors(system_reads())),
+        )
+        .with_credentials(plan.into_posture());
+    let (completed, _) = run(&backend, &spec);
+
+    assert!(
+        !completed.stdout.contains("supervisor-bearer-token"),
+        "the supervisor's gateway credential reached the confined child"
+    );
+    assert!(
+        !completed.stdout.contains("AA_GATEWAY_AUTH"),
+        "the supervisor's gateway credential name reached the confined child: {:?}",
+        completed.stdout
+    );
+    // The control: the delegation mechanism itself works, so the absence above
+    // is the withholding rule and not a launch that delegated nothing.
+    assert!(
+        completed.stdout.contains("AA_AGENT_ID=agent-under-test"),
+        "no delegated variable arrived at all, so the assertion above proves nothing: {:?}",
+        completed.stdout
+    );
+
+    std::env::remove_var("AA_GATEWAY_AUTH");
+    std::env::remove_var("AA_AGENT_ID");
+    measured(
+        scenario,
+        "a supervisor gateway credential explicitly requested for delegation was withheld from the \
+         child, while an ordinary correlation variable requested the same way arrived",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
 
