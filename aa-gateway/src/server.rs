@@ -160,6 +160,14 @@ async fn setup_audit(
 ///   written stay and stay readable, because the writer stamps
 ///   `SENSITIVE_DATA_SCHEMA_VERSION` onto what it persists and the read path
 ///   applies a major-only compatibility rule.
+/// * **Recording is best-effort, so an enabled tier can still be incomplete.**
+///   The sink offers each decision with a non-blocking `try_send` over
+///   `SENSITIVE_DATA_PROJECTION_CAPACITY` slots; a full or closed channel counts
+///   a `dropped` and logs, and an evaluation that cannot be described truthfully
+///   counts a `refused`. Both are reported by `drain_sensitive_data_projection`
+///   at shutdown, which is the only place they surface — they are not metrics
+///   and not queryable. A missing row therefore does not distinguish "found
+///   nothing" from "shed this one".
 ///
 /// It gates *recording*, not *detection*: the credential scanner runs either
 /// way and predates this subsystem. The policy verdict is computed on a path
