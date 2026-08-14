@@ -738,7 +738,21 @@ mod plan {
                      UTF-8 — so no execution specification exists, no backend was consulted, and nothing \
                      about its isolation is known",
                 );
-                return (None, report, Boundary::Absent);
+                // A launch that asked for a boundary cannot get one without a
+                // spec, and running it anyway would be an unconfined launch of
+                // an untrusted program — the fallback this whole mode exists to
+                // rule out. A launch that asked for none is unaffected, which is
+                // why the two are not the same answer.
+                let boundary = match self.backend {
+                    Some(_) => Boundary::Refused(
+                        "an execution-isolation boundary was requested and this launch cannot be described \
+                         faithfully — its program or an argument is not valid UTF-8 — so no specification \
+                         exists to negotiate one against"
+                            .to_string(),
+                    ),
+                    None => Boundary::Absent,
+                };
+                return (None, report, boundary);
             };
 
             // No backend: either nobody asked for one, or a preview met a
@@ -2215,24 +2229,30 @@ fn describe_refusal_reason(reason: &aa_isolation::RefusalReason) -> String {
     match reason {
         R::BackendUnavailable { reason } => format!("the backend cannot be selected on this host — {reason}"),
         R::NoCapabilityReported { .. } => {
-            "the backend reported nothing about this domain. Silence is not a claim that the domain needs              no control, so the requirement cannot be treated as met"
+            "the backend reported nothing about this domain. Silence is not a claim that the domain \
+             needs no control, so the requirement cannot be treated as met"
                 .to_string()
         }
         R::DomainUnsupported { reason, .. } => format!("the backend has no mechanism for this domain — {reason}"),
         R::ObserveOnlyForPreventionRequirement { mediation, .. } => format!(
-            "policy asked for the action to be denied before it happens, and the backend only {mediation:?}s              it. An observed action is not a prevented one and must not be promoted to one"
+            "policy asked for the action to be denied before it happens, and this backend's mediation for \
+             the domain is `{mediation:?}`. An observed action is not a prevented one and must not be \
+             promoted to one"
         ),
         R::DecisionTooLate { timing, .. } => format!(
-            "the backend enforces this domain but decides {timing:?}, which is after the effect. That is              detection, not prevention"
+            "the backend enforces this domain, but its decision timing is `{timing:?}` — after the effect. \
+             That is detection, not prevention"
         ),
         R::DecisionNotSynchronous { synchrony, .. } => format!(
-            "the backend decides before the effect but the action does not wait for the decision              ({synchrony:?}), so the action can win the race"
+            "the backend decides before the effect, but its synchrony is `{synchrony:?}`, so the action does \
+             not wait for the decision and can win the race"
         ),
         R::NoEvidenceProduced { .. } => {
             "the requirement asked for evidence and this capability produces none".to_string()
         }
         R::DescendantCoverageInsufficient { offered, .. } => format!(
-            "the requirement must reach the whole process tree and this capability covers {offered:?}. An              agent that escapes by spawning a child has no boundary"
+            "the requirement must reach the whole process tree and this capability covers `{offered:?}`. An \
+             agent that escapes by spawning a child has no boundary"
         ),
         R::PrerequisiteUnsatisfied { requirement, .. } => {
             format!("a host precondition this capability depends on is not known to hold: {requirement}")
