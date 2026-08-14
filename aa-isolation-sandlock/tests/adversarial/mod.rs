@@ -51,8 +51,11 @@
 //! `EnforcementEvidence::supports_prevention_claim` is false for every domain on
 //! the Sandlock backend, always: the kernel returns a denial to the *confined
 //! process* as an errno, and the mechanism exposes no out-of-process decision
-//! record. So this backend **prevents** — measurably, with controls — while AASM
-//! **cannot evidence** prevention. [`assert_no_prevention_claim`] is how every
+//! record. In the ADR 0033 §6 vocabulary the measured fact is **Denied before
+//! execution** at the kernel — the action did not take effect, and the decision
+//! preceded the effect — while at AASM's evidence layer the same action is
+//! **Unmeasured**, since the mechanism hands out no decision record for the
+//! pipeline to attribute. [`assert_no_prevention_claim`] is how every
 //! scenario re-states that ceiling, and a scenario that measures a real denial
 //! and then asserts a prevention claim would be asserting a lie about the
 //! evidence pipeline rather than about the kernel.
@@ -857,4 +860,143 @@ pub fn accepted_payloads(listener: &TcpListener, expected: usize, window: Durati
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// The adjudicator's own tests.
+// ---------------------------------------------------------------------------
+//
+// [`ControlledPair::verdict`] and [`assert_prevented`] decide what this suite
+// reports, and the scenarios were their only exercise until these tests
+// existed — which reads as coverage without being it. A scenario states its
+// finding *through* the adjudicator, so an adjudicator that answered
+// [`PairVerdict::Prevented`] for a pair whose attack landed would turn the whole
+// suite green while leaving each scenario's source untouched. Inverting the
+// first branch of `verdict` used to redden nothing in this repository, which is
+// the measurement that motivated this section.
+//
+// The per-scenario controls sit below this and cannot reach it. A control
+// guards against a broken probe: a predicate stuck at `false` leaves the control
+// false too, and the pair lands on [`PairVerdict::ControlProducedNoEffect`].
+// That says nothing about a fault in the code that reads the two effects.
+//
+// Plain `#[test]` rather than a `#[cfg(test)] mod tests`: this module is
+// compiled into an integration-test binary, where `cfg(test)` is false, so the
+// guarded form would be dropped without a diagnostic.
+
+/// A pair built from the two booleans the adjudicator reads, and nothing else.
+///
+/// The labels and details are fixtures: the decision depends on `observed`
+/// alone, and pinning the rest keeps each case below a one-variable change.
+fn adjudicated(attack_observed: bool, control_observed: bool) -> ControlledPair {
+    ControlledPair::new(
+        AttackFamily::BackendPosture,
+        Effect::new("attack under the boundary", attack_observed, "self-test fixture"),
+        Effect::new("control with one grant more", control_observed, "self-test fixture"),
+    )
+}
+
+/// Point the evidence ledger at a scratch directory for the life of the guard.
+///
+/// [`assert_prevented`] records [`Measurement::NotMeasured`] before it panics,
+/// which is part of what the case below is checking. In CI
+/// `AA_CONFORMANCE_OUTCOME_DIR` names the lane's real ledger, where a record
+/// written by a self-test would read as a scenario that committed to measuring
+/// and produced nothing — a false entry in the artifact the lane's guards assert
+/// over. Redirecting keeps the write path exercised and leaves the lane's ledger
+/// to the scenarios.
+///
+/// Sound under `cargo nextest`, which is what the isolation lane runs: it gives
+/// each test its own process, so the variable is not shared with a scenario
+/// running at the same time. Under `cargo test` the variable is per-binary, and
+/// there the ledger is switched off unless someone sets the variable by hand.
+struct RedirectedLedger {
+    previous: Option<std::ffi::OsString>,
+    scratch: PathBuf,
+}
+
+impl RedirectedLedger {
+    fn to_scratch() -> Self {
+        let previous = std::env::var_os(evidence::OUTCOME_DIR_ENV);
+        let scratch = std::env::temp_dir().join(format!("aa-adversarial-harness-selftest-{}", std::process::id()));
+        std::env::set_var(evidence::OUTCOME_DIR_ENV, &scratch);
+        Self { previous, scratch }
+    }
+}
+
+impl Drop for RedirectedLedger {
+    /// Runs during the unwind of the `should_panic` case, so the variable is put
+    /// back whichever way the guarded call ended.
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(previous) => std::env::set_var(evidence::OUTCOME_DIR_ENV, previous),
+            None => std::env::remove_var(evidence::OUTCOME_DIR_ENV),
+        }
+        let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+#[test]
+fn a_working_control_beside_a_silent_attack_reads_as_prevented() {
+    assert_eq!(adjudicated(false, true).verdict(), PairVerdict::Prevented);
+}
+
+#[test]
+fn an_attack_that_produced_its_effect_reads_as_bypassed() {
+    assert_eq!(adjudicated(true, true).verdict(), PairVerdict::Bypassed);
+}
+
+/// The branch order is load-bearing. An attack that landed is a bypass whatever
+/// the control did, so a broken control must not downgrade it into an
+/// unattributable result and take it out of the failure report.
+#[test]
+fn a_landed_attack_reads_as_bypassed_even_where_the_control_produced_nothing() {
+    assert_eq!(adjudicated(true, false).verdict(), PairVerdict::Bypassed);
+}
+
+#[test]
+fn two_silent_runs_read_as_control_produced_no_effect() {
+    assert_eq!(
+        adjudicated(false, false).verdict(),
+        PairVerdict::ControlProducedNoEffect
+    );
+}
+
+/// The detail a prevented pair returns is what the scenario hands to the ledger,
+/// so the family and the two labels have to survive into it.
+#[test]
+fn a_prevented_pair_yields_a_detail_naming_its_family_and_both_runs() {
+    let detail = assert_prevented("harness self-test: prevented", &adjudicated(false, true));
+    assert!(
+        detail.contains("backend_posture"),
+        "family missing from detail: {detail}"
+    );
+    assert!(
+        detail.contains("attack under the boundary") && detail.contains("control with one grant more"),
+        "both runs belong in the detail: {detail}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "BYPASS [backend_posture]")]
+fn assert_prevented_refuses_a_pair_whose_attack_landed() {
+    assert_prevented("harness self-test: bypass", &adjudicated(true, false));
+}
+
+#[test]
+#[should_panic(expected = "NOT MEASURED [backend_posture]")]
+fn assert_prevented_refuses_a_pair_whose_control_produced_nothing() {
+    let _ledger = RedirectedLedger::to_scratch();
+    assert_prevented(
+        "harness self-test: control produced no effect",
+        &adjudicated(false, false),
+    );
+}
+
+/// A sweep with nothing in it would otherwise pass `assert_all_prevented`
+/// vacuously, which is the family-level shape of the same fault.
+#[test]
+#[should_panic(expected = "NOT MEASURED")]
+fn assert_all_prevented_refuses_a_sweep_with_no_pairs_in_it() {
+    assert_all_prevented("harness self-test: empty sweep", &[]);
 }

@@ -38,6 +38,9 @@
 //! into a passing protection assertion is what this Epic exists to stop; so is
 //! quietly not looking.
 
+// Used by `every_declared_attack_family_has_a_scenario`, which is Linux-gated
+// for the reason stated on it.
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 use std::time::Duration;
@@ -1336,6 +1339,20 @@ fn section<'a>(stdout: &'a str, tag: &str) -> &'a str {
 /// out so that adding a family to `AttackFamily` without adding a scenario fails
 /// here, rather than leaving a family that reads as covered because it is in the
 /// enum.
+///
+/// **What it cannot catch, and what does.** Both sides are hand-written
+/// constants, so deleting a scenario leaves this green: the `covered` list keeps
+/// saying a family is represented whether or not a scenario for it still exists.
+/// The `isolation-backend-linux` job closes that half from the other direction,
+/// by diffing the scenario names the ledger carries *after a run* against
+/// `.ci/isolation-lane-scenarios.txt` — a second artifact, which reddens on a
+/// deletion.
+///
+/// **Gated to Linux**, because the two `UnixSocketsAndDescriptors` scenarios
+/// both carry `#[cfg(target_os = "linux")]`. Off Linux that family is absent
+/// from the binary, so making this claim there would state coverage the build
+/// does not contain.
+#[cfg(target_os = "linux")]
 #[test]
 fn every_declared_attack_family_has_a_scenario() {
     let scenario = "adversarial: every declared attack family has a scenario";
