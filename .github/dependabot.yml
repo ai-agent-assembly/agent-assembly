@@ -13,10 +13,14 @@
 #                       of a pinned action is available
 #
 # Common settings applied to every entry:
-#   target-branch   — always `master` (the repo's default integration branch)
 #   commit-message  — Gitmoji ⬆ prefix to match the project commit convention
 #   schedule        — daily to catch CVEs and patch releases quickly;
 #                     adjust to "weekly" if PR noise becomes too high
+#
+# Do not add `target-branch` here. It silently opts an ecosystem out of
+# Dependabot *security* updates while scheduled version bumps keep working, so
+# the loss is invisible. `main` is already the default branch, which is where
+# Dependabot targets by default. See AAASM-5769.
 #
 # Reference:
 #   https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
@@ -30,7 +34,6 @@ updates:
   # The workspace resolver means a single Cargo.lock at "/" tracks them all.
   - package-ecosystem: "cargo"
     directory: "/"
-    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "rust"]
@@ -58,7 +61,6 @@ updates:
   # Covers: react, react-dom, vite, typescript, @vitejs/plugin-react, @types/*.
   - package-ecosystem: "npm"
     directory: "/dashboard"
-    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "dashboard", "pnpm"]
@@ -76,7 +78,6 @@ updates:
   #         EmbarkStudios/cargo-deny-action, SonarSource/sonarqube-scan-action.
   - package-ecosystem: "github-actions"
     directory: "/"
-    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "github-actions"]
