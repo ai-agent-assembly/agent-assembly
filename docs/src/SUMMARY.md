@@ -132,6 +132,7 @@
 - [Sandbox / Dry-Run Mode](operations/sandbox-dry-run.md)
 - [Compliance Export](operations/compliance-export.md)
 - [Proxy Prevention-Evidence Retention](operations/proxy-audit-retention.md)
+- [Sensitive-Data Projection](operations/sensitive-data-projection.md)
 - [Agent-to-Agent Identity](operations/a2a-identity.md)
 - [Tool Sandbox: Network Egress](operations/tool-sandbox-network.md)
 - [Org-Tier Isolation](operations/org-isolation.md)
