@@ -333,6 +333,7 @@ fn run_args(tool: &str) -> RunArgs {
         governance_level: None,
         no_proxy: true,
         policy: Some(test_policy_path().to_path_buf()),
+        workdir: None,
         dry_run: false,
         enforcement_mode: None,
         observe: false,

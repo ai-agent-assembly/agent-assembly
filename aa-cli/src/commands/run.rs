@@ -23,14 +23,20 @@ use aa_policy::resolve as run_policy;
 /// Arguments for the `aasm run <tool> [args...]` subcommand.
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// The AI development tool to launch (claude, codex, copilot, windsurf).
+    /// The AI development tool to launch (claude, codex, copilot, windsurf), or
+    /// `exec` to launch a program you own yourself.
     ///
     /// The longer ids `aasm integrations list` prints — claude-code,
     /// github-copilot, windsurf-cascade — name the same tools and are accepted
     /// here too (AAASM-5503).
+    ///
+    /// `exec` takes the program and its arguments after `--`:
+    /// `aasm run exec [run-options] -- <program> [args...]` (AAASM-5706). It is
+    /// resolved only after every tool id fails, so it cannot shadow one.
     pub tool: String,
 
-    /// Arguments forwarded verbatim to the launched tool.
+    /// Arguments forwarded verbatim to the launched tool, or — after `exec` —
+    /// the program to launch and its own arguments.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub tool_args: Vec<String>,
 
@@ -67,6 +73,17 @@ pub struct RunArgs {
     /// policy is not an implicit allow-all (AAASM-5349).
     #[arg(long)]
     pub policy: Option<std::path::PathBuf>,
+
+    /// Directory the launched process starts in.
+    ///
+    /// Absent, the child inherits this shell's working directory, which is the
+    /// pre-existing behaviour. When present it is applied to the command **last**,
+    /// so the operator's explicit choice wins over any directory an adapter
+    /// selected, and the directory is checked before anything is registered or
+    /// started — a launch that cannot start where it was told to is refused, not
+    /// silently started somewhere else (AAASM-5706).
+    #[arg(long, value_name = "DIR")]
+    pub workdir: Option<std::path::PathBuf>,
 
     /// Show the launch command and settings without executing.
     #[arg(long)]
@@ -153,7 +170,9 @@ impl RunArgs {
 /// mechanical: move this module body to `run_plan.rs` and add one line to
 /// `DELETED_FILES`.
 mod plan {
+    use std::borrow::Cow;
     use std::collections::HashMap;
+    use std::ffi::OsString;
 
     use uuid::Uuid;
 
@@ -165,10 +184,18 @@ mod plan {
 
     /// What a launch is pointed at.
     ///
-    /// One variant today. A *generic command* target — a launch with no dev-tool
-    /// adapter behind it — is AAASM-5706. The enum exists now so that ticket adds
-    /// a variant rather than a parallel code path, and so every `match` on it
-    /// fails to compile until it has accounted for the new case.
+    /// Two kinds, and the difference is carried in the type rather than in a
+    /// pseudo-adapter (AAASM-5706). A dev-tool launch has an adapter behind it and
+    /// is *entitled* to generate and apply that tool's managed settings; a generic
+    /// command has no adapter, no settings schema and no configuration file of its
+    /// own, and must not have one written on its behalf. A fake adapter would have
+    /// made that a runtime convention; an enum makes it a case every `match` has
+    /// to account for before it compiles.
+    ///
+    /// Everything else — identity, lineage, proxy, policy, enforcement posture,
+    /// registration and deregistration — is deliberately *not* varied by this
+    /// enum. Both kinds resolve through the same [`RunPlanner`] and bind through
+    /// the same [`ResolvedRunPlan::bind`].
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub(super) enum RunTarget {
         /// A supported developer tool, named by its canonical registry token.
@@ -180,6 +207,24 @@ mod plan {
             /// The canonical `aa_devtool::registry` token.
             tool: String,
         },
+
+        /// A program the operator owns, launched exactly as typed after `--`.
+        ///
+        /// Held as [`OsString`] so that between the CLI boundary and `spawn` there
+        /// is no string a shell, a quoter or a splitter could reinterpret: the
+        /// child receives these values element for element, and no argument is
+        /// ever joined into a command line and re-split. An argument that is not
+        /// valid UTF-8 is refused by clap at parse time rather than lossily
+        /// converted here — losing the launch is better than running an argv that
+        /// differs from the one that was typed.
+        Command {
+            /// The program to execute. Resolved by the OS through `PATH` exactly
+            /// as any other `exec` would resolve it; `aasm run` does not probe it,
+            /// rewrite it, or wrap it in a shell.
+            program: OsString,
+            /// The remaining argv, in order, with nothing added or removed.
+            args: Vec<OsString>,
+        },
     }
 
     impl RunTarget {
@@ -188,13 +233,36 @@ mod plan {
             Self::DevTool { tool: tool.into() }
         }
 
+        /// A generic launch of `argv`, whose first element names the program.
+        ///
+        /// Refuses an empty `argv`. `aasm run exec` with nothing after `--` names
+        /// no program, and the two ways to paper over that — defaulting to a shell
+        /// or to `$SHELL` — would both reintroduce the shell reconstruction this
+        /// target exists to avoid.
+        pub(super) fn command(argv: &[String]) -> anyhow::Result<Self> {
+            let (program, args) = argv.split_first().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`aasm run {target}` needs a program to launch: \
+                     `aasm run {target} [run-options] -- <program> [args...]`",
+                    target = super::EXEC_TARGET
+                )
+            })?;
+            Ok(Self::Command {
+                program: OsString::from(program),
+                args: args.iter().map(OsString::from).collect(),
+            })
+        }
+
         /// The name this target is announced and refused under.
         ///
-        /// Also the executable a degraded preview falls back to, which is why it
-        /// has to be the canonical token rather than a display string.
-        pub(super) fn label(&self) -> &str {
+        /// Also the executable a degraded dev-tool preview falls back to, which is
+        /// why it has to be the canonical token rather than a display string. For
+        /// a generic command it is the program as typed, rendered lossily — this
+        /// is a label for humans, never the value handed to `spawn`.
+        pub(super) fn label(&self) -> Cow<'_, str> {
             match self {
-                Self::DevTool { tool } => tool,
+                Self::DevTool { tool } => Cow::Borrowed(tool),
+                Self::Command { program, .. } => program.to_string_lossy(),
             }
         }
     }
@@ -628,8 +696,10 @@ mod plan {
     /// [`PlanPosture::Launch`] already refused without. Absent for a preview,
     /// which by design carries unmet preconditions rather than refusing on them.
     pub(super) struct Launchable<'a> {
-        /// The detected tool this launch registers as.
-        pub(super) info: &'a DevToolInfo,
+        /// The detected tool this launch registers as, or `None` for a generic
+        /// command — which has no adapter, so there is nothing to detect and no
+        /// managed settings to generate.
+        pub(super) info: Option<&'a DevToolInfo>,
         /// The policy document managed settings are generated from.
         pub(super) policy: &'a aa_core::PolicyDocument,
     }
@@ -640,7 +710,8 @@ mod plan {
         posture: PlanPosture,
         target: RunTarget,
         identity: IdentityPlan,
-        integration: IntegrationPlan<'a>,
+        /// `None` for a generic command, which by construction has no adapter.
+        integration: Option<IntegrationPlan<'a>>,
         network: NetworkPlan,
         policy: PolicyPlan,
         isolation: IsolationPlan,
@@ -651,6 +722,11 @@ mod plan {
         /// Who the launch is attributed to.
         pub(super) fn identity(&self) -> &IdentityPlan {
             &self.identity
+        }
+
+        /// What this launch is pointed at.
+        pub(super) fn target(&self) -> &RunTarget {
+            &self.target
         }
 
         /// Where this launch's traffic goes.
@@ -694,9 +770,17 @@ mod plan {
             );
             self.policy.resolution.annotate_env(&mut child_env);
 
-            let (command, fidelity, adapter_error) =
-                self.integration
-                    .launch_command(self.args, self.target.label(), handle, self.network.endpoint());
+            let (mut command, fidelity, adapter_error) = self.launch_command(handle);
+
+            // Applied after the command is built, so an explicit `--workdir` wins
+            // over any directory the adapter chose — and applied *here*, in the
+            // one place both postures bind through, so the directory the preview
+            // prints is the directory the live launch starts in. It also reaches
+            // the `ExecutionSpec` below, because `spec` reads it back off the
+            // command rather than being told separately.
+            if let Some(dir) = &self.args.workdir {
+                command.current_dir(dir);
+            }
 
             // Derived through the same merge `spawn_and_wait` applies, so the
             // spec describes the environment the child actually receives —
@@ -719,16 +803,62 @@ mod plan {
             }
         }
 
+        /// The command this launch runs, how faithfully it can be described, and
+        /// the adapter's own error when it had one.
+        ///
+        /// The dev-tool arm delegates to the adapter — the single implementation
+        /// a preview and a live launch share. The generic arm builds the command
+        /// straight from the argv the operator typed: there is no adapter to ask,
+        /// nothing is derived and nothing is reinterpreted, so the result is
+        /// verbatim rather than "from the adapter" and there is no error a live
+        /// launch could fail on.
+        fn launch_command(
+            &self,
+            handle: &RegistrationHandle,
+        ) -> (std::process::Command, super::PreviewFidelity, Option<String>) {
+            match (&self.target, &self.integration) {
+                (RunTarget::Command { program, args }, _) => {
+                    let mut command = std::process::Command::new(program);
+                    command.args(args);
+                    (command, super::PreviewFidelity::Verbatim, None)
+                }
+                (target, Some(integration)) => {
+                    integration.launch_command(self.args, &target.label(), handle, self.network.endpoint())
+                }
+                // A dev-tool target is only ever constructed alongside its
+                // adapter, so nothing in this binary reaches here. It degrades
+                // visibly rather than panicking: a launcher that aborts the
+                // process tells the operator less than one that names what it
+                // could not derive.
+                (target, None) => {
+                    let mut command = std::process::Command::new(&*target.label());
+                    command.args(&self.args.tool_args);
+                    (
+                        command,
+                        super::PreviewFidelity::Degraded(format!(
+                            "no adapter was resolved for {}, so the command and environment below \
+                             omit everything one contributes — including NODE_EXTRA_CA_CERTS and \
+                             the normalised proxy URL, whose absence is what makes a session \
+                             ungoverned.",
+                            target.label()
+                        )),
+                        None,
+                    )
+                }
+            }
+        }
+
         /// The launch-only view of this plan, or `None` for a preview.
         pub(super) fn launchable(&self) -> Option<Launchable<'_>> {
             match self.posture {
                 PlanPosture::Preview => None,
                 PlanPosture::Launch => Some(Launchable {
-                    info: self
-                        .integration
-                        .detected
-                        .as_ref()
-                        .expect("a Launch-posture plan refuses when the tool is not installed"),
+                    info: self.integration.as_ref().map(|integration| {
+                        integration
+                            .detected
+                            .as_ref()
+                            .expect("a Launch-posture plan refuses when the tool is not installed")
+                    }),
                     policy: self
                         .policy
                         .document
@@ -743,12 +873,16 @@ mod plan {
     pub(super) struct RunPlanner<'a> {
         args: &'a RunArgs,
         target: RunTarget,
-        adapter: &'a dyn DevToolAdapter,
+        /// `None` for a generic command. Not an unfinished case: a program the
+        /// operator owns has no dev-tool adapter, and supplying an inert one would
+        /// make "this launch has no managed integration" indistinguishable from
+        /// "this launch has one that does nothing".
+        adapter: Option<&'a dyn DevToolAdapter>,
     }
 
     impl<'a> RunPlanner<'a> {
         /// A planner for `args`, launching `target` through `adapter`.
-        pub(super) fn new(args: &'a RunArgs, target: RunTarget, adapter: &'a dyn DevToolAdapter) -> Self {
+        pub(super) fn new(args: &'a RunArgs, target: RunTarget, adapter: Option<&'a dyn DevToolAdapter>) -> Self {
             Self { args, target, adapter }
         }
 
@@ -774,23 +908,49 @@ mod plan {
         pub(super) fn resolve(self, posture: PlanPosture) -> anyhow::Result<ResolvedRunPlan<'a>> {
             let enforcement_mode = self.args.resolved_enforcement_mode();
 
+            // 0. Working directory. A pure check of the operator's own argument:
+            //    it starts nothing, writes nothing and reaches no network, so it
+            //    is free to run before everything else — and running it first is
+            //    what keeps a launch that cannot start where it was told to from
+            //    creating a gateway registration it then abandons. The relative
+            //    order of every stage below is unchanged by it.
+            if let Some(dir) = &self.args.workdir {
+                if !dir.is_dir() {
+                    posture.refuse(anyhow::anyhow!(
+                        "--workdir {} is not a directory on this host",
+                        dir.display()
+                    ))?;
+                }
+            }
+
             // 1. Integration. A live launch of a tool that is not installed stops
             //    here. A preview does not: previewing a launch from CI, or from a
             //    machine still being set up, is the case `--dry-run` is most
             //    useful for, so it continues and degrades visibly instead
             //    (AAASM-5329 AC 3).
-            let integration = IntegrationPlan::probe(self.adapter);
+            //
+            //    A generic command is not probed at all. `aasm run` has no adapter
+            //    for it and no way to detect it, and refusing on a `PATH` lookup
+            //    would be a claim about a program it does not manage — the `exec`
+            //    itself is the test, and its failure is the operator's own
+            //    `No such file or directory`.
+            let integration = self.adapter.map(IntegrationPlan::probe);
             if posture == PlanPosture::Launch {
-                let info = integration
-                    .detected()
-                    .ok_or_else(|| anyhow::anyhow!("{} is not installed", self.target.label()))?;
-                eprintln!(
-                    "tool={} version={} path={} governance_level={}",
-                    self.target.label(),
-                    info.version.as_deref().unwrap_or("unknown"),
-                    info.install_path.display(),
-                    info.governance_level,
-                );
+                match &integration {
+                    Some(integration) => {
+                        let info = integration
+                            .detected()
+                            .ok_or_else(|| anyhow::anyhow!("{} is not installed", self.target.label()))?;
+                        eprintln!(
+                            "tool={} version={} path={} governance_level={}",
+                            self.target.label(),
+                            info.version.as_deref().unwrap_or("unknown"),
+                            info.install_path.display(),
+                            info.governance_level,
+                        );
+                    }
+                    None => eprintln!("command={}", self.target.label()),
+                }
             }
 
             // 2. Network. Resolved before registration on purpose.
@@ -813,8 +973,15 @@ mod plan {
             //    now at least visible in one place instead of being an absence,
             //    and extending it to the preview is a behaviour change this
             //    refactor deliberately does not make.
+            //
+            //    Applied to a generic command too, keyed by the program name as
+            //    typed. That catches `aasm run exec --no-proxy -- claude` on a
+            //    host where someone else required managed operation of Claude
+            //    Code, which is worth catching. It is a **name-shaped lower
+            //    bound**, not a barrier: an absolute path, a symlink or a renamed
+            //    copy resolves to no dev-tool kind and so meets no refusal here.
             if self.args.no_proxy && posture == PlanPosture::Launch {
-                if let Some(refusal) = super::no_proxy_refusal(self.target.label()) {
+                if let Some(refusal) = super::no_proxy_refusal(&self.target.label()) {
                     anyhow::bail!("{refusal}");
                 }
             }
@@ -1003,24 +1170,69 @@ impl Drop for RegistrationGuard {
 /// from, so the preview cannot advertise an identity the live run would not have
 /// submitted.
 async fn register_with_gateway(
-    info: &DevToolInfo,
+    subject: &SessionSubject,
     identity: &plan::IdentityPlan,
     mode: aa_core::EnforcementMode,
 ) -> Result<GovernedRegistration> {
     let agent_id = identity.agent_id(plan::PlanPosture::Launch);
-    let governance_level = info.governance_level.to_string();
 
     run_registration::register(run_registration::SessionDescriptor {
         agent_id: &agent_id,
-        name: &dev_tool_kind_str(&info.kind),
-        version: info.version.as_deref().unwrap_or("unknown"),
+        name: &subject.name,
+        version: &subject.version,
         team_id: identity.team_id(),
         parent_agent_id: identity.root_agent(),
         enforcement_mode: mode,
-        governance_level: &governance_level,
+        governance_level: &subject.governance_level,
     })
     .await
     .map_err(|e| anyhow::anyhow!("refusing to launch unregistered: {e}"))
+}
+
+/// What a launch registers *as* — the descriptive half of the request, none of
+/// which the gateway's gate consults.
+///
+/// Derived per target rather than shared, because the two kinds can honestly say
+/// different things and neither may borrow the other's words.
+///
+/// A generic command reports:
+///
+/// * `name` — the program the operator named, prefixed `command:`. The prefix is
+///   deliberate: without it `aasm run exec -- claude_code` would land in the
+///   registry under the same name a managed Claude Code session registers under,
+///   and an audit reader would have no way to tell an adapter-governed launch
+///   from an arbitrary program that happens to be called that.
+/// * `version` — `unknown`, and honestly so. `aasm run` does not probe an
+///   arbitrary program for a version, and inventing one would put a value in the
+///   registry that nothing measured.
+/// * `governance_level` — [`GovernanceLevel::L0Discover`], which is the level a
+///   launch with no adapter actually reaches: no managed settings, no MCP
+///   governance, and only what the proxy sees of its traffic. Claiming a higher
+///   level for a program `aasm run` cannot configure would be a protection claim
+///   nothing delivers.
+struct SessionSubject {
+    name: String,
+    version: String,
+    governance_level: String,
+}
+
+impl SessionSubject {
+    /// The subject `target` registers under. `info` is the adapter's detection
+    /// result, and is `None` exactly when the target is a generic command.
+    fn of(target: &plan::RunTarget, info: Option<&DevToolInfo>) -> Self {
+        match info {
+            Some(info) => Self {
+                name: dev_tool_kind_str(&info.kind),
+                version: info.version.clone().unwrap_or_else(|| "unknown".into()),
+                governance_level: info.governance_level.to_string(),
+            },
+            None => Self {
+                name: format!("command:{}", target.label()),
+                version: "unknown".into(),
+                governance_level: GovernanceLevel::L0Discover.to_string(),
+            },
+        }
+    }
 }
 
 /// Sandbox banner printed to stderr when `--observe` is in effect. The text is
@@ -1233,6 +1445,14 @@ fn looks_like_credential_name(key: &str) -> bool {
 enum PreviewFidelity {
     /// The command came from the adapter, as the live launch would build it.
     FromAdapter,
+    /// The command is the operator's own program and argv, forwarded as typed.
+    ///
+    /// Distinct from [`FromAdapter`](Self::FromAdapter) rather than folded into
+    /// it: a generic command has no adapter, so saying the preview was "derived
+    /// from the adapter" would name a contribution that does not exist. It is
+    /// equally not [`Degraded`](Self::Degraded) — nothing is missing, because
+    /// there is nothing for an adapter to add.
+    Verbatim,
     /// The adapter could not supply one; the preview is missing whatever it sets.
     Degraded(String),
 }
@@ -1269,6 +1489,14 @@ fn format_dry_run_output(
         format!("{} {}", program, args_strs.join(" "))
     };
 
+    // Read back off the command rather than off the flag, so this reports the
+    // directory the child is actually given — including one an adapter set that
+    // the operator never asked for.
+    let working_dir = cmd.get_current_dir().map_or_else(
+        || "<inherited from this shell>".to_string(),
+        |dir| dir.display().to_string(),
+    );
+
     // Derived through the same merge `spawn_and_wait` applies, so the preview
     // cannot claim a variable the launch would not have — including one the
     // adapter removes, which a naive union of the two sources would still show.
@@ -1283,11 +1511,14 @@ fn format_dry_run_output(
 
     let fidelity_line = match fidelity {
         PreviewFidelity::FromAdapter => "derived from the adapter, as the live launch builds it".to_string(),
+        PreviewFidelity::Verbatim => "the program and argv you supplied, forwarded verbatim; a generic command has no \
+             dev-tool adapter to contribute anything"
+            .to_string(),
         PreviewFidelity::Degraded(why) => format!("DEGRADED — {why}"),
     };
 
     format!(
-        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\n{}\n\n--- environment ---\n{}",
+        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\nworking_dir: {}\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
         handle.registration_did,
         handle.trace_id,
@@ -1304,10 +1535,21 @@ fn format_dry_run_output(
         policy.source().map_or("<none>".to_string(), |p| p.display().to_string()),
         policy.summary(),
         truncated_settings,
+        working_dir,
         cmd_line,
         env_lines,
     )
 }
+
+/// The reserved `aasm run` target that launches a program the operator owns
+/// rather than a managed developer tool (AAASM-5706).
+///
+/// It is resolved **only after** every tool id has failed to match, at both entry
+/// points, so it can never shadow an existing `aasm run <tool>` form or one of
+/// its aliases — if a tool were ever registered under this token the tool would
+/// keep it. `exec_target_is_not_an_id_any_supported_tool_answers_to` pins the
+/// other direction: today no tool answers to it, under either spelling.
+const EXEC_TARGET: &str = "exec";
 
 /// The canonical [`aa_devtool::registry`] token for any tool id `aasm run`
 /// accepts, or `None` for an id no built-in tool answers to.
@@ -1363,8 +1605,16 @@ fn accepted_tool_ids() -> String {
 /// Both spellings are listed because the user most likely arrived here having
 /// copied one from `aasm integrations list`; a refusal that named only the
 /// short tokens is what made that dead end hard to escape.
+///
+/// The generic target is named too, because "there is no adapter for my agent"
+/// is the other reason to arrive here and the answer to it is no longer "you
+/// cannot".
 fn unknown_tool_error(tool: &str) -> anyhow::Error {
-    anyhow::anyhow!("unknown tool: {tool}, supported: {}", accepted_tool_ids())
+    anyhow::anyhow!(
+        "unknown tool: {tool}, supported: {}; to launch a program that is not a managed dev tool, \
+         use `aasm run {EXEC_TARGET} [run-options] -- <program> [args...]`",
+        accepted_tool_ids()
+    )
 }
 
 /// Return the adapter for `tool`, or an error for unrecognised tool names.
@@ -1380,6 +1630,27 @@ fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
     canonical_tool_id(tool)
         .and_then(aa_devtool::registry::adapter_for)
         .ok_or_else(|| unknown_tool_error(tool))
+}
+
+/// The command and argv this launch is recorded under in the audit trail.
+///
+/// A dev-tool launch is recorded under the canonical tool token and the arguments
+/// forwarded to it, unchanged from before AAASM-5706. A generic command is
+/// recorded under the program and argv the operator supplied, rendered with
+/// `to_string_lossy`.
+///
+/// That lossiness is confined to the *record*: the child is spawned from the
+/// [`OsString`](std::ffi::OsString)s in the target, so a byte an audit consumer
+/// could not decode is replaced here and nowhere else. The launch is never
+/// altered to suit what the trail can express.
+fn audit_argv(target: &plan::RunTarget, args: &RunArgs) -> (String, Vec<String>) {
+    match target {
+        plan::RunTarget::DevTool { tool } => (tool.clone(), args.tool_args.clone()),
+        plan::RunTarget::Command { program, args: argv } => (
+            program.to_string_lossy().into_owned(),
+            argv.iter().map(|arg| arg.to_string_lossy().into_owned()).collect(),
+        ),
+    }
 }
 
 /// Release the registration over the gRPC service that issued it.
@@ -1440,6 +1711,16 @@ fn effective_child_env(
 /// `host:port` proxy address into the `http://host:port` URL an HTTP client
 /// accepts (AAASM-5324). Dropping the adapter's environment, as this function
 /// did before AAASM-5327, silently defeated both.
+///
+/// # Why the working directory is copied across explicitly
+///
+/// `cmd` is a `std::process::Command` and this spawns a `tokio` one, so every
+/// piece of state has to be carried over by name — nothing is inherited. The
+/// working directory was the third thing to be lost that way: the plan set it,
+/// `--dry-run` printed it, and the child started in the launcher's directory
+/// regardless (AAASM-5706, caught by
+/// `exec_starts_the_child_in_the_requested_working_directory`). Anything added to
+/// the bound command in future has to be added here too.
 async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, String>) -> Result<i32> {
     let (effective, removed) = effective_child_env(&cmd, child_env);
 
@@ -1448,6 +1729,9 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
     tokio_cmd.envs(&effective);
     for name in &removed {
         tokio_cmd.env_remove(name);
+    }
+    if let Some(dir) = cmd.get_current_dir() {
+        tokio_cmd.current_dir(dir);
     }
 
     let mut child = tokio_cmd.spawn()?;
@@ -1496,10 +1780,10 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
 /// The enforcement mode is no longer a parameter. It is derived from `args` by
 /// the planner, which is the only way to guarantee a preview and a live launch
 /// cannot be handed different postures for the same flags.
-fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs) -> String {
+fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>, args: &RunArgs) -> String {
     // Every refusal a preview meets is reported by the planner and recorded in
     // the plan, so `Preview` resolution cannot fail.
-    let resolved = plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), adapter)
+    let resolved = plan::RunPlanner::new(args, target, adapter)
         .resolve(plan::PlanPosture::Preview)
         .expect("a preview reports refusals rather than raising them");
 
@@ -1514,7 +1798,17 @@ fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs) -> String {
     // them is harmless, but it needs an enforceable policy the preview may not
     // have, and the honest placeholder says so rather than implying the live run
     // would apply nothing.
-    let settings = "<dry-run: managed settings not generated>".to_string();
+    //
+    // A generic command gets a different placeholder because it describes a
+    // different fact. "Not generated in a preview" would imply a live run
+    // generates some; a program with no adapter has no settings schema and no
+    // file of its own, and none is written for it at any posture.
+    let settings = match resolved.target() {
+        plan::RunTarget::Command { .. } => {
+            "<none: a generic command has no dev-tool managed settings, and none is written for it>".to_string()
+        }
+        plan::RunTarget::DevTool { .. } => "<dry-run: managed settings not generated>".to_string(),
+    };
 
     format_dry_run_output(
         &handle,
@@ -1544,9 +1838,14 @@ fn dry_run_preview(adapter: &dyn DevToolAdapter, args: &RunArgs) -> String {
 /// (AAASM-5323). The gateway gRPC endpoint is resolved by
 /// [`crate::commands::run_registration::gateway_endpoint`].
 pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<dyn DevToolAdapter>>) -> Result<i32> {
-    let adapter = adapters
-        .get(args.tool.as_str())
-        .ok_or_else(|| unknown_tool_error(&args.tool))?;
+    // A registered tool id is resolved **first**. `exec` names the generic target
+    // only where no adapter answers to it, so adding the reserved word cannot
+    // take an id away from a tool that already had it (AAASM-5706).
+    let (target, adapter): (plan::RunTarget, Option<&dyn DevToolAdapter>) = match adapters.get(args.tool.as_str()) {
+        Some(adapter) => (plan::RunTarget::dev_tool(&args.tool), Some(adapter.as_ref())),
+        None if args.tool == EXEC_TARGET => (plan::RunTarget::command(&args.tool_args)?, None),
+        None => return Err(unknown_tool_error(&args.tool)),
+    };
 
     let mode = args.resolved_enforcement_mode();
 
@@ -1563,7 +1862,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     }
 
     if args.dry_run {
-        print!("{}", dry_run_preview(adapter.as_ref(), args));
+        print!("{}", dry_run_preview(target, adapter, args));
         return Ok(0);
     }
 
@@ -1571,8 +1870,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // the order the launch commits to them: detect → proxy → `--no-proxy` guard
     // → policy. `Launch` posture makes each one fatal, so reaching the next line
     // means all four passed and nothing has been registered or started yet.
-    let resolved = plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), adapter.as_ref())
-        .resolve(plan::PlanPosture::Launch)?;
+    let resolved = plan::RunPlanner::new(args, target, adapter).resolve(plan::PlanPosture::Launch)?;
     let launchable = resolved
         .launchable()
         .expect("a Launch-posture plan resolves every precondition or refuses");
@@ -1580,7 +1878,11 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // Fatal on failure, and fatal *before* anything is launched: a session the
     // gateway did not accept has no governed identity, and a tool started under
     // no identity is an ungoverned process wearing a governed launch's name.
-    let registration = register_with_gateway(launchable.info, resolved.identity(), mode).await?;
+    // Identical for both target kinds — a generic command registers, and later
+    // deregisters, through the same handshake, so it is a governed identity for
+    // exactly as long as it runs.
+    let subject = SessionSubject::of(resolved.target(), launchable.info);
+    let registration = register_with_gateway(&subject, resolved.identity(), mode).await?;
     let handle = RegistrationHandle::of(&registration);
 
     // Recorded now, not at exit: an audit trail that only learns about a session
@@ -1588,12 +1890,13 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // end cleanly. Reachable only for a policy that permitted the launch — the
     // two refusing states are refused above, before any registration exists, so
     // they cannot reach the trail at all (see `run_audit`'s module docs).
+    let (audit_command, audit_args) = audit_argv(resolved.target(), args);
     run_registration::report_launch(
         &registration,
         &handle.trace_id,
         &handle.session_id,
-        &args.tool,
-        &args.tool_args,
+        &audit_command,
+        &audit_args,
         &resolved.policy().resolution().posture(),
         args.no_proxy,
     )
@@ -1607,15 +1910,23 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // override.
     let bound = resolved.bind(&handle);
 
-    let settings = adapter
-        .generate_managed_settings(launchable.policy)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to generate managed settings: {e}"))?;
+    // Managed settings are a dev-tool artifact, so they are generated and applied
+    // only where there is a dev tool. A generic command has no adapter, no
+    // settings schema and no configuration file of its own; writing one would put
+    // an operator-owned program under some other tool's configuration, changing
+    // that tool's behaviour on the host in a way nobody asked for and nothing
+    // would undo. `generic_run_writes_no_dev_tool_settings` is the control.
+    if let Some(adapter) = adapter {
+        let settings = adapter
+            .generate_managed_settings(launchable.policy)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to generate managed settings: {e}"))?;
 
-    adapter
-        .apply_settings(&settings)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
+        adapter
+            .apply_settings(&settings)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
+    }
 
     // Raised here rather than at bind time so the failure still lands where it
     // always has: after the managed settings have been applied, not before.
@@ -1649,9 +1960,13 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
 /// of those talking about an id the rest of the system does not use
 /// (AAASM-5503).
 pub async fn execute(mut args: RunArgs) -> Result<i32> {
-    args.tool = canonical_tool_id(&args.tool)
-        .ok_or_else(|| unknown_tool_error(&args.tool))?
-        .to_string();
+    // Tool ids are resolved first and the generic target only after they all
+    // fail, so `exec` cannot shadow a tool id or one of its aliases.
+    match canonical_tool_id(&args.tool) {
+        Some(canonical) => args.tool = canonical.to_string(),
+        None if args.tool == EXEC_TARGET => {}
+        None => return Err(unknown_tool_error(&args.tool)),
+    }
 
     let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
     for tool in aa_devtool::registry::SUPPORTED_TOOLS {
@@ -2459,6 +2774,7 @@ mod tests {
             governance_level: None,
             no_proxy: false,
             policy: None,
+            workdir: None,
             dry_run: false,
             enforcement_mode: None,
             observe: false,
@@ -2752,7 +3068,11 @@ mod tests {
         args.dry_run = true;
         args.no_proxy = true; // keeps the preview off any real proxy resolution
 
-        let output = dry_run_preview(&StubEnvContributing, &args);
+        let output = dry_run_preview(
+            plan::RunTarget::dev_tool("claude"),
+            Some(&StubEnvContributing as &dyn DevToolAdapter),
+            &args,
+        );
 
         assert!(
             output.contains("claude-real-binary"),
@@ -3155,7 +3475,7 @@ mod tests {
     /// is the same construction the preview performs without depending on what
     /// is running on the host.
     fn preview_plan<'a>(adapter: &'a dyn DevToolAdapter, args: &'a RunArgs) -> plan::ResolvedRunPlan<'a> {
-        plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), adapter)
+        plan::RunPlanner::new(args, plan::RunTarget::dev_tool(&args.tool), Some(adapter))
             .resolve(plan::PlanPosture::Preview)
             .expect("preview resolution reports refusals rather than raising them")
     }
@@ -3416,5 +3736,197 @@ mod tests {
         for name in ["LOG_LEVEL", "HOME", "PATH", "AA_TRACE_ID"] {
             assert!(!looks_like_credential_name(name), "{name} must not be swept in");
         }
+    }
+
+    // --- the generic command target (AAASM-5706) ---
+
+    /// AC 2 at the CLI boundary: the argv a shell would mangle survives parsing.
+    ///
+    /// Every element here is one a quoting round-trip loses: an embedded space,
+    /// a leading hyphen, a second `--`, an empty string, and a glob character a
+    /// re-parse would expand. `--agent-id` and `--workdir` sit before the `--`
+    /// and must be read as run-options, not as arguments to the program.
+    #[test]
+    fn parse_exec_target_keeps_run_options_and_forwards_argv_verbatim() {
+        let cli = TestCli::try_parse_from([
+            "aasm",
+            "run",
+            "exec",
+            "--agent-id",
+            "a1",
+            "--workdir",
+            "/tmp",
+            "--",
+            "python3",
+            "agent.py",
+            "--flag",
+            "two words",
+            "--",
+            "",
+            "*.py",
+        ])
+        .unwrap();
+        match cli.command {
+            TestCommands::Run(args) => {
+                assert_eq!(args.tool, EXEC_TARGET);
+                assert_eq!(args.agent_id.as_deref(), Some("a1"));
+                assert_eq!(args.workdir.as_deref(), Some(std::path::Path::new("/tmp")));
+                assert_eq!(
+                    args.tool_args,
+                    vec!["python3", "agent.py", "--flag", "two words", "--", "", "*.py"],
+                    "argv must survive parsing element for element"
+                );
+            }
+        }
+    }
+
+    /// The reserved word must not collide with an id a tool already answers to,
+    /// under **either** spelling — the short registry token or the longer
+    /// Developer-Integration id `aasm integrations list` prints.
+    ///
+    /// Driven from the registry rather than a hand-written list, so a tool added
+    /// later is covered without an edit here.
+    #[test]
+    fn exec_target_is_not_an_id_any_supported_tool_answers_to() {
+        assert!(
+            canonical_tool_id(EXEC_TARGET).is_none(),
+            "`{EXEC_TARGET}` resolves to a supported tool, so the generic target would shadow it"
+        );
+        for tool in aa_devtool::registry::SUPPORTED_TOOLS {
+            assert_ne!(tool, EXEC_TARGET, "a tool is registered under the reserved word");
+        }
+    }
+
+    /// `aasm run exec` with nothing after `--` names no program. The two ways to
+    /// paper over that — defaulting to `sh` or to `$SHELL` — would reintroduce
+    /// the shell reconstruction this target exists to avoid, so it refuses.
+    #[test]
+    fn a_generic_target_refuses_an_empty_argv() {
+        let err = plan::RunTarget::command(&[]).expect_err("no program is not a launchable target");
+        assert!(
+            err.to_string().contains("needs a program to launch"),
+            "the refusal must say what is missing; got: {err}"
+        );
+    }
+
+    /// The first element is the program; the rest are its argv, in order, with
+    /// nothing added, removed, joined or re-split.
+    #[test]
+    fn a_generic_target_splits_argv_into_a_program_and_its_arguments() {
+        let argv: Vec<String> = ["python3", "agent.py", "--flag", "two words", "--"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        match plan::RunTarget::command(&argv).expect("a program is present") {
+            plan::RunTarget::Command { program, args } => {
+                assert_eq!(program, std::ffi::OsString::from("python3"));
+                assert_eq!(
+                    args,
+                    vec![
+                        std::ffi::OsString::from("agent.py"),
+                        std::ffi::OsString::from("--flag"),
+                        std::ffi::OsString::from("two words"),
+                        std::ffi::OsString::from("--"),
+                    ]
+                );
+            }
+            other => panic!("expected a command target, got {other:?}"),
+        }
+    }
+
+    /// A generic plan binds the operator's own command **and** this session's
+    /// governance identity.
+    ///
+    /// Both halves matter. The command half is the AC 2 claim at the point the
+    /// child is actually constructed; the identity half is the AC 4/5 claim that
+    /// a generic launch is governed like any other, and asserting only the first
+    /// would let a target that carries no identity pass.
+    #[test]
+    fn a_generic_plan_binds_the_operators_command_with_the_session_identity() {
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = ["python3", "agent.py", "--flag", "two words"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let resolved = plan::RunPlanner::new(&args, target, None)
+            .resolve(plan::PlanPosture::Preview)
+            .expect("a preview reports refusals rather than raising them");
+        let handle = stub_handle(Some("team-a"));
+        let bound = resolved.bind(&handle);
+
+        assert_eq!(bound.command().get_program(), std::ffi::OsStr::new("python3"));
+        assert_eq!(
+            bound.command().get_args().collect::<Vec<_>>(),
+            vec![
+                std::ffi::OsStr::new("agent.py"),
+                std::ffi::OsStr::new("--flag"),
+                std::ffi::OsStr::new("two words"),
+            ],
+            "the bound command must carry the operator's argv unchanged"
+        );
+        assert_eq!(
+            bound.child_env().get("AA_AGENT_ID").map(String::as_str),
+            Some("test-agent"),
+            "a generic child must be handed the same governance identity a dev-tool child is"
+        );
+        assert_eq!(
+            bound.child_env().get("AA_TEAM_ID").map(String::as_str),
+            Some("team-a"),
+            "team lineage must reach a generic child too"
+        );
+        assert!(
+            bound.adapter_error().is_none(),
+            "there is no adapter behind a generic command, so there is no adapter error"
+        );
+    }
+
+    /// `--workdir` is applied where both postures bind, so the directory the
+    /// preview prints is the directory the launch starts in.
+    #[test]
+    fn a_generic_preview_shows_the_working_directory_and_no_managed_settings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = ["python3", "agent.py"].iter().map(|s| (*s).to_string()).collect();
+        args.workdir = Some(dir.path().to_path_buf());
+        args.dry_run = true;
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            output.contains(&format!("working_dir: {}", dir.path().display())),
+            "the working directory a live launch would use must be visible in the preview: {output}"
+        );
+        assert!(
+            output.contains("python3 agent.py"),
+            "the preview must show the command that would run: {output}"
+        );
+        assert!(
+            output.contains("forwarded verbatim"),
+            "a generic command has no adapter, so the preview must not claim adapter fidelity: {output}"
+        );
+        assert!(
+            output.contains("no dev-tool managed settings"),
+            "the preview must say no settings file is written for a generic command: {output}"
+        );
+    }
+
+    /// A dev-tool preview still reports an inherited working directory when the
+    /// operator names none — the new line must not turn absence into a claim.
+    #[test]
+    fn a_preview_without_workdir_reports_an_inherited_working_directory() {
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = vec!["python3".to_string()];
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            output.contains("working_dir: <inherited from this shell>"),
+            "with no --workdir the preview must say the child inherits this shell's directory: {output}"
+        );
     }
 }
