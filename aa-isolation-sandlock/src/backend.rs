@@ -228,6 +228,12 @@ impl SandlockBackend {
 
     /// Install `env` as the confined program's **entire** environment.
     ///
+    /// A setter rather than a `with_`-style builder because the caller that has
+    /// the environment is not the caller that selected the backend: `aasm run`
+    /// selects one while resolving the launch — early, so an unavailable host
+    /// refuses before anything is registered — and only computes the child
+    /// environment once an identity exists to put in it.
+    ///
     /// # Why a governed launch has to say this explicitly (AAASM-5711)
     ///
     /// The supervisor and the confined program are different processes with
@@ -248,9 +254,8 @@ impl SandlockBackend {
     /// The map is applied verbatim. Precedence was already decided by whoever
     /// built it; re-deciding it here would be a second implementation of the
     /// merge, which is the defect AAASM-5329 was.
-    pub fn with_child_environment(mut self, env: BTreeMap<String, String>) -> Self {
+    pub fn set_child_environment(&mut self, env: BTreeMap<String, String>) {
         self.child_environment = Some(env);
-        self
     }
 
     fn assemble(

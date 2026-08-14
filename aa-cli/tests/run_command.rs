@@ -337,5 +337,7 @@ fn run_args(tool: &str) -> RunArgs {
         dry_run: false,
         enforcement_mode: None,
         observe: false,
+        isolation: aa_cli::commands::run::IsolationIntent::None,
+        isolation_backend: None,
     }
 }
