@@ -26,6 +26,19 @@
 #   https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
 version: 2
+
+# AAASM-5675: `target-branch` is deliberately absent from EVERY entry below.
+#
+# GitHub's security-update guidance says plainly "you should not specify a
+# `target-branch`", and the options reference's legend scopes every
+# security-update-affecting option "except where `target-branch` is used" — so
+# setting it opts that entry's manifests out of configured security-update
+# behaviour. Every entry here previously set `target-branch: "main"`, which is
+# the repository's own default branch, so the field bought nothing and cost that
+# opt-out repo-wide, on cargo and github-actions as much as on npm.
+#
+# Removing it changes no targeting behaviour: absent the field Dependabot
+# targets the default branch, and that default is `main`.
 updates:
 
   # ── Rust workspace ────────────────────────────────────────────────────────
@@ -67,6 +80,58 @@ updates:
     commit-message:
       prefix: "⬆"
     open-pull-requests-limit: 10
+
+  # ── Developer-integration reference client (pnpm) ────────────────────────
+  # AAASM-5675. This directory had a pnpm-lock.yaml and no entry here, so it
+  # received no scheduled version updates at all — the reason its dependencies
+  # drifted unattended.
+  #
+  # No `allow:` block, deliberately. An earlier draft of this entry carried
+  # `allow: - dependency-type: "all"` and a comment calling it load-bearing. It
+  # is load-bearing for nothing here: the options reference scopes `all`'s
+  # dependencies-of-direct-dependencies behaviour to bundler / pip / composer /
+  # cargo / gomod / uv, and npm is in neither that list nor the `indirect` one,
+  # so for npm `all` is exactly `direct` — a no-op however it is read.
+  #
+  # The same draft asserted that js-yaml "was never in this directory's
+  # package.json and never will be". It is there, at `pnpm.overrides` — and that
+  # override is what actually resolved the advisory, which makes it the opposite
+  # of the claim. Left recorded here because a wrong root-cause in a comment
+  # outlives the pull request that introduced it.
+  - package-ecosystem: "npm"
+    directory: "/examples/aa-devint-reference-client"
+    schedule:
+      interval: "daily"
+    labels: ["dependencies", "examples", "pnpm"]
+    commit-message:
+      prefix: "⬆"
+    open-pull-requests-limit: 10
+
+  # ── Integration-test TypeScript agent fixtures (pnpm) ────────────────────
+  # AAASM-5675. Same shape as the entry above, found by the same sweep: a
+  # pnpm-lock.yaml with no entry here. It is test-fixture code and not shipped,
+  # so the blast radius of a vulnerability is smaller — but "smaller" is not the
+  # reason it was uncovered, and an unsatisfiable security job here would fail
+  # exactly as the reference client's did. Covered deliberately rather than left
+  # to be rediscovered.
+  #
+  # This directory has a live advisory right now: its pnpm-lock.yaml resolves
+  # js-yaml@4.1.1 at two sites, inside the >= 4.0.0 < 4.3.1 affected range, and
+  # unlike the reference client its package.json carries no `pnpm.overrides`
+  # pinning it. What this entry adds is scheduled *version* updates — the
+  # security PR for that advisory is driven by the repository's Dependabot
+  # security-updates setting and does not depend on this file at all
+  # ("there is no interaction between the settings specified in the
+  # dependabot.yml file and Dependabot security alerts"). The pin is tracked
+  # separately as AAASM-5775.
+  - package-ecosystem: "npm"
+    directory: "/aa-integration-tests/tests/fixtures/agents/typescript"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "test-fixtures", "pnpm"]
+    commit-message:
+      prefix: "⬆"
+    open-pull-requests-limit: 5
 
   # ── GitHub Actions ────────────────────────────────────────────────────────
   # All actions in .github/workflows/ are pinned to full commit SHAs
