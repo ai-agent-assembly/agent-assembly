@@ -37,6 +37,15 @@ on:
       - 'TRUTH-ADOPTION.md'
       # AAASM-5677 AC3 — paired with the router filter below.
       - 'verification-reports/**/*.md'
+      # AAASM-5679: mirrored from the `changes` router below. Without these,
+      # neither the claim-vocabulary checker's `--selftest` nor its full-tree
+      # report runs on `main` for the scopes it claims to cover — the "a PR-only
+      # gate lets main go silently red" shape this repository has already been
+      # bitten by.
+      - 'design/**'
+      - '.claude/**'
+      - '**/README.md'
+      - 'scripts/check_claim_vocabulary.py'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -97,6 +106,26 @@ jobs:
               # DEFAULT_GLOBS: this glob alone would only make the job RUN, and
               # it would then scan nothing.
               - 'verification-reports/**/*.md'
+              # AAASM-5679: the claim-vocabulary gate's scope is wider than
+              # `docs/**`, and a scope the workflow never fires for is a scope
+              # that is not gated. `design/**` is where the AC3 violation lived
+              # (ADR 0025 makes those specs authoritative), `.claude/**` is in
+              # the spec's 6.5 scope, and a README at any depth is too. The
+              # checker itself is listed for the same reason the two scripts
+              # above are: a change to a gate must re-run it.
+              #
+              # `governance/**` was here and has been removed: the checker reads
+              # nothing under it that `**/README.md` does not already select.
+              # The only other prose there is
+              # governance/testdata/seed-r16-companion.md, a validator fixture
+              # the checker declines as outside its 6.5 scope. So the glob fired
+              # the whole Docs workflow on all 49 governance/testdata fixtures
+              # while adding no coverage — the "runs and scans nothing" shape the
+              # note above this one exists to warn about.
+              - 'design/**'
+              - '.claude/**'
+              - '**/README.md'
+              - 'scripts/check_claim_vocabulary.py'
 
   build:
     name: Build mdBook
@@ -472,6 +501,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # AAASM-5679: full history. The claim-vocabulary gate below diffs
+          # against the pull request's base, and a three-dot diff needs a merge
+          # base. Under the default `fetch-depth: 1` git reports
+          #   fatal: <sha>...HEAD: no merge base
+          # and the step's `|| true` turned that into "no files changed" — so
+          # the gate passed on every pull request regardless of content. A gate
+          # that cannot fail is worse than no gate, because it reads as one.
+          fetch-depth: 0
 
       - name: Fail if a registry-owned canonical value drifts
         run: bash .ci/check-metadata-drift.sh
@@ -487,6 +525,43 @@ jobs:
         run: |
           python3 scripts/check_absolutes_unwaivable.py --selftest
           python3 scripts/check_absolutes_unwaivable.py
+
+      # AAASM-5679: enforce the CLAIM-ABS-* / CLAIM-VERB-* claim vocabulary
+      # against *product copy*. The check above is a different property — it asks
+      # whether a governance page declares a banned absolute waivable, and its
+      # globs never reach README.md or docs/src/introduction/. Pointed straight at
+      # README.md it exits 0, so a green run of it was never evidence that no
+      # banned absolute shipped. That is how an already-classified blocking
+      # CLAIM-ABS-09 violation survived on the front page.
+      #
+      # Adoption follows claim-vocabulary.md §6.6: the tree's blocking baseline is
+      # not yet empty, so blocking rules gate the PR's own added/modified lines
+      # while the full tree runs in report mode. Deliberately NOT a suppression
+      # list — a file of exempted strings is a permanent unexpiring waiver, which
+      # is forbidden design 9 arriving by another route. Flip the last step to a
+      # bare invocation once the baseline reaches zero.
+      - name: Claim vocabulary — selftest, then enforce
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_claim_vocabulary.py --selftest
+
+          echo "::group::Full-tree report (non-gating while the baseline is non-empty)"
+          python3 scripts/check_claim_vocabulary.py --report-only
+          echo "::endgroup::"
+
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "not a pull request — the full-tree report above is the whole check"
+            exit 0
+          fi
+
+          # No `|| true` anywhere below. claim-vocabulary.md 6.6 gates the pull
+          # request's own added and modified lines, and `--diff-base` computes
+          # those inside the checker, where a failure to work out what changed
+          # is raised as an error instead of being silently read as "nothing
+          # changed".
+          python3 scripts/check_claim_vocabulary.py --diff-base "$BASE_SHA"
 
   # AAASM-5677: the stable required context for this workflow. `deploy` is
   # deliberately NOT a need — it only runs off a pull request, and a Pages

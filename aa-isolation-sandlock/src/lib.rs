@@ -27,6 +27,24 @@
 //!   report. `EnforcementEvidence::supports_prevention_claim` is therefore false
 //!   after every run, which is the honest answer and is asserted by test.
 //!
+//! # Ambient authority the launch did not choose to give (AAASM-5709)
+//!
+//! Two things reach a child without anyone deciding they should: the launching
+//! environment, and this process's open descriptors. [`lower`] replaces the
+//! first — the child starts empty and receives only what the spec named — and
+//! [`inherit`] marks every non-standard descriptor close-on-exec so it does not
+//! survive into the confined program.
+//!
+//! Neither is asserted to have worked. What [`inherit`] could not act on is
+//! reported as
+//! [`DescriptorDisposition::ResidualUnclosable`](aa_isolation::DescriptorDisposition::ResidualUnclosable),
+//! a host that cannot enumerate descriptors at all yields an inventory whose
+//! [`asserts_clean_boundary`](aa_isolation::DescriptorInventory::asserts_clean_boundary)
+//! is false, and a name policy asked to remove that this launch still passes
+//! through appears in evidence as authority that **could not** be removed rather
+//! than as authority that was. That last distinction is the one this Epic exists
+//! to keep.
+//!
 //! # No unconfined fallback
 //!
 //! Exactly one function starts the caller's program, and it starts it as an
@@ -62,10 +80,12 @@
 pub mod backend;
 pub mod capability;
 pub mod host;
+pub mod inherit;
 pub mod lower;
 pub mod probe;
 
 pub use backend::{CompletedRun, SandlockBackend, BACKEND_ID, SOURCE_URL, SPDX_LICENSE};
 pub use host::{BackendLookupError, HostFacts, KernelVersion, BACKEND_PATH_ENV, BACKEND_PROGRAM};
+pub use inherit::seal_inherited_descriptors;
 pub use lower::{Argv, LoweringGap};
 pub use probe::{ConfinementProbe, Observation};

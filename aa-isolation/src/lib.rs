@@ -74,6 +74,30 @@
 //! requirement, because those two are read very differently by anyone deciding
 //! whether a boundary is complete.
 //!
+//! # Ambient authority and descendant inheritance (AAASM-5709)
+//!
+//! Three modules turn ADR 0035 §6 and §9 from prose into checkable properties,
+//! and each exists to keep one pair of states from collapsing into one:
+//!
+//! | Module | The pair it keeps apart |
+//! | --- | --- |
+//! | [`ambient`] | A credential *removed* from the child, and one that **could not be** removed |
+//! | [`descriptor`] | A descriptor known absent, and one nothing enumerated |
+//! | [`descendant`] | A sub-agent launch that narrows authority, and one that widens it |
+//!
+//! The first is the load-bearing one. [`CredentialPosture`] has always had the
+//! three-way split; what [`EnvironmentPlanner`] adds is that a posture built
+//! from a real environment *cannot* place a kept compatibility exception in
+//! `removed`, and [`CredentialPosture::contradictions`] is the predicate that
+//! catches a hand-written posture which does. A non-empty
+//! [`CredentialPosture::ambient_unremoved`] means the run is not
+//! least-authority, and every rendering of it must say so rather than reporting
+//! the delegated set as the whole story.
+//!
+//! None of the three enforces anything. They describe a launch before it starts,
+//! so a caller can refuse, degrade or record — the same three outcomes
+//! [`negotiate`] already offers, reached from a different input.
+//!
 //! # Reused vocabulary, and one deliberate rename
 //!
 //! Evidence terms are [`aa_core::attestation::ClaimTerm`] verbatim — this crate
@@ -147,8 +171,11 @@
 
 #![warn(missing_docs)]
 
+pub mod ambient;
 pub mod backend;
 pub mod capability;
+pub mod descendant;
+pub mod descriptor;
 pub mod evidence;
 pub mod lowering;
 pub mod plan;
@@ -157,11 +184,19 @@ pub mod spec;
 #[cfg(feature = "mock-backend")]
 pub mod mock;
 
+pub use ambient::{
+    classify_env_name, is_supervisor_credential, AmbientAuthorityKind, ClassifiedName, CompatibilityException,
+    EnvironmentPlan, EnvironmentPlanner, CLOUD_METADATA_ENDPOINTS,
+};
 pub use backend::{ExecutionHandle, IsolationBackend, PreparedExecution, SpawnError};
 pub use capability::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
     Synchrony,
+};
+pub use descendant::{authority_widening, covers_ordinary_descendants, is_same_or_narrower, AuthorityWidening};
+pub use descriptor::{
+    DescriptorDisposition, DescriptorInventory, InheritedDescriptor, InventoryCompleteness, STANDARD_DESCRIPTORS,
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
 pub use lowering::{

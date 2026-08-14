@@ -1,5 +1,10 @@
 //! The frozen runtime verdict, as an event field.
 
+// Only the `Deserialize` impl below constructs a `String`, and that impl is
+// `#[cfg(feature = "serde")]`. Left unconditional this is an `unused_imports`
+// error on any crate selection that omits the feature — which `--all-features`
+// hides, because there every gate is open (AAASM-5682).
+#[cfg(feature = "serde")]
 use alloc::string::String;
 
 /// The enforcement outcome an action received, spelled exactly as ADR 0018's

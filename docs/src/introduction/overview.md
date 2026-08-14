@@ -4,7 +4,9 @@
 > services, and spend money to get a job done. Agent Assembly is the set of
 > guardrails around them: for each action that reaches it, it checks the action
 > against rules you define, allows or blocks it *before* it happens, and keeps a
-> permanent record of what was decided. Think of it as a security checkpoint on
+> tamper-*evident* record of what was decided — one you can check for alteration,
+> though nothing in the product deletes it on a schedule, so retention is yours
+> to run. Think of it as a security checkpoint on
 > the paths you route through it — which means the paths you leave unrouted
 > still need their own controls. Which actions reach the checkpoint depends on
 > how the agent is wired up; the [three-layer
@@ -81,9 +83,11 @@ the agent may do." It provides:
 - **A hash-chained audit trail.** Every decision the runtime makes — allow and
   deny alike — is recorded, giving teams a tamper-*evident* account of the agent
   behavior that was observed, for debugging, incident response, and compliance.
-  Tamper-evident is not immutable: the SHA-256 chain is unkeyed, covers the JSONL
-  sink only, and retention pruning deletes rows. See
-  [Audit](concepts.md#audit).
+  Tamper-evident is not immutable: the SHA-256 chain is unkeyed and covers the
+  JSONL sink only. Retention pruning does not reach that sink — it deletes rows
+  from the SQL copy, which carries no chain — so the chained record itself is
+  bounded by nothing the product ships. See [Audit](concepts.md#audit) and
+  [what is retained](../security/audit-assurance.md#what-is-retained-and-what-is-deleted).
 - **Defense that does not depend on the agent's cooperation.** Enforcement is
   layered across three independent interception points (see [the three-layer
   model](three-layer-model.md)), so governance can still hold when an agent skips

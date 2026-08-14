@@ -8,6 +8,11 @@ use aa_security::canonical::{
 
 use super::guard::{AuditLabel, FieldPath, FieldRejection};
 use super::schema::{SchemaVersion, SENSITIVE_DATA_SCHEMA_VERSION};
+// `vocab` is referenced only from `cfg_attr(feature = "serde" / "schemars")`
+// attributes on the fields below, so the import must carry the same condition
+// or it is an `unused_imports` error whenever neither feature is on
+// (AAASM-5682).
+#[cfg(any(feature = "serde", feature = "schemars"))]
 use super::vocab;
 use super::CategoryLabel;
 
