@@ -38,14 +38,18 @@ use std::sync::Mutex;
 
 use aa_core::attestation::ClaimTerm;
 use aa_isolation::{
-    negotiate, BackendCapabilities, BackendIdentity, CapabilityDomain, EnforcementEvidence, EnforcementPlan,
-    EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, IsolationBackend, Lowering, PlanRefusal,
-    PreparedExecution, Provenance, RequirementOutcome, SpawnError,
+    negotiate, BackendCapabilities, BackendIdentity, CapabilityDomain, DescriptorInventory, EnforcementEvidence,
+    EnforcementPlan, EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, IsolationBackend, Lowering,
+    PlanRefusal, PreparedExecution, Provenance, RequirementOutcome, SpawnError,
 };
 
 use crate::capability;
 use crate::host::{BackendLookupError, HostFacts};
-use crate::lower::{build_argv, credential_flags, lower_requirement, unremoved_ambient, Argv, FLAG_ALLOW_DEGRADED};
+use crate::inherit::seal_inherited_descriptors;
+use crate::lower::{
+    build_argv, credential_flags, lower_requirement, reachable_metadata_endpoints, unremoved_ambient, Argv,
+    FLAG_ALLOW_DEGRADED,
+};
 use crate::probe::{self, ConfinementProbe};
 
 /// The stable machine identifier this backend answers to.
@@ -69,6 +73,14 @@ struct Prepared {
     plan: EnforcementPlan,
     argv: Argv,
     residual_authority: Vec<String>,
+    /// Taken in `prepare`, not in `evidence`: the descriptors that matter are
+    /// the ones open at the moment the boundary was built, and an inventory
+    /// taken later would describe a different process.
+    descriptors: DescriptorInventory,
+    /// Whether the launch's own egress grants leave an instance-metadata
+    /// service reachable. Always stated, including when the answer is no —
+    /// silence about a credential-minting endpoint reads as its absence.
+    metadata_reachability: String,
 }
 
 /// A finished run.
@@ -381,6 +393,12 @@ impl IsolationBackend for SandlockBackend {
         confinement.extend(self.degraded_flags.iter().cloned());
 
         let residual_authority = residual_authority(plan.spec());
+        // Before the argument vector is built and long before anything is
+        // launched: a descriptor marked here cannot cross the `exec` that
+        // starts the mechanism, and therefore cannot reach the program the
+        // mechanism confines.
+        let descriptors = seal_inherited_descriptors();
+        let metadata_reachability = metadata_reachability(plan.spec());
         let argv = build_argv(plan.spec(), confinement);
         let token = self.issue_token();
         self.prepared.lock().expect("backend state poisoned").insert(
@@ -389,6 +407,8 @@ impl IsolationBackend for SandlockBackend {
                 plan: plan.clone(),
                 argv,
                 residual_authority,
+                descriptors,
+                metadata_reachability,
             },
         );
         Ok(PreparedExecution::new(plan, token))
@@ -478,20 +498,63 @@ impl IsolationBackend for SandlockBackend {
 
         // The residue, always, including when it is empty — a run whose evidence
         // is silent about ambient authority reads as a run that had none.
+        //
+        // `Degraded` rather than `Planned` when anything is left: a launch that
+        // could not remove authority policy asked it to remove is not the launch
+        // policy described, and the claim term is where an E6 consumer reads
+        // that without parsing the sentence.
         evidence.record(EvidenceRecord::new(
             EvidenceKind::Installed,
             CapabilityDomain::Credential,
-            ClaimTerm::Planned,
+            if entry.residual_authority.is_empty() {
+                ClaimTerm::Planned
+            } else {
+                ClaimTerm::Degraded
+            },
             if entry.residual_authority.is_empty() {
                 "residual authority reaching the confined program: none beyond the three standard \
                  descriptors, which are delegated by design"
                     .to_string()
             } else {
                 format!(
-                    "residual authority reaching the confined program: {}",
+                    "residual authority reaching the confined program, which policy asked to remove and \
+                     this launch could not: {}. This run is NOT least-authority",
                     entry.residual_authority.join(", ")
                 )
             },
+        ));
+
+        // The descriptors, always, and with the completeness of the enumeration
+        // attached. An inventory that could not be taken must not read like one
+        // that came back empty — `asserts_clean_boundary` is the predicate that
+        // keeps the two apart, and it is reported rather than recomputed by
+        // every consumer.
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Installed,
+            CapabilityDomain::Ipc,
+            if entry.descriptors.asserts_clean_boundary() {
+                ClaimTerm::Planned
+            } else {
+                ClaimTerm::Unmeasured
+            },
+            format!(
+                "inherited descriptors ({}): {}",
+                if entry.descriptors.asserts_clean_boundary() {
+                    "every one accounted for"
+                } else {
+                    "NOT a clean boundary — some reach the confined program unaccounted for"
+                },
+                entry.descriptors.describe().join("; ")
+            ),
+        ));
+
+        // Metadata reachability is a network fact with a credential consequence,
+        // so it is recorded against the domain that could stop it.
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Installed,
+            CapabilityDomain::NetworkEgress,
+            ClaimTerm::Planned,
+            entry.metadata_reachability.clone(),
         ));
 
         if !self.degraded.is_empty() {
@@ -551,22 +614,41 @@ fn emits_flags(outcome: &RequirementOutcome) -> bool {
     )
 }
 
-/// Authority reaching the confined program that this backend did not remove.
+/// Authority reaching the confined program that this launch did not decide to
+/// give it.
 ///
-/// Always includes the standard descriptors, because they are inherited by
-/// design and an operator reading evidence should see them named rather than
-/// have to know they are implied.
+/// Each entry says *why* the name is still there, and the two reasons are not
+/// interchangeable:
+///
+/// * the launch replaced the environment and deliberately put this name back,
+///   because a caller recorded a compatibility exception for it — a debt, with
+///   a decision behind it; or
+/// * the launch replaced nothing, so the name is there along with everything
+///   else that was in the launching environment — no decision at all.
+///
+/// Rendering both as one sentence was the previous behaviour and was wrong in
+/// the first case: it told an operator that "nothing was replaced" on a launch
+/// where the environment *had* been replaced.
 fn residual_authority(spec: &ExecutionSpec) -> Vec<String> {
+    let replaced = !credential_flags(spec).is_empty();
     let mut residual: Vec<String> = unremoved_ambient(spec)
         .into_iter()
         .map(|name| {
-            format!(
-                "environment variable `{name}` (policy asked for its removal; this launch \
-                             delegates no environment, so nothing was replaced)"
-            )
+            if replaced {
+                format!(
+                    "environment variable `{name}` (policy asked for its removal; this launch replaced \
+                     the environment and passed it through anyway, as a recorded compatibility \
+                     exception)"
+                )
+            } else {
+                format!(
+                    "environment variable `{name}` (policy asked for its removal; this launch replaced \
+                     no environment, so it was inherited along with everything else)"
+                )
+            }
         })
         .collect();
-    if credential_flags(spec).is_empty() {
+    if !replaced {
         residual.push(
             "the whole launching environment, inherited: the spec's credential posture named nothing to \
              remove or delegate, so no environment replacement was requested"
@@ -574,6 +656,34 @@ fn residual_authority(spec: &ExecutionSpec) -> Vec<String> {
         );
     }
     residual
+}
+
+/// One sentence about whether this launch's egress grants leave an
+/// instance-metadata service reachable.
+///
+/// Always produced, in both directions. The negative sentence carries the limit
+/// of the check with it: a permitted destination is compared against the
+/// well-known addresses literally, so a CIDR block or a hostname that resolves
+/// into the link-local range is *not* detected, and broad egress reaches the
+/// service whatever this says.
+fn metadata_reachability(spec: &ExecutionSpec) -> String {
+    let reachable = reachable_metadata_endpoints(spec);
+    if reachable.is_empty() {
+        format!(
+            "instance-metadata reachability: no permitted egress destination names any of the {} \
+             well-known metadata addresses, and the mechanism is default-deny, so a destination it was \
+             not given is denied. The comparison is literal — a permitted CIDR block containing the \
+             link-local range, or a hostname resolving into it, would not be seen here",
+            aa_isolation::CLOUD_METADATA_ENDPOINTS.len()
+        )
+    } else {
+        format!(
+            "instance-metadata reachability: this launch permits egress to {}. The metadata service \
+             mints cloud credentials for anything that can reach it, so this is delegated credential \
+             authority arriving over the network domain, not merely a permitted destination",
+            reachable.join(", ")
+        )
+    }
 }
 
 #[cfg(test)]
@@ -821,6 +931,171 @@ mod tests {
         );
     }
 
+    /// **The property this Epic exists for, at the evidence layer.** A name the
+    /// launch could not remove must be named in evidence *and* must mark the run
+    /// as not least-authority.
+    ///
+    /// The negative control is the identical spec with the same variable moved
+    /// into `removed`: the record flips to the no-residue wording and drops the
+    /// name, so the assertions below are about which list the name is in rather
+    /// than about the record containing everything.
+    #[test]
+    fn unremoved_ambient_authority_is_named_in_evidence_and_marks_the_run_degraded() {
+        let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
+
+        let kept = writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: vec!["PATH".to_string()],
+        });
+        let record = credential_record(&backend, &kept);
+        assert!(
+            record.detail.contains("PATH") && record.detail.contains("NOT least-authority"),
+            "{}",
+            record.detail
+        );
+        assert_eq!(
+            record.claim,
+            ClaimTerm::Degraded,
+            "a run carrying authority policy asked to remove is not a fully planned run"
+        );
+        assert!(
+            !record.detail.contains("AWS_SECRET_ACCESS_KEY"),
+            "a removed name was reported as residual authority: {}",
+            record.detail
+        );
+
+        let removed = writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["AWS_SECRET_ACCESS_KEY".to_string(), "PATH".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: Vec::new(),
+        });
+        let record = credential_record(&backend, &removed);
+        assert!(
+            record.detail.contains("none beyond the three standard descriptors"),
+            "{}",
+            record.detail
+        );
+        assert_eq!(record.claim, ClaimTerm::Planned);
+    }
+
+    /// A launch that replaced the environment must not tell an operator that it
+    /// replaced nothing — the previous wording did exactly that whenever a
+    /// compatibility exception was recorded.
+    #[test]
+    fn the_residual_sentence_says_which_of_the_two_situations_it_is() {
+        let replaced = residual_authority(&writing_spec("/tmp/never").with_credentials(
+            aa_isolation::CredentialPosture {
+                removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
+                delegated: Vec::new(),
+                ambient_unremoved: vec!["PATH".to_string()],
+            },
+        ));
+        assert!(
+            replaced[0].contains("replaced the environment and passed it through anyway"),
+            "{replaced:?}"
+        );
+
+        let inherited = residual_authority(&writing_spec("/tmp/never").with_credentials(
+            aa_isolation::CredentialPosture {
+                removed: Vec::new(),
+                delegated: Vec::new(),
+                ambient_unremoved: vec!["PATH".to_string()],
+            },
+        ));
+        assert!(inherited[0].contains("replaced no environment"), "{inherited:?}");
+        assert!(
+            inherited.iter().any(|r| r.contains("the whole launching environment")),
+            "{inherited:?}"
+        );
+    }
+
+    /// The descriptor inventory is recorded on every run, with the completeness
+    /// of the enumeration attached rather than left for a reader to infer.
+    #[test]
+    fn the_descriptor_inventory_is_always_in_evidence() {
+        let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
+        let plan = backend.plan(&writing_spec("/tmp/never")).expect("planned");
+        let prepared = backend.prepare(plan).expect("prepared");
+        let handle = ExecutionHandle::new(backend.identity(), prepared.token(), prepared.plan().posture());
+        let evidence = backend.evidence(&handle);
+        let record = evidence
+            .records_for(CapabilityDomain::Ipc)
+            .find(|r| r.detail.starts_with("inherited descriptors"))
+            .unwrap_or_else(|| panic!("{:?}", evidence.records()));
+        // Whichever this host is, the record has to state which of the two it
+        // is. Asserting one value would make the test a host check.
+        assert!(
+            record.detail.contains("every one accounted for") || record.detail.contains("NOT a clean boundary"),
+            "{}",
+            record.detail
+        );
+        // Off Linux the enumeration is impossible, and the claim must fall to
+        // `Unmeasured` rather than reading as a planned control.
+        if !cfg!(target_os = "linux") {
+            assert_eq!(record.claim, ClaimTerm::Unmeasured);
+            assert!(record.detail.contains("unmeasured, not absent"), "{}", record.detail);
+        }
+    }
+
+    /// A permitted metadata destination is credential authority arriving over
+    /// the network, and evidence must say so. The pair is the control: the same
+    /// spec with an ordinary destination produces the negative sentence.
+    #[test]
+    fn metadata_reachability_is_stated_in_both_directions() {
+        let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
+
+        let reachable = writing_spec("/tmp/never").with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(
+                aa_isolation::RequirementScope::Selectors(vec![aa_isolation::permit_only_selector(
+                    "169.254.169.254:80",
+                )]),
+            ),
+        );
+        let record = network_record(&backend, &reachable);
+        assert!(
+            record.detail.contains("169.254.169.254") && record.detail.contains("mints cloud credentials"),
+            "{}",
+            record.detail
+        );
+
+        let ordinary = writing_spec("/tmp/never").with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(
+                aa_isolation::RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("10.0.0.1:443")]),
+            ),
+        );
+        let record = network_record(&backend, &ordinary);
+        assert!(
+            record.detail.contains("no permitted egress destination"),
+            "{}",
+            record.detail
+        );
+        // The limit of the check travels with the negative answer, or a reader
+        // takes it for a guarantee.
+        assert!(record.detail.contains("CIDR block"), "{}", record.detail);
+    }
+
+    /// Neither of the new evidence records may become a route to a prevention
+    /// claim — they are `Installed` facts about setup, and this backend has no
+    /// per-decision channel at all.
+    #[test]
+    fn the_ambient_authority_records_support_no_prevention_claim() {
+        let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
+        let spec = writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: vec!["PATH".to_string()],
+        });
+        let plan = backend.plan(&spec).expect("planned");
+        let prepared = backend.prepare(plan).expect("prepared");
+        let handle = ExecutionHandle::new(backend.identity(), prepared.token(), prepared.plan().posture());
+        let evidence = backend.evidence(&handle);
+        for domain in CapabilityDomain::ALL {
+            assert!(!evidence.supports_prevention_claim(*domain), "{domain}");
+        }
+        assert!(!evidence.records().iter().any(|r| r.kind == EvidenceKind::Decision));
+    }
+
     /// A waived protection removes the domain it covered, rather than leaving
     /// it reported as partially supported.
     #[test]
@@ -839,6 +1114,39 @@ mod tests {
     }
 
     // ---- fixtures ---------------------------------------------------------
+
+    /// Plan, prepare and take the evidence record this backend writes about
+    /// residual authority.
+    fn credential_record(backend: &SandlockBackend, spec: &ExecutionSpec) -> EvidenceRecord {
+        find_record(backend, spec, CapabilityDomain::Credential, "residual authority")
+    }
+
+    /// The evidence record about instance-metadata reachability.
+    fn network_record(backend: &SandlockBackend, spec: &ExecutionSpec) -> EvidenceRecord {
+        find_record(
+            backend,
+            spec,
+            CapabilityDomain::NetworkEgress,
+            "instance-metadata reachability",
+        )
+    }
+
+    fn find_record(
+        backend: &SandlockBackend,
+        spec: &ExecutionSpec,
+        domain: CapabilityDomain,
+        prefix: &str,
+    ) -> EvidenceRecord {
+        let plan = backend.plan(spec).expect("planned");
+        let prepared = backend.prepare(plan).expect("prepared");
+        let handle = ExecutionHandle::new(backend.identity(), prepared.token(), prepared.plan().posture());
+        let evidence = backend.evidence(&handle);
+        let found = evidence
+            .records_for(domain)
+            .find(|r| r.detail.starts_with(prefix))
+            .cloned();
+        found.unwrap_or_else(|| panic!("no `{prefix}` record for {domain}: {:?}", evidence.records()))
+    }
 
     /// Host facts naming a confinement executable that is not there.
     ///
