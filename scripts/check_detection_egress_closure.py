@@ -184,6 +184,20 @@ def closure(manifest_dir: Path, args: tuple[str, ...]) -> set[str]:
         "none",
         "--format",
         "{p}",
+        # Without this, cargo resolves for the HOST platform, so a dependency
+        # declared under `[target.'cfg(...)'.dependencies]` stays invisible to
+        # this gate unless CI happens to run on the platform it is gated to.
+        # Measured on this branch: appending
+        #     [target.'cfg(windows)'.dependencies]
+        #     reqwest = { workspace = true }
+        # to `aa-security/Cargo.toml` left the gate at exit 0, while the same
+        # selection under `--target all` placed reqwest in the closure. That
+        # shape is already in use here (`aa-runtime/Cargo.toml:81,86`,
+        # `aa-isolation-sandlock/Cargo.toml:37`, `aa-ebpf/Cargo.toml:64`), and
+        # `release.yml` ships Apple targets that this ubuntu-only job would
+        # otherwise leave uninspected.
+        "--target",
+        "all",
         *args,
     ]
     proc = subprocess.run(
