@@ -195,6 +195,27 @@
         "reviewed_at": "2026-08-13",
         "capability_evidence": "ci.yml job `isolation-backend-linux` installs exactly this artifact (digest verified by `sha256sum -c` in the job), then runs `aa-isolation-sandlock`'s confinement suite, which measures each claimed capability against observed behaviour with a control for every scenario: a forbidden write leaves an existing file byte-for-byte unchanged and creates nothing (pre-effect), a forbidden read returns no bytes, a connection to an unpermitted loopback destination never reaches a listener this repository owns, a process ceiling of one stops a grandchild from existing, and a descendant re-invoking the mechanism with a wider grant is still denied while the identical command outside the boundary succeeds. `.ci/test-evidence-summary.sh --require-evidence` fails the job if every scenario declined, so a green lane cannot mean an unmeasured one. A version bump must re-run that lane: the capability reports in `aa-isolation-sandlock/src/capability.rs` are gated on the live probe, so a version that stops denying reports itself as unable to prevent rather than passing on the strength of this record."
       },
+      "distribution_probe": {
+        "_about": [
+          "The executable name(s) AASM would have to name somewhere in its",
+          "packaging code in order to ship this backend. The gate greps every",
+          "channel's `packaging_paths` for these strings and requires the",
+          "result to agree with `channels` below: a backend claiming",
+          "non-distribution everywhere must appear NOWHERE in the packaging",
+          "surface, and a backend claiming `bundled`/`downloaded`/`source`",
+          "must appear SOMEWHERE in the surface of a channel it claims.",
+          "",
+          "Matching is a case-insensitive substring, deliberately over-broad. A",
+          "false positive is a loud failure someone reads and resolves; a false",
+          "negative is the silent hole this whole file exists to close.",
+          "",
+          "Note what this does NOT cover: ci.yml installs this exact binary in",
+          "the `isolation-backend-linux` job, and that is correct — a CI test",
+          "lane is not a distribution channel, so ci.yml is in no channel's",
+          "packaging surface and the install there does not trip this probe."
+        ],
+        "binary_names": ["sandlock"]
+      },
       "channels": {
         "github-release": "system",
         "crates-io": "not-distributed",
