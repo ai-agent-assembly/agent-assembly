@@ -312,7 +312,7 @@ semantics, and measured limitations.
 | `devtools/` | 14 | Integrators, security researchers | Hand | **Keep** (one exception below) |
 | `usage-guide/` | 11 | Operators, developers | Hand | **Keep** |
 | `security/` | 8 | Security engineers | Hand | **Keep** |
-| `operations/` | 7 | Operators | Hand | **Keep** |
+| `operations/` | 9 | Operators | Hand | **Keep** |
 | `architecture/` | 7 | Contributors | Hand | **Keep** |
 | `generated/` | 6 | *(none — include fragments)* | **Generated** | **Keep** — see below |
 | `development/` | 6 | Contributors | Hand | **Keep** — this page joins it |
