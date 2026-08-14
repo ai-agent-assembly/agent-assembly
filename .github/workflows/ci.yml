@@ -1011,38 +1011,91 @@ jobs:
       #
       # The closure check is an argument about what is *linked*. This runs the
       # detector's own tests with no network at all, which is what criterion 6
-      # literally asks for. `unshare -rn` creates a user + network namespace, so
-      # it needs no privilege: inside it there is one interface, a down `lo`,
-      # and no route anywhere.
+      # literally asks for.
       #
       # NOT an isolation backend. This is a test harness for the sensitive-data
       # fast path; OS-level execution confinement is AAASM-5702's subsystem
       # (`aa-isolation`) and must not be re-implemented here. The distinction
       # this job preserves is that the detector *needs* no egress — which is a
       # different claim from *being prevented* from egress.
+      #
+      # `sudo unshare -n`, not `unshare -rn`: the unprivileged form needs a USER
+      # namespace, and GitHub's Ubuntu images restrict those
+      # (kernel.apparmor_restrict_unprivileged_userns=1). The first version of
+      # this job used it and failed with
+      #   unshare: write failed /proc/self/uid_map: Operation not permitted
+      # A network namespace taken through passwordless sudo needs no user
+      # namespace, so it works and mutates no host sysctl.
       - name: Build the detector's tests (network still available)
-        run: cargo test -p aa-security --locked --no-run
+        run: |
+          set -euo pipefail
+          cargo test -p aa-security --locked --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true) | .executable | select(. != null)' \
+            > /tmp/aa-security-tests.txt
+          echo "built $(wc -l < /tmp/aa-security-tests.txt) test binary/binaries"
 
-      # The control that makes the next step mean anything. If the namespace
-      # were not actually isolating, the test run inside it would pass for the
-      # wrong reason and this job would certify egress-denied behaviour it never
-      # exercised — the "green for the wrong reason" shape this programme keeps
-      # finding. So prove egress is denied BEFORE trusting a pass inside it.
-      - name: Prove the namespace denies egress (positive control)
+      # The control that makes the next step mean anything, and it has to check
+      # THREE things rather than one.
+      #
+      # The first version checked only that curl failed inside the namespace,
+      # and it passed vacuously on this very job: `unshare -rn` could not create
+      # a namespace at all, so curl never ran, so "curl did not succeed" was
+      # true for entirely the wrong reason. It printed "egress denied, as
+      # required" having denied nothing. That is precisely the defect class this
+      # job exists to catch, reproduced inside the control meant to catch it.
+      #
+      # So: the namespace must be creatable, it must actually be a *different*
+      # network namespace (one interface, not the host's several), and only then
+      # does a failing curl mean egress was denied rather than never attempted.
+      - name: Prove the namespace exists and denies egress (positive control)
         run: |
           set -uo pipefail
-          if unshare -rn -- curl -sS --max-time 8 https://example.com >/dev/null 2>&1; then
-            echo "::error::unshare -rn reached the network — the namespace is not"
-            echo "::error::isolating, so a pass inside it would prove nothing."
+
+          if ! sudo unshare -n -- true; then
+            echo "::error::cannot create a network namespace on this runner;"
+            echo "::error::the egress-denied run below would prove nothing."
             exit 1
           fi
-          echo "egress denied inside the namespace, as required"
 
+          host_ifaces=$(ip -o link show | wc -l)
+          ns_ifaces=$(sudo unshare -n -- ip -o link show | wc -l)
+          if [ "$ns_ifaces" -ne 1 ]; then
+            echo "::error::expected exactly 1 interface inside the namespace (a"
+            echo "::error::down lo), found $ns_ifaces — this is not an isolated"
+            echo "::error::network namespace. Host has $host_ifaces."
+            exit 1
+          fi
+
+          if sudo unshare -n -- curl -sS --max-time 8 https://example.com >/dev/null 2>&1; then
+            echo "::error::reached the network from inside the namespace."
+            exit 1
+          fi
+
+          echo "namespace created; 1 interface inside vs $host_ifaces on the host; egress denied"
+
+      # Runs the prebuilt binaries rather than `cargo test`, so nothing inside
+      # the namespace wants a registry, a lockfile check or CARGO_HOME — a cargo
+      # network touch would fail and be indistinguishable from the detector
+      # needing egress, which is the very thing under test.
       - name: Detector tests pass with egress denied
-        # `--offline` because the point is to run with no network: without it a
-        # cargo registry touch would fail and be indistinguishable from the
-        # detector needing egress, which is the very thing under test.
-        run: unshare -rn -- cargo test -p aa-security --locked --offline
+        run: |
+          set -euo pipefail
+          count=0
+          while read -r bin; do
+            [ -n "$bin" ] || continue
+            echo "--- $bin"
+            sudo unshare -n -- runuser -u "$(id -un)" -- "$bin"
+            count=$((count + 1))
+          done < /tmp/aa-security-tests.txt
+          # Assert the population, not just the exit codes: an empty list would
+          # otherwise sail through this loop and report success having run no
+          # tests — the same "passes by running nothing" shape as a skipped
+          # suite.
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no test binaries were executed under egress denial"
+            exit 1
+          fi
+          echo "ran $count test binary/binaries with egress denied"
 
   no-std:
     needs: [changes]
