@@ -263,7 +263,69 @@ Stating the boundary precisely matters more than stating it flatteringly.
 - **It is not a replacement switch.** There is no prior implementation being
   cut over from. This subsystem was added alongside existing behaviour, so
   reverting returns the deployment to what it did before the subsystem existed
-  rather than to some earlier version of it.
+  rather than to some earlier version of it. The next section is why that last
+  point is load-bearing rather than incidental.
+
+## Why there is no shadow comparison to run
+
+A rollout gate normally has three legs: rollout, shadow comparison, rollback.
+Two of them are on this page. The third has nothing to attach to, and the
+reason is worth recording where an auditor will find it rather than leaving it
+to be re-derived. This section is [AAASM-5270](https://lightning-dust-mite.atlassian.net/browse/AAASM-5270)
+exit criterion 10's shadow-comparison leg.
+
+**A shadow comparison needs a prior implementation to run beside.** There is
+none. The detector was not replaced:
+
+- `CredentialScanner` has been in the product since AAASM-24 (`6acc74247`,
+  2026-04-27), months before this Epic.
+- `git log --diff-filter=D --since=2026-07-25 -- aa-security/src
+  aa-core/src/types aa-gateway/src/engine` returns nothing. No detector was
+  removed for a new one to stand in for.
+- `aa-security/src/canonical/lift.rs` describes the layer this Epic added as
+  "a pure projection … it does not scan, does not allocate, and is not called by
+  the scanner", whose fast path is "untouched by design".
+- ADR 0032 §8 says the same at the storage end: written alongside the existing
+  bridge, "which is left untouched".
+
+There was no cutover moment, so there is no pair of live implementations whose
+outputs could be compared.
+
+### "Shadow" in this codebase means something else
+
+Three symbols look like criterion-10 evidence and none of them is. All mean
+**observe / dry-run enforcement mode** (AAASM-1564, ADR 0021) — what a decision
+*would* have been — not a comparison of two implementations:
+
+| Symbol | What it means |
+| --- | --- |
+| `ShadowEvent` | the decision that would have been reached under `Enforce`, while the agent runs in `Observe` |
+| `shadow_expiry_watcher.rs` | auto-reverting an agent's expired shadow *enforcement* window |
+| `PolicyReasonCode::ShadowEvaluationOnly` | decision computed but not applied — the agent is in observe mode |
+
+`git grep ShadowEvent` over `aa-security/`,
+`aa-core/src/types/sensitive_data/`, `engine/sensitive_data.rs` and
+`engine/detection.rs` returns nothing. Observe mode does not even carry
+sensitive-data findings — it rewrites the result with `canonical_findings:
+vec![]`. Citing any of the three as a sensitive-data shadow comparison would be
+false.
+
+### What evidence does exist, and what it is called
+
+`aa-security/tests/canonical_no_behaviour_change.golden` pins the scanner's
+observable output to `main` at `95dbafe7` — a baseline captured before the
+canonical layer existed — and the test requires the current tree to reproduce it
+character for character. It has one commit (`699ca92ab`), so it has never been
+regenerated to match a change, and it rejected a candidate implementation during
+the 2026-08-07 detector work (`aa-security/src/scanner.rs`, the
+`overlaps_earlier_finding` rationale). Around it sit pinned false-positive
+ceiling and recall-floor thresholds over a named seeded corpus with a
+non-vacuity control, per-change suites for AAASM-5450 and AAASM-5441, and frozen
+conformance vectors.
+
+That is regression evidence against a pre-migration baseline. It is not a shadow
+comparison of two live implementations, and this page does not present it as
+one.
 
 ## Related
 
