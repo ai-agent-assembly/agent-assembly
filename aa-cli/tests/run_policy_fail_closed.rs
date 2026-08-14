@@ -107,6 +107,7 @@ fn args_with_policy(path: PathBuf) -> RunArgs {
         governance_level: None,
         no_proxy: true,
         policy: Some(path),
+        workdir: None,
         dry_run: false,
         enforcement_mode: None,
         observe: false,
