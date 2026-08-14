@@ -24,10 +24,9 @@
 # launcher abstraction never asked this launcher to also measure.
 #
 # `--policy` must point at an artifact that grants what the selected workload
-# families need (scratch-dir read/write, repo-root read, and per-family
-# extras such as process spawn or loopback network) — see
-# ../policy/README.md for what AAASM-5713 could and could not verify about
-# that mapping from this host.
+# families need. `../policy/render.sh <scratch_root> <out_path>` renders one
+# from `../policy/confined-arm.yaml.tmpl` — see ../policy/README.md for what
+# it states, why, and what it deliberately does not confine.
 set -eu
 
 if [ "${1:-}" = "--" ]; then

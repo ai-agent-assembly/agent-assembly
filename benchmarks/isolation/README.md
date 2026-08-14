@@ -14,12 +14,12 @@ The backend this exists to measure — Sandlock, AAASM-5708 — is merged, and
 `aasm run --isolation process` (AAASM-5711) is activated on `main`. What is
 **not** yet committed is a confined-arm measurement: producing one requires a
 Linux host with the sandlock mechanism actually installed, and no session
-that has worked on this directory so far has had one. `launchers/sandlock.sh`
-and `policy/allow-all.yaml` are built and confirmed against a real local build
-of `aa-cli`'s CLI grammar (see the launcher's own header comment for exactly
-what was and was not verified), so running the confined arm on a Linux host
-should not require further plumbing work — only running it, and confirming
-`policy/allow-all.yaml`'s lowering grants what each family needs.
+that has worked on this directory so far has had one. `launchers/sandlock.sh` and `policy/confined-arm.yaml.tmpl` are built and
+confirmed against a real local build of `aa-cli` — both the CLI grammar (see
+the launcher's own header comment) and, separately, that the policy's
+`filesystem`/`network` grants actually lower to real requirements rather than
+`not_stated` (see `policy/README.md`'s dry-run evidence). Running the
+confined arm on a Linux host should not require further plumbing work.
 **No verdict is drawn and none can be**: `compare` always reports the
 compatibility and security dimensions as blocked, so the decision rule can only
 return "no verdict" from timing data alone until that run exists.
@@ -45,14 +45,18 @@ python3 aabench.py run \
     --label unconfined-baseline \
     --out ../results/baseline.json
 
-# Confined arm — Linux + the sandlock backend only. AABENCH_SANDLOCK_POLICY
-# must point at a resolvable policy artifact (../policy/allow-all.yaml is a
-# starting point; read ../policy/README.md before trusting a compatibility
-# failure's classification).
-AABENCH_SANDLOCK_POLICY=../policy/allow-all.yaml \
+# Confined arm — Linux + the sandlock backend only. A fixed --scratch-root is
+# required so the policy's write grant can name it; render the policy against
+# that same path before running.
+scratch=/tmp/aabench-confined-scratch
+mkdir -p "$scratch"
+sh ../policy/render.sh "$scratch" ../policy/confined-arm.yaml
+AABENCH_SANDLOCK_POLICY=../policy/confined-arm.yaml \
 python3 aabench.py run \
     --launcher 'sh ../launchers/sandlock.sh' \
     --label sandlock \
+    --scratch-root "$scratch" \
+    --keep-scratch \
     --out ../results/confined.json
 
 # Score one against the other.
@@ -84,7 +88,7 @@ family, `--keep-scratch` to retain per-repetition logs for debugging.
 | `harness/tlsserver.py` | Loopback TLS server for the network family |
 | `workloads/` | One shell script per family, plus `manifest.json` |
 | `launchers/` | `unconfined.sh` (baseline), `throttled.sh` (control only), `sandlock.sh` (confined arm, Linux only) |
-| `policy/` | `allow-all.yaml` the confined arm runs under, and a caveat about what it actually grants |
+| `policy/` | `confined-arm.yaml.tmpl` + `render.sh` (the confined arm's real policy), `allow-all.yaml` (smoke-test only, not a data arm) |
 | `results/` | Committed baseline and self-test evidence |
 
 ## Two guards worth knowing about before you run this
@@ -117,7 +121,7 @@ may be drawn from them.
 ## Gates
 
 ```sh
-shellcheck workloads/*.sh launchers/*.sh
+shellcheck workloads/*.sh launchers/*.sh policy/*.sh
 uvx ruff check harness/          # config in ./ruff.toml
 uvx mypy --strict harness/
 python3 harness/aabench.py self-test

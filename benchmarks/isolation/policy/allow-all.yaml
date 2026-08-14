@@ -1,12 +1,17 @@
-# Policy artifact for the sandlock confined arm (AAASM-5713).
+# NOT the confined-arm policy — see confined-arm.yaml.tmpl and README.md.
 #
-# An explicit allow-all, in the shape `aasm run` itself prints when it refuses
-# an unconfigured launch. It exists so the harness measures the isolation
-# *boundary*'s cost, not the policy engine's — every family here is meant to
-# be permitted by AASM's own rules, so any failure under confinement is a
-# property of the backend's ability to express AASM's isolation lowering, not
-# of this policy being restrictive on the AASM side. See ../launchers/sandlock.sh
-# and ../policy/README.md.
+# Confirmed against a real `aasm run --dry-run`: a policy that states only
+# `tools:` (as this one does) produces zero `filesystem`/`network` requirements
+# — `aa_isolation::lower_policy` reports those domains `not_stated`, and
+# `aa-isolation/src/plan.rs`'s `negotiate` only ever confines a domain that
+# produced a requirement. Running the confined arm under this artifact would
+# not exercise any real confinement at all; it would only add the sandlock
+# wrapper's own overhead on top of an effectively unconfined child. Kept here
+# as a smoke-test artifact only (e.g. confirming `aasm run --isolation
+# process` parses and reaches backend selection at all) — never as a data arm.
+#
+# The shape below is otherwise exactly what `aasm run` itself prints as the
+# allow-all example when a launch refuses on an unconfigured policy.
 apiVersion: agent-assembly/v1
 kind: Policy
 metadata:
