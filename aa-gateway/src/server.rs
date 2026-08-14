@@ -128,22 +128,34 @@ async fn setup_audit(
 ///
 /// # Not a stable configuration surface
 ///
-/// `aa-gateway` is in the crates.io publish set, so a `pub` item here would
-/// otherwise read as public API carrying the usual compatibility promise. This
-/// one does not: the variable is an **internal deployment setting** for a tier
-/// that is off by default and has no documented operator-facing contract — it
-/// appears nowhere in `docs/`, unlike `AA_POLICY` and friends, which do.
+/// Path to the sensitive-data projection database; unset disables the tier.
 ///
-/// It is `pub` only because the integration tests that boot a real `serve_tcp`
-/// live outside the crate and must name the same variable the production path
-/// reads, rather than re-spelling the literal and passing while the real key
-/// drifts. `#[doc(hidden)]` keeps it out of the published documentation so the
-/// visibility does not become an advertisement.
+/// **This is a supported operator setting** as of
+/// [AAASM-5739](https://lightning-dust-mite.atlassian.net/browse/AAASM-5739),
+/// documented at `docs/src/operations/sensitive-data-projection.md`. The
+/// previous note here said the opposite — that promoting it would require
+/// naming it in the operator docs and committing to its failure behaviour,
+/// "none of which this ticket did". Both are now done, so the note is replaced
+/// rather than left to contradict the page.
 ///
-/// Promoting this to a supported configuration surface means naming it in the
-/// operator docs, fixing its precedence against any future config file, and
-/// committing to its failure behaviour — none of which this ticket did.
-#[doc(hidden)]
+/// The contract, in full:
+///
+/// * **Unset or empty — the default — wires nothing.** The projection is off,
+///   and `SensitiveDataProjectionConfig` derives `Default` with
+///   `enabled: false`, so the conservative state is not something an operator
+///   has to opt into (ADR 0032 §8).
+/// * **Set to a path** — the schema is applied at boot and an existing database
+///   is migrated in place, retaining its rows.
+/// * **Failure is fail-closed.** A database that cannot be opened or migrated
+///   fails the boot; see the `# Errors` section on
+///   [`attach_sensitive_data_projection`] for why warning-and-continue is the
+///   wrong behaviour for a governance surface.
+/// * **Reverting is unsetting it.** Writes stop; rows already written stay and
+///   stay readable, because every row carries `SENSITIVE_DATA_SCHEMA_VERSION`
+///   under a major-only compatibility rule.
+///
+/// It gates *recording*, not *detection*: the credential scanner runs either
+/// way and predates this subsystem, so this setting changes no policy decision.
 pub const SENSITIVE_DATA_PROJECTION_DB_ENV: &str = "AA_SENSITIVE_DATA_PROJECTION_DB";
 
 /// How many projected decisions may await persistence — see
