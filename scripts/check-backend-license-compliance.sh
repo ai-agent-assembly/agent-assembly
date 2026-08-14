@@ -46,6 +46,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF_TEST=0
 MANIFEST="$REPO_ROOT/metadata/isolation-backends.json"
 NOTICES="$REPO_ROOT/THIRD_PARTY_NOTICES.md"
+# Root that each channel's `packaging_paths` globs resolve against. Overridable
+# only so the self-test can point at a fixture packaging tree — the negative
+# control has to scan real files it controls the contents of, and it must not
+# be able to "pass" by reading this repository's actual release pipeline.
+PACKAGING_ROOT="$REPO_ROOT"
 
 # Strategies describing what AASM does with the backend on a given channel.
 #   bundled         AASM redistributes the backend's bytes in its own artifact.
@@ -64,7 +69,7 @@ fail=0
 err() { echo "::error::$*" >&2; fail=1; }
 
 usage() {
-  echo "usage: $0 [--manifest PATH] [--notices PATH] [--self-test]" >&2
+  echo "usage: $0 [--manifest PATH] [--notices PATH] [--packaging-root PATH] [--self-test]" >&2
   exit 2
 }
 
@@ -72,6 +77,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --manifest) [ $# -ge 2 ] || usage; MANIFEST="$2"; shift 2 ;;
     --notices)  [ $# -ge 2 ] || usage; NOTICES="$2";  shift 2 ;;
+    --packaging-root) [ $# -ge 2 ] || usage; PACKAGING_ROOT="$2"; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
     -h|--help) usage ;;
     *) echo "::error::unknown argument '$1'" >&2; usage ;;
@@ -80,6 +86,71 @@ done
 
 # `jq -r '<expr> // empty'` on a compact one-line backend object.
 jget() { printf '%s' "$1" | jq -r "${2} // empty"; }
+
+# --- packaging surface -----------------------------------------------------
+#
+# A channel's `packaging_paths` names the files in this repository that decide
+# what that channel ships. The gate reads them so a backend's declared
+# distribution strategy is checked against the packaging code instead of being
+# believed. Three properties make that reading worth something:
+#
+#   * a glob matching NOTHING is an error. A scan over an empty set confirms
+#     every claim equally, which is indistinguishable from no scan at all.
+#   * this gate's OWN inputs — the manifest, the notices file, this script —
+#     are excluded from every surface. All three name backends by id; a surface
+#     built out of them would find its own text and report a padded floor.
+#   * `packaging_owner: external-repo` is the only way to declare an empty
+#     surface, so "we cannot see this channel from here" is a written-down
+#     limitation rather than a silent absence.
+
+# Absolute path of $1, without requiring the file itself to exist.
+abspath() {
+  local dir base
+  dir="$(dirname "$1")"
+  base="$(basename "$1")"
+  if [ -d "$dir" ]; then
+    printf '%s/%s\n' "$(cd "$dir" && pwd)" "$base"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# Newline-separated absolute paths of the files this gate reads as its own
+# input. Set once in main(); membership is what excludes a file from a surface.
+GATE_INPUTS=""
+is_gate_input() { printf '%s\n' "$GATE_INPUTS" | grep -Fxq -- "$1"; }
+
+# Files a single packaging_paths glob expands to, relative to PACKAGING_ROOT.
+# Prints nothing when the glob matches nothing (the caller reports that).
+expand_pattern() {
+  local pat="$1"
+  (
+    cd "$PACKAGING_ROOT" 2>/dev/null || exit 0
+    shopt -s nullglob
+    local f
+    # Intentionally unquoted: this is the glob expansion. Entries containing
+    # whitespace are rejected before they reach here.
+    for f in $pat; do
+      [ -f "$f" ] && printf '%s\n' "$f"
+    done
+  )
+}
+
+# The scannable files of channel $1 — every glob expanded, gate inputs removed.
+# Prints nothing for an external channel, which is the point: an empty surface
+# means "not corroborable here", and callers must treat it as such.
+channel_surface_files() {
+  local ch_id="$1" pat f
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      is_gate_input "$(abspath "$PACKAGING_ROOT/$f")" && continue
+      printf '%s\n' "$f"
+    done < <(expand_pattern "$pat")
+  done < <(jq -r --arg c "$ch_id" '
+    .channels[] | select(.id == $c) | (.packaging_paths // [])[]' "$MANIFEST")
+}
 
 # ---------------------------------------------------------------------------
 # 0. The manifest must exist and parse. An unparseable manifest is a FAILURE,
@@ -182,7 +253,61 @@ check_channels() {
       oss|proprietary) ;;
       *) err "channel '$id' has distribution '${dist:-<missing>}'; must be 'oss' or 'proprietary' — this selects which allowlist applies, so it cannot be omitted." ;;
     esac
+    check_channel_surface "$ch" "$id"
   done < <(jq -c '.channels[]' "$MANIFEST")
+}
+
+# 2b. The channel's packaging surface must be real and non-vacuous, or declared
+#     absent on purpose. Everything the backend-level corroboration concludes
+#     rests on this, so it is validated up front and independently of any
+#     backend.
+check_channel_surface() {
+  local ch="$1" id="$2"
+  local n_paths pat matched kept f
+
+  if [ "$(printf '%s' "$ch" | jq -r 'has("packaging_paths")')" != "true" ]; then
+    err "channel '$id' has no 'packaging_paths'. It must name the files in this repository that decide what the channel ships, so a backend's declared strategy for it can be checked against the packaging code rather than believed. Use \"packaging_owner\": \"external-repo\" with an empty list if the deciding files genuinely live in another repository."
+    return
+  fi
+  if [ "$(printf '%s' "$ch" | jq -r '.packaging_paths | type')" != "array" ]; then
+    err "channel '$id' packaging_paths must be an array of path globs."
+    return
+  fi
+
+  n_paths="$(printf '%s' "$ch" | jq -r '.packaging_paths | length')"
+  if [ "$n_paths" -eq 0 ]; then
+    if [ "$(jget "$ch" '.packaging_owner')" != "external-repo" ]; then
+      err "channel '$id' declares an EMPTY packaging_paths without \"packaging_owner\": \"external-repo\". An empty surface means this gate can corroborate nothing about what the channel ships; that is only acceptable when the deciding files live in another repository, and it has to be stated rather than left to look like an oversight."
+    fi
+    return
+  fi
+
+  while IFS= read -r pat; do
+    [ -n "$pat" ] || continue
+    case "$pat" in
+      *[[:space:]]*)
+        err "channel '$id' packaging_paths entry '$pat' contains whitespace; the entries are expanded as shell globs, so a path with spaces would silently split into fragments that match nothing."
+        continue ;;
+    esac
+
+    matched="$(expand_pattern "$pat")"
+    if [ -z "$matched" ]; then
+      err "channel '$id' packaging_paths entry '$pat' matches no file under '$PACKAGING_ROOT'. A glob that selects nothing is a scan that confirms every claim equally — fix the path or drop the entry."
+      continue
+    fi
+
+    kept=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      is_gate_input "$(abspath "$PACKAGING_ROOT/$f")" && continue
+      kept="$kept$f"
+    done <<SURFACE
+$matched
+SURFACE
+    if [ -z "$kept" ]; then
+      err "channel '$id' packaging_paths entry '$pat' resolves only to this gate's own inputs (the manifest, the notices file, or the gate script). Those files name every backend by id, so a surface made of them would match its own text and report coverage it does not have."
+    fi
+  done < <(printf '%s' "$ch" | jq -r '.packaging_paths[]')
 }
 
 # ---------------------------------------------------------------------------
@@ -414,8 +539,12 @@ run_case() {
   local out rc
   [ -n "$notices" ] || notices="$ST_TMP/NOTICES.md"
 
+  # --packaging-root points at the fixture tree, never at this repository: the
+  # packaging-surface cases must be decided by files whose contents this test
+  # writes, not by whatever the real release pipeline happens to contain today.
   set +e
-  out="$(bash "$SELF" --manifest "$manifest" --notices "$notices" 2>&1)"
+  out="$(bash "$SELF" --manifest "$manifest" --notices "$notices" \
+           --packaging-root "$ST_TMP" 2>&1)"
   rc=$?
   set -e
 
@@ -480,6 +609,32 @@ NOTICES
 No notice written yet.
 NOTICES
 
+  # Fixture packaging tree. These two files are the "positive control located
+  # elsewhere": they are NOT the manifest, the notices file or this script, so
+  # a scan that reports a hit in them is reading real file contents rather than
+  # its own definition. Their contents differ in exactly two ways, and both
+  # differences decide a verdict below:
+  #   * both reference `fixture-backend-bin`; neither references
+  #     `absent-backend-bin` — that pair discriminates the distribution probe.
+  #   * only `pkg/oss-image.yml` carries an SBOM-producing directive — that
+  #     difference discriminates an honest `covered` claim from a bare one.
+  mkdir -p "$ST_TMP/pkg"
+  cat > "$ST_TMP/pkg/oss-release.yml" <<'PKG'
+# self-test fixture — the packaging file for channel `oss-chan`.
+# Ships the backend binary. Deliberately generates no SBOM.
+steps:
+  - run: tar -czf bundle.tar.gz aasm fixture-backend-bin
+PKG
+  cat > "$ST_TMP/pkg/oss-image.yml" <<'PKG'
+# self-test fixture — the packaging file for channel `img-chan`.
+# Bakes in the same binary AND generates an SBOM for the result.
+steps:
+  - uses: docker/build-push-action
+    with:
+      sbom: true
+  - run: COPY fixture-backend-bin /usr/local/bin/fixture-backend-bin
+PKG
+
   cat > "$ST_TMP/baseline.json" <<BASELINE
 {
   "schema_version": 1,
@@ -491,8 +646,22 @@ NOTICES
     }
   },
   "channels": [
-    { "id": "oss-chan",  "distribution": "oss" },
-    { "id": "prop-chan", "distribution": "proprietary" }
+    {
+      "id": "oss-chan",
+      "distribution": "oss",
+      "packaging_paths": ["pkg/oss-release.yml"]
+    },
+    {
+      "id": "img-chan",
+      "distribution": "oss",
+      "packaging_paths": ["pkg/oss-image.yml"]
+    },
+    {
+      "id": "prop-chan",
+      "distribution": "proprietary",
+      "packaging_owner": "external-repo",
+      "packaging_paths": []
+    }
   ],
   "backends": [
     {
@@ -509,8 +678,41 @@ NOTICES
         "reviewed_at": "2026-08-13",
         "capability_evidence": "docs/release/isolation-backend-licensing.md"
       },
-      "sbom": { "covered_by": "self-test fixture" },
-      "channels": { "oss-chan": "bundled", "prop-chan": "not-distributed" }
+      "distribution_probe": { "binary_names": ["fixture-backend-bin"] },
+      "sbom": {
+        "covered_by": "self-test fixture",
+        "channel_coverage": {
+          "oss-chan":  { "status": "none",    "mechanism": "no SBOM is produced for this fixture channel" },
+          "img-chan":  { "status": "covered", "mechanism": "buildx sbom: true on the image" },
+          "prop-chan": { "status": "none",    "mechanism": "channel does not carry the backend" }
+        }
+      },
+      "channels": {
+        "oss-chan": "bundled",
+        "img-chan": "bundled",
+        "prop-chan": "not-distributed"
+      }
+    },
+    {
+      "id": "fixture-absent",
+      "status": "active",
+      "upstream_name": "Fixture Absent Backend",
+      "version": "0.4.0",
+      "source_url": "https://example.invalid/absent-0.4.0.tar.gz",
+      "release_sha256": "$hex",
+      "spdx_license": "MIT",
+      "modifications": { "modified": false },
+      "review": {
+        "ticket": "AAASM-5714",
+        "reviewed_at": "2026-08-13",
+        "capability_evidence": "docs/release/isolation-backend-licensing.md"
+      },
+      "distribution_probe": { "binary_names": ["absent-backend-bin"] },
+      "channels": {
+        "oss-chan": "system",
+        "img-chan": "system",
+        "prop-chan": "not-distributed"
+      }
     },
     {
       "id": "fixture-pending",
@@ -537,13 +739,13 @@ BASELINE
 
   # --- the fabrication guard ------------------------------------------------
   run_case "pending_without_tracking_ticket" fail "tracking_ticket" \
-    "$(mutate pending_without_tracking_ticket 'del(.backends[1].tracking_ticket)')"
+    "$(mutate pending_without_tracking_ticket 'del(.backends[2].tracking_ticket)')"
 
   run_case "pending_carries_provenance" fail "carries provenance field" \
-    "$(mutate pending_carries_provenance '.backends[1].version = "0.1.0"')"
+    "$(mutate pending_carries_provenance '.backends[2].version = "0.1.0"')"
 
   run_case "pending_carries_license" fail "carries provenance field" \
-    "$(mutate pending_carries_license '.backends[1].spdx_license = "Apache-2.0"')"
+    "$(mutate pending_carries_license '.backends[2].spdx_license = "Apache-2.0"')"
 
   # --- the license allowlist, fail-closed -----------------------------------
   run_case "agpl_on_oss_channel" fail "oss_allowed_spdx" \
@@ -610,6 +812,28 @@ BASELINE
   run_case "channel_unclassified" fail "must be 'oss' or 'proprietary'" \
     "$(mutate channel_unclassified 'del(.channels[0].distribution)')"
 
+  # --- the packaging surface must be real ------------------------------------
+  # Everything the distribution-claim corroboration concludes rests on these
+  # three properties. Each is one mutation of the accepted baseline.
+  run_case "channel_without_packaging_paths" fail "has no 'packaging_paths'" \
+    "$(mutate channel_without_packaging_paths 'del(.channels[0].packaging_paths)')"
+
+  run_case "packaging_glob_matches_nothing" fail "matches no file" \
+    "$(mutate packaging_glob_matches_nothing \
+       '.channels[0].packaging_paths = ["pkg/does-not-exist-*.yml"]')"
+
+  # A surface pointed at the gate's own inputs. `NOTICES.md` sits in the
+  # fixture packaging root and IS one of those inputs, so the glob matches a
+  # real file and is still rejected — the rejection is the exclusion working,
+  # not the file being absent.
+  run_case "packaging_surface_is_only_gate_input" fail "resolves only to this gate's own inputs" \
+    "$(mutate packaging_surface_is_only_gate_input \
+       '.channels[0].packaging_paths = ["NOTICES.md"]')"
+
+  run_case "empty_surface_without_external_marker" fail "packaging_owner" \
+    "$(mutate empty_surface_without_external_marker \
+       'del(.channels[2].packaging_owner)')"
+
   # --- notices + SBOM obligations on bundled bytes --------------------------
   run_case "bundled_without_sbom_statement" fail "sbom.covered_by" \
     "$(mutate bundled_without_sbom_statement 'del(.backends[0].sbom)')"
@@ -640,6 +864,12 @@ main() {
     run_self_test
     exit 0
   fi
+  # The files this gate reads as its own input, excluded from every packaging
+  # surface below. All three name backends by id, so a surface built out of
+  # them would find its own text.
+  GATE_INPUTS="$(abspath "$MANIFEST")
+$(abspath "$NOTICES")
+$(abspath "$SELF")"
   check_manifest
   if [ "$fail" -ne 0 ]; then
     echo "isolation-backend license/provenance gate: FAILED" >&2
