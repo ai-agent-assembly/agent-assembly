@@ -3625,6 +3625,200 @@ mod tests {
         }
     }
 
+    // --- execution-isolation receipt (AAASM-5710) ---
+
+    /// The lines of `rendered` between the isolation header and the section
+    /// after it.
+    fn isolation_section(rendered: &str) -> String {
+        rendered
+            .split("--- execution isolation ---")
+            .nth(1)
+            .expect("the dry-run receipt carries an execution-isolation section")
+            .split("--- managed settings ---")
+            .next()
+            .expect("the isolation section is followed by managed settings")
+            .to_string()
+    }
+
+    /// A preview of `tool` under `--no-proxy`, so the resolution never depends on
+    /// what is running on this host.
+    fn isolation_preview(args: &RunArgs) -> String {
+        let adapter = StubDetected { version: None };
+        dry_run_preview(plan::RunTarget::dev_tool(&args.tool), Some(&adapter), args)
+    }
+
+    /// AC 1 / AC 9: `--dry-run` prints a deterministic execution-isolation
+    /// section derived from the canonical plan, and a machine-readable form
+    /// beside it.
+    ///
+    /// AC 7 is the load-bearing assertion here. `aasm run` selects no backend
+    /// and lowers no requirement, and `aa_isolation::negotiate` resolves an
+    /// empty spec to `Ready` against any backend at all — so the one thing this
+    /// section must never say is that the run is ready.
+    #[test]
+    fn the_dry_run_receipt_states_the_execution_isolation_it_previews() {
+        let _guard = crate::test_support::env_guard();
+        let mut args = run_args("claude");
+        args.no_proxy = true;
+        args.agent_id = Some("preview-agent".into());
+
+        let section = isolation_section(&isolation_preview(&args));
+
+        assert!(
+            section.contains("schema:           aasm.isolation.report/1"),
+            "the section must name the schema it is written in: {section}"
+        );
+        assert!(
+            section.contains("posture:          NO BOUNDARY ESTABLISHED"),
+            "a run with no backend and no requirement is not ready: {section}"
+        );
+        assert!(
+            !section.contains("posture:          READY"),
+            "`negotiate` calls an empty spec ready; the receipt must not: {section}"
+        );
+        assert!(
+            section.contains("An empty requirement set is not a clean boundary"),
+            "the empty requirement set must be named as such: {section}"
+        );
+        assert!(section.contains("agent_id:         preview-agent"), "{section}");
+
+        // Availability of a backend is never rendered as enforcement.
+        assert!(
+            section.contains("not about this run"),
+            "the backend line must refuse the availability-is-coverage reading: {section}"
+        );
+
+        // The machine-readable block a dashboard or CI check consumes.
+        assert!(
+            section.contains("--- execution isolation (machine-readable) ---"),
+            "{section}"
+        );
+        assert!(section.contains("\nschema=aasm.isolation.report/1\n"), "{section}");
+        assert!(section.contains("\nposture=no_boundary\n"), "{section}");
+        assert!(section.contains("\ndomain_count=9\n"), "{section}");
+        assert!(section.contains("\nbackend_selected=false\n"), "{section}");
+        for domain in aa_isolation::CapabilityDomain::ALL {
+            assert!(
+                section.contains(&format!("\ndomain.{}.claim=unmeasured\n", domain.as_str())),
+                "every domain must answer the claim axis: {section}"
+            );
+        }
+    }
+
+    /// AC 1: the same plan renders the same section, byte for byte.
+    ///
+    /// Bound twice against one handle, so the only way the two could differ is a
+    /// non-deterministic iteration inside the report — which is exactly what the
+    /// credential lists would introduce if they were not sorted.
+    #[test]
+    fn the_isolation_section_renders_byte_identically_for_one_plan() {
+        let _guard = crate::test_support::env_guard();
+        let adapter = StubDetected { version: None };
+        let mut args = run_args("claude");
+        args.no_proxy = true;
+        args.agent_id = Some("preview-agent".into());
+
+        let resolved = preview_plan(&adapter, &args);
+        let handle = stub_handle(Some("pioneer"));
+
+        let first = resolved.bind(&handle);
+        let second = resolved.bind(&handle);
+        assert_eq!(first.isolation().render(), second.isolation().render());
+        assert_eq!(first.isolation().machine_lines(), second.isolation().machine_lines());
+    }
+
+    /// AC 1 anti-drift: `--dry-run` and the live path emit **one** projection.
+    ///
+    /// The preview's embedded machine block must be byte-identical to what the
+    /// live path writes to stderr for the same bound launch. AAASM-5327 and
+    /// AAASM-5329 were both this failure in a different field — one side
+    /// reporting a protection the other did not have — so it is asserted rather
+    /// than assumed.
+    #[test]
+    fn both_run_paths_emit_one_isolation_projection() {
+        let _guard = crate::test_support::env_guard();
+        let adapter = StubDetected { version: None };
+        let mut args = run_args("claude");
+        args.no_proxy = true;
+        args.agent_id = Some("preview-agent".into());
+
+        let resolved = preview_plan(&adapter, &args);
+        let handle = stub_handle(Some("pioneer"));
+        let bound = resolved.bind(&handle);
+
+        // What the live path writes to stderr.
+        let live = isolation_machine_block(bound.isolation());
+
+        // What the preview embeds in its stdout receipt, for the same bind.
+        let preview = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            true,
+            "{}",
+            bound.command(),
+            bound.child_env(),
+            bound.fidelity(),
+            bound.isolation(),
+        );
+
+        assert!(
+            preview.contains(&live),
+            "the preview must embed exactly the block the live path emits.\nlive:\n{live}\npreview:\n{preview}"
+        );
+    }
+
+    /// AC 11 regression: existing `--dry-run` secret masking survives, and the
+    /// new section never prints a credential **value**.
+    ///
+    /// The two halves are separate claims and both are asserted. The environment
+    /// listing must still mask the value; the isolation section must carry the
+    /// variable's *name* — which proves the ambient-authority list is live and
+    /// not merely empty — while the value appears nowhere in the whole receipt.
+    #[test]
+    fn the_isolation_section_reports_credential_names_and_never_values() {
+        let _guard = crate::test_support::env_guard();
+        const NAME: &str = "AA_5710_PROBE_TOKEN";
+        const VALUE: &str = "value-that-must-never-be-printed-5710";
+
+        let prior = std::env::var(NAME).ok();
+        std::env::set_var(NAME, VALUE);
+
+        let mut args = run_args("claude");
+        args.no_proxy = true;
+        args.agent_id = Some("preview-agent".into());
+        let output = isolation_preview(&args);
+
+        match prior {
+            Some(v) => std::env::set_var(NAME, v),
+            None => std::env::remove_var(NAME),
+        }
+
+        assert!(
+            !output.contains(VALUE),
+            "no surface of the dry-run receipt may print a credential value: {output}"
+        );
+        assert!(
+            output.contains(&format!("{NAME}=***MASKED***")),
+            "the environment listing must still mask the value (AAASM-4894/4936 regression): {output}"
+        );
+
+        let section = isolation_section(&output);
+        assert!(
+            section.contains(NAME),
+            "the ambient-authority list must name the variable, or its emptiness would read as \
+             least-authority: {section}"
+        );
+        assert!(!section.contains(VALUE), "{section}");
+        assert!(
+            section.contains("least_authority:  NO —"),
+            "a run holding a credential it could not remove is not least-authority: {section}"
+        );
+        assert!(
+            section.contains("\nleast_authority=false\n"),
+            "the machine form must agree with the render: {section}"
+        );
+    }
+
     // --- launch planning (AAASM-5705) ---
 
     /// A plan resolved the way `--dry-run` resolves one.
