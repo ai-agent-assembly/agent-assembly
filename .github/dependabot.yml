@@ -22,16 +22,18 @@
 
 version: 2
 
-# AAASM-5675: `target-branch` is deliberately absent from EVERY entry below, and
-# adding it back disables Dependabot security updates for that entry's manifest
-# files. GitHub's security-update docs are explicit — "you should not specify a
-# `target-branch`" — and the options reference states that setting it means the
-# manifest files of that package manager no longer receive security updates.
+# AAASM-5675: `target-branch` is deliberately absent from EVERY entry below.
 #
-# It was previously set to "main" on all three entries, which is the repository's
-# default branch anyway, so it bought nothing and silently cost security updates
-# repo-wide. Removing it changes no targeting behaviour: Dependabot targets the
-# default branch when the field is absent, and that default is `main`.
+# GitHub's security-update guidance says plainly "you should not specify a
+# `target-branch`", and the options reference's legend scopes every
+# security-update-affecting option "except where `target-branch` is used" — so
+# setting it opts that entry's manifests out of configured security-update
+# behaviour. Every entry here previously set `target-branch: "main"`, which is
+# the repository's own default branch, so the field bought nothing and cost that
+# opt-out repo-wide, on cargo and github-actions as much as on npm.
+#
+# Removing it changes no targeting behaviour: absent the field Dependabot
+# targets the default branch, and that default is `main`.
 updates:
 
   # ── Rust workspace ────────────────────────────────────────────────────────
@@ -80,14 +82,11 @@ updates:
   # drifted unattended.
   #
   # No `allow:` block, deliberately. An earlier draft of this entry carried
-  # `allow: - dependency-type: "all"` and a comment calling it load-bearing.
-  # Both were wrong twice over: the options reference scopes `all`'s
+  # `allow: - dependency-type: "all"` and a comment calling it load-bearing. It
+  # is load-bearing for nothing here: the options reference scopes `all`'s
   # dependencies-of-direct-dependencies behaviour to bundler / pip / composer /
-  # cargo / gomod / uv, and **npm is in neither that list nor the `indirect`
-  # one**, so for npm `all` is exactly `direct`; and `allow` is not honoured for
-  # security updates at all (dependabot-core#2521, open since 2020). Dependabot
-  # already updates vulnerable transitive npm dependencies during security
-  # updates without any config lever.
+  # cargo / gomod / uv, and npm is in neither that list nor the `indirect` one,
+  # so for npm `all` is exactly `direct` — a no-op however it is read.
   #
   # The same draft asserted that js-yaml "was never in this directory's
   # package.json and never will be". It is there, at `pnpm.overrides` — and that
@@ -114,8 +113,12 @@ updates:
   # This directory has a live advisory right now: its pnpm-lock.yaml resolves
   # js-yaml@4.1.1 at two sites, inside the >= 4.0.0 < 4.3.1 affected range, and
   # unlike the reference client its package.json carries no `pnpm.overrides`
-  # pinning it. Covering it here is what lets Dependabot raise that PR; the pin
-  # itself is tracked separately (AAASM-5775).
+  # pinning it. What this entry adds is scheduled *version* updates — the
+  # security PR for that advisory is driven by the repository's Dependabot
+  # security-updates setting and does not depend on this file at all
+  # ("there is no interaction between the settings specified in the
+  # dependabot.yml file and Dependabot security alerts"). The pin is tracked
+  # separately as AAASM-5775.
   - package-ecosystem: "npm"
     directory: "/aa-integration-tests/tests/fixtures/agents/typescript"
     schedule:
