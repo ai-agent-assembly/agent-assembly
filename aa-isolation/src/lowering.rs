@@ -16,7 +16,9 @@
 //! narrower than [`CapabilityDomain`] is wide, and the honest response to that
 //! is to *say so per domain*, not to lower a plausible-looking requirement that
 //! no policy author wrote. Extending the schema is a public policy-contract
-//! change and is owned elsewhere (AAASM-5751); nothing here anticipates it.
+//! change made deliberately and recorded in an ADR before any code changes —
+//! AAASM-5751 added the filesystem path-scope node that way, and nothing here
+//! anticipates a node that has not been through that door.
 //!
 //! The single property this module exists to hold:
 //!
@@ -44,20 +46,26 @@
 //!
 //! # What the current schema can actually source
 //!
-//! Measured against the canonical AST at AAASM-5704 (`666c97dbf`). Full detail
-//! travels per domain in [`DomainLowering`]; this is the summary:
+//! Measured against the canonical AST at AAASM-5704 (`666c97dbf`), revised for
+//! the filesystem path-scope node added by AAASM-5751. Full detail travels per
+//! domain in [`DomainLowering`]; this is the summary:
 //!
 //! | Domain | Source | Granularity |
 //! | --- | --- | --- |
 //! | [`Syscall`](CapabilityDomain::Syscall) | `syscalls.allow` | Enumerated — a closed 15-name vocabulary |
 //! | [`NetworkEgress`](CapabilityDomain::NetworkEgress) | `network.allowlist`, `capabilities` `network_outbound` | Host globs only; no port, no protocol |
-//! | [`FilesystemRead`](CapabilityDomain::FilesystemRead) | `capabilities` `file_read` | Whole-domain boolean; no path scope |
-//! | [`FilesystemWrite`](CapabilityDomain::FilesystemWrite) | `capabilities` `file_write` / `file_delete` | Whole-domain boolean; no path scope |
+//! | [`FilesystemRead`](CapabilityDomain::FilesystemRead) | `filesystem.read.allow`, `capabilities` `file_read` | Enumerated path prefixes when scoped; whole-domain when the capability is denied |
+//! | [`FilesystemWrite`](CapabilityDomain::FilesystemWrite) | `filesystem.write.allow`, `capabilities` `file_write` / `file_delete` | Enumerated path prefixes when scoped; whole-domain when the capability is denied |
 //! | [`ProcessCreation`](CapabilityDomain::ProcessCreation) | `capabilities` `agent_spawn` / `terminal_exec` | Whole-domain boolean; no descendant ceiling |
 //! | [`NameResolution`](CapabilityDomain::NameResolution) | — | Not expressible |
 //! | [`Ipc`](CapabilityDomain::Ipc) | — | Not expressible |
 //! | [`Credential`](CapabilityDomain::Credential) | — | Not expressible |
 //! | [`Resource`](CapabilityDomain::Resource) | — | Not expressible |
+//!
+//! The last four are **accepted, measured risk**, not dead domains: the ADR
+//! 0035 AAASM-5751 amendment records that a backend can enforce three of them
+//! today and no operator can ask it to. They stay
+//! [`DomainCoverage::PolicyCannotExpress`] and carry no coverage claim.
 //!
 //! # No backend vocabulary
 //!
@@ -80,11 +88,11 @@ use serde::{Deserialize, Serialize};
 /// *permitted* set, rather than something to be stopped.
 ///
 /// [`RequirementScope::Selectors`] is an opaque string list with no polarity
-/// field, and the two policy nodes that carry scope — `syscalls.allow` and
-/// `network.allowlist` — are both allow-lists: they name what may happen, and
-/// the requirement is to prevent everything else. Emitting bare names would
-/// leave a backend to guess which of the two readings applies, and the two are
-/// exact opposites.
+/// field, and every policy node that carries scope — `syscalls.allow`,
+/// `network.allowlist` and `filesystem.<verb>.allow` — is an allow-list: each
+/// names what may happen, and the requirement is to prevent everything else.
+/// Emitting bare names would leave a backend to guess which of the two readings
+/// applies, and the two are exact opposites.
 ///
 /// Enumerating the complement instead was rejected: the complement of an
 /// allow-list is unbounded (`syscalls.allow: [read]` must stop `ptrace`, which
@@ -448,44 +456,115 @@ pub fn lower_policy(policy: &PolicyDocument, options: &LoweringOptions) -> Polic
 type DomainResult = (DomainCoverage, Option<RequirementScope>, Vec<String>);
 
 fn filesystem_read(policy: &PolicyDocument) -> DomainResult {
-    let gaps = vec![
-        FILESYSTEM_PATH_SCOPE_GAP.to_string(),
-        FILESYSTEM_BACKEND_DEFAULTS_GAP.to_string(),
-    ];
-    match restriction_sources(policy, &[Capability::FileRead]) {
-        Some(sourced_from) => (
-            DomainCoverage::Lowered {
-                granularity: ScopeGranularity::WholeDomainOnly,
-                sourced_from,
-            },
-            Some(RequirementScope::Whole),
-            gaps,
-        ),
-        None => (not_stated(CAPABILITY_NODE, CAPABILITY_ABSENT_MEANING), None, gaps),
-    }
+    filesystem(
+        policy,
+        &[Capability::FileRead],
+        policy.filesystem.as_ref().and_then(|fs| fs.read.as_ref()),
+        "filesystem.read.allow",
+        Vec::new(),
+    )
 }
 
 fn filesystem_write(policy: &PolicyDocument) -> DomainResult {
-    let gaps = vec![
-        FILESYSTEM_PATH_SCOPE_GAP.to_string(),
-        FILESYSTEM_BACKEND_DEFAULTS_GAP.to_string(),
-        FILESYSTEM_VERB_GAP.to_string(),
-    ];
     // `file_write` and `file_delete` both land on this one domain, which also
     // makes `aa_core::capability_is_denied`'s "a write deny implies a delete
     // deny" rule a no-op here: either capability alone already produces the
     // requirement.
-    match restriction_sources(policy, &[Capability::FileWrite, Capability::FileDelete]) {
-        Some(sourced_from) => (
+    filesystem(
+        policy,
+        &[Capability::FileWrite, Capability::FileDelete],
+        policy.filesystem.as_ref().and_then(|fs| fs.write.as_ref()),
+        "filesystem.write.allow",
+        vec![FILESYSTEM_VERB_GAP.to_string()],
+    )
+}
+
+/// Both filesystem domains, which differ only in which capabilities and which
+/// path node they read (AAASM-5751).
+///
+/// Four outcomes, in strictness order, and the ordering is the security
+/// content:
+///
+/// 1. **A whole-domain capability restriction is in force** — the domain is
+///    prevented outright. This outranks any path scope, exactly as a
+///    `network_outbound` denial outranks `network.allowlist`: lowering the
+///    narrower node under a broader denial would emit a requirement permitting
+///    paths the same document forbids.
+/// 2. **A path scope is stated and permits nothing** — an in-force restriction
+///    with an empty permitted set. Also whole-domain prevention, because
+///    "permit nothing" and "prevent everything" are the same requirement.
+/// 3. **A path scope is stated and names prefixes** — enumerated selectors.
+/// 4. **Neither node said anything** — [`DomainCoverage::NotStated`]. No
+///    requirement, and no statement that the domain is safe.
+///
+/// The path-scope residual gap is reported exactly in the cases whose emitted
+/// requirement is [`RequirementScope::Whole`], because those requirements are
+/// genuinely not scoped by path. Reporting it against an enumerated scope would
+/// name a gap the document has closed.
+fn filesystem(
+    policy: &PolicyDocument,
+    capabilities: &[Capability],
+    scope: Option<&aa_security::policy::PathScope>,
+    node: &str,
+    extra_gaps: Vec<String>,
+) -> DomainResult {
+    let whole_domain_gaps = || {
+        let mut gaps = vec![
+            FILESYSTEM_PATH_SCOPE_GAP.to_string(),
+            FILESYSTEM_BACKEND_DEFAULTS_GAP.to_string(),
+        ];
+        gaps.extend(extra_gaps.iter().cloned());
+        gaps
+    };
+    let scoped_gaps = || {
+        let mut gaps = vec![
+            FILESYSTEM_PREFIX_SEMANTICS_GAP.to_string(),
+            FILESYSTEM_BACKEND_DEFAULTS_GAP.to_string(),
+        ];
+        gaps.extend(extra_gaps.iter().cloned());
+        gaps
+    };
+
+    if let Some(sourced_from) = restriction_sources(policy, capabilities) {
+        return (
             DomainCoverage::Lowered {
                 granularity: ScopeGranularity::WholeDomainOnly,
                 sourced_from,
             },
             Some(RequirementScope::Whole),
-            gaps,
-        ),
-        None => (not_stated(CAPABILITY_NODE, CAPABILITY_ABSENT_MEANING), None, gaps),
+            whole_domain_gaps(),
+        );
     }
+
+    let Some(scope) = scope else {
+        return (
+            not_stated(&format!("{CAPABILITY_NODE} / {node}"), FILESYSTEM_ABSENT_MEANING),
+            None,
+            whole_domain_gaps(),
+        );
+    };
+
+    if scope.permits_nothing() {
+        return (
+            DomainCoverage::Lowered {
+                granularity: ScopeGranularity::WholeDomainOnly,
+                sourced_from: vec![format!("{node} is in force and permits no path")],
+            },
+            Some(RequirementScope::Whole),
+            whole_domain_gaps(),
+        );
+    }
+
+    (
+        DomainCoverage::Lowered {
+            granularity: ScopeGranularity::Enumerated,
+            sourced_from: vec![format!("{node} ({} path prefix(es))", scope.allow.len())],
+        },
+        Some(RequirementScope::Selectors(
+            scope.iter().map(permit_only_selector).collect(),
+        )),
+        scoped_gaps(),
+    )
 }
 
 fn process_creation(policy: &PolicyDocument) -> DomainResult {
@@ -632,6 +711,8 @@ fn unmapped_statements(policy: &PolicyDocument) -> Vec<String> {
 const CAPABILITY_NODE: &str = "capabilities.deny / capabilities.allow";
 const CAPABILITY_ABSENT_MEANING: &str =
     "no capability restriction was declared; the document neither grants nor withholds this domain";
+const FILESYSTEM_ABSENT_MEANING: &str = "neither the capability node nor the filesystem path node declared \
+     a restriction; the document neither grants nor withholds this domain";
 
 const NETWORK_NODE: &str = "network.allowlist";
 const NETWORK_ABSENT_MEANING: &str = "an absent or empty allowlist is documented as no egress restriction \
@@ -642,8 +723,13 @@ const SYSCALL_ABSENT_MEANING: &str = "an absent allowlist leaves syscalls uncons
      aa_policy::PolicyDocument::to_canonical always sets this node to None, so a document that reached \
      this AST through the gateway projection can never carry it however it was authored";
 
-const FILESYSTEM_PATH_SCOPE_GAP: &str = "path scope: capability grants are whole-domain booleans and no \
-     policy node names a path this requirement applies to";
+const FILESYSTEM_PATH_SCOPE_GAP: &str = "path scope: this requirement applies to every path. The schema \
+     can express one (filesystem.read.allow / filesystem.write.allow, AAASM-5751) and this document either \
+     denied the capability outright or left the path node unstated, so nothing narrowed it";
+const FILESYSTEM_PREFIX_SEMANTICS_GAP: &str = "prefix semantics: a path scope names absolute directory \
+     prefixes and nothing finer. There is no node for globs, extensions, file modes, or for what a symlink \
+     or bind mount out of a permitted prefix should mean — a backend resolves those, and ADR 0035 asks the \
+     policy to state them";
 const FILESYSTEM_BACKEND_DEFAULTS_GAP: &str = "the sensitive-path deny defaults in \
      aa_security::policy::lower_to_ebpf (/etc, /root/.ssh, /var/run/secrets) are that layer's own defaults \
      rather than policy content, and are deliberately not re-derived here";
@@ -690,13 +776,28 @@ fn unrepresentable(detail: &str) -> DomainCoverage {
 
 #[cfg(test)]
 mod tests {
-    use aa_security::policy::{CapabilitySet, NetworkPolicy, SyscallAllowlist, ToolRule};
+    use aa_security::policy::{CapabilitySet, FilesystemPolicy, NetworkPolicy, PathScope, SyscallAllowlist, ToolRule};
 
     use super::*;
     use crate::spec::{DescendantRequirement, IdentityRef, RequirementIntent};
 
     fn empty() -> PolicyDocument {
         PolicyDocument::default()
+    }
+
+    fn path_scope(paths: &[&str]) -> PathScope {
+        PathScope::from_paths(paths).expect("fixture paths are valid")
+    }
+
+    /// A document whose only restriction is a filesystem path scope.
+    fn with_paths(read: Option<&[&str]>, write: Option<&[&str]>) -> PolicyDocument {
+        PolicyDocument {
+            filesystem: Some(FilesystemPolicy {
+                read: read.map(path_scope),
+                write: write.map(path_scope),
+            }),
+            ..PolicyDocument::default()
+        }
     }
 
     fn with_denies(denied: &[Capability]) -> PolicyDocument {
@@ -758,6 +859,10 @@ mod tests {
             allowlist: vec!["api.openai.com".to_string(), "b.example".to_string()],
         });
         policy.syscall_allowlist = Some(SyscallAllowlist::from_names(["write", "read"]).unwrap());
+        policy.filesystem = Some(FilesystemPolicy {
+            read: Some(path_scope(&["/usr/share", "/workspace"])),
+            write: Some(path_scope(&["/workspace/build"])),
+        });
         assert_eq!(lower(&policy), lower(&policy));
     }
 
@@ -933,6 +1038,234 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Filesystem path scope (AAASM-5751).
+    // -----------------------------------------------------------------------
+
+    /// Both directions, and the granularity is what is asserted rather than
+    /// merely "a requirement exists": a stated path scope lowers to enumerated
+    /// permitted-prefix selectors, and an unstated one lowers to nothing at
+    /// all. Asserting only the first would pass for a function that emits
+    /// selectors unconditionally.
+    #[test]
+    fn a_stated_path_scope_lowers_to_enumerated_selectors_and_absence_does_not() {
+        let stated = lower(&with_paths(Some(&["/workspace", "/usr/share/dict"]), None));
+
+        let requirement =
+            requirement_for(&stated, CapabilityDomain::FilesystemRead).expect("a stated path scope lowers");
+        assert_eq!(
+            requirement.scope(),
+            &RequirementScope::Selectors(vec![
+                "permit-only:/usr/share/dict".to_string(),
+                "permit-only:/workspace".to_string(),
+            ])
+        );
+        assert!(matches!(
+            coverage_of(&stated, CapabilityDomain::FilesystemRead),
+            DomainCoverage::Lowered {
+                granularity: ScopeGranularity::Enumerated,
+                ..
+            }
+        ));
+
+        // The verb the document did not scope stays unstated: scoping reads
+        // must not fabricate a write requirement.
+        assert!(requirement_for(&stated, CapabilityDomain::FilesystemWrite).is_none());
+        assert!(matches!(
+            coverage_of(&stated, CapabilityDomain::FilesystemWrite),
+            DomainCoverage::NotStated { .. }
+        ));
+
+        // And with no path node at all, neither verb lowers.
+        let silent = lower(&empty());
+        assert!(requirement_for(&silent, CapabilityDomain::FilesystemRead).is_none());
+        assert!(matches!(
+            coverage_of(&silent, CapabilityDomain::FilesystemRead),
+            DomainCoverage::NotStated { .. }
+        ));
+    }
+
+    /// The selector polarity convention is reused, not re-invented: a lowered
+    /// path reads back through the same `permitted_selector` a backend already
+    /// uses for syscalls and hosts, with no domain branch.
+    #[test]
+    fn a_lowered_path_reads_back_through_the_existing_selector_convention() {
+        let lowering = lower(&with_paths(Some(&["/workspace"]), None));
+        let RequirementScope::Selectors(selectors) = requirement_for(&lowering, CapabilityDomain::FilesystemRead)
+            .expect("a stated path scope lowers")
+            .scope()
+        else {
+            panic!("a stated path scope lowers to selectors");
+        };
+        assert_eq!(
+            selectors
+                .iter()
+                .filter_map(|s| permitted_selector(s))
+                .collect::<Vec<_>>(),
+            vec!["/workspace"]
+        );
+    }
+
+    #[test]
+    fn each_verb_reaches_only_its_own_domain() {
+        let write_only = lower(&with_paths(None, Some(&["/workspace/build"])));
+        assert!(requirement_for(&write_only, CapabilityDomain::FilesystemWrite).is_some());
+        assert!(requirement_for(&write_only, CapabilityDomain::FilesystemRead).is_none());
+
+        let read_only = lower(&with_paths(Some(&["/workspace"]), None));
+        assert!(requirement_for(&read_only, CapabilityDomain::FilesystemRead).is_some());
+        assert!(requirement_for(&read_only, CapabilityDomain::FilesystemWrite).is_none());
+    }
+
+    /// An in-force scope that permits nothing is the *most* restrictive thing
+    /// an author can write, so it must lower to whole-domain prevention — not
+    /// to an empty selector list, which a backend could read as "no selectors,
+    /// nothing to do", and not to silence.
+    #[test]
+    fn a_scope_that_permits_nothing_lowers_to_whole_domain_prevention() {
+        let lowering = lower(&with_paths(Some(&[]), None));
+        let requirement =
+            requirement_for(&lowering, CapabilityDomain::FilesystemRead).expect("an in-force empty scope lowers");
+        assert_eq!(requirement.scope(), &RequirementScope::Whole);
+        assert!(matches!(
+            coverage_of(&lowering, CapabilityDomain::FilesystemRead),
+            DomainCoverage::Lowered {
+                granularity: ScopeGranularity::WholeDomainOnly,
+                ..
+            }
+        ));
+
+        // The control: an *absent* verb, which is the case an empty scope is
+        // easy to be confused with, lowers to nothing.
+        assert!(requirement_for(
+            &lower(&with_paths(None, Some(&["/x"]))),
+            CapabilityDomain::FilesystemRead
+        )
+        .is_none());
+    }
+
+    /// A whole-domain capability denial outranks the path scope, the same way
+    /// a `network_outbound` denial outranks `network.allowlist`. Lowering the
+    /// path scope here would emit a requirement permitting `/workspace` in a
+    /// document that denies reads outright.
+    #[test]
+    fn a_file_read_deny_outranks_the_path_scope() {
+        let mut policy = with_denies(&[Capability::FileRead]);
+        policy.filesystem = Some(FilesystemPolicy {
+            read: Some(path_scope(&["/workspace"])),
+            write: None,
+        });
+        let lowering = lower(&policy);
+        let requirement = requirement_for(&lowering, CapabilityDomain::FilesystemRead).expect("a deny lowers");
+        assert_eq!(requirement.scope(), &RequirementScope::Whole);
+
+        // The control: the identical path scope without the deny lowers to
+        // selectors, so the whole-domain result is attributable to the deny.
+        let mut permitted = policy.clone();
+        permitted.capabilities = None;
+        assert!(matches!(
+            requirement_for(&lower(&permitted), CapabilityDomain::FilesystemRead)
+                .expect("a stated path scope lowers")
+                .scope(),
+            RequirementScope::Selectors(_)
+        ));
+    }
+
+    /// The same reading for the other half of the two-sided capability rule: an
+    /// in-force allow-list that omits `file_write` restricts the whole domain,
+    /// which outranks a narrower write scope in the same document.
+    #[test]
+    fn an_in_force_allow_list_omission_outranks_the_path_scope() {
+        let mut policy = with_allows(&[Capability::FileRead]);
+        policy.filesystem = Some(FilesystemPolicy {
+            read: None,
+            write: Some(path_scope(&["/workspace/build"])),
+        });
+        assert_eq!(
+            requirement_for(&lower(&policy), CapabilityDomain::FilesystemWrite)
+                .expect("an omitted capability lowers")
+                .scope(),
+            &RequirementScope::Whole
+        );
+    }
+
+    /// The residual-gap list must move with what the document actually closed.
+    /// A path-scoped requirement no longer carries the "applies to every path"
+    /// gap, and a whole-domain one still does — the two lists must differ, or
+    /// the gap report is decorative.
+    #[test]
+    fn the_path_scope_gap_is_reported_only_where_the_requirement_is_unscoped() {
+        let scoped = lower(&with_paths(Some(&["/workspace"]), None));
+        let scoped_gaps = &scoped.coverage(CapabilityDomain::FilesystemRead).unwrap().residual_gaps;
+        assert!(
+            !scoped_gaps.iter().any(|g| g.contains("applies to every path")),
+            "a path-scoped requirement must not report an unscoped-path gap: {scoped_gaps:?}"
+        );
+        assert!(
+            scoped_gaps.iter().any(|g| g.contains("prefix semantics")),
+            "a path-scoped requirement must still report what prefixes cannot express: {scoped_gaps:?}"
+        );
+
+        let whole = lower(&with_denies(&[Capability::FileRead]));
+        let whole_gaps = &whole.coverage(CapabilityDomain::FilesystemRead).unwrap().residual_gaps;
+        assert!(
+            whole_gaps.iter().any(|g| g.contains("applies to every path")),
+            "an unscoped requirement must report that it is unscoped: {whole_gaps:?}"
+        );
+
+        // Neither is complete: something is still unexpressible in both cases,
+        // so a reader cannot take either as a full boundary.
+        assert!(!scoped.coverage(CapabilityDomain::FilesystemRead).unwrap().is_complete());
+        assert!(!whole.coverage(CapabilityDomain::FilesystemRead).unwrap().is_complete());
+    }
+
+    /// The negative control the ticket names. An **unset** path node must never
+    /// become a silent allow: it produces no requirement, it is reported as
+    /// `not_stated` rather than omitted, and a document carrying nothing else
+    /// refuses to produce an execution spec at all.
+    #[test]
+    fn an_unset_path_node_is_a_refusal_not_a_silent_allow() {
+        let lowering = lower(&empty());
+        for domain in [CapabilityDomain::FilesystemRead, CapabilityDomain::FilesystemWrite] {
+            assert!(
+                requirement_for(&lowering, domain).is_none(),
+                "{domain} lowered a requirement from a document that stated nothing"
+            );
+            let entry = lowering.coverage(domain).unwrap();
+            assert_eq!(
+                entry.coverage.as_str(),
+                "not_stated",
+                "{domain} must be reported, not omitted"
+            );
+            let DomainCoverage::NotStated { node, schema_default } = &entry.coverage else {
+                unreachable!("checked immediately above");
+            };
+            assert!(
+                node.contains("filesystem."),
+                "{domain} must name the path node an operator could have written: {node}"
+            );
+            assert!(
+                !schema_default.contains("unrestricted") && !schema_default.contains("permitted"),
+                "{domain}'s absent-node meaning must not read as a grant: {schema_default}"
+            );
+        }
+
+        // The refusal itself: nothing else in this document lowers either, so
+        // the boundary refuses rather than reporting an unrestricted launch as
+        // ready.
+        lower(&empty())
+            .apply_to(ExecutionSpec::new("python", IdentityRef::root("agent-1")))
+            .expect_err("a document that scopes nothing must not yield a spec");
+
+        // The control: stating the path node — and nothing else — is enough to
+        // produce a spec, so the refusal above is attributable to the unset
+        // node and not to `apply_to` refusing unconditionally.
+        let attached = lower(&with_paths(Some(&["/workspace"]), None))
+            .apply_to(ExecutionSpec::new("python", IdentityRef::root("agent-1")))
+            .expect("a stated path scope yields a spec");
+        assert_eq!(attached.requirements().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
     // The property the ticket exists for.
     // -----------------------------------------------------------------------
 
@@ -963,6 +1296,70 @@ mod tests {
             assert!(!detail.is_empty(), "{domain} states no reason");
         }
         assert_eq!(lowering.unrepresentable().count(), 4);
+    }
+
+    /// AAASM-5751 — a domain stops reporting a gap **only** when the schema
+    /// genuinely sourced it, and both directions are asserted against the same
+    /// document so they cannot be satisfied separately.
+    ///
+    /// Adding a filesystem path scope moves `FilesystemRead` from
+    /// `not_stated` to `lowered` at `Enumerated` granularity — the schema
+    /// really did gain the ability to source it. It must move *nothing else*:
+    /// the four domains no policy node reaches stay `policy_cannot_express`,
+    /// with the same count and the same reasons. A change that closed one gap
+    /// by quietly reclassifying the others would pass a one-sided test.
+    #[test]
+    fn sourcing_a_path_scope_moves_that_domain_and_no_other() {
+        let before = lower(&empty());
+        let after = lower(&with_paths(Some(&["/workspace"]), Some(&["/workspace/build"])));
+
+        assert_eq!(
+            coverage_of(&before, CapabilityDomain::FilesystemRead).as_str(),
+            "not_stated"
+        );
+        assert_eq!(
+            coverage_of(&after, CapabilityDomain::FilesystemRead).as_str(),
+            "lowered"
+        );
+        assert_eq!(
+            coverage_of(&after, CapabilityDomain::FilesystemWrite).as_str(),
+            "lowered"
+        );
+        assert!(matches!(
+            coverage_of(&after, CapabilityDomain::FilesystemWrite),
+            DomainCoverage::Lowered {
+                granularity: ScopeGranularity::Enumerated,
+                ..
+            }
+        ));
+
+        let unreachable = [
+            CapabilityDomain::NameResolution,
+            CapabilityDomain::Ipc,
+            CapabilityDomain::Credential,
+            CapabilityDomain::Resource,
+        ];
+        for domain in unreachable {
+            assert_eq!(
+                coverage_of(&before, domain),
+                coverage_of(&after, domain),
+                "{domain} moved when a filesystem path scope was stated"
+            );
+            assert!(
+                coverage_of(&after, domain).is_unrepresentable(),
+                "{domain} stopped reporting"
+            );
+        }
+        assert_eq!(before.unrepresentable().count(), 4);
+        assert_eq!(after.unrepresentable().count(), 4);
+
+        // And no requirement was fabricated for any of them.
+        for domain in unreachable {
+            assert!(
+                requirement_for(&after, domain).is_none(),
+                "{domain} lowered a requirement"
+            );
+        }
     }
 
     /// "Policy cannot express it" and "this document did not say" are both
