@@ -1077,7 +1077,7 @@ jobs:
           echo "built $(wc -l < /tmp/aa-security-tests.txt) test binary/binaries"
 
       # The control that makes the next step mean anything, and it has to check
-      # THREE things rather than one.
+      # FOUR things rather than one.
       #
       # The first version checked only that curl failed inside the namespace,
       # and it passed vacuously on this very job: `unshare -rn` could not create
@@ -1086,9 +1086,11 @@ jobs:
       # required" having denied nothing. That is precisely the defect class this
       # job exists to catch, reproduced inside the control meant to catch it.
       #
-      # So: the namespace must be creatable, it must actually be a *different*
-      # network namespace (one interface, not the host's several), and only then
-      # does a failing curl mean egress was denied rather than never attempted.
+      # So: the namespace must be creatable; it must actually be a *different*
+      # network namespace (fewer interfaces than the host, which is a
+      # comparison rather than a pinned count); the host must have egress for
+      # the namespace to be denying something; and only then does a failing
+      # curl inside it mean egress was denied rather than absent to begin with.
       - name: Prove the namespace exists and denies egress (positive control)
         run: |
           set -uo pipefail
@@ -1103,10 +1105,25 @@ jobs:
           # Measured through the SAME wrapper the tests use — `runuser` — so the
           # control exercises the shape under test rather than a simpler one.
           ns_ifaces=$(sudo unshare -n -- runuser -u "$(id -un)" -- ip -o link show | wc -l)
-          if [ "$ns_ifaces" -ne 1 ]; then
-            echo "::error::expected exactly 1 interface inside the namespace (a"
-            echo "::error::down lo), found $ns_ifaces — this is not an isolated"
-            echo "::error::network namespace. Host has $host_ifaces."
+
+          # Assert the DIFFERENCE, not an absolute. A previous version computed
+          # host_ifaces, interpolated it into the error text, and then tested
+          # `ns_ifaces -ne 1` — so the host figure appeared in the message
+          # without appearing in the predicate, and the control's actual
+          # argument ("this is a different namespace") went unasserted. The
+          # host count has to move for the comparison to discriminate, hence
+          # the `-gt 1` guard first: on a host that itself had one interface,
+          # `ns_ifaces -lt host_ifaces` could not hold and the step would be
+          # reporting on a runner where it cannot tell the two apart.
+          if [ "$host_ifaces" -le 1 ]; then
+            echo "::error::the host has $host_ifaces interface(s), so an interface"
+            echo "::error::count cannot distinguish the namespace from the host."
+            exit 1
+          fi
+          if [ "$ns_ifaces" -ge "$host_ifaces" ]; then
+            echo "::error::found $ns_ifaces interface(s) inside the namespace"
+            echo "::error::against $host_ifaces on the host — not fewer, so this"
+            echo "::error::is not an isolated network namespace."
             exit 1
           fi
 
@@ -1115,6 +1132,26 @@ jobs:
           # is the same defect this control was rewritten to remove, one level
           # further down.
           command -v curl >/dev/null || { echo "::error::curl absent; the egress probe cannot run"; exit 1; }
+
+          # The host leg is the control for the namespace leg, and it is the
+          # step that moves. A failing curl INSIDE the namespace is on its own
+          # equally consistent with a runner that has no egress anywhere: both
+          # give exit 6, and the step would then attribute to the namespace a
+          # denial the namespace had no part in. So require the host to reach
+          # the network first; only against a reachable host does an
+          # in-namespace 6/7/28 identify the namespace as the cause.
+          set +e
+          curl -sS --max-time 8 https://example.com >/dev/null 2>&1
+          host_curl=$?
+          set -e
+          if [ "$host_curl" -ne 0 ]; then
+            echo "::error::curl exited $host_curl on the HOST, outside the"
+            echo "::error::namespace. This runner has no egress to deny, so a"
+            echo "::error::failure inside the namespace would demonstrate"
+            echo "::error::nothing about the namespace."
+            exit 1
+          fi
+
           set +e
           sudo unshare -n -- curl -sS --max-time 8 https://example.com >/dev/null 2>&1
           curl_status=$?
@@ -1128,7 +1165,8 @@ jobs:
                 exit 1 ;;
           esac
 
-          echo "namespace created; 1 interface inside vs $host_ifaces on the host; egress denied (curl $curl_status)"
+          echo "namespace created; $ns_ifaces interface(s) inside vs $host_ifaces on the host;"
+          echo "host reaches the network (curl 0), namespace does not (curl $curl_status)"
 
       # Runs the prebuilt binaries rather than `cargo test`, so nothing inside
       # the namespace wants a registry, a lockfile check or CARGO_HOME — a cargo
