@@ -143,6 +143,22 @@ async fn a_deny_and_an_allow_differ_in_the_retrieved_durable_entry() {
     let deny = &retrieved[0];
     let allow = &retrieved[1];
 
+    // 0. The retrieved entries are attributed: `AuditEntry::agent_id` is derived
+    //    from the pipeline's agent identity, so the record survives storage as an
+    //    event *about an agent* rather than an unattributed one. ADR 0033 §6
+    //    *Observed* asks for a durable event attributed to the action, and this
+    //    is the half of that phrase the round trip has to keep.
+    assert_ne!(
+        deny.agent_id(),
+        aa_core::AgentId::from_bytes([0u8; 16]),
+        "a retrieved entry should carry a derived agent id, not a zero one"
+    );
+    assert_eq!(
+        deny.agent_id(),
+        allow.agent_id(),
+        "both records came from one agent and should be attributed to it"
+    );
+
     // 1. The governance event type separates them.
     assert_eq!(
         deny.event_type(),
