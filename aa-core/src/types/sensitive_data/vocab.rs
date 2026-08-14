@@ -44,6 +44,11 @@
 //! direction — the alternative is inventing a severity — but the list is the
 //! thing to update, which is what the size test exists to say.
 
+// These names reach the compiler only as the `$ty` of a `vocabulary_bridge!`
+// expansion, and every item that expansion produces is now gated on `serde` or
+// `schemars`. With neither feature on there is nothing left referring to them,
+// so the import must carry the union of those gates (AAASM-5682).
+#[cfg(any(feature = "serde", feature = "schemars"))]
 use aa_security::canonical::{ConfidenceBand, DetectionMethod, FindingStatus, Recognizer, Severity};
 
 /// Define the serde/schemars bridge for one `aa-security` vocabulary.
@@ -58,9 +63,20 @@ macro_rules! vocabulary_bridge {
             use super::*;
 
             /// Every variant of this vocabulary known to this build.
+            ///
+            /// Gated to its uses: `from_label` below (serde) and `schema`
+            /// (schemars). With neither feature on, nothing in the module reads
+            /// it and an unconditional definition is a `dead_code` error —
+            /// invisible under `--all-features`, where both gates are open, and
+            /// therefore only reachable through a narrow crate selection such as
+            /// `cargo clippy -p conformance` (AAASM-5682).
+            #[cfg(any(feature = "serde", feature = "schemars"))]
             pub(in crate::types::sensitive_data) const ALL: &[$ty] = &[$($variant),*];
 
             /// Resolve a wire label, or `None` if this build does not know it.
+            ///
+            /// Read only by `deserialize`, so it carries that function's gate.
+            #[cfg(feature = "serde")]
             pub(in crate::types::sensitive_data) fn from_label(label: &str) -> Option<$ty> {
                 ALL.iter().copied().find(|value| value.as_str() == label)
             }

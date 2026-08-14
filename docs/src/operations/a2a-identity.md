@@ -40,8 +40,21 @@ Two `AuditEventType` variants make A2A traffic explicit in the chain:
 
 | Variant | Emitted when | Payload fields |
 |---|---|---|
-| `A2ACallIntercepted` | Allow decision on a request whose `caller_agent_id` differs from `agent_id`. | `caller_agent_id`, `callee_agent_id`, plus the usual `action_type`, `decision`, `policy_rule`, `latency_us`. |
-| `A2AImpersonationAttempted` | Pre-policy-eval rejection because `credential_token` is empty, does not match the registered token for the claimed `agent_id`, or is registered to another agent while the request claims no subject — whether the `agent_id` is blank or omitted entirely. | `agent_id_claimed` (null when nothing was claimed), `identity_claimed` (bool), `agent_identity_assurance`, `credential_token_present` (bool), `reason`, `policy_rule = "a2a_identity_verification"`. |
+| `A2ACallIntercepted` | Allow decision on a request whose `caller_agent_id` differs from `agent_id`. | `caller_agent_id`, `callee_agent_id` (**nullable** — see below), `agent_identity_assurance`, plus the usual `action_type`, `decision`, `policy_rule`, `latency_us`. |
+| `A2AImpersonationAttempted` | Pre-policy-eval rejection because `credential_token` is empty, does not match the registered token for the claimed `agent_id`, or is registered to another agent while the request claims no subject — whether the `agent_id` is blank or omitted entirely. | `agent_id_claimed` (null when nothing was claimed), `claimed_org_id`, `identity_claimed` (bool), `agent_identity_assurance`, `credential_token_present` (bool), `reason`, `policy_rule = "a2a_identity_verification"`. |
+
+`callee_agent_id` is the **claimed** subject, and a caller may name none.
+An A2A call whose `agent_id` is blank or omitted is recorded with
+`callee_agent_id: null` and the reserved unattributed id on the entry, so a
+delegation edge cannot be read off that row (AAASM-5665). Treat a populated
+value as a claim rather than a verified fact, and read
+`agent_identity_assurance` beside it — the claim is corroborated when that
+field reads `bound`. The `aa-core` rustdoc on `AuditEventType::A2ACallIntercepted`
+states the same contract; these two are meant to be read as one.
+
+`claimed_org_id` is the org the refused request claimed. It is also stamped
+onto the entry's `Lineage`, so an audit query filtered by `org_id` surfaces the
+attempt against the org it was made against.
 
 Single-agent calls (no `caller_agent_id`, or caller equals callee) keep
 emitting the existing `ToolCallIntercepted` / `PolicyViolation`

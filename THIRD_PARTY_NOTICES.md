@@ -41,23 +41,37 @@ the build fails.
 *None at present.*
 
 Agent Assembly does not currently redistribute any third-party prebuilt binary.
-When the first execution-isolation backend lands, its notice section is added
-here and the gate begins requiring it.
+The first execution-isolation backend exists (see below) but is not
+redistributed on any channel; a backend that *is* bundled gets its notice
+section here and the gate begins requiring it.
 
-### Pending: Sandlock (AAASM-5708)
+### Not redistributed: Sandlock (AAASM-5708)
 
-The first isolation backend is not implemented yet. No notice section is
-written for it because its upstream name, version, source and license have not
-been measured — recording a placeholder would attest to something nobody
-verified.
+The first execution-isolation backend landed with AAASM-5708 and its measured
+provenance is recorded in
+[`metadata/isolation-backends.json`](metadata/isolation-backends.json)
+(`sandlock` 0.8.6, Apache-2.0, digest verified in CI). **Agent Assembly does
+not redistribute it.** It is an external executable the operator installs, so
+every channel's strategy is `system` or `not-distributed` — none is `bundled`,
+`downloaded` or `source` — and no attribution obligation attaches to anything
+this project ships.
 
-The gate enforces this in both directions:
+That statement is **checked, not asserted**: the gate greps every channel's
+declared packaging surface (`release.yml`, `docker.yml`, the Dockerfiles, the
+installer scripts) for the `sandlock` executable name and fails if it appears
+anywhere while the manifest claims non-distribution. The one place this
+repository does install the binary — `ci.yml`'s `isolation-backend-linux` test
+job — is not a distribution channel and is in no channel's surface.
 
-- while the backend's manifest entry is `status: "pending"`, it must carry
-  **no** provenance fields at all; and
-- once it flips to `status: "active"` with any channel set to `bundled`, a
-  section for it **must** exist in this file or
-  `scripts/check-backend-license-compliance.sh` fails the build.
+This heading is deliberately *not* `### sandlock`. The gate matches a bundled
+backend's notice section by exact heading, so if a future change makes any
+channel `bundled`, `scripts/check-backend-license-compliance.sh` will fail
+until someone writes a real notice section rather than finding this one already
+in place.
+
+The gate enforces the other direction too: while a backend's manifest entry is
+`status: "pending"`, it must carry **no** provenance fields at all, so an
+unmeasured backend cannot acquire a plausible-looking record.
 
 ## Adding an entry
 

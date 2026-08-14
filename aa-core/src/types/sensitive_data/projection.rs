@@ -6,6 +6,13 @@ use aa_security::canonical::{CanonicalCategory, ConfidenceBand, DetectionMethod,
 
 use super::finding_record::SensitiveDataFindingRecord;
 use super::verdict::RuntimeVerdictLabel;
+// `serde` alone, unlike `event.rs` and `finding_record.rs`, which take the
+// union. This module has no `JsonSchema` derive and no `schemars(schema_with =
+// …)` attribute — every `vocab::` reference here is `cfg_attr(feature =
+// "serde")`. Gating on the union would leave the import live under a
+// schemars-only build with nothing to use it, which is an `unused_imports`
+// error (AAASM-5682).
+#[cfg(feature = "serde")]
 use super::vocab;
 
 /// The six labels ADR 0032 §9 permits on a sensitive-data metric.
