@@ -544,7 +544,8 @@ A channel that names the backend's executable in the code that builds its artifa
 # failure mode this ticket names.
 check_backend_channels() {
   local b="$1" id="$2" license="$3"
-  local missing unknown ch_id strategy dist allowlist_key allowed hint bundled_anywhere=0
+  local missing unknown ch_id strategy dist allowlist_key allowed hint
+  local bundled_anywhere=0 acq_channels=""
 
   if [ "$(printf '%s' "$b" | jq -r '(.channels // {}) | length')" -eq 0 ]; then
     err "active backend '$id' declares no per-channel distribution strategy. Each channel in the manifest must say whether AASM bundles, downloads, expects a system install, builds from source, or does not distribute it."
@@ -572,7 +573,7 @@ check_backend_channels() {
 
     # Only channels where AASM causes acquisition are license-gated.
     case " $GATED_STRATEGIES " in
-      *" $strategy "*) ;;
+      *" $strategy "*) acq_channels="$acq_channels $ch_id" ;;
       *) continue ;;
     esac
 
@@ -600,13 +601,18 @@ check_backend_channels() {
   done < <(printf '%s' "$b" | jq -r '(.channels // {}) | to_entries[] | "\(.key)=\(.value)"')
 
   if [ "$bundled_anywhere" -eq 1 ]; then
-    check_bundled_obligations "$b" "$id"
+    check_notice_obligation "$b" "$id"
+  fi
+  if [ -n "$acq_channels" ]; then
+    check_sbom_obligations "$b" "$id" "$acq_channels"
   fi
 }
 
-# Obligations that attach specifically to redistributing the backend's bytes.
-check_bundled_obligations() {
-  local b="$1" id="$2" sbom
+# The notice obligation attaches to REDISTRIBUTING the bytes, so it is tied to
+# `bundled` alone: downloading an upstream artifact at install time does not
+# make this project the redistributor.
+check_notice_obligation() {
+  local b="$1" id="$2"
 
   # Third-party notice. Matched against an EXACT `### <id>` heading rather than
   # a substring: this file also carries a "Pending: <id>" heading while a
@@ -618,12 +624,71 @@ check_bundled_obligations() {
     err "backend '$id' is bundled into a release artifact but $(basename "$NOTICES") has no '### $id' section. Retaining the upstream copyright and license text is an obligation of every license in the allowlist; the notice must ship with the bytes."
   fi
 
-  # SBOM coverage. Only container images have SBOM generation today
-  # (docker.yml `sbom: true`); nothing covers the released binaries. A bundled
-  # backend must therefore state HOW it is accounted for, so the gap is
-  # recorded rather than assumed away.
+}
+
+# SBOM accounting, per acquiring channel — AAASM-5714 AC4.
+#
+# Applies to `bundled`, `downloaded` AND `source`, not `bundled` alone: an
+# installer that fetches a backend puts those bytes on the user's machine as
+# surely as a tarball does, and an SBOM that omits it is wrong in the same way.
+#
+# Coverage differs sharply by channel — container images get an image-layer
+# SBOM from buildx, the released binaries get nothing — so the status is stated
+# per channel rather than once for the backend. `partial` and `none` are
+# first-class answers: the point is to record the gap accurately, and a schema
+# that only allowed `covered` would buy honesty-shaped text and nothing else.
+#
+# A `covered` claim is checked, not accepted: the channel's packaging surface
+# must actually contain an SBOM-producing directive. That is what stops the
+# strongest of the three statuses from being the cheapest to write.
+check_sbom_obligations() {
+  local b="$1" id="$2" acq_channels="$3"
+  local sbom ch_id entry status mechanism surface
+
   sbom="$(jget "$b" '.sbom.covered_by')"
   [ -n "$sbom" ] || err "backend '$id' is bundled but has no 'sbom.covered_by' stating how the shipped artifact is accounted for in release/SBOM output. Note that SBOM generation today covers container images only — a binary bundled into a release tarball is not covered by it."
+
+  for ch_id in $acq_channels; do
+    entry="$(printf '%s' "$b" | jq -c --arg c "$ch_id" '.sbom.channel_coverage[$c] // empty')"
+    if [ -z "$entry" ]; then
+      err "backend '$id' is acquired by AASM on channel '$ch_id' but has no 'sbom.channel_coverage.$ch_id'. Coverage differs per channel — image layers are covered by buildx, released binaries are covered by nothing — so a single overall statement cannot be true of all of them."
+      continue
+    fi
+    status="$(jget "$entry" '.status')"
+    case "$status" in
+      covered|partial|none) ;;
+      *) err "backend '$id' sbom.channel_coverage.$ch_id.status is '${status:-<missing>}'; must be one of: covered, partial, none. 'partial' and 'none' are valid answers — an inaccurate 'covered' is not."
+         continue ;;
+    esac
+    mechanism="$(jget "$entry" '.mechanism')"
+    [ -n "$mechanism" ] || err "backend '$id' sbom.channel_coverage.$ch_id has no 'mechanism' naming what does (or does not) produce the SBOM for this channel."
+
+    [ "$status" = "covered" ] || continue
+    surface="$(channel_surface_files "$ch_id")"
+    # An external channel cannot be checked from here; the channel's own
+    # packaging_owner records that limit rather than this claim hiding it.
+    [ -n "$surface" ] || continue
+    if ! probe_sbom_generator "$surface"; then
+      err "backend '$id' claims sbom.channel_coverage.$ch_id.status = 'covered', but no file in that channel's packaging surface contains an SBOM-producing directive. Claiming coverage that nothing produces is worse than declaring 'none': it stops anyone from looking."
+    fi
+  done
+}
+
+# True when some file in the newline-separated surface $1 mentions SBOM
+# generation at all. Deliberately coarse — it distinguishes "something here
+# produces an SBOM" from "nothing here does", which is the only distinction a
+# `covered` claim needs to survive.
+probe_sbom_generator() {
+  local files="$1" f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ( cd "$PACKAGING_ROOT" && grep -qiF -- "sbom" "$f" 2>/dev/null ); then
+      return 0
+    fi
+  done <<SURFACE
+$files
+SURFACE
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -733,7 +798,9 @@ NOTICES
   mkdir -p "$ST_TMP/pkg"
   cat > "$ST_TMP/pkg/oss-release.yml" <<'PKG'
 # self-test fixture — the packaging file for channel `oss-chan`.
-# Ships the backend binary. Deliberately generates no SBOM.
+# Ships the backend binary. This file deliberately carries no bill-of-materials
+# directive of any kind, and must not gain one: its ABSENCE is what the
+# "covered" claim on this channel is measured against.
 steps:
   - run: tar -czf bundle.tar.gz aasm fixture-backend-bin
 PKG
@@ -982,9 +1049,39 @@ BASELINE
         | .backends[0].channels |= map_values("not-distributed")
         | del(.backends[0].sbom)')"
 
-  # --- notices + SBOM obligations on bundled bytes --------------------------
+  # --- notices + SBOM obligations on acquired bytes -------------------------
   run_case "bundled_without_sbom_statement" fail "sbom.covered_by" \
     "$(mutate bundled_without_sbom_statement 'del(.backends[0].sbom)')"
+
+  run_case "acquiring_channel_without_coverage_row" fail "sbom.channel_coverage.oss-chan" \
+    "$(mutate acquiring_channel_without_coverage_row \
+       'del(.backends[0].sbom.channel_coverage["oss-chan"])')"
+
+  run_case "sbom_status_not_a_recognised_answer" fail "must be one of: covered, partial, none" \
+    "$(mutate sbom_status_not_a_recognised_answer \
+       '.backends[0].sbom.channel_coverage["oss-chan"].status = "yes"')"
+
+  run_case "sbom_coverage_row_without_mechanism" fail "has no 'mechanism'" \
+    "$(mutate sbom_coverage_row_without_mechanism \
+       'del(.backends[0].sbom.channel_coverage["oss-chan"].mechanism)')"
+
+  # The moving control for the `covered` claim. The baseline already asserts
+  # `covered` on `img-chan` and is accepted, because that channel's packaging
+  # file carries an SBOM directive. The SAME word on `oss-chan`, whose
+  # packaging file does not, must be rejected — so the verdict is decided by
+  # the packaging surface and not by the word.
+  run_case "sbom_claims_covered_with_no_generator_in_the_surface" fail \
+    "no file in that channel's packaging surface contains an SBOM-producing directive" \
+    "$(mutate sbom_claims_covered_with_no_generator_in_the_surface \
+       '.backends[0].sbom.channel_coverage["oss-chan"].status = "covered"')"
+
+  # A `downloaded` channel is accounted for exactly like a bundled one: the
+  # bytes land on the user's machine either way. Before AAASM-5714 AC4 this
+  # mutation passed, because only `bundled` carried an SBOM obligation.
+  run_case "downloaded_channel_without_coverage_row" fail "sbom.channel_coverage.img-chan" \
+    "$(mutate downloaded_channel_without_coverage_row \
+       '.backends[0].channels["img-chan"] = "downloaded"
+        | del(.backends[0].sbom.channel_coverage["img-chan"])')"
 
   run_case "bundled_without_notice_section" fail "has no '### fixture-backend' section" \
     "$ST_TMP/baseline.json" "$ST_TMP/NOTICES-pending-only.md"
