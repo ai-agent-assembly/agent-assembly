@@ -61,6 +61,9 @@
 // strip-for-publish:begin devtool
 pub mod adapters;
 // strip-for-publish:end devtool
+pub mod apply_outcome;
+#[cfg(test)]
+mod apply_outcome_falsification;
 pub mod audit;
 pub mod client;
 pub mod codec;
@@ -86,12 +89,14 @@ pub mod verb;
 #[cfg(test)]
 mod version_contract;
 
+pub use apply_outcome::{ApplyMutation, MutationUnknown};
 pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 pub use client::{ClientError, DevIntClient, Negotiated};
 pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
-pub use lifecycle::{IntegrationLifecycle, LifecycleError};
+pub use lifecycle::{AppliedIntegration, IntegrationLifecycle, LifecycleError};
 pub use negotiate::{
-    Negotiation, NegotiationError, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROVENANCE_SINCE,
+    Negotiation, NegotiationError, DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED,
+    DI_API_PROVENANCE_SINCE,
 };
 pub use provenance::{
     BuildIdentity, FieldReport, FieldStatus, IdentityComparison, IdentitySource, PeerProvenance, ProvenanceStanding,

@@ -1,4 +1,4 @@
-//! The DI-API v3 → v4 version contract, driven over real sockets (AAASM-5628).
+//! The DI-API version contract, driven over real sockets (AAASM-5628, 5674).
 //!
 //! # What this suite is for
 //!
@@ -21,16 +21,25 @@
 //!
 //! # Why the version is what a peer can *say*, not what it can call
 //!
-//! Neither v3 nor v4 adds a verb, so a v1–v3 peer is not `Degraded` and loses
-//! no capability. What the version buys is the ability to name the reason a
-//! field is missing: "this runtime speaks DI-API 3; build provenance arrived in
-//! 4" rather than the vaguer "the field is missing". That is the property
+//! None of v3, v4 and v5 adds a verb, so a v1–v4 peer is not `Degraded` and
+//! loses no capability. What the version buys is the ability to name the reason
+//! a field is missing: "this runtime speaks DI-API 3; build provenance arrived
+//! in 4" rather than the vaguer "the field is missing". That is the property
 //! [`an_older_peer_is_told_why_the_field_is_absent_not_handed_a_default`]
 //! pins.
+//!
+//! v5 raises the stakes on the same shape. Provenance's absence degrades a
+//! *claim about the peer*; the apply outcome's absence, misread, degrades into
+//! a **success claim about the host** — `unchanged` says "your install was
+//! already correct". So the v5 tests below assert not only that nothing is
+//! fabricated but that the specific fabrication is unreachable, from both
+//! directions.
 
+use super::apply_outcome::{ApplyMutation, MutationUnknown};
 use super::client::DevIntClient;
 use super::negotiate::{
-    DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_POLICY_POSTURE_SINCE, DI_API_PROVENANCE_SINCE,
+    DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_POLICY_POSTURE_SINCE,
+    DI_API_PROVENANCE_SINCE,
 };
 use super::provenance::ProvenanceVerdict;
 use super::scope::{TokenScope, ToolScope};
@@ -109,7 +118,11 @@ async fn v4_adds_provenance_to_the_ack_and_nothing_below_it_receives_one() {
 #[tokio::test]
 async fn an_older_peer_keeps_every_verb_it_had() {
     let server = TestServer::start(FakeLifecycle::default()).await;
-    for version in [DI_API_POLICY_POSTURE_SINCE, DI_API_PROVENANCE_SINCE] {
+    for version in [
+        DI_API_POLICY_POSTURE_SINCE,
+        DI_API_PROVENANCE_SINCE,
+        DI_API_APPLY_OUTCOME_SINCE,
+    ] {
         let mut client = connect_offering(&server, &[version]).await;
         assert!(
             !client.negotiated().degraded,
@@ -203,6 +216,138 @@ fn no_public_verb_was_removed_or_renamed_by_the_version_bump() {
     );
 }
 
+// ── v5: the apply outcome (AAASM-5674) ──────────────────────────────────────
+
+/// v5 carries the apply outcome; v4 and below do not. The exact addition.
+///
+/// **Old client, new peer.** The server is this build and serves the whole
+/// window; the client offers exactly one version and is therefore a peer of
+/// that vintage. A v1–v4 client must receive the frame its version promised —
+/// sending a field it never negotiated is how a peer starts misparsing, and a
+/// third-party client written against v4 has no reason to expect it.
+#[tokio::test]
+async fn v5_adds_the_apply_outcome_and_nothing_below_it_receives_one() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    for version in DI_API_MIN_SUPPORTED..=DI_API_MAX_SUPPORTED {
+        let mut client = connect_offering(&server, &[version]).await;
+        let applied = client.apply(&claude_code_id(), "plan-1").await.expect("apply");
+        if version >= DI_API_APPLY_OUTCOME_SINCE {
+            assert!(
+                applied.outcome.is_some(),
+                "v{version} must carry the apply outcome, or the bump bought nothing"
+            );
+        } else {
+            assert!(
+                applied.outcome.is_none(),
+                "v{version} was sent a v{DI_API_APPLY_OUTCOME_SINCE} field it never negotiated"
+            );
+        }
+        // The rest of the frame is untouched at every version: a bump may add,
+        // never move or drop.
+        assert_eq!(applied.plan_id, "plan-1");
+        assert!(!applied.receipt_id.is_empty());
+        assert!(!applied.steps.is_empty());
+        assert_eq!(applied.achieved_level, "integrated");
+    }
+    server.shutdown().await;
+}
+
+/// **New client, old peer** — the direction that matters most.
+///
+/// A client that knows about v5 talks to a connection that negotiated v4. The
+/// frame it gets back is byte-identical to what a genuinely older runtime
+/// sends, and what it must conclude is `Unknown`, naming the version — **not**
+/// `Unchanged`, which would tell a user their install was already correct on
+/// the strength of a field nobody sent.
+#[tokio::test]
+async fn a_new_client_reading_an_older_peer_concludes_unknown_not_unchanged() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    for version in DI_API_MIN_SUPPORTED..DI_API_APPLY_OUTCOME_SINCE {
+        let mut client = connect_offering(&server, &[version]).await;
+        let applied = client.apply(&claude_code_id(), "plan-1").await.expect("apply");
+        let mutation = client.negotiated().apply_mutation(&applied);
+
+        assert_eq!(
+            mutation,
+            ApplyMutation::Unknown(MutationUnknown::NotReportedAtVersion {
+                negotiated_version: version,
+                since: DI_API_APPLY_OUTCOME_SINCE,
+            }),
+            "v{version} was read as something other than unknown"
+        );
+        assert_ne!(mutation, ApplyMutation::Unchanged, "v{version} fabricated a no-op");
+        assert!(!mutation.is_authoritative(), "v{version}");
+        assert!(!mutation.modified_the_host(), "v{version}");
+        assert!(
+            mutation.detail().contains(&format!("v{version}")),
+            "the reason must name the version that could not say: {}",
+            mutation.detail()
+        );
+        // Nothing was invented in the field's place.
+        assert!(applied.outcome.is_none(), "v{version} carried a fabricated outcome");
+    }
+    server.shutdown().await;
+}
+
+/// Every outcome a peer can state survives a real socket, and is read back as
+/// itself.
+///
+/// Driven through [`FakeLifecycle::reporting`] rather than through the
+/// projection function, because the contract lives in a frame: a mapping that
+/// encoded correctly and decoded onto a neighbour would pass a round-trip on
+/// one struct and fail here.
+#[tokio::test]
+async fn every_stated_outcome_crosses_the_socket_as_itself() {
+    for stated in [
+        ApplyMutation::Changed,
+        ApplyMutation::Unchanged,
+        ApplyMutation::Failed {
+            detail: "the settings write did not land".to_string(),
+        },
+        ApplyMutation::Unsupported {
+            detail: "this executor cannot compare canonical forms".to_string(),
+        },
+        ApplyMutation::Unknown(MutationUnknown::Unspecified {
+            detail: "the engine was interrupted".to_string(),
+        }),
+    ] {
+        let server = TestServer::start(FakeLifecycle::reporting(stated.clone())).await;
+        let mut client = connect_offering(&server, &[DI_API_APPLY_OUTCOME_SINCE]).await;
+        let applied = client.apply(&claude_code_id(), "plan-1").await.expect("apply");
+        let read = client.negotiated().apply_mutation(&applied);
+        assert_eq!(read, stated, "{stated:?} did not survive the socket");
+        // The two non-answers are non-answers on arrival, not merely on paper.
+        assert_eq!(
+            read.is_authoritative(),
+            matches!(
+                stated,
+                ApplyMutation::Changed | ApplyMutation::Unchanged | ApplyMutation::Failed { .. }
+            ),
+            "{stated:?} changed standing on the wire"
+        );
+        server.shutdown().await;
+    }
+}
+
+/// A v5 peer that states nothing is `Omitted`, and `Omitted` is not a no-op.
+///
+/// The missing-field case *at the carrying version* — distinct from the version
+/// gap, and the one a field test alone would have to get right. Constructed by
+/// asking a v5 connection's decoder to read a frame with no block, which is
+/// exactly what a v5 peer that skipped the field would send.
+#[test]
+fn a_v5_peer_that_omits_the_block_is_not_read_as_unchanged() {
+    let mutation = ApplyMutation::from_view(None, DI_API_APPLY_OUTCOME_SINCE);
+    assert_eq!(
+        mutation,
+        ApplyMutation::Unknown(MutationUnknown::Omitted {
+            negotiated_version: DI_API_APPLY_OUTCOME_SINCE
+        })
+    );
+    assert_ne!(mutation, ApplyMutation::Unchanged);
+    assert!(!mutation.is_authoritative());
+}
+
 /// The version constants stay internally consistent.
 ///
 /// `DI_API_PROVENANCE_SINCE` naming a version outside the served window would
@@ -212,9 +357,13 @@ fn no_public_verb_was_removed_or_renamed_by_the_version_bump() {
 /// for a test run.
 const _: () = {
     assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
-    // Provenance is the newest addition. If it stops being so, the suite above
-    // is pinning the wrong version and its "nothing below receives one" sweep
-    // silently stops covering the top of the window.
-    assert!(DI_API_PROVENANCE_SINCE == DI_API_MAX_SUPPORTED);
+    // The apply outcome is the newest addition. If it stops being so, the v5
+    // sweeps below are pinning the wrong version and their "nothing below
+    // receives one" loops silently stop covering the top of the window.
+    assert!(DI_API_APPLY_OUTCOME_SINCE == DI_API_MAX_SUPPORTED);
+    // Provenance is no longer the newest addition — the apply outcome is
+    // (AAASM-5674) — so the "nothing below receives one" sweep for provenance
+    // now runs over a strict interior of the window rather than up to its top.
+    assert!(DI_API_PROVENANCE_SINCE < DI_API_MAX_SUPPORTED);
     assert!(DI_API_PROVENANCE_SINCE > DI_API_POLICY_POSTURE_SINCE);
 };

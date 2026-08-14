@@ -500,8 +500,10 @@ impl Connection {
             }
             DiVerb::Apply => {
                 let plan_id = request.apply.as_ref().map(|a| a.plan_id.as_str()).unwrap_or_default();
-                let receipt = lifecycle.apply(&tool, plan_id).await?;
-                response.apply = Some(project::apply_view(&receipt));
+                let applied = lifecycle.apply(&tool, plan_id).await?;
+                // The negotiated version, not this runtime's maximum: a peer is
+                // sent the frame its own version promised (AAASM-5674).
+                response.apply = Some(project::apply_view(&applied, self.version));
             }
             DiVerb::Status => {
                 let status = lifecycle.status(&tool).await?;

@@ -273,10 +273,12 @@ impl Harness {
             SettingsScope::User,
         );
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.service
+        Ok(self
+            .service
             .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .receipt)
     }
 
     /// The opt-in, administrator-authorized install. Everything about it is
@@ -291,10 +293,12 @@ impl Harness {
         .requesting_level(ProtectionLevel::HostEnforced)
         .allowing_privileged_host_steps();
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.service
+        Ok(self
+            .service
             .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
             .await
-            .map_err(|e| anyhow::anyhow!("{e}"))
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .receipt)
     }
 
     /// The same plan, without the consent the privileged step needs.

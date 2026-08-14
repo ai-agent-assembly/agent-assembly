@@ -39,6 +39,8 @@ use aa_core::integration::{
     IntegrationStatus, RemovalPlan, ToolVersion, VerificationResult, VersionCompatibility,
 };
 
+use super::apply_outcome::ApplyMutation;
+
 /// Why a lifecycle operation could not be completed.
 ///
 /// Coarse on purpose. These reach a client as `DENY_CODE_LIFECYCLE_ERROR` with
@@ -210,6 +212,26 @@ impl ApprovalInput {
     }
 }
 
+/// What an apply produced: the receipt, and whether the host changed.
+///
+/// The two travel together because they are one statement. The receipt alone
+/// cannot answer "did anything change?" — a no-op reapply keeps the receipt it
+/// already had, id and timestamp included, precisely so the store's history
+/// does not record an upgrade that never happened (AAASM-5674). Returning the
+/// receipt on its own is what left the DI-API with no way to say it, and a
+/// client with nothing sound to derive it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedIntegration {
+    /// The receipt that is now on record.
+    pub receipt: IntegrationReceipt,
+    /// What this implementation states about whether the host changed.
+    ///
+    /// An implementation that cannot tell must say so — [`ApplyMutation::Unsupported`]
+    /// or [`ApplyMutation::Unknown`] — rather than pick the answer that looks
+    /// like a success.
+    pub mutation: ApplyMutation,
+}
+
 /// Acknowledgement that a human's input reached the decision authority.
 ///
 /// Deliberately carries no verdict. "Accepted for adjudication" is the whole
@@ -239,7 +261,11 @@ pub trait IntegrationLifecycle: Send + Sync {
     async fn plan(&self, request: IntegrationRequest) -> Result<IntegrationPlan, LifecycleError>;
 
     /// Execute a previously authored plan and record the receipt.
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<IntegrationReceipt, LifecycleError>;
+    ///
+    /// Returns whether the host changed alongside the receipt. An
+    /// implementation states what it knows and never guesses: the answer is a
+    /// public contract, and a wrong `unchanged` is worse than an absent one.
+    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError>;
 
     /// Derive the protection state from current evidence.
     async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError>;

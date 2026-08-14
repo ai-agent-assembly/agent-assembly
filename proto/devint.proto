@@ -428,6 +428,56 @@ message StepOutcomeView {
   string fingerprint = 3;
 }
 
+// Whether an apply modified anything (AAASM-5674).
+//
+// # Why this is an enum and not a `bool`
+//
+// A proto3 `bool` has no presence: a peer that never sent the field and a peer
+// that sent `false` decode identically. `false` would then mean "nothing was
+// modified" — a *success claim* — so every runtime that predates this field
+// would silently announce `unchanged` for every install it ever performed.
+// That is AAASM-5628's failure mode (an absent identity read as a matching one)
+// one field over, and it is why the zero value below is the **non-committal**
+// one rather than either determinate answer.
+//
+// The five states are exhaustive and each is distinct:
+//
+// | Value | Meaning |
+// | --- | --- |
+// | `UNSPECIFIED` | the peer sent an outcome block and could not classify the apply — or the field was defaulted. Never a success claim. |
+// | `CHANGED` | the requested end state was reached, and something was modified |
+// | `UNCHANGED` | the requested end state already held; nothing was modified |
+// | `FAILED` | the apply ran and did not reach the requested end state |
+// | `UNSUPPORTED` | this peer cannot determine whether the apply modified anything, and will not be able to |
+//
+// `UNSUPPORTED` is a *stated, standing* inability — a client can stop asking.
+// `UNSPECIFIED` is "not established for this operation". Both are non-answers,
+// and a client must render neither as a success.
+enum ApplyMutation {
+  // The zero value, and therefore what a defaulted or unset field decodes to.
+  // Deliberately means "no outcome was stated": see the note above.
+  APPLY_MUTATION_UNSPECIFIED = 0;
+  APPLY_MUTATION_CHANGED = 1;
+  APPLY_MUTATION_UNCHANGED = 2;
+  APPLY_MUTATION_FAILED = 3;
+  APPLY_MUTATION_UNSUPPORTED = 4;
+}
+
+// The apply outcome, carried as a MESSAGE so its absence is explicit.
+//
+// The same construction `PolicyView` (v3) and `RuntimeProvenance` (v4) use, and
+// for the same reason: message presence distinguishes "this peer could not be
+// asked" from "this peer answered, and the answer was inconclusive". A client
+// reads the two differently — the first names a version, the second names a
+// runtime — and neither is a success.
+message ApplyOutcomeView {
+  ApplyMutation mutation = 1;
+  // Operator-facing detail: why the outcome is `UNSPECIFIED` or `UNSUPPORTED`,
+  // or what made a `FAILED` apply fail. Never a substitute for `mutation` — a
+  // client must branch on the enum and only ever *display* this.
+  string detail = 2;
+}
+
 message ApplyView {
   string plan_id = 1;
   string receipt_id = 2;
@@ -435,6 +485,18 @@ message ApplyView {
   repeated StepOutcomeView steps = 4;
   string planned_level = 5;
   string achieved_level = 6;
+  // Whether this apply modified anything (AAASM-5674). Present from DI-API 5;
+  // a v1–v4 peer omits the message entirely.
+  //
+  // **Compatibility contract.** A client may consume this field only when the
+  // connection negotiated DI-API 5 or newer. Below that the field's absence
+  // means the peer *cannot say*, which is neither `UNCHANGED` nor any other
+  // outcome, and must never be resolved in the direction that claims success.
+  // A client that reaches the same conclusion from an exit status, from local
+  // state, from the receipt id (reused across a no-op reapply) or from
+  // `applied_at_unix_secs` (second-granularity, cross-process) is guessing;
+  // this field is the only authoritative answer.
+  ApplyOutcomeView outcome = 7;
 }
 
 // One observation, with the timestamp that makes it "verified at T" rather

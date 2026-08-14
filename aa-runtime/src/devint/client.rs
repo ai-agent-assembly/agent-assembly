@@ -33,6 +33,7 @@ use tokio::net::UnixStream;
 
 use aa_proto::assembly::devint::v1 as wire;
 
+use super::apply_outcome::ApplyMutation;
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
 use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
 use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
@@ -186,6 +187,22 @@ impl Negotiated {
     /// [`Self::provenance_verdict`] against an explicit expected identity.
     pub fn verify_against(&self, expected: &BuildIdentity) -> ProvenanceVerdict {
         provenance::verify(self.provenance.as_ref(), expected, self.di_api_version)
+    }
+
+    /// What an [`apply`](DevIntClient::apply) said about whether the host
+    /// changed.
+    ///
+    /// The **only** supported way to read it. Taking `ApplyView::outcome`
+    /// directly skips the version gate, and the version is not decoration here:
+    /// a peer below
+    /// [`DI_API_APPLY_OUTCOME_SINCE`](super::negotiate::DI_API_APPLY_OUTCOME_SINCE)
+    /// never promised the field, so its absence means *cannot say* rather than
+    /// `unchanged`. Resolving that in the permissive direction is a fabricated
+    /// success claim (AAASM-5674), which is why the decision is made here —
+    /// against the negotiated version this struct already holds — rather than
+    /// left for each caller to remember.
+    pub fn apply_mutation(&self, applied: &wire::ApplyView) -> ApplyMutation {
+        ApplyMutation::from_view(applied.outcome.as_ref(), self.di_api_version)
     }
 }
 

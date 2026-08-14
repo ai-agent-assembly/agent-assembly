@@ -218,6 +218,14 @@ EXAMPLES:
       unchanged) echo 'nothing needed repairing' ;;
     esac
 
+    # install answers it too. `null` means the runtime did not state one —
+    # handle it, and never treat it as unchanged.
+    case $(aasm integrations install claude-code --yes --output json | jq -r .outcome) in
+      changed)   echo 'the tool was configured' ;;
+      unchanged) echo 'it was already exactly as planned' ;;
+      null)      echo 'this runtime cannot say; update it' ;;
+    esac
+
 NOTES:
     Lifecycle commands run inside the Agent Assembly runtime, which owns the
     only audited implementation of them. There is no in-process fallback; when
@@ -244,16 +252,17 @@ NOTES:
     The exit code answers `did the command succeed?`.
     It does NOT answer `did the world change?` — a remove of an integration
     that is already gone succeeded and modified nothing. That is answered by the
-    outcome below, which repair and remove print on the result's first line and
+    outcome below, which install, repair and remove print on the result and
     carry as `outcome` in --output json. On a non-zero exit the outcome is named
     on stderr instead; stdout stays empty there, so a harness has no result to
     record from a run that refused.
 
-    install does NOT yet report it. The runtime knows whether an apply mutated
-    anything, but the DI-API's ApplyView does not carry the fact, and this
-    client will not guess at it from a timestamp — a wrong `unchanged` is worse
-    than an absent one. Until the wire carries it, check `aasm integrations
-    status` before and after instead.
+    install reports it only when the runtime states it, which needs DI-API 5 or
+    newer. An older runtime does not carry the fact, so the outcome is `null`
+    and `outcome_unknown` says why. That is NOT `unchanged`: this client will
+    not guess from a receipt id, a timestamp or a status read, because a wrong
+    `unchanged` is a success claim nobody made. Update the runtime, or check
+    `aasm integrations status` before and after instead.
 
 {}
 {}",
