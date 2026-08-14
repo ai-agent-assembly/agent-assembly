@@ -115,35 +115,63 @@ async fn setup_audit(
 }
 
 /// Path of the SQLite file the durable sensitive-data projection is written to
-/// (AAASM-5440).
-///
-/// Unset means the tier is off, which is the default ADR 0032 §8 requires: the
-/// projection must be switchable without touching existing audit behaviour, and
-/// defaulting it on would make the safe state the one an operator opts into.
+/// (AAASM-5440); unset or empty disables the tier.
 ///
 /// A path rather than a boolean over the gateway's own database. The projection
-/// is a second writer with a different retention story and a documented rollback
-/// of "drop the tables"; giving it its own file keeps that rollback to deleting
-/// one file, and keeps its write traffic off the pool the audit path shares.
+/// is a second writer with its own retention story, so giving it its own file
+/// keeps its write traffic off the pool the audit path shares and makes
+/// discarding it a matter of deleting one file.
 ///
-/// # Not a stable configuration surface
+/// **This is a supported operator setting** as of
+/// [AAASM-5739](https://lightning-dust-mite.atlassian.net/browse/AAASM-5739),
+/// documented at `docs/src/operations/sensitive-data-projection.md`. The
+/// previous note here said the opposite — that promoting it would require
+/// naming it in the operator docs and committing to its failure behaviour,
+/// "none of which this ticket did". Both are now done, so the note is replaced
+/// rather than left to contradict the page.
 ///
-/// `aa-gateway` is in the crates.io publish set, so a `pub` item here would
-/// otherwise read as public API carrying the usual compatibility promise. This
-/// one does not: the variable is an **internal deployment setting** for a tier
-/// that is off by default and has no documented operator-facing contract — it
-/// appears nowhere in `docs/`, unlike `AA_POLICY` and friends, which do.
+/// The contract, in full:
 ///
-/// It is `pub` only because the integration tests that boot a real `serve_tcp`
-/// live outside the crate and must name the same variable the production path
-/// reads, rather than re-spelling the literal and passing while the real key
-/// drifts. `#[doc(hidden)]` keeps it out of the published documentation so the
-/// visibility does not become an advertisement.
+/// * **Unset or empty — the default — wires nothing.** The projection is off,
+///   and `SensitiveDataProjectionConfig` derives `Default` with
+///   `enabled: false`, so the conservative state is not something an operator
+///   has to opt into. Defaulting off is decided here (AAASM-5440), not by ADR
+///   0032: §8 fixes the tier's shape — the event and its finding rows written
+///   *alongside* an `audit_entry_to_storage_event` bridge left untouched — and
+///   records no switch and no default. A new writer against a path nobody chose
+///   is a surprise on upgrade, so the state requiring no decision writes
+///   nothing.
+/// * **Set to a path** — the tables are created if absent
+///   (`CREATE TABLE IF NOT EXISTS`), and that is all: there is no in-place
+///   schema evolution. Against tables that already exist the statements are a
+///   no-op, so one left over from an earlier build is left as it stands, key
+///   included. Rows survive because nothing rewrites them; changing the key
+///   needs a migration that recreates the tables, and none is written — see
+///   the *Migration position* note on `PROJECTION_SCHEMA` in
+///   `storage/sensitive_data/sqlite.rs`.
+/// * **Failure is fail-closed, in the paths that read this.** A database that
+///   cannot be opened or migrated fails the boot of [`serve_tcp`] /
+///   [`serve_uds`]; see the `# Errors` section on
+///   [`attach_sensitive_data_projection`] for why warning-and-continue is the
+///   wrong behaviour for a governance surface. `--mode local` and
+///   `--mode remote` never read this variable, so under those modes a bad path
+///   is neither opened nor reported.
+/// * **Reverting is unsetting it.** Writes to this table stop; rows already
+///   written stay and stay readable, because the writer stamps
+///   `SENSITIVE_DATA_SCHEMA_VERSION` onto what it persists and the read path
+///   applies a major-only compatibility rule.
+/// * **Recording is best-effort, so an enabled tier can still be incomplete.**
+///   The sink offers each decision with a non-blocking `try_send` over
+///   `SENSITIVE_DATA_PROJECTION_CAPACITY` slots; a full or closed channel counts
+///   a `dropped` and logs, and an evaluation that cannot be described truthfully
+///   counts a `refused`. Both are reported by `drain_sensitive_data_projection`
+///   at shutdown, which is the only place they surface — they are not metrics
+///   and not queryable. A missing row therefore does not distinguish "found
+///   nothing" from "shed this one".
 ///
-/// Promoting this to a supported configuration surface means naming it in the
-/// operator docs, fixing its precedence against any future config file, and
-/// committing to its failure behaviour — none of which this ticket did.
-#[doc(hidden)]
+/// It gates *recording*, not *detection*: the credential scanner runs either
+/// way and predates this subsystem. The policy verdict is computed on a path
+/// that does not read this variable, so switching it does not move the verdict.
 pub const SENSITIVE_DATA_PROJECTION_DB_ENV: &str = "AA_SENSITIVE_DATA_PROJECTION_DB";
 
 /// How many projected decisions may await persistence — see

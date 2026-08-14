@@ -215,6 +215,25 @@ the self-host essentials:
 > and the login page degrades honestly when it is not. See
 > [Authentication](authentication.md) for the account, invite, and reset flows.
 
+## Configuring the `aa-gateway` service
+
+Growing the stack further — past `aa-api` to the **gateway** itself — adds one
+`AA_*` variable a self-hosting operator is expected to decide about, because
+nothing turns it on for you:
+
+| Variable | Set it to | Effect |
+|---|---|---|
+| `AA_SENSITIVE_DATA_PROJECTION_DB` | a SQLite path on a durable volume | Records classification decisions and their findings to the durable sensitive-data projection. Left unset — the default — the gateway still evaluates those decisions, but writes none of them to this table. |
+
+Two conditions apply and neither is visible from the variable's name. It is read
+only under the gateway's default `legacy-grpc` mode, so a container whose command
+carries `--mode local` or `--mode remote` ignores it without complaint. And a
+path that cannot be opened or migrated **fails the gateway's boot** — deliberate,
+so an unwritable volume mount surfaces at start-up rather than as a table nobody
+notices is empty. [Sensitive-data
+projection](../operations/sensitive-data-projection.md) covers both, how to
+revert, and what an incomplete projection looks like under load.
+
 ## When you want it fully managed
 
 If you would rather not run and maintain the infrastructure yourself — and want the
