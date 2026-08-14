@@ -20,6 +20,14 @@ The gateway is the single decision-maker. The interception layers differ only in
 *where* they sit and *how much* they can bypass — they all converge on the same
 protobuf wire format defined in `aa-proto` and the same `PolicyService` RPC.
 
+> **Execution isolation is not a fourth interception layer.** `aasm run
+> --isolation` (`aa-isolation` + the `aa-isolation-sandlock` backend) confines
+> an agent's whole native process tree at the OS level — it is a set of
+> [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md)
+> elements (E2, E4, E5, E6), not a new one. See
+> [Execution isolation](../security/execution-isolation.md) and
+> [ADR 0035](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md).
+
 ## Workspace at a glance
 
 The Cargo workspace declares **28 member crates** in the top-level
