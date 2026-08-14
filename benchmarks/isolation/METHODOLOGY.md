@@ -19,16 +19,22 @@ empty until a real backend has been measured on a Linux host.
 
 ## Scope of the delivered work
 
-AAASM-5713's full acceptance criteria cannot be met until AAASM-5708 lands. What
-is delivered here is the part that does not depend on the backend:
+AAASM-5708 (Sandlock backend) and AAASM-5711 (`aasm run --isolation`) have both
+since landed on `main`. What AAASM-5713 could not deliver in this pass is a
+**measurement**: every session that has worked on this directory so far ran on
+a host with no Linux + sandlock execution access, and METHODOLOGY.md's own
+rules (see [Cross-platform comparison is invalid](#cross-platform-comparison-is-invalid))
+forbid substituting a macOS run, a CI-adjacent lane's numbers, or an upstream
+figure for that measurement.
 
-| Delivered now | Deferred to AAASM-5708 |
+| Delivered now | Still deferred, pending a Linux + sandlock run |
 | --- | --- |
 | Methodology (this file) | Confined measurements |
 | Pre-registered thresholds | Compatibility-failure catalogue |
-| Runnable harness, launcher-parameterised | Security-limitation evaluation |
-| Unconfined baseline numbers | Decision-matrix verdict |
+| Runnable harness, launcher-parameterised | Security-limitation evaluation (S1/S2) |
+| Unconfined baseline numbers (macOS, harness-validation only) | Decision-matrix verdict |
 | Negative-control evidence for the harness | Follow-up tickets |
+| The confined-arm launcher (`launchers/sandlock.sh`) and its policy artifact (`policy/allow-all.yaml`), built and confirmed against a real `aa-cli` build's CLI grammar | Confirmation that `policy/allow-all.yaml`'s lowering actually grants what each workload family needs (see `policy/README.md`) |
 
 ## Prohibition on borrowed numbers
 
@@ -61,8 +67,12 @@ Two launchers ship with the harness today:
 - `launchers/throttled.sh` — the negative control (see
   [Negative control](#negative-control)). Never a data arm.
 
-The confined arm is a third launcher supplied on the command line once
-AAASM-5708 exists. No harness change is required to add it.
+The confined arm is a third launcher, `launchers/sandlock.sh` (AAASM-5713),
+wrapping `aasm run exec --isolation process --no-proxy --policy ...` — the
+product's own confined-launch path, confirmed against a real `aa-cli` build.
+No harness change was required to add it. It has not yet been *run*: doing so
+needs a Linux host with the sandlock mechanism installed, which no session
+working on this directory has had access to so far.
 
 ### Workload families
 
