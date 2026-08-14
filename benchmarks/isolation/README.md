@@ -10,12 +10,19 @@ rules and the reason a cross-platform comparison is invalid.
 
 ## Status
 
-The backend this exists to measure is **AAASM-5708 and does not exist yet**.
-What is committed here is the methodology, the harness, an unconfined baseline,
-and the negative-control evidence that the harness can detect a regression.
+The backend this exists to measure — Sandlock, AAASM-5708 — is merged, and
+`aasm run --isolation process` (AAASM-5711) is activated on `main`. What is
+**not** yet committed is a confined-arm measurement: producing one requires a
+Linux host with the sandlock mechanism actually installed, and no session
+that has worked on this directory so far has had one. `launchers/sandlock.sh`
+and `policy/allow-all.yaml` are built and confirmed against a real local build
+of `aa-cli`'s CLI grammar (see the launcher's own header comment for exactly
+what was and was not verified), so running the confined arm on a Linux host
+should not require further plumbing work — only running it, and confirming
+`policy/allow-all.yaml`'s lowering grants what each family needs.
 **No verdict is drawn and none can be**: `compare` always reports the
 compatibility and security dimensions as blocked, so the decision rule can only
-return "no verdict" from timing data alone.
+return "no verdict" from timing data alone until that run exists.
 
 ## Requirements
 
@@ -38,10 +45,13 @@ python3 aabench.py run \
     --label unconfined-baseline \
     --out ../results/baseline.json
 
-# Confined arm, once AAASM-5708 exists. No harness change is needed —
-# a launcher is any command invoked as `<launcher> -- <argv...>`.
+# Confined arm — Linux + the sandlock backend only. AABENCH_SANDLOCK_POLICY
+# must point at a resolvable policy artifact (../policy/allow-all.yaml is a
+# starting point; read ../policy/README.md before trusting a compatibility
+# failure's classification).
+AABENCH_SANDLOCK_POLICY=../policy/allow-all.yaml \
 python3 aabench.py run \
-    --launcher '/usr/bin/aasm-sandlock-run --policy ci.yaml' \
+    --launcher 'sh ../launchers/sandlock.sh' \
     --label sandlock \
     --out ../results/confined.json
 
@@ -73,7 +83,8 @@ family, `--keep-scratch` to retain per-repetition logs for debugging.
 | `harness/selftest.py` | Negative control |
 | `harness/tlsserver.py` | Loopback TLS server for the network family |
 | `workloads/` | One shell script per family, plus `manifest.json` |
-| `launchers/` | `unconfined.sh` (baseline) and `throttled.sh` (control only) |
+| `launchers/` | `unconfined.sh` (baseline), `throttled.sh` (control only), `sandlock.sh` (confined arm, Linux only) |
+| `policy/` | `allow-all.yaml` the confined arm runs under, and a caveat about what it actually grants |
 | `results/` | Committed baseline and self-test evidence |
 
 ## Two guards worth knowing about before you run this
