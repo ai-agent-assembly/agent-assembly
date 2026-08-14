@@ -56,6 +56,13 @@ every channel's strategy is `system` or `not-distributed` — none is `bundled`,
 `downloaded` or `source` — and no attribution obligation attaches to anything
 this project ships.
 
+That statement is **checked, not asserted**: the gate greps every channel's
+declared packaging surface (`release.yml`, `docker.yml`, the Dockerfiles, the
+installer scripts) for the `sandlock` executable name and fails if it appears
+anywhere while the manifest claims non-distribution. The one place this
+repository does install the binary — `ci.yml`'s `isolation-backend-linux` test
+job — is not a distribution channel and is in no channel's surface.
+
 This heading is deliberately *not* `### sandlock`. The gate matches a bundled
 backend's notice section by exact heading, so if a future change makes any
 channel `bundled`, `scripts/check-backend-license-compliance.sh` will fail

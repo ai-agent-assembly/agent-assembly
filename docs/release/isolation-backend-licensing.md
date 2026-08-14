@@ -58,22 +58,44 @@ Each channel states what it ships, who owns it, whether it is an **OSS** or a
 **proprietary** distribution tier (this selects which license allowlist
 applies), and what SBOM coverage exists for it **today**.
 
-| Channel | What ships | Owner | Tier | Backend strategy | SBOM coverage today |
-|---|---|---|---|---|---|
-| `github-release` | `aasm-*.tar.gz` + `SHA256SUMS` (cosign-signed) | `.github/workflows/release.yml` | OSS | *pending AAASM-5708* | **none** |
-| `crates-io` | Published workspace crates (source) | `release.yml` → `publish-crates` | OSS | *pending AAASM-5708* | **none** |
-| `homebrew-tap` | Formulas in `ai-agent-assembly/homebrew-tap` | `release.yml` → `update-homebrew-tap` | OSS | *pending AAASM-5708* | **none** (inherits `github-release`) |
-| `ghcr-container` | `ghcr.io` images | `.github/workflows/docker.yml` | OSS | *pending AAASM-5708* | image-layer SBOM (`sbom: true`) |
-| `shell-installer` | Fetches release assets, verifies via cosign | `scripts/install-cli.sh` | OSS | *pending AAASM-5708* | **none** |
-| `enterprise` | Self-hosted gateway + control-plane extensions | `agent-assembly-enterprise` (separate repo) | **proprietary** | *pending AAASM-5708* | n/a |
-| `saas` | Hosted control plane / runners | `cloud` (separate repo) | **proprietary** | *pending AAASM-5708* | n/a |
+| Channel | What ships | Owner | Tier | Sandlock strategy | Packaging surface read by the gate | SBOM coverage today |
+|---|---|---|---|---|---|---|
+| `github-release` | `aasm-*.tar.gz` + `SHA256SUMS` (cosign-signed) | `.github/workflows/release.yml` | OSS | `system` | `release.yml` | **none** |
+| `crates-io` | Published workspace crates (source) | `release.yml` → `publish-crates` | OSS | `not-distributed` | `release.yml` | **none** |
+| `homebrew-tap` | Formulas in `ai-agent-assembly/homebrew-tap` | `release.yml` → `update-homebrew-tap` | OSS | `system` | `release.yml` (**partial** — formula bodies live in the tap repo) | **none** (inherits `github-release`) |
+| `ghcr-container` | `ghcr.io` images | `.github/workflows/docker.yml` | OSS | `system` | `docker.yml`, `aa-*/Dockerfile`, `docker/Dockerfile.*` | image-layer SBOM (`sbom: true`) |
+| `shell-installer` | Fetches release assets, verifies via cosign | `scripts/install-cli.sh` | OSS | `system` | `install-cli.sh`, `install.sh` | **none** |
+| `enterprise` | Self-hosted gateway + control-plane extensions | `agent-assembly-enterprise` (separate repo) | **proprietary** | `system` | **none in this repo** (`packaging_owner: external-repo`) | n/a |
+| `saas` | Hosted control plane / runners | `cloud` (separate repo) | **proprietary** | `system` | **none in this repo** (`packaging_owner: external-repo`) | n/a |
+
+**The strategy column is corroborated, not asserted.** Each channel declares
+`packaging_paths` — the files *in this repository* that decide what it ships —
+and the gate greps them for the backend's executable name
+(`distribution_probe.binary_names`). A backend claiming `system` /
+`not-distributed` on every channel must appear **nowhere** in that surface; a
+backend claiming `bundled` / `downloaded` / `source` must appear **somewhere**
+in the surface of a channel it claims. A glob matching no file is an error, and
+the gate's own inputs (this manifest, the notices file, the gate script) are
+excluded from every surface, so a scan cannot pad its floor by reading its own
+text. The two channels owned by other repositories declare an empty surface
+explicitly: that blind spot is written down rather than left looking like
+coverage.
+
+`ci.yml` installs this exact binary in its `isolation-backend-linux` job. That
+is correct and does not trip the probe: a CI test lane is not a distribution
+channel, so `ci.yml` is in no channel's packaging surface.
 
 **SBOM coverage is thinner than it looks.** Only container images have SBOM
 generation today. The released *binaries* have none, and neither does the cargo
 graph in notice-enumerated form. A backend bundled into a release tarball is
-therefore **not** covered by any existing SBOM; the gate requires a bundled
-backend to state how it is accounted for (`sbom.covered_by`) precisely so that
-gap is recorded rather than assumed away.
+therefore **not** covered by any existing SBOM. The gate requires every channel
+where AASM *acquires* a backend — `bundled`, `downloaded` **and** `source` — to
+carry a `sbom.channel_coverage.<channel>` row stating `covered`, `partial` or
+`none` plus the mechanism. `partial` and `none` are first-class answers so a
+gap is recorded accurately; a `covered` claim is the one that gets checked, by
+requiring the channel's packaging surface to actually contain a
+bill-of-materials directive. Sandlock carries no such row because it is
+acquired on no channel.
 
 Two channel notes worth keeping straight:
 
@@ -200,8 +222,14 @@ the manifest attesting to a review that did not happen for the new version.
 6. **Notices.** Update the `### <backend id>` section in
    [`THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md) if the backend is
    bundled anywhere. The gate fails if that section is missing.
-7. **SBOM.** Update `sbom.covered_by`. If the backend became bundled on a
-   channel with no SBOM coverage, say so rather than leaving it implied.
+7. **SBOM.** Update `sbom.covered_by` and the `sbom.channel_coverage` row for
+   every channel the backend is `bundled`/`downloaded`/`source` on. If a
+   channel has no coverage, say `none` — do not write `covered` to make the
+   row look complete; the gate checks that claim against the channel's
+   packaging surface and rejects it when nothing there produces one.
+7b. **Distribution probe.** If the upstream executable was renamed, update
+   `distribution_probe.binary_names` in the same edit. A stale name makes the
+   whole packaging corroboration pass on a string nobody ships any more.
 8. **Review record.** Set `review.ticket` and `review.reviewed_at` to *this*
    review, not the previous one.
 
@@ -241,6 +269,19 @@ reason.
   declared for a channel the manifest does not define.
 - A bundled backend with no `### <id>` section in the notices file, or no
   `sbom.covered_by` statement.
+- A channel with no `packaging_paths`; a `packaging_paths` glob matching no
+  file; a surface resolving only to the gate's own inputs; or an empty surface
+  not declared `packaging_owner: external-repo`.
+- An active backend with no `distribution_probe.binary_names` — the field that
+  makes its per-channel strategy contradictable at all.
+- **A backend claiming `system`/`not-distributed` on every channel whose
+  executable name appears in the packaging surface**, and the converse: a
+  backend claiming acquisition that no packaging file references. Also
+  rejected: a non-distribution claim where *no* channel offers a scannable
+  surface, which would leave the claim resting on nothing.
+- An acquiring channel with no `sbom.channel_coverage` row, a row whose
+  `status` is not `covered`/`partial`/`none`, a row with no `mechanism`, or a
+  `covered` claim on a channel whose packaging surface produces no SBOM.
 - Incoherent policy: a proprietary list wider than the OSS list, or a license
   appearing in both an allowlist and `known_incompatible_spdx`.
 
@@ -264,5 +305,18 @@ for a backend that actually ships.
   `RELEASE_BINARIES` or `UNRELEASED_BINARIES` in
   `scripts/check-release-completeness.sh` — a workspace binary in neither list
   already fails that gate.
-- Binary-level SBOM generation for release artifacts remains unimplemented and
-  is not in this ticket's scope.
+- **Binary-level SBOM generation for release artifacts remains unimplemented.**
+  Nothing in this repository produces an SBOM for `aasm-*.tar.gz` or for the
+  crates in it. AC4 ("SBOM/release checks include any backend artifact AASM
+  distributes") is satisfied today because the set of distributed backend
+  artifacts is **empty** and the gate now proves that against the packaging
+  code, not because binary SBOM coverage exists. The moment a backend becomes
+  `bundled`/`downloaded`/`source` on a channel, the gate forces the coverage
+  status for that channel to be stated, and `covered` cannot be claimed for a
+  channel that generates nothing — so the honest answer there will be `none`
+  until binary SBOM generation is built. That work is separate and unscheduled.
+- The `homebrew-tap` surface is **partial**: only the `update-homebrew-tap` job
+  is in this repository. A backend added directly to a formula in the tap repo
+  would not be seen from here. It could still only reach a user through a
+  GitHub Release asset, which `release.yml` does cover — but the tap repo has
+  no equivalent gate of its own.
