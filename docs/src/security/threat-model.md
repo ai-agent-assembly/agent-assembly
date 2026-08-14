@@ -34,6 +34,16 @@ adversaries are:
   fastest interception layer.
 - **The careless integrator.** Not malicious, but ships secrets in tool
   arguments or LLM payloads, or wires an agent to an over-broad capability set.
+- **The adaptive hostile process** (`aasm run --isolation` scope). An agent
+  process — and everything it causes to execute — that may adaptively
+  enumerate files, environment, network routes, metadata endpoints, IPC,
+  sockets, credentials, process state and alternate execution paths, and that
+  may spawn descendants attempting to escape or widen its own authority. See
+  [Execution isolation](execution-isolation.md#threat-model) for the full
+  boundary this adversary is measured against, including the explicit
+  non-goal of protecting a machine from its own trusted operator, and the
+  requirement that descendant confinement is part of correctness rather than
+  an afterthought.
 
 > **Trust posture.** Because the SDK runs inside an attacker-controllable
 > process, *any guarantee anchored in the SDK is not a guarantee*. Security must
