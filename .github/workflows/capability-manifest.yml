@@ -21,17 +21,22 @@ name: Capability Manifest
 
 on:
   pull_request:
-    paths:
-      - "governance/**"
-      - "schemas/capability-manifest/**"
-      - "scripts/validate_capability_manifest.py"
-      - ".github/workflows/capability-manifest.yml"
-      # AAASM-5678. Rule R16 compares the manifest against these two, so they
-      # are gate INPUTS and not merely referenced documents. A PR that edits the
-      # seed alone is exactly how the manifest and the seed drift apart, and
-      # without these entries that PR is the one the gate never runs on.
-      - "verification-reports/AAASM-5527-capability-coverage-matrix.yaml"
-      - "verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md"
+    # AAASM-5677: deliberately NOT path-filtered — the selection that used to
+    # live here now lives in the `changes` router below.
+    #
+    # This gate is governance-bearing (CONTRIBUTING, "Which CI checks are
+    # governance-bearing"), so it has to be a REQUIRED status check, and a
+    # required check only works if it reliably reports. A path-filtered
+    # workflow that does not trigger produces no check run at all — not a
+    # pending one, an absent one — and a required check that never arrives
+    # leaves the pull request waiting forever. That is the trap AAASM-5675
+    # closed for `ci.yml`; the same shape applies here.
+    #
+    # **If you add a job here, gate it on `needs.changes.outputs.*`** for
+    # `pull_request` only. Non-PR events must stay unconditional: the `push`
+    # and `schedule` triggers below are this gate's backstops, and gating them
+    # on a diff router would reintroduce exactly the `path_gated_no_backstop`
+    # state the header describes.
   push:
     branches:
       - main
@@ -48,8 +53,48 @@ permissions:
   contents: read
 
 jobs:
+  # AAASM-5677: the selection that used to be `on.pull_request.paths`. Only
+  # consulted for `pull_request` — see the `on:` comment for why the push and
+  # schedule backstops must stay unconditional.
+  changes:
+    name: Detect changed areas (Capability Manifest)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      manifest: ${{ steps.filter.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4.0.3
+        id: filter
+        with:
+          filters: |
+            manifest:
+              - 'governance/**'
+              - 'schemas/capability-manifest/**'
+              - 'scripts/validate_capability_manifest.py'
+              - '.github/workflows/capability-manifest.yml'
+              # AAASM-5678. Rule R16 compares the manifest against these two, so
+              # they are gate INPUTS and not merely referenced documents. A PR
+              # that edits the seed alone is exactly how the manifest and the
+              # seed drift apart, and without these entries that PR is the one
+              # the gate never runs on.
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix.yaml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md'
+              # AAASM-5677 review R2: the consistency guard for those two
+              # artifacts. Its own docstring says to run it before any change to
+              # either, so a change to the guard changes what that means.
+              - 'verification-reports/aaasm-5527-scope-guard.py'
+
   capability-manifest:
     name: capability manifest schema & evidence
+    needs: [changes]
+    # `!cancelled()` keeps a *skipped* `changes` (every non-PR event) from
+    # force-skipping this job — without a status function in the expression,
+    # GitHub propagates the skip. A *failed* `changes` leaves the condition
+    # false, so this skips and the aggregate below turns red: fail closed.
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.manifest == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -97,3 +142,31 @@ jobs:
       # the manifest itself would still validate.
       - name: Validator rules still fail closed
         run: bash governance/testdata/run-validator-tests.sh
+
+  # AAASM-5677: the stable required context for this workflow. It exists so the
+  # branch-protection contract does not name an internal job: renaming
+  # `capability manifest schema & evidence` would otherwise silently remove the
+  # requirement, which is the failure `docs.yml`'s `metadata-drift` comment
+  # already warns about. `if: always()` means it reports a conclusion on every
+  # pull request, including ones where every gated job skipped — an absent
+  # required check blocks the pull request forever.
+  capability-manifest-success:
+    name: Capability Manifest Success
+    needs: [changes, capability-manifest]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A required Capability Manifest job concluded with '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required Capability Manifest jobs passed or were intentionally skipped."

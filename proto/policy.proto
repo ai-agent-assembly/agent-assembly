@@ -30,7 +30,27 @@ service PolicyService {
 // ── Check ─────────────────────────────────────────────────────────────────────
 
 message CheckActionRequest {
-  // Composite identity of the agent requesting the check.
+  // Composite identity of the agent requesting the check, as **claimed by the
+  // caller** (AAASM-5665).
+  //
+  // The gateway runs this RPC under a non-rejecting `enrich` interceptor, so
+  // this triple is client-supplied and forgeable. It identifies the agent
+  // subject the request asserts it is acting for; it is not authentication of
+  // that subject. What the gateway did with the claim comes back on
+  // `CheckActionResponse.agent_identity_assurance`.
+  //
+  // Optional and additive-compatible: a client that omits it is evaluated with
+  // UNATTRIBUTED identity — tenancy is neutralised and evidence records the
+  // absence, and the id is never replaced with a placeholder subject.
+  //
+  // What that does NOT mean: unattributed checks carry the reserved all-zero
+  // agent id, and an agent-scoped policy CAN be written against it. Agent
+  // scopes parse as `agent:<uuid>`, so a document scoped to the nil UUID
+  // `agent:00000000-0000-0000-0000-000000000000` becomes the narrowest, highest
+  // precedence cascade tier for every unattributed check. What is proven is
+  // narrower: no *registered* agent's id can hash to the reserved value, so an
+  // unattributed request cannot land in a registered agent's scope. Operators
+  // must not use the nil UUID as an "unassigned" placeholder scope.
   assembly.common.v1.AgentId    agent_id         = 1;
   // Credential token issued at registration; validated on every call.
   string                        credential_token = 2;
@@ -157,6 +177,13 @@ message CheckActionResponse {
   RedactInstructions          redact              = 5;
   // Gateway decision latency in microseconds — used for p99 SLO monitoring.
   int64                       decision_latency_us = 6;
+  // How the gateway treated the `agent_id` claimed on the request
+  // (AAASM-5665). Additive: default 0 (UNSPECIFIED) serialises to zero bytes,
+  // so a producer that never sets it is byte-identical on the wire to one that
+  // predates the field, and an old client decodes the response unchanged.
+  //
+  // Consumers must not read UNSPECIFIED as BOUND — see the enum's own comment.
+  assembly.common.v1.AgentIdentityAssurance agent_identity_assurance = 7;
 }
 
 // RedactInstructions lists the fields that must be redacted before the action proceeds.

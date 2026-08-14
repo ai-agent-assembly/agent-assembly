@@ -25,6 +25,18 @@ Two claims to hold, and neither is expressible as a fixture file:
 2. **Structure.** Every field the schema declares as a mapping, or as a list of
    mappings, survives a bare string in it — with a finding, not a traceback.
 
+3. **Sequences** (AAASM-5729). Every field the schema declares as an array of
+   scalars reports a bare string too. This half never crashed, which is why it
+   outlived the fix for claim 2: a string is iterable, so
+   `known_bypasses: "one string"` walked its ten characters, R8/R8b matched
+   environment-token regexes against single letters, and the document validated
+   at **exit 0** having examined nothing. Where it did fail it failed for the
+   wrong reason — `released_channels: crates_io` exited 1 with nine R9 findings
+   naming the letters `c`, `r`, `a`, `t`, `e`, `s`, `_`, `i`, `o` as
+   unsurveyed distribution channels. So the assertion here is not "exit 1": it
+   is an `[R1]` finding **at that field's own label**, which is the only thing
+   that separates the fix from the misread it replaces.
+
 WHY THE FIELD LIST IS DERIVED AND NOT WRITTEN DOWN
 --------------------------------------------------
 Round one of this fix hand-copied five field names into the validator and
@@ -99,6 +111,7 @@ _validator = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_validator)
 ARRAY_PATHS: tuple[tuple[str, ...], ...] = _validator.ARRAY_OF_MAPPING_PATHS
 MAPPING_PATHS: tuple[tuple[str, ...], ...] = _validator.MAPPING_PATHS
+SEQUENCE_PATHS: tuple[tuple[tuple[str, ...], frozenset[str]], ...] = _validator.SEQUENCE_PATHS
 
 # Exit 1 = the document is invalid. Exit 2 = the tool did not validate it.
 # Named rather than inlined, because the entire point of this file is that the
@@ -111,6 +124,7 @@ OUT_OF_SCOPE = 2
 # smaller non-empty set, which would quietly probe and gate fewer fields.
 MIN_ARRAY_FIELDS = 7
 MIN_MAPPING_FIELDS = 9
+MIN_SEQUENCE_FIELDS = 22
 
 MARKER = "a bare string"
 
@@ -127,19 +141,31 @@ def render(parts: tuple[str, ...]) -> str:
 
 
 def set_at(doc: dict[str, object], parts: tuple[str, ...], value: object) -> None:
-    """Put `value` at a schema path, creating any missing parent mappings."""
+    """Put `value` at a schema path, creating any missing parents.
+
+    A parent is created as the container the NEXT path part needs — a list when
+    that part is `[]`, a mapping otherwise — and an empty list on the way gets
+    one element to descend into. valid-minimal.yaml is minimal by design, so the
+    optional blocks (`meta.channel_absences`, `meta.cross_representation`) are
+    absent from it and the fields beneath them are only reachable by building
+    the parent. Refusing there would have quietly dropped six of the twenty-two
+    sequence fields from this probe — a probe that skips is a probe that passes.
+    """
     node: object = doc
-    for part in parts[:-1]:
+    for i, part in enumerate(parts[:-1]):
+        wants_list = parts[i + 1] == "[]"
         if part == "[]":
-            if not isinstance(node, list) or not node:
-                raise ValueError(f"no element to descend into for {render(parts)}")
+            if not isinstance(node, list):
+                raise ValueError(f"cannot descend into a list for {render(parts)}")
+            if not node:
+                node.append({})
             node = node[0]
             continue
         if not isinstance(node, dict):
             raise ValueError(f"cannot descend through {part} for {render(parts)}")
         child = node.get(part)
-        if not isinstance(child, (dict, list)):
-            child = {}
+        if not isinstance(child, list if wants_list else (dict, list)):
+            child = [] if wants_list else {}
             node[part] = child
         node = child
     if not isinstance(node, dict):
@@ -229,17 +255,23 @@ def main() -> int:
         ok(f"exit codes discriminate — invalid={inv_code}, out of scope={seed_code}")
 
     # ── Claim 2: structure ───────────────────────────────────────────────────
-    arrays, mappings = ARRAY_PATHS, MAPPING_PATHS
-    if len(arrays) < MIN_ARRAY_FIELDS or len(mappings) < MIN_MAPPING_FIELDS:
+    arrays, mappings, sequences = ARRAY_PATHS, MAPPING_PATHS, SEQUENCE_PATHS
+    if (
+        len(arrays) < MIN_ARRAY_FIELDS
+        or len(mappings) < MIN_MAPPING_FIELDS
+        or len(sequences) < MIN_SEQUENCE_FIELDS
+    ):
         bad(
-            f"the gate derives {len(arrays)} array-of-mapping and {len(mappings)} mapping "
-            f"fields, expected at least {MIN_ARRAY_FIELDS} and {MIN_MAPPING_FIELDS}. "
-            "A derivation that shrinks gates fewer fields and probes fewer fields, in step"
+            f"the gate derives {len(arrays)} array-of-mapping, {len(mappings)} mapping and "
+            f"{len(sequences)} sequence fields, expected at least {MIN_ARRAY_FIELDS}, "
+            f"{MIN_MAPPING_FIELDS} and {MIN_SEQUENCE_FIELDS}. A derivation that shrinks "
+            "gates fewer fields and probes fewer fields, in step"
         )
     else:
         ok(
-            f"the gate derives {len(arrays)} array-of-mapping + {len(mappings)} mapping "
-            f"fields (floors {MIN_ARRAY_FIELDS}/{MIN_MAPPING_FIELDS})"
+            f"the gate derives {len(arrays)} array-of-mapping + {len(mappings)} mapping + "
+            f"{len(sequences)} sequence fields (floors {MIN_ARRAY_FIELDS}/"
+            f"{MIN_MAPPING_FIELDS}/{MIN_SEQUENCE_FIELDS})"
         )
 
     # object rather than a union: the value is opaque here — it is written into a
@@ -248,6 +280,11 @@ def main() -> int:
         (p, [MARKER], f"{render(p)}[0]", "list item") for p in arrays
     ]
     cases += [(p, MARKER, render(p), "mapping") for p in mappings]
+    # AAASM-5729. The same bare string, in the fields the rules ITERATE rather
+    # than dereference. These do not crash — a string iterates as its
+    # characters, so before the gate covered them every one of these mutations
+    # exited 0 or, worse, exited 1 carrying findings about single letters.
+    cases += [(p, MARKER, render(p), "list") for p, _ in sequences]
 
     for parts, value, label, kind in cases:
         doc = copy.deepcopy(base)
