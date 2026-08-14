@@ -683,6 +683,8 @@ fn orchestration_ruleset() -> EbpfRuleSet {
         syscall_allowlist: Some(
             SyscallAllowlist::from_names(["read", "write", "close", "exit"]).expect("known syscall names"),
         ),
+        // AAASM-5751 — the path-scope node is not an eBPF lowering input.
+        filesystem: None,
     };
     lower_to_ebpf(&doc)
 }

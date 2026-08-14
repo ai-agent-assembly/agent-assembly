@@ -35,6 +35,7 @@ pub mod digest;
 pub mod document;
 pub mod error;
 pub mod expr;
+pub mod filesystem;
 pub mod history;
 pub mod network;
 pub mod raw;
@@ -50,6 +51,7 @@ pub use context::{ContextError, PolicyContext};
 pub use document::{ActiveHours, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy};
 pub use error::{PolicyParseError, ValidationError, ValidationWarning};
 pub use expr::{evaluate_clause, ClauseKind, ResolutionFailure};
+pub use filesystem::{merge_cascade as merge_filesystem_cascade, CascadeFilesystemScope, EmptyCascadeRefusal};
 pub use network::{check_network_egress, EgressDecision};
 pub use rbac::{required_role_for, CallerRole, MutationKind, PolicyScopeKind};
 pub use scope::{OrgId, PolicyScope, TeamId};
@@ -58,6 +60,6 @@ pub use validator::{PolicyValidator, PolicyValidatorOutput};
 // Re-export the canonical, cross-layer policy AST so consumers of
 // `aa_gateway::policy` reach the single source of truth in `aa-security`.
 pub use aa_security::policy::{
-    lower_to_ebpf, Capability as CanonicalCapability, CapabilitySet as CanonicalCapabilitySet, EbpfRuleSet, PathRule,
-    PathVerdict, PolicyDocument as CanonicalPolicyDocument,
+    lower_to_ebpf, Capability as CanonicalCapability, CapabilitySet as CanonicalCapabilitySet, EbpfRuleSet,
+    FilesystemPolicy, PathRule, PathScope, PathScopeError, PathVerdict, PolicyDocument as CanonicalPolicyDocument,
 };

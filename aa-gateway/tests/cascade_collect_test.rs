@@ -38,6 +38,7 @@ fn doc_for_scope(scope: PolicyScope) -> PolicyDocument {
         approval_policy: None,
         tools: HashMap::new(),
         capabilities: None,
+        filesystem: None,
     }
 }
 

@@ -197,6 +197,7 @@ form).
 | `data` | section | _(omitted → no scan rules)_ | see [data](#data) |
 | `tools` | map | _(empty)_ | see [tools](#tools) |
 | `capabilities` | section | _(omitted)_ | see [capabilities](#capabilities) |
+| `filesystem` | section | _(omitted → no path scope stated)_ | see [filesystem](#filesystem) |
 | `approval` | section | _(omitted)_ | see [approval](#approval) |
 
 `scope` accepts one of: `global`, `org:<id>`, `team:<id>`, `agent:<uuid>`, or
@@ -249,6 +250,15 @@ spec:
       - mcp_tool:git
     deny:
       - terminal_exec
+
+  filesystem:
+    read:
+      allow:
+        - /workspace
+        - /usr/share/dict
+    write:
+      allow:
+        - /workspace/build
 
   approval:
     timeout_seconds: 600
@@ -653,6 +663,91 @@ capabilities:
   deny:
     - file_delete
 ```
+
+## `filesystem`
+
+Scopes filesystem access **by path**, where [`capabilities`](#capabilities) can
+only allow or deny a verb outright. Backed by `FilesystemPolicy`. Added by
+[AAASM-5751](https://lightning-dust-mite.atlassian.net/browse/AAASM-5751) and
+recorded in the ADR 0035 amendment of the same ticket.
+
+| Field | Type | Default | Example |
+|---|---|---|---|
+| `read.allow` | list of absolute paths | _(omitted → not stated)_ | `allow: ["/workspace"]` |
+| `write.allow` | list of absolute paths | _(omitted → not stated)_ | `allow: ["/workspace/build"]` |
+
+```yaml
+filesystem:
+  read:
+    allow:
+      - /workspace
+      - /usr/share/dict
+  write:
+    allow:
+      - /workspace/build
+```
+
+`write` covers create, rename, write **and** delete together — the policy
+vocabulary does not separate those verbs, and neither does the execution
+boundary they lower onto.
+
+### Three states, and they are not the same
+
+| Authored form | Meaning |
+|---|---|
+| The section or a verb key is **absent** | The operator stated nothing about paths for that verb. **This is not a grant** — whether the domain is otherwise restricted is decided by `capabilities`. |
+| `allow:` is present and **non-empty** | Only those subtrees may be reached; everything else must be prevented. |
+| `allow:` is present and **empty** (`allow: []`, or a verb key with no `allow:`) | A restriction is in force and permits nothing — the *most* restrictive posture available here. |
+
+An empty `allow:` is deny-all, not "no restriction" — the same reading an empty
+[`network.allowlist`](#network) gets.
+
+### Path rules
+
+- Paths must be **absolute**. A relative prefix has no machine-independent
+  meaning and is a validation error.
+- A path permits itself and **everything beneath it**. Matching is
+  component-aware: `/workspace` permits `/workspace/src` but not
+  `/workspace-other`.
+- `..` components are **rejected**, not resolved. `/workspace/../etc` denotes
+  `/etc`; a prefix that reads as workspace-scoped must not silently permit
+  anything else. Write `/etc` if that is what you mean.
+- Redundant entries are collapsed: `["/workspace", "/workspace/src"]` is
+  `["/workspace"]`.
+- A malformed entry fails the whole load rather than being dropped, so a typo
+  cannot quietly widen or narrow the scope you wrote.
+
+### Interaction with `capabilities`
+
+A whole-domain denial **outranks** the path scope. A document that both denies
+`file_read` and scopes `filesystem.read` prevents *all* reads — lowering the
+narrower node would otherwise permit paths the same document forbids. The same
+applies to an in-force `capabilities.allow` list that omits the verb.
+
+### Cascade behaviour
+
+Across the `Global → Org → Team → Agent → Tool` cascade the merge is
+most-restrictive-wins: the effective scope is the **intersection** of every tier
+that declares one, computed over subtrees. A Global tier permitting `/workspace`
+and a Team tier permitting `/workspace/src` and `/tmp` merge to `/workspace/src`
+alone — the narrower tier shrinks the broader one, and cannot add `/tmp`, which
+Global never permitted.
+
+A tier that declares no `filesystem:` section contributes nothing and cannot
+widen a tier that does. Tiers whose scopes are **disjoint** intersect to empty,
+which is deny-all.
+
+### What a path scope still cannot express
+
+Reported per domain by `aasm run --dry-run` rather than assumed:
+
+- No globs, extensions or file modes — absolute directory prefixes only.
+- No statement of what a symlink or bind mount out of a permitted prefix means;
+  a backend resolves that.
+- No separation of create / rename / write / delete.
+- The sensitive-path defaults in the eBPF layer (`/etc`, `/root/.ssh`,
+  `/var/run/secrets`) are that layer's own floor, **not** policy content, and
+  are deliberately not re-derived as policy.
 
 ## `approval`
 
