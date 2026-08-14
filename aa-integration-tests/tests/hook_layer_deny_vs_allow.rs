@@ -1,5 +1,6 @@
 //! AAASM-5783 — a hook-layer deny is distinguishable from an allow in a
-//! *retrieved* durable audit entry.
+//! *retrieved* durable audit entry, and in the frame a live-stream subscriber
+//! receives.
 //!
 //! ## Why this test exists
 //!
@@ -29,6 +30,12 @@
 //! Step 5 is the load-bearing one: reverting the AAASM-5783 producer change
 //! makes the two retrieved entries compare equal on `event_type` and on the
 //! payload's `decision`, and this test fails.
+//!
+//! The live-stream case follows the same rule: the frame asserted on is read
+//! back off a real WebSocket connection to the `aa-api` router, not built in the
+//! test.
+
+mod common;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -362,5 +369,64 @@ async fn a_hook_layer_deny_bypasses_the_batch() {
         first.inner.decision,
         aa_proto::assembly::common::v1::Decision::Deny as i32,
         "the record that bypassed the batch should be the deny"
+    );
+}
+
+/// AAASM-5783 acceptance: a deny and an allow also differ on the live stream.
+///
+/// The two records are produced and enriched by the same shipping chain as the
+/// durable case, then broadcast to a real `aa-api` WebSocket subscriber. The
+/// assertions run on the JSON frames read back off the socket.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deny_and_an_allow_differ_in_the_frame_read_off_the_live_stream() {
+    use futures::StreamExt;
+
+    let (deny_proto, allow_proto) = produced_events().await;
+    let forwarded = through_pipeline(vec![deny_proto, allow_proto]).await;
+    assert_eq!(forwarded.len(), 2, "the pipeline should forward both records");
+
+    let env = common::TopologyTestEnv::start().await.expect("harness should start");
+    let url = format!("ws://{}/api/v1/ws/events", env.addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("WS connect should succeed");
+    // Let the handler subscribe to the broadcast before anything is sent.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for enriched in forwarded {
+        env.events
+            .pipeline_sender()
+            .send(PipelineEvent::Audit(Box::new(enriched)))
+            .expect("broadcast should have a subscriber");
+    }
+
+    let mut frames = Vec::new();
+    while frames.len() < 2 {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout waiting for a WS frame")
+            .expect("stream closed unexpectedly")
+            .expect("ws error");
+        let event: serde_json::Value = serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+        frames.push(event);
+    }
+
+    let deny_frame = &frames[0]["payload"];
+    let allow_frame = &frames[1]["payload"];
+
+    assert_eq!(
+        deny_frame["decision"], "deny",
+        "the deny read off the stream should carry the deny bucket, got {deny_frame}"
+    );
+    assert_eq!(
+        allow_frame["decision"], "allow",
+        "the allow read off the stream should carry the allow bucket, got {allow_frame}"
+    );
+    assert_eq!(deny_frame["status"], "blocked");
+    assert_eq!(allow_frame["status"], "running");
+    assert_eq!(deny_frame["op_type"], "tool_call");
+    assert_ne!(
+        deny_frame["decision"], allow_frame["decision"],
+        "a deny and an allow must not render identically on the live stream"
     );
 }
