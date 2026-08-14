@@ -1044,3 +1044,701 @@ fn state_of(outcome: &RequirementOutcome) -> ControlState {
         RequirementOutcome::Unmet { reason } => ControlState::Unsupported { reason: reason.clone() },
     }
 }
+
+/// Collapse anything that would break a line-oriented record into a space.
+///
+/// Applied to every value that came from outside this crate — a backend's
+/// refusal reason, a policy node name, a schema default. A machine consumer
+/// splits [`IsolationReport::machine_lines`] on `\n` and on the first `=`, so a
+/// value carrying either would silently become a record of its own.
+fn sanitize(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A stable token for what policy asked a control to do.
+fn intent_token(intent: RequirementIntent) -> &'static str {
+    match intent {
+        RequirementIntent::PreventBeforeEffect => "prevent_before_effect",
+        RequirementIntent::Observe => "observe",
+    }
+}
+
+/// A stable token for what happens when a requirement cannot be met.
+fn requirement_posture_token(posture: RequirementPosture) -> &'static str {
+    match posture {
+        RequirementPosture::Required => "required",
+        RequirementPosture::Optional => "optional",
+        RequirementPosture::DegradeIfUnavailable => "degrade_if_unavailable",
+    }
+}
+
+/// A stable token for how far down the process tree a requirement must reach.
+fn descendant_requirement_token(descendants: DescendantRequirement) -> &'static str {
+    match descendants {
+        DescendantRequirement::ProcessTree => "process_tree",
+        DescendantRequirement::TargetProcessOnly => "target_process_only",
+    }
+}
+
+/// What a requirement applies to within its domain, rendered.
+///
+/// Selectors are the operator's own policy text — paths, destinations, call
+/// names — and are printed so a reader can see what the requirement actually
+/// covers. They are never credential material: [`RequirementScope`] carries
+/// selectors, and the crate's credential vocabulary carries names only.
+fn scope_detail(scope: &RequirementScope) -> String {
+    match scope {
+        RequirementScope::Whole => "whole_domain".to_string(),
+        RequirementScope::Selectors(selectors) => {
+            let rendered: Vec<String> = selectors.iter().map(|s| sanitize(s)).collect();
+            format!("selectors[{}]: {}", rendered.len(), rendered.join(", "))
+        }
+        RequirementScope::Limits(limits) => {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(v) = limits.max_memory_bytes {
+                parts.push(format!("max_memory_bytes={v}"));
+            }
+            if let Some(v) = limits.max_cpu_seconds {
+                parts.push(format!("max_cpu_seconds={v}"));
+            }
+            if let Some(v) = limits.max_pids {
+                parts.push(format!("max_pids={v}"));
+            }
+            if let Some(v) = limits.max_wall_clock_seconds {
+                parts.push(format!("max_wall_clock_seconds={v}"));
+            }
+            if let Some(v) = limits.max_file_size_bytes {
+                parts.push(format!("max_file_size_bytes={v}"));
+            }
+            if let Some(v) = limits.max_open_files {
+                parts.push(format!("max_open_files={v}"));
+            }
+            if parts.is_empty() {
+                "limits: none stated".to_string()
+            } else {
+                format!("limits: {}", parts.join(" "))
+            }
+        }
+    }
+}
+
+/// A stable token naming which refusal this is.
+///
+/// A free function rather than a method on [`RefusalReason`] so this ticket adds
+/// no surface to the negotiation module. The match is exhaustive within the
+/// crate, so a new variant fails to compile here rather than falling into a
+/// catch-all that renders it as something else.
+fn refusal_token(reason: &RefusalReason) -> &'static str {
+    match reason {
+        RefusalReason::BackendUnavailable { .. } => "backend_unavailable",
+        RefusalReason::NoCapabilityReported { .. } => "no_capability_reported",
+        RefusalReason::DomainUnsupported { .. } => "domain_unsupported",
+        RefusalReason::ObserveOnlyForPreventionRequirement { .. } => "observe_only_for_prevention_requirement",
+        RefusalReason::DecisionTooLate { .. } => "decision_too_late",
+        RefusalReason::DecisionNotSynchronous { .. } => "decision_not_synchronous",
+        RefusalReason::NoEvidenceProduced { .. } => "no_evidence_produced",
+        RefusalReason::DescendantCoverageInsufficient { .. } => "descendant_coverage_insufficient",
+        RefusalReason::PrerequisiteUnsatisfied { .. } => "prerequisite_unsatisfied",
+    }
+}
+
+/// Why a requirement could not be met, in words an operator can act on.
+///
+/// Every arm names the *specific* missing capability rather than a generic
+/// failure: "could not enforce filesystem writes" tells an operator nothing they
+/// can do, while "the backend observes this domain but the requirement needs a
+/// decision before the effect" tells them whether to change the policy, the
+/// backend, or their expectations.
+fn refusal_detail(reason: &RefusalReason) -> String {
+    match reason {
+        RefusalReason::BackendUnavailable { reason } => {
+            format!("the backend cannot be selected on this host: {}", sanitize(reason))
+        }
+        RefusalReason::NoCapabilityReported { domain } => format!(
+            "the backend said nothing about `{domain}`; silence is not a claim that the domain is uncovered, \
+             and it is not a claim that it is covered either"
+        ),
+        RefusalReason::DomainUnsupported { domain, reason } => {
+            format!("the backend reports no mechanism for `{domain}`: {}", sanitize(reason))
+        }
+        RefusalReason::ObserveOnlyForPreventionRequirement { domain, mediation } => format!(
+            "`{domain}` needs a decision before the effect and this capability only \
+             `{}`s; an observing control is never promoted to a preventing one",
+            mediation.as_manifest_str()
+        ),
+        RefusalReason::DecisionTooLate { domain, timing } => format!(
+            "`{domain}` is enforced but the decision lands `{}` rather than before the effect",
+            timing.as_manifest_str()
+        ),
+        RefusalReason::DecisionNotSynchronous { domain, synchrony } => format!(
+            "`{domain}` decides before the effect but the action is `{}` rather than waiting for the \
+             decision, so it can win the race",
+            synchrony.as_manifest_str()
+        ),
+        RefusalReason::NoEvidenceProduced { domain } => {
+            format!("`{domain}` produces no evidence and the requirement asked for evidence")
+        }
+        RefusalReason::DescendantCoverageInsufficient { domain, offered } => format!(
+            "`{domain}` needs process-tree coverage and this capability covers `{}`",
+            offered.as_str()
+        ),
+        RefusalReason::PrerequisiteUnsatisfied { domain, requirement } => format!(
+            "`{domain}` depends on a host precondition that is not known to hold: {}",
+            sanitize(requirement)
+        ),
+    }
+}
+
+/// What a degraded requirement actually got, rendered.
+fn achieved_detail(achieved: &AchievedControl) -> String {
+    match achieved {
+        AchievedControl::Observed { timing, descendants } => format!(
+            "observed(timing={}, descendants={})",
+            timing.as_manifest_str(),
+            descendants.as_str()
+        ),
+        AchievedControl::None => "nothing".to_string(),
+    }
+}
+
+/// The parenthetical that follows a [`ControlState`]'s token.
+fn state_detail(state: &ControlState) -> String {
+    match state {
+        ControlState::Prevention { timing, descendants } | ControlState::ObserveOnly { timing, descendants } => {
+            format!(
+                "timing={}, descendants={}",
+                timing.as_manifest_str(),
+                descendants.as_str()
+            )
+        }
+        ControlState::Degraded {
+            planned,
+            achieved,
+            reason,
+        } => format!(
+            "planned={}, achieved={}, reason={}",
+            intent_token(*planned),
+            achieved_detail(achieved),
+            refusal_token(reason)
+        ),
+        ControlState::Unsupported { reason } => refusal_token(reason).to_string(),
+        ControlState::Unmeasured { reason } => match reason {
+            UnmeasuredReason::Inconclusive { detail } => format!("inconclusive: {}", sanitize(detail)),
+            other => other.as_str().to_string(),
+        },
+    }
+}
+
+/// What policy asked, rendered.
+fn requested_detail(requested: &RequestedControl) -> String {
+    match requested {
+        RequestedControl::Stated {
+            intent,
+            posture,
+            descendants,
+            scope,
+        } => format!(
+            "intent={}, posture={}, descendants={}, scope={}",
+            intent_token(*intent),
+            requirement_posture_token(*posture),
+            descendant_requirement_token(*descendants),
+            scope_detail(scope)
+        ),
+        RequestedControl::NotStated { node, schema_default } => format!(
+            "node=`{}` left unset; schema default: {}",
+            sanitize(node),
+            sanitize(schema_default)
+        ),
+        RequestedControl::PolicyCannotExpress { detail } => sanitize(detail),
+        RequestedControl::NotDerived => "no policy lowering was attached to this report".to_string(),
+    }
+}
+
+/// A copy of `names`, sorted, so a report of the same run renders identically
+/// twice.
+fn sorted(names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = names.to_vec();
+    out.sort();
+    out
+}
+
+impl IsolationReport {
+    /// The operator-facing rendering of this report.
+    ///
+    /// Deterministic: the same report renders byte-identically every time. Every
+    /// list is emitted in a fixed order — domains in [`CapabilityDomain::ALL`]
+    /// order, credential names sorted — so a diff between two runs is a
+    /// difference in the runs and never in the iteration.
+    ///
+    /// The sections are ordered by how much they change what a reader should
+    /// believe: the posture and whether the run is least-authority come first,
+    /// then what was asked, then per-domain results, then the four different
+    /// kinds of gap. Shortfalls, refusals and policy gaps each get a section of
+    /// their own rather than a marker inside the table, because a reader
+    /// skimming a table will read a marker as a footnote.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        out.push_str("--- execution isolation ---\n");
+        self.render_header(&mut out);
+        self.render_requested(&mut out);
+        self.render_domains(&mut out);
+        self.render_shortfalls(&mut out);
+        self.render_refusals(&mut out);
+        self.render_policy_gaps(&mut out);
+        self.render_authority(&mut out);
+        self.render_unmeasured(&mut out);
+        out
+    }
+
+    /// Identity, session, target, backend and the two headline judgements.
+    fn render_header(&self, out: &mut String) {
+        let posture = self.posture();
+        let stage = match self.stage {
+            ReportStage::PreLaunch => "pre-launch — nothing has run; every state below is what the plan would do",
+            ReportStage::PostRun => "post-run — states are the plan's; claims are what recorded evidence supports",
+        };
+        out.push_str(&format!("schema:           {REPORT_SCHEMA}\n"));
+        out.push_str(&format!("stage:            {stage}\n"));
+        out.push_str(&format!("posture:          {}\n", posture.label()));
+        if let Some(reason) = self.boundary_absent_reason() {
+            out.push_str(&format!("posture_detail:   {}\n", sanitize(reason)));
+        }
+        if let Some(reason) = &self.backend_unavailable {
+            out.push_str(&format!("backend_refusal:  {}\n", sanitize(reason)));
+        }
+        out.push_str(&format!("least_authority:  {}\n", self.least_authority_line()));
+        out.push_str(&format!("agent_id:         {}\n", sanitize(&self.identity.agent_id)));
+        out.push_str(&format!(
+            "team_id:          {}\n",
+            self.identity
+                .team_id
+                .as_deref()
+                .map_or_else(|| "<none>".to_string(), sanitize)
+        ));
+        out.push_str(&format!(
+            "lineage:          {}\n",
+            if self.identity.lineage.is_empty() {
+                "<root launch, no ancestors>".to_string()
+            } else {
+                self.identity
+                    .lineage
+                    .iter()
+                    .map(|a| sanitize(a))
+                    .collect::<Vec<_>>()
+                    .join(" > ")
+            }
+        ));
+        out.push_str(&format!("session_id:       {}\n", sanitize(&self.session.session_id)));
+        out.push_str(&format!("trace_id:         {}\n", sanitize(&self.session.trace_id)));
+        out.push_str(&format!(
+            "target:           {} ({} argument(s))\n",
+            sanitize(&self.target.program),
+            self.target.arg_count
+        ));
+        match &self.backend {
+            Some(backend) => {
+                out.push_str(&format!(
+                    "backend:          {} version={} source={} license={} modified={}\n",
+                    sanitize(&backend.id),
+                    sanitize(&backend.version),
+                    sanitize(&backend.provenance.source),
+                    sanitize(&backend.provenance.license),
+                    backend.provenance.modified,
+                ));
+            }
+            None => out.push_str(
+                "backend:          <none selected — no backend was consulted. Whether one could \
+                 have been is a fact about this host, not about this run, and is not stated here>\n",
+            ),
+        }
+    }
+
+    /// The least-authority verdict, with the reason it is what it is.
+    fn least_authority_line(&self) -> String {
+        if self.is_least_authority() {
+            return "yes — no inherited credential name and no inherited descriptor reaches the child \
+                    unintended, as far as this launch could establish"
+                .to_string();
+        }
+        let mut reasons: Vec<String> = Vec::new();
+        let ambient = self.credentials.ambient_unremoved.len();
+        if ambient > 0 {
+            reasons.push(format!(
+                "{ambient} inherited credential name(s) reach the child that policy wanted removed and \
+                 this launch could not remove"
+            ));
+        }
+        if let Some(inventory) = &self.descriptors {
+            if !inventory.asserts_clean_boundary() {
+                reasons.push("the inherited-descriptor boundary is not clean".to_string());
+            }
+        }
+        format!("NO — {}", reasons.join("; "))
+    }
+
+    /// The capability set policy asked for.
+    fn render_requested(&self, out: &mut String) {
+        out.push_str("\nrequested capability set:\n");
+        if self.requested.is_empty() {
+            out.push_str(
+                "  <empty> — this launch asked the execution boundary for nothing. An empty requirement \
+                 set is not a clean boundary and must not be read as one: nothing was demanded, so \
+                 nothing was refused, degraded or met.\n",
+            );
+            return;
+        }
+        for requirement in &self.requested {
+            out.push_str(&format!(
+                "  {:<17} {}\n",
+                requirement.domain().as_str(),
+                requested_detail(&RequestedControl::of(requirement))
+            ));
+        }
+    }
+
+    /// The per-capability table: requested, state, claim, evidence.
+    fn render_domains(&self, out: &mut String) {
+        out.push_str(
+            "\nper-capability (state is what the boundary does; claim is what may be said; evidence is \
+             what stands behind the claim):\n",
+        );
+        out.push_str(&format!(
+            "  {:<17} {:<22} {:<13} {:<12} {}\n",
+            "DOMAIN", "REQUESTED", "STATE", "CLAIM", "EVIDENCE"
+        ));
+        for projection in &self.domains {
+            out.push_str(&format!(
+                "  {:<17} {:<22} {:<13} {:<12} {}\n",
+                projection.domain.as_str(),
+                projection.requested.as_str(),
+                projection.state.as_str(),
+                projection.claim.as_str(),
+                projection.evidence.as_str(),
+            ));
+        }
+    }
+
+    /// Degraded and unsupported controls, each with what it did *not* reach.
+    fn render_shortfalls(&self, out: &mut String) {
+        let shortfalls: Vec<&DomainProjection> = self.shortfalls().collect();
+        if shortfalls.is_empty() {
+            return;
+        }
+        out.push_str(
+            "\ndegraded or unsupported controls — these are NOT enforced, and a run carrying any of \
+             them is not equivalently protected:\n",
+        );
+        for projection in shortfalls {
+            out.push_str(&format!(
+                "  {} [{}] {}\n",
+                projection.domain.as_str(),
+                projection.state.as_str(),
+                state_detail(&projection.state)
+            ));
+            let reason = match &projection.state {
+                ControlState::Degraded { reason, .. } | ControlState::Unsupported { reason } => Some(reason),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                out.push_str(&format!("      {}\n", refusal_detail(reason)));
+            }
+        }
+    }
+
+    /// The refusal, naming every missing required capability.
+    fn render_refusals(&self, out: &mut String) {
+        if self.refusals.is_empty() && self.backend_unavailable.is_none() {
+            return;
+        }
+        out.push_str("\nrefused before launch — the exact required capabilities that are missing:\n");
+        if let Some(reason) = &self.backend_unavailable {
+            out.push_str(&format!("  <backend> [backend_unavailable] {}\n", sanitize(reason)));
+        }
+        for (domain, reason) in &self.refusals {
+            out.push_str(&format!(
+                "  {} [{}] {}\n",
+                domain.as_str(),
+                refusal_token(reason),
+                refusal_detail(reason)
+            ));
+        }
+    }
+
+    /// The three kinds of policy gap, each in its own block.
+    ///
+    /// Kept apart on purpose. A domain the schema cannot express, a domain the
+    /// operator left unset, and a restriction the operator wrote that no domain
+    /// can carry are three different remedies — change the product, change the
+    /// policy, or accept that the intent was lost — and merging them would leave
+    /// a reader unable to tell which one they are looking at.
+    fn render_policy_gaps(&self, out: &mut String) {
+        let unrepresentable: Vec<&DomainProjection> = self.unrepresentable_domains().collect();
+        if !unrepresentable.is_empty() {
+            out.push_str(
+                "\npolicy cannot express these domains — there is no way for an operator to state a \
+                 restriction here. This is the absence of a way to ask, NOT a judgement that no control \
+                 is required:\n",
+            );
+            for projection in unrepresentable {
+                out.push_str(&format!(
+                    "  {} {}\n",
+                    projection.domain.as_str(),
+                    requested_detail(&projection.requested)
+                ));
+            }
+        }
+
+        let not_stated: Vec<&DomainProjection> = self
+            .domains
+            .iter()
+            .filter(|d| matches!(d.requested, RequestedControl::NotStated { .. }))
+            .collect();
+        if !not_stated.is_empty() {
+            out.push_str(
+                "\nnot stated by this policy — the schema has a node for these and the operator left it \
+                 unset. Unlike the block above, there is a policy line to write:\n",
+            );
+            for projection in not_stated {
+                out.push_str(&format!(
+                    "  {} {}\n",
+                    projection.domain.as_str(),
+                    requested_detail(&projection.requested)
+                ));
+            }
+        }
+
+        let residual: Vec<&DomainProjection> = self
+            .domains
+            .iter()
+            .filter(|d| !d.residual_policy_gaps.is_empty())
+            .collect();
+        if !residual.is_empty() {
+            out.push_str(
+                "\npartially expressible — a requirement was lowered for these domains and something \
+                 else about them could not be written:\n",
+            );
+            for projection in residual {
+                for gap in &projection.residual_policy_gaps {
+                    out.push_str(&format!("  {} {}\n", projection.domain.as_str(), sanitize(gap)));
+                }
+            }
+        }
+
+        if !self.unmapped_policy.is_empty() {
+            out.push_str(
+                "\npolicy statements no capability domain can carry — the operator wrote these and the \
+                 execution boundary has nowhere to put them:\n",
+            );
+            for statement in &self.unmapped_policy {
+                out.push_str(&format!("  {}\n", sanitize(statement)));
+            }
+        }
+    }
+
+    /// Residual ambient authority: credential names and inherited descriptors.
+    fn render_authority(&self, out: &mut String) {
+        out.push_str("\nresidual ambient authority (names only — no credential value is ever placed here):\n");
+        let ambient = sorted(&self.credentials.ambient_unremoved);
+        if ambient.is_empty() {
+            out.push_str(
+                "  ambient_unremoved: <none found>. This is a name-shaped lower bound, so an empty list \
+                 is not evidence that no ambient authority reached the child.\n",
+            );
+        } else {
+            out.push_str(&format!(
+                "  ambient_unremoved ({}): {}\n",
+                ambient.len(),
+                ambient.iter().map(|n| sanitize(n)).collect::<Vec<_>>().join(", ")
+            ));
+            out.push_str(
+                "      These reach the child and policy wanted them gone. The run is NOT \
+                 least-authority.\n",
+            );
+        }
+        let removed = sorted(&self.credentials.removed);
+        out.push_str(&format!(
+            "  removed ({}): {}\n",
+            removed.len(),
+            if removed.is_empty() {
+                "<none>".to_string()
+            } else {
+                removed.iter().map(|n| sanitize(n)).collect::<Vec<_>>().join(", ")
+            }
+        ));
+        let delegated = sorted(&self.credentials.delegated);
+        out.push_str(&format!(
+            "  delegated ({}): {}\n",
+            delegated.len(),
+            if delegated.is_empty() {
+                "<none>".to_string()
+            } else {
+                delegated.iter().map(|n| sanitize(n)).collect::<Vec<_>>().join(", ")
+            }
+        ));
+        let contradictions = self.credentials.contradictions();
+        if !contradictions.is_empty() {
+            out.push_str(&format!(
+                "  CONTRADICTORY ({}): {} — reported in two lists that cannot both be true; this posture \
+                 cannot be read\n",
+                contradictions.len(),
+                contradictions.join(", ")
+            ));
+        }
+        match &self.descriptors {
+            Some(inventory) => {
+                for line in inventory.describe() {
+                    out.push_str(&format!("  {}\n", sanitize(&line)));
+                }
+            }
+            None => out.push_str(
+                "  inherited descriptors: <no inventory taken> — nothing enumerated what the child \
+                 inherits, which is not the same as nothing being inherited.\n",
+            ),
+        }
+    }
+
+    /// Every domain nothing looked at, with which silence it is.
+    fn render_unmeasured(&self, out: &mut String) {
+        let unmeasured: Vec<&DomainProjection> = self.unmeasured_domains().collect();
+        if unmeasured.is_empty() {
+            return;
+        }
+        out.push_str("\nunmeasured — nothing established anything about these domains:\n");
+        for projection in unmeasured {
+            out.push_str(&format!(
+                "  {} {}\n",
+                projection.domain.as_str(),
+                state_detail(&projection.state)
+            ));
+        }
+    }
+
+    /// The machine-readable projection, one `key=value` record per line.
+    ///
+    /// A downstream dashboard or CI check consumes this without reading any of
+    /// the prose in [`render`](Self::render): split each line on the first `=`,
+    /// key off the token vocabulary, and never parse a sentence. Every value is
+    /// passed through a sanitizer that removes control characters, so a line
+    /// always holds exactly one record.
+    ///
+    /// The shape is stable within a [`REPORT_SCHEMA`] version. Keys are added
+    /// without a bump; a rename or removal is a bump.
+    ///
+    /// Emitted rather than serialized because `aa-isolation`'s `serde` feature is
+    /// off by default and deliberately so — the crate's types are a contract
+    /// between crates, not a wire format, and a shipped binary should not have to
+    /// enable a serialization surface to be able to report what it did.
+    pub fn machine_lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut push = |key: &str, value: String| lines.push(format!("{key}={}", sanitize(&value)));
+
+        push("schema", REPORT_SCHEMA.to_string());
+        push("stage", self.stage.as_str().to_string());
+        push("posture", self.posture().as_str().to_string());
+        push(
+            "posture_detail",
+            self.boundary_absent_reason().unwrap_or_default().to_string(),
+        );
+        push("least_authority", self.is_least_authority().to_string());
+        push("agent_id", self.identity.agent_id.clone());
+        push("team_id", self.identity.team_id.clone().unwrap_or_default());
+        push("lineage_depth", self.identity.depth().to_string());
+        push("session_id", self.session.session_id.clone());
+        push("trace_id", self.session.trace_id.clone());
+        push("target_program", self.target.program.clone());
+        push("target_arg_count", self.target.arg_count.to_string());
+
+        push("backend_selected", self.backend.is_some().to_string());
+        if let Some(backend) = &self.backend {
+            push("backend_id", backend.id.clone());
+            push("backend_version", backend.version.clone());
+            push("backend_source", backend.provenance.source.clone());
+            push("backend_license", backend.provenance.license.clone());
+            push("backend_modified", backend.provenance.modified.to_string());
+        }
+        push(
+            "backend_unavailable",
+            self.backend_unavailable.clone().unwrap_or_default(),
+        );
+
+        push("requested_requirement_count", self.requested.len().to_string());
+        push("domain_count", self.domains.len().to_string());
+        for projection in &self.domains {
+            let domain = projection.domain.as_str();
+            push(
+                &format!("domain.{domain}.requested"),
+                projection.requested.as_str().to_string(),
+            );
+            push(
+                &format!("domain.{domain}.requested_detail"),
+                requested_detail(&projection.requested),
+            );
+            push(&format!("domain.{domain}.state"), projection.state.as_str().to_string());
+            push(
+                &format!("domain.{domain}.state_detail"),
+                state_detail(&projection.state),
+            );
+            push(&format!("domain.{domain}.claim"), projection.claim.as_str().to_string());
+            push(
+                &format!("domain.{domain}.evidence"),
+                projection.evidence.as_str().to_string(),
+            );
+            push(
+                &format!("domain.{domain}.policy_gap_count"),
+                projection.residual_policy_gaps.len().to_string(),
+            );
+            for (index, gap) in projection.residual_policy_gaps.iter().enumerate() {
+                push(&format!("domain.{domain}.policy_gap.{index}"), gap.clone());
+            }
+        }
+
+        push("refusal_count", self.refusals.len().to_string());
+        for (index, (domain, reason)) in self.refusals.iter().enumerate() {
+            push(&format!("refusal.{index}.domain"), domain.as_str().to_string());
+            push(&format!("refusal.{index}.reason"), refusal_token(reason).to_string());
+            push(&format!("refusal.{index}.detail"), refusal_detail(reason));
+        }
+
+        for (label, names) in [
+            ("removed", &self.credentials.removed),
+            ("delegated", &self.credentials.delegated),
+            ("ambient_unremoved", &self.credentials.ambient_unremoved),
+        ] {
+            let names = sorted(names);
+            push(&format!("credential.{label}_count"), names.len().to_string());
+            for (index, name) in names.iter().enumerate() {
+                push(&format!("credential.{label}.{index}"), name.clone());
+            }
+        }
+        push(
+            "credential.contradiction_count",
+            self.credentials.contradictions().len().to_string(),
+        );
+
+        push("descriptors_present", self.descriptors.is_some().to_string());
+        if let Some(inventory) = &self.descriptors {
+            push(
+                "descriptors.enumeration_complete",
+                inventory.completeness().is_complete().to_string(),
+            );
+            push("descriptors.residual_count", inventory.residual().count().to_string());
+            push(
+                "descriptors.asserts_clean_boundary",
+                inventory.asserts_clean_boundary().to_string(),
+            );
+        }
+
+        push("policy.unmapped_count", self.unmapped_policy.len().to_string());
+        for (index, statement) in self.unmapped_policy.iter().enumerate() {
+            push(&format!("policy.unmapped.{index}"), statement.clone());
+        }
+
+        lines
+    }
+}
