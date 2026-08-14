@@ -51,8 +51,11 @@
 //! `EnforcementEvidence::supports_prevention_claim` is false for every domain on
 //! the Sandlock backend, always: the kernel returns a denial to the *confined
 //! process* as an errno, and the mechanism exposes no out-of-process decision
-//! record. So this backend **prevents** — measurably, with controls — while AASM
-//! **cannot evidence** prevention. [`assert_no_prevention_claim`] is how every
+//! record. In the ADR 0033 §6 vocabulary the measured fact is **Denied before
+//! execution** at the kernel — the action did not take effect, and the decision
+//! preceded the effect — while at AASM's evidence layer the same action is
+//! **Unmeasured**, since the mechanism hands out no decision record for the
+//! pipeline to attribute. [`assert_no_prevention_claim`] is how every
 //! scenario re-states that ceiling, and a scenario that measures a real denial
 //! and then asserts a prevention claim would be asserting a lie about the
 //! evidence pipeline rather than about the kernel.
