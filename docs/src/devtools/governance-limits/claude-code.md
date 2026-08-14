@@ -22,8 +22,8 @@
 | process spawn | Partial — eBPF | eBPF tracepoint on `sched_process_exec` is the detection path; no SDK is embedded in Claude Code to govern spawns directly |
 | MCP allowlist | Yes | The adapter writes `enabledMcpjsonServers` / `disabledMcpjsonServers` into the managed `settings.json` (`aa-devtool-claude-code/src/apply.rs`) — not a separate `mcp_servers.json` |
 | sub-agent lineage | **No (L0)** | Claude Code sub-agents are not registered, get no topology entry and no per-child policy scope — see the [L0-L3 Capability Matrix](../../governance/capability-matrix.md). No SDK is embedded in Claude Code |
-| prompt redaction | Yes | Proxy intercepts all outbound API traffic and applies redaction rules |
-| response redaction | Yes | Proxy intercepts all inbound API responses |
+| prompt redaction | Yes — on the LLM host | Redaction runs on what the proxy decrypts, and `llm_only` defaults to `true`: only the built-in LLM providers plus any operator or integration `mitm_hosts` entry are MitM'd, and every other host is transparently tunnelled and never scanned (`aa-proxy/src/config.rs`). Claude Code's `api.anthropic.com` traffic is in the built-in set, so its prompts are covered; the MCP-registry and telemetry endpoints it also calls are not |
+| response redaction | Yes — on the LLM host | Same scope as prompt redaction: inbound bodies are scanned on MitM'd hosts only. A tunnelled host's response is never decrypted, so nothing in it can be redacted |
 | budget enforcement | Yes | Gateway tracks spend from proxy-observed request/response pairs for the managed launch — no SDK is embedded to emit cost events directly |
 | audit ingestion | Yes | The managed launch injects `AA_AGENT_ID` and the proxy records the requests it intercepts for that process (measured: two `/v1/messages` POSTs, an MCP-registry GET and a telemetry POST for one headless run — `AAASM-5276`). It is not a complete record: the prevention-evidence sink is bounded and lossy by design — it drops on a full channel and deletes on rotation, counting both in its `SinkCompleteness` sidecar (`AAASM-5449`). There is no SDK-level semantic event stream |
 
