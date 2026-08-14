@@ -94,6 +94,17 @@ on:
       - "scripts/install.sh"
       - "metadata/versions.rb"
       - "scripts/check-release-completeness.sh"
+      # AAASM-5714 AC4: the Dockerfiles are the `ghcr-container` channel's real
+      # packaging surface — a binary enters a published image through a
+      # Dockerfile instruction, not through the workflow that calls buildx.
+      # Measured with picomatch (the matcher dorny/paths-filter uses) against
+      # the filter as it stood before this change: `aa-gateway/Dockerfile` and
+      # `docker/Dockerfile.node-20-slim` matched NO existing entry, so bundling
+      # a backend by editing one of them selected no job at all. The smoke
+      # fixtures under `docker/smoke/**` stay unselected — they build nothing
+      # that is published.
+      - "aa-*/Dockerfile"
+      - "docker/Dockerfile.*"
       # AAASM-5677: inputs of the `governance-coverage` gate below. Paired with
       # the `governance` router filter — a router filter without a matching
       # `on.*.paths` entry is a dead trigger, and on `push` that means the gate
@@ -299,6 +310,10 @@ jobs:
               - 'scripts/install.sh'
               - 'metadata/versions.rb'
               - 'scripts/check-release-completeness.sh'
+              # AAASM-5714 AC4. Paired with the matching `on.push.paths`
+              # entries above — a router filter without one is a dead trigger.
+              - 'aa-*/Dockerfile'
+              - 'docker/Dockerfile.*'
             # AAASM-5708: the Linux process-isolation backend and the contract it
             # implements. Narrower than `rust` on purpose — this lane installs a
             # third-party confinement binary and runs eight confined processes
