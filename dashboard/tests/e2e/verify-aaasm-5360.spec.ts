@@ -8,9 +8,9 @@ import { expect, test } from '@playwright/test'
  * AAASM-5360's verification plan requires screenshots of the sensitive-data
  * views taken from the running application, and says in terms that "mock-only
  * screenshots are not acceptable when the real app can be run". `tests/e2e/README.md`
- * records why that instruction matters here more than usual: of the 44 gated
- * specs, **all 44 stub every network call**, so the gate compares the frontend
- * against its own hand-written mocks and cannot observe the real API at all.
+ * records why that instruction matters here more than usual: **every** gated
+ * spec stubs its network calls, so the gate compares the frontend against its
+ * own hand-written mocks and cannot observe the real API at all.
  * The AAASM-4892 pagination-envelope breakage is the standing proof — the app
  * had already been fixed and it was the *mocks* that were stale.
  *
