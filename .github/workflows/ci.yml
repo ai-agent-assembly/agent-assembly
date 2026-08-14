@@ -36,6 +36,11 @@ on:
       # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
       - ".ci/verify-range-builds.sh"
       - ".ci/check-compatibility-matrix.sh"
+      # AAASM-5738: same rule, for the detection-closure gate. Paired with the
+      # `rust` router filter below; on `main` this is what makes a script-only
+      # merge produce a check run at all, rather than none — and an absent check
+      # reads as "not applicable", not as "failing".
+      - "scripts/check_detection_egress_closure.py"
       # AAASM-5708: the evidence-ledger summary and the nextest profile that
       # produces its denominator. Paired with the `isolation_backend` router
       # filter below — a router filter without a matching `on.*.paths` entry is
@@ -204,6 +209,14 @@ jobs:
               - 'deny.toml'
               - '.ci/verify-range-builds.sh'
               - '.ci/check-compatibility-matrix.sh'
+              # AAASM-5738: the closure gate's own script. Its VERDICT is the
+              # `EXPECTED` table inside this file, not the Cargo manifests — so
+              # without this entry a pull request that only edits the script
+              # (adding a crate to EXPECTED to silence a drift, loosening the
+              # parser, deleting a selection) skips the job, and `ci-success`
+              # counts a skip as a pass. The gate would merge its own weakening
+              # having never run.
+              - 'scripts/check_detection_egress_closure.py'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
@@ -986,11 +999,15 @@ jobs:
     # sensitive content must not be sent to third-party SaaS DLP or
     # classification services").
     #
-    # Gated on `changes.rust`, which is the right filter here rather than a new
-    # one: its globs already include `Cargo.toml`, `Cargo.lock`,
-    # `aa-*/**/*.toml` and this workflow — every path through which a new
-    # dependency can enter the detector's closure. A narrower filter would be a
-    # dead trigger for the exact change class this job exists to catch.
+    # Gated on `changes.rust`. Its globs cover `Cargo.toml`, `Cargo.lock`,
+    # `aa-*/**/*.toml` and this workflow — every path a new *dependency* enters
+    # through — plus, since review, the gate's own script.
+    #
+    # That last one was missing and mattered: the verdict is the `EXPECTED`
+    # table inside the script, not the manifests, so a pull request editing only
+    # the script skipped this job while `ci-success` counted the skip as a pass.
+    # An earlier version of this comment asserted the filter already covered
+    # "every path", which was true of dependencies and false of the gate itself.
     if: needs.changes.outputs.rust == 'true'
     name: Detection fast path has no outbound capability
     runs-on: ubuntu-latest
@@ -1058,7 +1075,9 @@ jobs:
           fi
 
           host_ifaces=$(ip -o link show | wc -l)
-          ns_ifaces=$(sudo unshare -n -- ip -o link show | wc -l)
+          # Measured through the SAME wrapper the tests use — `runuser` — so the
+          # control exercises the shape under test rather than a simpler one.
+          ns_ifaces=$(sudo unshare -n -- runuser -u "$(id -un)" -- ip -o link show | wc -l)
           if [ "$ns_ifaces" -ne 1 ]; then
             echo "::error::expected exactly 1 interface inside the namespace (a"
             echo "::error::down lo), found $ns_ifaces — this is not an isolated"
@@ -1066,12 +1085,25 @@ jobs:
             exit 1
           fi
 
-          if sudo unshare -n -- curl -sS --max-time 8 https://example.com >/dev/null 2>&1; then
-            echo "::error::reached the network from inside the namespace."
-            exit 1
-          fi
+          # curl must EXIST before its failure can mean anything: a missing
+          # binary exits 127, which a bare `if` reads as "egress denied". That
+          # is the same defect this control was rewritten to remove, one level
+          # further down.
+          command -v curl >/dev/null || { echo "::error::curl absent; the egress probe cannot run"; exit 1; }
+          set +e
+          sudo unshare -n -- curl -sS --max-time 8 https://example.com >/dev/null 2>&1
+          curl_status=$?
+          set -e
+          case "$curl_status" in
+            0)  echo "::error::reached the network from inside the namespace."; exit 1 ;;
+            6|7|28) : ;;  # resolve / connect / timeout — a real network failure
+            *)  echo "::error::curl exited $curl_status, which is not a network"
+                echo "::error::failure (expected 6, 7 or 28). The probe did not"
+                echo "::error::demonstrate egress denial."
+                exit 1 ;;
+          esac
 
-          echo "namespace created; 1 interface inside vs $host_ifaces on the host; egress denied"
+          echo "namespace created; 1 interface inside vs $host_ifaces on the host; egress denied (curl $curl_status)"
 
       # Runs the prebuilt binaries rather than `cargo test`, so nothing inside
       # the namespace wants a registry, a lockfile check or CARGO_HOME — a cargo
