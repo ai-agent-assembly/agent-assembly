@@ -14,8 +14,12 @@ survived on the repository's front page while a docs pipeline went green.
 They enforce different properties and it matters that they are not confused.
 `check_absolutes_unwaivable.py` is a *meta*-check: it verifies that a governance
 document does not declare a banned absolute to be waivable. It never looks for a
-banned absolute in product copy, and it globs only `docs/src/adr/*`,
-`docs/src/development/*` and `docs/TRUTH-ADOPTION.md`. Pointed directly at
+banned absolute in product copy, and its `DEFAULT_GLOBS` reach only
+`docs/src/adr/*.md`, `docs/src/development/*.md`, `TRUTH-ADOPTION.md`,
+`docs/TRUTH-ADOPTION.md` and `verification-reports/**/*.md` — read from that
+tuple rather than remembered, because the last two arrived after this note was
+first written and a stale account of a sibling gate's reach is how two checkers
+come to assume each other covers a file neither does. Pointed directly at
 `README.md` it exits 0 — verified, not assumed. A green run of that script is
 therefore not evidence that no banned absolute shipped, and folding this rule set
 into it would make one exit code stand for two unrelated claims.
