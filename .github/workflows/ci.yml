@@ -94,6 +94,17 @@ on:
       - "scripts/install.sh"
       - "metadata/versions.rb"
       - "scripts/check-release-completeness.sh"
+      # AAASM-5714 AC4: the Dockerfiles are the `ghcr-container` channel's real
+      # packaging surface — a binary enters a published image through a
+      # Dockerfile instruction, not through the workflow that calls buildx.
+      # Measured with picomatch (the matcher dorny/paths-filter uses) against
+      # the filter as it stood before this change: `aa-gateway/Dockerfile` and
+      # `docker/Dockerfile.node-20-slim` matched NO existing entry, so bundling
+      # a backend by editing one of them selected no job at all. The smoke
+      # fixtures under `docker/smoke/**` stay unselected — they build nothing
+      # that is published.
+      - "aa-*/Dockerfile"
+      - "docker/Dockerfile.*"
       # AAASM-5677: inputs of the `governance-coverage` gate below. Paired with
       # the `governance` router filter — a router filter without a matching
       # `on.*.paths` entry is a dead trigger, and on `push` that means the gate
@@ -299,6 +310,10 @@ jobs:
               - 'scripts/install.sh'
               - 'metadata/versions.rb'
               - 'scripts/check-release-completeness.sh'
+              # AAASM-5714 AC4. Paired with the matching `on.push.paths`
+              # entries above — a router filter without one is a dead trigger.
+              - 'aa-*/Dockerfile'
+              - 'docker/Dockerfile.*'
             # AAASM-5708: the Linux process-isolation backend and the contract it
             # implements. Narrower than `rust` on purpose — this lane installs a
             # third-party confinement binary and runs eight confined processes
@@ -1671,6 +1686,186 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # AAASM-5694: the one lane in this repository that compares the dashboard
+  # against the *real* API rather than against its own fixtures.
+  #
+  # `dashboard-e2e` above stubs every network call in every one of its gated
+  # specs, so its real-backend coverage is exactly zero and it cannot see
+  # backend contract drift. AAASM-4892 is the demonstrated cost: the pagination
+  # envelope changed, the app had already been fixed, and the *mocks* were what
+  # went stale — the gate stayed green against a contract the backend no longer
+  # had. Recovering that needs a Rust-side lane, not a shorter quarantine list.
+  #
+  # It runs on the union of dashboard and Rust API changes, because either side
+  # can break the contract and only one of them is watched today.
+  dashboard-e2e-real-backend:
+    name: Dashboard e2e (real backend)
+    #
+    # `needs` both builders and `if: always()` so the job survives one of them
+    # skipping. An earlier version had `needs: [changes, dashboard-build]` with a
+    # dashboard-OR-rust condition, and `dashboard-build` is dashboard-only — so on
+    # a **Rust-only** pull request this lane either skipped (and `ci-success`
+    # treats a skipped need as passing) or ran and died on a missing artifact.
+    # Either way the one lane that can observe backend contract drift was absent
+    # on exactly the changes that cause it, which is AAASM-4892's shape again.
+    needs: [changes, dashboard-build, dashboard-assets]
+    # `!cancelled()` and not `always()`: this workflow sets
+    # `cancel-in-progress` for pull requests, and under `always()` a superseded
+    # run would still start this job — ~15 min of pre-build, server build and
+    # browser provisioning — only to die at the download. Requiring the builder
+    # that will actually supply the artifact to have **succeeded** (rather than
+    # merely not failed) closes the same hole for a *skipped* builder, e.g. when
+    # `dashboard-typecheck` fails and `dashboard-build` never runs.
+    if: >-
+      !cancelled() &&
+      needs.changes.result == 'success' &&
+      (
+        (needs.changes.outputs.dashboard == 'true' &&
+         needs.dashboard-build.result == 'success') ||
+        (needs.changes.outputs.dashboard != 'true' &&
+         needs.changes.outputs.rust == 'true' &&
+         needs.dashboard-assets.result == 'success')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.1
+        with:
+          shared-key: dashboard-e2e-real-backend
+
+      - name: Install protoc
+        # `aa-proto`'s build script shells out to `protoc`, and the runner image
+        # does not ship it — every other Rust job here installs it the same way.
+        # Without it the first cargo invocation dies with
+        #   Could not find `protoc` … try setting the `PROTOC` environment variable
+        # which is what took this lane red on its first CI run while it passed
+        # locally, where protoc happened to be installed.
+        run: sudo apt-get install -y protobuf-compiler
+
+      - name: Pre-build the hitl-approval fixture
+        # `hitl-approval` spawns its own gateway via `cargo test --test
+        # e2e_hitl_approval`, and `hitl-fixture.ts` waits up to 4 minutes for it
+        # to print READY. Compiling inside that window on a cold runner spends
+        # the whole budget on rustc, so the fixture is built here — where a
+        # build failure is reported as a build failure — and the spec's wait
+        # then covers only process start.
+        #
+        # No Docker: this fixture's `TopologyTestEnv` is backed by in-memory
+        # stores. The testcontainers dependency in `aa-integration-tests` belongs
+        # to `audit_consumer_verify.rs`, a different target.
+        #
+        # Command must match `hitl-fixture.ts`'s spawn EXACTLY — it runs
+        # `cargo test --test e2e_hitl_approval` from the workspace root with no
+        # `-p`. An earlier version pre-built with `-p aa-integration-tests`,
+        # which is a different package selection, therefore a different feature
+        # unification, therefore a different binary hash — so the fixture still
+        # compiled inside its own 4-minute window and cleared it by ~13 s.
+        # Measured after the fix: the whole lane runs in 37 s and the fixture's
+        # `beforeAll` in ~33 s, against ~227 s before. Step order relative to
+        # `Build aa-api-server` turned out not to matter — cargo keys artifacts
+        # by a hash that includes the feature set, so the two builds coexist.
+        run: cargo test --no-run --test e2e_hitl_approval
+
+      - name: Build aa-api-server
+        # `aa-gateway --mode local` deliberately does not construct
+        # `aa_api::AppState`, so every /api/v1/* path returns the SPA fallback as
+        # text/html. The REST surface comes from this binary, and that is not
+        # discoverable from the gateway's own output — AAASM-5694 records it
+        # because it is the first wall anyone hits trying to "run the app".
+        run: cargo build -p aa-api --bin aa-api-server
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: dashboard/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: dashboard
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate API types from OpenAPI spec
+        working-directory: dashboard
+        run: pnpm generate:api
+
+      # `dashboard-build` publishes `dashboard-dist`; `dashboard-assets` (the
+      # rust-gated builder) publishes `dashboard-dist-rust`. Exactly one of them
+      # ran, and the two conditions below select on the same `changes` outputs
+      # that decided which — so selection is by router output, not by probing for
+      # existence. A missing artifact fails at `download-artifact` itself.
+      - name: Download dashboard dist (dashboard-gated build)
+        if: needs.changes.outputs.dashboard == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dashboard-dist
+          path: dashboard/dist/
+
+      - name: Download dashboard dist (rust-gated build)
+        if: needs.changes.outputs.dashboard != 'true' && needs.changes.outputs.rust == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dashboard-dist-rust
+          path: dashboard/dist/
+
+      - name: Fail loudly if the dist has no index.html
+        # Narrower than it looks, and deliberately kept: `download-artifact`
+        # already fails on a *missing* artifact, so the only state this catches
+        # is one that uploaded but is empty or mis-laid-out. Without it the
+        # preview server serves nothing and every spec fails with an unhelpful
+        # navigation error instead of naming the cause.
+        run: test -f dashboard/dist/index.html
+
+      - name: Install Playwright chromium + OS deps
+        working-directory: dashboard
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Boot aa-api-server and wait for health
+        env:
+          AASM_API_AUTH: 'off'
+          AA_API_ADDR: 127.0.0.1:7700
+        run: |
+          set -euo pipefail
+          ./target/debug/aa-api-server &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:7700/api/v1/health >/dev/null 2>&1; then
+              echo "aa-api-server is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "aa-api-server did not become healthy within 60s" >&2
+          exit 1
+
+      - name: Run the real-backend specs
+        working-directory: dashboard
+        env:
+          AA_API_BASE: http://127.0.0.1:7700
+        run: pnpm exec playwright test --config=playwright.realbackend.config.ts
+
+      # The step that makes this lane mean something. Playwright exits 0 on a run
+      # where every real-backend spec skipped for want of a backend, so an
+      # exit-code-only gate would record verification that never happened —
+      # the precise defect AAASM-5694 reports. This asserts the population.
+      - name: Assert the real-backend specs actually ran
+        if: always()
+        working-directory: dashboard
+        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 12
+
+      - name: Upload real-backend report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dashboard-e2e-real-backend-results
+          path: dashboard/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
   dashboard-codegen-drift:
     name: Dashboard codegen drift check
     needs: [changes]
@@ -2138,7 +2333,7 @@ jobs:
       # above are quality/acceptance signals; this one asserts functional
       # behaviour (routes render, client-side behaviour holds, the rendered app
       # still works against a stubbed backend) exactly as `dashboard-test` does,
-      # so it belongs in the same bucket. Note what it does NOT assert: all 44
+      # so it belongs in the same bucket. Note what it does NOT assert: the
       # gated specs stub every call, so this is not an API-contract check and
       # cannot see backend drift; real-backend coverage is zero because the one
       # spec that talks to a live gateway needs `cargo` (dashboard/tests/e2e/
@@ -2148,6 +2343,11 @@ jobs:
       # specs (AAASM-5195) and ratchets that list against a frozen baseline
       # (QUARANTINE_BASELINE in playwright.quarantine.ts).
       - dashboard-e2e
+      # AAASM-5694: gated for the same reason as `dashboard-e2e`, and with more
+      # force — this is the only lane that can observe backend contract drift at
+      # all. Left advisory it would reproduce the defect it was built to fix: a
+      # real-backend signal that exists, is green, and gates nothing.
+      - dashboard-e2e-real-backend
       - dashboard-codegen-drift
       - aa-cli-compat
       - devint-reference-client

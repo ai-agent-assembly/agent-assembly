@@ -94,19 +94,39 @@
     }
   },
 
+  "_about_packaging_paths": [
+    "AAASM-5714 AC4. `packaging_paths` is the set of files IN THIS REPOSITORY",
+    "that decide what a channel actually ships. It exists so a backend's",
+    "per-channel strategy stops being an unverifiable assertion: the gate reads",
+    "these files and checks the claim against them, rather than taking the",
+    "manifest's word for it.",
+    "",
+    "A glob that matches no file is an error, not an empty result — a scan over",
+    "nothing would 'confirm' any claim at all. The gate also refuses a surface",
+    "made only of its own inputs (this manifest, THIRD_PARTY_NOTICES.md, the",
+    "gate script), because a check that reads itself measures nothing.",
+    "",
+    "`packaging_owner: \"external-repo\"` is the only way to declare an EMPTY",
+    "surface. It records that the deciding files live in another repository and",
+    "that this gate therefore cannot corroborate the claim for that channel —",
+    "an admitted blind spot rather than a silent one."
+  ],
+
   "channels": [
     {
       "id": "github-release",
       "distribution": "oss",
       "artifact": "aasm-*.tar.gz release assets + SHA256SUMS",
       "owner": ".github/workflows/release.yml",
-      "notes": "Assets are checksummed into SHA256SUMS and cosign keyless-signed. A bundled backend binary must get the same treatment (see docs/release/isolation-backend-licensing.md)."
+      "packaging_paths": [".github/workflows/release.yml"],
+      "notes": "Assets are checksummed into SHA256SUMS and cosign keyless-signed. A bundled backend binary must get the same treatment (see docs/release/isolation-backend-licensing.md). The `Archive binaries` step in release.yml is the exact place a backend binary would enter this channel, which is why that file is the scanned surface."
     },
     {
       "id": "crates-io",
       "distribution": "oss",
       "artifact": "published workspace crates",
       "owner": ".github/workflows/release.yml (publish-crates job)",
+      "packaging_paths": [".github/workflows/release.yml"],
       "notes": "Source-only channel. crates.io packages carry no prebuilt backend binary; a build.rs that downloaded one would make this a `downloaded` channel and is deliberately not permitted without a review decision."
     },
     {
@@ -114,35 +134,46 @@
       "distribution": "oss",
       "artifact": "ai-agent-assembly/homebrew-tap formulas",
       "owner": ".github/workflows/release.yml (update-homebrew-tap job)",
-      "notes": "Generator model — metadata/versions.rb IN THE TAP REPO is source of truth and formulas are regenerated from it. The formulas resolve GitHub Release assets, so this channel inherits whatever github-release ships."
+      "packaging_paths": [".github/workflows/release.yml"],
+      "notes": "Generator model — metadata/versions.rb IN THE TAP REPO is source of truth and formulas are regenerated from it. The formulas resolve GitHub Release assets, so this channel inherits whatever github-release ships. PARTIAL SURFACE: only the `update-homebrew-tap` job is in this repository; the formula bodies live in the tap repo, so a backend added directly to a formula there would not be seen from here — it could only reach a user through a GitHub Release asset, which release.yml does cover."
     },
     {
       "id": "ghcr-container",
       "distribution": "oss",
       "artifact": "ghcr.io container images",
       "owner": ".github/workflows/docker.yml",
-      "notes": "The only channel with existing SBOM coverage today (buildx `sbom: true`). An image-layer SBOM covers a backend binary baked into the image; it does NOT cover one the container downloads at runtime."
+      "packaging_paths": [
+        ".github/workflows/docker.yml",
+        "aa-*/Dockerfile",
+        "docker/Dockerfile.*"
+      ],
+      "notes": "The only channel with existing SBOM coverage today (buildx `sbom: true`). An image-layer SBOM covers a backend binary baked into the image; it does NOT cover one the container downloads at runtime. The Dockerfiles are listed alongside the workflow because a binary enters an image through a Dockerfile instruction, not through the workflow that invokes buildx."
     },
     {
       "id": "shell-installer",
       "distribution": "oss",
       "artifact": "scripts/install-cli.sh",
       "owner": "scripts/install-cli.sh",
-      "notes": "Fetches GitHub Release assets and verifies SHA256SUMS via cosign. If it is ever taught to fetch a backend from a non-AASM origin, that channel's strategy becomes `downloaded` and the license gate applies to it."
+      "packaging_paths": ["scripts/install-cli.sh", "scripts/install.sh"],
+      "notes": "Fetches GitHub Release assets and verifies SHA256SUMS via cosign. If it is ever taught to fetch a backend from a non-AASM origin, that channel's strategy becomes `downloaded` and the license gate applies to it. scripts/install.sh is scanned too: it is the developer bootstrap rather than the published installer, but it installs host tooling and is the other script a backend could be slipped into."
     },
     {
       "id": "enterprise",
       "distribution": "proprietary",
       "artifact": "ai-agent-assembly/agent-assembly-enterprise distributions",
       "owner": "agent-assembly-enterprise (separate repo)",
-      "notes": "Declared here so the stricter proprietary allowlist is evaluated for it. This repo cannot enforce what the enterprise repo builds; the manifest records the intended boundary and this gate fails if a backend's license is not cleared for it."
+      "packaging_owner": "external-repo",
+      "packaging_paths": [],
+      "notes": "Declared here so the stricter proprietary allowlist is evaluated for it. This repo cannot enforce what the enterprise repo builds; the manifest records the intended boundary and this gate fails if a backend's license is not cleared for it. Because no deciding file is in this repository, the packaging-surface corroboration below CANNOT run for this channel — that limit is declared, not worked around."
     },
     {
       "id": "saas",
       "distribution": "proprietary",
       "artifact": "hosted control plane / runners",
       "owner": "ai-agent-assembly/cloud (separate repo)",
-      "notes": "Hosted execution. Recorded because network-use obligations (e.g. AGPL §13) bite on this channel even when nothing is redistributed — the case a redistribution-only review would miss."
+      "packaging_owner": "external-repo",
+      "packaging_paths": [],
+      "notes": "Hosted execution. Recorded because network-use obligations (e.g. AGPL §13) bite on this channel even when nothing is redistributed — the case a redistribution-only review would miss. Deciding files live in the cloud repo, so this channel is not corroborable from here either."
     }
   ],
 
@@ -163,6 +194,27 @@
         "ticket": "AAASM-5708",
         "reviewed_at": "2026-08-13",
         "capability_evidence": "ci.yml job `isolation-backend-linux` installs exactly this artifact (digest verified by `sha256sum -c` in the job), then runs `aa-isolation-sandlock`'s confinement suite, which measures each claimed capability against observed behaviour with a control for every scenario: a forbidden write leaves an existing file byte-for-byte unchanged and creates nothing (pre-effect), a forbidden read returns no bytes, a connection to an unpermitted loopback destination never reaches a listener this repository owns, a process ceiling of one stops a grandchild from existing, and a descendant re-invoking the mechanism with a wider grant is still denied while the identical command outside the boundary succeeds. `.ci/test-evidence-summary.sh --require-evidence` fails the job if every scenario declined, so a green lane cannot mean an unmeasured one. A version bump must re-run that lane: the capability reports in `aa-isolation-sandlock/src/capability.rs` are gated on the live probe, so a version that stops denying reports itself as unable to prevent rather than passing on the strength of this record."
+      },
+      "distribution_probe": {
+        "_about": [
+          "The executable name(s) AASM would have to name somewhere in its",
+          "packaging code in order to ship this backend. The gate greps every",
+          "channel's `packaging_paths` for these strings and requires the",
+          "result to agree with `channels` below: a backend claiming",
+          "non-distribution everywhere must appear NOWHERE in the packaging",
+          "surface, and a backend claiming `bundled`/`downloaded`/`source`",
+          "must appear SOMEWHERE in the surface of a channel it claims.",
+          "",
+          "Matching is a case-insensitive substring, deliberately over-broad. A",
+          "false positive is a loud failure someone reads and resolves; a false",
+          "negative is the silent hole this whole file exists to close.",
+          "",
+          "Note what this does NOT cover: ci.yml installs this exact binary in",
+          "the `isolation-backend-linux` job, and that is correct — a CI test",
+          "lane is not a distribution channel, so ci.yml is in no channel's",
+          "packaging surface and the install there does not trip this probe."
+        ],
+        "binary_names": ["sandlock"]
       },
       "channels": {
         "github-release": "system",
