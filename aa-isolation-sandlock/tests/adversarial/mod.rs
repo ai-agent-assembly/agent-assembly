@@ -713,9 +713,25 @@ pub fn shell_spec_with_system_reads(
     reads: Vec<String>,
     writes: Vec<String>,
 ) -> ExecutionSpec {
+    shell_spec_using("/bin/sh", script, system, reads, writes)
+}
+
+/// The same, with the shell named.
+///
+/// Exists for the alternate-executable-path attack: `/bin/sh` and `/usr/bin/sh`
+/// are two names for one binary on a merged-`/usr` host, and a boundary keyed on
+/// the path a program was reached by rather than on the process would confine one
+/// and not the other.
+pub fn shell_spec_using(
+    program: &str,
+    script: &str,
+    system: Vec<String>,
+    reads: Vec<String>,
+    writes: Vec<String>,
+) -> ExecutionSpec {
     let mut all_reads = system;
     all_reads.extend(reads);
-    ExecutionSpec::new("/bin/sh", IdentityRef::root("agent-under-test"))
+    ExecutionSpec::new(program, IdentityRef::root("agent-under-test"))
         .with_args(["-c", script])
         .with_requirement(
             ControlRequirement::prevent(CapabilityDomain::FilesystemRead)
