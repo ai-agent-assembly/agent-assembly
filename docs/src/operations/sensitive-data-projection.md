@@ -79,7 +79,7 @@ $ aa-gateway --policy /etc/agent-assembly/policy.yaml --listen 127.0.0.1:50051
 ```
 
 The tables are created if absent — `CREATE TABLE IF NOT EXISTS`, applied at boot
-by `migrate_sensitive_data_projection`. That is the whole of it: **there is no
+by `migrate_sensitive_data_projection`. That is the extent of it: **there is no
 in-place schema evolution.** Against a database whose tables already exist the
 statements are a no-op, so a table left over from an earlier build is left as it
 stands — its columns and its uniqueness key are not altered to match the build
@@ -102,16 +102,18 @@ $ unset AA_SENSITIVE_DATA_PROJECTION_DB
 $ aa-gateway --policy /etc/agent-assembly/policy.yaml --listen 127.0.0.1:50051
 ```
 
-Writes stop. Nothing else changes, and that is the property the revert rests on:
-the projection is a **separate table written alongside the existing audit
-bridge, which this subsystem does not modify**. There is no back-migration to
-run, because nothing was migrated away from.
+Writes to this table stop, and the revert rests on how narrow that is: the
+projection is a **separate table written alongside the existing audit bridge,
+which this subsystem does not modify**. There is no back-migration to run,
+because nothing was migrated away from. What the gateway does outside this table
+— detection, evaluation, the audit path — is reached by other code and is not
+switched by this variable.
 
 ### What happens to rows already written
 
-They stay, and they stay readable. Each persisted decision event and finding row
-carries `SENSITIVE_DATA_SCHEMA_VERSION`, and the rule enforced on every read
-compares the **major** only — `check_readable`, in
+They stay, and they stay readable. The writer stamps
+`SENSITIVE_DATA_SCHEMA_VERSION` onto the decision-event and finding rows it
+persists, and the read path compares the **major** only — `check_readable`, in
 `aa-gateway/src/storage/sensitive_data/rows.rs`:
 
 ```rust
@@ -255,8 +257,9 @@ Stating the boundary precisely matters more than stating it flatteringly.
   regardless of this setting. It predates this subsystem — it has been in the
   product since AAASM-24 (2026-04-27) — and this projection is a consumer of its
   results, not a gate on them. Reverting the projection stops *recording*
-  classifications; it does not stop the gateway from *making* them, and it does
-  not change any policy decision.
+  classifications; it does not stop the gateway from *making* them. The policy
+  verdict is computed on a path this variable is not read on, so switching the
+  projection does not move it.
 - **It is not a staged or percentage rollout.** The setting is per-process and
   binary: a gateway either writes the projection or does not. There is no canary
   percentage, no per-org enablement, and no gradual ramp.
@@ -293,7 +296,7 @@ outputs could be compared.
 
 ### "Shadow" in this codebase means something else
 
-Three symbols look like criterion-10 evidence and none of them is. All mean
+Three symbols look like criterion-10 evidence and none of them is. All three mean
 **observe / dry-run enforcement mode** (AAASM-1564, ADR 0021) — what a decision
 *would* have been — not a comparison of two implementations:
 

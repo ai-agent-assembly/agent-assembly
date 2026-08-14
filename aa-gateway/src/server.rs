@@ -156,12 +156,14 @@ async fn setup_audit(
 ///   wrong behaviour for a governance surface. `--mode local` and
 ///   `--mode remote` never read this variable, so under those modes a bad path
 ///   is neither opened nor reported.
-/// * **Reverting is unsetting it.** Writes stop; rows already written stay and
-///   stay readable, because every row carries `SENSITIVE_DATA_SCHEMA_VERSION`
-///   under a major-only compatibility rule.
+/// * **Reverting is unsetting it.** Writes to this table stop; rows already
+///   written stay and stay readable, because the writer stamps
+///   `SENSITIVE_DATA_SCHEMA_VERSION` onto what it persists and the read path
+///   applies a major-only compatibility rule.
 ///
 /// It gates *recording*, not *detection*: the credential scanner runs either
-/// way and predates this subsystem, so this setting changes no policy decision.
+/// way and predates this subsystem. The policy verdict is computed on a path
+/// that does not read this variable, so switching it does not move the verdict.
 pub const SENSITIVE_DATA_PROJECTION_DB_ENV: &str = "AA_SENSITIVE_DATA_PROJECTION_DB";
 
 /// How many projected decisions may await persistence — see
