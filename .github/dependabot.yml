@@ -66,6 +66,51 @@ updates:
       prefix: "⬆"
     open-pull-requests-limit: 10
 
+  # ── Developer-integration reference client (pnpm) ────────────────────────
+  # AAASM-5675. This directory had a pnpm-lock.yaml and no entry here, which is
+  # a worse state than being uncovered: security updates are advisory-driven and
+  # run against any manifest regardless of this file, so the directory got a
+  # Dependabot *security* job with no configuration able to satisfy it. The job
+  # ran with `"allowed-updates":[{"dependency-type":"direct"}]` and
+  # `"update-subdependencies":false`, and the advisory was for a **transitive**
+  # `js-yaml` — the updater was asked to patch a package it was simultaneously
+  # forbidden to touch, and errored out on every attempt.
+  #
+  # `dependency-type: "all"` is the fix and is load-bearing: for npm, Dependabot
+  # defaults to direct dependencies only, which is precisely the setting that
+  # made the failing job unsatisfiable. The vulnerable package was never in this
+  # directory's package.json and never will be.
+  - package-ecosystem: "npm"
+    directory: "/examples/aa-devint-reference-client"
+    target-branch: "main"
+    schedule:
+      interval: "daily"
+    allow:
+      - dependency-type: "all"
+    labels: ["dependencies", "examples", "pnpm"]
+    commit-message:
+      prefix: "⬆"
+    open-pull-requests-limit: 10
+
+  # ── Integration-test TypeScript agent fixtures (pnpm) ────────────────────
+  # AAASM-5675. Same shape as the entry above, found by the same sweep: a
+  # pnpm-lock.yaml with no entry here. It is test-fixture code and not shipped,
+  # so the blast radius of a vulnerability is smaller — but "smaller" is not the
+  # reason it was uncovered, and an unsatisfiable security job here would fail
+  # exactly as the reference client's did. Covered deliberately rather than left
+  # to be rediscovered.
+  - package-ecosystem: "npm"
+    directory: "/aa-integration-tests/tests/fixtures/agents/typescript"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-type: "all"
+    labels: ["dependencies", "test-fixtures", "pnpm"]
+    commit-message:
+      prefix: "⬆"
+    open-pull-requests-limit: 5
+
   # ── GitHub Actions ────────────────────────────────────────────────────────
   # All actions in .github/workflows/ are pinned to full commit SHAs
   # (per SonarCloud rule S7637). Dependabot will open PRs to update both
