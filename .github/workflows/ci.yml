@@ -1175,6 +1175,26 @@ jobs:
       - name: Detector tests pass with egress denied
         run: |
           set -euo pipefail
+
+          # Pinned population, not a `!= 0` floor. The previous version's own
+          # comment said "assert the population, not just the exit codes" and
+          # then tested `count -eq 0`, so a change that built 1 of the 8
+          # binaries passed it — the "passes by running nothing" shape it meant
+          # to close, one binary short of empty.
+          #
+          # 8 is the measured count for `aa-security` and is expected to move:
+          # adding or removing a test target changes it, and the remedy is to
+          # update this number in the same commit, the same one-line review the
+          # closure gate's EXPECTED table asks for.
+          #
+          # The number pinned is BINARIES, not tests. The test total moves on
+          # every added `#[test]` (326 locally at the time of writing, against
+          # 305 when this job was first measured), which would make a pinned
+          # test count a weekly red for no signal. The binary count moves only
+          # when a test target is added or dropped, which is the structural
+          # change worth a look.
+          expected_bins=8
+
           count=0
           while read -r bin; do
             [ -n "$bin" ] || continue
@@ -1182,15 +1202,16 @@ jobs:
             sudo unshare -n -- runuser -u "$(id -un)" -- "$bin"
             count=$((count + 1))
           done < /tmp/aa-security-tests.txt
-          # Assert the population, not just the exit codes: an empty list would
-          # otherwise sail through this loop and report success having run no
-          # tests — the same "passes by running nothing" shape as a skipped
-          # suite.
-          if [ "$count" -eq 0 ]; then
-            echo "::error::no test binaries were executed under egress denial"
+
+          if [ "$count" -ne "$expected_bins" ]; then
+            echo "::error::ran $count test binary/binaries under egress denial,"
+            echo "::error::expected $expected_bins. If a test target was added or"
+            echo "::error::removed, update expected_bins in this step; if not,"
+            echo "::error::the build step above produced a different population"
+            echo "::error::than this job was pinned against."
             exit 1
           fi
-          echo "ran $count test binary/binaries with egress denied"
+          echo "ran $count test binary/binaries with egress denied (pinned at $expected_bins)"
 
   no-std:
     needs: [changes]
