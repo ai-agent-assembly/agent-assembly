@@ -33,6 +33,7 @@
 - [aasm dashboard](cli/dashboard.md)
 - [aasm gateway](cli/gateway.md)
 - [aasm proxy](cli/proxy.md)
+- [aasm run](cli/run.md)
 - [aasm integrations](cli/integrations.md)
 - [aasm start / stop](cli/start-stop.md)
 - [aasm sandbox](cli/sandbox.md)
@@ -67,6 +68,7 @@
 - [Trust boundaries](security/trust-boundaries.md)
 - [Trust-boundary review checklist](security/trust-boundary-review-checklist.md)
 - [Audit and assurance](security/audit-assurance.md)
+- [Execution isolation](security/execution-isolation.md)
 
 # Architecture
 
