@@ -159,8 +159,15 @@ impl AssemblyClient {
     ///
     /// `details` passes through the advisory preflight before shipping; the
     /// runtime re-scans regardless.
+    ///
+    /// `event_type` is the hook layer's outcome tag (an `aa_core::AuditEventType`
+    /// variant name, or a lower-case action tag). It is classified into the proto's
+    /// typed `action_type` / `decision` / `detail` fields by
+    /// [`classify_hook_event`] — see that function for why the classification
+    /// happens here rather than downstream.
     pub fn report_event(&self, event_type: String, details: String) -> Result<(), SdkClientError> {
         let safe_details = self.apply_preflight(details);
+        let classified = classify_hook_event(&event_type, &safe_details);
 
         let mut labels = HashMap::new();
         labels.insert("event_type".to_string(), event_type);
@@ -168,6 +175,9 @@ impl AssemblyClient {
 
         let event = aa_proto::assembly::audit::v1::AuditEvent {
             event_id: unique_event_id(),
+            action_type: classified.action_type.into(),
+            decision: classified.decision.into(),
+            detail: classified.detail,
             labels,
             ..Default::default()
         };
@@ -301,6 +311,112 @@ impl AssemblyClient {
     /// Returns the list of detected AI frameworks.
     pub fn detected_frameworks(&self) -> Vec<String> {
         self.detected_frameworks.clone()
+    }
+}
+
+/// Hook-layer outcome tags that name an action the governance layer blocked.
+///
+/// Each name is an `aa_core::AuditEventType` variant whose own documentation
+/// describes a blocked outcome, plus the lower-case alias the in-repo callers
+/// use. A tag outside this set is not read as a deny — see
+/// [`classify_hook_event`] for what happens instead.
+const DENIED_EVENT_TAGS: &[&str] = &[
+    "PolicyViolation",
+    "policy_violation",
+    "CredentialLeakBlocked",
+    "MessageBlocked",
+    "ApprovalDenied",
+    "BudgetLimitExceeded",
+];
+
+/// Hook-layer outcome tags that name an action which was intercepted and then
+/// proceeded.
+const ALLOWED_EVENT_TAGS: &[&str] = &[
+    "ToolCallIntercepted",
+    "ToolDispatched",
+    "tool_call",
+    "tool_result",
+    "llm_call",
+];
+
+/// The typed proto fields a hook-layer outcome tag resolves to.
+struct ClassifiedHookEvent {
+    action_type: aa_proto::assembly::common::v1::ActionType,
+    decision: aa_proto::assembly::common::v1::Decision,
+    detail: Option<aa_proto::assembly::audit::v1::audit_event::Detail>,
+}
+
+/// Resolve a hook-layer outcome tag into the proto's typed `action_type`,
+/// `decision` and `detail` fields.
+///
+/// ## Why the classification lives here (AAASM-5783)
+///
+/// This is the seam the defect was fixed at, and the alternative was to teach
+/// the runtime pipeline to read `AuditEvent.labels` instead. The producer side
+/// was chosen for three reasons:
+///
+/// 1. `labels` is declared in `proto/audit.proto` as "arbitrary labels attached
+///    at event creation for downstream query filtering" — an auxiliary index,
+///    not the carrier of a record's governance substance. Making it load-bearing
+///    would contradict the field's stated contract.
+/// 2. The typed fields are what the consumers already read:
+///    `aa-runtime`'s `is_policy_violation`, `enriched_to_audit_entry`/`build_payload`
+///    and `event_type_for`, and `aa-api`'s WebSocket `build_violation_payload`.
+///    Populating them at the producer repairs those four readers at one point.
+///    Teaching each reader a string convention that a single producer emits
+///    would fork one wire contract into two encodings of the same fact, and a
+///    reader not taught the convention would keep reading a deny as an
+///    unspecified allow.
+/// 3. A security classification that keys off an untyped, agent-supplied string
+///    is weaker than one that keys off the proto enum. The SDK controls `labels`
+///    (see `SDK_VERSION_LABEL` in `aa-runtime`, which is treated as an untrusted
+///    claim for exactly this reason).
+///
+/// ## What is carried, and what is not
+///
+/// A denied record carries its tag as `PolicyViolation.blocked_action` and the
+/// preflight-scanned `details` text as `PolicyViolation.reason`, both of which
+/// `build_payload`'s detail summary copies into the durable entry. An allowed
+/// record carries its classification only: the two-string signature supplies no
+/// tool name, run id or latency to put in a `ToolCallDetail`, and inventing one
+/// would be a claim this layer cannot see. Widening the primitive so the SDKs
+/// pass those typed is separate work.
+///
+/// An unrecognised tag leaves `decision` at `DECISION_UNSPECIFIED` rather than
+/// defaulting to allow, so an outcome this function cannot read is not recorded
+/// as a permitted one.
+fn classify_hook_event(event_type: &str, safe_details: &str) -> ClassifiedHookEvent {
+    use aa_proto::assembly::audit::v1::{audit_event::Detail, PolicyViolation};
+    use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+    // The hook layer is the governed-tool-call path, so a tag that does not name
+    // another action class is recorded as a tool call.
+    let action_type = match event_type {
+        "llm_call" => ActionType::LlmCall,
+        "tool_result" => ActionType::ToolResult,
+        _ => ActionType::ToolCall,
+    };
+
+    if DENIED_EVENT_TAGS.contains(&event_type) {
+        return ClassifiedHookEvent {
+            action_type,
+            decision: Decision::Deny,
+            detail: Some(Detail::Violation(PolicyViolation {
+                blocked_action: event_type.to_string(),
+                reason: safe_details.to_string(),
+                ..Default::default()
+            })),
+        };
+    }
+
+    ClassifiedHookEvent {
+        action_type,
+        decision: if ALLOWED_EVENT_TAGS.contains(&event_type) {
+            Decision::Allow
+        } else {
+            Decision::Unspecified
+        },
+        detail: None,
     }
 }
 
@@ -445,6 +561,91 @@ mod tests {
         match rx.try_recv().expect("should receive command") {
             IpcCommand::SendEvent(event) => {
                 assert_eq!(event.labels.get("details").unwrap(), "searched for cats");
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
+    /// AAASM-5783: a denied hook-layer record leaves the producer with the proto's
+    /// typed fields populated, so the readers downstream (which key off
+    /// `action_type` / `decision` / `detail`, not `labels`) can tell it from an
+    /// allowed one. The retrieval-side proof lives in
+    /// `aa-integration-tests/tests/hook_layer_deny_vs_allow.rs`.
+    #[test]
+    fn report_event_types_a_deny_as_a_violation() {
+        use aa_proto::assembly::audit::v1::audit_event::Detail;
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let (client, mut rx) = test_client(vec![]);
+        client
+            .report_event("PolicyViolation".into(), "blocked: shell_exec".into())
+            .unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.action_type, i32::from(ActionType::ToolCall));
+                assert_eq!(event.decision, i32::from(Decision::Deny));
+                match event.detail {
+                    Some(Detail::Violation(ref v)) => {
+                        assert_eq!(v.blocked_action, "PolicyViolation");
+                        assert_eq!(v.reason, "blocked: shell_exec");
+                    }
+                    other => panic!("expected a Violation detail, got {other:?}"),
+                }
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn report_event_types_an_allow_as_an_allowed_tool_call() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let (client, mut rx) = test_client(vec![]);
+        client
+            .report_event("ToolCallIntercepted".into(), "ran: web_search".into())
+            .unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.action_type, i32::from(ActionType::ToolCall));
+                assert_eq!(event.decision, i32::from(Decision::Allow));
+                assert!(event.detail.is_none(), "an allowed record carries no violation detail");
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
+    /// An outcome the classifier cannot read is left unspecified rather than
+    /// recorded as permitted.
+    #[test]
+    fn report_event_leaves_an_unreadable_tag_undecided() {
+        use aa_proto::assembly::common::v1::Decision;
+
+        let (client, mut rx) = test_client(vec![]);
+        client.report_event("SomethingNewer".into(), "…".into()).unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.decision, i32::from(Decision::Unspecified));
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
+    /// The tag and the details text stay in `labels` as well, so the query-filter
+    /// index the field is declared for keeps working alongside the typed fields.
+    #[test]
+    fn report_event_keeps_the_label_index() {
+        let (client, mut rx) = test_client(vec![]);
+        client
+            .report_event("PolicyViolation".into(), "blocked: shell_exec".into())
+            .unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.labels.get("event_type").unwrap(), "PolicyViolation");
+                assert_eq!(event.labels.get("details").unwrap(), "blocked: shell_exec");
             }
             other => panic!("expected SendEvent, got {other:?}"),
         }

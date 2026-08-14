@@ -27,6 +27,8 @@ pub mod cli;
 #[allow(dead_code)]
 pub mod format;
 #[allow(dead_code)]
+pub mod hook_layer;
+#[allow(dead_code)]
 pub mod live_gateway;
 #[allow(dead_code)]
 pub mod mock_llm;
