@@ -122,6 +122,7 @@ fn global_doc() -> PolicyDocument {
         approval_policy: None,
         tools: HashMap::new(),
         capabilities: None,
+        filesystem: None,
     }
 }
 

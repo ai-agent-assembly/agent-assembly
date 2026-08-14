@@ -59,6 +59,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
             deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
             allow_restricted: false,
         }),
+        filesystem: None,
     }
 }
 
@@ -76,6 +77,7 @@ fn no_cap_doc(scope: PolicyScope) -> PolicyDocument {
         approval_policy: None,
         tools: HashMap::new(),
         capabilities: None,
+        filesystem: None,
     }
 }
 

@@ -14,6 +14,7 @@ use std::str::FromStr;
 use super::capability::{Capability, CapabilitySet};
 use super::document::{NetworkPolicy, PolicyDocument, ToolRule};
 use super::error::PolicyParseError;
+use super::filesystem::{FilesystemPolicy, PathScope};
 use super::syscall::SyscallAllowlist;
 
 #[cfg(feature = "serde")]
@@ -41,10 +42,22 @@ mod raw {
         pub capabilities: Option<Capabilities>,
         pub tools: Option<BTreeMap<String, Tool>>,
         pub syscalls: Option<Syscalls>,
+        pub filesystem: Option<Filesystem>,
     }
 
     #[derive(Debug, Deserialize)]
     pub struct Syscalls {
+        pub allow: Option<Vec<String>>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Filesystem {
+        pub read: Option<PathScope>,
+        pub write: Option<PathScope>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct PathScope {
         pub allow: Option<Vec<String>>,
     }
 
@@ -146,12 +159,30 @@ impl PolicyDocument {
             None => None,
         };
 
+        // AAASM-5751. A verb key that is present but carries no `allow:` list
+        // becomes an *empty* scope, which is deny-all — the same fail-closed
+        // reading `syscalls:` with no `allow:` already gets. A `filesystem:`
+        // that states neither verb is normalized to `None`, because it says
+        // nothing about either one and "nothing was said" is a state the
+        // lowering reports distinctly from "nothing is permitted".
+        let filesystem = match spec.filesystem {
+            Some(fs) => {
+                let node = FilesystemPolicy {
+                    read: parse_path_scope(fs.read, "filesystem.read")?,
+                    write: parse_path_scope(fs.write, "filesystem.write")?,
+                };
+                node.is_stated().then_some(node)
+            }
+            None => None,
+        };
+
         let doc = PolicyDocument {
             name,
             network,
             capabilities,
             tools,
             syscall_allowlist,
+            filesystem,
         };
 
         // AAASM-4020: a document that parses but declares no enforcement
@@ -162,6 +193,7 @@ impl PolicyDocument {
             && doc.capabilities.is_none()
             && doc.tools.is_empty()
             && doc.syscall_allowlist.is_none()
+            && doc.filesystem.is_none()
         {
             return Err(PolicyParseError::NoEnforcementSection);
         }
@@ -186,6 +218,25 @@ fn parse_syscall(raw: &str) -> Result<super::syscall::Syscall, PolicyParseError>
     })
 }
 
+/// Parse one `filesystem.<verb>` node into a [`PathScope`] (AAASM-5751).
+///
+/// An absent verb key is `None` — the operator stated nothing about it. A
+/// present key with no `allow:` list is an empty, in-force scope: deny-all.
+///
+/// # Errors
+///
+/// [`PolicyParseError::InvalidPath`] naming `node` so the operator is sent to
+/// the line they wrote, rather than to "somewhere in the policy".
+fn parse_path_scope(raw: Option<raw::PathScope>, node: &str) -> Result<Option<PathScope>, PolicyParseError> {
+    let Some(raw) = raw else { return Ok(None) };
+    let entries = raw.allow.unwrap_or_default();
+    let scope = PathScope::from_paths(&entries).map_err(|reason| PolicyParseError::InvalidPath {
+        raw: format!("{node}.allow"),
+        reason: reason.to_string(),
+    })?;
+    Ok(Some(scope))
+}
+
 /// Top-level / flat-form keys. The flat form lets `spec` fields sit at the top
 /// level, so the spec section names are also accepted here.
 #[cfg(feature = "serde")]
@@ -199,6 +250,7 @@ const TOP_LEVEL_KEYS: &[&str] = &[
     "capabilities",
     "tools",
     "syscalls",
+    "filesystem",
     "schedule",
     "budget",
     "data",
@@ -216,6 +268,7 @@ const SPEC_KEYS: &[&str] = &[
     "capabilities",
     "tools",
     "syscalls",
+    "filesystem",
     "schedule",
     "budget",
     "data",
@@ -230,6 +283,12 @@ const CAPABILITIES_KEYS: &[&str] = &["allow", "deny"];
 
 #[cfg(feature = "serde")]
 const SYSCALLS_KEYS: &[&str] = &["allow"];
+
+#[cfg(feature = "serde")]
+const FILESYSTEM_KEYS: &[&str] = &["read", "write"];
+
+#[cfg(feature = "serde")]
+const PATH_SCOPE_KEYS: &[&str] = &["allow"];
 
 #[cfg(feature = "serde")]
 const TOOL_KEYS: &[&str] = &["allow", "requires_approval_if", "limit_per_hour"];
@@ -269,6 +328,18 @@ fn validate_schema(root: &serde_yaml::Value) -> Result<(), PolicyParseError> {
     }
     if let Some(sys) = effective.get("syscalls").and_then(|v| v.as_mapping()) {
         check_keys(sys, SYSCALLS_KEYS, "syscalls")?;
+    }
+    // AAASM-5751. A misspelled `wrtie:` or `alow:` under `filesystem:` would be
+    // dropped by `#[serde(flatten)]`-adjacent leniency and silently leave the
+    // verb unscoped, which reads as "the operator restricted nothing" — the
+    // exact fail-open AAASM-3874 closed for the other security sections.
+    if let Some(fs) = effective.get("filesystem").and_then(|v| v.as_mapping()) {
+        check_keys(fs, FILESYSTEM_KEYS, "filesystem")?;
+        for verb in FILESYSTEM_KEYS {
+            if let Some(scope) = fs.get(*verb).and_then(|v| v.as_mapping()) {
+                check_keys(scope, PATH_SCOPE_KEYS, &format!("filesystem.{verb}"))?;
+            }
+        }
     }
     if let Some(tools) = effective.get("tools").and_then(|v| v.as_mapping()) {
         for (tname, tval) in tools {
@@ -531,5 +602,142 @@ spec:
         let doc = PolicyDocument::from_yaml("spec:\n  network:\n    allowlist: []\n").unwrap();
         assert!(doc.syscall_allowlist.is_none());
         assert!(doc.allowed_syscalls().is_empty());
+    }
+
+    // ── filesystem path scope (AAASM-5751) ──────────────────────────────────
+
+    #[test]
+    fn parses_filesystem_path_scope_for_both_verbs() {
+        let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: scoped
+spec:
+  filesystem:
+    read:
+      allow:
+        - /workspace
+        - /usr/share/dict
+    write:
+      allow:
+        - /workspace/build
+"#;
+        let fs = PolicyDocument::from_yaml(yaml).unwrap().filesystem.expect("stated");
+        let read = fs.read.expect("read verb stated");
+        assert_eq!(
+            read.iter().collect::<Vec<_>>(),
+            vec!["/usr/share/dict", "/workspace"],
+            "prefixes are normalized and order-stable"
+        );
+        assert!(read.permits("/workspace/src/main.rs"));
+        assert!(!read.permits("/etc/passwd"));
+
+        let write = fs.write.expect("write verb stated");
+        assert!(write.permits("/workspace/build/out.o"));
+        // The narrower write scope must not inherit the wider read scope.
+        assert!(!write.permits("/workspace/src/main.rs"));
+    }
+
+    /// Both directions. An absent section is `None` — "nobody said" — and a
+    /// verb the operator did not name stays `None` even when its sibling is
+    /// stated. Asserting only the positive would pass for a parser that
+    /// fabricated a scope for every verb.
+    #[test]
+    fn an_absent_filesystem_node_and_an_absent_verb_are_both_unstated() {
+        let none = PolicyDocument::from_yaml("spec:\n  network:\n    allowlist: []\n").unwrap();
+        assert!(none.filesystem.is_none());
+
+        let read_only =
+            PolicyDocument::from_yaml("spec:\n  filesystem:\n    read:\n      allow: [/workspace]\n").unwrap();
+        let fs = read_only.filesystem.expect("stated");
+        assert!(fs.read.is_some());
+        assert!(fs.write.is_none(), "an unnamed verb must not be fabricated");
+    }
+
+    /// A present verb with no `allow:` list is an in-force scope that permits
+    /// nothing — deny-all, never "no restriction". The control beside it is the
+    /// `filesystem: {}` case, which names no verb and therefore states nothing:
+    /// the two produce different documents, so the parser is not collapsing
+    /// "empty" and "absent".
+    #[test]
+    fn an_empty_verb_is_deny_all_and_an_empty_section_is_unstated() {
+        let empty_verb = PolicyDocument::from_yaml("spec:\n  filesystem:\n    write:\n      allow: []\n").unwrap();
+        let scope = empty_verb.filesystem.expect("stated").write.expect("write stated");
+        assert!(scope.permits_nothing());
+        assert!(!scope.permits("/workspace"));
+
+        let no_allow_key = PolicyDocument::from_yaml("spec:\n  filesystem:\n    write: {}\n").unwrap();
+        assert!(no_allow_key
+            .filesystem
+            .expect("stated")
+            .write
+            .expect("write stated")
+            .permits_nothing());
+
+        // `filesystem: {}` names no verb: nothing was said, and with no other
+        // enforcement section the document is refused rather than loaded as a
+        // permissive one.
+        assert_eq!(
+            PolicyDocument::from_yaml("spec:\n  filesystem: {}\n"),
+            Err(PolicyParseError::NoEnforcementSection)
+        );
+    }
+
+    /// A path scope alone is an enforcement section, so a document carrying
+    /// only one must load. The control is the line above it in the previous
+    /// test: a `filesystem:` that scopes no verb still gets refused.
+    #[test]
+    fn a_path_scope_alone_satisfies_the_enforcement_section_floor() {
+        let doc = PolicyDocument::from_yaml("spec:\n  filesystem:\n    read:\n      allow: [/workspace]\n").unwrap();
+        assert!(doc.network.is_none() && doc.capabilities.is_none() && doc.tools.is_empty());
+        assert!(doc.filesystem.is_some());
+    }
+
+    /// A malformed prefix is a load failure, not a silently dropped
+    /// restriction — the AAASM-3874 fail-closed rule applied to this node.
+    #[test]
+    fn a_malformed_prefix_fails_the_load() {
+        for bad in ["workspace", "/workspace/../etc", "''"] {
+            let yaml = format!("spec:\n  filesystem:\n    read:\n      allow: [{bad}]\n");
+            let err = PolicyDocument::from_yaml(&yaml).expect_err("a malformed prefix must fail the load");
+            assert!(
+                matches!(err, PolicyParseError::InvalidPath { ref raw, .. } if raw == "filesystem.read.allow"),
+                "{bad:?} produced {err:?}"
+            );
+        }
+        // The control: a well-formed prefix in the same position loads.
+        assert!(PolicyDocument::from_yaml("spec:\n  filesystem:\n    read:\n      allow: [/workspace]\n").is_ok());
+    }
+
+    /// A typo inside `filesystem:` must not be dropped: `wrtie:` would leave
+    /// writes unscoped, which reads as a restriction the operator never got.
+    #[test]
+    fn a_misspelled_filesystem_key_is_rejected() {
+        assert_eq!(
+            PolicyDocument::from_yaml("spec:\n  filesystem:\n    wrtie:\n      allow: [/workspace]\n"),
+            Err(PolicyParseError::UnknownKey {
+                path: "filesystem".to_string(),
+                key: "wrtie".to_string(),
+            })
+        );
+        assert_eq!(
+            PolicyDocument::from_yaml("spec:\n  filesystem:\n    read:\n      alow: [/workspace]\n"),
+            Err(PolicyParseError::UnknownKey {
+                path: "filesystem.read".to_string(),
+                key: "alow".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn filesystem_is_accepted_in_the_flat_form_too() {
+        let doc = PolicyDocument::from_yaml("filesystem:\n  read:\n    allow: [/workspace]\n").unwrap();
+        assert!(doc
+            .filesystem
+            .expect("stated")
+            .read
+            .expect("read stated")
+            .permits("/workspace"));
     }
 }

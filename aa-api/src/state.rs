@@ -868,6 +868,7 @@ mod tests {
             approval_policy: None,
             tools: Default::default(),
             capabilities: Some(caps),
+            filesystem: None,
         });
 
         state

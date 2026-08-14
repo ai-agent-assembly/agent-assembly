@@ -129,6 +129,20 @@ on:
       - ".github/workflows/*.yml"
       - "verification-reports/AAASM-5527-capability-coverage-matrix.yaml"
       - "verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md"
+      # AAASM-5713: the isolation benchmark harness. It ships pre-registered
+      # thresholds and a self-test that exists to prove the harness can still
+      # detect a slowdown — and until now NO job in this workflow covered
+      # `benchmarks/**` at all, so both were local-only and unexercised on every
+      # merge after the one that added them. That is acceptable for a harness
+      # nobody depends on; it is not acceptable for the evidence base of this
+      # Epic's Go / No-Go decision. Paired with the `benchmarks` router filter
+      # below — a router filter without a matching `on.*.paths` entry is a dead
+      # trigger, and on `push` that means the gate never runs on the merge that
+      # breaks it.
+      - "benchmarks/**/*.py"
+      - "benchmarks/**/*.sh"
+      - "benchmarks/**/*.json"
+      - "benchmarks/**/*.toml"
   pull_request:
     branches: [main]
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
@@ -178,6 +192,7 @@ jobs:
       backend_license: ${{ steps.filter.outputs.backend_license }}
       isolation_backend: ${{ steps.filter.outputs.isolation_backend }}
       governance: ${{ steps.filter.outputs.governance }}
+      benchmarks: ${{ steps.filter.outputs.benchmarks }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -342,6 +357,16 @@ jobs:
               - 'aa-integration-tests/tests/evidence/mod.rs'
               - '.ci/test-evidence-summary.sh'
               - '.config/nextest.toml'
+              - '.github/workflows/ci.yml'
+            # AAASM-5713: the isolation benchmark harness. Extension-qualified
+            # rather than a bare `benchmarks/**` so a results JSON committed by
+            # a measurement run selects the gate (its schema is what `compare`
+            # reads) while a README edit does not.
+            benchmarks:
+              - 'benchmarks/**/*.py'
+              - 'benchmarks/**/*.sh'
+              - 'benchmarks/**/*.json'
+              - 'benchmarks/**/*.toml'
               - '.github/workflows/ci.yml'
             # AAASM-5677: the governance surface. Before this filter existed, a
             # change to `governance/capability-manifest.yaml` selected NO job in
@@ -2413,6 +2438,38 @@ jobs:
   # Blocks, by CONTRIBUTING's rule: it asserts a property (every
   # governance-bearing path is inside a required check's trigger surface), not
   # a metric. Pure Python, no toolchain, so it costs seconds.
+  isolation-benchmark-harness:
+    needs: [changes]
+    if: needs.changes.outputs.benchmarks == 'true'
+    name: Isolation benchmark harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install tooling
+        run: python -m pip install --quiet ruff
+      # `benchmarks/isolation/ruff.toml` is the only Python lint config in the
+      # repository, and nothing was running it.
+      - name: Lint the harness
+        working-directory: benchmarks/isolation
+        run: ruff check .
+      # The self-test IS the negative control: it runs the harness against a
+      # launcher whose degradation is known in advance and fails unless the
+      # harness recovers it. Running it here is what stops "the benchmark
+      # numbers are green" from being unfalsifiable — a harness that has
+      # silently stopped detecting a 500 ms injected delay would otherwise keep
+      # reporting GREEN for a backend that had become slow.
+      #
+      # The run rewrites `benchmarks/isolation/results/selftest-*.json` in
+      # place — the harness has no output-directory option. Harmless here
+      # because the checkout is thrown away, but it means running this locally
+      # overwrites the committed evidence from the original measurement, so
+      # restore those files afterwards if you do.
+      - name: The harness can still detect a slowdown
+        run: python3 benchmarks/isolation/harness/selftest.py
+
   governance-coverage:
     needs: [changes]
     if: needs.changes.outputs.governance == 'true'
@@ -2511,6 +2568,7 @@ jobs:
       # metric. Advisory, it would be a report on the health of the merge gate
       # that the merge gate itself ignores.
       - governance-coverage
+      - isolation-benchmark-harness
     steps:
       - name: Verify no required job failed or was cancelled
         run: |

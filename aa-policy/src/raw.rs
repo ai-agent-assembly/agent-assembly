@@ -107,6 +107,37 @@ pub struct RawCapabilitySet {
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
 
+/// Raw (unvalidated) deserialization target for one `filesystem.<verb>` node
+/// (AAASM-5751).
+#[derive(Debug, Deserialize)]
+pub struct RawPathScope {
+    /// Absolute path prefixes the agent may reach for this verb.
+    ///
+    /// `None` means the verb key was written with no `allow:` under it, which
+    /// the validator reads as an in-force scope permitting **nothing** — not as
+    /// the absence of a restriction. The distinction between that and an absent
+    /// verb key is carried by the surrounding `Option<RawPathScope>`.
+    pub allow: Option<Vec<String>>,
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
+/// Raw (unvalidated) deserialization target for the `filesystem` policy
+/// section (AAASM-5751).
+#[derive(Debug, Deserialize)]
+pub struct RawFilesystemPolicy {
+    /// Paths the agent may read.
+    pub read: Option<RawPathScope>,
+    /// Paths the agent may write, create, rename or delete.
+    pub write: Option<RawPathScope>,
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
 /// Raw (unvalidated) deserialization target for the `metadata` section
 /// of the governance policy YAML envelope.
 #[derive(Debug, Deserialize)]
@@ -172,6 +203,8 @@ pub struct RawPolicyDocument {
     pub tools: Option<HashMap<String, RawToolPolicy>>,
     /// Per-level capability restrictions.
     pub capabilities: Option<RawCapabilitySet>,
+    /// Filesystem path scope (AAASM-5751).
+    pub filesystem: Option<RawFilesystemPolicy>,
     /// Seconds before an approval request times out.
     /// Defaults to 300 when absent.
     pub approval_timeout_secs: Option<u32>,
@@ -396,5 +429,56 @@ mod tests {
         let yaml = "capabilities:\n  allow: []\n  extra_field: true\n";
         let raw: RawPolicyDocument = serde_yaml::from_str(yaml).unwrap();
         assert!(raw.capabilities.as_ref().unwrap().unknown.contains_key("extra_field"));
+    }
+
+    // ── RawFilesystemPolicy (AAASM-5751) ────────────────────────────────────
+
+    #[test]
+    fn raw_filesystem_deserializes_both_verbs() {
+        let yaml =
+            "filesystem:\n  read:\n    allow:\n      - /workspace\n  write:\n    allow:\n      - /workspace/build\n";
+        let raw: RawPolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        let fs = raw.filesystem.as_ref().unwrap();
+        assert_eq!(fs.read.as_ref().unwrap().allow, Some(vec!["/workspace".to_string()]));
+        assert_eq!(
+            fs.write.as_ref().unwrap().allow,
+            Some(vec!["/workspace/build".to_string()])
+        );
+        assert!(fs.unknown.is_empty());
+    }
+
+    /// Three distinguishable shapes, and the raw layer must keep them apart:
+    /// section absent, verb absent, verb present with no list. Collapsing any
+    /// two of them loses the difference between "nobody said" and "nothing is
+    /// permitted".
+    #[test]
+    fn raw_filesystem_distinguishes_absent_section_absent_verb_and_absent_list() {
+        let no_section: RawPolicyDocument = serde_yaml::from_str("{}\n").unwrap();
+        assert!(no_section.filesystem.is_none());
+
+        let no_verb: RawPolicyDocument =
+            serde_yaml::from_str("filesystem:\n  read:\n    allow: [/workspace]\n").unwrap();
+        assert!(no_verb.filesystem.as_ref().unwrap().write.is_none());
+
+        let no_list: RawPolicyDocument = serde_yaml::from_str("filesystem:\n  write: {}\n").unwrap();
+        let write = no_list.filesystem.as_ref().unwrap().write.as_ref().unwrap();
+        assert_eq!(write.allow, None);
+    }
+
+    #[test]
+    fn raw_filesystem_captures_unknown_keys_at_both_levels() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("filesystem:\n  wrtie:\n    allow: []\n").unwrap();
+        assert!(raw.filesystem.as_ref().unwrap().unknown.contains_key("wrtie"));
+
+        let nested: RawPolicyDocument = serde_yaml::from_str("filesystem:\n  read:\n    alow: [/workspace]\n").unwrap();
+        assert!(nested
+            .filesystem
+            .as_ref()
+            .unwrap()
+            .read
+            .as_ref()
+            .unwrap()
+            .unknown
+            .contains_key("alow"));
     }
 }

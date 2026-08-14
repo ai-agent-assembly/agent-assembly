@@ -1411,6 +1411,7 @@ mod graph_tests {
                 })
                 .collect(),
             capabilities,
+            filesystem: None,
         }
     }
 

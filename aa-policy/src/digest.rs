@@ -234,6 +234,45 @@ fn hash_capabilities(hasher: &mut Sha256, caps: Option<&aa_core::CapabilitySet>)
     }
 }
 
+/// Hash the AAASM-5751 filesystem path-scope node.
+///
+/// Two documents whose only difference is which paths they permit are two
+/// different policies, and `content_digest` is what the audit trail attributes
+/// a decision by and what `policy_hits` counts by. Omitting this node would
+/// give them one identity.
+///
+/// **Emitted only when the node is stated**, for the same reason
+/// `hash_data`'s `locale_packs` is: an unconditional tag byte would change the
+/// digest of every document that has ever existed, resetting every policy's
+/// `hits_24h` and shifting audit attribution across the upgrade boundary. A
+/// document with no `filesystem:` section therefore hashes to exactly the bytes
+/// it hashed to before this field existed —
+/// `legacy_documents_keep_their_pre_filesystem_digest` pins that.
+///
+/// The per-verb tag distinguishes an unstated verb from a stated one that
+/// permits nothing, which the node's own semantics require to be different
+/// documents.
+fn hash_filesystem(hasher: &mut Sha256, filesystem: Option<&aa_security::policy::FilesystemPolicy>) {
+    fn hash_scope(hasher: &mut Sha256, scope: Option<&aa_security::policy::PathScope>) {
+        match scope {
+            None => hasher.update([0u8]),
+            Some(s) => {
+                hasher.update([1u8]);
+                // `allow` is a BTreeSet<String> of normalized paths, already in
+                // a total, deterministic order.
+                hasher.update((s.allow.len() as u64).to_be_bytes());
+                for path in &s.allow {
+                    hash_str(hasher, path);
+                }
+            }
+        }
+    }
+    let Some(fs) = filesystem else { return };
+    hasher.update(b"fs\x01");
+    hash_scope(hasher, fs.read.as_ref());
+    hash_scope(hasher, fs.write.as_ref());
+}
+
 impl PolicyDocument {
     /// A stable, content-derived identity for this document: `"sha256:<hex>"`
     /// where the hex is the SHA-256 of a canonical encoding of every validated
@@ -263,6 +302,7 @@ impl PolicyDocument {
         hash_approval(&mut hasher, self.approval_policy.as_ref());
         hash_tools(&mut hasher, &self.tools);
         hash_capabilities(&mut hasher, self.capabilities.as_ref());
+        hash_filesystem(&mut hasher, self.filesystem.as_ref());
         let digest: [u8; 32] = hasher.finalize().into();
         format!("sha256:{}", hex::encode(digest))
     }
@@ -341,7 +381,90 @@ mod tests {
             approval_policy: None,
             tools: HashMap::new(),
             capabilities: None,
+            filesystem: None,
         }
+    }
+
+    fn scope_of(paths: &[&str]) -> aa_security::policy::PathScope {
+        aa_security::policy::PathScope::from_paths(paths).expect("fixture paths are valid")
+    }
+
+    /// AAASM-5751 — adding `filesystem` must not re-key documents that do not
+    /// use it, for the same reason `locale_packs` must not: the digest is the
+    /// `policy_doc_id` on every audit entry and the `policy_hits` key.
+    ///
+    /// The expected value is the one
+    /// `legacy_documents_keep_their_pre_locale_packs_digest` already pins from
+    /// commit `b7e853b09` — the same fixture, so the two tests agree by
+    /// construction and this cannot drift into pinning "whatever this build
+    /// produces".
+    ///
+    /// If this fails, `hash_filesystem` started emitting bytes for an unstated
+    /// node. That is a migration event, not a refactor.
+    #[test]
+    fn legacy_documents_keep_their_pre_filesystem_digest() {
+        let mut doc = base_doc();
+        doc.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        assert!(doc.filesystem.is_none());
+        assert_eq!(
+            doc.content_digest(),
+            "sha256:c4664a0acb0bd210dc52b02942ec99c70b23919c57ff04edd47d07556e0582da",
+            "adding filesystem re-keyed a document that does not use it"
+        );
+    }
+
+    /// The other half, and the one that matters for attribution: documents that
+    /// differ only in path scope are different policies and must not share an
+    /// identity. Four fixtures, chosen so the naive encodings fail —
+    /// unstated vs. stated-permitting-nothing, and read vs. write, are pairs a
+    /// digest that hashed only a flattened path list would collapse.
+    #[test]
+    fn path_scope_is_part_of_the_documents_identity() {
+        use aa_security::policy::FilesystemPolicy;
+
+        let unstated = base_doc();
+
+        let mut deny_all_reads = base_doc();
+        deny_all_reads.filesystem = Some(FilesystemPolicy {
+            read: Some(scope_of(&[])),
+            write: None,
+        });
+
+        let mut workspace_reads = base_doc();
+        workspace_reads.filesystem = Some(FilesystemPolicy {
+            read: Some(scope_of(&["/workspace"])),
+            write: None,
+        });
+
+        let mut workspace_writes = base_doc();
+        workspace_writes.filesystem = Some(FilesystemPolicy {
+            read: None,
+            write: Some(scope_of(&["/workspace"])),
+        });
+
+        let digests: Vec<String> = [&unstated, &deny_all_reads, &workspace_reads, &workspace_writes]
+            .iter()
+            .map(|d| d.content_digest())
+            .collect();
+        let distinct: std::collections::BTreeSet<&String> = digests.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            4,
+            "four different policies collapsed onto fewer digests"
+        );
+
+        // The control: the same scope written two ways is one policy, so
+        // normalization must not manufacture a difference either.
+        let mut same = workspace_reads.clone();
+        same.filesystem = Some(FilesystemPolicy {
+            read: Some(scope_of(&["/workspace/"])),
+            write: None,
+        });
+        assert_eq!(same.content_digest(), workspace_reads.content_digest());
     }
 
     #[test]

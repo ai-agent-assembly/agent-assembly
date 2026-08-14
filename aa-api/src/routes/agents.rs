@@ -2689,6 +2689,7 @@ mod tests {
             approval_policy: None,
             tools: Default::default(),
             capabilities: Some(capabilities),
+            filesystem: None,
         }
     }
 
