@@ -58,6 +58,16 @@ aa-devtool-claude-code = { path = "../aa-devtool-claude-code", version = "0.0.1-
 # crate docs call for exactly this fencing — without it, `cargo publish` for
 # aa-cli fails on a dependency that is not on crates.io.
 aa-isolation         = { path = "../aa-isolation", version = "0.0.1-rc.6" }
+# AAASM-5711: the concrete Linux process-isolation backend `aasm run --isolation`
+# selects. It is the only backend in the workspace, and it is named here rather
+# than discovered at run time because Rust has no plugin loader — but nothing
+# downstream of selection knows the name: the launch path holds
+# `Arc<dyn IsolationBackend>`, so policy cannot come to depend on which backend
+# answered it (ADR 0035 §3).
+#
+# Same region, same reason: this crate is `publish = false` and its only consumer
+# is `run.rs`, which the `devtool` region already strips.
+aa-isolation-sandlock = { path = "../aa-isolation-sandlock", version = "0.0.1-rc.6" }
 # strip-for-publish:end devtool
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.6" }
 aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.6" }

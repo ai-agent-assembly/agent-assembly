@@ -444,8 +444,8 @@ pub fn credential_flags(spec: &ExecutionSpec) -> Vec<String> {
 ///
 /// * the spec's own `ambient_unremoved` list — a compatibility exception the
 ///   caller recorded, which this backend honours by passing the name through;
-/// * every name in `removed`, but **only** when [`credential_flags`] emitted
-///   nothing. With no environment replacement the child inherits the launching
+/// * every name in `removed`, but **only** when `environment_replaced` is false.
+///   With no environment replacement the child inherits the launching
 ///   environment whole, so a name policy asked to remove is still there, and
 ///   reporting it as removed would be exactly the failure this Epic exists to
 ///   prevent.
@@ -453,10 +453,18 @@ pub fn credential_flags(spec: &ExecutionSpec) -> Vec<String> {
 /// The second source is why this function exists rather than the caller reading
 /// `spec.credentials().ambient_unremoved` directly: whether a `removed` name was
 /// actually removed is a property of the *lowering*, not of the posture.
-pub fn unremoved_ambient(spec: &ExecutionSpec) -> Vec<String> {
+///
+/// `environment_replaced` is a parameter rather than `!credential_flags(spec)
+/// .is_empty()` computed here because the posture is no longer the only thing
+/// that can replace the environment: AAASM-5711 lets a caller hand the backend
+/// the exact environment the confined program is to receive, which replaces it
+/// whatever the posture says. Recomputing from the posture would then report
+/// every `removed` name as residue on precisely the launches that did remove
+/// them.
+pub fn unremoved_ambient(spec: &ExecutionSpec, environment_replaced: bool) -> Vec<String> {
     let credentials = spec.credentials();
     let mut residue = credentials.ambient_unremoved.clone();
-    if credential_flags(spec).is_empty() {
+    if !environment_replaced {
         residue.extend(credentials.removed.iter().cloned());
     }
     residue.sort();
@@ -515,6 +523,28 @@ pub fn reachable_metadata_endpoints(spec: &ExecutionSpec) -> Vec<&'static str> {
             })
         })
         .collect()
+}
+
+/// The flags that install an exact, caller-computed environment.
+///
+/// Every launch that uses this starts from [`FLAG_CLEAN_ENV`] and adds back only
+/// what the caller listed, so the confined program receives that map and nothing
+/// else. That is strictly narrower than the alternative of letting the
+/// confinement executable pass its own environment through, and it is the only
+/// way `aasm run` can put the governance identity, the proxy address and the
+/// adapter's CA path inside the boundary: without an explicit environment those
+/// variables live in the *supervisor's* process, which a `--clean-env` launch
+/// deliberately does not inherit.
+///
+/// The caller owns the precedence question. This function applies no layering
+/// of its own — the map that arrives is the environment that runs, so nothing
+/// here can silently override a value the caller resolved.
+pub fn explicit_environment_flags(env: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    let mut flags = vec![FLAG_CLEAN_ENV.to_string()];
+    for (name, value) in env {
+        flags.push(flag_with_value(FLAG_ENV, &format!("{name}={value}")));
+    }
+    flags
 }
 
 /// Build the whole command line for a spec and its already-lowered flags.
@@ -672,7 +702,7 @@ mod tests {
             ambient_unremoved: Vec::new(),
         });
         assert_eq!(credential_flags(&spec), [FLAG_CLEAN_ENV]);
-        assert!(unremoved_ambient(&spec).is_empty());
+        assert!(unremoved_ambient(&spec, !credential_flags(&spec).is_empty()).is_empty());
     }
 
     /// A posture that names nothing leaves the environment inherited, and that
@@ -681,7 +711,7 @@ mod tests {
     fn an_empty_posture_reports_no_flags_and_no_false_removal() {
         let spec = spec("/bin/true", &[]);
         assert!(credential_flags(&spec).is_empty());
-        assert!(unremoved_ambient(&spec).is_empty());
+        assert!(unremoved_ambient(&spec, !credential_flags(&spec).is_empty()).is_empty());
     }
 
     /// **The property this Epic exists for, at the lowering layer.** A name the
@@ -705,7 +735,7 @@ mod tests {
             delegated: Vec::new(),
             ambient_unremoved: vec!["PATH".to_string()],
         });
-        assert_eq!(unremoved_ambient(&kept), ["PATH"]);
+        assert_eq!(unremoved_ambient(&kept, !credential_flags(&kept).is_empty()), ["PATH"]);
         assert!(
             credential_flags(&kept).iter().any(|f| f.starts_with("--env=PATH=")),
             "the name reported as still reaching the child was withheld from it: {:?}",
@@ -720,7 +750,7 @@ mod tests {
             delegated: Vec::new(),
             ambient_unremoved: Vec::new(),
         });
-        assert!(unremoved_ambient(&removed).is_empty());
+        assert!(unremoved_ambient(&removed, !credential_flags(&removed).is_empty()).is_empty());
         assert!(
             !credential_flags(&removed).iter().any(|f| f.contains("PATH=")),
             "a removed name reached the child: {:?}",
@@ -741,7 +771,10 @@ mod tests {
             ambient_unremoved: vec!["SSH_AUTH_SOCK".to_string()],
         });
         assert!(credential_flags(&spec).is_empty());
-        assert_eq!(unremoved_ambient(&spec), ["SSH_AUTH_SOCK"]);
+        assert_eq!(
+            unremoved_ambient(&spec, !credential_flags(&spec).is_empty()),
+            ["SSH_AUTH_SOCK"]
+        );
     }
 
     /// A permitted destination naming the metadata service is credential

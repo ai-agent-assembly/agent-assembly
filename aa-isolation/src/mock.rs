@@ -24,7 +24,9 @@ use std::sync::Mutex;
 
 use aa_core::attestation::ClaimTerm;
 
-use crate::backend::{ExecutionHandle, IsolationBackend, PreparedExecution, SpawnError};
+use crate::backend::{
+    ExecutionHandle, ExitDisposition, IsolationBackend, PreparedExecution, SpawnError, TerminationRequest,
+};
 use crate::capability::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
     Mediation, PlatformBoundary, Synchrony,
@@ -208,6 +210,42 @@ impl IsolationBackend for MockBackend {
             prepared.token(),
             prepared.plan().posture(),
         ))
+    }
+
+    /// The disposition of a run that never started.
+    ///
+    /// [`ExitDisposition::NoCode`] rather than `Code(0)`, and the difference is
+    /// the whole reason the two states exist. This backend starts no process, so
+    /// there is no exit code to report; answering `0` would let a test assert
+    /// "the confined program succeeded" against a backend that ran nothing, which
+    /// is the shape of false pass this crate is built to make impossible.
+    fn wait_for_exit(&self, handle: &ExecutionHandle) -> Result<ExitDisposition, SpawnError> {
+        let launched = self.launched.lock().expect("mock backend state poisoned");
+        if !launched.contains_key(handle.token()) {
+            return Err(SpawnError::Supervision {
+                detail: format!("no prepared execution recorded for handle `{}`", handle.token()),
+            });
+        }
+        Ok(ExitDisposition::NoCode {
+            detail: "the mock backend applies no mechanism and starts no process, so nothing ran and no \
+                     exit code exists"
+                .to_string(),
+        })
+    }
+
+    /// Always an error, on every handle.
+    ///
+    /// `Ok` on this trait means the request reached the execution. Nothing is
+    /// executing, so nothing can be reached, and returning `Ok` would let a
+    /// caller record a delivered termination that never happened.
+    fn terminate(&self, handle: &ExecutionHandle, _request: TerminationRequest) -> Result<(), SpawnError> {
+        Err(SpawnError::Supervision {
+            detail: format!(
+                "the mock backend started no process for handle `{}`, so no termination request can be \
+                 delivered",
+                handle.token()
+            ),
+        })
     }
 
     /// Evidence for a run that did not happen.

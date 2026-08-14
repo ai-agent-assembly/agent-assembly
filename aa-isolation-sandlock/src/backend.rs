@@ -31,7 +31,7 @@
 //! `Decision` record from "the program exited non-zero" would be exactly the
 //! promotion the contract is built to prevent.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -39,16 +39,16 @@ use std::sync::Mutex;
 use aa_core::attestation::ClaimTerm;
 use aa_isolation::{
     negotiate, BackendCapabilities, BackendIdentity, CapabilityDomain, DescriptorInventory, EnforcementEvidence,
-    EnforcementPlan, EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, IsolationBackend, Lowering,
-    PlanRefusal, PreparedExecution, Provenance, RequirementOutcome, SpawnError,
+    EnforcementPlan, EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, ExitDisposition, IsolationBackend,
+    Lowering, PlanRefusal, PreparedExecution, Provenance, RequirementOutcome, SpawnError, TerminationRequest,
 };
 
 use crate::capability;
 use crate::host::{BackendLookupError, HostFacts};
 use crate::inherit::seal_inherited_descriptors;
 use crate::lower::{
-    build_argv, credential_flags, lower_requirement, reachable_metadata_endpoints, unremoved_ambient, Argv,
-    FLAG_ALLOW_DEGRADED,
+    build_argv, credential_flags, explicit_environment_flags, lower_requirement, reachable_metadata_endpoints,
+    unremoved_ambient, Argv, FLAG_ALLOW_DEGRADED,
 };
 use crate::probe::{self, ConfinementProbe};
 
@@ -109,8 +109,18 @@ pub struct SandlockBackend {
     degraded: Vec<String>,
     degraded_flags: Vec<String>,
     capture_output: bool,
+    /// The exact environment the confined program is to receive, when the caller
+    /// computed one. `None` means the mechanism's own default applies: the
+    /// confined program inherits whatever the confinement executable inherited.
+    child_environment: Option<BTreeMap<String, String>>,
     prepared: Mutex<HashMap<String, Prepared>>,
     running: Mutex<HashMap<String, Child>>,
+    /// The confinement executable's process id per token, kept separately from
+    /// [`Self::running`] because [`Self::wait`] has to take the `Child` by value
+    /// to reap it. Without this, a termination request arriving while a
+    /// supervisor was already waiting would find nothing to signal — which is
+    /// exactly the interleaving a `Ctrl-C` produces.
+    pids: Mutex<HashMap<String, u32>>,
     completed: Mutex<HashMap<String, CompletedRun>>,
     next_token: AtomicU64,
 }
@@ -216,6 +226,38 @@ impl SandlockBackend {
         self
     }
 
+    /// Install `env` as the confined program's **entire** environment.
+    ///
+    /// A setter rather than a `with_`-style builder because the caller that has
+    /// the environment is not the caller that selected the backend: `aasm run`
+    /// selects one while resolving the launch — early, so an unavailable host
+    /// refuses before anything is registered — and only computes the child
+    /// environment once an identity exists to put in it.
+    ///
+    /// # Why a governed launch has to say this explicitly (AAASM-5711)
+    ///
+    /// The supervisor and the confined program are different processes with
+    /// different environments, and only the second one matters to the launched
+    /// tool. `aasm run` resolves a child environment — the governance identity,
+    /// the proxy address, the adapter's `NODE_EXTRA_CA_CERTS`, the policy
+    /// annotations, with the adapter's own values layered last — and every one
+    /// of those lives in a map the supervisor holds, not in its own environment.
+    /// A launch that said nothing here would confine the program with whatever
+    /// the *launcher's* shell happened to carry, and the two variables whose
+    /// absence makes a session ungoverned would be among the ones missing.
+    ///
+    /// Passing the environment as data rather than inheriting it also removes the
+    /// silent-widening case in the other direction: with an explicit environment
+    /// the child receives exactly these names, so a variable nobody listed cannot
+    /// arrive because it happened to be exported.
+    ///
+    /// The map is applied verbatim. Precedence was already decided by whoever
+    /// built it; re-deciding it here would be a second implementation of the
+    /// merge, which is the defect AAASM-5329 was.
+    pub fn set_child_environment(&mut self, env: BTreeMap<String, String>) {
+        self.child_environment = Some(env);
+    }
+
     fn assemble(
         identity: BackendIdentity,
         capabilities: BackendCapabilities,
@@ -230,8 +272,10 @@ impl SandlockBackend {
             degraded: Vec::new(),
             degraded_flags: Vec::new(),
             capture_output: false,
+            child_environment: None,
             prepared: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            pids: Mutex::new(HashMap::new()),
             completed: Mutex::new(HashMap::new()),
             next_token: AtomicU64::new(0),
         }
@@ -263,8 +307,10 @@ impl SandlockBackend {
     ///
     /// # Errors
     ///
-    /// [`SpawnError::Spawn`] when the handle names no running execution, or the
-    /// wait itself fails.
+    /// [`SpawnError::Supervision`] when the handle names no running execution,
+    /// or the wait itself fails. Not [`SpawnError::Spawn`]: by the time this is
+    /// called something was started, and reporting a lost wait as a failed
+    /// launch would tell an operator no process exists at the moment one does.
     pub fn wait(&self, handle: &ExecutionHandle) -> Result<CompletedRun, SpawnError> {
         let child = self
             .running
@@ -280,11 +326,11 @@ impl SandlockBackend {
                 .expect("backend state poisoned")
                 .get(handle.token())
                 .cloned()
-                .ok_or_else(|| SpawnError::Spawn {
+                .ok_or_else(|| SpawnError::Supervision {
                     detail: format!("no running execution for handle `{}`", handle.token()),
                 });
         };
-        let output = child.wait_with_output().map_err(|e| SpawnError::Spawn {
+        let output = child.wait_with_output().map_err(|e| SpawnError::Supervision {
             detail: format!("waiting for the confined run failed: {e}"),
         })?;
         let completed = CompletedRun {
@@ -386,13 +432,30 @@ impl IsolationBackend for SandlockBackend {
             })?;
             confinement.extend(lowered.flags);
         }
-        confinement.extend(credential_flags(plan.spec()));
+        // An explicit child environment supersedes the posture-derived flags
+        // rather than joining them: both start with `--clean-env`, and emitting
+        // it twice would be the mechanism's own duplicate-flag case. It is also
+        // strictly the stronger of the two — the posture adds back only the
+        // names it knows about, while this adds back exactly the environment the
+        // caller resolved and nothing else.
+        let environment_replaced = match &self.child_environment {
+            Some(env) => {
+                confinement.extend(explicit_environment_flags(env));
+                true
+            }
+            None => {
+                let flags = credential_flags(plan.spec());
+                let replaced = !flags.is_empty();
+                confinement.extend(flags);
+                replaced
+            }
+        };
         // Last, so a waiver is visible at the end of the command line rather
         // than buried among the grants, and so it is impossible for a grant to
         // be silently dropped in favour of one.
         confinement.extend(self.degraded_flags.iter().cloned());
 
-        let residual_authority = residual_authority(plan.spec());
+        let residual_authority = residual_authority(plan.spec(), environment_replaced);
         // Before the argument vector is built and long before anything is
         // launched: a descriptor marked here cannot cross the `exec` that
         // starts the mechanism, and therefore cannot reach the program the
@@ -456,11 +519,77 @@ impl IsolationBackend for SandlockBackend {
         })?;
 
         let handle = ExecutionHandle::new(self.identity.clone(), prepared.token(), prepared.plan().posture());
+        self.pids
+            .lock()
+            .expect("backend state poisoned")
+            .insert(prepared.token().to_string(), child.id());
         self.running
             .lock()
             .expect("backend state poisoned")
             .insert(prepared.token().to_string(), child);
         Ok(handle)
+    }
+
+    /// Block until the confinement executable exits, and report its code.
+    ///
+    /// The code is the mechanism's, passed through unaltered. This backend does
+    /// not know — and must not guess — whether a non-zero code came from the
+    /// confined program or from the mechanism refusing to confine: those are
+    /// different facts, and the mechanism offers no channel that separates them.
+    /// Substituting a code of its own would erase whichever one it was.
+    fn wait_for_exit(&self, handle: &ExecutionHandle) -> Result<ExitDisposition, SpawnError> {
+        let completed = self.wait(handle)?;
+        Ok(match completed.status.code() {
+            Some(code) => ExitDisposition::Code(code),
+            None => ExitDisposition::NoCode {
+                detail: format!(
+                    "the confinement executable reported `{}`, which carries no exit code; on this \
+                     platform that is what a process ended by a signal produces",
+                    completed.status
+                ),
+            },
+        })
+    }
+
+    /// Deliver a termination request to the confinement executable.
+    ///
+    /// It is sent to the mechanism's process, not to the confined program, and
+    /// that is the only correct target available: the supervisor holds no
+    /// identifier inside the boundary, by design (ADR 0035 §5). Whether the
+    /// mechanism passes it on, and whether the confined program honours it, are
+    /// facts about processes this backend does not control — which is why `Ok`
+    /// here promises delivery and nothing more.
+    ///
+    /// # Errors
+    ///
+    /// [`SpawnError::Supervision`] when the handle names no launch of this
+    /// backend, when the run has already ended, or — off Linux — when the
+    /// backend has no way to deliver one at all.
+    fn terminate(&self, handle: &ExecutionHandle, request: TerminationRequest) -> Result<(), SpawnError> {
+        if self
+            .completed
+            .lock()
+            .expect("backend state poisoned")
+            .contains_key(handle.token())
+        {
+            return Err(SpawnError::Supervision {
+                detail: format!(
+                    "the run behind handle `{}` has already ended; a termination request now would name \
+                     a process id this backend no longer owns",
+                    handle.token()
+                ),
+            });
+        }
+        let pid = self
+            .pids
+            .lock()
+            .expect("backend state poisoned")
+            .get(handle.token())
+            .copied()
+            .ok_or_else(|| SpawnError::Supervision {
+                detail: format!("no launch of this backend is recorded for handle `{}`", handle.token()),
+            })?;
+        deliver_termination(pid, request)
     }
 
     fn evidence(&self, handle: &ExecutionHandle) -> EnforcementEvidence {
@@ -600,6 +729,56 @@ impl IsolationBackend for SandlockBackend {
     }
 }
 
+/// Send a termination request to the confinement executable's process.
+///
+/// Linux only, and the non-Linux arm returns an error rather than doing nothing
+/// quietly: a supervisor that forwarded `Ctrl-C` and got `Ok` from a build that
+/// cannot deliver one would report a stop request that never left the process.
+/// The backend is unavailable off Linux anyway, so nothing there can have
+/// reached this with a running execution.
+#[cfg(target_os = "linux")]
+fn deliver_termination(pid: u32, request: TerminationRequest) -> Result<(), SpawnError> {
+    let signal = match request {
+        TerminationRequest::Graceful => libc::SIGTERM,
+        TerminationRequest::Immediate => libc::SIGKILL,
+        // `TerminationRequest` is `#[non_exhaustive]`; a request this backend has
+        // not been taught is refused rather than approximated by the nearest one,
+        // because the two arms above differ in whether the target may decline.
+        other => {
+            return Err(SpawnError::Supervision {
+                detail: format!("this backend does not know how to deliver `{other:?}`"),
+            })
+        }
+    };
+    // Safety: `pid` is the id of a child this backend spawned. The window in
+    // which it could name a different process is between the mechanism's exit
+    // and the reap in `wait`, and is the same window the unconfined launch path
+    // has always had; `terminate` narrows it by refusing once a completion has
+    // been recorded.
+    let sent = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if sent == 0 {
+        return Ok(());
+    }
+    Err(SpawnError::Supervision {
+        detail: format!(
+            "the termination request could not be delivered to the confinement executable: {}",
+            std::io::Error::last_os_error()
+        ),
+    })
+}
+
+/// The non-Linux arm. See the Linux one for why this is an error.
+#[cfg(not(target_os = "linux"))]
+fn deliver_termination(pid: u32, _request: TerminationRequest) -> Result<(), SpawnError> {
+    Err(SpawnError::Supervision {
+        detail: format!(
+            "this backend confines Linux processes and cannot deliver a termination request on {}; \
+             process {pid} was not signalled",
+            std::env::consts::OS
+        ),
+    })
+}
+
 /// Whether an outcome means the backend should emit this requirement's flags.
 ///
 /// Shortfalls emit nothing. Because the mechanism is default-deny, an absent
@@ -629,9 +808,8 @@ fn emits_flags(outcome: &RequirementOutcome) -> bool {
 /// Rendering both as one sentence was the previous behaviour and was wrong in
 /// the first case: it told an operator that "nothing was replaced" on a launch
 /// where the environment *had* been replaced.
-fn residual_authority(spec: &ExecutionSpec) -> Vec<String> {
-    let replaced = !credential_flags(spec).is_empty();
-    let mut residual: Vec<String> = unremoved_ambient(spec)
+fn residual_authority(spec: &ExecutionSpec, replaced: bool) -> Vec<String> {
+    let mut residual: Vec<String> = unremoved_ambient(spec, replaced)
         .into_iter()
         .map(|name| {
             if replaced {
@@ -984,25 +1162,27 @@ mod tests {
     /// compatibility exception was recorded.
     #[test]
     fn the_residual_sentence_says_which_of_the_two_situations_it_is() {
-        let replaced = residual_authority(&writing_spec("/tmp/never").with_credentials(
-            aa_isolation::CredentialPosture {
+        let replaced = residual_authority(
+            &writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
                 removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
                 delegated: Vec::new(),
                 ambient_unremoved: vec!["PATH".to_string()],
-            },
-        ));
+            }),
+            true,
+        );
         assert!(
             replaced[0].contains("replaced the environment and passed it through anyway"),
             "{replaced:?}"
         );
 
-        let inherited = residual_authority(&writing_spec("/tmp/never").with_credentials(
-            aa_isolation::CredentialPosture {
+        let inherited = residual_authority(
+            &writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
                 removed: Vec::new(),
                 delegated: Vec::new(),
                 ambient_unremoved: vec!["PATH".to_string()],
-            },
-        ));
+            }),
+            false,
+        );
         assert!(inherited[0].contains("replaced no environment"), "{inherited:?}");
         assert!(
             inherited.iter().any(|r| r.contains("the whole launching environment")),

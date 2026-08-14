@@ -100,6 +100,66 @@ pub struct RunArgs {
     /// `--enforcement-mode` so the source of truth stays unambiguous.
     #[arg(long, conflicts_with = "enforcement_mode")]
     pub observe: bool,
+
+    /// How much execution isolation this launch requires (AAASM-5711).
+    ///
+    /// Defaults to `none`, which is the behaviour every `aasm run` had before
+    /// this flag existed. That default is deliberate and is not a statement that
+    /// isolation does not matter: turning it on by default would sandbox every
+    /// existing user's tool in a release they did not read the notes for, and a
+    /// governed launch that suddenly cannot write to the operator's own
+    /// repository is worse than one that says what it is not doing. Changing the
+    /// default is a product decision with its own ticket, not a side effect of
+    /// making the mode work.
+    ///
+    /// `auto` and `process` both **refuse** when no backend can provide the
+    /// class on this host. Neither ever falls back to `none`: a launch that
+    /// asked for a boundary and silently did not get one is the exact failure
+    /// Epic AAASM-5702 exists to prevent.
+    #[arg(long, value_enum, default_value_t = IsolationIntent::None)]
+    pub isolation: IsolationIntent,
+
+    /// Pin the concrete isolation backend by id. Advanced and diagnostic only.
+    ///
+    /// Not the product vocabulary and not a policy dimension — ADR 0035 §3 is
+    /// explicit that policy describes required isolation *properties*, not a
+    /// vendor, so this exists for reproducing a result on a specific mechanism
+    /// and for telling two backends apart in a bug report. `--isolation` is what
+    /// an operator normally sets.
+    ///
+    /// Refused alongside `--isolation none`: naming a backend for a launch that
+    /// asked for no boundary is a contradiction, and silently ignoring one half
+    /// of it would leave the operator believing the other half took effect.
+    #[arg(long, value_name = "ID")]
+    pub isolation_backend: Option<String>,
+}
+
+/// The stable, backend-neutral statement of how much execution isolation a
+/// launch requires (ADR 0035 §3, "isolation class is not backend identity").
+///
+/// Deliberately spelled in isolation *classes* rather than in any mechanism's
+/// vocabulary. A class is a property an operator can ask for and a backend can
+/// answer; a mechanism name is neither portable nor a promise, and the moment it
+/// appears in this enum an ordinary policy stops surviving a backend change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum IsolationIntent {
+    /// No execution-isolation boundary is established for this launch.
+    ///
+    /// Represented explicitly rather than as the absence of a flag, because the
+    /// report has to be able to say *why* a run has no boundary, and "nobody
+    /// asked for one" is a different fact from "one was asked for and could not
+    /// be built".
+    #[default]
+    None,
+    /// Agent Assembly selects the strongest isolation class it can provide here.
+    ///
+    /// Today exactly one class exists, so this resolves to
+    /// [`Process`](Self::Process). It is not a synonym for "isolate if
+    /// convenient": when nothing can provide a class, this refuses rather than
+    /// running unconfined.
+    Auto,
+    /// Confine the launch and its descendants within one host's process model.
+    Process,
 }
 
 /// CLI surface for [`aa_core::EnforcementMode`]. Lives here (not in `aa-core`)
@@ -178,7 +238,7 @@ mod plan {
 
     use aa_core::{DevToolAdapter, DevToolInfo};
     use aa_isolation::{
-        ControlRequirement, CredentialPosture, ExecutionSpec, IdentityRef, IsolationReport, SessionRef, TargetRef,
+        CredentialPosture, ExecutionSpec, IdentityRef, IsolationBackend, IsolationReport, SessionRef, TargetRef,
     };
     use aa_policy::resolve as run_policy;
 
@@ -535,37 +595,87 @@ mod plan {
         }
     }
 
-    /// What the execution boundary is required to provide.
+    /// Which of the three things happened to this launch's execution boundary.
     ///
-    /// Backend-neutral by construction: it names no backend, selects none, and
-    /// nothing in this Story negotiates it against one. `aa-isolation` keeps
-    /// [`BackendIdentity`](aa_isolation::BackendIdentity) out of
-    /// [`ControlRequirement`] and [`ExecutionSpec`] for exactly this reason, so
-    /// carrying requirements here cannot make policy depend on which backend
-    /// answers them (ADR 0035 §3).
+    /// Three variants because the alternative — an `Option<EnforcementPlan>` —
+    /// makes "nobody asked for a boundary" and "one was asked for and refused"
+    /// the same value, and those are opposite security statements. The second
+    /// must stop the launch; the first must not change it at all.
+    pub(super) enum Boundary {
+        /// No boundary. The launch runs exactly as every `aasm run` did before
+        /// this flag existed.
+        Absent,
+        /// A negotiated plan the launch must execute inside, or not at all.
+        ///
+        /// Boxed only to keep the enum small: an [`EnforcementPlan`] carries the
+        /// whole spec plus every planned requirement, and the other two variants
+        /// are a unit and a string, so an unboxed variant would make every
+        /// `Boundary` the size of the largest one.
+        Negotiated(Box<aa_isolation::EnforcementPlan>),
+        /// Negotiation refused before anything started, with the operator-facing
+        /// reason.
+        Refused(String),
+    }
+
+    /// What the execution boundary is required to provide, and who is going to
+    /// provide it.
     ///
-    /// The requirement list is **empty**, and that is the honest state rather
-    /// than a placeholder: no policy surface lowers to an isolation requirement
-    /// yet and no backend is selected, so a populated list would describe demands
-    /// nothing was asked to meet. The remaining tickets under Epic AAASM-5702
-    /// populate it.
-    #[derive(Debug, Default, Clone)]
+    /// Backend-neutral where it has to be and concrete where it cannot avoid
+    /// being: the requirements are lowered from policy and name no backend
+    /// (`aa-isolation` keeps [`BackendIdentity`](aa_isolation::BackendIdentity)
+    /// out of [`ControlRequirement`] and [`ExecutionSpec`] for exactly that
+    /// reason, ADR 0035 §3), while *selection* has to name one because Rust has
+    /// no plugin loader. Everything downstream of selection holds the trait.
+    ///
+    /// The requirement list is no longer empty (AAASM-5711). It is
+    /// [`aa_isolation::lower_policy`] applied to the canonical projection
+    /// `aa-policy` now retains — see `PolicyResolution`'s type documentation for
+    /// why that projection had to be added before any of this could source a
+    /// single requirement.
+    #[derive(Default)]
     pub(super) struct IsolationPlan {
-        requirements: Vec<ControlRequirement>,
+        /// What the effective policy asks of the boundary, per domain. `None`
+        /// when no policy resolved, which only a preview can reach — a live
+        /// launch refuses on that first.
+        lowering: Option<aa_isolation::PolicyLowering>,
+        /// The selected backend. `None` whenever no boundary is in play, and
+        /// [`Self::absent`] then says which of the reasons applies.
+        backend: Option<aa_isolation_sandlock::SandlockBackend>,
+        /// Why this launch has no boundary, in words an operator can act on.
+        absent: Option<String>,
     }
 
     impl IsolationPlan {
-        /// The backend-neutral statement of what this launch runs and what it
-        /// must run inside.
+        /// Take the selected backend, leaving none behind.
+        ///
+        /// Consuming rather than borrowing because the launch path needs it as
+        /// `Arc<dyn IsolationBackend>` and holds it for the whole run, which
+        /// outlives the plan.
+        pub(super) fn take_backend(&mut self) -> Option<aa_isolation_sandlock::SandlockBackend> {
+            self.backend.take()
+        }
+
+        /// The reason this launch has no boundary.
+        ///
+        /// Never a bare "none": every path that produces no boundary sets a
+        /// sentence, because [`IsolationReport::no_boundary`] renders it and an
+        /// operator reading "no boundary" without a reason cannot tell a default
+        /// from a failure.
+        fn absent_reason(&self) -> String {
+            self.absent.clone().unwrap_or_else(|| {
+                "no execution-isolation backend was selected for this launch, and nothing recorded why".to_string()
+            })
+        }
+
+        /// The launch as an [`ExecutionSpec`], before any requirement is
+        /// attached.
         ///
         /// `None` when the program or any argument is not valid UTF-8.
         /// [`ExecutionSpec`] is explicit that a launch it cannot describe
         /// faithfully must be rejected at the CLI boundary rather than lossily
         /// converted — "losing the launch is better than logging an argv that
-        /// differs from the one that ran". This Story does not yet gate a launch
-        /// on having a spec, so the honest answer here is to carry none rather
-        /// than one built from a lossy conversion.
-        fn spec(
+        /// differs from the one that ran".
+        fn base_spec(
             &self,
             identity: &IdentityPlan,
             handle: &RegistrationHandle,
@@ -584,75 +694,142 @@ mod plan {
             if let Some(dir) = command.get_current_dir() {
                 spec = spec.with_working_dir(dir);
             }
-            for requirement in &self.requirements {
-                spec = spec.with_requirement(requirement.clone());
-            }
             Some(spec)
         }
 
-        /// The canonical projection of what this launch's execution boundary was
-        /// asked for and what it got (AAASM-5710).
+        /// Resolve this launch's execution boundary: the spec, the canonical
+        /// projection of what was asked and achieved, and what execution must do
+        /// about it.
         ///
-        /// Built here, once, so `--dry-run` and the live launch describe one
-        /// boundary rather than each deciding for itself what to call a result —
-        /// the same convergence [`ResolvedRunPlan::bind`] exists to enforce for
-        /// the command and the environment.
+        /// Called from [`ResolvedRunPlan::bind`] and therefore by `--dry-run` and
+        /// the live launch alike, which is what makes AC 10 hold: nothing here
+        /// prepares, starts or writes anything, so a preview negotiates the same
+        /// plan against the same backend and prints it.
         ///
-        /// Today it is always [`IsolationReport::no_boundary`], and that is the
-        /// honest state rather than an unfinished one: [`Self::requirements`] is
-        /// empty and no backend is selected, so nothing was negotiated, prepared
-        /// or applied. Reporting that as a ready boundary is precisely the
-        /// failure Epic AAASM-5702 exists to prevent — and it is a live risk,
-        /// because [`aa_isolation::negotiate`] resolves an empty spec to
-        /// [`LaunchPosture::Ready`](aa_isolation::LaunchPosture::Ready) against
-        /// any backend at all, including one that enforces nothing.
-        ///
-        /// AAASM-5711 selects a backend and replaces the call below with
-        /// `negotiate(...)` into [`IsolationReport::from_plan`] or
-        /// [`IsolationReport::from_refusal`], and attaches the policy lowering
-        /// with [`IsolationReport::with_policy`]. Neither needs this method's
-        /// shape to change: the report is the same type either way, and every
-        /// surface already renders it.
-        fn report(
-            &self,
+        /// `child_env` is handed to the backend rather than left to be
+        /// inherited. The confined program is a different process from this one,
+        /// and the governance identity, the proxy address and the adapter's CA
+        /// path all live in a map this process holds rather than in its own
+        /// environment — see `SandlockBackend::set_child_environment`.
+        fn resolve_boundary(
+            &mut self,
             identity: &IdentityPlan,
             handle: &RegistrationHandle,
             command: &std::process::Command,
-            spec: Option<&ExecutionSpec>,
+            child_env: &std::collections::BTreeMap<String, String>,
             credentials: CredentialPosture,
-        ) -> IsolationReport {
-            // Read off the spec where there is one, so the report names the same
-            // target the spec does. Where there is none the program was not valid
-            // UTF-8, and the lossy rendering is a label for humans — which is all
-            // `TargetRef` is, since it deliberately carries no argv.
-            let target = match spec {
-                Some(spec) => TargetRef::of(spec),
-                None => TargetRef::new(
+        ) -> (Option<ExecutionSpec>, IsolationReport, Boundary) {
+            let session = SessionRef::new(&handle.session_id, &handle.trace_id);
+            let identity_ref = identity.identity_ref(&handle.agent_id);
+
+            let Some(base) = self.base_spec(identity, handle, command, credentials.clone()) else {
+                // The lossy rendering is a label for humans, which is all
+                // `TargetRef` is — it deliberately carries no argv.
+                let target = TargetRef::new(
                     command.get_program().to_string_lossy().into_owned(),
                     command.get_args().len(),
-                ),
+                );
+                let report = IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    target,
+                    credentials,
+                    "this launch cannot be described faithfully — its program or an argument is not valid \
+                     UTF-8 — so no execution specification exists, no backend was consulted, and nothing \
+                     about its isolation is known",
+                );
+                // A launch that asked for a boundary cannot get one without a
+                // spec, and running it anyway would be an unconfined launch of
+                // an untrusted program — the fallback this whole mode exists to
+                // rule out. A launch that asked for none is unaffected, which is
+                // why the two are not the same answer.
+                let boundary = match self.backend {
+                    Some(_) => Boundary::Refused(
+                        "an execution-isolation boundary was requested and this launch cannot be described \
+                         faithfully — its program or an argument is not valid UTF-8 — so no specification \
+                         exists to negotiate one against"
+                            .to_string(),
+                    ),
+                    None => Boundary::Absent,
+                };
+                return (None, report, boundary);
             };
 
-            let reason = match spec {
-                Some(_) => {
-                    "`aasm run` selects no execution-isolation backend yet (Epic AAASM-5702), and no \
-                     policy surface lowers to an isolation requirement, so nothing was negotiated, \
-                     prepared or applied for this launch"
+            // No backend: either nobody asked for one, or a preview met a
+            // refusal a live launch would have raised. Either way the boundary
+            // is absent, and the report says which — with the policy lowering
+            // attached, so every domain states whether the operator left a node
+            // unset or whether the schema has no node to set. Without that, all
+            // nine read `not_derived`, which is what they read before this
+            // ticket and is far more benign than the truth.
+            let Some(backend) = self.backend.as_mut() else {
+                let mut report = IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    TargetRef::of(&base),
+                    credentials,
+                    self.absent_reason(),
+                );
+                if let Some(lowering) = &self.lowering {
+                    report = report.with_policy(lowering);
                 }
-                None => {
-                    "this launch cannot be described faithfully — its program or an argument is not \
-                     valid UTF-8 — so no execution specification exists, no backend was consulted, \
-                     and nothing about its isolation is known"
+                return (Some(base), report, Boundary::Absent);
+            };
+
+            // A boundary was asked for, so a policy has to have lowered to
+            // something for it to enforce. `apply_to` is fallible on purpose:
+            // `negotiate` resolves an empty requirement set to `Ready` against
+            // any backend at all, including one that enforces nothing, and
+            // "we asked for nothing and got it" must not reach a reader as
+            // readiness.
+            let Some(lowering) = self.lowering.as_ref() else {
+                let report = IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    TargetRef::of(&base),
+                    credentials,
+                    "an execution-isolation boundary was requested but no effective policy resolved, so \
+                     there is nothing to lower into requirements for it to enforce",
+                );
+                return (
+                    Some(base),
+                    report,
+                    Boundary::Refused(
+                        "an execution-isolation boundary was requested and no effective policy resolved to \
+                         lower into it"
+                            .to_string(),
+                    ),
+                );
+            };
+
+            let spec = match lowering.apply_to(base.clone()) {
+                Ok(spec) => spec,
+                Err(nothing) => {
+                    let detail = nothing.to_string();
+                    let mut report = IsolationReport::no_boundary(
+                        session,
+                        identity_ref,
+                        TargetRef::of(&base),
+                        credentials,
+                        format!("the launch is refused: {detail}"),
+                    );
+                    report = report.with_policy(lowering);
+                    return (Some(base), report, Boundary::Refused(detail));
                 }
             };
 
-            IsolationReport::no_boundary(
-                SessionRef::new(&handle.session_id, &handle.trace_id),
-                identity.identity_ref(&handle.agent_id),
-                target,
-                credentials,
-                reason,
-            )
+            backend.set_child_environment(child_env.clone());
+            match backend.plan(&spec) {
+                Ok(plan) => {
+                    let report = IsolationReport::from_plan(session, &plan).with_policy(lowering);
+                    (Some(spec), report, Boundary::Negotiated(Box::new(plan)))
+                }
+                Err(refusal) => {
+                    let detail = super::describe_refusal(&refusal);
+                    let report = IsolationReport::from_refusal(session, &spec, &refusal).with_policy(lowering);
+                    (Some(spec), report, Boundary::Refused(detail))
+                }
+            }
         }
     }
 
@@ -712,6 +889,7 @@ mod plan {
         adapter_error: Option<String>,
         spec: Option<ExecutionSpec>,
         isolation: IsolationReport,
+        boundary: Boundary,
     }
 
     impl BoundLaunch {
@@ -739,17 +917,16 @@ mod plan {
             self.adapter_error.as_deref()
         }
 
-        /// The backend-neutral [`ExecutionSpec`] this launch corresponds to.
-        ///
-        /// Constructed but not yet consumed. AC 4 of AAASM-5705 is that the plan
-        /// can *carry* a spec without depending on a concrete backend, and the
-        /// ticket is explicit that no isolation backend is activated here.
-        /// Negotiating it — [`aa_isolation::negotiate`] — belongs to the next
-        /// ticket under Epic AAASM-5702. Making it change anything now would be
-        /// the new protection claim AC 9 rules out.
+        /// The backend-neutral [`ExecutionSpec`] this launch corresponds to,
+        /// requirements included.
         #[allow(dead_code)]
         pub(super) fn spec(&self) -> Option<&ExecutionSpec> {
             self.spec.as_ref()
+        }
+
+        /// What execution must do about this launch's boundary.
+        pub(super) fn boundary(&self) -> &Boundary {
+            &self.boundary
         }
 
         /// What this launch's execution boundary was asked for, and what it got.
@@ -760,9 +937,22 @@ mod plan {
             &self.isolation
         }
 
-        /// Consume this into the two values `spawn_and_wait` needs.
-        pub(super) fn into_spawn_parts(self) -> (std::process::Command, HashMap<String, String>) {
-            (self.command, self.child_env)
+        /// Consume this into the values execution needs.
+        ///
+        /// The command and environment travel even for a confined launch: the
+        /// unconfined path consumes them directly, and the confined one has
+        /// already handed the environment to the backend, so returning them
+        /// together keeps one exit from this type rather than two that could
+        /// disagree about what was bound.
+        pub(super) fn into_execution_parts(
+            self,
+        ) -> (
+            std::process::Command,
+            HashMap<String, String>,
+            Boundary,
+            IsolationReport,
+        ) {
+            (self.command, self.child_env, self.boundary, self.isolation)
         }
     }
 
@@ -837,7 +1027,7 @@ mod plan {
         /// annotations — and the adapter's own environment is applied last, at
         /// spawn time, so it wins on a collision. It is the layer that knows what
         /// the launched tool actually needs.
-        pub(super) fn bind(&self, handle: &RegistrationHandle) -> BoundLaunch {
+        pub(super) fn bind(&mut self, handle: &RegistrationHandle) -> BoundLaunch {
             let mut child_env = super::build_child_env(
                 handle,
                 self.network.endpoint(),
@@ -864,16 +1054,21 @@ mod plan {
             // two sources would still show as present.
             let (effective, removed) = super::effective_child_env(&command, &child_env);
             let credentials = credential_posture(&effective, &removed);
-            let spec = self
-                .isolation
-                .spec(&self.identity, handle, &command, credentials.clone());
 
-            // Built from the same credential posture the spec carries, in the one
-            // place both postures bind through, so the isolation section a preview
-            // prints is the one a live launch would emit (AAASM-5710).
-            let isolation = self
-                .isolation
-                .report(&self.identity, handle, &command, spec.as_ref(), credentials);
+            // The spec, the canonical projection and the execution decision are
+            // resolved together, in the one place both postures bind through, so
+            // the isolation section a preview prints is the one a live launch
+            // would emit and the plan it names is the plan the live launch runs
+            // (AAASM-5710 AC 1, AAASM-5711 AC 10).
+            //
+            // `effective` rather than `child_env`: it is the merge the child
+            // actually receives, adapter values on top and the adapter's
+            // removals already applied. Handing over the pre-merge map would put
+            // a different environment inside the boundary than the one every
+            // other surface reports.
+            let (spec, isolation, boundary) =
+                self.isolation
+                    .resolve_boundary(&self.identity, handle, &command, &effective, credentials);
 
             BoundLaunch {
                 command,
@@ -882,7 +1077,13 @@ mod plan {
                 adapter_error,
                 spec,
                 isolation,
+                boundary,
             }
+        }
+
+        /// Take the selected isolation backend, leaving none behind.
+        pub(super) fn take_backend(&mut self) -> Option<aa_isolation_sandlock::SandlockBackend> {
+            self.isolation.take_backend()
         }
 
         /// The command this launch runs, how faithfully it can be described, and
@@ -1081,6 +1282,14 @@ mod plan {
                 }
             };
 
+            // 5. Execution isolation. Last, because it is lowered from the
+            //    policy stage 4 resolved and because selecting a backend probes
+            //    the host — work a launch already refused should not do. Still
+            //    before any registration exists: a boundary that cannot be
+            //    provided refuses here, not after a governed identity has been
+            //    created for a session that will not run.
+            let isolation = Self::resolve_isolation(self.args, posture, &resolution)?;
+
             Ok(ResolvedRunPlan {
                 args: self.args,
                 posture,
@@ -1092,10 +1301,113 @@ mod plan {
                     no_proxy: self.args.no_proxy,
                 },
                 policy: PolicyPlan { resolution, document },
-                // Empty until a policy surface lowers to isolation requirements;
-                // see `IsolationPlan`.
-                isolation: IsolationPlan::default(),
+                isolation,
                 enforcement_mode,
+            })
+        }
+
+        /// Lower the effective policy onto capability requirements and select a
+        /// backend to meet them, or record why there is none.
+        ///
+        /// The lowering happens for **every** launch, including `--isolation
+        /// none`. That is not wasted work: it is what lets the report say, per
+        /// domain, whether the operator left a policy node unset or whether the
+        /// schema has no node to set. A run with no boundary that also said
+        /// nothing about what policy asked for would report all nine domains as
+        /// `not_derived`, which reads as "nothing to see" rather than as "no
+        /// boundary was established".
+        ///
+        /// Selection refuses rather than degrading. Every path out of here that
+        /// leaves `backend: None` while the operator asked for one has already
+        /// gone through [`PlanPosture::refuse`], so under
+        /// [`PlanPosture::Launch`] it is unreachable — a preview reports the
+        /// refusal and carries on, which is what a preview is for.
+        fn resolve_isolation(
+            args: &RunArgs,
+            posture: PlanPosture,
+            resolution: &run_policy::PolicyResolution,
+        ) -> anyhow::Result<IsolationPlan> {
+            let lowering = resolution
+                .canonical()
+                .map(|document| aa_isolation::lower_policy(document, &aa_isolation::LoweringOptions::strict()));
+
+            if args.isolation == super::IsolationIntent::None {
+                // Naming a backend for a launch that asked for no boundary is a
+                // contradiction, and honouring one half of it silently would
+                // leave the operator believing the other half took effect.
+                if let Some(id) = &args.isolation_backend {
+                    posture.refuse(anyhow::anyhow!(
+                        "--isolation-backend {id} names a backend, but --isolation is `none`, so this launch \
+                         establishes no execution-isolation boundary for a backend to provide. Add \
+                         `--isolation auto` (or `process`), or drop --isolation-backend."
+                    ))?;
+                }
+                return Ok(IsolationPlan {
+                    lowering,
+                    backend: None,
+                    absent: Some(
+                        "no execution-isolation boundary was requested (`--isolation none`, the default), so \
+                         no backend was consulted and nothing was negotiated, prepared or applied. This is \
+                         the pre-existing behaviour of `aasm run`, stated rather than left to be inferred \
+                         from an absence"
+                            .to_string(),
+                    ),
+                });
+            }
+
+            let requested = args
+                .isolation_backend
+                .as_deref()
+                .unwrap_or(aa_isolation_sandlock::BACKEND_ID);
+            if requested != aa_isolation_sandlock::BACKEND_ID {
+                posture.refuse(anyhow::anyhow!(
+                    "--isolation-backend {requested} names no backend this build has. The only backend \
+                     compiled in is `{}`. Backend ids are a diagnostic control and are not portable — \
+                     `--isolation {}` asks for the isolation class instead, and survives a backend change.",
+                    aa_isolation_sandlock::BACKEND_ID,
+                    match args.isolation {
+                        super::IsolationIntent::Auto => "auto",
+                        _ => "process",
+                    },
+                ))?;
+                return Ok(IsolationPlan {
+                    lowering,
+                    backend: None,
+                    absent: Some(format!("no backend answers to the id `{requested}` in this build")),
+                });
+            }
+
+            // Discovery measures the host; it starts nothing and confines
+            // nothing, so a preview may call it too — and must, or the preview
+            // would describe a boundary the live launch could not build.
+            let backend = aa_isolation_sandlock::SandlockBackend::discover();
+            if let aa_isolation::BackendAvailability::Unavailable { reason } =
+                backend.capabilities().availability().clone()
+            {
+                posture.refuse(anyhow::anyhow!(
+                    "refusing to launch: an execution-isolation boundary was requested and the `{}` backend \
+                     cannot be selected on this host — {reason}.\n\
+                     \n\
+                     There is no fallback. A launch that asked for a boundary and quietly ran without one \
+                     would report as governed while being unconfined, which is the failure this mode \
+                     exists to prevent. Install the backend, or re-run with `--isolation none` to launch \
+                     unconfined deliberately.",
+                    aa_isolation_sandlock::BACKEND_ID,
+                ))?;
+                return Ok(IsolationPlan {
+                    lowering,
+                    backend: None,
+                    absent: Some(format!(
+                        "an execution-isolation boundary was requested and no backend could be selected on \
+                         this host: {reason}"
+                    )),
+                });
+            }
+
+            Ok(IsolationPlan {
+                lowering,
+                backend: Some(backend),
+                absent: None,
             })
         }
     }
@@ -1883,6 +2195,163 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
     Ok(status.code().unwrap_or(1))
 }
 
+/// One operator-facing sentence per reason a backend refused a launch.
+///
+/// Every reason, not just the first: an operator fixing one at a time and
+/// re-running would otherwise discover them serially, which is the reason
+/// `PlanRefusal` collects them all rather than short-circuiting.
+fn describe_refusal(refusal: &aa_isolation::PlanRefusal) -> String {
+    let mut out = format!(
+        "the `{}` backend refused this launch before anything started",
+        refusal.backend().id
+    );
+    if let Some(reason) = refusal.backend_unavailable() {
+        out.push_str(&format!("\n  - the backend cannot be selected on this host: {reason}"));
+    }
+    for (requirement, reason) in refusal.unmet() {
+        out.push_str(&format!(
+            "\n  - {}: {}",
+            requirement.domain(),
+            describe_refusal_reason(reason)
+        ));
+    }
+    out
+}
+
+/// What one unmet requirement means, in words that name the remedy.
+///
+/// Deliberately per-variant. "Could not enforce filesystem writes" is not
+/// actionable; "the backend observes filesystem writes but the requirement needs
+/// a decision before the effect" tells an operator whether to change the policy,
+/// change the backend, or accept the risk.
+fn describe_refusal_reason(reason: &aa_isolation::RefusalReason) -> String {
+    use aa_isolation::RefusalReason as R;
+    match reason {
+        R::BackendUnavailable { reason } => format!("the backend cannot be selected on this host — {reason}"),
+        R::NoCapabilityReported { .. } => {
+            "the backend reported nothing about this domain. Silence is not a claim that the domain \
+             needs no control, so the requirement cannot be treated as met"
+                .to_string()
+        }
+        R::DomainUnsupported { reason, .. } => format!("the backend has no mechanism for this domain — {reason}"),
+        R::ObserveOnlyForPreventionRequirement { mediation, .. } => format!(
+            "policy asked for the action to be denied before it happens, and this backend's mediation for \
+             the domain is `{mediation:?}`. An observed action is not a prevented one and must not be \
+             promoted to one"
+        ),
+        R::DecisionTooLate { timing, .. } => format!(
+            "the backend enforces this domain, but its decision timing is `{timing:?}` — after the effect. \
+             That is detection, not prevention"
+        ),
+        R::DecisionNotSynchronous { synchrony, .. } => format!(
+            "the backend decides before the effect, but its synchrony is `{synchrony:?}`, so the action does \
+             not wait for the decision and can win the race"
+        ),
+        R::NoEvidenceProduced { .. } => {
+            "the requirement asked for evidence and this capability produces none".to_string()
+        }
+        R::DescendantCoverageInsufficient { offered, .. } => format!(
+            "the requirement must reach the whole process tree and this capability covers `{offered:?}`. An \
+             agent that escapes by spawning a child has no boundary"
+        ),
+        R::PrerequisiteUnsatisfied { requirement, .. } => {
+            format!("a host precondition this capability depends on is not known to hold: {requirement}")
+        }
+        // `RefusalReason` is `#[non_exhaustive]`. A reason this build has not
+        // been taught is printed rather than swallowed: an unexplained refusal
+        // is still a refusal, and hiding it would make the launch look like it
+        // stopped for no reason.
+        other => format!("{other:?}"),
+    }
+}
+
+/// Run the launch inside a negotiated boundary, and nowhere else.
+///
+/// # The one thing this function must never do
+///
+/// There is no arm here that falls back to [`spawn_and_wait`]. `prepare` and
+/// `spawn` failures propagate, and the launch produces no process at all — the
+/// backend holds the same property structurally on its side (see
+/// `aa_isolation_sandlock::backend`'s "single launch path"), and this is the
+/// caller-side half of it. A fallback would turn every host problem into a
+/// silently unconfined run of an untrusted program.
+///
+/// The supervisor stays outside the boundary (ADR 0035 §5). It holds an opaque
+/// handle, waits on a thread it owns, and forwards a termination request through
+/// the backend — it never acquires a descriptor into, or a process id inside,
+/// the confined tree.
+async fn run_confined(
+    backend: std::sync::Arc<dyn aa_isolation::IsolationBackend>,
+    plan: aa_isolation::EnforcementPlan,
+    report: aa_isolation::IsolationReport,
+) -> Result<i32> {
+    let prepared = backend
+        .prepare(plan)
+        .map_err(|e| anyhow::anyhow!("refusing to launch: the execution boundary could not be established — {e}"))?;
+    let handle = backend.spawn(prepared).map_err(|e| {
+        anyhow::anyhow!(
+            "refusing to launch: the confined launch failed — {e}. No process was started outside the boundary"
+        )
+    })?;
+
+    // `wait_for_exit` blocks by contract — `aa-isolation` takes no async runtime
+    // — so it runs on a thread this process owns rather than on the executor,
+    // which has signal handlers to service.
+    let waiter = {
+        let backend = std::sync::Arc::clone(&backend);
+        let handle = handle.clone();
+        tokio::task::spawn_blocking(move || backend.wait_for_exit(&handle))
+    };
+    tokio::pin!(waiter);
+
+    #[cfg(unix)]
+    let disposition = {
+        let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
+        let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt())?;
+        loop {
+            tokio::select! {
+                // Forwarded, then the wait continues. The pre-isolation path
+                // sent SIGTERM to the child and then waited for it, and an
+                // operator's Ctrl-C must still mean the same thing here.
+                // A failure to deliver is reported and not fatal: the child may
+                // already be exiting, and turning that into an error would make
+                // a clean shutdown look like a launcher failure.
+                _ = sigterm.recv() => forward_termination(backend.as_ref(), &handle),
+                _ = sigint.recv() => forward_termination(backend.as_ref(), &handle),
+                joined = &mut waiter => break joined,
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let disposition = waiter.await;
+
+    let disposition = disposition
+        .map_err(|e| anyhow::anyhow!("the thread waiting on the confined launch failed: {e}"))?
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // The evidenced transition (ADR 0035 §10): what the run actually produced,
+    // joined to the plan. `with_evidence` may only *lower* a posture, and this
+    // backend records no per-decision channel, so nothing here can turn "the
+    // program ran" into "a control decided".
+    let evidence = backend.evidence(&handle);
+    eprint!("{}", isolation_machine_block(&report.with_evidence(&evidence)));
+
+    // The launcher's exit code has always been the launched program's, with `1`
+    // where no code was observable. That contract predates isolation and is not
+    // changed by it: the confinement mechanism passes the program's code
+    // through, and this passes the mechanism's through.
+    Ok(disposition.code_or(1))
+}
+
+/// Deliver a termination request, reporting a failure rather than raising it.
+#[cfg(unix)]
+fn forward_termination(backend: &dyn aa_isolation::IsolationBackend, handle: &aa_isolation::ExecutionHandle) {
+    if let Err(e) = backend.terminate(handle, aa_isolation::TerminationRequest::Graceful) {
+        eprintln!("warning: could not forward the termination request to the confined launch: {e}");
+    }
+}
+
 /// Render the `--dry-run` preview for `args`.
 ///
 /// Returns the payload instead of printing it so a test can assert on the whole
@@ -1901,7 +2370,7 @@ async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, 
 fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>, args: &RunArgs) -> String {
     // Every refusal a preview meets is reported by the planner and recorded in
     // the plan, so `Preview` resolution cannot fail.
-    let resolved = plan::RunPlanner::new(args, target, adapter)
+    let mut resolved = plan::RunPlanner::new(args, target, adapter)
         .resolve(plan::PlanPosture::Preview)
         .expect("a preview reports refusals rather than raising them");
 
@@ -1989,7 +2458,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // the order the launch commits to them: detect → proxy → `--no-proxy` guard
     // → policy. `Launch` posture makes each one fatal, so reaching the next line
     // means all four passed and nothing has been registered or started yet.
-    let resolved = plan::RunPlanner::new(args, target, adapter).resolve(plan::PlanPosture::Launch)?;
+    let mut resolved = plan::RunPlanner::new(args, target, adapter).resolve(plan::PlanPosture::Launch)?;
     let launchable = resolved
         .launchable()
         .expect("a Launch-posture plan resolves every precondition or refuses");
@@ -2001,6 +2470,11 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // deregisters, through the same handshake, so it is a governed identity for
     // exactly as long as it runs.
     let subject = SessionSubject::of(resolved.target(), launchable.info);
+    // Cloned out before `bind` takes the plan mutably. The managed-settings
+    // policy is the adapter's projection and is used after the bind; keeping the
+    // borrow alive across it would be the only thing standing between this
+    // function and the boundary resolution `bind` now performs.
+    let managed_policy = launchable.policy.clone();
     let registration = register_with_gateway(&subject, resolved.identity(), mode).await?;
     let handle = RegistrationHandle::of(&registration);
 
@@ -2029,6 +2503,16 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // override.
     let bound = resolved.bind(&handle);
 
+    // Created here rather than just before the spawn, because from this point
+    // on the function has refusal paths — the boundary refusal below is one —
+    // and a registered session abandoned without deregistration is a governed
+    // identity with no process behind it. `deregistered` is still set on the
+    // normal path so the Drop does not duplicate the request.
+    let mut guard = RegistrationGuard {
+        registration: registration.clone(),
+        deregistered: false,
+    };
+
     // The same projection `--dry-run` renders, on the path that actually starts a
     // child (AAASM-5710). Machine-readable and on stderr: stdout is reserved for
     // the launched tool's own output, and a dashboard or CI check watching a live
@@ -2036,6 +2520,14 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // the child exists, so a run that never returns still leaves the record of
     // what its boundary was — and was not.
     eprint!("{}", isolation_machine_block(bound.isolation()));
+
+    // Before the managed settings are written and long before any child exists:
+    // a required control the backend cannot provide stops the launch, and it
+    // stops it without having changed anything on the host first (AAASM-5711 AC
+    // 4). The report above has already said which control and why.
+    if let plan::Boundary::Refused(why) = bound.boundary() {
+        anyhow::bail!("refusing to launch: {why}");
+    }
 
     // Managed settings are a dev-tool artifact, so they are generated and applied
     // only where there is a dev tool. A generic command has no adapter, no
@@ -2045,7 +2537,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // would undo. `generic_run_writes_no_dev_tool_settings` is the control.
     if let Some(adapter) = adapter {
         let settings = adapter
-            .generate_managed_settings(launchable.policy)
+            .generate_managed_settings(&managed_policy)
             .await
             .map_err(|e| anyhow::anyhow!("failed to generate managed settings: {e}"))?;
 
@@ -2061,13 +2553,21 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         anyhow::bail!("failed to build launch command: {e}");
     }
 
-    let mut guard = RegistrationGuard {
-        registration: registration.clone(),
-        deregistered: false,
+    let backend = resolved.take_backend();
+    let (cmd, child_env, boundary, isolation) = bound.into_execution_parts();
+    let code = match boundary {
+        // The launch runs inside the negotiated boundary, or not at all. There
+        // is no arm below that reaches `spawn_and_wait` after a boundary was
+        // established and then failed.
+        plan::Boundary::Negotiated(plan) => {
+            let backend = backend.expect("a negotiated plan is only produced by a selected backend");
+            run_confined(std::sync::Arc::new(backend), *plan, isolation).await?
+        }
+        // Unchanged from every `aasm run` before `--isolation` existed.
+        plan::Boundary::Absent => spawn_and_wait(cmd, &child_env).await?,
+        // Refused above, before the managed settings were written.
+        plan::Boundary::Refused(why) => anyhow::bail!("refusing to launch: {why}"),
     };
-
-    let (cmd, child_env) = bound.into_spawn_parts();
-    let code = spawn_and_wait(cmd, &child_env).await?;
 
     // Primary deregistration path — async, reliable. Mark the guard first so its
     // Drop does not fire a duplicate request when the function returns normally.
@@ -2565,6 +3065,10 @@ mod tests {
                 }],
                 enforcement_mode: aa_core::EnforcementMode::default(),
             },
+            // Deliberately the empty canonical document: these tests are about
+            // the policy *state*, and a stub that restricted something would
+            // give every one of them an execution boundary they never asked for.
+            canonical: aa_security::policy::PolicyDocument::default(),
         }
     }
 
@@ -2921,6 +3425,10 @@ mod tests {
             dry_run: false,
             enforcement_mode: None,
             observe: false,
+            // The default, and the point: every existing test describes a
+            // launch with no execution-isolation boundary, exactly as before.
+            isolation: IsolationIntent::None,
+            isolation_backend: None,
         }
     }
 
@@ -3371,6 +3879,7 @@ mod tests {
                     }],
                     enforcement_mode: aa_core::EnforcementMode::default(),
                 },
+                canonical: aa_security::policy::PolicyDocument::default(),
             },
             run_policy::PolicyResolution::Permissive {
                 source: PathBuf::from("/p.yaml"),
@@ -3383,6 +3892,7 @@ mod tests {
                     }],
                     enforcement_mode: aa_core::EnforcementMode::default(),
                 },
+                canonical: aa_security::policy::PolicyDocument::default(),
             },
             run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] }),
             run_policy::PolicyResolution::LoadFailed {
@@ -3718,7 +4228,7 @@ mod tests {
         args.no_proxy = true;
         args.agent_id = Some("preview-agent".into());
 
-        let resolved = preview_plan(&adapter, &args);
+        let mut resolved = preview_plan(&adapter, &args);
         let handle = stub_handle(Some("pioneer"));
 
         let first = resolved.bind(&handle);
@@ -3742,7 +4252,7 @@ mod tests {
         args.no_proxy = true;
         args.agent_id = Some("preview-agent".into());
 
-        let resolved = preview_plan(&adapter, &args);
+        let mut resolved = preview_plan(&adapter, &args);
         let handle = stub_handle(Some("pioneer"));
         let bound = resolved.bind(&handle);
 
@@ -3910,7 +4420,7 @@ mod tests {
     fn the_bound_launch_carries_both_the_session_identity_and_the_adapter_environment() {
         let adapter = StubEnvContributing;
         let args = planning_args("claude");
-        let resolved = preview_plan(&adapter, &args);
+        let mut resolved = preview_plan(&adapter, &args);
         let handle = stub_handle(Some("team-a"));
 
         let bound = resolved.bind(&handle);
@@ -3945,7 +4455,7 @@ mod tests {
         let adapter = StubEnvContributing;
         let mut args = planning_args("claude");
         args.tool_args = vec!["--resume".into(), "session-7".into()];
-        let resolved = preview_plan(&adapter, &args);
+        let mut resolved = preview_plan(&adapter, &args);
         let handle = stub_handle(None);
 
         let bound = resolved.bind(&handle);
@@ -3971,7 +4481,7 @@ mod tests {
     fn the_execution_spec_states_no_isolation_requirement_yet() {
         let adapter = StubEnvContributing;
         let args = planning_args("claude");
-        let resolved = preview_plan(&adapter, &args);
+        let mut resolved = preview_plan(&adapter, &args);
         let bound = resolved.bind(&stub_handle(None));
         let spec = bound.spec().expect("spec");
 
@@ -3994,7 +4504,7 @@ mod tests {
         let mut args = planning_args("claude");
         args.team_id = Some("team-a".into());
         args.root_agent = Some("root-agent-1".into());
-        let resolved = preview_plan(&adapter, &args);
+        let mut resolved = preview_plan(&adapter, &args);
 
         let bound = resolved.bind(&stub_handle(Some("team-a")));
         let identity = bound.spec().expect("spec").identity();
@@ -4024,7 +4534,7 @@ mod tests {
 
         let adapter = StubEnvContributing;
         let args = planning_args("claude");
-        let resolved = preview_plan(&adapter, &args);
+        let mut resolved = preview_plan(&adapter, &args);
         let bound = resolved.bind(&stub_handle(None));
         let credentials = bound.spec().expect("spec").credentials().clone();
 
@@ -4203,7 +4713,7 @@ mod tests {
             .collect();
 
         let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
-        let resolved = plan::RunPlanner::new(&args, target, None)
+        let mut resolved = plan::RunPlanner::new(&args, target, None)
             .resolve(plan::PlanPosture::Preview)
             .expect("a preview reports refusals rather than raising them");
         let handle = stub_handle(Some("team-a"));

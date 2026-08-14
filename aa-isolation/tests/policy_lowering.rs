@@ -11,9 +11,9 @@ use aa_isolation::mock::MockBackend;
 use aa_isolation::{
     lower_policy, negotiate, permitted_selector, BackendAvailability, BackendCapabilities, BackendIdentity,
     CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage, EnforcementEvidence, EnforcementPlan,
-    ExecutionHandle, ExecutionSpec, IdentityRef, IsolationBackend, LaunchPosture, Lowering, LoweringOptions, Mediation,
-    PlanRefusal, PlatformBoundary, PolicyLowering, PreparedExecution, Provenance, RefusalReason, RequirementOutcome,
-    RequirementPosture, RequirementScope, SpawnError, Synchrony,
+    ExecutionHandle, ExecutionSpec, ExitDisposition, IdentityRef, IsolationBackend, LaunchPosture, Lowering,
+    LoweringOptions, Mediation, PlanRefusal, PlatformBoundary, PolicyLowering, PreparedExecution, Provenance,
+    RefusalReason, RequirementOutcome, RequirementPosture, RequirementScope, SpawnError, Synchrony, TerminationRequest,
 };
 use aa_security::policy::{Capability, CapabilitySet, NetworkPolicy, PolicyDocument, SyscallAllowlist};
 
@@ -368,6 +368,20 @@ impl IsolationBackend for RecordingBackend {
             prepared.token(),
             prepared.plan().posture(),
         ))
+    }
+
+    /// This backend runs nothing, so it reports no exit code rather than a
+    /// successful one — the same reason [`MockBackend`] does.
+    fn wait_for_exit(&self, _handle: &ExecutionHandle) -> Result<ExitDisposition, SpawnError> {
+        Ok(ExitDisposition::NoCode {
+            detail: "this test backend records a plan and starts no process".to_string(),
+        })
+    }
+
+    fn terminate(&self, _handle: &ExecutionHandle, _request: TerminationRequest) -> Result<(), SpawnError> {
+        Err(SpawnError::Supervision {
+            detail: "this test backend started no process to terminate".to_string(),
+        })
     }
 
     fn evidence(&self, handle: &ExecutionHandle) -> EnforcementEvidence {

@@ -29,6 +29,7 @@ use anyhow::Result;
 
 use aa_core::integration::policy_posture::{PolicyPosture, PolicyState};
 use aa_core::{PolicyDecision, PolicyDocument, PolicyRule};
+use aa_security::policy::PolicyDocument as CanonicalPolicyDocument;
 
 /// A minimal policy artifact that permits everything.
 ///
@@ -84,6 +85,28 @@ pub const POLICY_SOURCE_ENV: &str = "AA_POLICY_SOURCE";
 /// — makes a broken policy indistinguishable from an absent one in the audit
 /// trail, which is precisely the confusion an attacker who corrupts a policy
 /// file would want.
+///
+/// # Why the two launching states carry two documents (AAASM-5711)
+///
+/// [`project_rules`] keeps only the `tools:` dimension, because that is all a
+/// dev-tool adapter can write into a settings file. That projection was for a
+/// long time the *only* thing that survived resolution, and the consequence was
+/// measurable: `aasm run` could not source a single execution-isolation
+/// requirement from its own effective policy, because
+/// [`aa_isolation::lower_policy`] reads capabilities, egress and filesystem path
+/// scope — every one of which `project_rules` discards — from the canonical AST,
+/// and nothing in the run path constructed one. The boundary then reported every
+/// domain as `not_derived`, which reads far more benign than "no policy source
+/// exists".
+///
+/// So both projections travel. They are not alternatives and neither subsumes
+/// the other: the adapter needs tool rules to write a settings file, and the
+/// execution boundary needs the dimensions the settings file has nowhere to put.
+/// Deriving the canonical one here, once, at the point the rich validated
+/// document is still in hand, is also the only place it *can* be derived —
+/// after this function returns, that document is gone.
+///
+/// [`aa_isolation::lower_policy`]: https://docs.rs/aa-isolation
 #[derive(Debug, Clone, PartialEq)]
 pub enum PolicyResolution {
     /// An effective policy resolved and carries at least one enforceable rule.
@@ -92,6 +115,8 @@ pub enum PolicyResolution {
         source: PathBuf,
         /// The projection handed to the dev-tool adapter.
         document: PolicyDocument,
+        /// The cross-layer projection an execution boundary is lowered from.
+        canonical: CanonicalPolicyDocument,
     },
     /// The operator explicitly selected an allow-all artifact.
     Permissive {
@@ -99,6 +124,14 @@ pub enum PolicyResolution {
         source: PathBuf,
         /// The projection handed to the dev-tool adapter.
         document: PolicyDocument,
+        /// The cross-layer projection an execution boundary is lowered from.
+        ///
+        /// Present, and deliberately not skipped for this state. An allow-all
+        /// artifact restricts nothing *that the tool ruleset can express*; the
+        /// canonical document is what says whether the same artifact restricted
+        /// anything else, and answering that from an absence would be the
+        /// fail-open reading.
+        canonical: CanonicalPolicyDocument,
     },
     /// No effective policy resolved.
     Unconfigured(Unconfigured),
@@ -146,7 +179,7 @@ impl PolicyResolution {
     /// which is a fact about the caller and not about any policy.
     pub fn posture(&self) -> PolicyPosture {
         match self {
-            Self::Enforced { source, document } => PolicyPosture::Resolved {
+            Self::Enforced { source, document, .. } => PolicyPosture::Resolved {
                 state: PolicyState::Enforced,
                 source: Some(source.display().to_string()),
                 detail: format!("{} rule(s)", document.rules.len()),
@@ -206,7 +239,7 @@ impl PolicyResolution {
     /// rather than by inferring from what is missing from it.
     pub fn summary(&self) -> String {
         match self {
-            Self::Enforced { source, document } => {
+            Self::Enforced { source, document, .. } => {
                 format!("enforced — {} rule(s) from {}", document.rules.len(), source.display())
             }
             Self::Permissive { source, .. } => format!(
@@ -240,6 +273,24 @@ impl PolicyResolution {
             None => {
                 env.remove(POLICY_SOURCE_ENV);
             }
+        }
+    }
+
+    /// The cross-layer projection an execution boundary is lowered from, for
+    /// the two states that launch.
+    ///
+    /// `None` for the two refusing states, and that is the whole answer for
+    /// them: a launch that is refused establishes no boundary, so there is
+    /// nothing for one to be derived from. It never means "this policy asks
+    /// nothing of the boundary" — a document that asks nothing is `Some` of a
+    /// document that says so, which
+    /// [`aa_isolation::lower_policy`] then reports per domain.
+    ///
+    /// [`aa_isolation::lower_policy`]: https://docs.rs/aa-isolation
+    pub fn canonical(&self) -> Option<&CanonicalPolicyDocument> {
+        match self {
+            Self::Enforced { canonical, .. } | Self::Permissive { canonical, .. } => Some(canonical),
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => None,
         }
     }
 
@@ -402,15 +453,22 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
             source: source.to_path_buf(),
         });
     }
+    // Derived here, from the same validated document `project_rules` reads, and
+    // for the same reason: this is the last point at which the rich document
+    // exists. Deriving it later is not merely inconvenient, it is impossible —
+    // which is how the execution boundary came to have no policy source at all.
+    let canonical = validated.to_canonical();
     if is_explicit_allow_all(&validated) {
         return PolicyResolution::Permissive {
             source: source.to_path_buf(),
             document,
+            canonical,
         };
     }
     PolicyResolution::Enforced {
         source: source.to_path_buf(),
         document,
+        canonical,
     }
 }
 
@@ -523,6 +581,74 @@ mod tests {
             "load_failed",
             "a policy that cannot be parsed is a broken artifact, not an absent one; got {resolution:?}"
         );
+    }
+
+    /// **The negative control for AAASM-5711's policy seam.**
+    ///
+    /// The two projections must carry *different* dimensions, and this asserts
+    /// that they do rather than that "something arrived". `project_rules` keeps
+    /// only the tool ruleset, so a `capabilities.deny` entry is invisible in the
+    /// document a dev-tool adapter receives; the canonical projection is the
+    /// only thing that carries it out of resolution, and the execution boundary
+    /// is lowered from that.
+    ///
+    /// The control is the pair: the same artifact without the denial produces a
+    /// canonical document whose deny set is empty, so the assertion below is
+    /// about the denial crossing rather than about the field being populated by
+    /// anything at all. Removing the `canonical` retention makes this fail to
+    /// compile; weakening it to `None` makes it fail.
+    #[test]
+    fn the_canonical_projection_carries_a_denial_the_tool_ruleset_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        let with_denial = write(
+            &dir,
+            "denying.yaml",
+            "tools:\n  bash:\n    allow: true\ncapabilities:\n  deny:\n    - file_write\n",
+        );
+        let resolution = load(&with_denial);
+        assert_eq!(resolution.state_token(), "enforced");
+
+        let canonical = resolution.canonical().expect("a launching state carries one").clone();
+        assert!(
+            canonical
+                .capabilities
+                .as_ref()
+                .is_some_and(|c| c.deny.contains(&aa_security::policy::Capability::FileWrite)),
+            "the file_write denial did not survive resolution: {canonical:?}"
+        );
+
+        // What the adapter's projection can say about the same artifact: the
+        // tool rule, and nothing else. If this ever starts carrying the denial,
+        // the two projections have merged and the comment above is stale.
+        let rules = resolution.into_enforceable().expect("enforced launches");
+        assert_eq!(rules.rules.len(), 1);
+        assert_eq!(rules.rules[0].action_pattern, "bash");
+
+        // The control. Same tool rule, no denial: the canonical projection is
+        // still present and states no capability restriction, which is a
+        // different fact from the artifact above and from an absent document.
+        let without = write(&dir, "plain.yaml", "tools:\n  bash:\n    allow: true\n");
+        let control = load(&without);
+        assert_eq!(control.state_token(), "enforced");
+        let control_canonical = control.canonical().expect("a launching state carries one");
+        assert!(
+            control_canonical
+                .capabilities
+                .as_ref()
+                .is_none_or(|c| c.deny.is_empty()),
+            "the control artifact denied something nobody wrote: {control_canonical:?}"
+        );
+    }
+
+    /// A refused resolution carries no canonical projection, and that must read
+    /// as "no boundary was established" rather than as "the policy asked
+    /// nothing of one".
+    #[test]
+    fn a_refusing_state_carries_no_canonical_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = write(&dir, "p.yaml", "budget:\n  daily_limit_usd: 5.0\n");
+        assert!(load(&empty).canonical().is_none());
+        assert!(resolve(Some(&dir.path().join("absent.yaml"))).canonical().is_none());
     }
 
     /// A typo'd section is the dangerous shape of the case above: it parses as

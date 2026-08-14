@@ -24,6 +24,15 @@
 # / AAASM-5709), 11 from tests/adversarial_boundary_linux.rs, 8 from
 # tests/adversarial_negotiation.rs.
 
+# AAASM-5711: the end-to-end confined launch through `aasm run`, measured by
+# `aa-cli/tests/run_isolation_linux.rs`. These ran in the `Test` lane before,
+# which does not install the mechanism, so all four took the `ToolAbsent`
+# branch and reported PASS in 8-14 ms. They are measured here instead.
+aasm-run-confined-child-environment
+aasm-run-confined-exit-code
+aasm-run-devtool-confined-write-denied
+aasm-run-exec-confined-write-denied
+
 absent backend refuses before launch
 adversarial: a detached descendant and an alternate executable path are confined alike
 adversarial: a direct connection bypassing the configured route never arrives
