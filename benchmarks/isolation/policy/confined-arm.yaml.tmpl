@@ -1,0 +1,62 @@
+# Template for the confined arm's real policy artifact (AAASM-5713).
+#
+# Rendered by render.sh into a concrete policy YAML before a run — the write
+# and network grants below need the scratch directory's actual path, which is
+# only known once a run picks one.
+#
+# What this states, and why, traced against aa-isolation/src/lowering.rs and
+# aa-cli/src/commands/run.rs (read, not edited — AAASM-5713 does not own
+# either):
+#
+# - `filesystem.read.allow: ["/"]` — deliberately unrestricted. The default
+#   workload families (see ../workloads/*.sh) call out to python3, node, pnpm,
+#   cargo, rg and git, whose interpreters, standard libraries and dependency
+#   caches live wherever the host's toolchain installer put them — a runner
+#   image detail this ticket cannot enumerate correctly ahead of a live run,
+#   and getting it wrong would fail every family for a policy-authoring
+#   reason having nothing to do with the sandlock backend. Read confinement is
+#   consequently NOT exercised by this policy; see the caveat in README.md.
+# - `filesystem.write.allow: ["__SCRATCH_ROOT__"]` — every default workload
+#   family was already written to confine its own writes to the scratch
+#   directory the harness hands it (`rust_cargo_check.sh` pins
+#   `CARGO_TARGET_DIR` there for exactly this reason). This is therefore a
+#   real, intentionally narrow grant, not a "make everything pass" wildcard —
+#   a write outside it failing under confinement is either a genuine backend
+#   limitation or a workload family that turns out not to be as contained as
+#   its own comment claims, and either is worth recording as a compatibility
+#   finding.
+# - `network.allowlist: ["127.0.0.1"]` — the only network the default
+#   families need is the harness's own loopback TLS server
+#   (`harness/tlsserver.py` binds `127.0.0.1`).
+# - No `capabilities:` node. Leaving process creation (`agent_spawn` /
+#   `terminal_exec`) unstated means `aa_isolation::lower_policy` lowers that
+#   domain to `NotStated` and produces no requirement for it, which — per
+#   `aa-isolation/src/plan.rs`'s `negotiate` — means the sandlock backend
+#   confines nothing in that domain: process spawning inside the confined
+#   child (pnpm spawning node, cargo spawning rustc, `process_spawn.sh`'s 200
+#   execve/reap cycles) proceeds exactly as unconfined. This is a deliberate,
+#   documented scope decision, not an oversight: this run measures
+#   filesystem-write and network-egress confinement cost. It does NOT measure
+#   what AASM's advertised process-spawn control would cost under this
+#   backend — P4's confined-arm figure from this run is genuinely 1.0-ish by
+#   construction, and that must not be read as "process confinement is free."
+#   A follow-up run with an explicit `capabilities` restriction is separate
+#   work.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aabench-confined-arm
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "/"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__"
+  network:
+    allowlist:
+      - "127.0.0.1"
