@@ -13,6 +13,8 @@
 //!
 //! - [`capability`] — the `file_read` / `network_outbound` / `mcp_tool:<n>`
 //!   capability vocabulary.
+//! - [`filesystem`] — the `filesystem.read` / `filesystem.write` path-scope
+//!   node (AAASM-5751).
 //! - [`document`] — [`PolicyDocument`] and its sub-structures.
 //! - [`parse`] — YAML parsing of the `policy-examples` on-disk contract.
 //! - [`ebpf`] — deterministic lowering of the AST to eBPF map entries
@@ -23,6 +25,7 @@ pub mod capability;
 pub mod document;
 pub mod ebpf;
 pub mod error;
+pub mod filesystem;
 #[cfg(feature = "serde")]
 pub mod parse;
 pub mod syscall;
@@ -31,4 +34,5 @@ pub use capability::{Capability, CapabilitySet};
 pub use document::{NetworkPolicy, PolicyDocument, ToolRule};
 pub use ebpf::{lower_to_ebpf, EbpfRuleSet, PathRule, PathVerdict};
 pub use error::PolicyParseError;
+pub use filesystem::{FilesystemPolicy, PathScope, PathScopeError};
 pub use syscall::{Syscall, SyscallAllowlist};

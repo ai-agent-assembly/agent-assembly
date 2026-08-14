@@ -12,6 +12,7 @@
 //! budget accounting) stay in `aa-gateway` and operate *on top of* this AST.
 
 use super::capability::CapabilitySet;
+use super::filesystem::FilesystemPolicy;
 use super::syscall::SyscallAllowlist;
 
 /// Network egress policy: the set of hosts an agent may connect to.
@@ -59,6 +60,14 @@ pub struct PolicyDocument {
     /// monitored PID. Lowered to `SYSCALL_ALLOWLIST` map entries by
     /// AAASM-3635.
     pub syscall_allowlist: Option<SyscallAllowlist>,
+    /// Filesystem path scope for this workload (AAASM-5751).
+    ///
+    /// `None` means the operator stated nothing about paths — **not** that
+    /// paths are unrestricted. The distinction is load-bearing: the
+    /// `aa-isolation` lowering reports an unstated node as
+    /// `DomainCoverage::NotStated` and emits no requirement, which is a
+    /// different fact from a stated node permitting nothing.
+    pub filesystem: Option<FilesystemPolicy>,
 }
 
 impl PolicyDocument {
@@ -101,10 +110,14 @@ mod tests {
         assert!(doc.egress_allowlist().is_empty());
         assert!(doc.syscall_allowlist.is_none());
         assert!(doc.allowed_syscalls().is_empty());
+        // AAASM-5751 — an unstated path node. `None` is "nobody said", which
+        // the lowering must not read as "everything is permitted".
+        assert!(doc.filesystem.is_none());
     }
 
     #[test]
     fn accessors_read_through() {
+        use super::super::filesystem::PathScope;
         use super::super::syscall::{Syscall, SyscallAllowlist};
         let mut caps = CapabilitySet::default();
         caps.deny.insert(Capability::FileWrite);
@@ -120,10 +133,19 @@ mod tests {
                 requires_approval_if: None,
             }],
             syscall_allowlist: Some(SyscallAllowlist::from_names(["read", "write"]).unwrap()),
+            filesystem: Some(FilesystemPolicy {
+                read: Some(PathScope::from_paths(["/workspace"]).unwrap()),
+                write: None,
+            }),
         };
         assert_eq!(doc.denied_capabilities(), vec![&Capability::FileWrite]);
         assert_eq!(doc.egress_allowlist(), ["api.openai.com"]);
         assert_eq!(doc.tools.len(), 1);
         assert_eq!(doc.allowed_syscalls(), vec![Syscall::Read, Syscall::Write]);
+        let fs = doc.filesystem.as_ref().unwrap();
+        assert!(fs.read.as_ref().unwrap().permits("/workspace/src/main.rs"));
+        assert!(!fs.read.as_ref().unwrap().permits("/etc/passwd"));
+        // A verb the operator left unstated stays unstated on the document.
+        assert!(fs.write.is_none());
     }
 }

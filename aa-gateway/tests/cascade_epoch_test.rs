@@ -33,6 +33,7 @@ fn allow_doc(scope: PolicyScope) -> PolicyDocument {
         approval_policy: None,
         tools: HashMap::new(),
         capabilities: None,
+        filesystem: None,
     }
 }
 

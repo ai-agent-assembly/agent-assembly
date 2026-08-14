@@ -72,7 +72,8 @@ impl PolicyValidator {
                     key,
                     format!(
                         "unknown top-level key '{}'; valid keys are: version, scope, network, \
-                         schedule, budget, data, tools, capabilities, approval_timeout_secs, approval",
+                         schedule, budget, data, tools, capabilities, filesystem, \
+                         approval_timeout_secs, approval",
                         key
                     ),
                 ));
@@ -86,6 +87,7 @@ impl PolicyValidator {
         let data = Self::validate_data(raw.data, &mut errors);
         let tools = Self::validate_tools(raw.tools, &mut errors);
         let capabilities = Self::validate_capabilities(raw.capabilities, &mut errors, &mut warnings);
+        let filesystem = Self::validate_filesystem(raw.filesystem, &mut errors);
         let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
@@ -120,6 +122,7 @@ impl PolicyValidator {
                 approval_policy,
                 tools,
                 capabilities,
+                filesystem,
             },
             warnings,
         })
@@ -471,6 +474,62 @@ impl PolicyValidator {
             deny,
             allow_restricted,
         })
+    }
+
+    /// Validate the `filesystem:` path-scope section (AAASM-5751).
+    ///
+    /// Returns `None` when the section is absent **or** when it names neither
+    /// verb: in both cases the operator said nothing about paths, and the
+    /// lowering must be able to report that distinctly from a scope that
+    /// permits nothing. A verb key that is present but carries no `allow:`
+    /// list is *not* that case — it is an in-force scope permitting nothing,
+    /// which is the most restrictive posture available here.
+    fn validate_filesystem(
+        raw: Option<crate::raw::RawFilesystemPolicy>,
+        errors: &mut Vec<ValidationError>,
+    ) -> Option<aa_security::policy::FilesystemPolicy> {
+        let raw = raw?;
+
+        reject_unknown_keys("filesystem", &raw.unknown, errors);
+
+        let node = aa_security::policy::FilesystemPolicy {
+            read: Self::validate_path_scope(raw.read, "filesystem.read", errors),
+            write: Self::validate_path_scope(raw.write, "filesystem.write", errors),
+        };
+        node.is_stated().then_some(node)
+    }
+
+    /// Validate one `filesystem.<verb>` node into a canonical
+    /// [`aa_security::policy::PathScope`].
+    ///
+    /// A malformed prefix is a hard error rather than a dropped entry: every
+    /// rejection [`aa_security::policy::PathScopeError`] makes has a reading
+    /// under which the authored prefix permits strictly more than it looks like
+    /// it permits, so quietly discarding one would widen the scope the operator
+    /// wrote. This is the AAASM-4330 fail-closed rule applied per entry.
+    fn validate_path_scope(
+        raw: Option<crate::raw::RawPathScope>,
+        node: &str,
+        errors: &mut Vec<ValidationError>,
+    ) -> Option<aa_security::policy::PathScope> {
+        let raw = raw?;
+
+        reject_unknown_keys(node, &raw.unknown, errors);
+
+        let entries = raw.allow.unwrap_or_default();
+        let mut accepted: Vec<String> = Vec::with_capacity(entries.len());
+        for (i, entry) in entries.iter().enumerate() {
+            match aa_security::policy::PathScope::from_paths([entry]) {
+                Ok(_) => accepted.push(entry.clone()),
+                Err(reason) => errors.push(ValidationError::new(format!("{node}.allow[{i}]"), reason.to_string())),
+            }
+        }
+        // Every accepted entry already validated individually above, so this
+        // cannot fail. The fallback is the *empty* scope rather than a panic
+        // or a permissive default: empty permits nothing, so a hypothetical
+        // future divergence between the per-entry and whole-list checks can
+        // only ever narrow this scope, never widen it.
+        Some(aa_security::policy::PathScope::from_paths(&accepted).unwrap_or_default())
     }
 
     fn validate_tools(
