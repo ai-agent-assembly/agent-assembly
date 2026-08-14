@@ -91,7 +91,12 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+
+# A closure resolver: cargo args in, the set of crate names out. `check()`
+# takes one so the selftest can drive the real comparison with a stub.
+Resolver = Callable[[tuple[str, ...]], set[str]]
 
 EXIT_OK = 0
 EXIT_DRIFT = 1
@@ -220,7 +225,7 @@ def closure(manifest_dir: Path, args: tuple[str, ...]) -> set[str]:
     return parse_names(proc.stdout)
 
 
-def check(manifest_dir: Path, resolve=None) -> int:
+def check(manifest_dir: Path, resolve: Resolver | None = None) -> int:
     """Compare each pinned selection against its measured closure.
 
     `resolve` exists so the selftest can drive this function with a stub instead
