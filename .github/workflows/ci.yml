@@ -1034,7 +1034,16 @@ jobs:
     # An earlier version of this comment asserted the filter already covered
     # "every path", which was true of dependencies and false of the gate itself.
     if: needs.changes.outputs.rust == 'true'
-    name: Detection fast path has no outbound capability
+    # Named for what the job measures — `aa-security`, which is detection pass
+    # 1 (`BuiltinScannerPass`) — not for the whole detection fast path. The
+    # earlier name, "Detection fast path has no outbound capability", was wider
+    # than the job: by the script's own scope section the gateway cascade's
+    # passes 2 and 3 (`CompiledRegexPass` / `CascadeRegexPass` over `regex`, a
+    # direct aa-gateway dependency) are part of that fast path and are neither
+    # pinned nor run here. The script's docstring carried that caveat; the
+    # check name a reviewer reads in the checks list carried no qualifier, and
+    # the name is what most people see.
+    name: aa-security detection pass has no outbound capability
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
