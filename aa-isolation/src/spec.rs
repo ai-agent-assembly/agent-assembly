@@ -206,6 +206,39 @@ impl CredentialPosture {
     pub fn has_unremoved_ambient_authority(&self) -> bool {
         !self.ambient_unremoved.is_empty()
     }
+
+    /// Names this posture reports in two lists that cannot both be true.
+    ///
+    /// The three lists answer one question — *does this name reach the child* —
+    /// with three different answers, so a name in two of them makes the posture
+    /// unreadable. Two pairs matter and both are checked:
+    ///
+    /// * `removed` ∩ `ambient_unremoved` is the failure this Epic exists to
+    ///   prevent. It renders authority that **could not** be removed as
+    ///   authority that **was**, and a reader who stops at `removed` concludes
+    ///   the run is least-authority when it is not.
+    /// * `removed` ∩ `delegated` is the same contradiction with the intent
+    ///   reversed, and is just as unreadable.
+    ///
+    /// `delegated` ∩ `ambient_unremoved` is deliberately *not* an error: both
+    /// mean the name reaches the child, so a posture carrying it is redundant
+    /// rather than wrong, and rejecting it would fail a caller who recorded a
+    /// delegation and a compatibility debt for the same variable.
+    ///
+    /// Empty for every posture [`crate::ambient::EnvironmentPlanner`] builds —
+    /// it cannot construct one of these — so this predicate exists for the
+    /// hand-written postures a caller may still assemble.
+    pub fn contradictions(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .removed
+            .iter()
+            .filter(|name| self.ambient_unremoved.contains(name) || self.delegated.contains(name))
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
 }
 
 /// One policy-derived demand on the execution boundary.

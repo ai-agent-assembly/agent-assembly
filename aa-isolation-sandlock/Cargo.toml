@@ -24,11 +24,32 @@ aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6" }
 # verbatim and this crate must name when it records a decision.
 aa-core = { path = "../aa-core", version = "0.0.1-rc.6" }
 
+# AAASM-5709, and only for `src/inherit.rs`: `fcntl(F_GETFD/F_SETFD)`, to stop an
+# inherited descriptor crossing `exec` into the confined program. The standard
+# library exposes no way to set the close-on-exec flag on a descriptor it did not
+# create, and the alternative — taking ownership of the descriptor and dropping
+# it — closes something this process does not own and races a concurrent open
+# that reuses the number.
+#
+# Linux-only by target, because the enumeration it acts on is `/proc/self/fd`
+# and the backend is unavailable off Linux anyway. `libc` is already a workspace
+# dependency; this adds no new crate to the tree, only a new edge.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
 [features]
 default = []
 
 [dev-dependencies]
 aa-isolation-sandlock = { path = "." }
+
+# AAASM-5709, and only for the descriptor scenario in
+# `tests/linux_confinement.rs`: `dup`, to obtain a descriptor that is inheritable
+# across `exec` by construction. The scenario's control depends on that being
+# true, and assuming what `File::open` did with the close-on-exec flag would make
+# the control's premise an assumption rather than a fact.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = { workspace = true }
 
 [lints]
 workspace = true

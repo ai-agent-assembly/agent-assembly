@@ -408,6 +408,18 @@ pub fn unexpressible_limit(limits: &ResourceLimits) -> Option<&'static str> {
 /// Returned separately from the per-requirement lowering because the posture
 /// lives on the spec rather than on any one requirement, and because it must be
 /// emitted exactly once however many requirements a spec carries.
+///
+/// # Why the unremoved-ambient names are passed through too
+///
+/// [`CredentialPosture::ambient_unremoved`](aa_isolation::CredentialPosture)
+/// means *this name reaches the child even though policy asked that it not*. On
+/// a launch that replaces the environment, that is only true if this lowering
+/// actually puts the name back — otherwise the posture would say the child holds
+/// something the command line withheld, which is the same class of lie as
+/// reporting a kept variable as removed, with the sign flipped. So a name in
+/// that list is emitted exactly like a delegated one, and the *difference*
+/// between the two travels where it belongs: in evidence, where a delegation
+/// reads as a decision and an unremoved name reads as a debt.
 pub fn credential_flags(spec: &ExecutionSpec) -> Vec<String> {
     let credentials = spec.credentials();
     if credentials.removed.is_empty() && credentials.delegated.is_empty() {
@@ -417,7 +429,7 @@ pub fn credential_flags(spec: &ExecutionSpec) -> Vec<String> {
     // variables from an inherited environment would leave everything nobody
     // thought to name, which is the opposite of least authority.
     let mut flags = vec![FLAG_CLEAN_ENV.to_string()];
-    for name in &credentials.delegated {
+    for name in credentials.delegated.iter().chain(credentials.ambient_unremoved.iter()) {
         if let Some(value) = std::env::var_os(name).and_then(|v| v.into_string().ok()) {
             flags.push(flag_with_value(FLAG_ENV, &format!("{name}={value}")));
         }
@@ -428,11 +440,19 @@ pub fn credential_flags(spec: &ExecutionSpec) -> Vec<String> {
 /// Names that policy asked to keep out of the child and that this lowering
 /// cannot remove.
 ///
-/// Empty whenever [`credential_flags`] emits its clean-environment flag, which
-/// is the whole point of starting from an empty environment. Non-empty when the
-/// posture named variables to remove but nothing to delegate *and* nothing to
-/// clean — in which case the child inherits, and the spec's own
-/// `ambient_unremoved` list is the honest place for the residue.
+/// Two sources, and both are real:
+///
+/// * the spec's own `ambient_unremoved` list — a compatibility exception the
+///   caller recorded, which this backend honours by passing the name through;
+/// * every name in `removed`, but **only** when [`credential_flags`] emitted
+///   nothing. With no environment replacement the child inherits the launching
+///   environment whole, so a name policy asked to remove is still there, and
+///   reporting it as removed would be exactly the failure this Epic exists to
+///   prevent.
+///
+/// The second source is why this function exists rather than the caller reading
+/// `spec.credentials().ambient_unremoved` directly: whether a `removed` name was
+/// actually removed is a property of the *lowering*, not of the posture.
 pub fn unremoved_ambient(spec: &ExecutionSpec) -> Vec<String> {
     let credentials = spec.credentials();
     let mut residue = credentials.ambient_unremoved.clone();
@@ -442,6 +462,59 @@ pub fn unremoved_ambient(spec: &ExecutionSpec) -> Vec<String> {
     residue.sort();
     residue.dedup();
     residue
+}
+
+/// Well-known instance-metadata addresses this spec's egress grants name.
+///
+/// The metadata service mints cloud credentials for anything that can reach it,
+/// so a permitted destination that names one is ambient credential authority
+/// arriving through the network domain — which is why
+/// [`AmbientAuthorityKind::CloudMetadataEndpoint`] carries both domains.
+///
+/// # What this can and cannot see
+///
+/// It compares a permitted destination against
+/// [`CLOUD_METADATA_ENDPOINTS`](aa_isolation::CLOUD_METADATA_ENDPOINTS)
+/// literally, allowing for a trailing port or path. It therefore catches the
+/// case an operator would write by hand and **does not** catch a CIDR block
+/// containing the link-local range, a hostname that resolves into it, or a proxy
+/// that forwards to it. That gap is stated in the evidence sentence this feeds
+/// rather than papered over: a launch permitting broad egress reaches the
+/// metadata service whatever this returns.
+///
+/// The mechanism is default-deny for egress, so a spec that permits no
+/// destination reaches no metadata service, and this returns empty for the right
+/// reason.
+///
+/// [`AmbientAuthorityKind::CloudMetadataEndpoint`]: aa_isolation::AmbientAuthorityKind::CloudMetadataEndpoint
+pub fn reachable_metadata_endpoints(spec: &ExecutionSpec) -> Vec<&'static str> {
+    let permitted: Vec<&str> = spec
+        .requirements()
+        .iter()
+        .filter(|r| r.domain() == CapabilityDomain::NetworkEgress)
+        .filter_map(|r| match r.scope() {
+            RequirementScope::Selectors(selectors) => Some(selectors),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|s| permitted_selector(s))
+        .collect();
+    aa_isolation::CLOUD_METADATA_ENDPOINTS
+        .iter()
+        .copied()
+        .filter(|endpoint| {
+            permitted.iter().any(|destination| {
+                *destination == *endpoint
+                    // A destination is conventionally `host:port` or a URL
+                    // authority; both keep the address as a prefix ending at a
+                    // separator, so anchoring on one avoids matching an
+                    // unrelated address that merely starts with these digits.
+                    || destination
+                        .strip_prefix(endpoint)
+                        .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('/'))
+            })
+        })
+        .collect()
 }
 
 /// Build the whole command line for a spec and its already-lowered flags.
@@ -609,6 +682,108 @@ mod tests {
         let spec = spec("/bin/true", &[]);
         assert!(credential_flags(&spec).is_empty());
         assert!(unremoved_ambient(&spec).is_empty());
+    }
+
+    /// **The property this Epic exists for, at the lowering layer.** A name the
+    /// posture says could not be removed must come out of `unremoved_ambient`,
+    /// and must not be silently absent because the environment was replaced.
+    ///
+    /// The negative control is the same variable moved from
+    /// `ambient_unremoved` to `removed`: it then reports as removed and out of
+    /// the residue, so the assertion below is about which list the name is in
+    /// and not about the function returning everything it is given.
+    #[test]
+    fn a_compatibility_exception_is_reported_as_residue_and_reaches_the_child() {
+        // `PATH` rather than a fabricated name: it is set on every host this
+        // runs on, and mutating the process environment from a test is a data
+        // race against every other test in the binary. It is also the realistic
+        // exception — a child that cannot resolve a program name is a child that
+        // does not run.
+        assert!(std::env::var_os("PATH").is_some(), "this host sets no PATH");
+        let kept = spec("/bin/true", &[]).with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: vec!["PATH".to_string()],
+        });
+        assert_eq!(unremoved_ambient(&kept), ["PATH"]);
+        assert!(
+            credential_flags(&kept).iter().any(|f| f.starts_with("--env=PATH=")),
+            "the name reported as still reaching the child was withheld from it: {:?}",
+            credential_flags(&kept)
+        );
+
+        // Negative control: the same variable moved into `removed`. It leaves
+        // the residue *and* leaves the command line, so the assertion above is
+        // about which list the name is in.
+        let removed = spec("/bin/true", &[]).with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["AWS_SECRET_ACCESS_KEY".to_string(), "PATH".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: Vec::new(),
+        });
+        assert!(unremoved_ambient(&removed).is_empty());
+        assert!(
+            !credential_flags(&removed).iter().any(|f| f.contains("PATH=")),
+            "a removed name reached the child: {:?}",
+            credential_flags(&removed)
+        );
+    }
+
+    /// With no environment replacement, every name policy asked to remove is
+    /// still there — and must be reported as such rather than as removed.
+    #[test]
+    fn without_a_replacement_a_removed_name_is_reported_as_residue() {
+        // `removed` alone triggers the clean-environment flag, so the only way
+        // to reach this state is a posture that names nothing but the residue
+        // itself — which is what a caller records when it could not act at all.
+        let spec = spec("/bin/true", &[]).with_credentials(aa_isolation::CredentialPosture {
+            removed: Vec::new(),
+            delegated: Vec::new(),
+            ambient_unremoved: vec!["SSH_AUTH_SOCK".to_string()],
+        });
+        assert!(credential_flags(&spec).is_empty());
+        assert_eq!(unremoved_ambient(&spec), ["SSH_AUTH_SOCK"]);
+    }
+
+    /// A permitted destination naming the metadata service is credential
+    /// authority arriving over the network, and must be visible as such.
+    #[test]
+    fn a_permitted_metadata_destination_is_reported_as_reachable() {
+        let reachable = spec("/bin/true", &[]).with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(RequirementScope::Selectors(vec![
+                permit_only_selector("169.254.169.254:80"),
+            ])),
+        );
+        assert_eq!(reachable_metadata_endpoints(&reachable), ["169.254.169.254"]);
+
+        // Control one: the same requirement with an ordinary destination.
+        let ordinary = spec("/bin/true", &[]).with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress)
+                .with_scope(RequirementScope::Selectors(vec![permit_only_selector("10.0.0.1:443")])),
+        );
+        assert!(reachable_metadata_endpoints(&ordinary).is_empty());
+
+        // Control two: an address that merely starts with the same digits must
+        // not match, or the check reports reachability that is not there.
+        let lookalike = spec("/bin/true", &[]).with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(RequirementScope::Selectors(vec![
+                permit_only_selector("169.254.169.2540"),
+            ])),
+        );
+        assert!(
+            reachable_metadata_endpoints(&lookalike).is_empty(),
+            "a longer address matched the metadata endpoint as a prefix"
+        );
+    }
+
+    /// Default-deny means a spec that permits nothing reaches no metadata
+    /// service, and the check must say so for that reason rather than by
+    /// accident.
+    #[test]
+    fn a_spec_with_no_egress_grant_reaches_no_metadata_endpoint() {
+        assert!(reachable_metadata_endpoints(&spec("/bin/true", &[])).is_empty());
+        let whole =
+            spec("/bin/true", &[]).with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress));
+        assert!(reachable_metadata_endpoints(&whole).is_empty());
     }
 
     /// The boundary can only be weakened by a flag, and no spec can reach one.
