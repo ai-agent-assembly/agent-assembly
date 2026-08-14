@@ -51,6 +51,29 @@
 //! The dependency runs one way only: `aa-isolation` → `aa-core`. Nothing in
 //! `aa-core` knows this crate exists.
 //!
+//! # Policy lowering, and why it lives here (AAASM-5707)
+//!
+//! [`lowering`] maps an effective policy onto [`ControlRequirement`]s. That
+//! needs the canonical policy AST, so the crate now has a second dependency,
+//! `aa-security` — a leaf crate that is not a platform, an async runtime or a
+//! serialization format, which are the three things the paragraph above is
+//! about.
+//!
+//! The edge direction is forced rather than preferred. `aa-policy` owns
+//! effective-policy resolution and would be the natural home, but it carries no
+//! `publish = false` and is therefore in `cargo workspaces publish`'s set, while
+//! this crate opts out — so `aa-policy` → `aa-isolation` fails `cargo publish`
+//! on a dependency that is not on crates.io. `aa-security` → `aa-isolation` is
+//! a cycle, because `aa-core` already depends on `aa-security`. What remains is
+//! `aa-isolation` → `aa-security`, which is acyclic and packaging-safe.
+//!
+//! Lowering reads policy and never writes it: no type in [`lowering`] is a
+//! policy node, and nothing there anticipates a schema that does not exist.
+//! Where the schema cannot express a domain, the gap is reported as
+//! [`DomainCoverage::PolicyCannotExpress`] rather than as an absent
+//! requirement, because those two are read very differently by anyone deciding
+//! whether a boundary is complete.
+//!
 //! # Reused vocabulary, and one deliberate rename
 //!
 //! Evidence terms are [`aa_core::attestation::ClaimTerm`] verbatim — this crate
@@ -127,6 +150,7 @@
 pub mod backend;
 pub mod capability;
 pub mod evidence;
+pub mod lowering;
 pub mod plan;
 pub mod spec;
 
@@ -140,6 +164,10 @@ pub use capability::{
     Synchrony,
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
+pub use lowering::{
+    lower_policy, permit_only_selector, permitted_selector, DomainCoverage, DomainLowering, LoweringOptions,
+    NoRequirementsLowered, PolicyLowering, ScopeGranularity, PERMIT_ONLY_SELECTOR,
+};
 pub use plan::{
     negotiate, AchievedControl, BackendIdentity, EnforcementPlan, LaunchPosture, Lowering, PlanRefusal,
     PlannedRequirement, Provenance, RefusalReason, RequirementOutcome,

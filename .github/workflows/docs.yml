@@ -9,41 +9,18 @@ permissions:
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
-      - '.github/workflows/docs.yml'
-      # AAASM-4310: shared metadata sources feed docs/src/generated/. A drift
-      # in either without a matching snippet update must fail docs CI.
-      - 'metadata/**'
-      - 'scripts/generate_docs_metadata.py'
-      - 'Cargo.toml'
-      # AAASM-4911: the version-drift gate below stamps README / installation.md
-      # / docs.yml pins / CONTRIBUTING.md from the SoT; a change to the gate
-      # script itself must re-run it (a dead trigger otherwise).
-      - 'scripts/propagate_versions.py'
-      # AAASM-4922: the metadata-drift lint (ADR 0014); re-run it when it changes.
-      - '.ci/check-metadata-drift.sh'
-      # AAASM-5671: the banned-absolutes waiver-eligibility gate (ADR 0034 W10);
-      # a change to the gate itself must re-run it, or it is a dead trigger.
-      - 'scripts/check_absolutes_unwaivable.py'
-      # The gate also scans the root adoption record ADR 0034 Decision 4 requires of
-      # every repository. It does not exist here yet; listing it now means the first
-      # one committed is gated, rather than sitting outside the trigger unnoticed —
-      # the vacuous-pass guard cannot catch that, since the docs/ globs still match.
-      - 'TRUTH-ADOPTION.md'
-      # AAASM-5679: the claim-vocabulary gate's scope is wider than `docs/**`,
-      # and a scope the workflow never fires for is a scope that is not gated.
-      # `design/**` is where the AC3 violation lived (ADR 0025 makes those specs
-      # authoritative), `.claude/**` is in the spec's 6.5 scope, and a README at
-      # any depth is too. The checker itself is listed for the same reason the
-      # two scripts above are: a change to a gate must re-run it.
-      - 'design/**'
-      - '.claude/**'
-      - '**/README.md'
-      - 'governance/**'
-      - 'scripts/check_claim_vocabulary.py'
+    # AAASM-5677: deliberately NOT path-filtered — the selection that used to
+    # live here now lives in the `changes` router below, glob for glob.
+    #
+    # `metadata-drift` and `version-drift` are governance-bearing (CONTRIBUTING,
+    # "Which CI checks are governance-bearing"): `metadata-drift` is what
+    # carries scripts/check_absolutes_unwaivable.py in CI, and AAASM-5677
+    # recorded that a PR editing the capability coverage matrix and threat
+    # model was not scanned by it at all — no failing check, no warning, simply
+    # fewer check runs. So this workflow has to be a required status check, and
+    # a required check only works if it reliably reports: a path-filtered
+    # workflow that does not trigger produces no check run at all, and a
+    # required check that never arrives blocks the pull request forever.
   push:
     branches: [main]
     paths:
@@ -58,10 +35,13 @@ on:
       - '.ci/check-metadata-drift.sh'
       - 'scripts/check_absolutes_unwaivable.py'
       - 'TRUTH-ADOPTION.md'
-      # AAASM-5679: mirrored from `pull_request` above. Without these, neither
-      # the checker's `--selftest` nor its full-tree report runs on `main` for
-      # the scopes it claims to cover — the "a PR-only gate lets main go
-      # silently red" shape this repository has already been bitten by.
+      # AAASM-5677 AC3 — paired with the router filter below.
+      - 'verification-reports/**/*.md'
+      # AAASM-5679: mirrored from the `changes` router below. Without these,
+      # neither the claim-vocabulary checker's `--selftest` nor its full-tree
+      # report runs on `main` for the scopes it claims to cover — the "a PR-only
+      # gate lets main go silently red" shape this repository has already been
+      # bitten by.
       - 'design/**'
       - '.claude/**'
       - '**/README.md'
@@ -77,19 +57,91 @@ on:
     types: [completed]
 
 jobs:
+  # AAASM-5677: the selection that used to be `on.pull_request.paths`, glob for
+  # glob. Consulted for `pull_request` only — the `push` and `workflow_run`
+  # triggers keep their own filters and their existing behaviour, because they
+  # are backstops (and `workflow_run` has no diff for a paths filter to read).
+  changes:
+    name: Detect changed areas (Docs)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            docs:
+              - 'docs/**'
+              - 'README.md'
+              - 'CONTRIBUTING.md'
+              - '.github/workflows/docs.yml'
+              # AAASM-4310: shared metadata sources feed docs/src/generated/. A
+              # drift in either without a matching snippet update must fail docs CI.
+              - 'metadata/**'
+              - 'scripts/generate_docs_metadata.py'
+              - 'Cargo.toml'
+              # AAASM-4911: the version-drift gate stamps README / installation.md
+              # / docs.yml pins / CONTRIBUTING.md from the SoT; a change to the
+              # gate script itself must re-run it (a dead trigger otherwise).
+              - 'scripts/propagate_versions.py'
+              # AAASM-4922: the metadata-drift lint (ADR 0014); re-run it when it changes.
+              - '.ci/check-metadata-drift.sh'
+              # AAASM-5671: the banned-absolutes waiver-eligibility gate (ADR 0034
+              # W10); a change to the gate itself must re-run it, or it is a dead
+              # trigger.
+              - 'scripts/check_absolutes_unwaivable.py'
+              # The gate also scans the root adoption record ADR 0034 Decision 4
+              # requires of every repository. It does not exist here yet; listing
+              # it now means the first one committed is gated, rather than sitting
+              # outside the trigger unnoticed — the vacuous-pass guard cannot catch
+              # that, since the docs/ globs still match.
+              - 'TRUTH-ADOPTION.md'
+              # AAASM-5677 AC3. Capability, claim and evidence records — the
+              # capability coverage matrix and threat model among them. The
+              # `metadata-drift` job carries scripts/check_absolutes_unwaivable.py,
+              # and Finding 2 was a pull request editing two of these that the
+              # job never ran on. Paired with the same entry in that script's
+              # DEFAULT_GLOBS: this glob alone would only make the job RUN, and
+              # it would then scan nothing.
+              - 'verification-reports/**/*.md'
+              # AAASM-5679: the claim-vocabulary gate's scope is wider than
+              # `docs/**`, and a scope the workflow never fires for is a scope
+              # that is not gated. `design/**` is where the AC3 violation lived
+              # (ADR 0025 makes those specs authoritative), `.claude/**` is in
+              # the spec's 6.5 scope, and a README at any depth is too. The
+              # checker itself is listed for the same reason the two scripts
+              # above are: a change to a gate must re-run it.
+              - 'design/**'
+              - '.claude/**'
+              - '**/README.md'
+              - 'governance/**'
+              - 'scripts/check_claim_vocabulary.py'
+
   build:
     name: Build mdBook
+    needs: [changes]
     runs-on: ubuntu-latest
     # PR + main-push always build. A workflow_run only proceeds when the
     # upstream Release succeeded, was a TAG PUSH (not a pull_request / dispatch
     # dry-run — AAASM-3714; our branch names also start with 'v', so the
     # head_branch check alone is insufficient), and the tag looks like a release
     # version (vX.Y.Z[-pre]).
+    #
+    # AAASM-5677: `!cancelled()` stops a skipped `changes` (every non-PR event)
+    # from force-skipping this job — without a status function in the
+    # expression GitHub propagates the skip. A *failed* `changes` leaves the
+    # router clause false, so this skips and `Docs Success` turns red on the
+    # failure: fail closed.
     if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true') &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')))
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -359,8 +411,12 @@ jobs:
 
   verify-commands:
     name: Verify documented commands (Linux)
+    needs: [changes]
     # Only on PR / main push; a release cut re-verifies nothing new.
-    if: github.event_name != 'workflow_run'
+    # AAASM-5677: see the note on `build` for why `!cancelled()` is required.
+    if: >-
+      !cancelled() && github.event_name != 'workflow_run' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -394,8 +450,12 @@ jobs:
   # signal is fast and independent of the heavy book build.
   version-drift:
     name: Version-drift gate (propagate_versions --check)
+    needs: [changes]
     # PR + main push only; a release-cut workflow_run rebuilds no sources.
-    if: github.event_name != 'workflow_run'
+    # AAASM-5677: see the note on `build` for why `!cancelled()` is required.
+    if: >-
+      !cancelled() && github.event_name != 'workflow_run' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -417,11 +477,20 @@ jobs:
   # no toolchain — kept fast and independent of the book build like version-drift.
   # NOTE: this job now runs two independent pure-script docs gates —
   # check-metadata-drift.sh and check_absolutes_unwaivable.py (AAASM-5671). The
-  # display name still names only the first because it is a required status check
-  # and renaming it would break branch protection; the steps are the accurate list.
+  # display name still names only the first; the steps are the accurate list.
+  # AAASM-5677 corrected the reason this name is frozen: this job was never a
+  # required status check (at the time, `main` required none at all), and the
+  # required context is now `Docs Success` below, which exists precisely so an
+  # internal rename cannot silently drop the requirement. Renaming this job is
+  # therefore safe with respect to branch protection — it is left alone only to
+  # keep run history comparable.
   metadata-drift:
     name: Metadata-drift gate (check-metadata-drift.sh)
-    if: github.event_name != 'workflow_run'
+    needs: [changes]
+    # AAASM-5677: see the note on `build` for why `!cancelled()` is required.
+    if: >-
+      !cancelled() && github.event_name != 'workflow_run' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -486,6 +555,30 @@ jobs:
           # is raised as an error instead of being silently read as "nothing
           # changed".
           python3 scripts/check_claim_vocabulary.py --diff-base "$BASE_SHA"
+
+  # AAASM-5677: the stable required context for this workflow. `deploy` is
+  # deliberately NOT a need — it only runs off a pull request, and a Pages
+  # deployment failure is an operational problem, not a merge gate.
+  docs-success:
+    name: Docs Success
+    needs: [changes, build, verify-commands, version-drift, metadata-drift]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A required Docs job concluded with '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required Docs jobs passed or were intentionally skipped."
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
