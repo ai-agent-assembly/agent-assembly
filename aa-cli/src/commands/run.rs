@@ -177,7 +177,9 @@ mod plan {
     use uuid::Uuid;
 
     use aa_core::{DevToolAdapter, DevToolInfo};
-    use aa_isolation::{ControlRequirement, CredentialPosture, ExecutionSpec, IdentityRef};
+    use aa_isolation::{
+        ControlRequirement, CredentialPosture, ExecutionSpec, IdentityRef, IsolationReport, SessionRef, TargetRef,
+    };
     use aa_policy::resolve as run_policy;
 
     use super::{run_registration, RegistrationHandle, RunArgs};
@@ -587,6 +589,71 @@ mod plan {
             }
             Some(spec)
         }
+
+        /// The canonical projection of what this launch's execution boundary was
+        /// asked for and what it got (AAASM-5710).
+        ///
+        /// Built here, once, so `--dry-run` and the live launch describe one
+        /// boundary rather than each deciding for itself what to call a result —
+        /// the same convergence [`ResolvedRunPlan::bind`] exists to enforce for
+        /// the command and the environment.
+        ///
+        /// Today it is always [`IsolationReport::no_boundary`], and that is the
+        /// honest state rather than an unfinished one: [`Self::requirements`] is
+        /// empty and no backend is selected, so nothing was negotiated, prepared
+        /// or applied. Reporting that as a ready boundary is precisely the
+        /// failure Epic AAASM-5702 exists to prevent — and it is a live risk,
+        /// because [`aa_isolation::negotiate`] resolves an empty spec to
+        /// [`LaunchPosture::Ready`](aa_isolation::LaunchPosture::Ready) against
+        /// any backend at all, including one that enforces nothing.
+        ///
+        /// AAASM-5711 selects a backend and replaces the call below with
+        /// `negotiate(...)` into [`IsolationReport::from_plan`] or
+        /// [`IsolationReport::from_refusal`], and attaches the policy lowering
+        /// with [`IsolationReport::with_policy`]. Neither needs this method's
+        /// shape to change: the report is the same type either way, and every
+        /// surface already renders it.
+        fn report(
+            &self,
+            identity: &IdentityPlan,
+            handle: &RegistrationHandle,
+            command: &std::process::Command,
+            spec: Option<&ExecutionSpec>,
+            credentials: CredentialPosture,
+        ) -> IsolationReport {
+            // Read off the spec where there is one, so the report names the same
+            // target the spec does. Where there is none the program was not valid
+            // UTF-8, and the lossy rendering is a label for humans — which is all
+            // `TargetRef` is, since it deliberately carries no argv.
+            let target = match spec {
+                Some(spec) => TargetRef::of(spec),
+                None => TargetRef::new(
+                    command.get_program().to_string_lossy().into_owned(),
+                    command.get_args().len(),
+                ),
+            };
+
+            let reason = match spec {
+                Some(_) => {
+                    "`aasm run` selects no execution-isolation backend yet (Epic AAASM-5702), and no \
+                     policy surface lowers to an isolation requirement, so nothing was negotiated, \
+                     prepared or applied for this launch"
+                }
+                None => {
+                    "this launch cannot be described faithfully — its program or an argument is not \
+                     valid UTF-8 — so no execution specification exists, no backend was consulted, \
+                     and nothing about its isolation is known"
+                }
+            };
+
+            IsolationReport::no_boundary(
+                SessionRef::new(&handle.session_id, &handle.trace_id),
+                identity.identity_ref(&handle.agent_id),
+                target,
+                credentials,
+                reason,
+            )
+        }
     }
 
     /// How this launch treats the authority the child would otherwise inherit.
@@ -644,6 +711,7 @@ mod plan {
         fidelity: super::PreviewFidelity,
         adapter_error: Option<String>,
         spec: Option<ExecutionSpec>,
+        isolation: IsolationReport,
     }
 
     impl BoundLaunch {
@@ -682,6 +750,14 @@ mod plan {
         #[allow(dead_code)]
         pub(super) fn spec(&self) -> Option<&ExecutionSpec> {
             self.spec.as_ref()
+        }
+
+        /// What this launch's execution boundary was asked for, and what it got.
+        ///
+        /// The one projection both `--dry-run` and the live launch render, so
+        /// neither can describe a boundary the other would not have (AAASM-5710).
+        pub(super) fn isolation(&self) -> &IsolationReport {
+            &self.isolation
         }
 
         /// Consume this into the two values `spawn_and_wait` needs.
@@ -787,12 +863,17 @@ mod plan {
             // including the names the adapter removes, which a naive union of the
             // two sources would still show as present.
             let (effective, removed) = super::effective_child_env(&command, &child_env);
-            let spec = self.isolation.spec(
-                &self.identity,
-                handle,
-                &command,
-                credential_posture(&effective, &removed),
-            );
+            let credentials = credential_posture(&effective, &removed);
+            let spec = self
+                .isolation
+                .spec(&self.identity, handle, &command, credentials.clone());
+
+            // Built from the same credential posture the spec carries, in the one
+            // place both postures bind through, so the isolation section a preview
+            // prints is the one a live launch would emit (AAASM-5710).
+            let isolation = self
+                .isolation
+                .report(&self.identity, handle, &command, spec.as_ref(), credentials);
 
             BoundLaunch {
                 command,
@@ -800,6 +881,7 @@ mod plan {
                 fidelity,
                 adapter_error,
                 spec,
+                isolation,
             }
         }
 
@@ -1457,6 +1539,25 @@ enum PreviewFidelity {
     Degraded(String),
 }
 
+/// The machine-readable isolation block, byte-identical on both surfaces.
+///
+/// `--dry-run` prints it to stdout beneath the operator render; a live launch
+/// prints it to stderr, because stdout belongs to the launched tool. One
+/// function emits it for both so a downstream dashboard or CI check does not
+/// have to handle two shapes — and so the two cannot drift, which is the same
+/// failure AAASM-5327 and AAASM-5329 were.
+///
+/// A consumer anchors on the header, then reads `key=value` records until the
+/// first line that is not one. It never has to parse a sentence.
+fn isolation_machine_block(report: &aa_isolation::IsolationReport) -> String {
+    let mut out = String::from("--- execution isolation (machine-readable) ---\n");
+    for line in report.machine_lines() {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
 /// Build the structured dry-run output string.
 ///
 /// The `--- policy ---` section is the preview's receipt of which of the four
@@ -1464,6 +1565,20 @@ enum PreviewFidelity {
 /// including the two that would refuse: a preview that showed a policy section
 /// only when one loaded would make "no policy at all" look like a formatting
 /// quirk rather than the reason the live run stops.
+///
+/// The `--- execution isolation ---` section is the same receipt for the
+/// execution boundary, rendered from the [`aa_isolation::IsolationReport`] the
+/// live launch also emits (AAASM-5710). It is printed unconditionally for the
+/// same reason: a section that appeared only once a backend was selected would
+/// make "no boundary was established" look like a formatting quirk rather than
+/// the state of the run.
+// Eight parameters, one per section of the receipt. The obvious way to satisfy
+// the lint is to take a `BoundLaunch` instead of the command, environment,
+// fidelity and isolation report — but `BoundLaunch` is constructible only by
+// `ResolvedRunPlan::bind`, deliberately, so that no caller can assemble a launch
+// state that never went through the plan. Weakening that to quiet a parameter
+// count would trade a real invariant for a cosmetic one.
+#[allow(clippy::too_many_arguments)]
 fn format_dry_run_output(
     handle: &RegistrationHandle,
     policy: &run_policy::PolicyResolution,
@@ -1472,6 +1587,7 @@ fn format_dry_run_output(
     cmd: &std::process::Command,
     env: &HashMap<String, String>,
     fidelity: &PreviewFidelity,
+    isolation: &aa_isolation::IsolationReport,
 ) -> String {
     const SETTINGS_LIMIT: usize = 1024;
 
@@ -1518,7 +1634,7 @@ fn format_dry_run_output(
     };
 
     format!(
-        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n--- managed settings ---\n{}\n\n--- launch command ---\nworking_dir: {}\n{}\n\n--- environment ---\n{}",
+        "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n{}\n{}\n--- managed settings ---\n{}\n\n--- launch command ---\nworking_dir: {}\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
         handle.registration_did,
         handle.trace_id,
@@ -1534,6 +1650,8 @@ fn format_dry_run_output(
         policy.state_token(),
         policy.source().map_or("<none>".to_string(), |p| p.display().to_string()),
         policy.summary(),
+        isolation.render(),
+        isolation_machine_block(isolation),
         truncated_settings,
         working_dir,
         cmd_line,
@@ -1818,6 +1936,7 @@ fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>
         bound.command(),
         bound.child_env(),
         bound.fidelity(),
+        bound.isolation(),
     )
 }
 
@@ -1909,6 +2028,14 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // would then faithfully carry forward the very values it is meant to
     // override.
     let bound = resolved.bind(&handle);
+
+    // The same projection `--dry-run` renders, on the path that actually starts a
+    // child (AAASM-5710). Machine-readable and on stderr: stdout is reserved for
+    // the launched tool's own output, and a dashboard or CI check watching a live
+    // run should not have to parse a receipt written for a human. Emitted before
+    // the child exists, so a run that never returns still leaves the record of
+    // what its boundary was — and was not.
+    eprint!("{}", isolation_machine_block(bound.isolation()));
 
     // Managed settings are a dev-tool artifact, so they are generated and applied
     // only where there is a dev tool. A generic command has no adapter, no
@@ -2406,6 +2533,22 @@ mod tests {
             session_id: "test-session".into(),
             team_id: team_id.map(String::from),
         }
+    }
+
+    /// The isolation report a bound launch carries today: no backend selected,
+    /// so no boundary established.
+    ///
+    /// Built with the same constructor `IsolationPlan::report` uses, so a test
+    /// asserting on the rendered section is asserting on the shape the command
+    /// actually emits.
+    fn stub_isolation(credentials: aa_isolation::CredentialPosture) -> aa_isolation::IsolationReport {
+        aa_isolation::IsolationReport::no_boundary(
+            aa_isolation::SessionRef::new("test-session", "test-trace"),
+            aa_isolation::IdentityRef::root("test-agent"),
+            aa_isolation::TargetRef::new("mock-tool", 0),
+            credentials,
+            "no isolation backend is selected",
+        )
     }
 
     /// A resolved-and-enforced policy, for tests whose subject is not the
@@ -2998,6 +3141,7 @@ mod tests {
             &cmd,
             &env,
             &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
         );
 
         assert!(
@@ -3046,6 +3190,7 @@ mod tests {
             &cmd,
             &HashMap::new(),
             &fidelity,
+            &stub_isolation(Default::default()),
         );
         assert!(
             output.contains("DEGRADED"),
@@ -3162,6 +3307,7 @@ mod tests {
             &cmd,
             &env,
             &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
         );
 
         assert!(output.contains("agent_id:"), "missing identity section: {output}");
@@ -3248,8 +3394,16 @@ mod tests {
         let sections: Vec<String> = states
             .iter()
             .map(|state| {
-                let output =
-                    format_dry_run_output(&handle, state, false, "{}", &cmd, &env, &PreviewFidelity::FromAdapter);
+                let output = format_dry_run_output(
+                    &handle,
+                    state,
+                    false,
+                    "{}",
+                    &cmd,
+                    &env,
+                    &PreviewFidelity::FromAdapter,
+                    &stub_isolation(Default::default()),
+                );
                 let start = output
                     .find("--- policy ---")
                     .expect("receipt must carry a policy section");
@@ -3304,6 +3458,7 @@ mod tests {
             &cmd,
             &env,
             &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
         );
 
         assert!(
@@ -3351,6 +3506,7 @@ mod tests {
             &cmd,
             &env,
             &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
         );
 
         assert!(
@@ -3405,6 +3561,7 @@ mod tests {
             &cmd,
             &env,
             &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
         );
         assert!(unprotected.contains("--- protection ---"), "{unprotected}");
         assert!(unprotected.contains("unprotected"), "{unprotected}");
@@ -3421,6 +3578,7 @@ mod tests {
             &cmd,
             &env,
             &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
         );
         assert!(proxied.contains("proxy_configured"), "{proxied}");
         assert!(
