@@ -400,6 +400,7 @@ dependencies = [
  "aa-ebpf",
  "aa-ebpf-common",
  "aa-gateway",
+ "aa-isolation",
  "aa-proto",
  "aa-proxy",
  "aa-runtime",

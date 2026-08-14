@@ -49,6 +49,12 @@ aa-devtool  = { path = "../aa-devtool" }
 aa-devtool-claude-code = { path = "../aa-devtool-claude-code" }
 aa-devtool-contract = { path = "../aa-devtool-contract" }
 aa-gateway  = { path = "../aa-gateway" }
+# AAASM-5751. The filesystem path-scope round trip crosses three crates that
+# cannot see each other — aa-policy validates, aa-security holds the canonical
+# AST, aa-isolation lowers it — so only a test here can assert the whole chain.
+# Both this crate and `aa-isolation` are `publish = false`, so this edge never
+# reaches the crates.io dependency graph.
+aa-isolation = { path = "../aa-isolation" }
 aa-storage-postgres = { path = "../aa-storage-postgres" }
 aa-storage-sqlite-buffer = { path = "../aa-storage-sqlite-buffer" }
 aa-proto    = { path = "../aa-proto" }
