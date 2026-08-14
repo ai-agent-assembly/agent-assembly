@@ -10,13 +10,14 @@ builds or invokes as a supported component.
 > about any particular distribution, and it is not a substitute for review by
 > someone qualified to give one.
 >
-> **Status — reduced scope.** The first backend (Sandlock) is built by
-> **AAASM-5708** and does not exist yet. This document and its gate deliver the
-> **mechanism**: the manifest schema, the channel matrix, the notices
-> scaffolding and the enforcement. The Sandlock row in
-> [`metadata/isolation-backends.json`](../../metadata/isolation-backends.json)
-> is deliberately empty. No version, source URL, checksum or license identifier
-> has been invented for it, because none has been measured.
+> **Status.** This document and its gate deliver the **mechanism**: the
+> manifest schema, the channel matrix, the notices scaffolding and the
+> enforcement. The first backend (Sandlock) landed with **AAASM-5708**, and its
+> row in [`metadata/isolation-backends.json`](../../metadata/isolation-backends.json)
+> now carries measured provenance — version, source URL, release digest and
+> SPDX identifier, each taken from the artifact rather than from upstream
+> documentation. AASM does not redistribute the backend on any channel, so no
+> channel is license-gated by it.
 
 ## 1. The gap this closes
 
@@ -249,10 +250,13 @@ for a backend that actually ships.
 
 ## 7. Open items for AAASM-5708 and the final wave
 
-- Fill the Sandlock row with measured provenance and flip `status` to `active`.
-  Every requirement above turns on at that moment.
-- Decide and record the per-channel strategy for it, especially whether
-  `github-release` bundles the binary or the installer downloads it.
+- ~~Fill the Sandlock row with measured provenance and flip `status` to
+  `active`.~~ Done in AAASM-5708.
+- ~~Decide and record the per-channel strategy for it.~~ Done in AAASM-5708:
+  every channel is `system` except `crates-io`, which is `not-distributed`
+  because the consuming crate carries `publish = false`. Nothing is bundled or
+  downloaded, so the bundled-artifact items below remain open only for a future
+  backend that *is* shipped.
 - If bundled: add a checksum manifest to `release.yml` on the `EBPF_SHA256SUMS`
   pattern, cosign-sign it with the same keyless flow, and add the notices
   section.

@@ -1,0 +1,34 @@
+[package]
+name = "aa-isolation-sandlock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Linux process-isolation backend for Agent Assembly, implemented over the Sandlock supervisor (AAASM-5708)"
+# AAASM-5708. Held back from crates.io for the same reasons as `aa-isolation`
+# (see that crate's `src/lib.rs` "Packaging" section) plus one of its own: this
+# crate is useless without an external `sandlock` executable that AASM does not
+# distribute on any channel, so a published copy would advertise a capability
+# nothing published can provide.
+#
+# `cargo workspaces publish` (release.yml `publish-crates`) ships every workspace
+# member that does NOT carry this key, so omitting it would publish this crate by
+# default rather than by decision.
+publish = false
+
+[dependencies]
+# The backend-neutral contract this crate implements. `aa-isolation` is
+# `publish = false` too, so this edge is packaging-safe in the same direction.
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6" }
+# Only for the `ClaimTerm` evidence vocabulary, which `aa-isolation` re-uses
+# verbatim and this crate must name when it records a decision.
+aa-core = { path = "../aa-core", version = "0.0.1-rc.6" }
+
+[features]
+default = []
+
+[dev-dependencies]
+aa-isolation-sandlock = { path = "." }
+
+[lints]
+workspace = true

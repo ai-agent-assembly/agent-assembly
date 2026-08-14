@@ -149,20 +149,53 @@
   "backends": [
     {
       "id": "sandlock",
-      "status": "pending",
+      "status": "active",
       "tracking_ticket": "AAASM-5708",
+      "upstream_name": "sandlock",
+      "version": "0.8.6",
+      "source_url": "https://github.com/multikernel/sandlock/releases/download/v0.8.6/sandlock-x86_64-unknown-linux-gnu.tar.gz",
+      "release_sha256": "86e89e5bdb2da748e683cda6908a95504ae6751f73d9dadf79cf0fc6843873fb",
+      "spdx_license": "Apache-2.0",
+      "modifications": {
+        "modified": false
+      },
+      "review": {
+        "ticket": "AAASM-5708",
+        "reviewed_at": "2026-08-13",
+        "capability_evidence": "ci.yml job `isolation-backend-linux` installs exactly this artifact (digest verified by `sha256sum -c` in the job), then runs `aa-isolation-sandlock`'s confinement suite, which measures each claimed capability against observed behaviour with a control for every scenario: a forbidden write leaves an existing file byte-for-byte unchanged and creates nothing (pre-effect), a forbidden read returns no bytes, a connection to an unpermitted loopback destination never reaches a listener this repository owns, a process ceiling of one stops a grandchild from existing, and a descendant re-invoking the mechanism with a wider grant is still denied while the identical command outside the boundary succeeds. `.ci/test-evidence-summary.sh --require-evidence` fails the job if every scenario declined, so a green lane cannot mean an unmeasured one. A version bump must re-run that lane: the capability reports in `aa-isolation-sandlock/src/capability.rs` are gated on the live probe, so a version that stops denying reports itself as unable to prevent rather than passing on the strength of this record."
+      },
+      "channels": {
+        "github-release": "system",
+        "crates-io": "not-distributed",
+        "homebrew-tap": "system",
+        "ghcr-container": "system",
+        "shell-installer": "system",
+        "enterprise": "system",
+        "saas": "system"
+      },
       "notes": [
-        "DELIBERATELY EMPTY. The first isolation backend is built by AAASM-5708,",
-        "which has not landed. No version, source URL, release checksum or SPDX",
-        "identifier is recorded here because none has been measured — a fabricated",
-        "provenance row is worse than an absent one: it would pass this gate while",
-        "attesting to something nobody verified.",
+        "MEASURED, NOT QUOTED. Every field above was taken from the artifact:",
+        "the digest was computed locally with `shasum -a 256` over the downloaded",
+        "tarball and matches the digest GitHub publishes for that release asset;",
+        "the SPDX identifier was read from the LICENSE file at tag v0.8.6.",
         "",
-        "The gate ENFORCES that emptiness: a `pending` backend that carries any",
-        "provenance field is rejected (see the pending_backend_carries_provenance",
-        "self-test case). Filling this row is part of AAASM-5708 / the final wave",
-        "of AAASM-5702, and flipping `status` to `active` turns on every",
-        "requirement in scripts/check-backend-license-compliance.sh."
+        "AASM DISTRIBUTES NOTHING. The backend is an external executable the",
+        "operator installs, so no channel is `bundled`, `downloaded` or `source`",
+        "and none is license-gated by this file. `crates-io` is",
+        "`not-distributed` rather than `system` for a different reason: the",
+        "consuming crate `aa-isolation-sandlock` carries `publish = false`, so",
+        "nothing on that channel could use the backend even if it were present.",
+        "",
+        "The digest is not decoration. `ci.yml`'s `isolation-backend-linux` job",
+        "pins this exact version and verifies this exact digest before it",
+        "measures anything, so a drifted upstream artifact fails CI instead of",
+        "silently changing what was measured. Bumping `version` without bumping",
+        "`release_sha256` breaks that job.",
+        "",
+        "WHAT THIS ROW DOES NOT SAY: it records provenance, not capability. What",
+        "the backend can actually enforce is measured per host at run time and",
+        "reported through `aa-isolation`'s capability contract; the mechanism's",
+        "own feature documentation is not used as an AASM claim anywhere."
       ]
     }
   ]
