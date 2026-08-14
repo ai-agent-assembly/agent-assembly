@@ -271,6 +271,7 @@ Read in `aa-runtime/src/config.rs`:
 | `AA_AUDIT_DIR` | `aa-gateway/src/server.rs` | Directory for the tamper-evident JSONL audit log. |
 | `AA_DATA_DIR` | `aa-gateway/src/policy/history/config.rs` | Base data dir; e.g. policy history lands under `$AA_DATA_DIR/policy-history/`. |
 | `AA_AUDIT_NATS_URL` + `AA_AUDIT_POSTGRES_URL` | `aa-gateway/src/audit_consumer.rs` | Both must be set to enable the async audit consumer (NATS → Postgres). |
+| `AA_SENSITIVE_DATA_PROJECTION_DB` | `aa-gateway/src/server.rs` | SQLite path for the durable sensitive-data projection. Unset or empty leaves the tier off. Read only under `legacy-grpc` (the default mode); a path that cannot be opened or migrated fails the boot. See [Sensitive-data projection](../operations/sensitive-data-projection.md). |
 
 The default gRPC listen address is `127.0.0.1:50051`; the seven gRPC services
 (`PolicyService`, `AuditService`, `AgentLifecycleService`, `TopologyService`,
