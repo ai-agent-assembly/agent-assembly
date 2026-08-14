@@ -45,7 +45,6 @@ on:
       - 'design/**'
       - '.claude/**'
       - '**/README.md'
-      - 'governance/**'
       - 'scripts/check_claim_vocabulary.py'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
@@ -114,10 +113,18 @@ jobs:
               # the spec's 6.5 scope, and a README at any depth is too. The
               # checker itself is listed for the same reason the two scripts
               # above are: a change to a gate must re-run it.
+              #
+              # `governance/**` was here and has been removed: the checker reads
+              # nothing under it that `**/README.md` does not already select.
+              # The only other prose there is
+              # governance/testdata/seed-r16-companion.md, a validator fixture
+              # the checker declines as outside its 6.5 scope. So the glob fired
+              # the whole Docs workflow on all 49 governance/testdata fixtures
+              # while adding no coverage — the "runs and scans nothing" shape the
+              # note above this one exists to warn about.
               - 'design/**'
               - '.claude/**'
               - '**/README.md'
-              - 'governance/**'
               - 'scripts/check_claim_vocabulary.py'
 
   build:
