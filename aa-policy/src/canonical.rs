@@ -83,8 +83,15 @@ impl PolicyDocument {
             // The gateway's source PolicyDocument does not yet model a kernel
             // syscall allowlist; the syscall-allowlist node (AAASM-3624) is
             // populated from the policy YAML by aa-security's own parser.
-            // Wiring the gateway's projection to it is future work.
+            // Wiring the gateway's projection to it is future work, tracked as
+            // AAASM-5753 — a document that reached this AST through this bridge
+            // can never carry a syscall allowlist however it was authored.
             syscall_allowlist: None,
+            // AAASM-5751 — the path-scope node deliberately does NOT repeat
+            // that omission. It is a move, not a translation: this document
+            // holds the canonical type itself, so there is no gateway-side twin
+            // that could be forgotten here and no second definition to drift.
+            filesystem: self.filesystem.clone(),
         }
     }
 }
@@ -113,6 +120,7 @@ mod tests {
             approval_policy: None,
             tools: HashMap::new(),
             capabilities: None,
+            filesystem: None,
         }
     }
 
@@ -162,6 +170,40 @@ mod tests {
             canon.tools[0].requires_approval_if.as_deref(),
             Some("path starts_with \"/etc\"")
         );
+    }
+
+    /// AAASM-5751 — the path-scope node must survive the bridge.
+    ///
+    /// The control is `syscall_allowlist` beside it: that node is dropped here
+    /// by construction (AAASM-5753), so a test that only asserted "some field
+    /// arrives" would pass against a bridge that dropped this one too. This
+    /// asserts the two nodes behave *differently*, which is the whole point of
+    /// holding the canonical type rather than a gateway-side twin.
+    #[test]
+    fn the_path_scope_node_crosses_the_bridge_where_the_syscall_node_does_not() {
+        use aa_security::policy::{FilesystemPolicy, PathScope, SyscallAllowlist};
+
+        let mut doc = base_doc();
+        doc.filesystem = Some(FilesystemPolicy {
+            read: Some(PathScope::from_paths(["/workspace"]).unwrap()),
+            write: Some(PathScope::from_paths(Vec::<&str>::new()).unwrap()),
+        });
+
+        let canon = doc.to_canonical();
+        let fs = canon.filesystem.as_ref().expect("the path node crosses");
+        assert!(fs.read.as_ref().unwrap().permits("/workspace/src/main.rs"));
+        assert!(!fs.read.as_ref().unwrap().permits("/etc/passwd"));
+        assert!(fs.write.as_ref().unwrap().permits_nothing());
+
+        // The control: the gateway document has no syscall node to project, so
+        // the canonical one stays None however the document is authored.
+        assert!(canon.syscall_allowlist.is_none());
+        assert!(SyscallAllowlist::from_names(["read"]).is_ok(), "the node type exists");
+
+        // The other control: an unstated path node stays unstated across the
+        // bridge rather than becoming an empty (deny-all) or absent-but-present
+        // value.
+        assert!(base_doc().to_canonical().filesystem.is_none());
     }
 
     #[test]

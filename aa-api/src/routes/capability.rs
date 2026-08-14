@@ -1032,6 +1032,7 @@ mod tests {
                 })
                 .collect(),
             capabilities,
+            filesystem: None,
         }
     }
 
@@ -1506,6 +1507,7 @@ mod tests {
                 },
             )]),
             capabilities: Some(caps),
+            filesystem: None,
         };
 
         let rules = project_rules(&doc);

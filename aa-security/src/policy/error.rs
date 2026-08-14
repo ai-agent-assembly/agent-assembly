@@ -21,6 +21,18 @@ pub enum PolicyParseError {
         /// Why it was rejected.
         reason: String,
     },
+    /// A path in a `filesystem.read.allow` / `filesystem.write.allow` list was
+    /// not an admissible prefix (AAASM-5751).
+    ///
+    /// Rejected at load rather than normalized: every rejection has a reading
+    /// under which the authored prefix would permit strictly more than it looks
+    /// like it permits, and a silently widened path scope is a fail-open policy.
+    InvalidPath {
+        /// The offending raw entry.
+        raw: String,
+        /// Why it was rejected.
+        reason: String,
+    },
     /// A structural key was not part of the known policy schema.
     ///
     /// Raised when a security-relevant section or field is misspelled (e.g.
@@ -61,6 +73,9 @@ impl fmt::Display for PolicyParseError {
             Self::InvalidSyscall { raw, reason } => {
                 write!(f, "invalid syscall {raw:?}: {reason}")
             }
+            Self::InvalidPath { raw, reason } => {
+                write!(f, "invalid filesystem path {raw:?}: {reason}")
+            }
             Self::UnknownKey { path, key } => {
                 write!(f, "unknown policy key {key:?} under {path}")
             }
@@ -73,8 +88,8 @@ impl fmt::Display for PolicyParseError {
             Self::NoEnforcementSection => {
                 write!(
                     f,
-                    "policy declares no enforcement section (network/capabilities/tools/syscalls); \
-                     it would be fully permissive"
+                    "policy declares no enforcement section \
+                     (network/capabilities/tools/syscalls/filesystem); it would be fully permissive"
                 )
             }
         }

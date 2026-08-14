@@ -178,6 +178,23 @@ pub struct PolicyDocument {
     pub tools: std::collections::HashMap<String, ToolPolicy>,
     /// Capability allow/deny restrictions for this policy scope.
     pub capabilities: Option<aa_core::CapabilitySet>,
+    /// AAASM-5751 — filesystem path scope for this policy scope.
+    ///
+    /// `None` means the operator stated nothing about paths — **not** that
+    /// paths are unrestricted. See
+    /// [`aa_security::policy::FilesystemPolicy`] for the three authored states
+    /// and why an empty scope is deny-all rather than the absence of one.
+    ///
+    /// # Why this reuses the canonical type verbatim
+    ///
+    /// Every other cross-layer dimension on this document has a gateway-side
+    /// twin that [`PolicyDocument::to_canonical`] converts into. That pattern
+    /// is what let the syscall node fall out of the projection unnoticed
+    /// (AAASM-5753): a second type makes "carried across the bridge" a thing
+    /// someone has to remember to do. Holding the canonical type itself makes
+    /// the projection a move rather than a translation, so this node cannot
+    /// acquire a second, divergent definition.
+    pub filesystem: Option<aa_security::policy::FilesystemPolicy>,
 }
 
 #[cfg(test)]
@@ -199,8 +216,12 @@ mod tests {
             approval_policy: None,
             tools: std::collections::HashMap::new(),
             capabilities: None,
+            filesystem: None,
         };
         assert!(doc.tools.is_empty());
+        // AAASM-5751 — an unstated path node. Read this as "nobody said",
+        // never as "nothing is restricted".
+        assert!(doc.filesystem.is_none());
     }
 
     #[test]

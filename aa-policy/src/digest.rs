@@ -341,6 +341,7 @@ mod tests {
             approval_policy: None,
             tools: HashMap::new(),
             capabilities: None,
+            filesystem: None,
         }
     }
 

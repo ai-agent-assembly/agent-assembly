@@ -223,6 +223,10 @@ mod tests {
             capabilities: caps,
             tools,
             syscall_allowlist: None,
+            // AAASM-5751 — this lowering reads capability booleans and tool
+            // path predicates only; the path-scope node is consumed by the
+            // aa-isolation execution boundary, not by the eBPF map compiler.
+            filesystem: None,
         }
     }
 
