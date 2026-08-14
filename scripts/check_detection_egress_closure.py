@@ -33,6 +33,29 @@ bumps them weekly, and a control that goes red on every patch bump gets muted or
 routed around within a month. A version bump cannot introduce a capability the
 crate did not already have a name for; a new name can. Names are the signal.
 
+# What this does NOT check — scope
+
+This pins **`aa-security` only**, and the gateway's scan path is wider than that.
+`aa-gateway/src/engine/detection.rs` runs a two-pass cascade: pass 1 is
+`BuiltinScannerPass` over `aa_security::CredentialScanner` (covered here), and
+pass 2 is `CompiledRegexPass` / `CascadeRegexPass` over `regex::Regex`, where
+`regex` is a direct dependency of **aa-gateway** and appears nowhere in
+`aa-security`. Those crates are outside the pinned set, and pinning aa-gateway's
+closure would be meaningless — it already links reqwest, hyper and tokio because
+it is a server.
+
+So a new in-file pass inside `detection.rs` that opened a socket would not trip
+this control. What guards that case instead is the `DetectionPass` **seal**:
+the trait is sealed by a private `sealed::InProcess` supertrait
+(`detection.rs`), so no crate outside that file can add a pass, and a
+`compile_fail` doctest pins the seal. That is a stronger boundary than a closure
+pin for the out-of-process provider case (AAASM-5361/5362/5363), and a weaker
+one for "somebody edits detection.rs" — which is a code-review question, not a
+dependency question.
+
+Stated here because a control that is silent about its scope gets read as
+covering everything under the name in its title.
+
 # What this does NOT check — the AAASM-5702 boundary
 
 This is a statement about the detector's **dependency closure**, which is a
@@ -53,6 +76,8 @@ must not grow into, a second isolation backend. `aa-isolation` owns that.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 import re
 import subprocess
 import sys
@@ -71,7 +96,12 @@ EXIT_INTERNAL = 2
 # fire on test infrastructure and get muted.
 SELECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
-        "aa-security (default features)",
+        # Labelled for the flag actually passed, not for what it coincides with
+        # today. `aa-security` declares no `default = [...]`, so this is also
+        # its default closure right now — but a `default` added tomorrow would
+        # leave this selection pinning the no-default closure while every
+        # consumer built something else, with the label still saying "default".
+        "aa-security (--no-default-features)",
         ("-p", "aa-security", "--no-default-features"),
     ),
     (
@@ -84,7 +114,7 @@ SELECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 EXPECTED: dict[str, frozenset[str]] = {
-    "aa-security (default features)": frozenset(
+    "aa-security (--no-default-features)": frozenset(
         {
             "aa-security",
             "aho-corasick",
@@ -166,12 +196,20 @@ def closure(manifest_dir: Path, args: tuple[str, ...]) -> set[str]:
     return parse_names(proc.stdout)
 
 
-def check(manifest_dir: Path) -> int:
+def check(manifest_dir: Path, resolve=None) -> int:
+    """Compare each pinned selection against its measured closure.
+
+    `resolve` exists so the selftest can drive this function with a stub instead
+    of cargo. Without it the selftest could only assert set algebra — i.e. test
+    Python, not this control — and the comparison that actually gates CI would
+    never itself be exercised by anything but a hand-run mutation.
+    """
+    resolve = resolve or (lambda args: closure(manifest_dir, args))
     drifted = False
     for label, args in SELECTIONS:
         expected = EXPECTED[label]
         try:
-            actual = closure(manifest_dir, args)
+            actual = resolve(args)
         except (RuntimeError, ValueError) as exc:
             print(f"check_detection_egress_closure: internal error: {exc}", file=sys.stderr)
             return EXIT_INTERNAL
@@ -249,16 +287,57 @@ def selftest() -> int:
     else:
         failures.append("parser accepted an unparseable line instead of raising")
 
-    # --- comparison ----------------------------------------------------------
-    # The real check compares sets; these assert the set algebra rejects both
-    # directions of drift. Literal sets, not EXPECTED.
-    baseline = {"aa-security", "aho-corasick", "memchr"}
-    if not (baseline | {"reqwest"}) - baseline == {"reqwest"}:
-        failures.append("comparison failed to see an ADDED crate")
-    if not baseline - (baseline - {"memchr"}) == {"memchr"}:
-        failures.append("comparison failed to see a REMOVED crate")
-    if (baseline - baseline) or (baseline - baseline):
-        failures.append("comparison reported drift on an identical set")
+    # --- the real comparison, driven end to end ------------------------------
+    # These call `check()` itself with a stub resolver. An earlier version
+    # asserted set algebra on literals — which tests Python's `set` type, not
+    # this control: the comparison that actually gates CI was never exercised by
+    # anything except a hand-run mutation. Each case below must produce the
+    # stated exit code, and the expectations are literal integers rather than
+    # anything derived from RULES/EXPECTED.
+    here = Path(__file__).resolve().parent.parent
+
+    def _stub(mapping):
+        return lambda args: set(mapping[args])
+
+    def _quiet(*args, **kwargs) -> int:
+        """Run `check()` with its reports suppressed.
+
+        The mutation cases below deliberately provoke DRIFT and internal-error
+        reports. Letting those reach the log would print several screens
+        containing the word FAIL during a *passing* selftest — which anyone
+        skimming CI output, or grepping it, would reasonably read as a failure.
+        The exit code is what is under test; the prose is not.
+        """
+        with open(os.devnull, "w", encoding="utf-8") as sink:
+            with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+                return check(*args, **kwargs)
+
+    truthful = {args: EXPECTED[label] for label, args in SELECTIONS}
+
+    if _quiet(here, _stub(truthful)) != EXIT_OK:
+        failures.append("check() reported drift on the pinned closures")
+
+    for label, args in SELECTIONS:
+        added = dict(truthful)
+        added[args] = set(truthful[args]) | {"reqwest"}
+        if _quiet(here, _stub(added)) != EXIT_DRIFT:
+            failures.append(f"check() missed an ADDED crate in {label!r}")
+
+        removed = dict(truthful)
+        removed[args] = set(truthful[args]) - {"aho-corasick"}
+        if _quiet(here, _stub(removed)) != EXIT_DRIFT:
+            failures.append(f"check() missed a REMOVED crate in {label!r}")
+
+        emptied = dict(truthful)
+        emptied[args] = set()
+        if _quiet(here, _stub(emptied)) != EXIT_DRIFT:
+            failures.append(f"check() passed on an EMPTY closure for {label!r}")
+
+    def _raises(_args):
+        raise RuntimeError("cargo unavailable")
+
+    if _quiet(here, _raises) != EXIT_INTERNAL:
+        failures.append("check() did not report a resolver failure as internal")
 
     # --- table sanity --------------------------------------------------------
     for label, _ in SELECTIONS:
