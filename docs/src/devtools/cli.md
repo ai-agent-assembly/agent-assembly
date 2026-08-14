@@ -274,6 +274,55 @@ what the agent may do. Write a policy to `~/.aasm/policy.yaml` or pass
 `--policy <FILE>`, or the launch is refused with `policy=unconfigured` — see
 [Onboarding → Step 5](onboarding.md#step-5--write-the-policy-the-session-will-run-under).
 
+### Launching an agent you own yourself
+
+Not every agent is one of the four managed developer tools. `aasm run exec`
+launches a program you wrote, under the same governed identity:
+
+```bash
+aasm run exec --agent-id research-bot --policy ./policy.yaml -- python3 agent.py --topic "two words"
+```
+
+Everything after `--` is the program and its arguments. They are handed to the
+child exactly as typed — no shell is involved, nothing is re-quoted, and nothing
+is re-split, so an argument containing spaces, a leading hyphen or a second `--`
+arrives intact.
+
+`--workdir <DIR>` starts the child in `DIR` instead of your current directory. A
+directory that does not exist is refused before anything is registered or
+started, rather than failing at spawn time.
+
+What a generic run gets, identically to `aasm run claude`:
+
+* a gateway registration through the same gRPC handshake, released when the
+  process ends — the session has a governed identity for exactly as long as it
+  runs, and a registration the gateway refuses stops the launch;
+* `--agent-id`, `--team-id` and `--root-agent` lineage, exported to the child as
+  `AA_AGENT_ID` / `AA_TEAM_ID` / `AA_AGENT_DID`;
+* policy resolution — an unconfigured policy refuses the launch here too;
+* `--enforcement-mode` / `--observe`, and the `--dry-run` preview;
+* proxy routing, or the explicit `--no-proxy` opt-out.
+
+What it does **not** get, and why:
+
+* **No developer-tool settings file is written for it.** A program you own has
+  no adapter and no settings schema, so nothing is generated and nothing is
+  applied; writing another tool's settings on its behalf would change that
+  tool's behaviour on your machine.
+* **No sandboxing or process isolation.** None is wired into `aasm run` for
+  either target kind today. The child runs with the authority your shell had,
+  minus nothing.
+* **The registry records it as `command:<program>` at `L0Discover`**, not at the
+  level a managed tool reaches. There is no adapter to configure it, so the only
+  thing between it and the network is the proxy — and `aasm run` does not probe
+  an arbitrary program for a version, so the registration reports `unknown`
+  rather than inventing one.
+
+The `--no-proxy` refusal that protects a managed host applies here only when the
+program is *named* like a managed tool (`aasm run exec --no-proxy -- claude`). An
+absolute path, a symlink or a renamed copy matches nothing and meets no refusal;
+it is a name-shaped lower bound, not a barrier.
+
 ### What is deliberately not offered
 
 * **`ANTHROPIC_BASE_URL` redirection.** Measured in AAASM-5276 delivering a
