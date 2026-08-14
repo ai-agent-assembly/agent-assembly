@@ -101,6 +101,7 @@ dependencies = [
  "aa-devtool-claude-code",
  "aa-gateway",
  "aa-isolation",
+ "aa-isolation-sandlock",
  "aa-policy",
  "aa-proto",
  "aa-proxy",
