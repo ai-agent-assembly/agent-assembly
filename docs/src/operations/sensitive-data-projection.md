@@ -21,9 +21,17 @@ different entry points that never read this variable:
 | Invocation | Reads `AA_SENSITIVE_DATA_PROJECTION_DB`? |
 | --- | --- |
 | `aa-gateway --policy <path>` (default: `legacy-grpc`) | **Yes** |
+| `aasm gateway start --policy <path>` | **Yes** — it spawns `aa-gateway --policy … --listen …` and passes no `--mode` |
+| `aasm start --mode remote` | **Yes** — it spawns `aa-gateway --listen …`, also with no `--mode` |
 | `aa-gateway --mode local` | No |
 | `aa-gateway --mode remote` | No |
 | `aasm start --mode local` | No — it spawns `aa-api-server`, not `aa-gateway` |
+
+The two `aasm` rows that read it do so because neither passes `--mode` to the
+child, and neither clears the child's environment: the spawned `aa-gateway`
+inherits the variable you exported and resolves its own mode from `AA_MODE`.
+Exporting `AA_MODE=local` in that shell therefore moves those rows to *No*
+without changing the command you typed.
 
 Under the modes that do not read it, an unset, misspelled or unwritable path
 produces no error and no warning, because nothing tries to open it.
