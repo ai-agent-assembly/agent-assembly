@@ -300,14 +300,14 @@ occurrences of the marker text are prose or trailing explanatory comments and
 are **not** generated content — the distinction was made by reading each match,
 not by counting them.
 
-### L3 · Core — `agent-assembly/docs/src` (143 pages)
+### L3 · Core — `agent-assembly/docs/src` (147 pages)
 
 This book. `T4` throughout: it authors architecture, ADRs, protocol and policy
 semantics, and measured limitations.
 
 | Group | Pages | Audience | Generated | Disposition |
 |---|---:|---|---|---|
-| `adr/` | 33 | Contributors, security researchers | Hand | **Keep** — canonical decision record; owned by other lanes |
+| `adr/` | 34 | Contributors, security researchers | Hand | **Keep** — canonical decision record; owned by other lanes |
 | `cli/` | 24 | Operators | Hand | **Keep** |
 | `devtools/` | 14 | Integrators, security researchers | Hand | **Keep** (one exception below) |
 | `usage-guide/` | 11 | Operators, developers | Hand | **Keep** |
@@ -315,7 +315,7 @@ semantics, and measured limitations.
 | `operations/` | 9 | Operators | Hand | **Keep** |
 | `architecture/` | 7 | Contributors | Hand | **Keep** |
 | `generated/` | 6 | *(none — include fragments)* | **Generated** | **Keep** — see below |
-| `development/` | 6 | Contributors | Hand | **Keep** — this page joins it |
+| `development/` | 7 | Contributors | Hand | **Keep** — this page joins it |
 | `quick-start/` | 4 | New users | Hand | **Keep** |
 | `introduction/` | 4 | New users | Hand | **Keep** |
 | `benchmarks/` | 4 | Operators, contributors | Hand | **Keep** |
@@ -804,13 +804,13 @@ frontmatter at all.
 
 Every key in use is a renderer directive. **No page in any SDK carries
 descriptive metadata** — no `description`, `owner`, `status`, `last_reviewed`,
-or ticket reference. Core is the same: zero of its 143 pages carry frontmatter,
+or ticket reference. Core is the same: zero of its 147 pages carry frontmatter,
 verified with a `BEGIN GENERATED` control proving the search would have found a
 match.
 
 **Report as a gap**, not a defect. It is the precondition anything resembling a
 metadata contract would have to establish first, and it is a larger job than it
-looks: 40 pages from nothing, plus new keys on 41 more, plus 143 in Core.
+looks: 40 pages from nothing, plus new keys on 41 more, plus 147 in Core.
 
 ### D5 · Nine evidence files are filed in the source tree
 
@@ -880,7 +880,7 @@ Conformance today:
 | Surface | Pages | Conforming |
 |---|---:|---:|
 | Docs Hub (`docs/src`) | 22 | **1** — `page-standards.md` itself |
-| Core (`agent-assembly/docs/src`) | 143 | **0** |
+| Core (`agent-assembly/docs/src`) | 147 | **0** |
 | `python-sdk` / `node-sdk` / `go-sdk` (`docs/`) | 81 | **0** |
 
 The contract's `owner` enum includes `L3:agent-assembly` and eight further `L3:`
@@ -1255,7 +1255,7 @@ Slices 1–3 do not overlap and can run concurrently.
 |---|---|
 | [AAASM-5594](https://lightning-dust-mite.atlassian.net/browse/AAASM-5594) | The disposition table and the four partitions above |
 | [AAASM-3665](https://lightning-dust-mite.atlassian.net/browse/AAASM-3665) | [Redirect obligations](#redirect-obligations) — the per-page list `MIGRATION.md` says it does not carry |
-| [AAASM-5610](https://lightning-dust-mite.atlassian.net/browse/AAASM-5610) | The conformance census in [D8](#d8--the-metadata-contract-exists-and-one-page-in-the-organisation-satisfies-it): 1 of 22, 0 of 143, 0 of 81 |
+| [AAASM-5610](https://lightning-dust-mite.atlassian.net/browse/AAASM-5610) | The conformance census in [D8](#d8--the-metadata-contract-exists-and-one-page-in-the-organisation-satisfies-it): 1 of 22, 0 of 147, 0 of 81 |
 | Defect triage | [D1](#d1--seventeen-internal-links-in-core-point-at-a-path-that-does-not-exist) (broken links, gate red on `main`) and [D2](#d2--three-numbering-schemes-two-of-which-are-spelled-l) (colliding `L` vocabularies) |
 
 ### Re-running this census
