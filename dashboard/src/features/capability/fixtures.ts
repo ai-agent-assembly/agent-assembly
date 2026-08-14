@@ -265,4 +265,7 @@ export const CAPABILITY_MATRIX_FIXTURE: CapabilityMatrix = {
   agents: AGENTS,
   policies: POLICIES,
   sampleCalls: SAMPLE_CALLS,
+  // This fixture is a fully-populated matrix, so the cascade is loaded and its
+  // verdicts are real measurements (AAASM-5106).
+  cascadeLoaded: true,
 }

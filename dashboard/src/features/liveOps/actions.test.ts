@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { pauseOp, resumeOp, terminateOp } from './actions'
+import { haltAgent, haltGlobal, pauseOp, resumeOp, terminateOp } from './actions'
 
 const fetchSpy = vi.fn()
 const originalFetch = globalThis.fetch
-const originalLocalStorage = globalThis.localStorage
+const originalSessionStorage = globalThis.sessionStorage
 
 function setToken(token: string | null) {
   const store: Record<string, string> = {}
   if (token !== null) store.aa_token = token
-  Object.defineProperty(globalThis, 'localStorage', {
+  Object.defineProperty(globalThis, 'sessionStorage', {
     configurable: true,
     value: {
       getItem: (k: string) => store[k] ?? null,
@@ -44,10 +44,10 @@ describe('liveOps/actions', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
-    if (originalLocalStorage) {
-      Object.defineProperty(globalThis, 'localStorage', {
+    if (originalSessionStorage) {
+      Object.defineProperty(globalThis, 'sessionStorage', {
         configurable: true,
-        value: originalLocalStorage,
+        value: originalSessionStorage,
       })
     }
   })
@@ -76,7 +76,7 @@ describe('liveOps/actions', () => {
     )
   })
 
-  it('attaches Bearer token from localStorage', async () => {
+  it('attaches Bearer token from sessionStorage (AAASM-4322)', async () => {
     setToken('jwt-abc')
     fetchSpy.mockResolvedValue(okResponse())
     await resumeOp('op-1')
@@ -109,5 +109,26 @@ describe('liveOps/actions', () => {
     for (const [, init] of fetchSpy.mock.calls) {
       expect(init.headers['Content-Type']).toBe('application/json')
     }
+  })
+
+  it('haltAgent POSTs to /api/v1/ops/:id/halt-agent', async () => {
+    fetchSpy.mockResolvedValue(okResponse())
+    await haltAgent('op-123')
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/v1/ops/op-123/halt-agent')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('haltGlobal POSTs to the fleet-wide /api/v1/ops/global/halt endpoint', async () => {
+    fetchSpy.mockResolvedValue(okResponse())
+    await haltGlobal()
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('/api/v1/ops/global/halt')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('haltGlobal rejects with status code on failure', async () => {
+    fetchSpy.mockResolvedValue(errResponse(503, 'unavailable'))
+    await expect(haltGlobal()).rejects.toThrow(/503/)
   })
 })

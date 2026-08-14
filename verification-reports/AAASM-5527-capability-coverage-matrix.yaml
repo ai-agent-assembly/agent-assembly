@@ -1,0 +1,3125 @@
+# AAASM-5527 — machine-readable capability coverage matrix
+#
+# Companion to AAASM-5527-capability-coverage-matrix-and-threat-model.md, which
+# carries the prose, the threat model, the bypass catalogue and the Go/No-Go
+# recommendations. This file carries the seventeen ticket-required fields split
+# individually, so AAASM-5531 can consume them without parsing Markdown tables.
+#
+# Placement note: this lives in verification-reports/ rather than a docs/spec
+# directory because docs/src/** and docs/src/SUMMARY.md are held by AAASM-5592
+# concurrently (see the companion document, "Why this file lives here").
+# AAASM-5531 owns promoting it to a canonical, CI-validated location.
+#
+# NOT a source of truth for the architecture — ADR 0033 is. Every `coverage`
+# value is one of ADR 0033 §6's eleven terms and validation should enforce that.
+
+meta:
+  ticket: AAASM-5527
+  epic: AAASM-5526
+  goal: CBLPCRLM-13
+  fix_version: agent-assembly v0.0.1-rc.7
+  compiled: "2026-08-06"
+  base_commit: 299de3883
+  canonical_architecture: docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md
+  protection_ladder: docs/src/adr/0030-developer-integration-boundaries-and-trust-model.md
+  companion: verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
+
+schema:
+  # The seventeen fields the ticket requires, plus eight this survey found
+  # necessary to make a claim checkable. See the companion document's
+  # "Fields this artifact recommends for the AAASM-5531 manifest".
+  required_fields:
+    - id
+    - capability
+    - framework_or_tool
+    - language
+    - platform
+    - launch_path
+    - transport
+    - interception_component
+    - identity_source
+    - policy_context
+    - decision_timing
+    - observe_or_enforce
+    - sync_or_best_effort
+    - failure_posture
+    - known_bypasses
+    - evidence
+    - current_level
+    - target_level
+  recommended_additions:
+    - default_state
+    - released_channels
+    - released_platforms
+    - reachability
+    - boundary_class
+    - failure_posture           # third enum value fail_open_silent
+    - evidence_runs_on_main
+    - deny_signal
+    - redaction_actor
+    - coverage                  # closed enum, ADR 0033 §6
+    - released_note             # channel/platform exceptions in prose
+    - evidence_quality          # unit_only | wire_level
+    - boundary_conditional_on   # what the boundary depends on holding
+    - boundary_attained         # false where the class is named but not reached
+    - coverage_qualifiers       # THE general rule for secondary coverage.
+                                # A mapping {aspect: <coverage term>} used wherever
+                                # one row's coverage differs by aspect — connection
+                                # vs payload, E3 vs E4, MCP path vs LLM path, one
+                                # SDK vs the others. Replaces five ad-hoc keys that
+                                # were declared rather than resolved; values are
+                                # the same closed ADR 0033 §6 enum as `coverage`.
+    - released_matrix           # channel -> platforms, REQUIRED where the two do
+                                # not factorise (every aa-proxy row: macOS is
+                                # crates.io-only per release.yml:274)
+    - current_level_scope       # e.g. tool_governance_only — an ADR 0030 rung
+                                # that is reachable but does NOT imply data-path prevention
+    - notes
+    - tickets
+    - response_side_posture     # where request and response postures differ
+    - failure_posture_node      # where one SDK diverges from the others
+    - q3_changed_answer
+    - q4_changed_answer
+    - q4_changed_answer_in_product_favour
+    - evidence_gate_note        # why a path-filtered gate does not cover its test
+  enums:
+    coverage:                   # ADR 0033 §6 — closed set; anything else is invalid
+      [observed, detected, evaluated, denied_before_execution, redacted,
+       approval_required, degraded, unmeasured, experimental, planned, unsupported]
+    decision_timing: [pre, in_line, post, none]
+    observe_or_enforce: [enforce, observe, none]
+    sync_or_best_effort: [sync, best_effort, none]
+    failure_posture:
+      # `fail_open_silent` is a distinct value on purpose: G7 and G9 fail open
+      # WITHOUT emitting a degradation, which is materially different from G6,
+      # which does. `silent_truncation` is M7/N9's posture — the request is not
+      # refused and not forwarded intact; the body is emptied.
+      [fail_closed, fail_open, fail_open_silent, silent_truncation, not_applicable]
+    default_state: [on, off, open, closed, mixed, not_applicable]
+    released_channels:
+      [github_release, homebrew, install_script, crates_io, pypi, npm,
+       go_modules, not_applicable]
+    released_platforms:
+      [linux_x86_64, linux_aarch64, macos, windows, not_applicable]
+    evidence_runs_on_main:
+      # NOT a boolean. A path-filtered gate with a cron backstop is weak
+      # evidence; one with no backstop is not evidence of a standing property at
+      # all. `path_gated_no_backstop` is this artifact's OWN situation: the link,
+      # anchor, YAML and markdownlint checks are run by hand because
+      # doc-links.yml is path-filtered to README.md and docs/**, and no
+      # markdownlint job exists in CI at all.
+      [standing, path_gated_with_schedule, path_gated_no_backstop, manual_only, none]
+    reachability:
+      # WHY the capability is or is not reachable. Split out from the old
+      # boolean `reachable_in_release`, which conflated four different causes
+      # and was wrong in both directions for ~25 of 80 rows.
+      #   shipped                 reachable through the listed channels (41 rows)
+      #   shipped_with_platform_exception
+      #                           reachable through every listed channel, but NOT
+      #                           on every platform. The 21 aa-proxy-backed rows,
+      #                           listed literally because a glob over these
+      #                           prefixes resolves to 29 and sweeps in 8 rows that
+      #                           are NOT in this class (M5/M6/M8 are
+      #                           absent_mechanism — the opposite of reachable —
+      #                           plus M10, N10, N11, N12, N13):
+      #                             N1 N2 N3 N4 N5 N6 N7 N8 N9
+      #                             M1 M2 M3 M4 M7 M9
+      #                             C1 C2 C4 I6 G3 G4
+      #                           They carve out Windows,
+      #                           and on macOS the bin is crates.io-only
+      #                           (AAASM-5653). NEVER fold these into `shipped`:
+      #                           doing so overstated 21 of 80 rows, which is what
+      #                           the companion Markdown's *"62 shipped"* did
+      #                           before AAASM-5666 (21 rows)
+      #   shipped_crates_io_only  the bin publishes to crates.io but is absent
+      #                           from the GitHub Release / Homebrew / installer
+      #                           channels most users actually use (10 rows)
+      #   dead_code               the binary ships; no route reaches the code (1)
+      #   absent_mechanism        no such mechanism exists in the tree (7 rows)
+      #   stubbed_default         the code path exists but the default config
+      #                           routes past it. DEFINED BUT UNUSED — 0 rows. An
+      #                           earlier revision cited S7 as the instance, but
+      #                           S7 is `shipped` here and in the manifest, so the
+      #                           example was stale, not the value.
+      [shipped, shipped_with_platform_exception, shipped_crates_io_only, dead_code, absent_mechanism, stubbed_default]
+    boundary_class:
+      B1: universal within one patched function
+      B2: universal within one framework
+      B3: universal within one process
+      B4: universal within one container
+      B5: universal within one host
+      B6: universal within one managed device
+      B7: universal across opaque SaaS agents
+    deny_signal: [raise, sentinel_value, none]
+    redaction_actor: [proxy_scanner, gateway_instructions, none]
+    current_level:              # ADR 0030 ladder for dev-tool rows
+      [not_installed, detected_not_integrated, partially_integrated, integrated,
+       gateway_protected, host_enforced, l1_observe, not_applicable]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D1 · Framework tool calls, SDK adapters, direct function calls
+# ─────────────────────────────────────────────────────────────────────────────
+capabilities:
+
+  - id: S1
+    domain: sdk
+    capability: Wrapped framework tool call, deny raised before the tool body
+    framework_or_tool: [pydantic_ai, google_adk, microsoft_agent_framework, mcp_client_session, langchain_handler]
+    language: python
+    platform: [linux, macos, windows]
+    launch_path: in_process_after_init_assembly
+    transport: uds_to_aa_runtime
+    interception_component: "monkeypatch; python-sdk _shared/tool_governance.py:225-228 before invoke_original() at :237"
+    identity_source: AA_AGENT_ID or persisted did:key
+    policy_context: [tool_name, tool_arguments]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on          # after the explicit init_assembly() call
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B2
+    coverage: denied_before_execution
+    deny_signal: raise
+    known_bypasses:
+      - not calling init_assembly()
+      - unadapted framework
+      - direct call bypassing framework dispatch
+      - raw HTTP / subprocess / filesystem (see S12)
+    evidence: [aa-integration-tests/tests/e2e_sdk_python.rs, aa-integration-tests/tests/e2e_policy_sdk.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+    notes: "Unreachable runtime yields _FailClosedInterceptor which denies every call (core/runtime_interceptor.py:375-376,521-540)."
+
+  - id: S2
+    domain: sdk
+    capability: Wrapped framework tool call, deny returned as a sentinel string
+    framework_or_tool: [crewai, openai_agents, haystack, smolagents, agno, llamaindex]
+    language: python
+    platform: [linux, macos, windows]
+    launch_path: in_process_after_init_assembly
+    transport: uds_to_aa_runtime
+    interception_component: "monkeypatch returning a '[BLOCKED ...]' string before the original body"
+    identity_source: AA_AGENT_ID or persisted did:key
+    policy_context: [tool_name, tool_arguments]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B2
+    coverage: denied_before_execution
+    deny_signal: sentinel_value
+    known_bypasses: [same as S1]
+    evidence: [aa-integration-tests/tests/e2e_sdk_python.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+    notes: "Integration hazard: a caller catching only PolicyViolationError treats a blocked call as a success whose result is a string."
+
+  - id: S3
+    domain: sdk
+    capability: Graph / workflow node execution
+    framework_or_tool: [langgraph, mastra]
+    language: [python, node]
+    platform: [linux, macos, windows]
+    launch_path: in_process_after_init
+    transport: uds_to_aa_runtime
+    interception_component: "monkeypatch of StateGraph.compile / Agent.prototype.generate — lineage only"
+    identity_source: AA_AGENT_ID
+    policy_context: [node_name]
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: not_applicable
+    default_state: on
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B2
+    coverage: observed
+    deny_signal: none
+    known_bypasses: ["the mechanism cannot block; there is nothing to bypass"]
+    evidence: ["lineage tests only — cannot evidence prevention"]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "add a blocking seam, or stop listing these frameworks as governed"
+    notes: "node-sdk/src/hooks/langgraph.ts:99-108 states in-tree: performs NO in-process tool-governance check, so a policy DENY will NOT block."
+
+  - id: S4
+    domain: sdk
+    capability: LangChain tool call via the callback handler
+    framework_or_tool: ["@langchain/core"]
+    language: node
+    platform: [linux, macos, windows]
+    launch_path: auto_detected_at_initAssembly
+    transport: uds_to_aa_runtime
+    interception_component: "node-sdk/src/adapters/langchain/assembly-callback-handler.ts:34 handleToolStart"
+    identity_source: AA_AGENT_ID
+    policy_context: [tool_name]
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: not_applicable
+    default_state: on
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B2
+    coverage: observed
+    deny_signal: none
+    known_bypasses: ["cannot block by construction"]
+    evidence: [node-sdk unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "must not be described as enforcement"
+    notes: "Class doc at :13-21 — @langchain/core discards the return value, so it can only observe, never preempt. Records a pendingDenials entry and never throws."
+
+  - id: S5
+    domain: sdk
+    capability: LangChain tool call via the explicit wrapper
+    framework_or_tool: ["@langchain/core"]
+    language: node
+    platform: [linux, macos, windows]
+    launch_path: tools_passed_as_config_langchain_tools
+    transport: uds_to_aa_runtime
+    interception_component: "node-sdk/src/adapters/langchain/wrap-tool-with-assembly.ts:80 replaces tool.invoke; throws at :90 before originalInvoke at :107"
+    identity_source: AA_AGENT_ID
+    policy_context: [tool_name, tool_arguments]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_open_silent
+    default_state: off
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B1
+    coverage: denied_before_execution
+    deny_signal: raise
+    known_bypasses:
+      - "S7 defeats it in the default mode"
+      - "a frozen invoke is skipped with a stderr warning and the tool runs ungoverned (:50-58)"
+    evidence: [node-sdk unit tests, aa-integration-tests/tests/e2e_sdk_node.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "conditional on closing S7"
+
+  - id: S6
+    domain: sdk
+    capability: Vercel AI SDK / OpenAI Agents tool call
+    framework_or_tool: [ai, "@openai/agents"]
+    language: node
+    platform: [linux, macos, windows]
+    launch_path: auto_detected_at_initAssembly
+    transport: uds_to_aa_runtime
+    interception_component: "node-sdk/src/hooks/ai-sdk.ts:143 throws before executeOriginal() at :161; hooks/openai-agents.ts:272-274 returns a deny string before :287"
+    identity_source: AA_AGENT_ID
+    policy_context: [tool_name, tool_arguments]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B2
+    coverage: denied_before_execution
+    deny_signal: [raise, sentinel_value]
+    known_bypasses: ["S7 defeats it in the default mode"]
+    evidence: [node-sdk unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "conditional on closing S7"
+
+  - id: S7
+    domain: sdk
+    capability: Node default mode routes every policy check through an allow-all no-op client
+    framework_or_tool: [all_node_frameworks]
+    language: node
+    platform: [linux, macos, windows]
+    launch_path: initAssembly_with_defaults
+    transport: none
+    interception_component: "node-sdk/src/core/init-assembly.ts createClient:167; mode defaults to 'auto' at :171; only CHECK_CAPABLE_MODE='napi-inprocess' (:144) builds a real client (:201-224); everything else returns createNoopGatewayClient at :226, whose check is async () => ({denied:false,pending:false}) (gateway/client.ts:40)"
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_open_silent
+    default_state: open
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    deny_signal: none
+    q3_changed_answer: true
+    known_bypasses: ["this IS the bypass, and it is the default"]
+    evidence: ["GAP — no test asserts the default path enforces, because it does not"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "must be closed before any page claims Node pre-execution denial"
+    tickets: [AAASM-4991]
+    notes: >-
+      Three partial mitigations exist and none closes it: explicit
+      enforcementMode 'enforce' with a non-capable mode throws (:183-190);
+      explicit langchain.tools under a fail-closed posture throws (:590-605);
+      auto-detected frameworks produce a WARNING ONLY, never a throw
+      (:427-465, :515-523), deliberately, to preserve zero-config.
+
+  - id: S8
+    domain: sdk
+    capability: Wrapped tool call, Go
+    framework_or_tool: [any]
+    language: go
+    platform: [linux, macos, windows]
+    launch_path: assembly_Init_plus_explicit_WrapTools
+    transport: uds_ffi
+    interception_component: "go-sdk/assembly/tool_wrapper.go:83 runGovernanceGate returns an error before t.inner.Call at :87"
+    identity_source: AA_AGENT_ID or did:key
+    policy_context: [tool_name, tool_arguments]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: off        # requires an explicit WrapTools call
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B1
+    coverage: denied_before_execution
+    deny_signal: raise        # returned error, not a panic
+    known_bypasses:
+      - not calling WrapTools
+      - "S12 classes"
+      - "internal/ffi/query_policy.go:55-59 returns DecisionAllow for a binding without policyQuerier — test bindings only; both production bridges implement it"
+    evidence: [aa-integration-tests/tests/e2e_sdk_go.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "hold — Go is the reference posture the other two SDKs should match"
+    notes: "failClosed defaults true (defaults.go:14); REDACT, UNSPECIFIED and unknown decision codes all become errors, none silently allows (ffi_governance_client.go:110,117,127)."
+
+  - id: S9
+    domain: sdk
+    capability: Go default build without -tags aa_ffi_go and CGO
+    framework_or_tool: [any]
+    language: go
+    platform: [linux, macos, windows]
+    launch_path: default_go_build
+    transport: none
+    interception_component: "internal/ffi/binding_select_fallback.go:5-7 -> fallback_uds_nocgo.go:18-20 returns statusRuntimeUnavailable"
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: closed
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: B1
+    coverage: denied_before_execution
+    deny_signal: raise
+    q3_changed_answer: true
+    known_bypasses: []
+    evidence: [go-sdk unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "document that the default build denies everything"
+    notes: "Fail-closed, but not the advertised behaviour either — every wrapped tool call denies."
+
+  - id: S10
+    domain: sdk
+    capability: Direct function call that does not pass a patched seam
+    framework_or_tool: [any]
+    language: [python, node, go]
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: none
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["residual by construction — B1/B2 do not extend to B3"]
+    evidence: ["GAP by design"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "never claim beyond B2 for an SDK seam"
+
+  - id: S11
+    domain: sdk
+    capability: Framework with no adapter
+    framework_or_tool: [any_unadapted]
+    language: [python, node, go]
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: none
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["choosing an unadapted framework"]
+    evidence: ["GAP by design"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "publish the adapter list as the boundary"
+
+  - id: S12
+    domain: sdk
+    capability: Raw HTTP, subprocess, filesystem, DB driver, browser automation from inside an SDK-adopting process
+    framework_or_tool: [any]
+    language: [python, node, go]
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: any
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["this is the whole class"]
+    evidence: >-
+      GAP. Verified in all three SDKs with a positive control in the same probe:
+      every match for requests/httpx/urllib/fetch/axios/child_process/os-exec/
+      fs/database drivers/playwright/selenium is the SDK's OWN plumbing —
+      health probe, sidecar spawn, audit POST — never interception.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state explicitly on every SDK page"
+
+  - id: S13
+    domain: sdk
+    capability: The SDK honouring a Deny it received
+    framework_or_tool: [aa-sdk-client]
+    language: rust
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: uds
+    interception_component: "aa-sdk-client/src/decision.rs resolve_decision"
+    identity_source: did:key
+    policy_context: [decision]
+    decision_timing: pre
+    observe_or_enforce: observe   # advisory
+    sync_or_best_effort: sync
+    failure_posture: fail_closed  # when the caller opts in
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: evaluated
+    q4_changed_answer: true
+    known_bypasses:
+      - "resolve_decision has ZERO non-test callers in this repository — every
+        reference is in its own file below #[cfg(test)] (aa-sdk-client/src/decision.rs:58,99),
+        and 0 in aa-cli/src, aa-runtime/src and all three SDK repos. Positive control:
+        aa-cli DOES depend on aa-sdk-client (aa-cli/Cargo.toml:74), so a cross-crate
+        call would be findable."
+      - "WITHDRAWN: \"refusal lives in the out-of-repo FFI shims\" — that is false.
+        Settled from the node-sdk source at 3d8ecd8df: native/aa-ffi-node/src/lib.rs:204-209
+        maps QueryFailed | ChannelClosed | Shutdown to Decision::Allow with
+        FAIL_OPEN_REASON, under a two-line comment at :202-203 reading 'Fail-open: a
+        slow, unreachable, or shut-down runtime must never block the agent.' The shim
+        hard-codes fail-OPEN, so it is not where refusal lives. No in-repo artifact
+        proves the SDK honours a deny."
+    evidence: >-
+      GAP, with a control that holds. resolve_decision is defined at
+      aa-sdk-client/src/decision.rs:58; every reference is in that file, all
+      below #[cfg(test)] at :99, and it has 0 hits in aa-cli/src, aa-runtime/src
+      AND all three SDK repos. POSITIVE CONTROL: aa-cli does depend on
+      aa-sdk-client (aa-cli/Cargo.toml:74), so a cross-crate call would be
+      findable — the zero is real, not a mis-scoped probe. WITHDRAWN: "refusal
+      lives in the out-of-repo FFI shims". The Node shim hard-codes fail-OPEN,
+      mapping QueryFailed, ChannelClosed and Shutdown to Decision::Allow
+      (node-sdk/native/aa-ffi-node/src/lib.rs:204-209).
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "correct per ADR 0002 — keep advisory, make the claim wording match"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D2 · Host actions: shell, subprocess, filesystem, browser, database
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: H1
+    domain: host_action
+    capability: Shell command / subprocess spawn by a native agent process
+    framework_or_tool: [any]
+    language: [any]
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: not_applicable
+    interception_component: none
+    identity_source: not_applicable
+    policy_context:
+      expressible: ["GovernanceAction::ProcessExec{command} aa-core/src/policy.rs:229-233", "Capability::TerminalExec aa-security/src/policy/capability.rs:42", "proto/policy.proto:69,138-139"]
+      enforceable: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["everything — there is no interception at all"]
+    evidence: >-
+      GAP. Positive control in the same probe over aa-proxy/src aa-runtime/src
+      aa-gateway/src aa-cli/src: McpToolCall 20 hits; PreToolUse, pre_tool_use,
+      seccomp_filter, LD_PRELOAD, command_wrapper, shell_hook, intercept_exec
+      all 0 hits.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "needs a product decision, not a ticket"
+    notes: "The policy language can express the rule; nothing in a released build can enforce it. This is the single largest coverage gap."
+
+  - id: H2
+    domain: host_action
+    capability: Shell command intercepted by the eBPF syscall guard
+    framework_or_tool: [any]
+    language: [any]
+    platform: [linux_x86_64, linux_aarch64]
+    launch_path: "AA_EBPF_CONFINE_PID set AND policy lowers a non-empty allowlist"
+    transport: syscall
+    interception_component: "aa-ebpf-probes/src/syscall_guard.rs via aa-ebpf-loaderd"
+    identity_source: "PID in PID_FILTER"
+    policy_context: [syscall_allowlist]
+    decision_timing: post
+    observe_or_enforce: enforce   # by asynchronous kill, NOT by refusal
+    sync_or_best_effort: best_effort
+    failure_posture: fail_open
+    default_state: off
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    boundary_class: B3
+    coverage: detected            # explicitly NOT denied_before_execution
+    q3_changed_answer: true
+    q4_changed_answer: true
+    known_bypasses:
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
+      - "the offending syscall completes before the SIGKILL lands"
+      - "fork propagation fails open past 1024 PIDs"
+      - "load-time window runs the confined PID with an empty allowlist"
+      - >-
+        NOT fail-open: if Load(SyscallGuard) succeeds and UpdateSyscallAllowlist
+        then fails, aa-runtime/src/ebpf_control.rs:342-352 degrades and returns
+        WITHOUT detaching. The confined PID stays in PID_FILTER with an empty
+        allowlist, so the guard default-denies by SIGKILL on the next syscall.
+    evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
+    evidence_runs_on_main: path_gated_with_schedule  # path-gated to aa-ebpf*/** — .github/workflows/ci.yml:131-133
+    current_level: not_applicable
+    target_level: "keep Experimental until AAASM-3872 lands a synchronous deny"
+    tickets: [AAASM-5640, AAASM-3872]
+
+  - id: H3
+    domain: host_action
+    capability: Process exec observation
+    framework_or_tool: [any]
+    language: [any]
+    platform: [linux_x86_64, linux_aarch64]
+    launch_path: any
+    transport: "sched_process_{fork,exec,exit} tracepoints"
+    interception_component: aa-ebpf-probes/src/exec_probes.rs
+    identity_source: pid
+    policy_context: []
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: fail_open
+    default_state: on
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    boundary_class: B5
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["no ring-buffer reader is wired — aa-runtime/src/runtime.rs:510-512; events never leave the kernel"]
+    evidence: ["GAP — nothing consumes the events"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "wire the reader or withdraw the capability"
+    tickets: [AAASM-5640]
+
+  - id: H4
+    domain: host_action
+    capability: File read / write / unlink observation
+    framework_or_tool: [any]
+    language: [any]
+    platform: [linux_x86_64]      # x86_64 ONLY
+    launch_path: any
+    transport: "__x64_sys_* kprobes"
+    interception_component: "aa-ebpf/src/kprobe.rs:145-160 — 14 BPF programs over 7 syscalls (an entry kprobe and a kretprobe each): openat, read, write, unlinkat, unlink, renameat2, rename"
+    identity_source: pid
+    policy_context: [path_blocklist]
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: fail_open
+    default_state: on
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    boundary_class: B5
+    coverage: observed
+    coverage_qualifiers: {path_blocklist: detected}   # the blocklist sets an alert bit; the syscall still proceeds
+    q4_changed_answer: true
+    known_bypasses:
+      - "x86_64 only — 16 __x64_sys_ matches vs 0 __arm64_sys_ in aa-ebpf/src/kprobe.rs"
+      - "observe-only: the path blocklist sets event.flags=1 and the syscall proceeds"
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
+    evidence: [aa-integration-tests/tests/e2e_file_monitoring.rs]
+    evidence_runs_on_main: path_gated_with_schedule
+    current_level: not_applicable
+    target_level: "state the arch bound wherever file coverage is claimed"
+    tickets: [AAASM-5640]
+
+  - id: H5
+    domain: host_action
+    capability: File access by a WASM-marked tool
+    framework_or_tool: [aa-sandbox]
+    language: wasm
+    platform: [linux, macos, windows]
+    launch_path: "aasm sandbox run, or POST /dispatch_tool with ToolKind::Wasm"
+    transport: in_process
+    interception_component: "aa-sandbox WASI preopen allowlist — aa-sandbox/src/policy.rs:21-90"
+    identity_source: not_applicable
+    policy_context: [preopened_dirs, fuel, memory_pages, wall_clock]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: closed         # preopened_dirs empty => fully sealed
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: "Linked into aasm and aa-api-server; no separate binary."
+    boundary_class: B3            # of the WASM guest only
+    coverage: denied_before_execution
+    known_bypasses: ["not on any agent's normal tool-call path"]
+    evidence: [aa-integration-tests/tests/e2e_tool_sandbox.rs, aa-integration-tests/tests/e2e_tool_sandbox_fs.rs, aa-integration-tests/tests/e2e_dispatch_tool_wasm.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "do not cite as agent-action mediation"
+    notes: "aa-proxy has NO aa-sandbox dependency, contradicting aa-sandbox/src/lib.rs:10-11 (AAASM-5627)."
+
+  - id: H6
+    domain: host_action
+    capability: Browser action (Playwright / Selenium / Puppeteer)
+    framework_or_tool: [any]
+    language: [any]
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: any
+    interception_component: none
+    identity_source: not_applicable
+    policy_context:
+      expressible: []             # no Browser action kind exists
+      enforceable: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["not expressible and not enforceable"]
+    evidence: >-
+      GAP. Positive control in the same probe over aa-security/src/policy/:
+      68 matches for FileRead|FileWrite|Network|TerminalExec, 0 for Browser.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "decide: model as ToolCall/NetworkRequest, or add an action kind (F6)"
+
+  - id: H7
+    domain: host_action
+    capability: Database query
+    framework_or_tool: [any]
+    language: [any]
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: any
+    interception_component: none
+    identity_source: not_applicable
+    policy_context:
+      expressible: []             # no Database action kind exists
+      enforceable: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["not expressible and not enforceable"]
+    evidence: ["GAP — 0 matches for Database in aa-security/src/policy/, same probe as H6"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "same decision as H6 (F6)"
+
+  - id: H8
+    domain: host_action
+    capability: Shell / file rule declared in a tool's own settings file
+    framework_or_tool: [claude_code]
+    language: not_applicable
+    platform: [macos]
+    launch_path: settings_write
+    transport: not_applicable
+    interception_component: "aa-devtool-claude-code managed settings — managed_settings.rs:1063-1079"
+    identity_source: "tool config scope (User / Project / Managed)"
+    policy_context: [permissions_deny, disableBypassPermissionsMode, allowManagedPermissionRulesOnly]
+    decision_timing: pre          # by the tool, not by Agent Assembly
+    observe_or_enforce: enforce   # by the tool
+    sync_or_best_effort: sync
+    failure_posture: fail_open_silent
+    default_state: off
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B6
+    coverage: unmeasured
+    known_bypasses:
+      - "whether the tool honours the keys is unmeasured — the open half of AAASM-5298"
+      - "no PreToolUse hook is ever registered: positive control 'permissions' 15 hits vs PreToolUse 0 across aa-devtool-claude-code/src"
+      - "a local administrator can rewrite the root-owned file"
+    evidence: ["read-back of the written file — evidence of the WRITE, never of ENFORCEMENT"]
+    evidence_runs_on_main: standing
+    current_level: integrated
+    current_level_scope: tool_governance_only   # ADR 0033 §6: aa-devtool-* config writes are "Not a data-path claim at all"
+    target_level: "gateway_protected is unreachable by this path — it needs a core-side adjudication"
+    tickets: [AAASM-5298]
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D3 · Network egress
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: N1
+    domain: network
+    capability: CONNECT-time egress allow/deny
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: traffic_routed_to_the_proxy
+    transport: http_connect
+    interception_component: "connect_deny_reason aa-proxy/src/proxy/mod.rs:934, run at :1308 -> 403"
+    identity_source: none          # the proxy has no agent attribution
+    policy_context: [host]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_open
+    default_state: open            # both lists empty by default
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    boundary_conditional_on: "the process honours the injected proxy environment"
+    coverage: denied_before_execution
+    q3_changed_answer: true
+    known_bypasses: [unset HTTPS_PROXY, "a client that ignores proxy env", N10, N11]
+    evidence: [aa-integration-tests/tests/e2e_policy_proxy.rs, aa-integration-tests/tests/cli_proxy_remote_bind_refusal.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "state the default-open posture wherever egress control is claimed"
+    notes: "AA_PROXY_DENIED_HOSTS and AA_PROXY_NETWORK_ALLOWLIST are both empty by default (aa-proxy/src/config.rs:75-85)."
+
+  - id: N2
+    domain: network
+    capability: SSRF guard
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: traffic_routed_to_the_proxy
+    transport: http_connect
+    interception_component: aa-proxy/src/ssrf.rs
+    identity_source: none
+    policy_context: [destination_address]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on              # the one network control that is not default-open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: denied_before_execution
+    known_bypasses: [N10, N11, "traffic not routed to the proxy"]
+    evidence: [aa-proxy unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+
+  - id: N3
+    domain: network
+    capability: HTTPS payload inspection and credential DLP on the built-in LLM hosts
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed_and_ca_trusted
+    transport: tls_mitm_http1_1
+    interception_component: "handle_llm_mitm aa-proxy/src/proxy/mod.rs:1038; in_tunnel_deny_reason 403 at :1066; Interceptor VerdictDecision::Block 403 at :1173"
+    identity_source: none
+    policy_context: [host, request_headers, request_body]
+    decision_timing: in_line
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: denied_before_execution
+    coverage_qualifiers: {credential_dlp: redacted}   # the same path both refuses and redacts
+    redaction_actor: proxy_scanner
+    known_bypasses: ["only 3 hosts: api.openai.com, api.anthropic.com, api.cohere.com (aa-proxy/src/intercept/detect.rs:31-34)", N5, N8, N9, N10, N11]
+    evidence: [aa-integration-tests/tests/e2e_secret_interception.rs, aa-integration-tests/tests/e2e_mcp_redact.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "publish the three-host default next to every 'inspects outbound HTTPS' claim"
+    notes: "Both refusals are LOCAL policy, not a gateway decision."
+
+  - id: N4
+    domain: network
+    capability: HTTPS payload inspection on any other host
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: "routed, CA trusted, AND llm_only=false or an operator mitm_hosts entry"
+    transport: tls_mitm_http1_1
+    interception_component: "handle_non_llm_mitm aa-proxy/src/proxy/mod.rs:801"
+    identity_source: none
+    policy_context: [host, request_headers, request_body]
+    decision_timing: in_line
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: off             # llm_only defaults true; mitm_hosts empty
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: denied_before_execution
+    q3_changed_answer: true
+    known_bypasses: ["off by default — aa-proxy/src/config.rs:434-439"]
+    evidence: [aa-proxy unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "publish the default"
+
+  - id: N5
+    domain: network
+    capability: HTTPS to a host not under MitM
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed
+    transport: raw_tls_relay
+    interception_component: "transparent_tunnel aa-proxy/src/proxy/mod.rs:1397"
+    identity_source: none
+    policy_context: [host]
+    decision_timing: none
+    observe_or_enforce: observe    # the CONNECTION only
+    sync_or_best_effort: best_effort
+    failure_posture: not_applicable
+    default_state: on              # this IS the default path for every host but three
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: unmeasured           # payload; the connection is `observed`
+    coverage_qualifiers: {connection: observed, payload: unmeasured}
+    known_bypasses: ["the payload is never inspected"]
+    evidence: ["transmission_evidence::forwarded persists 'forwarded, and nothing looked at it — never clean' (mod.rs:1398-1408, AAASM-5358)"]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "keep — this is the evidence model other paths should follow"
+    notes: "AAASM-5637: the adjacent CONNECT-level emit_policy_decision(host,false) at :1325 records an ALLOW for this same traffic, which contradicts the split above."
+
+  - id: N6
+    domain: network
+    capability: Model response body scanning on LLM hosts
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed_and_ca_trusted
+    transport: tls_mitm
+    interception_component: "none — raw tokio::io::copy at aa-proxy/src/proxy/mod.rs:1233"
+    identity_source: none
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["a credential echoed back by a provider is never detected"]
+    evidence: ["GAP — no response-scanning test on the LLM path, because there is no response scanning"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "scan LLM responses, or state the asymmetry publicly"
+
+  - id: N7
+    domain: network
+    capability: Plain http:// request
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed
+    transport: http1_1_cleartext
+    interception_component: "plain-HTTP path aa-proxy/src/proxy/mod.rs:1425 — DLP runs"
+    identity_source: none
+    policy_context: [host, request_body]
+    decision_timing: in_line
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: redacted
+    redaction_actor: proxy_scanner
+    known_bypasses: ["no MCP adjudication on this path"]
+    evidence: [aa-proxy unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+
+  - id: N8
+    domain: network
+    capability: HTTP/2, gRPC or WebSocket over a MitM'd host
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed_and_ca_trusted
+    transport: [http2, grpc, websocket]
+    interception_component: none
+    identity_source: none
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: null
+    coverage: unsupported
+    coverage_qualifiers: {hosts_not_mitmd: unmeasured}   # unsupported on MitM'd hosts; tunnelled and unmeasured elsewhere
+    known_bypasses: ["the MitM ServerConfig sets no alpn_protocols (mod.rs:1342-1346); the HTTP/2 preface is rejected as a malformed request line"]
+    evidence: ["GAP — 0 matches for alpn repo-wide"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state that MitM'd hosts are HTTP/1.1 only"
+
+  - id: N9
+    domain: network
+    capability: Chunked transfer encoding
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed_and_ca_trusted
+    transport: http1_1_chunked
+    interception_component: "request: hard reject aa-proxy/src/proxy/http.rs:205-210,266-270. response: head parsed, body left EMPTY at :466-484, re-serialised with Content-Length: 0 at :502-527"
+    identity_source: none
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: fail_closed   # request side
+    response_side_posture: silent_truncation
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["a chunked request is dropped with no HTTP response; a chunked response on the MCP path is silently emptied"]
+    evidence: ["aa-proxy/src/proxy/http.rs:747-760 pins the REQUEST rejection; nothing pins the RESPONSE behaviour"]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "F2 — correctness bug, needs a new ticket"
+
+  - id: N10
+    domain: network
+    capability: Raw TCP that does not speak the proxy protocol
+    framework_or_tool: [any]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: tcp
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["no transparent redirect exists"]
+    evidence: >-
+      GAP. Positive control in the same probe over aa-proxy/src: CONNECT 6
+      matches; iptables, pfctl, TPROXY and SO_ORIGINAL_DST all 0.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "never describe the proxy as covering 'outbound traffic'; it covers routed HTTP(S)"
+
+  - id: N11
+    domain: network
+    capability: UDP, QUIC, HTTP/3
+    framework_or_tool: [any]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: [udp, quic, http3]
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unsupported
+    evidence: >-
+      GAP. Positive control in the same probe: TcpListener 44 matches across
+      aa-cli/aa-proxy/aa-gateway/aa-runtime; UdpSocket, quinn, quic and http3
+      all 0 across those plus aa-core and aa-api.
+    evidence_runs_on_main: none
+    known_bypasses: ["the whole transport class"]
+    current_level: not_applicable
+    target_level: "state as Unsupported"
+
+  - id: N12
+    domain: network
+    capability: Local IPC (Unix domain sockets) between third-party processes
+    framework_or_tool: [any]
+    language: any
+    platform: [linux, macos]
+    launch_path: any
+    transport: uds
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["nothing mediates a third-party UDS conversation"]
+    evidence: ["GAP by construction"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state as out of scope"
+
+  - id: N13
+    domain: network
+    capability: TLS plaintext observation without the proxy
+    framework_or_tool: [aa-ebpf]
+    language: any
+    platform: [linux_x86_64, linux_aarch64]
+    launch_path: any
+    transport: "OpenSSL SSL_read / SSL_write uprobes"
+    interception_component: "aa-ebpf-probes/src/ssl_probes.rs:91,123,151"
+    identity_source: pid
+    policy_context: []
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: fail_open
+    default_state: on
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    boundary_class: B5
+    coverage: unmeasured           # downstream: events are not bridged to audit
+    coverage_qualifiers: {secondary: observed}
+    q4_changed_answer: true
+    known_bypasses:
+      - "Go crypto/tls, rustls, Node BoringSSL, GnuTLS, NSS, BoringSSL, LibreSSL and s2n expose no such symbols — full list at aa-ebpf-probes/src/ssl_probes.rs:22-25"
+      - "events are NOT bridged to the audit pipeline (aa-runtime/src/runtime.rs:302-305,344-350)"
+      - "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"
+    evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
+    evidence_runs_on_main: path_gated_with_schedule
+    current_level: not_applicable
+    target_level: "bridge the events or stop counting TLS observation as coverage"
+    tickets: [AAASM-5640, AAASM-5634]
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D4 · MCP
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: M1
+    domain: mcp
+    capability: MCP tools/call adjudication by the control plane
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: "routed, CA trusted, AA_PROXY_GATEWAY_ENDPOINT set, non-LLM MitM'd host"
+    transport: "https POST, HTTP/1.1, explicit Content-Length"
+    interception_component: "evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614 invoked at :834 -> aa-gateway PolicyService.CheckAction"
+    identity_source: "CONSTANT 'aa-proxy' — PROXY_AGENT_ID aa-proxy/src/mcp_enforce.rs:48,99-102; org_id/team_id/credential_token empty; caller_agent_id None at :116"
+    policy_context: [tool_name, arguments, "tool_source=mcp", target_url]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: off             # gateway_endpoint defaults to None
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: denied_before_execution
+    redaction_actor: proxy_scanner
+    q3_changed_answer: true
+    known_bypasses:
+      - "M2 through M9"
+      - "gateway Decision::Pending is downgraded to Deny (mcp_enforce.rs:135-144), so human approval cannot be reached inside the tunnel"
+      - "gateway RedactInstructions are never replayed field-by-field (mcp_enforce.rs:62-75; proxy/mod.rs:643-652)"
+    evidence: [aa-integration-tests/tests/e2e_mcp_interceptor.rs, aa-integration-tests/tests/e2e_mcp_redact.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "per-agent MCP policy and per-agent MCP audit do not exist and must not be claimed"
+    tickets: [AAASM-5533]
+    notes: >-
+      The only gateway-bound pre-dial block in the system. Mediation is coupled
+      to whole-machine MitM on the CONVENIENCE path, not in the mechanism. Both
+      MANAGED routes — `aasm proxy start --gateway <url>`
+      (aa-cli/src/commands/proxy/start.rs:128-135) and an aa-runtime-spawned
+      proxy (aa-runtime/src/runtime.rs:246-259) — set AA_PROXY_GATEWAY_ENDPOINT
+      and force AA_PROXY_LLM_ONLY=false, widening TLS MitM to every host on the
+      machine. WITHDRAWN: "the only supported route". Settled from source at the
+      base commit 299de3883 — should_mitm (aa-proxy/src/proxy/mod.rs:1385-1389)
+      is `detect_api(host) != Unknown` OR a mitm_hosts match, and the llm_only
+      branch at :1333 consults it, so AA_PROXY_GATEWAY_ENDPOINT together with
+      AA_PROXY_MITM_HOSTS adjudicates exactly the named hosts with llm_only left
+      TRUE. The targeted configuration EXISTS; what is missing is a CLI flag that
+      produces it and any page saying so — recommendation F7 in the companion, an
+      ergonomics and documentation gap, NOT an absent capability.
+
+  - id: M2
+    domain: mcp
+    capability: MCP enforcement with no gateway configured
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: default_aa_proxy_run
+    transport: https
+    interception_component: "none — evaluate_mcp_request is reached only via Some(gw) (aa-proxy/src/proxy/mod.rs:832-834)"
+    identity_source: none
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: fail_open
+    default_state: off             # aa-proxy/src/config.rs:123-130,179
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: null
+    coverage: unmeasured
+    q3_changed_answer: true
+    known_bypasses: ["MCP enforcement is dark on a default aa-proxy run"]
+    evidence: ["GAP"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state the default"
+
+  - id: M3
+    domain: mcp
+    capability: JSON-RPC batch array or malformed envelope carrying tools/call
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: same_as_M1
+    transport: https
+    interception_component: "is_unenforceable_tool_call aa-proxy/src/intercept/mcp.rs:115-130 -> JSON-RPC -32600 at proxy/mod.rs:620-631"
+    identity_source: "constant 'aa-proxy'"
+    policy_context: [raw_envelope]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on              # when M1's preconditions hold
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: denied_before_execution
+    known_bypasses:
+      - "a NESTED batch, or a batch whose elements carry params without a literal top-level method — mentions_tools_call inspects one level only (intercept/mcp.rs:128-130)"
+    evidence: [aa-proxy/src/intercept/mcp.rs:222-272]
+    evidence_runs_on_main: standing
+    evidence_quality: unit_only    # e2e_mcp_interceptor.rs has no batch case
+    current_level: not_applicable
+    target_level: "add a wire-level negative control"
+    tickets: [AAASM-4070, AAASM-5532]
+
+  - id: M4
+    domain: mcp
+    capability: Every MCP method other than tools/call
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: same_as_M1
+    transport: https
+    interception_component: "none — the parser returns None for any other method (aa-proxy/src/intercept/mcp.rs:85-87)"
+    identity_source: none
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: fail_open
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses:
+      - "resources/read — a complete data-exfiltration primitive, adjudicated nowhere"
+      - "prompts/get, sampling/createMessage, initialize, all notifications/*"
+    evidence: ["GAP — forwarded as McpEvalOutcome::Skip, subject only to the byte-level credential scanner"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "highest-value MCP follow-up"
+    tickets: [AAASM-5533]
+
+  - id: M5
+    domain: mcp
+    capability: MCP over stdio (subprocess pipes)
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: stdio_pipes
+    interception_component: "none, and structurally impossible for a CONNECT proxy"
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["the most common MCP transport in practice is entirely unmediated"]
+    evidence: >-
+      GAP. Positive control in the same probe over aa-proxy/src: stdio 0
+      matches, tools/call 49 matches.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state explicitly on every MCP page"
+    tickets: [AAASM-5533]
+    notes: "The product MODELS stdio servers — McpServerInfo{name,command,args} aa-core/src/dev_tool.rs:112-121 — and cannot mediate them."
+
+  - id: M6
+    domain: mcp
+    capability: MCP over SSE (text/event-stream)
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: any
+    transport: sse
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["the SSE leg is raw-copied unscanned"]
+    evidence: ["GAP — text/event-stream 0 matches repo-wide"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state explicitly"
+    tickets: [AAASM-5533]
+
+  - id: M7
+    domain: mcp
+    capability: MCP over Streamable HTTP
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: same_as_M1
+    transport: streamable_http
+    interception_component: "parsed, then EMPTIED — handle_mcp_response_body always re-serialises with Content-Length: 0"
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: silent_truncation
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["functionally broken, not merely uncovered — the client receives an empty 200"]
+    evidence: ["GAP — streamable 0 matches repo-wide; nothing pins the response behaviour"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "F2 — new ticket"
+    notes: "aa-proxy/src/proxy/http.rs:13 claims 'the MCP path falls back to a transparent relay'. It does not."
+
+  - id: M8
+    domain: mcp
+    capability: MCP over WebSocket
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: any
+    transport: websocket
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
+    boundary_class: null
+    coverage: unsupported
+    q4_changed_answer: true
+    known_bypasses: ["no upgrade handling exists"]
+    evidence: ["GAP — Sec-WebSocket and '101 Switching' 0 matches in aa-proxy/src"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state as Unsupported"
+    tickets: [AAASM-5533]
+
+  - id: M9
+    domain: mcp
+    capability: MCP on a built-in LLM host
+    framework_or_tool: [any_mcp_client]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed_and_ca_trusted
+    transport: https
+    interception_component: "none — handle_llm_mitm contains zero MCP code (aa-proxy/src/proxy/mod.rs:1038-1241)"
+    identity_source: none
+    policy_context: []
+    decision_timing: in_line
+    observe_or_enforce: enforce    # DLP only
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: redacted             # DLP only; never adjudicated
+    redaction_actor: proxy_scanner
+    known_bypasses: ["an MCP endpoint on api.anthropic.com is DLP-scanned but never adjudicated"]
+    evidence: ["GAP"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "route LLM-host MCP through the adjudication path, or state the exclusion"
+
+  - id: M10
+    domain: mcp
+    capability: MCP-server governance by configuration
+    framework_or_tool: [claude_code, copilot, windsurf]
+    language: not_applicable
+    platform: [macos, linux, windows]
+    launch_path: config_write
+    transport: not_applicable
+    interception_component: "enabledMcpjsonServers/disabledMcpjsonServers aa-devtool-claude-code/src/lib.rs:385-409; chat.mcp.deny, chat.mcp.requireApproval aa-devtool-copilot/src/lib.rs:18-19 (keys), :403 (apply_mcp_governance)"
+    identity_source: tool_config_scope
+    policy_context: [mcp_server_name]
+    decision_timing: pre           # by the tool
+    observe_or_enforce: enforce    # by the tool
+    sync_or_best_effort: sync
+    failure_posture: fail_open_silent
+    default_state: off
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B6
+    coverage: unmeasured
+    known_bypasses: ["any process can launch the MCP server itself; enforcement is the host tool's, not Agent Assembly's"]
+    evidence: ["read-back of the config write"]
+    evidence_runs_on_main: standing
+    current_level: integrated
+    current_level_scope: tool_governance_only   # ADR 0033 §6: aa-devtool-* config writes are "Not a data-path claim at all"
+    target_level: "never present config-level MCP disabling as interception"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D5 · Managed dev-tool launch versus unmanaged
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: L1
+    domain: devtool_launch
+    capability: Claude Code managed launch
+    framework_or_tool: [claude_code]
+    language: node
+    platform: [macos]
+    launch_path: aasm_run
+    transport: "injects AA_AGENT_ID, AA_TEAM_ID, the installed launch-env store INCLUDING NODE_EXTRA_CA_CERTS, HTTPS_PROXY, HTTP_PROXY"
+    interception_component: "aa-devtool-claude-code/src/lib.rs:356-383"
+    identity_source: "AA_AGENT_ID plus did:key registration over gRPC AgentLifecycleService.Register with an Ed25519 possession proof"
+    policy_context: [proxy_dlp, mcp_adjudication_if_gateway_configured, managed_settings]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B3
+    boundary_conditional_on: "the tool honours the injected proxy environment"
+    coverage: denied_before_execution
+    q4_changed_answer_in_product_favour: true
+    known_bypasses: ["the eleven-item list in docs/src/devtools/limitations.md:69-84", "everything in D2, D3, D4"]
+    evidence:
+      - aa-integration-tests/tests/cli_run_claude_governed_launch.rs
+      - aa-integration-tests/tests/cli_run_claude_launch_env.rs
+      - aa-integration-tests/tests/claude_code_integration_lifecycle.rs
+      - aa-integration-tests/tests/conformance_claude_code.rs
+    evidence_runs_on_main: standing
+    current_level: host_enforced   # reachable — the only adapter for which it is
+    target_level: "hold; close the AAASM-5298 open half"
+    tickets: [AAASM-5298]
+    notes: >-
+      SCOPE: fixed on `main` at the base commit 299de3883; the registration half
+      is NOT in the published v0.0.1-rc.6, where
+      aa-cli/src/commands/run_registration.rs does not exist at the tag — so the
+      reversal recorded here cites a file the published release does not contain.
+      Quote this row as "fixed on main, still live in rc.6", never as "fixed".
+      Of the three host_enforced rows (L1, L7, P3) this is the only one whose
+      coverage also reaches denied_before_execution — L7 is unmeasured and P3
+      unsupported — so the scoping is load-bearing: for rc.6 the rung is
+      unearned, not merely unmeasured.
+
+  - id: L2
+    domain: devtool_launch
+    capability: Codex managed launch
+    framework_or_tool: [codex]
+    language: not_applicable
+    platform: [macos, linux]
+    launch_path: aasm_run
+    transport: "injects AA_AGENT_ID, AA_TEAM_ID, HTTPS_PROXY ONLY — no CA trust"
+    interception_component: "aa-devtool-codex/src/lib.rs:281-303"
+    identity_source: AA_AGENT_ID
+    policy_context: ["whatever the proxy sees — which may be nothing"]
+    decision_timing: pre
+    observe_or_enforce: enforce    # in shape only
+    sync_or_best_effort: sync
+    failure_posture: fail_open_silent
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    q3_changed_answer: true
+    known_bypasses:
+      - "no CA trust is established for the launch: NODE_EXTRA_CA_CERTS count 0 vs HTTPS_PROXY 1 in the same probe"
+      - "all of L1's bypasses"
+    evidence: ["GAP — no launch evidence test for this adapter"]
+    evidence_runs_on_main: none
+    current_level: integrated      # HARD-CAPPED by LegacyAdapterShim
+    target_level: "do not raise the cap until a protection probe adjudicates a launch"
+    tickets: [F1]
+    notes: >-
+      This is the exact configuration AAASM-5276 measured as failing the MitM
+      handshake SILENTLY, recorded at aa-devtool-claude-code/src/lib.rs:337-346.
+      Fixed there; unfixed here.
+
+  - id: L3
+    domain: devtool_launch
+    capability: Windsurf managed launch
+    framework_or_tool: [windsurf]
+    language: electron_node
+    platform: [macos, linux]
+    launch_path: aasm_run
+    transport: "injects AA_AGENT_ID, AA_TEAM_ID, HTTPS_PROXY ONLY — no CA trust"
+    interception_component: "aa-devtool-windsurf/src/lib.rs:295-315"
+    identity_source: AA_AGENT_ID
+    policy_context: ["whatever the proxy sees — which may be nothing"]
+    decision_timing: pre
+    observe_or_enforce: enforce    # in shape only
+    sync_or_best_effort: sync
+    failure_posture: fail_open_silent
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    q3_changed_answer: true
+    known_bypasses: ["NODE_EXTRA_CA_CERTS 0 vs HTTPS_PROXY 3 in the same probe", "all of L1's bypasses"]
+    evidence: ["GAP — no launch evidence test for this adapter"]
+    evidence_runs_on_main: none
+    current_level: integrated      # HARD-CAPPED by LegacyAdapterShim
+    target_level: "as L2"
+    tickets: [F1]
+    notes: "Electron/Node does not consult the OS trust store by default, which is precisely why NODE_EXTRA_CA_CERTS exists."
+
+  - id: L4
+    domain: devtool_launch
+    capability: Copilot managed launch
+    framework_or_tool: [github_copilot]
+    language: not_applicable
+    platform: [macos, linux, windows]
+    launch_path: none
+    transport: not_applicable
+    interception_component: "build_launch_command ALWAYS returns AdapterError::LaunchFailed — aa-devtool-copilot/src/lib.rs:347-359, pinned by the test at :530-536"
+    identity_source: not_applicable
+    policy_context: [settings_write_only]
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unsupported
+    q4_changed_answer: true
+    known_bypasses: ["editing the settings back"]
+    evidence: ["read-back only"]
+    evidence_runs_on_main: standing
+    current_level: integrated      # HARD-CAPPED by LegacyAdapterShim
+    target_level: "correct as-is; never describe Copilot as launch-governed"
+
+  - id: L5
+    domain: devtool_launch
+    capability: SaaS / opaque agent
+    framework_or_tool: [claude_ai_and_siblings]
+    language: not_applicable
+    platform: not_applicable
+    launch_path: none
+    transport: webhook_ingest
+    interception_component: "aa-devtool-saas/src/adapter.rs:93-100 always errors; supports_managed_settings false at :71; NOT registered in SUPPORTED_TOOLS (aa-devtool/src/registry.rs:39)"
+    identity_source: saas_webhook_payload
+    policy_context: ["whatever the SaaS surface exposes"]
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: not_applicable
+    default_state: off
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B7
+    boundary_attained: false
+    coverage: observed
+    known_bypasses: ["everything — the operator does not control execution"]
+    evidence: [aa-api/src/routes/devtools/mod.rs:57-59]
+    evidence_runs_on_main: standing
+    current_level: l1_observe      # hard-capped, documented at adapter.rs:119-122
+    target_level: "correct as-is — this is the honest B7 answer"
+
+  - id: L6
+    domain: devtool_launch
+    capability: Unmanaged launch — the user starts the tool directly
+    framework_or_tool: [any]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: direct
+    transport: not_applicable
+    interception_component: none
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["this IS the bypass, and it is not detectable"]
+    evidence: ["aa-devtool-claude-code/src/bypass.rs:228-235 names it as an unobservable bypass. There is NO process watcher on any platform."]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "keep announcing it"
+
+  - id: L7
+    domain: devtool_launch
+    capability: Settings-layer governance surviving an unmanaged launch
+    framework_or_tool: [claude_code]
+    language: not_applicable
+    platform: [macos]
+    launch_path: "root-owned /Library/Application Support/ClaudeCode/managed-settings.json"
+    transport: not_applicable
+    interception_component: "managed_settings.rs:1063-1079 — disableBypassPermissionsMode, allowManagedPermissionRulesOnly"
+    identity_source: file_ownership
+    policy_context: [managed_document_keys]
+    decision_timing: pre           # by the tool
+    observe_or_enforce: enforce    # by the tool
+    sync_or_best_effort: sync
+    failure_posture: fail_open_silent
+    default_state: off
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B6
+    coverage: unmeasured           # data path
+    known_bypasses: ["a local administrator", "the tool ignoring the keys"]
+    evidence: ["read-back of the written file, never observed enforcement — 'the open half of AAASM-5298' (managed_settings.rs:50-57)"]
+    evidence_runs_on_main: standing
+    current_level: host_enforced
+    current_level_scope: tool_governance_only   # ADR 0033 §6: aa-devtool-* config writes are "Not a data-path claim at all"   # on the TOOL-GOVERNANCE axis only
+    target_level: "do not let this rung imply data-path prevention"
+    tickets: [AAASM-5298]
+
+  - id: L8
+    domain: devtool_launch
+    capability: aasm run --no-proxy
+    framework_or_tool: [any]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: explicit_flag
+    transport: none
+    interception_component: "resolve_launch_proxy aa-cli/src/commands/run.rs:372-388 — warns and returns None"
+    identity_source: AA_AGENT_ID
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: off
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["this is the bypass, and it is explicitly announced"]
+    evidence: ["Guarded: refused where a managed receipt or managed-settings file says the host runs managed (run.rs:894-903). Ambient HTTPS_PROXY/HTTP_PROXY are REMOVED, not inherited, on this path (:329-333). NOTE: resolve_launch_proxy (run.rs:372-388) returns Ok(None) ONLY on the no_proxy branch, so the 'proxy is None and no_proxy is false' combination an earlier revision described is unreachable."]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D6 · Credential and secret boundary
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: C1
+    domain: credentials
+    capability: Outbound credential scan and redact on an inspected request
+    framework_or_tool: [aa-security, aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed_and_ca_trusted
+    transport: tls_mitm
+    interception_component: "aa-security scanner via intercept_request"
+    identity_source: none
+    policy_context: [request_body, request_headers]
+    decision_timing: in_line
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_open     # RedactOnly forwards
+    default_state: open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: redacted
+    redaction_actor: proxy_scanner
+    q3_changed_answer: true
+    known_bypasses:
+      - "default is RedactOnly (forward redacted), not Block — aa-proxy/src/config.rs:16-27, #[default] at :22 on RedactOnly at :23"
+      - "AlertOnly forwards the credential UNMODIFIED and raises no alert"
+      - "every non-inspected path in D3"
+      - "C6 recall bounds"
+    evidence: [aa-integration-tests/tests/e2e_secret_interception.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "state the RedactOnly default wherever DLP is claimed"
+
+  - id: C2
+    domain: credentials
+    capability: Credential substitution at egress — the real provider key never enters the agent
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: "AA_PROXY_PROVIDER_KEYS=host=key set in the proxy's environment"
+    transport: tls_mitm_llm_host
+    interception_component: >-
+      CredentialStore::from_env aa-proxy/src/credentials.rs:198 ->
+      authorization_for :238 -> serialize_http_request_with_auth
+      aa-proxy/src/proxy/http.rs:353, which STRIPS the agent's own
+      Authorization / x-api-key at :371-373 and appends the operator's real key
+      at :379-383
+    identity_source: none
+    policy_context: [host]
+    decision_timing: in_line
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_open     # empty store => no substitution
+    default_state: off
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: redacted                 # the request proceeds with the agent's credential REMOVED and the operator's substituted. Nothing is denied, so denied_before_execution was the wrong ADR 0033 §6 term.
+    q3_changed_answer: true
+    q4_changed_answer_in_product_favour: true
+    known_bypasses:
+      - "only the MitM'd hosts"
+      - "the operator must set the env var"
+      - "aasm run still hands the child the whole parent environment (C5)"
+      - "the agent can egress on any path in D3"
+    evidence: ["aa-proxy/src/credentials.rs:307-322 unit tests; GAP — no end-to-end test proves the substitution reaches upstream"]
+    evidence_runs_on_main: standing
+    evidence_quality: unit_only
+    current_level: not_applicable
+    target_level: "a bounded version of the 'never enters the agent' claim IS defensible, with all four conditions named"
+    notes: >-
+      DISTINCT from C3. AAASM-5528 E4 correctly found the DispatchTool secrets
+      path dead; this is a second, separately-named mechanism that ships and
+      works. Conflating them under 'credential injection' is what produced the
+      W16/W17 over-claims.
+
+  - id: C3
+    domain: credentials
+    capability: Credential injection via SecretsService.DispatchTool
+    framework_or_tool: [aa-gateway, aa-api]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: none
+    transport: [grpc, http]
+    interception_component: "proto/secrets.proto:12; aa-api/src/routes/dispatch.rs:125"
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: dead_code
+    released_note: >-
+      The binaries ship. The capability is unreachable for a NON-CHANNEL
+      reason: no route populates the secrets store. Channel scoping is
+      irrelevant here — do not read `released_*` as reachability.
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses:
+      - "both production constructions instantiate a fresh empty InMemorySecretsStore (aa-api/src/state.rs:449; aa-gateway/src/server.rs:693)"
+      - "no registration route; no aasm secrets command"
+      - "every ${NAME} resolves to UnknownPlaceholder"
+    evidence: ["aa-integration-tests/tests/common/mod.rs:246 registers a secret in a TEST HELPER only"]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "decide its fate"
+    tickets: [AAASM-5631]
+
+  - id: C4
+    domain: credentials
+    capability: Model response credential scanning
+    framework_or_tool: [aa-proxy]
+    language: any
+    platform: [linux, macos]
+    launch_path: routed_and_ca_trusted
+    transport: tls_mitm
+    interception_component: "none on the LLM path (raw tokio::io::copy, mod.rs:1233); present on the MCP path (redact_response_body)"
+    identity_source: none
+    policy_context: [response_body]
+    decision_timing: in_line
+    observe_or_enforce: enforce    # MCP path only
+    sync_or_best_effort: sync
+    failure_posture: fail_closed   # MCP path withholds an uninspectable body
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: unmeasured           # LLM path
+    coverage_qualifiers: {secondary: redacted}
+    known_bypasses: ["asymmetric by path — the LLM path never scans responses"]
+    evidence: ["GAP on the LLM path"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "scan LLM responses, or state the asymmetry"
+
+  - id: C5
+    domain: credentials
+    capability: Environment inheritance by aasm run
+    framework_or_tool: [aa-cli]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: aasm_run
+    transport: process_environment
+    interception_component: "std::env::vars().collect() — aa-cli/src/commands/run.rs:310"
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: fail_open
+    default_state: open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: null
+    coverage: unmeasured
+    known_bypasses: ["the child receives the ENTIRE parent environment, so a shell or file tool in the agent can read any credential the operator exported"]
+    evidence: ["the masking helper `fn mask_value` at :462 is used only at :578, for --dry-run preview text"]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "warrants a ticket — whole-environment inheritance defeats C2's benefit for any agent with a shell tool"
+
+  - id: C6
+    domain: credentials
+    capability: Credential scanner recall
+    framework_or_tool: [aa-security]
+    language: any
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: any
+    interception_component: aa-security/src/scanner.rs
+    identity_source: not_applicable
+    policy_context: [payload]
+    decision_timing: in_line
+    observe_or_enforce: observe    # detect
+    sync_or_best_effort: sync
+    failure_posture: fail_open
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    boundary_class: B3
+    coverage: detected
+    known_bypasses:
+      - "no Stripe detector exists; the OpenAI detector keys on 'sk-' while Stripe uses 'sk_'"
+      - >-
+        NARROWED by AAASM-5368, not open: a base64 run cut by ONE separator is
+        now detected (Pass 5, aa-security/src/scanner.rs:1346, implemented :1395;
+        closure recorded at :1279 and :3849; live test :3858). What remains open
+        is multi-character gaps and many-way splits, pinned as not-detected at
+        :3960-4005, plus ASCII punctuation deliberately not counting as a
+        separator (is_split_separator, :1596-1598). Fully open in rc.6, where
+        AAASM-5368 has 0 occurrences.
+    evidence: [aa-security/src/scanner.rs:1346, aa-security/src/scanner.rs:1395, aa-security/src/scanner.rs:3858, aa-security/src/scanner.rs:3960-4005]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "bounded by the pattern set — say so"
+    tickets: [AAASM-5368]
+    notes: >-
+      SCOPE — closed on `main`, STILL LIVE in the published v0.0.1-rc.6. The Pass 5
+      closure is AAASM-5368, and at the rc.6 tag `AAASM-5368` has 0 occurrences in
+      aa-security/src/scanner.rs (positive control: `AAASM` = 28 in the SAME blob, so
+      the probe is live; 8 on `main`). A base64 secret split by ONE separator is
+      therefore still scanned clean in the newest release on crates.io. Quote this row
+      as "closed on `main`, still live in rc.6", never as closed — the companion
+      Markdown requires the statement twice, at :167-187 (row C6 / D-g) and at :819.
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D7 · Identity propagation
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: I1
+    domain: identity
+    capability: Agent identity — Ed25519 did:key with a possession proof
+    framework_or_tool: [aa-sdk-client, aa-gateway]
+    language: rust
+    platform: [linux, macos, windows]
+    launch_path: registration
+    transport: grpc
+    interception_component: >-
+      Identity key is random CSPRNG, persisted owner-only
+      (aa-sdk-client/src/identity_store.rs: O_EXCL, 0600, symlink/uid/mode
+      validation at :218; load_or_enroll :344, enroll :402, rotate :439,
+      revoke :479). Gateway enforces enforce_did_key_binding
+      (aa-gateway/src/service/lifecycle_service.rs:232-239) and
+      verify_possession_proof over a server-issued single-use nonce
+      (:241-259, consumed :454-457).
+    identity_source: persisted_random_ed25519_keypair
+    policy_context: [did_key, nonce]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B3
+    coverage: evaluated
+    q4_changed_answer_in_product_favour: true
+    known_bypasses: ["registration is reachable by anyone who can reach the agent plane — see I7"]
+    evidence: [aa-integration-tests/tests/e2e_a2a_identity.rs, aa-integration-tests/tests/native_auth_gating.rs, aa-gateway/tests/lifecycle_service_test.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: keep
+    tickets: [AAASM-5332]
+    notes: >-
+      Prior belief was that the Ed25519 seed is SHA-256(public agent id), making
+      any agent impersonable. FIXED by AAASM-5332 — one of the three Question-4
+      answers that moved in the product's favour. SCOPE: fixed on `main` at the
+      base commit 299de3883; STILL LIVE in the published v0.0.1-rc.6, where
+      aa-sdk-client/src/identity_store.rs does not exist and
+      enforce_did_key_binding has 0 occurrences in lifecycle_service.rs (control:
+      verify_possession_proof = 7 in the same file at the same tag). Quote it as
+      "fixed on main, still live in rc.6", never as "fixed". WITHDRAWN: the
+      "residual smell" citation of aa-cli/src/commands/run_registration.rs:583,668.
+      Read at the base commit, both call sites are inside that module's test block
+      (opens at :462) and both prove the vulnerability is CLOSED: :583 derives a
+      deliberately FOREIGN key for "somebody-else" and :584-588 asserts
+      assert_did_key_binds_public_key REFUSES it — a negative control — while
+      :667-672 is the AAASM-5332 regression assertion
+      (assert_ne!(derive_transport_key("parity-check").public_key_hex(),
+      cli.public_key)) under a comment at :663-666 naming the ticket. Citing them
+      as evidence of a partly-open vulnerability inverted their meaning. The
+      aa-gateway half (lifecycle_service_test.rs fixtures seeded from
+      derive_transport_key) is test hygiene only and implies no production gap: a
+      SHA-256-seeded Ed25519 public key is indistinguishable from a random one
+      server-side.
+
+  - id: I2
+    domain: identity
+    capability: Transport key for the runtime UDS handshake
+    framework_or_tool: [aa-sdk-client, aa-runtime]
+    language: rust
+    platform: [linux, macos]
+    launch_path: uds_handshake
+    transport: uds
+    interception_component: "derive_transport_key aa-sdk-client/src/keypair.rs:107-131; recomputed at aa-runtime/src/ipc/handshake.rs:29,51"
+    identity_source: "SHA-256(agent_id) — deliberately non-secret"
+    policy_context: [peer_uid, socket_mode]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B3
+    coverage: evaluated
+    known_bypasses: ["the signature proves nothing; the boundary is the socket's 0600 mode plus peercred UID"]
+    evidence: [aa-runtime unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "correct by design, provided no page calls it an authentication key"
+
+  - id: I3
+    domain: identity
+    capability: Sub-agent / delegation lineage
+    framework_or_tool: [aa-gateway]
+    language: rust
+    platform: [linux, macos, windows]
+    launch_path: registration
+    transport: grpc
+    interception_component: "aa-core/src/agent.rs:52-71 (parent_agent_id, depth, root_agent_id, delegation_reason, spawned_by_tool); derived server-side at aa-gateway/src/service/lifecycle_service.rs:477-497"
+    identity_source: parent_agent_registration
+    policy_context: [lineage, depth, root_agent_id]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed   # invalid parent => Status::invalid_argument
+    default_state: on
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B3
+    coverage: evaluated
+    known_bypasses: ["as I7 — the plane is open"]
+    evidence: [aa-integration-tests/tests/e2e_a2a_identity.rs, aa-integration-tests/tests/api_topology.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "advertise it — this is stronger than anything published about it"
+
+  - id: I4
+    domain: identity
+    capability: Process-tree identity across fork/exec
+    framework_or_tool: [aa-ebpf, aa-runtime]
+    language: rust
+    platform: [linux]
+    launch_path: any
+    transport: tracepoints
+    interception_component: "PARENT_TGID and EXEC_PID_FILTER propagation, aa-ebpf-probes/src/exec_probes.rs:6-9,68-89; userspace correlation aa-runtime/src/correlation/pid.rs:28-81"
+    identity_source: pid_ancestry_only
+    policy_context: []
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: fail_open
+    default_state: on
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses:
+      - "NO agent id crosses fork/exec"
+      - "the bridge feeding the correlation engine HARDCODES pid: 0 (aa-runtime/src/correlation/mod.rs:47-49, TODO(AAASM-150)), so pid-family correlation is inert on that path"
+    evidence: >-
+      GAP. Positive control in the same probe: agent_id 0 matches in
+      aa-ebpf-probes/src/exec_probes.rs and aa-ebpf-common/src/exec.rs, against
+      pid 52 and 10 matches respectively.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "wire the pid through, or withdraw process-tree attribution claims"
+
+  - id: I5
+    domain: identity
+    capability: Tenant / org isolation
+    framework_or_tool: [aa-gateway, aa-storage-postgres, aa-storage-sqlite, aa-storage-memory]
+    language: rust
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: any
+    interception_component: >-
+      Enforced PER CALL SITE, not at the storage layer. AgentFilter.org_id is an
+      Option applied only when the caller supplies it
+      (aa-gateway/src/storage/postgres.rs:240-243, sqlite.rs:343-346);
+      get_agent by id has NO org predicate (postgres.rs:499-508). The
+      DB-backstopped path is Postgres RLS and only for the _for_tenant methods
+      (aa-storage-postgres/src/audit_sink.rs:56-74).
+    identity_source: [verified_caller_org_id, agent_record_org_id]
+    policy_context: [org_id, team_id]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_open
+    default_state: off             # TenancyMode defaults to Untenanted
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B3
+    coverage: evaluated
+    q3_changed_answer: true
+    known_bypasses:
+      - "a caller that omits org_id on a filtered read"
+      - "get_agent by id"
+      - "aa-storage-memory has ZERO org_id references across all nine source files, against 85 in aa-storage-postgres/src/user_store.rs as positive control"
+      - "TenancyMode defaults to Untenanted (aa-gateway/src/server.rs:657-663)"
+    evidence: [aa-integration-tests/tests/e2e_org_isolation.rs, aa-integration-tests/tests/api_iam.rs, aa-api/src/ws/tenant.rs:10-25]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "push org scoping into the storage trait so a forgetful call site cannot leak across tenants (F5)"
+
+  - id: I6
+    domain: identity
+    capability: Agent attribution of proxy traffic
+    framework_or_tool: [aa-proxy]
+    language: rust
+    platform: [linux, macos]
+    launch_path: any
+    transport: any
+    interception_component: "none — PROXY_AGENT_ID constant at aa-proxy/src/mcp_enforce.rs:48,99-102; ProxyEvent.agent_id hardcoded None at aa-proxy/src/proxy/mod.rs:1081"
+    identity_source: none
+    policy_context: [host_only]
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    boundary_class: null
+    coverage: unmeasured
+    q4_changed_answer: true
+    known_bypasses: ["per-agent MCP policy and per-agent MCP audit attribution do not exist"]
+    evidence: >-
+      GAP. Positive control in the same probe over aa-proxy/src: peercred,
+      SO_PEERCRED and peer_pid all 0 matches; host 253 matches in
+      aa-proxy/src/proxy/mod.rs. Logs render the agent as '<unknown>'.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "AAASM-5533's 'real agent identity binding' — this is its concrete requirement"
+    tickets: [AAASM-5533]
+
+  - id: I7
+    domain: identity
+    capability: Gateway agent-plane authentication
+    framework_or_tool: [aa-gateway]
+    language: rust
+    platform: [linux, macos, windows]
+    launch_path: any
+    transport: [grpc_tcp, grpc_uds]
+    interception_component: >-
+      PolicyService and AgentLifecycleService are mounted behind
+      enrich_interceptor, which returns Ok(req) UNCONDITIONALLY when no valid
+      token is present (aa-gateway/src/iam/grpc_auth.rs:150-161; wiring
+      aa-gateway/src/server.rs:719-745 TCP and :864-880 UDS). AuditService,
+      ApprovalService, TopologyService, SecretsService and InvalidationService
+      use the fail-closed auth_interceptor (:122-141).
+    identity_source: optional_credential_token
+    policy_context: [client_supplied_org_team_when_tokenless]
+    decision_timing: pre
+    observe_or_enforce: enforce    # for the auth-gated services only
+    sync_or_best_effort: sync
+    failure_posture: fail_open     # on the agent plane
+    default_state: open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B3
+    coverage: evaluated
+    q3_changed_answer: true
+    known_bypasses:
+      - >-
+        An unauthenticated caller reaching the agent plane can register and can
+        submit policy queries. CORRECTION: those queries are evaluated with
+        tenancy NEUTRALISED, not with the caller's own — policy_service.rs:433-438
+        clears ctx.team_id and removes org_id/team_id when no authoritative owner
+        resolves (AAASM-3992). The exposure is that the plane accepts the call,
+        not that it honours the caller's tenancy.
+      - "apply_authoritative_tenancy (policy_service.rs:398-425) overwrites client-supplied org/team ONLY when a credential token resolves"
+    evidence: ["aa-api is uniformly gated by contrast — aa-api/src/routes/mod.rs:281"]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "document the bootstrap exposure explicitly; defensible, but must not be described as 'authenticated'"
+    tickets: [AAASM-3422]
+    notes: "By design for bootstrap: Register is documented as an unauthenticated bootstrap endpoint (aa-sdk-client/src/identity_store.rs:5-9)."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D8 · Degraded and unavailable modes
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: G1
+    domain: degraded_mode
+    capability: aa-runtime to gateway unreachable on a policy query
+    interception_component: "aa-runtime/src/pipeline/mod.rs:467-486 — Deny, 'gateway unreachable; denied by fail-closed policy'; timeouts identical at :648-651; unknown decision codes collapse to Deny at :657-668"
+    platform: [linux, macos, windows]
+    failure_posture: fail_closed
+    default_state: closed          # AA_GATEWAY_FAIL_CLOSED unset => true (aa-runtime/src/config.rs:306-310)
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    coverage: denied_before_execution
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    boundary_class: B3
+    identity_source: agent_id
+    policy_context: [tool_call]
+    framework_or_tool: [aa-runtime]
+    language: rust
+    launch_path: any
+    transport: uds
+    known_bypasses: []
+    evidence: [aa-integration-tests/tests/e2e_runtime_gateway_deny.rs]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+
+  - id: G2
+    domain: degraded_mode
+    capability: aa-runtime with no gateway configured, or fail_closed=false
+    interception_component: "falls through to local evaluation whose terminal default is ALLOW — aa-runtime/src/pipeline/mod.rs:486,536; GatewayOutcome::NoClient takes the same path"
+    platform: [linux, macos, windows]
+    failure_posture: fail_open
+    default_state: open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    coverage: unmeasured
+    decision_timing: pre
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    boundary_class: null
+    identity_source: agent_id
+    policy_context: [local_policy_only]
+    framework_or_tool: [aa-runtime]
+    language: rust
+    launch_path: any
+    transport: uds
+    q3_changed_answer: true
+    known_bypasses: ["running the runtime without a gateway silently yields allow-by-default"]
+    evidence: ["GAP"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "state the no-gateway default"
+
+  - id: G3
+    domain: degraded_mode
+    capability: aa-proxy to gateway unreachable for MCP adjudication
+    interception_component: "startup: refuses to start (aa-proxy/src/proxy/mod.rs:270-286); per-call: Deny -32000 (:666-688)"
+    platform: [linux, macos]
+    failure_posture: fail_closed
+    default_state: closed          # mcp_fail_open defaults false
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    coverage: denied_before_execution
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    boundary_class: B3
+    identity_source: none
+    policy_context: [tool_call]
+    framework_or_tool: [aa-proxy]
+    language: rust
+    launch_path: any
+    transport: https
+    known_bypasses: ["AA_PROXY_MCP_FAIL_OPEN=1 degrades both points to forward-without-enforcement"]
+    evidence: [aa-proxy/src/config.rs:957-966]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+
+  - id: G4
+    domain: degraded_mode
+    capability: Credential and DLP default action
+    interception_component: "CredentialAction #[default] is RedactOnly — aa-proxy/src/config.rs:16-27,23-24"
+    platform: [linux, macos]
+    failure_posture: fail_open
+    default_state: open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped_with_platform_exception
+    released_matrix:
+      github_release: [linux_x86_64, linux_aarch64]
+      homebrew:       [linux_x86_64, linux_aarch64]
+      install_script: [linux_x86_64, linux_aarch64]
+      crates_io:      [linux_x86_64, linux_aarch64, macos]
+    released_note: >-
+      macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy is
+      a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew
+      tap and `scripts/install-cli.sh` (1 match vs 17 for `aasm`). It IS on
+      crates.io: newest 0.0.1-rc.6, bin_names ['aa-proxy'], no `publish` key.
+      On macOS the only route is `cargo install aa-proxy` (AAASM-5653).
+    coverage: redacted
+    decision_timing: in_line
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    boundary_class: B3
+    identity_source: none
+    policy_context: [payload]
+    framework_or_tool: [aa-proxy]
+    language: rust
+    launch_path: any
+    transport: tls_mitm
+    q3_changed_answer: true
+    known_bypasses: ["Block is opt-in; AlertOnly forwards unmodified"]
+    evidence: [aa-proxy/src/config.rs:888]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "state the default"
+
+  - id: G5
+    domain: degraded_mode
+    capability: SDK cannot reach the aa-runtime UDS socket
+    interception_component: "Python: _FailClosedInterceptor denies every call. Node: fail-closed only under an explicit enforce posture, and defeated by S7 in the default mode. Go: fail-closed."
+    platform: [linux, macos, windows]
+    failure_posture: fail_closed   # python, go
+    failure_posture_node: fail_open_silent
+    default_state: mixed
+    released_channels: [pypi, npm, go_modules, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos, windows]
+    reachability: shipped
+    coverage: denied_before_execution   # Python and Go
+    coverage_qualifiers: {node_default_mode: unmeasured}
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    boundary_class: B2
+    identity_source: agent_id
+    policy_context: [tool_call]
+    framework_or_tool: [python-sdk, node-sdk, go-sdk]
+    language: [python, node, go]
+    launch_path: any
+    transport: uds
+    known_bypasses: [S7]
+    evidence: ["per-SDK unit tests"]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: "bring Node to parity with Python and Go"
+    tickets: [AAASM-4991]
+
+  - id: G6
+    domain: degraded_mode
+    capability: eBPF load or attach failure
+    interception_component: "degrade() aa-runtime/src/ebpf_control.rs:204-213 — warn, emit LayerDegradation, continue; daemon unreachable => degrade_all_probes :378-384"
+    platform: [linux]
+    failure_posture: fail_open
+    default_state: open
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    coverage: degraded
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: best_effort
+    boundary_class: null
+    identity_source: pid
+    policy_context: []
+    framework_or_tool: [aa-runtime, aa-ebpf]
+    language: rust
+    launch_path: any
+    transport: bpf
+    known_bypasses: ["the agent proceeds unconfined"]
+    evidence: ["a LayerDegradation IS emitted here — but see G11, nothing renders it"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "correct posture; the reporting half is G11"
+
+  - id: G7
+    domain: degraded_mode
+    capability: eBPF policy file unreadable or unparseable
+    interception_component: "aa-runtime/src/ebpf_control.rs:190-201 — SILENT fail-open to an empty rule set, with NO LayerDegradation raised"
+    platform: [linux]
+    failure_posture: fail_open_silent
+    default_state: open
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    coverage: unmeasured
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    boundary_class: null
+    identity_source: pid
+    policy_context: []
+    framework_or_tool: [aa-runtime]
+    language: rust
+    launch_path: any
+    transport: bpf
+    q3_changed_answer: true
+    known_bypasses: ["no kernel rules at all, and no signal that this happened"]
+    evidence: ["GAP"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "F4 — new ticket"
+
+  - id: G8
+    domain: degraded_mode
+    capability: Gateway policy load or schema failure
+    interception_component: "server startup aborts — aa-gateway/src/server.rs:617-619 (serve_tcp), :777-781 (serve_uds); aa-runtime exits 1 on policy parse failure"
+    platform: [linux, macos, windows]
+    failure_posture: fail_closed
+    default_state: closed
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    coverage: denied_before_execution
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    boundary_class: B3
+    identity_source: not_applicable
+    policy_context: [policy_document]
+    framework_or_tool: [aa-gateway, aa-runtime]
+    language: rust
+    launch_path: boot
+    transport: not_applicable
+    known_bypasses: []
+    evidence: [aa-gateway unit tests]
+    evidence_runs_on_main: standing
+    current_level: not_applicable
+    target_level: hold
+
+  - id: G9
+    domain: degraded_mode
+    capability: Budget state unreadable or corrupt
+    interception_component: >-
+      SILENT fail-open — the cap resets to zero spend.
+      aa-gateway/src/server.rs:155-163 load_from_disk(...).unwrap_or_else(...);
+      write failure is an eprintln! and continue
+      (aa-gateway/src/budget/persistence.rs:85-86).
+    platform: [linux, macos, windows]
+    failure_posture: fail_open_silent
+    default_state: open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    coverage: unmeasured
+    decision_timing: pre
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    boundary_class: null
+    identity_source: team_id
+    policy_context: [budget_state]
+    framework_or_tool: [aa-gateway]
+    language: rust
+    launch_path: boot
+    transport: not_applicable
+    q3_changed_answer: true
+    known_bypasses: ["an unavailable or corrupt budget store silently resets the cap"]
+    evidence: >-
+      GAP. Budget never queries the control-plane DB — positive control in the
+      same probe over aa-gateway/src/storage/*.rs: 'budget' 1 unrelated hit
+      ('latency budget', postgres.rs:896), 'audit' 57 hits in the same file.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "F4 — new ticket"
+
+  - id: G10
+    domain: degraded_mode
+    capability: Audit emission failure
+    interception_component: >-
+      aa-gateway/src/service/audit_service.rs:175-187 — try_send Full => warn +
+      audit_drops counter; Closed => error; EITHER WAY the function returns
+      event_id and the RPC reports success. The hash chain advances BEFORE the
+      send (:172), so a dropped entry leaves a permanent chain gap.
+    platform: [linux, macos, windows]
+    failure_posture: fail_open
+    default_state: open
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    coverage: unmeasured
+    decision_timing: post
+    observe_or_enforce: none
+    sync_or_best_effort: best_effort
+    boundary_class: null
+    identity_source: agent_id
+    policy_context: []
+    framework_or_tool: [aa-gateway]
+    language: rust
+    launch_path: any
+    transport: internal_channel
+    known_bypasses: ["a dropped entry is indistinguishable from tampering"]
+    evidence: ["GAP"]
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "owned by AAASM-5626"
+    tickets: [AAASM-5626]
+
+  - id: G11
+    domain: degraded_mode
+    capability: Degradation visibility to a user
+    interception_component: >-
+      EMIT-ONLY. Three producers (aa-runtime/src/runtime.rs:280-298, :571-583,
+      plus ebpf_control.rs:211), all using `let _ = broadcast_tx.send(...)`; a
+      WS payload type (aa-api/src/models/ws_payloads.rs:92-100); and NO
+      renderer. The /health degraded_layers field is a snapshot moved in once
+      at boot (aa-runtime/src/runtime.rs:1180-1188) and never updates; status
+      is the hardcoded literal "healthy" (aa-runtime/src/health/mod.rs:50).
+    platform: [linux, macos, windows]
+    failure_posture: fail_open_silent
+    default_state: not_applicable
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    coverage: unmeasured
+    decision_timing: post
+    observe_or_enforce: none
+    sync_or_best_effort: best_effort
+    boundary_class: null
+    identity_source: "synthesised as system:<layer>"
+    policy_context: []
+    framework_or_tool: [aa-runtime, aa-api, dashboard]
+    language: [rust, typescript]
+    launch_path: any
+    transport: websocket
+    q4_changed_answer: true
+    known_bypasses: ["a degradation is emitted, typed, and rendered nowhere"]
+    evidence: >-
+      GAP. Positive control in the same probe: LayerDegradation appears in
+      exactly one dashboard file, dashboard/src/api/events.ts (a type
+      declaration, 3 mentions), against policy_violation 110 mentions across
+      real dashboard feature code. degraded_layers 0 matches in aa-cli/src.
+    evidence_runs_on_main: none
+    current_level: not_applicable
+    target_level: "AAASM-5535 — In Progress; this FAILS an Epic AAASM-5526 exit criterion outright"
+    tickets: [AAASM-5535]
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # D9 · Host-level interception (E4), per platform
+  # ───────────────────────────────────────────────────────────────────────────
+
+  - id: P1
+    domain: platform
+    capability: Linux x86_64 host-level interception
+    framework_or_tool: [aa-proxy, aa-ebpf]
+    language: rust
+    platform: [linux_x86_64]
+    launch_path: "privileged aa-ebpf-loaderd at /run/aa-ebpf-loaderd.sock"
+    transport: [tls_mitm, uprobes, kprobes, tracepoints, raw_syscalls]
+    interception_component: "E3 aa-proxy with CA via `sudo aasm proxy install-ca` (aa-cli/src/commands/proxy/ca.rs:150-188); E4 eBPF TLS uprobes, 14 file-I/O kprobes, exec tracepoints, opt-in syscall guard"
+    identity_source: pid
+    policy_context: [syscall_allowlist, path_blocklist]
+    decision_timing: post
+    observe_or_enforce: observe    # except the opt-in guard's async kill
+    sync_or_best_effort: best_effort
+    failure_posture: fail_open
+    default_state: off             # syscall guard
+    released_channels: [crates_io]
+    released_platforms: [linux_x86_64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      E3 (`aa-proxy`) on Linux ships through every channel. E4 ships to crates.io
+      ONLY, as `aa-ebpf`'s `aa-ebpf-loaderd` bin (live: 0.0.1-rc.6, yanked false,
+      bin_names ['aa-ebpf-loaderd']; no `publish` key; untouched by
+      `.ci/strip-for-publish.sh`). Absent from GitHub Release assets, the
+      Homebrew tap and `scripts/install-cli.sh` —
+      `scripts/check-release-completeness.sh:58` lists it in UNRELEASED_BINARIES.
+      Two outcomes on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>'; with the toolchain, E4 is genuinely
+      reachable. See AAASM-5640.
+    boundary_class: B5
+    boundary_attained: false
+    coverage: experimental
+    coverage_qualifiers: {tls_file_exec_probes: observed, path_blocklist: detected}   # the probes observe/detect; only the opt-in guard is experimental
+    q3_changed_answer: true
+    q4_changed_answer: true
+    known_bypasses: ["everything on the channels most users install through — aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"]
+    evidence: [aa-integration-tests/tests/e2e_ebpf.rs, aa-integration-tests/tests/e2e_three_layers_together.rs]
+    evidence_runs_on_main: path_gated_with_schedule
+    current_level: not_applicable
+    target_level: "No-Go for B5 until the daemon reaches a channel beyond crates.io AND a synchronous deny exists — it DOES ship, to crates.io only"
+    tickets: [AAASM-5640, AAASM-3872]
+
+  - id: P2
+    domain: platform
+    capability: Linux aarch64 host-level interception
+    framework_or_tool: [aa-proxy, aa-ebpf]
+    language: rust
+    platform: [linux_aarch64]
+    launch_path: "privileged aa-ebpf-loaderd"
+    transport: [tls_mitm, uprobes, tracepoints]
+    interception_component: "E3 aa-proxy; E4 eBPF TLS + exec only — NO file-I/O coverage"
+    identity_source: pid
+    policy_context: []
+    decision_timing: post
+    observe_or_enforce: observe
+    sync_or_best_effort: best_effort
+    failure_posture: fail_open
+    default_state: on
+    released_channels: [crates_io]
+    released_platforms: [linux_aarch64]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      `aa-ebpf` publishes its `aa-ebpf-loaderd` bin to crates.io — verified
+      live: newest 0.0.1-rc.6, yanked false, bin_names ['aa-ebpf-loaderd'].
+      `aa-ebpf/Cargo.toml` sets no `publish` key (control: `aa-api/Cargo.toml:4`
+      does) and `.ci/strip-for-publish.sh` never touches it (0 matches for
+      aa-ebpf/loaderd/[[bin]]/src/bin against controls aa-cli 19, aa-runtime 5).
+      A crate publishes its bins unless it sets `publish = false`.
+      ABSENT from: GitHub Release assets, the Homebrew tap and
+      `scripts/install-cli.sh` — `scripts/check-release-completeness.sh:58`
+      lists `aa-ebpf-loaderd` in UNRELEASED_BINARIES.
+      TWO OUTCOMES on `cargo install aa-ebpf`: without nightly + rust-src +
+      bpf-linker, `aa-ebpf/build.rs:120-131` writes empty stubs and
+      `aa-ebpf/src/integrity.rs:57-64` rejects the empty digest as
+      '<unset: no signed digest baked in>' — a loaderd that starts and can
+      load nothing. With the toolchain, E4 is genuinely reachable.
+    boundary_class: B5
+    boundary_attained: false
+    coverage: observed
+    q4_changed_answer: true
+    known_bypasses: ["0 __arm64_sys_* targets against 16 __x64_sys_ in aa-ebpf/src/kprobe.rs", "aa-ebpf-loaderd reaches crates.io only — absent from the GitHub Release assets, the Homebrew tap and scripts/install-cli.sh, and inert without a nightly toolchain"]
+    evidence: [aa-integration-tests/tests/e2e_ebpf.rs]
+    evidence_runs_on_main: path_gated_with_schedule
+    current_level: not_applicable
+    target_level: "must say which probes are absent"
+    tickets: [AAASM-5640]
+
+  - id: P3
+    domain: platform
+    capability: macOS host-level interception
+    framework_or_tool: [aa-proxy, aa-devtool-claude-code]
+    language: rust
+    platform: [macos]
+    launch_path: "proxy start (CA install attempted automatically); managed-settings write"
+    transport: tls_mitm
+    interception_component: >-
+      E3 aa-proxy; System Keychain trust ATTEMPTED AUTOMATICALLY at proxy
+      start, gated only on whether the certificate is already installed,
+      requiring admin authorization, and a refused prompt FAILS PROXY STARTUP
+      (aa-proxy/src/lib.rs:62-69; tls/keychain.rs:16,18,23-32).
+      E4: NONE. Endpoint Security and Network Extension are explicit non-goals,
+      asserted in docs/src/devtools/product-brief.md and ADR 0033 section 5.3.
+      NO TEST PINS IT: model.rs:1212,1216 is a pass-through tautology —
+      summary_declaring stuffs its `reason` argument into the field the test
+      asserts on, so any string would pass.
+      (aa-cli/src/commands/integrations/model.rs:1212,1216).
+    identity_source: file_ownership
+    policy_context: [managed_settings_keys]
+    decision_timing: in_line       # E3
+    observe_or_enforce: enforce    # E3 only
+    sync_or_best_effort: sync
+    failure_posture: fail_closed   # a refused CA prompt fails startup
+    default_state: on
+    released_channels: [crates_io]
+    released_platforms: [macos]
+    reachability: shipped_crates_io_only
+    released_note: >-
+      E3 on macOS is crates.io ONLY. `.github/workflows/release.yml:274` — 'proxy
+      is a Linux-only component (ADR-014); only built/packaged there' — so
+      `aa-proxy` is absent from the macOS GitHub Release assets, the Homebrew tap
+      and `scripts/install-cli.sh`. It IS on crates.io (0.0.1-rc.6, bin_names
+      ['aa-proxy'], no `publish` key), so `cargo install aa-proxy` is the only
+      macOS route. E4 does not exist on macOS at all. See AAASM-5653.
+    boundary_class: B6             # managed-settings route only
+    coverage: unsupported              # THIS ROW IS E4. Unsupported on macOS.
+    coverage_qualifiers: {e3_transport_mediation: denied_before_execution, e4_host_level: unsupported}
+    known_bypasses: ["a local administrator", "the tool ignoring the managed keys (AAASM-5298's open half)"]
+    evidence: [aa-integration-tests/tests/cli_run_claude_governed_launch.rs, aa-integration-tests/tests/conformance_claude_code.rs]
+    evidence_runs_on_main: standing
+    current_level: host_enforced
+    current_level_scope: tool_governance_only   # the ADR 0030 rung is reachable here, and ONLY on the tool-governance axis, never as data-path prevention
+    target_level: "claim the file, never the enforcement"
+    tickets: [AAASM-5298, AAASM-5639]
+
+  - id: P4
+    domain: platform
+    capability: Windows mediation
+    framework_or_tool: []
+    language: not_applicable
+    platform: [windows]
+    launch_path: none
+    transport: none
+    interception_component: "NONE. aa-proxy's accept loop uses tokio::signal::unix unconditionally, so the crate has no Windows build path. No ETW, WFP or minifilter code exists."
+    identity_source: not_applicable
+    policy_context: []
+    decision_timing: none
+    observe_or_enforce: none
+    sync_or_best_effort: none
+    failure_posture: not_applicable
+    default_state: not_applicable
+    released_channels: not_applicable
+    released_platforms: not_applicable
+    reachability: absent_mechanism
+    boundary_class: null
+    coverage: unsupported
+    known_bypasses: ["everything"]
+    evidence: ["windows_sys is declared in no Cargo.toml in the workspace, so the #[cfg(windows)] blocks that do exist cannot compile as written"]
+    evidence_runs_on_main: none
+    current_level: not_installed
+    target_level: "state as Unsupported"

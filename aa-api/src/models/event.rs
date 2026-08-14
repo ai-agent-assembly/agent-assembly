@@ -34,4 +34,17 @@ pub struct GovernanceEvent {
     /// Timestamp when the event was received by the API layer (ISO 8601).
     #[schema(value_type = String)]
     pub timestamp: DateTime<Utc>,
+    /// Owning team of the event, resolved from the source event's tenant
+    /// context (AAASM-3980). Server-side only: `#[serde(skip)]` keeps it
+    /// off the wire (no OpenAPI change) so it is never disclosed to
+    /// clients — it exists solely so the WebSocket dispatch loop can gate
+    /// both live and replayed events by tenant. `None` means the event
+    /// carries no resolvable owning team.
+    #[serde(skip)]
+    pub team_id: Option<String>,
+    /// Owning org of the event, resolved from the agent-registry lineage
+    /// (AAASM-3980). Server-side only for the same reason as
+    /// [`Self::team_id`]; `None` when no org could be resolved.
+    #[serde(skip)]
+    pub org_id: Option<String>,
 }

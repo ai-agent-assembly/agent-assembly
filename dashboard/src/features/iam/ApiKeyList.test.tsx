@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiKeyList } from './ApiKeyList'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 import { ToastProvider } from '../../components/ToastProvider'
 import { _apiKeysInternal } from './apiKeys'
 import type { ApiKey } from './types'
@@ -12,11 +14,13 @@ import type { ApiKey } from './types'
 // the seeded 3-row fixture, so these tests render against the same shape
 // the gateway produces without needing to mock the openapi-fetch client.
 
-function Wrapper({ children }: { children: React.ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>
-      <ToastProvider>{children}</ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>{children}</ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
   )
 }

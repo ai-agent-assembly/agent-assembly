@@ -12,7 +12,10 @@ use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
 use aa_core::time::Timestamp;
-use aa_core::{AgentContext, AuditEntry, AuditEventType, GovernanceLevel, Lineage};
+use aa_core::{
+    AgentContext, AgentIdentityAssurance, AgentIdentityAttribution, AuditEntry, AuditEventType, GovernanceLevel,
+    Lineage,
+};
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyService;
 use aa_proto::assembly::policy::v1::{
     BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage,
@@ -23,6 +26,7 @@ use aa_security::Redaction;
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
 use crate::alerts::SecretAlert;
+use crate::anomaly::{AnomalyDetector, AnomalyEvent, AnomalyResponder};
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
@@ -30,10 +34,54 @@ use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{
     resolve_enforcement_mode, transform_for_observe_mode, DenyAction, EvaluationResult, PolicyEngine, ShadowEvent,
 };
+use crate::iam::VerifiedCaller;
 use crate::ops::{OpsRegistry, SharedOpControlPublisher};
 use crate::registry::convert::proto_agent_id_to_key;
 use crate::registry::{AgentRegistry, SuspendReason};
 use crate::service::convert;
+
+/// Map the core three-state assurance onto its proto discriminant
+/// (AAASM-5665).
+///
+/// The proto enum has a fourth value, `UNSPECIFIED = 0`, that this function
+/// never produces: it exists only so a producer that predates the field
+/// decodes as "not stated". Every response the gateway emits states one of the
+/// three real levels.
+fn proto_assurance(assurance: AgentIdentityAssurance) -> i32 {
+    use aa_proto::assembly::common::v1::AgentIdentityAssurance as Proto;
+    let proto = match assurance {
+        AgentIdentityAssurance::Unattributed => Proto::Unattributed,
+        AgentIdentityAssurance::Asserted => Proto::Asserted,
+        AgentIdentityAssurance::Bound => Proto::Bound,
+    };
+    proto as i32
+}
+
+/// Live anomaly-detection wiring for the `CheckAction` / `BatchCheck` flow
+/// (AAASM-3378).
+///
+/// The `aa-gateway::anomaly` engine was fully implemented and unit-tested but
+/// had zero non-test instantiations — it never ran against live traffic, so no
+/// `AnomalyEvent` could ever fire at runtime. This hook feeds every evaluated
+/// action through [`AnomalyDetector::detect`] and runs [`AnomalyResponder`] on
+/// any detection, broadcasting the resulting [`AnomalyEvent`] to subscribers.
+#[derive(Clone)]
+pub struct AnomalyHook {
+    detector: Arc<AnomalyDetector>,
+    event_tx: broadcast::Sender<AnomalyEvent>,
+}
+
+impl AnomalyHook {
+    /// Build a hook around the given detector and event broadcast sender.
+    pub fn new(detector: Arc<AnomalyDetector>, event_tx: broadcast::Sender<AnomalyEvent>) -> Self {
+        Self { detector, event_tx }
+    }
+
+    /// Shared handle to the underlying detector (for stateful checks/tests).
+    pub fn detector(&self) -> Arc<AnomalyDetector> {
+        Arc::clone(&self.detector)
+    }
+}
 
 /// gRPC service implementation wiring `CheckAction` / `BatchCheck` to [`PolicyEngine`].
 pub struct PolicyServiceImpl {
@@ -65,13 +113,19 @@ pub struct PolicyServiceImpl {
     /// new subscriptions with `Unavailable`. PR-H will pair this with
     /// `OpsRegistry` transition call sites that drive `publish()`.
     ops_publisher: Option<SharedOpControlPublisher>,
+    /// Optional live anomaly-detection hook (AAASM-3378). When set, every
+    /// `check_action` / `batch_check` evaluation is run through the anomaly
+    /// detector and any detection triggers the responder + an `AnomalyEvent`
+    /// broadcast. `None` disables detection — the default for unit tests and
+    /// any caller that does not opt in via [`with_anomaly_detection`].
+    anomaly: Option<AnomalyHook>,
 }
 
 impl PolicyServiceImpl {
     /// Create a new service backed by the given policy engine and audit channel.
     ///
     /// `initial_hash` should be the `entry_hash` of the last persisted audit entry
-    /// (obtained via [`AuditWriter::read_last_hash`]) so the hash chain is maintained
+    /// (obtained via `AuditWriter::read_last_hash`) so the hash chain is maintained
     /// across process restarts. Pass `[0u8; 32]` for a fresh chain.
     pub fn new(
         engine: Arc<PolicyEngine>,
@@ -94,6 +148,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -123,6 +178,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -154,6 +210,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -190,6 +247,7 @@ impl PolicyServiceImpl {
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
+            anomaly: None,
         }
     }
 
@@ -212,6 +270,20 @@ impl PolicyServiceImpl {
         self
     }
 
+    /// Seed the audit `seq` counter so sequence numbers continue monotonically
+    /// across process restarts (AAASM-3356).
+    ///
+    /// `initial_seq` should be the *next* sequence number to emit — i.e.
+    /// `last_persisted_seq + 1`, obtained from
+    /// [`AuditWriter::read_last_seq`](crate::audit::AuditWriter::read_last_seq).
+    /// Without this, the counter restarts at `0` and produces duplicate `seq`
+    /// values after a restart, breaking the WORM log's per-entry uniqueness.
+    /// Mirrors the `initial_hash` recovery already done for the hash chain.
+    pub fn with_initial_seq(self, initial_seq: u64) -> Self {
+        self.seq.store(initial_seq, Ordering::Relaxed);
+        self
+    }
+
     /// Attach a broadcast sender for secret-detection alerts (AAASM-1545).
     ///
     /// When present, the service publishes a [`SecretAlert`] each time a
@@ -223,7 +295,7 @@ impl PolicyServiceImpl {
         self
     }
 
-    /// Attach an [`OpsRegistry`] for in-flight operation tracking (AAASM-1422).
+    /// Attach an `OpsRegistry` for in-flight operation tracking (AAASM-1422).
     ///
     /// When present, every `check_action` call ingests an op keyed by
     /// `"{trace_id}:{span_id}"` and transitions it on the engine decision:
@@ -234,7 +306,7 @@ impl PolicyServiceImpl {
         self
     }
 
-    /// Attach an [`OpControlPublisher`] for the SDK return-channel (AAASM-1653).
+    /// Attach an `OpControlPublisher` for the SDK return-channel (AAASM-1653).
     ///
     /// When present, [`PolicyService::op_control_stream`] subscribes to the
     /// publisher and forwards every envelope whose `agent_id` matches the
@@ -242,24 +314,130 @@ impl PolicyServiceImpl {
     /// publisher attached, subscription requests are rejected with
     /// `Status::unavailable("op control channel not configured")`.
     ///
-    /// [`OpControlPublisher`]: crate::ops::OpControlPublisher
+    /// `OpControlPublisher`: crate::ops::OpControlPublisher
     pub fn with_ops_publisher(mut self, publisher: SharedOpControlPublisher) -> Self {
         self.ops_publisher = Some(publisher);
         self
     }
 
-    /// Look up the per-agent `enforcement_mode` override for the request's agent.
+    /// Attach a live anomaly-detection hook (AAASM-3378).
     ///
-    /// Returns `Some(_)` when the request's agent is registered AND its record
-    /// carries an explicit override; `None` in every other case (no registry
-    /// attached, agent unregistered, agent registered with no override). The
-    /// resolver in [`crate::engine::resolve_enforcement_mode`] treats `None` as
-    /// "inherit from policy default", so an unknown / unregistered agent
-    /// transparently falls back to live enforcement.
+    /// Wires the previously-unwired `aa-gateway::anomaly` engine into the live
+    /// `check_action` / `batch_check` path. With a hook attached, every
+    /// evaluated action updates the per-agent behavioral baseline, runs through
+    /// [`AnomalyDetector::detect`], and — on a detection — executes
+    /// [`AnomalyResponder::respond`] and broadcasts the resulting
+    /// [`AnomalyEvent`]. Without a hook, behavior is unchanged.
+    pub fn with_anomaly_detection(
+        mut self,
+        detector: Arc<AnomalyDetector>,
+        event_tx: broadcast::Sender<AnomalyEvent>,
+    ) -> Self {
+        self.anomaly = Some(AnomalyHook::new(detector, event_tx));
+        self
+    }
+
+    /// Resolve the authoritative agent key for agent-scoped controls.
+    ///
+    /// AAASM-4133 — `req.agent_id` is client-supplied and forgeable (the
+    /// `PolicyService` runs under the non-rejecting `enrich` interceptor). When
+    /// the credential token resolves to a registered owner, that owner's key is
+    /// the trust anchor, so agent-scoped controls bind to it: a credentialed
+    /// caller can neither dodge its own agent-scoped enforcement override by
+    /// presenting a different `agent_id`, nor trip a budget-suspend against a
+    /// victim's claimed id. Falls back to the client-supplied `agent_id` only
+    /// when no token owner resolves — the unregistered OSS runtime→gateway flow
+    /// that forwards checks without a per-agent token — mirroring
+    /// [`Self::apply_authoritative_tenancy`].
+    fn authoritative_agent_key(&self, req: &CheckActionRequest) -> Option<[u8; 16]> {
+        self.credentialed_owner_key(req)
+            .or_else(|| req.agent_id.as_ref().map(proto_agent_id_to_key))
+    }
+
+    /// The agent identity the gateway resolves **without reference to the
+    /// claim**: the registered owner of the presented `credential_token`.
+    ///
+    /// This is the gateway's only authoritative agent identity today, and it is
+    /// what makes an [`AgentIdentityAttribution::Bound`] attribution possible.
+    /// Its strength is exactly the strength of a bearer credential issued at
+    /// registration and stored in [`AgentRegistry`] — it establishes that the
+    /// caller holds that agent's token, not that the caller is that agent's
+    /// process.
+    ///
+    /// `None` — meaning no authoritative identity for this request, so a claim
+    /// can only be *asserted* — when no registry is attached, no token is
+    /// presented, or the token owns no registered agent.
+    ///
+    /// Unlike [`Self::authoritative_agent_key`] this never falls back to the
+    /// client-supplied `agent_id`: a value derived from the claim cannot
+    /// corroborate the claim.
+    fn credentialed_owner_key(&self, req: &CheckActionRequest) -> Option<[u8; 16]> {
+        let registry = self.registry.as_ref()?;
+        if req.credential_token.is_empty() {
+            return None;
+        }
+        registry.find_by_credential_token(&req.credential_token)
+    }
+
+    /// Resolve what is known about the `agentId` this request claimed
+    /// (AAASM-5665).
+    ///
+    /// The comparison runs over registry keys, because the registry stores
+    /// agents under the 16-byte hash of the `{org, team, agent}` triple rather
+    /// than under the wire string; the string is what travels into evidence.
+    /// See [`AgentIdentityAttribution::from_claim`].
+    fn agent_identity_attribution(&self, req: &CheckActionRequest) -> AgentIdentityAttribution {
+        let agreement = self
+            .credentialed_owner_key(req)
+            .map(|owner_key| req.agent_id.as_ref().map(proto_agent_id_to_key) == Some(owner_key));
+        AgentIdentityAttribution::from_claim(convert::claimed_agent_id(req), agreement)
+    }
+
+    /// Deposit the resolved assurance onto the policy evaluation context
+    /// (AAASM-5665).
+    ///
+    /// `convert::request_to_core` deposits the claimed `agentId` string; the
+    /// assurance can only be resolved once the registry is reachable, which is
+    /// here. Both travel in `ctx.metadata` alongside `org_id` / `team_id`, so
+    /// the context the engine evaluates states which agent the action was
+    /// attributed to and on what basis.
+    ///
+    /// No policy predicate reads either key today — they are carried, not
+    /// matched. Nothing in this function changes which rules fire.
+    fn stamp_attribution_on_context(attribution: &AgentIdentityAttribution, ctx: &mut AgentContext) {
+        ctx.metadata.insert(
+            convert::AGENT_IDENTITY_ASSURANCE_KEY.to_string(),
+            attribution.assurance().as_str().to_string(),
+        );
+    }
+
+    /// Stamp the resolved identity assurance onto a decision before it is
+    /// returned to the caller and handed to the audit path.
+    ///
+    /// Applied to every response the service emits, including denials — a
+    /// refused call is exactly where a reviewer needs to know whether the
+    /// identity in the record was bound or merely claimed.
+    fn stamp_identity_assurance(
+        &self,
+        req: &CheckActionRequest,
+        mut response: CheckActionResponse,
+    ) -> CheckActionResponse {
+        response.agent_identity_assurance = proto_assurance(self.agent_identity_attribution(req).assurance());
+        response
+    }
+
+    /// Look up the per-agent `enforcement_mode` override for the request's
+    /// authoritative agent (see [`Self::authoritative_agent_key`]).
+    ///
+    /// Returns `Some(_)` when that agent is registered AND its record carries an
+    /// explicit override; `None` in every other case (no registry attached,
+    /// agent unregistered, agent registered with no override). The resolver in
+    /// [`crate::engine::resolve_enforcement_mode`] treats `None` as "inherit
+    /// from policy default", so an unknown / unregistered agent transparently
+    /// falls back to live enforcement.
     fn lookup_agent_enforcement_override(&self, req: &CheckActionRequest) -> Option<aa_core::EnforcementMode> {
         let registry = self.registry.as_ref()?;
-        let proto_agent = req.agent_id.as_ref()?;
-        let agent_key = proto_agent_id_to_key(proto_agent);
+        let agent_key = self.authoritative_agent_key(req)?;
         registry.get(&agent_key)?.enforcement_mode
     }
 
@@ -269,6 +447,83 @@ impl PolicyServiceImpl {
     /// Callers are responsible for converting the [`EvaluationResult`] into a
     /// proto response — this allows `RequiresApproval` to be intercepted before
     /// the conversion.
+    /// Resolve the authoritative tenancy (`org_id` / `team_id` / governance
+    /// level) for `ctx`, in place, before it flows into policy evaluation,
+    /// budget attribution, or audit lineage.
+    ///
+    /// AAASM-3751 / AAASM-3138 / AAASM-3729 — the presented credential token is
+    /// the only trust anchor for tenancy. `PolicyService` runs under the
+    /// non-rejecting `enrich` interceptor, so the request-body
+    /// `{org,team,agent}` triple is client-supplied and forgeable. There are
+    /// two cases:
+    ///
+    /// * A token that resolves to a registered owner → deposit THAT owner's
+    ///   registered `governance_level` / `org_id` / `team_id`, overwriting any
+    ///   client-supplied lineage, so a credentialed agent is always evaluated
+    ///   against — and billed to — its registered owner (not a forged triple).
+    ///
+    /// * AAASM-3992 — no authoritative owner resolves (a tokenless request, or
+    ///   a token that owns no registered agent). The client-supplied
+    ///   `org_id` / `team_id` are attacker-controlled, so they MUST NOT be
+    ///   trusted. Rather than DENY the request (which breaks the normal OSS /
+    ///   self-host runtime→gateway flow, where unregistered agents forward
+    ///   checks without a per-agent token but with tenancy from their config),
+    ///   NEUTRALIZE the tenancy: strip `org_id` / `team_id` so the downstream
+    ///   engine `authoritative_tenancy` / `authoritative_lineage` resolve to an
+    ///   anonymous/empty tenant instead of echoing the client claim. Budget is
+    ///   then charged to — and cascade selected for — an anonymous tenant,
+    ///   NEVER the client-claimed victim; the audit path is already neutral for
+    ///   unregistered agents (`record_audit` keys `registry.lineage` on the
+    ///   claimed composite key, which misses → empty `Lineage`). Policy
+    ///   evaluation still proceeds, so global / default / tool-scoped rules
+    ///   (including per-tool deny) are still enforced — exactly as a request
+    ///   that carries no tenancy claim at all already behaves.
+    ///
+    /// `ctx.agent_id` is left untouched so `PolicyScope::Agent` matching and the
+    /// eval cache key stay correct.
+    fn apply_authoritative_tenancy(&self, req: &CheckActionRequest, ctx: &mut AgentContext) {
+        let Some(registry) = &self.registry else {
+            // No registry attached (lightweight test fixtures that bypass the
+            // registry layer) — leave the client-supplied ctx untouched.
+            return;
+        };
+
+        if !req.credential_token.is_empty() {
+            if let Some(record) = registry
+                .find_by_credential_token(&req.credential_token)
+                .and_then(|owner_key| registry.get(&owner_key))
+            {
+                ctx.governance_level = record.governance_level;
+                match record.org_id {
+                    Some(org) => {
+                        ctx.metadata.insert("org_id".into(), org);
+                    }
+                    None => {
+                        ctx.metadata.remove("org_id");
+                    }
+                }
+                match record.team_id {
+                    Some(team) => {
+                        ctx.team_id = Some(team.clone());
+                        ctx.metadata.insert("team_id".into(), team);
+                    }
+                    None => {
+                        ctx.team_id = None;
+                        ctx.metadata.remove("team_id");
+                    }
+                }
+                return;
+            }
+        }
+
+        // AAASM-3992 — no authoritative owner resolved: neutralize the
+        // unauthenticated, client-supplied tenancy so it cannot target a victim
+        // tenant's budget or audit lineage.
+        ctx.team_id = None;
+        ctx.metadata.remove("org_id");
+        ctx.metadata.remove("team_id");
+    }
+
     #[allow(clippy::result_large_err)] // tonic::Status is the standard gRPC error type
     fn evaluate_one(&self, req: &CheckActionRequest) -> Result<(EvaluationResult, i64, String), Status> {
         let (mut ctx, action) = convert::request_to_core(req).map_err(|e| {
@@ -276,17 +531,9 @@ impl PolicyServiceImpl {
             Status::invalid_argument(e.to_string())
         })?;
 
-        // Populate `ctx.governance_level` from the registered `AgentRecord`
-        // so level-conditional policy rules (e.g. `governance_level >= L2`)
-        // see the agent's actual level instead of the proto-default. Falls
-        // back to whatever default `request_to_core` produced when the
-        // registry is not attached or the agent is not registered.
-        if let (Some(registry), Some(proto_agent)) = (&self.registry, req.agent_id.as_ref()) {
-            let agent_key = proto_agent_id_to_key(proto_agent);
-            if let Some(record) = registry.get(&agent_key) {
-                ctx.governance_level = record.governance_level;
-            }
-        }
+        self.apply_authoritative_tenancy(req, &mut ctx);
+
+        Self::stamp_attribution_on_context(&self.agent_identity_attribution(req), &mut ctx);
 
         let start = Instant::now();
         let eval = self.engine.evaluate(&ctx, &action);
@@ -315,11 +562,13 @@ impl PolicyServiceImpl {
             Some(r) => r,
             None => return,
         };
-        let proto_agent = match req.agent_id.as_ref() {
-            Some(a) => a,
+        // AAASM-4133 — suspend the token-derived owner, never a client-claimed
+        // `agent_id`, so a credentialed caller cannot trip budget-suspend on a
+        // victim's id.
+        let agent_key = match self.authoritative_agent_key(req) {
+            Some(k) => k,
             None => return,
         };
-        let agent_key = proto_agent_id_to_key(proto_agent);
         let reason_text = "budget limit exceeded";
         if let Err(e) = registry
             .suspend_and_notify(&agent_key, SuspendReason::BudgetExceeded, reason_text)
@@ -327,7 +576,7 @@ impl PolicyServiceImpl {
         {
             tracing::warn!(error = %e, "failed to suspend agent on budget exceeded");
         } else {
-            tracing::info!(agent_id = ?proto_agent.agent_id, "agent suspended: {reason_text}");
+            tracing::info!(agent_key = ?agent_key, "agent suspended: {reason_text}");
         }
     }
 
@@ -360,6 +609,137 @@ impl PolicyServiceImpl {
             team_id,
             timeout_override_secs,
             escalation_role_override,
+        }
+    }
+
+    /// Emit a chain-hashed `ApprovalRouted` WORM audit entry for a routed
+    /// approval. Fire-and-forget over `audit_tx`; a full/closed channel is
+    /// logged (and counted as a drop) rather than blocking the approval path.
+    async fn emit_approval_routed_audit(
+        &self,
+        req: &CheckActionRequest,
+        team_id: &str,
+        approval_request_id: uuid::Uuid,
+        agent_id_val: AgentId,
+        session_id_val: SessionId,
+    ) {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let payload = serde_json::json!({
+            "team_id": team_id,
+            "action_type": req.action_type,
+            "approval_id": approval_request_id.to_string(),
+        })
+        .to_string();
+        let mut last_hash = self.last_hash.lock().await;
+        let entry = AuditEntry::new(
+            seq,
+            now,
+            AuditEventType::ApprovalRouted,
+            agent_id_val,
+            session_id_val,
+            payload,
+            *last_hash,
+        );
+        *last_hash = *entry.entry_hash();
+        drop(last_hash);
+        if let Err(e) = self.audit_tx.try_send(entry) {
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(seq, "audit channel full — ApprovalRouted entry dropped");
+                    self.audit_drops.fetch_add(1, Ordering::Relaxed);
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    tracing::error!("audit channel closed — AuditWriter task has exited");
+                }
+            }
+        }
+    }
+
+    /// Register the pending escalation for `approval_id` with the in-memory (and,
+    /// when present, DB) escalation scheduler.
+    ///
+    /// Router-driven path (`routing_decision` is `Some`): use the decision's
+    /// `escalation_role` and `escalate_at`. Legacy path: resolve escalation
+    /// approvers and timeout from the `RoutingConfigStore`. Registration
+    /// failures are logged and do not abort the approval submission.
+    async fn register_escalation(
+        &self,
+        approval_id: uuid::Uuid,
+        routing_decision: Option<&crate::approval::RoutingDecision>,
+        team_id: &Option<String>,
+        timeout_secs: u32,
+        timeout_override: Option<u64>,
+        role_override: Option<&String>,
+    ) {
+        match routing_decision {
+            Some(decision) => self.register_router_escalation(approval_id, decision).await,
+            None => {
+                self.register_legacy_escalation(approval_id, team_id, timeout_secs, timeout_override, role_override)
+            }
+        }
+    }
+
+    /// Router-driven escalation: register the in-memory scheduler (when a team
+    /// and scheduler are present) and the DB scheduler (when present) using the
+    /// decision's `escalation_role` and `escalate_at`. Failures are logged only.
+    async fn register_router_escalation(&self, approval_id: uuid::Uuid, decision: &crate::approval::RoutingDecision) {
+        if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
+            let now_secs = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let esc_timeout = decision.escalate_at.saturating_sub(now_secs);
+            let approvers = vec![decision.escalation_role.clone()];
+            if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
+                tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
+            }
+        }
+        if let (Some(ref db_scheduler), Some(ref team_id_val)) = (&self.db_escalation_scheduler, &decision.team_id) {
+            if let Err(e) = db_scheduler
+                .register(
+                    approval_id,
+                    team_id_val.clone(),
+                    decision.escalation_role.clone(),
+                    "TeamAdmin".to_string(),
+                    decision.escalate_at,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
+            }
+        }
+    }
+
+    /// Legacy escalation: resolve escalation approvers and timeout from the
+    /// `RoutingConfigStore` (or `role_override`) and register the in-memory
+    /// scheduler. No-op without a team and scheduler. Failures are logged only.
+    fn register_legacy_escalation(
+        &self,
+        approval_id: uuid::Uuid,
+        team_id: &Option<String>,
+        timeout_secs: u32,
+        timeout_override: Option<u64>,
+        role_override: Option<&String>,
+    ) {
+        let (Some(tid), Some(scheduler)) = (team_id.as_ref(), self.escalation_scheduler.as_ref()) else {
+            return;
+        };
+        let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
+        let escalation_approvers = self
+            .routing_store
+            .as_ref()
+            .and_then(|store| store.get(tid))
+            .map(|cfg| match role_override {
+                Some(role) => vec![role.clone()],
+                None => cfg.escalation_approvers.clone(),
+            })
+            .unwrap_or_default();
+        if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
+            tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
         }
     }
 
@@ -415,40 +795,8 @@ impl PolicyServiceImpl {
 
         // Emit ApprovalRouted audit event (chain-hashed WORM log) when a team is identified.
         if let Some(ref tid) = team_id {
-            let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-            let now = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64;
-            let payload = serde_json::json!({
-                "team_id": tid,
-                "action_type": req.action_type,
-                "approval_id": approval_request_id.to_string(),
-            })
-            .to_string();
-            let mut last_hash = self.last_hash.lock().await;
-            let entry = AuditEntry::new(
-                seq,
-                now,
-                AuditEventType::ApprovalRouted,
-                agent_id_val,
-                session_id_val,
-                payload,
-                *last_hash,
-            );
-            *last_hash = *entry.entry_hash();
-            drop(last_hash);
-            if let Err(e) = self.audit_tx.try_send(entry) {
-                match e {
-                    mpsc::error::TrySendError::Full(_) => {
-                        tracing::warn!(seq, "audit channel full — ApprovalRouted entry dropped");
-                        self.audit_drops.fetch_add(1, Ordering::Relaxed);
-                    }
-                    mpsc::error::TrySendError::Closed(_) => {
-                        tracing::error!("audit channel closed — AuditWriter task has exited");
-                    }
-                }
-            }
+            self.emit_approval_routed_audit(req, tid, approval_request_id, agent_id_val, session_id_val)
+                .await;
         }
 
         let (timeout_override, role_override) = self.engine.approval_escalation_overrides();
@@ -503,54 +851,15 @@ impl PolicyServiceImpl {
         };
 
         // Register the pending escalation with the scheduler.
-        if let Some(ref decision) = routing_decision {
-            // Router-driven path: use the decision's escalation_role and escalate_at.
-            if let (Some(ref team_id_val), Some(ref scheduler)) = (&decision.team_id, &self.escalation_scheduler) {
-                let now_secs = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let esc_timeout = decision.escalate_at.saturating_sub(now_secs);
-                let approvers = vec![decision.escalation_role.clone()];
-                if let Err(e) = scheduler.register(approval_id, team_id_val.clone(), approvers, esc_timeout) {
-                    tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
-                }
-            }
-            if let Some(ref db_scheduler) = self.db_escalation_scheduler {
-                if let Some(ref team_id_val) = decision.team_id {
-                    if let Err(e) = db_scheduler
-                        .register(
-                            approval_id,
-                            team_id_val.clone(),
-                            decision.escalation_role.clone(),
-                            "TeamAdmin".to_string(),
-                            decision.escalate_at,
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to register DB escalation for approval {}", approval_id);
-                    }
-                }
-            }
-        } else if let (Some(ref tid), Some(ref scheduler)) = (&team_id, &self.escalation_scheduler) {
-            // Legacy path: resolve escalation config from the RoutingConfigStore.
-            let effective_timeout = timeout_override.unwrap_or(u64::from(timeout_secs));
-            let escalation_approvers = self
-                .routing_store
-                .as_ref()
-                .and_then(|store| store.get(tid))
-                .map(|cfg| {
-                    if let Some(ref role) = role_override {
-                        vec![role.clone()]
-                    } else {
-                        cfg.escalation_approvers.clone()
-                    }
-                })
-                .unwrap_or_default();
-            if let Err(e) = scheduler.register(approval_id, tid.clone(), escalation_approvers, effective_timeout) {
-                tracing::warn!(error = %e, "failed to register escalation for approval {}", approval_id);
-            }
-        }
+        self.register_escalation(
+            approval_id,
+            routing_decision.as_ref(),
+            &team_id,
+            timeout_secs,
+            timeout_override,
+            role_override.as_ref(),
+        )
+        .await;
 
         let (_id, future) = queue.submit(approval_req);
 
@@ -642,11 +951,17 @@ impl PolicyServiceImpl {
         eval: &EvaluationResult,
         shadow: Option<&ShadowEvent>,
     ) {
-        let proto_agent = match req.agent_id.as_ref() {
-            Some(a) => a,
-            None => return, // No agent identity — cannot construct entry.
-        };
-        let agent_id = AgentId::from_bytes(convert::hash_to_16(&proto_agent.agent_id));
+        // AAASM-5665 — a request that carried no agent identity used to produce
+        // no audit entry at all, so an unattributed action left no trace. It is
+        // now recorded under the reserved unattributed id with the absence
+        // stated in the payload, rather than dropped or given a placeholder
+        // subject.
+        let attribution = self.agent_identity_attribution(req);
+        let claimed_agent_id = attribution.claimed_id();
+        let agent_id = AgentId::from_bytes(match claimed_agent_id {
+            Some(id) => convert::hash_to_16(id),
+            None => convert::UNATTRIBUTED_AGENT_ID,
+        });
         let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
 
         // AAASM-1944: when the request carries `caller_agent_id` and it
@@ -656,7 +971,7 @@ impl PolicyServiceImpl {
         // graphs. Deny / Redact / Pending decisions continue to flow
         // through the existing variants per `decision_to_event_type_from_response`.
         let caller_agent_id_str: Option<&str> = req.caller_agent_id.as_ref().and_then(|c| {
-            if c.agent_id.is_empty() || c.agent_id == proto_agent.agent_id {
+            if c.agent_id.is_empty() || Some(c.agent_id.as_str()) == claimed_agent_id {
                 None
             } else {
                 Some(c.agent_id.as_str())
@@ -673,27 +988,130 @@ impl PolicyServiceImpl {
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
+        // AAASM-2008 — resolve the agent's org_id from the registry so the
+        // audit entry carries it in the Lineage. Lets `/api/v1/logs?org_id=…`
+        // and `aasm audit compliance-export` filter by tenant. Falls back to
+        // an empty Lineage when the registry is absent (lightweight test
+        // fixtures) or the agent is not registered.
+        let lineage = self
+            .registry
+            .as_ref()
+            .zip(req.agent_id.as_ref())
+            .and_then(|(r, proto_agent)| r.lineage(&proto_agent_id_to_key(proto_agent)))
+            .map(|reg_lineage| Lineage {
+                org_id: reg_lineage.org_id,
+                team_id: reg_lineage.team_id,
+                // AAASM-3377 — carry the full delegation lineage now sourced by
+                // `AgentRegistry::lineage()` so a child agent's audit entry no
+                // longer drops root / parent / depth / delegation_reason /
+                // spawned_by_tool.
+                root_agent_id: reg_lineage.root_agent_id.map(AgentId::from_bytes),
+                parent_agent_id: reg_lineage.parent_agent_id.map(AgentId::from_bytes),
+                depth: reg_lineage.depth,
+                delegation_reason: reg_lineage.delegation_reason,
+                spawned_by_tool: reg_lineage.spawned_by_tool,
+            })
+            .unwrap_or_default();
+
+        // AAASM-3377 — the lineage above is persisted as top-level `AuditEntry`
+        // fields, but consumers that read only the inner `payload` JSON (e.g.
+        // `/api/v1/logs`, JSONL replay tooling) never saw the delegation chain.
+        // Mirror the delegation lineage into the payload — alongside org/team —
+        // so a child agent's persisted JSONL `payload` carries root / parent /
+        // depth / delegation_reason / spawned_by_tool. Hex-encode the AgentId
+        // fields so the payload value is a stable, human-readable string rather
+        // than the raw byte array the top-level field serializes to.
+        let root_agent_id_hex = lineage.root_agent_id.map(|id| hex::encode(id.as_bytes()));
+        let parent_agent_id_hex = lineage.parent_agent_id.map(|id| hex::encode(id.as_bytes()));
+
+        // AAASM-3376 — the session_id stored on the entry is SHA256(trace_id)[:16],
+        // which is one-way: the raw trace_id and the per-action span_id are lost
+        // once the entry is persisted. Carry both in the payload JSON so they
+        // survive to the JSONL log / DB and let `/api/v1/traces/{trace_id}`
+        // reconstruct spans. (A first-class column on `AuditEntry` is the proto /
+        // core-type follow-up — see PR body.)
+        let trace_id_str: Option<&str> = (!req.trace_id.is_empty()).then_some(req.trace_id.as_str());
+        let span_id_str: Option<&str> = (!req.span_id.is_empty()).then_some(req.span_id.as_str());
+        // AAASM-5107 — the content digest of the deciding policy document. Carried
+        // in the payload JSON so the per-document 24h hit-count query
+        // (`aa_api::routes::analytics`) can group audit events by document, and
+        // mirrored onto the top-level `policy_doc_id` field below. `None` on
+        // paths that resolved no cascade document (primary policy, credential /
+        // budget engine-level denies, empty cascade) — absent, never a
+        // misleading id.
+        let policy_doc_id: Option<&str> = eval.policy_doc_id.as_deref();
+
+        // AAASM-5100 / ADR-0018 items A+B — capture the finer 5-way runtime
+        // verdict and the per-decision latency onto the audit payload (the
+        // *source* the read-side `GET /agents/{id}/decisions` projection reads;
+        // its `verdict`/`latencyMs` were frozen nullable under AAASM-5086).
+        //
+        // Item A — verdict: derived alongside the proto `decision`, never
+        // replacing it. Written as a lowercase string because `RuntimeVerdict`
+        // lives in `aa-api` (which depends on `aa-gateway`, not the reverse);
+        // the read-side parses the string back into the enum.
+        //
+        // Item B — latency: `decision_latency_us` is measured with a MONOTONIC
+        // clock (`Instant::now()` / `.elapsed()`) around `engine.evaluate` only
+        // (see `evaluate_one`). For a held / approval-pending action this is the
+        // scanner's DECISION time, NOT the human approval wait — the wait happens
+        // later in `maybe_submit_approval`, outside this measurement window. All
+        // actions are measured (no sampling). Recorded in ms (floor via integer
+        // division; a sub-ms decision floors to 0), matching the read-side's
+        // `latencyMs`. `trace_id` is deliberately left to the existing
+        // (nullable) `trace_id` field — trace-id propagation is ADR-0018 item C,
+        // gated to Phase 2 and NOT implemented here.
+        let verdict = convert::runtime_verdict(response.decision, eval.narrowed);
+        let latency_ms: u64 = (response.decision_latency_us.max(0) as u64) / 1_000;
         let payload = match shadow {
             Some(s) => serde_json::json!({
                 "action_type": req.action_type,
                 "decision": response.decision,
+                "verdict": verdict,
+                "latency_ms": latency_ms,
                 "reason": &response.reason,
                 "policy_rule": &response.policy_rule,
+                "policy_doc_id": policy_doc_id,
                 "latency_us": response.decision_latency_us,
                 "dry_run": true,
                 "shadow_decision": &s.shadow_decision,
                 "shadow_reason": &s.reason,
+                "agent_id_claimed": claimed_agent_id,
+                "agent_identity_assurance": attribution.assurance().as_str(),
                 "caller_agent_id": caller_agent_id_str,
-                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "callee_agent_id": caller_agent_id_str.and(claimed_agent_id),
+                "trace_id": trace_id_str,
+                "span_id": span_id_str,
+                "org_id": &lineage.org_id,
+                "team_id": &lineage.team_id,
+                "root_agent_id": &root_agent_id_hex,
+                "parent_agent_id": &parent_agent_id_hex,
+                "depth": lineage.depth,
+                "delegation_reason": &lineage.delegation_reason,
+                "spawned_by_tool": &lineage.spawned_by_tool,
             }),
             None => serde_json::json!({
                 "action_type": req.action_type,
                 "decision": response.decision,
+                "verdict": verdict,
+                "latency_ms": latency_ms,
                 "reason": &response.reason,
                 "policy_rule": &response.policy_rule,
+                "policy_doc_id": policy_doc_id,
                 "latency_us": response.decision_latency_us,
+                "agent_id_claimed": claimed_agent_id,
+                "agent_identity_assurance": attribution.assurance().as_str(),
                 "caller_agent_id": caller_agent_id_str,
-                "callee_agent_id": caller_agent_id_str.map(|_| proto_agent.agent_id.as_str()),
+                "callee_agent_id": caller_agent_id_str.and(claimed_agent_id),
+                "trace_id": trace_id_str,
+                "span_id": span_id_str,
+                "org_id": &lineage.org_id,
+                "team_id": &lineage.team_id,
+                "root_agent_id": &root_agent_id_hex,
+                "parent_agent_id": &parent_agent_id_hex,
+                "depth": lineage.depth,
+                "delegation_reason": &lineage.delegation_reason,
+                "spawned_by_tool": &lineage.spawned_by_tool,
             }),
         }
         .to_string();
@@ -704,50 +1122,36 @@ impl PolicyServiceImpl {
         // redacted payload) to the audit entry via the redaction-aware constructor.
         // Both fields carry the [REDACTED:<kind>] form only — the raw secret bytes
         // never reach the audit pipeline.
-        // AAASM-2008 — resolve the agent's org_id from the registry so the
-        // audit entry carries it in the Lineage. Lets `/api/v1/logs?org_id=…`
-        // and `aasm audit compliance-export` filter by tenant. Falls back to
-        // an empty Lineage when the registry is absent (lightweight test
-        // fixtures) or the agent is not registered.
-        let lineage = self
-            .registry
-            .as_ref()
-            .and_then(|r| r.lineage(&proto_agent_id_to_key(proto_agent)))
-            .map(|reg_lineage| Lineage {
-                org_id: reg_lineage.org_id,
-                team_id: reg_lineage.team_id,
-                ..Lineage::default()
-            })
-            .unwrap_or_default();
-
-        let entry = if eval.credential_findings.is_empty() {
-            AuditEntry::new_with_lineage(
-                seq,
-                timestamp_ns,
-                event_type,
-                agent_id,
-                session_id,
-                payload,
-                *last_hash,
-                lineage,
-            )
+        // AAASM-5107 — always route through the attribution-aware constructor so
+        // the deciding document's digest is committed to the entry hash. A clean
+        // scan passes `Redaction::default()`, which contributes zero bytes and so
+        // hashes exactly as `new_with_lineage` did; a policy_doc_id of `None`
+        // likewise contributes nothing. Only a *present* digest changes the hash.
+        // AAASM-5354: either tier counts. A locale-pack finding carries no
+        // `CredentialKind` and so leaves `credential_findings` empty, but the
+        // engine still produced a redacted payload — reading only that list
+        // recorded neither the finding nor the redaction, so the audit trail
+        // said the action was clean when it was not.
+        let redaction = if eval.credential_findings.is_empty() && eval.canonical_findings.is_empty() {
+            Redaction::default()
         } else {
-            let redaction = Redaction {
+            Redaction {
                 credential_findings: eval.credential_findings.clone(),
                 redacted_payload: eval.redacted_payload.clone(),
-            };
-            AuditEntry::new_with_lineage_and_redaction(
-                seq,
-                timestamp_ns,
-                event_type,
-                agent_id,
-                session_id,
-                payload,
-                *last_hash,
-                lineage,
-                redaction,
-            )
+            }
         };
+        let entry = AuditEntry::new_with_lineage_redaction_and_attribution(
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            *last_hash,
+            lineage,
+            redaction,
+            eval.policy_doc_id.clone(),
+        );
 
         // Update the chain head before sending — even if try_send fails (the entry
         // is dropped), we advance the chain so subsequent entries don't duplicate
@@ -795,25 +1199,55 @@ impl PolicyServiceImpl {
     ///
     /// * No `AgentRegistry` is attached (test fixtures that bypass the
     ///   registry layer continue to work unchanged).
-    /// * `req.agent_id` is `None` (caller did not declare an identity —
-    ///   handled by downstream evaluation).
     /// * The claimed agent is not registered (no fixture data to verify
     ///   against; the policy engine may or may not allow per its rules).
+    /// * No subject is claimed AND the presented token belongs to no
+    ///   registered agent (the unregistered / OSS self-host path).
+    ///
+    /// AAASM-5665 — `req.agent_id` being `None` is **not** on that list. An
+    /// absent message and a blank `agent_id` string are the same claim, so a
+    /// token owning a registered agent is refused under either shape; skipping
+    /// on absent would let its owner shed its own agent-scoped rules while
+    /// keeping the tenancy the same token resolves.
     ///
     /// Emitting the audit event is fire-and-forget — a full `Deny`
     /// response is always constructed and returned to the caller.
     async fn validate_credential_token(&self, req: &CheckActionRequest) -> Option<CheckActionResponse> {
         let registry = self.registry.as_ref()?;
-        let proto_agent = req.agent_id.as_ref()?;
-        let key = proto_agent_id_to_key(proto_agent);
-        let record_opt = registry.get(&key);
+        // AAASM-5665 (R1) — an ABSENT `agent_id` message is the same claim as a
+        // blank one: none. `convert::claimed_agent_id` already collapses the two
+        // everywhere else, and this is the site that used to disagree.
+        //
+        // This previously `?`-returned on absent, so the presented token was
+        // never examined at all. That was inert while an absent `agent_id` was
+        // rejected upstream as `InvalidArgument`. Once it is evaluated instead,
+        // it becomes an escape hatch: the request is evaluated under
+        // `UNATTRIBUTED_AGENT_ID`, so `PolicyScope::Agent(hash_to_16(<own id>))`
+        // — the narrowest, highest-precedence tier — is never consulted, while
+        // `apply_authoritative_tenancy` still resolves org/team/governance level
+        // from the token owner. The caller keeps its tenancy and sheds only its
+        // own restrictions.
+        //
+        // That is the dodge the refusal below already exists to prevent, one
+        // shape wider: the comment there reasons "otherwise a token holder could
+        // dodge an `agent:<their id>` scoped rule by blanking the field", and
+        // omitting the field did exactly that. Falling through with `None` sends
+        // the absent shape down the same branch as the blank one.
+        let record_opt = req
+            .agent_id
+            .as_ref()
+            .and_then(|proto_agent| registry.get(&proto_agent_id_to_key(proto_agent)));
 
         let reason = if let Some(record) = &record_opt {
             // The claimed agent is registered at the claimed (org, team, id)
             // triple. Standard validation: empty / mismatched token rejects.
             if req.credential_token.is_empty() {
                 "missing credential token"
-            } else if req.credential_token != record.credential_token {
+            } else if !bool::from(subtle::ConstantTimeEq::ct_eq(
+                req.credential_token.as_bytes(),
+                record.credential_token.as_bytes(),
+            )) {
+                // AAASM-3922: constant-time compare (defence-in-depth timing side-channel).
                 "credential token mismatch"
             } else {
                 return None;
@@ -827,6 +1261,20 @@ impl PolicyServiceImpl {
             // validation so existing tests that bypass the registry layer
             // continue working.)
             if req.credential_token.is_empty() {
+                // AAASM-3992: empty credential token + a claimed {org,team,agent}
+                // triple that is NOT registered. This is the lightweight
+                // untenanted-fixture / unregistered (OSS self-host) deployment
+                // path — the runtime forwards checks WITHOUT a per-agent
+                // credential token. We do NOT deny it: policy evaluation still
+                // proceeds (global / default / tool-scoped rules apply).
+                //
+                // The threat here is only that the request's client-supplied
+                // `org_id` / `team_id` are attacker-controlled under the
+                // non-rejecting `enrich` interceptor, so they must not be
+                // TRUSTED for budget attribution or audit lineage. That is
+                // handled by `apply_authoritative_tenancy`, which neutralizes
+                // the unauthenticated tenancy to an anonymous tenant rather than
+                // rejecting the request.
                 return None;
             }
             if registry.find_by_credential_token(&req.credential_token).is_some() {
@@ -839,14 +1287,36 @@ impl PolicyServiceImpl {
             }
         };
 
-        let response = CheckActionResponse {
-            decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
-            reason: reason.into(),
-            policy_rule: "a2a_identity_verification".into(),
-            approval_id: String::new(),
-            redact: None,
-            decision_latency_us: 0,
-        };
+        // AAASM-5665 — a rejected impersonation is the case where the assurance
+        // matters most, so the refusal states it too.
+        //
+        // It is ASSERTED when the request claimed an agent subject, and
+        // UNATTRIBUTED when it did not. The second case is reachable and is not
+        // a contradiction: a request carrying `agent_id { org, team, agent_id:
+        // "" }` plus a token registered to a *different* agent claims no
+        // subject, yet must still be refused — otherwise a token holder could
+        // dodge an `agent:<their id>` scoped rule by blanking the field. The
+        // refusal is about the credential, the assurance is about the claim,
+        // and the two answer different questions.
+        //
+        // Both sites derive "is there a claim?" from
+        // `convert::claimed_agent_id`, so they cannot drift apart. The payload
+        // carries `identity_claimed` because the assurance field alone cannot
+        // answer "refused impersonations where a subject was claimed" — reading
+        // `agent_identity_assurance != "unattributed"` would silently drop the
+        // blank-subject rows.
+        let response = self.stamp_identity_assurance(
+            req,
+            CheckActionResponse {
+                decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+                reason: reason.into(),
+                policy_rule: "a2a_identity_verification".into(),
+                approval_id: String::new(),
+                redact: None,
+                decision_latency_us: 0,
+                ..Default::default()
+            },
+        );
 
         self.record_impersonation_audit(req, &response).await;
         Some(response)
@@ -856,10 +1326,22 @@ impl PolicyServiceImpl {
     /// rejected credential validation in `validate_credential_token`. Mirrors
     /// the chain-bookkeeping shape of [`PolicyServiceImpl::record_audit`].
     async fn record_impersonation_audit(&self, req: &CheckActionRequest, response: &CheckActionResponse) {
-        let Some(proto_agent) = req.agent_id.as_ref() else {
-            return;
-        };
-        let agent_id = AgentId::from_bytes(convert::hash_to_16(&proto_agent.agent_id));
+        // AAASM-5665 (R1) — this used to return early when the `agent_id`
+        // message was absent. That was harmless while an absent `agent_id`
+        // could not be refused; it is not harmless now that it can, because a
+        // refusal that records nothing is precisely the defect `record_audit`
+        // was already fixed for. Absent and blank are the same claim — none —
+        // so both produce an entry, and `claimed_agent_id` is the single
+        // predicate deciding what it says.
+        let proto_agent = req.agent_id.clone().unwrap_or_default();
+        let claimed = convert::claimed_agent_id(req);
+        // Unclaimed refusals are recorded under the reserved id, matching what
+        // `request_to_core` deposits for the same request rather than
+        // `hash_to_16("")`, which is a distinct and guessable subject.
+        let agent_id = AgentId::from_bytes(match claimed {
+            Some(id) => convert::hash_to_16(id),
+            None => convert::UNATTRIBUTED_AGENT_ID,
+        });
         let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
@@ -869,9 +1351,27 @@ impl PolicyServiceImpl {
             "decision": response.decision,
             "reason": &response.reason,
             "policy_rule": &response.policy_rule,
-            "claimed_agent_id": &proto_agent.agent_id,
+            // AAASM-5665 (R3) — `record_audit` writes this subject as
+            // `agent_id_claimed`; this producer wrote `claimed_agent_id`, so
+            // the stated goal ("one query over the entries this service emits
+            // answers how an identity was established") held for the assurance
+            // and broke for the subject it belongs to. Same key AND same value
+            // shape: `Option<&str>`, null when nothing was claimed, so a blank
+            // or absent subject reads identically from both producers.
+            "agent_id_claimed": claimed,
             "claimed_org_id": &proto_agent.org_id,
             "credential_token_present": !req.credential_token.is_empty(),
+            // AAASM-5665 — whether the refused request claimed an agent subject
+            // at all, from the same predicate the assurance uses. A blank
+            // `agent_id` with a foreign token is refused but claims nobody, so
+            // filtering on the assurance field alone would drop that row.
+            "identity_claimed": convert::claimed_agent_id(req).is_some(),
+            // AAASM-5665 — same key name as `record_audit` uses, so one query
+            // over the entries this service emits answers "how was this
+            // identity established?" for its refusals as well as its verdicts.
+            // Scoped to this service: other audit producers in the gateway do
+            // not write the key.
+            "agent_identity_assurance": self.agent_identity_attribution(req).assurance().as_str(),
         })
         .to_string();
 
@@ -922,6 +1422,20 @@ impl PolicyServiceImpl {
     /// carries only kind tags and counts — never any byte of the original
     /// secret. Failure to send (no receivers) is logged at trace level
     /// and does not propagate (AAASM-1545).
+    ///
+    /// # Known gap (AAASM-5354)
+    ///
+    /// A locale-pack finding does **not** raise an alert. [`SecretAlert`] names
+    /// what it found with a [`CredentialKind`], and `primary_kind()` falls back
+    /// to `CredentialKind::Custom` when the list is empty — so emitting one for
+    /// a zh-TW national ID would publish it through `aa-api`'s
+    /// `detected_pattern_type` as an operator-authored regex match, which is a
+    /// confidently wrong answer rather than a missing one.
+    ///
+    /// Widening that vocabulary changes a published `aa-api` contract and is out
+    /// of this ticket's crate scope, so the gap is left open and recorded here
+    /// rather than papered over. Enforcement and the audit trail are *not*
+    /// affected — both act on either tier; this is the alerting side-channel only.
     fn maybe_emit_secret_alert(&self, req: &CheckActionRequest, eval: &EvaluationResult) {
         if eval.credential_findings.is_empty() {
             return;
@@ -960,6 +1474,220 @@ impl PolicyServiceImpl {
         }
     }
 
+    /// AAASM-4125 — conservative server-side floor for a *client-declared* prompt
+    /// token count that is non-positive (`0`, negative, or an omitted proto field
+    /// which deserializes to `0`). A real LLM call always consumes some prompt
+    /// tokens; a declared `0` is therefore either an omission or a deliberate
+    /// under-report and must NOT be trusted as a genuinely empty call. Pricing it
+    /// at `$0` trips the `cost <= 0.0` accrual short-circuit and skips the budget
+    /// reservation entirely, giving an agent that always sends `prompt_tokens: 0`
+    /// unmetered LLM spend indefinitely. Flooring to a minimum estimate keeps the
+    /// call priced non-zero so the daily / monthly cap engages (fail-closed,
+    /// mirroring the unknown-model handling in AAASM-4069). Legitimate calls that
+    /// report a real positive count are priced on that count and are unaffected,
+    /// so no legitimate call is double-charged.
+    const MIN_ESTIMATED_PROMPT_TOKENS: u64 = 1_000;
+
+    /// AAASM-3353 / AAASM-3986 — atomically reserve the cost of a non-denied LLM
+    /// call against the agent's budget so daily / monthly limits actually fire,
+    /// with no check→record TOCTOU.
+    ///
+    /// The live `CheckAction` handler previously only called `engine.evaluate`,
+    /// which *reads* accumulated spend (Stage 7), then recorded the cost via
+    /// `record_spend` *after* the response was built. Those two steps were not
+    /// atomic, so N concurrent checks for one tenant could all observe
+    /// under-limit before any recorded — a bounded overspend proportional to
+    /// in-flight concurrency (AAASM-3986). This now prices the call and routes
+    /// it through [`PolicyEngine::check_and_accrue_llm_spend`], which checks and
+    /// commits under the tracker's per-ancestor lock. When the reservation shows
+    /// the call cannot be afforded, the response is rewritten to a hard `Deny`
+    /// (like the Stage-7 budget deny) and nothing is charged.
+    ///
+    /// Returns the (possibly rewritten) response. No spend is reserved and the
+    /// response is returned unchanged when:
+    /// * the action is not an `LLM_CALL`;
+    /// * the decision was already a hard `Deny` (a denied call did not run);
+    /// * the priced cost is `0.0`. Two client-controlled inputs that used to
+    ///   force a `0.0` price — and so bypass metering — now fail closed instead:
+    ///   an unrecognised model name is priced at the conservative fallback rate
+    ///   (AAASM-4069), and a client-declared prompt-token count of `0` (or a
+    ///   negative / omitted value, which the proto deserializes to `0`) is
+    ///   floored to [`Self::MIN_ESTIMATED_PROMPT_TOKENS`] rather than trusted as
+    ///   a genuinely empty call (AAASM-4125). A `0.0` price is therefore only
+    ///   reached for a truly unpriceable call, not a client-declared empty one.
+    fn maybe_accrue_llm_spend(&self, req: &CheckActionRequest, response: CheckActionResponse) -> CheckActionResponse {
+        use aa_proto::assembly::policy::v1::action_context::Action;
+
+        // A hard Deny means the call was blocked — do not reserve spend.
+        if response.decision == aa_proto::assembly::common::v1::Decision::Deny as i32 {
+            return response;
+        }
+
+        let Some(Action::LlmCall(lc)) = req.context.as_ref().and_then(|c| c.action.as_ref()) else {
+            return response;
+        };
+
+        // AAASM-4125 — `prompt_tokens` is client-supplied (see `convert.rs`). A
+        // non-positive declared count must not price to `$0` and bypass metering,
+        // so floor it to a conservative server-side minimum; a real positive count
+        // is used as-is.
+        let input_tokens = match u64::try_from(lc.prompt_tokens) {
+            Ok(t) if t > 0 => t,
+            _ => Self::MIN_ESTIMATED_PROMPT_TOKENS,
+        };
+        // The pre-execution check has no completion yet, so output tokens are 0.
+        let cost = self.engine.llm_call_cost_usd(&lc.model, input_tokens, 0);
+        if cost <= 0.0 {
+            return response;
+        }
+
+        // Rebuild the AgentContext for tenancy resolution. `check_and_accrue_llm_spend`
+        // keys budget on the agent's *registered* owner (AAASM-3138) and only
+        // uses ctx tenancy as a fallback. AAASM-3992 — apply the same
+        // authoritative tenancy resolution used for evaluation so an
+        // unauthenticated, client-supplied `org_id` / `team_id` is neutralized
+        // here too: spend accrues to the registered owner (valid token) or to an
+        // anonymous tenant (tokenless / unregistered), NEVER a client-claimed
+        // victim.
+        let ctx = match convert::request_to_core(req) {
+            Ok((mut ctx, _action)) => {
+                self.apply_authoritative_tenancy(req, &mut ctx);
+                ctx
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to rebuild ctx for LLM spend accrual");
+                return response;
+            }
+        };
+
+        match self.engine.check_and_accrue_llm_spend(&ctx, cost) {
+            None => response,
+            Some(reason) => {
+                tracing::warn!(reason, "LLM call denied: atomic budget reservation exceeded limit");
+                CheckActionResponse {
+                    decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+                    reason: reason.into(),
+                    policy_rule: reason.into(),
+                    approval_id: String::new(),
+                    redact: None,
+                    decision_latency_us: response.decision_latency_us,
+                    ..Default::default()
+                }
+            }
+        }
+    }
+
+    /// AAASM-3378 — run the live anomaly detector over an evaluated action.
+    ///
+    /// This is the wiring that the previously-unwired `aa-gateway::anomaly`
+    /// engine was missing: the detector had a full API + unit tests but **no
+    /// non-test caller**, so no `AnomalyEvent` could ever fire at runtime.
+    ///
+    /// Behaviour (no-op when no hook is attached):
+    /// 1. Rebuild the core `(ctx, action)` from the request.
+    /// 2. Update the per-agent baseline (`record_action`, and for tool calls
+    ///    `record_tool_call`; one `record_credential_finding` per credential
+    ///    finding the evaluation surfaced).
+    /// 3. Run [`AnomalyDetector::detect`] with `has_pii` derived from the
+    ///    evaluation's credential findings and the policy network allowlist.
+    /// 4. On a detection, execute [`AnomalyResponder::respond`] (logs the
+    ///    response action) and broadcast the [`AnomalyEvent`] so subscribers
+    ///    (and tests) observe the live detection.
+    ///
+    /// Returns the detected [`AnomalyEvent`] (if any) so the caller can enforce
+    /// a block-equivalent response as a hard `Deny` (AAASM-3384). Returns `None`
+    /// when no hook is attached or no anomaly fired.
+    fn maybe_detect_anomaly(&self, req: &CheckActionRequest, eval: &EvaluationResult) -> Option<AnomalyEvent> {
+        let hook = self.anomaly.as_ref()?;
+        let (ctx, action) = match convert::request_to_core(req) {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to rebuild ctx for anomaly detection");
+                return None;
+            }
+        };
+        let agent_id = ctx.agent_id;
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Update the behavioral baseline before detection so spike / loop
+        // checks see the current action.
+        hook.detector.record_action(agent_id, now_ms);
+        if let aa_core::GovernanceAction::ToolCall { name, args } = &action {
+            hook.detector.record_tool_call(agent_id, name, args, now_ms);
+        }
+        // AAASM-5354: a locale-pack finding is sensitive data the agent tried to
+        // send, so it feeds the behavioural baseline like any other. Counted from
+        // the canonical tier only for findings with no enforcement-tier
+        // counterpart, so a lifted finding is not counted twice.
+        let canonical_only = eval
+            .canonical_findings
+            .iter()
+            .filter(|f| f.category().to_credential_kind().is_none())
+            .count();
+        for _ in 0..(eval.credential_findings.len() + canonical_only) {
+            hook.detector.record_credential_finding(agent_id);
+        }
+
+        let has_pii = !eval.credential_findings.is_empty() || canonical_only > 0;
+        let allowlist = self.engine.network_allowlist();
+        let event = hook.detector.detect(agent_id, &action, has_pii, &allowlist, None)?;
+        AnomalyResponder::respond(&event);
+        if let Err(err) = hook.event_tx.send(event.clone()) {
+            tracing::trace!(error = %err, "no subscribers for AnomalyEvent broadcast");
+        }
+        Some(event)
+    }
+
+    /// AAASM-3384 — turn a block-equivalent anomaly detection into a hard
+    /// `Deny` on an otherwise-allowed action.
+    ///
+    /// Detection previously only logged + broadcast; a `Block` (or
+    /// `Quarantine`) outcome did not actually stop the action. This applies the
+    /// responder's enforcement intent to the live `CheckAction` response: if a
+    /// blocking anomaly fired and the current decision is `Allow`, the response
+    /// is rewritten to `Deny` with a clear, operator-readable reason.
+    ///
+    /// Non-Allow responses (already Deny / Redact / Pending) are left untouched
+    /// — the action is already governed, and we never weaken an existing
+    /// decision. Returns the (possibly rewritten) response.
+    fn enforce_anomaly_block(
+        &self,
+        response: CheckActionResponse,
+        event: Option<&AnomalyEvent>,
+    ) -> CheckActionResponse {
+        let Some(event) = event else {
+            return response;
+        };
+        if !event.response.is_blocking() {
+            return response;
+        }
+        if response.decision != aa_proto::assembly::common::v1::Decision::Allow as i32 {
+            return response;
+        }
+        let reason = format!(
+            "anomaly detected ({:?}): {} — blocked by anomaly responder",
+            event.anomaly_type, event.description
+        );
+        tracing::warn!(
+            anomaly_type = ?event.anomaly_type,
+            response = ?event.response,
+            reason = %reason,
+            "enforcing anomaly block: rewriting Allow → Deny"
+        );
+        CheckActionResponse {
+            decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+            reason,
+            policy_rule: "anomaly_detection".to_string(),
+            approval_id: String::new(),
+            redact: None,
+            decision_latency_us: response.decision_latency_us,
+            ..Default::default()
+        }
+    }
+
     /// Compose the live-ops registry id and ingest if a registry is attached.
     ///
     /// Returns `Some(op_id)` when ingestion happened so the caller can drive
@@ -967,6 +1695,37 @@ impl PolicyServiceImpl {
     /// typical setup for unit tests that don't exercise the live-ops view) or
     /// when the request lacks a trace identifier (a malformed request the
     /// engine will reject anyway).
+    /// AAASM-5088: record this action against the agent's session in the
+    /// registry so `active_sessions` (and the Fleet Active-Sessions surface)
+    /// populate from real gateway traffic.
+    ///
+    /// The session is keyed by the hex-encoded 16-byte hash of `trace_id` —
+    /// the same derivation the audit pipeline uses for `SessionId`, so a
+    /// session's id here matches its audit / trace records. The first action
+    /// for a `(agent, session)` pair opens the session; each subsequent action
+    /// increments its `actions_count`.
+    ///
+    /// No-op when the registry is absent (test fixtures / untenanted
+    /// deployments) or the request omits `trace_id` / `agent_id`. A
+    /// `NotFound` (agent not registered) is logged and swallowed — session
+    /// tracking must never fail an otherwise-valid policy check.
+    fn record_session_activity(&self, req: &CheckActionRequest) {
+        let Some(registry) = self.registry.as_ref() else {
+            return;
+        };
+        if req.trace_id.is_empty() {
+            return;
+        }
+        let Some(proto_agent) = req.agent_id.as_ref() else {
+            return;
+        };
+        let agent_key = proto_agent_id_to_key(proto_agent);
+        let session_id = hex::encode(convert::hash_to_16(&req.trace_id));
+        if let Err(err) = registry.record_session_activity(&agent_key, &session_id) {
+            tracing::trace!(?err, "record_session_activity no-op (agent not registered)");
+        }
+    }
+
     fn ingest_op(&self, req: &CheckActionRequest) -> Option<String> {
         let registry = self.ops_registry.as_ref()?;
         if req.trace_id.is_empty() {
@@ -1044,6 +1803,11 @@ impl PolicyService for PolicyServiceImpl {
             return Ok(Response::new(rejection));
         }
 
+        // AAASM-5088: register this action against the agent's session so
+        // `active_sessions` populates from live traffic. Runs after credential
+        // validation so a rejected impersonator never opens a forged session.
+        self.record_session_activity(&req);
+
         // AAASM-1422: ingest the op into the live-ops registry before
         // evaluation so the dashboard sees the in-flight check even when
         // the engine takes time to decide. Idempotent — a retry of the
@@ -1070,6 +1834,23 @@ impl PolicyService for PolicyServiceImpl {
             } else {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
+
+        // AAASM-3378 / AAASM-3384: run the live anomaly detector over the
+        // evaluated action, then enforce a block-equivalent detection as a hard
+        // Deny before the ops transition / audit observe the final decision.
+        let anomaly_event = self.maybe_detect_anomaly(&req, &eval);
+        let response = self.enforce_anomaly_block(response, anomaly_event.as_ref());
+
+        // AAASM-3353 / AAASM-3986: atomically reserve LLM-call cost so daily /
+        // monthly budget limits fire without a check→record TOCTOU. Runs BEFORE
+        // the ops transition and audit so a budget-exceeded reservation is
+        // reflected as a Deny everywhere downstream.
+        let response = self.maybe_accrue_llm_spend(&req, response);
+
+        // AAASM-5665: stamp how the claimed `agentId` was treated. Placed after
+        // every path that can rewrite the decision (approval, anomaly, budget)
+        // so a rewritten response carries it too.
+        let response = self.stamp_identity_assurance(&req, response);
 
         // AAASM-1422 / AAASM-1657: transition the registry op to match the
         // final policy decision. Allow → Running, Deny → Terminated.
@@ -1113,6 +1894,26 @@ impl PolicyService for PolicyServiceImpl {
         let mut responses = Vec::with_capacity(batch.requests.len());
 
         for req in &batch.requests {
+            // AAASM-3888: validate the supplied `credential_token` against the
+            // registered token for the claimed `agent_id` BEFORE any evaluation
+            // or side-effect (audit / spend / suspend), exactly as `check_action`
+            // does. PolicyService runs under the non-rejecting `enrich`
+            // interceptor, so the request-body `{org,team,agent}` triple and
+            // `credential_token` are attacker-controlled; without this check a
+            // peer at :50051 could forge a victim identity per batch entry and
+            // drive forged audit, budget-exhaustion spend, or agent suspension
+            // against the victim. On rejection, push the Deny and skip all
+            // side-effects for this request — `evaluate_one`'s tenancy-anchoring
+            // invariant (which assumes validation already ran) is thereby upheld.
+            if let Some(rejection) = self.validate_credential_token(req).await {
+                responses.push(rejection);
+                continue;
+            }
+
+            // AAASM-5088: same session tracking as check_action, per batch entry
+            // (after the per-entry credential validation above).
+            self.record_session_activity(req);
+
             let (eval, latency_us, policy_rule) = self.evaluate_one(req)?;
             self.maybe_emit_secret_alert(req, &eval);
 
@@ -1131,6 +1932,15 @@ impl PolicyService for PolicyServiceImpl {
             } else {
                 convert::eval_result_to_response(&eval, latency_us, &policy_rule)
             };
+            // AAASM-3378 / AAASM-3384: detect + enforce a block-equivalent
+            // anomaly as a hard Deny in batch mode too.
+            let anomaly_event = self.maybe_detect_anomaly(req, &eval);
+            let resp = self.enforce_anomaly_block(resp, anomaly_event.as_ref());
+            // AAASM-3353 / AAASM-3986: atomically reserve LLM-call cost so budget
+            // limits fire in batch mode too, rewriting to Deny on overspend.
+            let resp = self.maybe_accrue_llm_spend(req, resp);
+            // AAASM-5665: same stamp as `check_action`, per batch entry.
+            let resp = self.stamp_identity_assurance(req, resp);
             self.maybe_suspend_agent(req, deny_action).await;
             self.record_audit(req, &resp, &eval, shadow_event.as_ref()).await;
             responses.push(resp);
@@ -1143,7 +1953,7 @@ impl PolicyService for PolicyServiceImpl {
 
     /// AAASM-1653: gateway → SDK push channel for op-lifecycle signals.
     ///
-    /// Subscribes the caller to the configured [`OpControlPublisher`] and
+    /// Subscribes the caller to the configured `OpControlPublisher` and
     /// forwards every envelope whose `agent_id` matches the request's
     /// `agent_id`. The stream stays open until either the client cancels
     /// (`Closed` from the broadcast receiver) or the publisher is dropped.
@@ -1155,14 +1965,44 @@ impl PolicyService for PolicyServiceImpl {
     /// Returns `Status::unavailable` when no publisher is attached to the
     /// service (tests / partial wiring), and `Status::invalid_argument`
     /// when the request omits `agent_id`.
+    ///
+    /// AAASM-3889: the subscription is authorized before any signal is served.
+    /// When an [`AgentRegistry`] is attached (a tenanted deployment), the caller
+    /// MUST present a credential token that the `enrich` interceptor resolved to
+    /// a [`VerifiedCaller`] (absent → `Status::unauthenticated`), and the
+    /// requested `{org,team,agent}` triple MUST resolve to the caller's own
+    /// registered identity (mismatch → `Status::permission_denied`). Without this
+    /// a credential-less peer could subscribe with an arbitrary triple and read
+    /// another tenant's pause/resume/terminate signals + op_ids. The check is
+    /// skipped only when no registry is attached (test fixtures / untenanted
+    /// deployments), mirroring `validate_credential_token`.
     async fn op_control_stream(
         &self,
         request: Request<OpControlSubscribeRequest>,
     ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+        // Read the interceptor-injected caller BEFORE `into_inner` drops the
+        // request extensions.
+        let caller = request.extensions().get::<VerifiedCaller>().cloned();
         let req = request.into_inner();
         let Some(agent_id) = req.agent_id else {
             return Err(Status::invalid_argument("agent_id is required"));
         };
+
+        // AAASM-3889: bind the subscription to the authenticated caller's own
+        // identity when the registry layer is active.
+        if self.registry.is_some() {
+            let Some(caller) = caller else {
+                return Err(Status::unauthenticated(
+                    "op_control_stream requires a valid credential token",
+                ));
+            };
+            if proto_agent_id_to_key(&agent_id) != caller.agent_key {
+                return Err(Status::permission_denied(
+                    "op_control_stream subscription must match the caller's own agent identity",
+                ));
+            }
+        }
+
         let Some(publisher) = self.ops_publisher.clone() else {
             return Err(Status::unavailable("op control channel not configured"));
         };
@@ -1176,11 +2016,16 @@ impl PolicyService for PolicyServiceImpl {
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
-                        // Match on the composite id triple to avoid cross-org
-                        // / cross-team agent_id collisions.
-                        if envelope.agent_id.agent_id != target_agent_id
-                            || envelope.agent_id.team_id != target_team_id
-                            || envelope.agent_id.org_id != target_org_id
+                        // AAASM-3881: a global halt (reserved op-id "*") is
+                        // delivered to every subscriber unconditionally — it is
+                        // the fleet-wide kill switch and is not addressed to a
+                        // single agent. Per-agent envelopes still match on the
+                        // composite id triple to avoid cross-org / cross-team
+                        // agent_id collisions.
+                        if !envelope.global
+                            && (envelope.agent_id.agent_id != target_agent_id
+                                || envelope.agent_id.team_id != target_team_id
+                                || envelope.agent_id.org_id != target_org_id)
                         {
                             continue;
                         }
@@ -1198,5 +2043,59 @@ impl PolicyService for PolicyServiceImpl {
         };
 
         Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+#[cfg(test)]
+mod attribution_context_tests {
+    //! AAASM-5665 — the assurance actually lands on the `AgentContext` the
+    //! engine evaluates, for every one of the three states.
+
+    use super::*;
+
+    fn fresh_ctx() -> AgentContext {
+        AgentContext::now(AgentId::from_bytes([1u8; 16]), SessionId::from_bytes([2u8; 16]), 0)
+    }
+
+    #[test]
+    fn every_assurance_state_is_deposited_on_the_evaluation_context() {
+        let cases = [
+            (AgentIdentityAttribution::Unattributed, "unattributed"),
+            (
+                AgentIdentityAttribution::Asserted {
+                    claimed: "agent-a".into(),
+                },
+                "asserted",
+            ),
+            (
+                AgentIdentityAttribution::Bound {
+                    agent_id: "agent-a".into(),
+                },
+                "bound",
+            ),
+        ];
+        for (attribution, expected) in cases {
+            let mut ctx = fresh_ctx();
+            PolicyServiceImpl::stamp_attribution_on_context(&attribution, &mut ctx);
+            assert_eq!(
+                ctx.metadata
+                    .get(convert::AGENT_IDENTITY_ASSURANCE_KEY)
+                    .map(String::as_str),
+                Some(expected),
+                "attribution {attribution:?} must deposit {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_deposit_leaves_the_rest_of_the_context_untouched() {
+        // The key is additive: it must not disturb the tenancy metadata the
+        // engine already reads.
+        let mut ctx = fresh_ctx();
+        ctx.metadata.insert("org_id".into(), "org-1".into());
+        ctx.metadata.insert("team_id".into(), "team-1".into());
+        PolicyServiceImpl::stamp_attribution_on_context(&AgentIdentityAttribution::Unattributed, &mut ctx);
+        assert_eq!(ctx.metadata.get("org_id").map(String::as_str), Some("org-1"));
+        assert_eq!(ctx.metadata.get("team_id").map(String::as_str), Some("team-1"));
     }
 }

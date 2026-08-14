@@ -1,0 +1,37 @@
+# cargo-nextest configuration.
+#
+# AAASM-3650: a modest global retry absorbs residual runner-starvation
+# flakes (e.g. a healthz round-trip that is slow on a noisy-neighbour
+# GitHub-hosted runner) without masking real regressions:
+#
+#   * Retries only rescue NON-deterministic failures. A deterministic
+#     regression fails all 3 attempts and is still reported as failed.
+#   * nextest reports any test that passed only after a retry as FLAKY,
+#     so the noise stays visible instead of being silently swallowed.
+#
+# CI invokes nextest with the default profile (`cargo nextest run
+# --workspace ...`, `-p aa-gateway`, etc. — no `--profile ci`), so the
+# retry policy belongs under `[profile.default]`.
+[profile.default]
+retries = 2
+
+# AAASM-5465: the profile the Claude Code conformance lanes run under.
+#
+# Why a JUnit report at all
+# -------------------------
+# A scenario that declines to measure prints `SKIP [...]` and returns, which the
+# runner counts as a pass. The evidence ledger
+# (`aa-integration-tests/tests/evidence/mod.rs`) records every such decline, but
+# a count of declines only becomes "how much of this lane was substantive" when
+# it is netted against how many cases the runner actually ran — and the runner is
+# the only thing that knows that number. `.ci/test-evidence-summary.sh` subtracts
+# the one from the other and refuses to call a lane that declined everything a
+# lane that measured something.
+#
+# Inherits `retries` from `[profile.default]`; a retried test appears once in the
+# report, so the arithmetic is unaffected.
+[profile.evidence]
+retries = 2
+
+[profile.evidence.junit]
+path = "junit.xml"

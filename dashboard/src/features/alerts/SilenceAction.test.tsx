@@ -4,6 +4,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SilenceAction } from './SilenceAction'
 import { ToastProvider } from '../../components/ToastProvider'
+import { AuthContext, type AuthContextValue, type Scope } from '../../auth/AuthContext'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 interface Call {
   url: string
@@ -13,7 +16,7 @@ let calls: Call[]
 
 beforeEach(() => {
   calls = []
-  localStorage.setItem('aa_token', 'test-token')
+  sessionStorage.setItem('aa_token', 'test-token')
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -36,14 +39,16 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  localStorage.clear()
+  sessionStorage.clear()
 })
 
-function Wrapper({ children }: { children: React.ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>
-      <ToastProvider>{children}</ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>{children}</ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
   )
 }
@@ -73,6 +78,32 @@ describe('SilenceAction', () => {
     await user.click(screen.getByTestId('silence-action-submit'))
     await waitFor(() => expect(calls).toHaveLength(1))
     expect(JSON.parse(calls[0].init.body as string).duration_seconds).toBe(15 * 60)
+  })
+
+  it('disables the submit for a read-only caller and issues no request', async () => {
+    const user = userEvent.setup()
+    const auth: AuthContextValue = {
+      token: 'tok',
+      scopes: ['read'] as Scope[],
+      login: async () => {},
+      loginWithCredentials: async () => {},
+      signup: async () => {},
+      logout: () => {},
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <AuthContext.Provider value={auth}>
+          <ToastProvider>
+            <SilenceAction alertId="a-1" />
+          </ToastProvider>
+        </AuthContext.Provider>
+      </QueryClientProvider>,
+    )
+    const submit = screen.getByTestId('silence-action-submit')
+    expect(submit).toBeDisabled()
+    await user.click(submit)
+    expect(calls).toHaveLength(0)
   })
 
   it('renders a read-only line when the alert is already silenced', () => {

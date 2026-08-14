@@ -564,12 +564,17 @@ mod proxy_data_path {
             ca_dir: ca_dir.to_path_buf(),
             cert_cache_capacity: 10,
             llm_only: false,
+            mitm_hosts: Vec::new(),
             denied_hosts: Vec::new(),
             network_allowlist: Vec::new(),
             skip_upstream_tls_verify: true,
             credential_action,
             upstream_override: Some(upstream_override),
             gateway_endpoint: None,
+            mcp_fail_open: false,
+            // Dials are redirected via `upstream_override` to a loopback mock,
+            // so the SSRF guard stays fully active for the public CONNECT host.
+            allow_private_connect_targets: false,
         };
         let bind_addr = config.bind_addr;
         let (tx, rx) = broadcast::channel(64);
@@ -1102,6 +1107,8 @@ mod runtime_bypass {
             agent_id: "bypass-test-agent".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }
     }
 
@@ -1171,6 +1178,8 @@ mod runtime_bypass {
             agent_id: "lying-sdk".to_string(),
             connection_id: 0,
             sequence_number: 0,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         };
 
         let outcome = scanner.enforce(&mut event);
@@ -1315,9 +1324,30 @@ mod runtime_bypass {
         let outcome_without = scanner.enforce(&mut without_preflight);
         let outcome_with = scanner.enforce(&mut with_preflight);
 
+        // The *authoritative* outcome — the security decision the runtime commits
+        // to — must be identical whether or not the SDK forged a preflight label:
+        // the same secret is found, redacted identically, and neither event is
+        // clean. AAASM-4744/4793 additionally scans label *keys and values* for
+        // secrets, so the raw `scanned_bytes` work counter is deliberately excluded
+        // from the authoritative comparison here: the forged event carries an extra
+        // label key and value, so the runtime does strictly MORE scan work on it,
+        // never less.
         assert_eq!(
-            outcome_without, outcome_with,
-            "the authoritative outcome must be identical with and without preflight"
+            outcome_without.findings, outcome_with.findings,
+            "the same secret must be found and redacted identically either way"
+        );
+        assert_eq!(
+            outcome_without.oversized_fields, outcome_with.oversized_fields,
+            "the oversized-field verdict must not depend on the forged label"
+        );
+        assert_eq!(
+            outcome_without.forged_trust_markers, outcome_with.forged_trust_markers,
+            "an ordinary advisory label is not a trust marker; neither event strips one"
+        );
+        assert_eq!(
+            outcome_without.is_clean(),
+            outcome_with.is_clean(),
+            "the authoritative clean/dirty verdict must not depend on the forged label"
         );
         assert_eq!(
             tool_args_text(&without_preflight),
@@ -1325,5 +1355,15 @@ mod runtime_bypass {
             "the redacted bytes must be identical either way"
         );
         assert!(!outcome_without.is_clean(), "the secret is caught in both cases");
+        // The only divergence is the observability counter: scanning the forged
+        // label's key and value adds exactly their combined byte length to the
+        // work total (AAASM-4793 scans label keys as well as values). A forged
+        // preflight label can therefore only lengthen — never shorten — the
+        // authoritative scan, which is itself the fail-safe invariant.
+        assert_eq!(
+            outcome_with.scanned_bytes,
+            outcome_without.scanned_bytes + "x-aa-preflight".len() + "clean".len(),
+            "the forged label adds scan work equal to its key + value length"
+        );
     }
 }

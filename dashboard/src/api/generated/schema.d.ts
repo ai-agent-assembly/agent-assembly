@@ -140,6 +140,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{id}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/:id/config` — per-agent config projection (AAASM-5098).
+         * @description Read-only projection backing the Agent-Detail Config-YAML tab (ADR-0022,
+         *     narrow Option C). Returns **only fields with a real per-agent source**: the
+         *     registered `enforcement_mode` (the field the enforcement path consults, not
+         *     `metadata["mode"]`), the agent's effective policy cascade, and a *qualitative*
+         *     recommendation naming the resources that dominate its recent denials. The
+         *     mock's `fail_open`, `rate_limit`, `observability`, and `issuer` are omitted
+         *     from the contract entirely — ADR-0022 verified none has a per-agent source,
+         *     and emitting them as `null` would imply a concept that does not exist. The
+         *     recommendation carries no quantified improvement estimate: the `−N%`
+         *     counterfactual is blocked on AAASM-5094's traffic replay.
+         *
+         *     Deny-by-default and tenant-scoped: [`authorize_agent_access`] confines the
+         *     caller to an agent in its own team (admin sees any; a caller with no team
+         *     scope is denied before any read), so neither the cascade nor the denial
+         *     rollup crosses a tenant boundary. No enforcement or audit-write path is touched.
+         */
+        get: operations["get_agent_config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/agents/:id/decisions` — recent per-agent decision stream.
+         * @description Read-only projection of the existing audit log: the agent's most recent
+         *     governance decisions, newest-first, one row per decision
+         *     (`design/v1/hi-fi/agent-detail.jsx` Traffic tab). Backs the agent-detail
+         *     Traffic tab's per-decision table beneath its aggregate summary (AAASM-5058).
+         *
+         *     Deny-by-default and tenant-scoped: [`authorize_agent_access`] confines the
+         *     caller to an agent in its own team (admin sees any; a caller with no team
+         *     scope is denied before any audit read), so the returned decisions never
+         *     cross a tenant boundary. Entries carrying no policy `decision` are skipped so
+         *     the stream is decisions only. No audit-write or enforcement path is touched.
+         */
+        get: operations["get_agent_decisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{id}/edges": {
         parameters: {
             query?: never;
@@ -156,6 +219,105 @@ export interface paths {
         get: operations["list_agent_edges"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}/enforcement-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/agents/:id/enforcement-mode` — set an agent's enforcement mode.
+         * @description Direction-asymmetric governance mutation (AAASM-5097, ADR 0021 Option B).
+         *     The operation is split by *direction of effect*, because the two directions
+         *     have opposite blast radius:
+         *
+         *     - **Strengthening** (`→ enforce`) turns governance back *on* — it fails safe.
+         *       It needs only tenant-scoped `Write` (via [`authorize_agent_access`]), no
+         *       `reason`, no `expires_at`; the per-agent expiry is cleared so the agent
+         *       returns to permanent enforcement.
+         *     - **Weakening** (`→ observe`, i.e. shadow) turns denials *and credential
+         *       redaction off* for the agent — it fails **open**. It is the high-privilege
+         *       path: it requires `Admin` scope in addition to tenant ownership, a required
+         *       non-empty `reason`, and a required `expires_at` that is in the future and
+         *       within [`SHADOW_MAX_HOURS`] of now. A missing/empty reason or a
+         *       missing/past/too-distant deadline is rejected `422`.
+         *
+         *     `disabled` is not reachable under any input (it is not a variant of
+         *     [`EnforcementModeTarget`], so it fails deserialization — ADR 0021).
+         *
+         *     A single handler gates both directions rather than two extractors: the
+         *     `Write` floor authenticates and denies a read-only caller up front
+         *     (deny-by-default — an unauthenticated caller never reaches the logic), then
+         *     the weakening path additionally requires `Admin` in-handler. On success the
+         *     canonical `enforcement_mode` (the field the enforcement resolver reads, not
+         *     `metadata["mode"]`) is written durably and a `GovernanceMutation` audit is
+         *     emitted with the **verified** actor + tenant from the authenticated caller —
+         *     never the request body.
+         *
+         *     **Cascade (AAASM-5340).** When the request carries a `cascade`
+         *     confirmation, the toggle applies to the whole subtree rooted at `{id}` (root
+         *     included) rather than the single agent. The direction, Admin gate, reason,
+         *     and expiry window are validated **once** for the set; then the mode is
+         *     persisted to every affected agent, each with its **own** actor-attributed
+         *     `GovernanceMutation` audit. The caller must echo back the exact affected-id
+         *     set + count it was shown by `/enforcement-mode/preview`:
+         *     - the recomputed subtree (compared as an order-independent **set**, plus the
+         *       count) differing from the echo-back → **`409` Conflict** (the tree changed
+         *       since preview — re-preview), chosen over `422` because the request is
+         *       well-formed but *stale* against current state, exactly the semantics of a
+         *       version conflict;
+         *     - a recomputed set larger than `MAX_CASCADE_AGENTS` → **`422`** (an
+         *       unprocessable over-limit request, never truncated);
+         *     - a subtree agent outside the caller's tenant → **`403`** (never dropped).
+         *
+         *     Without a `cascade` field the behaviour is byte-identical to AAASM-5338.
+         */
+        post: operations["set_enforcement_mode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{id}/enforcement-mode/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/agents/{id}/enforcement-mode/preview` — dry-run the cascade.
+         * @description Compute the explicit affected-agent set for a cascade rooted at `{id}`.
+         *
+         *     Returns the affected agent ids (the subtree rooted at `{id}`, **including the
+         *     root**) and their count without mutating any agent — a preview the UI shows
+         *     before an operator commits a subtree-wide enforcement-mode change
+         *     (AAASM-5340, ADR 0021 Option B). The order is deterministic: the root first,
+         *     then its descendants in BFS order. A subsequent cascade apply must echo this
+         *     exact set + count back (the TOCTOU / mis-click guard).
+         *
+         *     It shares the whole authorization contract of the apply path: the root is
+         *     tenant-authorized (403/404), every descendant is tenant-confined (a node
+         *     outside the caller's tenant is a `403`, never dropped), and a set larger than
+         *     `MAX_CASCADE_AGENTS` (50) is rejected `422` — matching apply so the UI can
+         *     surface the over-limit rejection before the operator commits. The `Write`
+         *     floor authenticates the caller; the preview is direction-agnostic (it takes
+         *     no body) so it needs no Admin gate — the weakening Admin check happens on the
+         *     apply path.
+         */
+        post: operations["preview_enforcement_mode_cascade"];
         delete?: never;
         options?: never;
         head?: never;
@@ -533,6 +695,349 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/action-volume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/action-volume` — action counts over time, per category.
+         * @description Buckets the requested window into [`SERIES_BUCKETS`] equal slices and counts
+         *     audit events per slice, grouped into a small set of action categories
+         *     (`intercepted`, `dispatched`, `violations`, `approvals` — see
+         *     [`action_category`]). Each emitted series carries a point for every bucket
+         *     (including zeros) so the line chart is continuous; `t` is the bucket-start
+         *     epoch-millisecond timestamp. Only categories that recorded at least one
+         *     event in the window are emitted, so an idle window yields an empty series
+         *     list rather than fabricated activity. Confined to the caller's tenant.
+         */
+        get: operations["get_action_volume"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/agent-decision-mix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/agent-decision-mix` — per-agent decision distribution.
+         * @description Aggregates the existing audit log over the requested window, grouping by
+         *     agent id and tallying each recorded decision into the Agent-Detail
+         *     traffic-mix buckets `allow` / `narrow` / `scrub` / `pending` / `deny` (the
+         *     vocabulary in `dashboard/src/features/trace/decision.ts`). The audit
+         *     event-type → bucket mapping is [`decision_mix_bucket`], identical to the
+         *     gateway's own decision write path (`decision_to_event_type_from_response`)
+         *     and to the enforcement timeline (AAASM-5031): read-only observability over
+         *     data the API already holds — no enforcement or audit-write path is touched.
+         *
+         *     **Truthfulness.** Only the four proto `Decision` outcomes the gateway records
+         *     are populated. `narrow` is always `0`: the proto `Decision` enum has no
+         *     `NARROW` variant, so no audit event can be attributed to it, and inventing a
+         *     count would fabricate governance activity that never happened. Agents with no
+         *     tracked decision in the window are omitted entirely (the dashboard renders an
+         *     empty state rather than a synthetic all-zero row). Confined to the caller's
+         *     tenant via [`fetch_window_entries`] and bounded by [`MAX_ANALYTICS_AUDIT_EVENTS`],
+         *     matching the sibling per-agent route (`agent-enforcement`, AAASM-5084).
+         */
+        get: operations["get_agent_decision_mix"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/agent-enforcement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/agent-enforcement` — per-agent blocked + scrubbed counts.
+         * @description Aggregates the existing audit log over the requested window, grouping by
+         *     agent id and counting the two enforcement outcomes the Fleet page surfaces:
+         *     `blocked` = `PolicyViolation` events, `scrubbed` = `CredentialLeakBlocked`
+         *     events. This is the same audit event-type → verdict mapping the enforcement
+         *     timeline uses ([`timeline_verdict`], AAASM-5031): read-only observability
+         *     over data the API already holds — no enforcement or audit-write path is
+         *     touched, and no value is fabricated. Only agents that recorded at least one
+         *     blocked or scrubbed decision appear (an agent with neither is omitted, so the
+         *     dashboard renders `—` rather than a synthetic zero). Confined to the caller's
+         *     tenant via [`fetch_window_entries`], matching the other audit-derived
+         *     analytics routes (tool-usage, policy-effectiveness).
+         */
+        get: operations["get_agent_enforcement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/approvals` — resolved-approval volume, rate and latency.
+         * @description Aggregates the approval queue's resolved history over records whose decision
+         *     timestamp falls in the window, confined to the caller's tenant (admin sees
+         *     all teams; a tenant-scoped caller sees only its own team; untagged records
+         *     are admin-only — matching the `/approvals` list route). `byOutcome` splits
+         *     approved / rejected / `timed_out` (expired); `volume` is their sum;
+         *     `approvalRate` = approved / volume; `medianTta` is the median time-to-answer
+         *     in seconds across decided (non-expired) approvals.
+         */
+        get: operations["get_approvals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/cost-breakdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/cost-breakdown` — stacked spend broken down by a dimension.
+         * @description The budget tracker exposes **point-in-time** spend (today's totals per agent
+         *     and per team), not a time series, so the v1 response emits a single bucket
+         *     labelled with the current budget date. Grouping:
+         *
+         *     * `agent` (default) — one segment per agent, from the budget snapshot's
+         *       per-agent breakdown. Only an admin sees the per-agent rows (they are not
+         *       team-keyed, so exposing them to a tenant caller would leak other tenants'
+         *       agents — same rule the `/costs` route applies).
+         *     * `team` — one segment per team; an admin sees every team, a tenant-scoped
+         *       caller sees only its own team's row.
+         *     * `model` — **no per-model spend source exists** in the budget tracker, so
+         *       this returns an empty bucket list rather than fabricated segments.
+         */
+        get: operations["get_cost_breakdown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/fleet-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/fleet-health` — per-agent health sparklines.
+         * @description The registry exposes point-in-time status, not a health time series, so the
+         *     v1 view emits a single current sample per agent: `score` = 100 when Active,
+         *     40 when Suspended, 0 when Deregistered (see [`health_score`]), stamped with
+         *     the current epoch-millisecond time. Scoped to the agents the caller may see
+         *     (admin sees all; a tenant-scoped caller sees only its own team's agents).
+         */
+        get: operations["get_fleet_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/kpis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/kpis` — a single scalar KPI plus its window-over-window delta.
+         * @description v1 metric definitions (documented because several are not uniquely
+         *     determined by the available in-process state):
+         *
+         *     * `agents` — number of registered agents the caller may see (registry is
+         *       point-in-time, so `delta` is always `0.0`).
+         *     * `invocations` — count of `ToolCallIntercepted` + `ToolDispatched` audit
+         *       events in the window; `delta` compares against the immediately preceding
+         *       equal-length window.
+         *     * `cost` — current daily spend (USD) from the budget tracker snapshot
+         *       (point-in-time; `delta` is `0.0`, `unit` = `USD`).
+         *     * `anomalies` — count of `PolicyViolation` audit events in the window (the
+         *       closest available signal to an anomaly); `delta` is window-over-window.
+         *     * `p99` — request-tail latency. **No latency source exists** in the
+         *       in-process audit/budget state, so this honestly returns `0.0` (`unit` =
+         *       `ms`) rather than a fabricated value.
+         *
+         *     Audit-derived metrics are confined to the caller's tenant; registry/budget
+         *     metrics use the same visibility rules as the cost route.
+         */
+        get: operations["get_kpis"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/policy-effectiveness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/policy-effectiveness` — per-rule daily outcome counts.
+         * @description Groups audit events that carry a non-empty `policy_rule` by rule and by UTC
+         *     day, classifying each into the v1 buckets:
+         *
+         *     * `warns` — the evaluation was a shadow / dry-run (`dry_run: true`).
+         *     * `blocks` — a `PolicyViolation` event, or a non-dry-run evaluation whose
+         *       `decision` was not an allow.
+         *     * `passes` — a non-dry-run evaluation whose `decision` was an allow (or that
+         *       recorded no explicit decision).
+         *
+         *     The rule `name` equals its id in v1 (the audit log records only the rule
+         *     identifier). Rules with no recorded evaluations produce no entry, so an idle
+         *     window returns an empty rule list. Confined to the caller's tenant.
+         */
+        get: operations["get_policy_effectiveness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/tool-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/tool-usage` — per-tool call counts and error rate.
+         * @description Aggregates `ToolCallIntercepted` / `ToolDispatched` audit events in the
+         *     window by tool identifier (see [`extract_tool_name`]). `calls` is the event
+         *     count; `errorRate` is the fraction whose policy `decision` was not an allow
+         *     (see [`decision_is_error`]) — the v1 definition of a failed tool call.
+         *     Events whose payload carries no resolvable tool name are skipped, so a
+         *     window with no tool activity returns an empty list rather than a synthetic
+         *     tool. Confined to the caller's tenant.
+         */
+        get: operations["get_tool_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/trust": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/trust` — per-agent behavioural trust score (ADR 0019).
+         * @description Serves Option A's clean-rate score over the fixed 7-day window, under the
+         *     caller's tenant-configured weight-set (ADR 0019 Option D). Reuses the exact
+         *     audit read + tenant confinement the sibling per-agent rollups use
+         *     ([`fetch_window_entries_with_total`] → [`scope_entries`]): a trust score
+         *     leaking another tenant's behaviour would be an IDOR, so the read is confined
+         *     to the caller's org and the weight-set is read for that same org.
+         *
+         *     Per agent it counts the five Option A signals from the audit log
+         *     (`ToolCallIntercepted`, `PolicyViolation`, `CredentialLeakBlocked`,
+         *     `ApprovalRequested`, and `ApprovalDenied` + `ApprovalTimedOut`) and applies
+         *     [`crate::trust::compute_trust`]. The two binding guardrails hold:
+         *
+         *     * **Guardrail 1** — the response echoes the effective `weights`, so a `78`
+         *       here is never presented as commensurable with another tenant's `78`.
+         *     * **Guardrail 2** — cold start (`D < MIN_ACTIONS`) yields `null` regardless
+         *       of the weights, and a window truncated at the analytics cap yields no
+         *       score at all (`truncated: true`, empty `agents`) — never a partial score.
+         *
+         *     Read-only observability over data the API already holds — no enforcement or
+         *     audit-write path is touched.
+         */
+        get: operations["get_trust"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analytics/trust/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/analytics/trust/config` — read the caller tenant's trust weights.
+         * @description Returns the effective weight-set for the caller's org (its stored override,
+         *     or the Option A defaults). Confined to the caller's own tenant: the org is
+         *     resolved from the authenticated caller ([`AuthenticatedCaller::tenant`]),
+         *     never from client input, so a caller can only read its own tenant's config.
+         */
+        get: operations["get_trust_config"];
+        /**
+         * `PUT /api/v1/analytics/trust/config` — set the caller tenant's trust weights.
+         * @description Changing a tenant's trust weights is a tenant-scoped mutation, so it requires
+         *     `Scope::Write` ([`RequireWrite`]) — matching how the other tenant-scoped
+         *     write surfaces (alert rules, destinations) are gated. The target tenant is
+         *     the caller's own org, resolved from [`AuthenticatedCaller::tenant`] and never
+         *     from client input, so a caller cannot rewrite another tenant's weights (an
+         *     IDOR). A caller with no org tenant has no per-tenant config to write and is
+         *     rejected with 400.
+         *
+         *     Only the per-signal enabled/weight are configurable (ADR 0019 Option D, v1);
+         *     the bucket thresholds and window are fixed and not part of this body.
+         */
+        put: operations["put_trust_config"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/approvals": {
         parameters: {
             query?: never;
@@ -593,6 +1098,33 @@ export interface paths {
          * @description Approve a pending governance action, unblocking the agent.
          */
         post: operations["approve_action"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/approvals/{id}/forward": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/approvals/:id/forward` — reassign a pending approval to a
+         *     different approver (AAASM-5095).
+         * @description Forwarding does **not** decide the request: it stays pending so the new
+         *     target must still approve or reject it. This is a governance action and
+         *     carries the *same* write-scope + tenant-ownership guard as approve/reject
+         *     (an operator may only forward approvals in a team it can access, or any
+         *     approval when it holds admin scope). Returns the still-pending approval on
+         *     success, 404 when the id is unknown or already resolved (no pending request
+         *     to forward), and 400 for a missing target or invalid UUID.
+         */
+        post: operations["forward_action"];
         delete?: never;
         options?: never;
         head?: never;
@@ -666,6 +1198,215 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a single-use, expiring invite for a new account (admin scope only).
+         * @description ADR 0031 §3. The raw invite token is returned exactly once in this response;
+         *     only its hash is persisted, so it cannot be recovered later. The invite is
+         *     bound to the target email and role and expires after a fixed window.
+         */
+        post: operations["invite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/invite/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept an invite: set the initial password and activate the account.
+         * @description ADR 0031 §3. Consumes the single-use invite token (rejected if already used
+         *     or expired), hashes the chosen password with argon2id, and activates the
+         *     account. Public: the invitee is not yet authenticated.
+         */
+        post: operations["invite_accept"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authenticate with email + password, returning an access token and setting the
+         *     refresh cookie (ADR 0031 §3).
+         * @description Enumeration-safe: an unknown email and a wrong password both return a uniform
+         *     `401`, and an unknown email still runs an argon2 verify against a dummy hash
+         *     so the timing does not distinguish the two. A locked account returns `423`
+         *     with `retry-after` regardless of whether the password is correct.
+         */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke the refresh session and clear the cookie.
+         * @description ADR 0031 §5. Revokes the caller's refresh token server-side and clears the
+         *     HttpOnly cookie. Requires an authenticated caller; always returns `204`,
+         *     including when no active session is found (idempotent).
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Advertise the credential methods this deployment supports (ADR 0031 §Q5).
+         * @description Public: the login page reads this before rendering, so it never offers a
+         *     password form on an in-memory (API-key-only) backend. Always lists `api_key`;
+         *     adds `password` only when a Postgres-backed account store is configured.
+         */
+        get: operations["auth_methods"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a password-reset email (ADR 0031 §Q4).
+         * @description Enumeration-safe: always returns `202 Accepted` whether or not the email maps
+         *     to an account, so a caller can never probe which addresses are registered.
+         *     When the email does resolve to an active account, a single-use, expiring reset
+         *     token is minted (stored only as its hash) and the raw token is dispatched via
+         *     the configured mailer; the token is never logged and never returned on the
+         *     wire. A mail outage or an SMTP-less deployment does not change the response.
+         */
+        post: operations["password_reset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password/reset/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a password reset: consume the token and set the new password (ADR
+         *     0031 §Q4).
+         * @description Validates the new password against the minimum-length floor (`422` if weak),
+         *     then atomically consumes the single-use reset token — a missing, expired, or
+         *     already-used token is rejected with `422`. On success the password is
+         *     re-hashed with argon2id and installed, and every outstanding refresh session
+         *     for the account is revoked so any pre-existing session is forced to re-auth.
+         *     The token is never logged.
+         */
+        post: operations["password_reset_confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a valid refresh cookie for a new access token.
+         * @description ADR 0031 §5. Rotates the refresh token on use — the presented token is
+         *     revoked and a fresh one is set — so a replayed cookie loses the rotation
+         *     race and is rejected. Public: the HttpOnly refresh cookie is the credential.
+         */
+        post: operations["refresh"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register the first account (bootstrap owner) or a self-registered account when
+         *     open registration is enabled (ADR 0031 §4 / §Q3).
+         * @description The first account on a fresh instance becomes `owner` under an advisory lock
+         *     so two concurrent registrations cannot both claim owner. Once a user exists,
+         *     registration is closed (`403`) unless `AA_AUTH_OPEN_REGISTRATION` is set, in
+         *     which case a subsequent registration creates a `developer` account.
+         */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/token": {
         parameters: {
             query?: never;
@@ -682,6 +1423,33 @@ export interface paths {
          *     the caller's granted scopes.
          */
         post: operations["issue_token"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/ws-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint a short-lived, single-use WebSocket ticket for the authenticated caller.
+         * @description A browser cannot set an `Authorization` header on a WebSocket handshake, so
+         *     the dashboard mints a ticket here (over an authenticated REST call) and
+         *     presents it once as `?ticket=` on the upgrade, instead of putting a
+         *     long-lived credential in the URL where infrastructure logs would capture it
+         *     (AAASM-4861; see ADR 0012). The ticket is bound to this caller's identity,
+         *     scopes, and tenant, is valid only for the requested stream, is atomically
+         *     consumed on first use (replay-safe), is not accepted by any REST route, and
+         *     is not refreshable — a reconnect mints a fresh one.
+         */
+        post: operations["issue_ws_ticket"];
         delete?: never;
         options?: never;
         head?: never;
@@ -738,7 +1506,9 @@ export interface paths {
          * @description Returns the subset of agent rows that actually changed — the dashboard
          *     uses this to drive an optimistic-UI rollback when an override fails.
          *     An unknown `agentId` rejects the request with 400 and leaves the store
-         *     untouched; an unknown `resourceId` on an agent is silently skipped.
+         *     untouched; an unknown `resourceId` on an agent is silently skipped. A
+         *     `narrow` or `approval` decision is also rejected with 400 — the projection
+         *     emits only allow / deny / na, so no revoke could restore such a cell.
          *
          *     When `ttlSeconds` is present the override is automatically reverted after
          *     that many seconds and the response status is **201 Created**. Without a
@@ -785,8 +1555,70 @@ export interface paths {
          * `GET /api/v1/costs` — cost and budget summary.
          * @description Retrieve the current daily and monthly cost and budget summary,
          *     including per-agent breakdown and configured budget limits.
+         *
+         *     Per-tenant filtering (AAASM-3139): an admin caller sees every tenant's
+         *     per-agent and per-team breakdown; a tenant-scoped caller sees only its own
+         *     team's row; a caller with neither admin scope nor a team scope receives the
+         *     aggregate totals only, with the breakdowns elided rather than leaking every
+         *     tenant's spend (the cross-tenant IDOR that AAASM-3126 admin-gated).
          */
         get: operations["get_cost_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/costs/budget-tree": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/costs/budget-tree` — org → team → agent budget inheritance tree.
+         * @description Joins the agent registry's team/lineage structure with the budget tracker's
+         *     per-tier spend so each node shows its configured limit, own spend, and the
+         *     subtree spend a parent's budget constrains. Tenant scope is the visible-agent
+         *     boundary ([`visible_agents`]): an admin sees the whole org; a tenant-scoped
+         *     caller sees only its team's subtree; an unscoped non-admin caller gets a
+         *     `null` root. Within the visible set, an agent is a team-level root when its
+         *     spawn parent is not itself visible, and its spawned sub-agents nest beneath
+         *     it (they inherit its budget line) — so every visible agent appears exactly
+         *     once. Read-only: no enforcement or budget-debit path is touched.
+         */
+        get: operations["get_budget_tree"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/costs/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/costs/history` — trailing daily spend series.
+         * @description Aggregates the budget tracker's per-agent daily spend history into a single
+         *     dense (zero-filled), oldest-first series over the last `days` days. The set
+         *     of agents summed is exactly the caller's visible set ([`visible_agents`]):
+         *     an admin gets the org-wide total, a tenant-scoped caller gets only its own
+         *     team's total, and an unscoped non-admin caller gets an all-zero series —
+         *     so the same endpoint serves every scope without leaking cross-tenant spend.
+         *     Read-only observability over data the tracker already holds; no enforcement
+         *     or budget-debit path is touched. The history is in-memory (see
+         *     `BudgetTracker::spend_history_totals_for`) and resets on gateway restart.
+         */
+        get: operations["get_cost_history"];
         put?: never;
         post?: never;
         delete?: never;
@@ -811,6 +1643,36 @@ export interface paths {
          *     secret-injection resolver.
          */
         post: operations["dispatch_tool"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/fleet/active-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/fleet/active-sessions` — list currently-open agent sessions
+         *     across the whole fleet.
+         * @description Read-only observability surface for the dashboard Fleet → Active Sessions tab
+         *     (AAASM-5038). Flattens the `active_sessions` the registry already tracks on
+         *     each [`aa_gateway::registry::AgentRecord`] into one fleet-wide list, tagging
+         *     every session with its owning agent's id, name, and team. Purely derived from
+         *     existing registry state — it opens, mutates, and closes nothing, so it changes
+         *     neither session lifecycle nor enforcement.
+         *
+         *     Tenant-scoped exactly like [`list_agents`] (AAASM-3865): an admin sees every
+         *     agent's sessions; a team-scoped caller sees only its own team's; an agent with
+         *     no team is admin-only. Results are ordered newest-first by `started_at`.
+         */
+        get: operations["list_active_sessions"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -910,6 +1772,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/iam/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/iam/roles` — the built-in RBAC roles and their capability grants.
+         * @description Read-only reflection of the gateway's policy-RBAC model
+         *     (`PolicyMutationRequiredRole`). Grants are derived server-side, not stored,
+         *     so the response is stable and requires no IAM state. Gated `RequireRead`
+         *     (deny-by-default): the authz model is not per-tenant secret — it is the same
+         *     data published in `docs/src/policy-rbac.md` — but still requires a valid
+         *     read-scoped caller.
+         */
+        get: operations["list_roles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/logs": {
         parameters: {
             query?: never;
@@ -921,6 +1808,13 @@ export interface paths {
          * `GET /api/v1/logs` — paginated audit log query.
          * @description Query the paginated audit log of governance events.
          *     Supports optional filtering by agent ID and event type.
+         *
+         *     Per-tenant scoping (AAASM-3483): the audit log is per-tenant data. An admin
+         *     caller may read any org's audit (honouring an explicit `?org_id`); a
+         *     tenant-scoped caller has the `org_id` filter forced to its own org, so it
+         *     can neither read another org's audit nor omit the filter to enumerate every
+         *     org. A non-admin caller with no org scope receives an empty page rather than
+         *     a cross-tenant dump.
          */
         get: operations["list_logs"];
         put?: never;
@@ -951,6 +1845,67 @@ export interface paths {
          *     lifecycle transitions via the `pause`, `resume`, and `terminate` endpoints.
          */
         post: operations["register_op"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ops/global/halt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ops/global/halt` — emit a **fleet-wide** op-control halt
+         *     delivered to every connected runtime.
+         * @description The halt is published under the reserved global op-id `"*"` (AAASM-3873),
+         *     a kill switch that no agent can evade. Because it affects every agent in the
+         *     fleet it is gated to admin callers (AAASM-3881).
+         *
+         *     * `200 OK` — global halt emitted; body is an [`OpHaltAck`].
+         *     * `400 Bad Request` — unknown action.
+         *     * `403 Forbidden` — caller lacks admin scope.
+         *     * `503 Service Unavailable` — no op-control channel is configured.
+         */
+        post: operations["halt_global"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/ops/{id}/halt-agent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/ops/{id}/halt-agent` — emit an **agent-wide** op-control halt
+         *     for the agent that owns operation `{id}`.
+         * @description The halt is published under the reserved `agent:{agent_id}` op-id, which the
+         *     runtime consults on **every** request regardless of the agent-supplied
+         *     `trace_id` (AAASM-3873). It therefore halts the whole agent — not just this
+         *     op — and cannot be evaded by omitting or forging a trace id (AAASM-3881).
+         *     The owning agent identity is resolved server-side from the op registry, so
+         *     the operator addresses a live op they can already see in the ops view.
+         *
+         *     * `200 OK` — halt emitted; body is an [`OpHaltAck`].
+         *     * `400 Bad Request` — empty op id or unknown action.
+         *     * `403 Forbidden` — caller lacks write scope or the op's team.
+         *     * `404 Not Found` — no op with this id is registered.
+         *     * `409 Conflict` — the op has no resolvable owning agent to halt.
+         *     * `503 Service Unavailable` — no op-control channel is configured.
+         */
+        post: operations["halt_agent_for_op"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1027,6 +1982,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/overview/enforcement-timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/overview/enforcement-timeline` — decision counts over time by verdict.
+         * @description Buckets the requested window into [`SERIES_BUCKETS`] equal slices and counts
+         *     audit-recorded enforcement decisions per slice into four verdict lanes —
+         *     `allow` / `narrow` / `deny` / `scrub` — derived from the [`AuditEventType`]
+         *     the gateway writes for each proto `Decision` (see [`timeline_verdict`]). This
+         *     is read-only observability over the existing audit log: no enforcement
+         *     semantics are touched and no new data source is introduced. Every bucket is
+         *     emitted (including zeros) so the dashboard timeline renders a continuous
+         *     axis. Confined to the caller's tenant.
+         */
+        get: operations["get_enforcement_timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/policies": {
         parameters: {
             query?: never;
@@ -1074,7 +2056,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/topology/edges": {
+    "/api/v1/policies/replay": {
         parameters: {
             query?: never;
             header?: never;
@@ -1082,6 +2064,431 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/policies/replay` — replay recent traffic against a proposed
+         *     policy and report aggregate impact (AAASM-5094).
+         * @description Distinct from `POST /api/v1/policies/simulate`, which dry-runs a *single*
+         *     hypothetical `(agent, tool, target)` probe against the *live* policy. This
+         *     endpoint replays a **corpus** of recorded real traffic (the audit window)
+         *     against a **proposed** policy that is never loaded, and returns aggregate
+         *     impact stats — newly-blocked, newly-narrowed, regressions, false-positives —
+         *     plus a bounded sample of per-request before/after verdict diffs.
+         *
+         *     Read-only and non-mutating: the proposed policy is validated but never
+         *     applied ([`PolicyEngine::simulate_against`] runs on a throwaway engine), no
+         *     audit entry is written, and no live state changes.
+         *
+         *     ## What is and is not replayed
+         *
+         *     The corpus is the recorded audit log. The audit payload persists only
+         *     non-secret action metadata — tool name, paths, hosts — and never the raw tool
+         *     arguments (`aa_runtime::audit_publisher::conversion::build_payload`). Replay
+         *     therefore reconstructs each recorded **tool call** from its persisted tool
+         *     name with empty arguments and diffs the proposed policy's verdict against the
+         *     recorded one. Argument/target-sensitive rules and the credential/PII scrubber
+         *     cannot be faithfully re-exercised from the corpus and are not counted; an
+         *     empty corpus returns all-zero counts, never a fabricated figure.
+         */
+        post: operations["replay_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/policies/simulate` — dry-run a hypothetical request.
+         * @description Evaluate a hypothetical `(agent, tool, target)` request against the active
+         *     governance policy and return the verdict (allow / narrow / approval / deny),
+         *     the matched rule/reason, and whether the payload would be scrubbed.
+         *
+         *     This is a pure, read-only what-if: it runs the policy engine in dry-run mode
+         *     ([`aa_gateway::engine::PolicyEngine::simulate`]) with no state mutation, no
+         *     budget debit, no audit write, and no enforcement side effect.
+         */
+        post: operations["simulate_policy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/policies/team/{team_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/policies/team/{team_id}` — policies in force for one team.
+         * @description Read-only inverse of [`PolicyResponse::affects`]: the union of the policy
+         *     cascades of the team's agents, deduplicated by document. Backs the Teams
+         *     surface's Active-policies card (AAASM-5080 / AAASM-5096).
+         *
+         *     It is a separate path rather than a field on `GET /api/v1/policies` because
+         *     that endpoint is Admin-only — it discloses every tenant's raw policy YAML —
+         *     while a team's own operator must be able to read the policies governing its
+         *     team. This endpoint discloses no YAML, only document identities, so plain
+         *     Read plus membership in the requested team is the right gate.
+         *
+         *     Deny-by-default and tenant-scoped: a non-admin caller may only ask about its
+         *     own team, and each member is additionally filtered through the shared
+         *     `record_visible_to` org+team check, so no agent outside the caller's tenant
+         *     contributes a document.
+         *
+         *     Returns `policies: null` rather than `[]` when the team has agents but no
+         *     resolvable cascade — see [`TeamPoliciesResponse::policies`] for why the two
+         *     must not collapse.
+         */
+        get: operations["list_team_policies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scrub/pattern-counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/scrub/pattern-counts` — per-kind detection counts over a window.
+         * @description Aggregates the persisted `secret_detected` alerts by their recorded
+         *     `detected_pattern_type` (the [`CredentialKind`] string) over the requested
+         *     window. Only kinds that actually fired appear, so an idle window returns an
+         *     empty list rather than zero-filled fabricated rows. The alert read is
+         *     bounded by [`MAX_SCRUB_ALERTS`] and confined to the caller's tenant.
+         *
+         *     **`hits` counts alerts, not findings, and only the alert's first kind** —
+         *     see [`PatternCount::hits`] for exactly what that loses and why it is
+         *     recorded rather than repaired here. `GET /api/v1/sensitive-data/breakdown`
+         *     is the finding-accurate surface.
+         */
+        get: operations["get_pattern_counts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scrub/patterns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/scrub/patterns` — the effective built-in pattern catalogue.
+         * @description Returns every built-in [`CredentialKind`] detector with its canonical kind
+         *     label, `[REDACTED:<kind>]` replacement string, coarse category, and fixed
+         *     severity. This is the real detector set the gateway scanner enforces — the
+         *     dashboard Scrub page can render it directly instead of the static fixtures
+         *     it used before AAASM-5174.
+         *
+         *     Custom policy-defined patterns (`data.sensitive_patterns`) are intentionally
+         *     **not** listed here: they are per-policy, not built-in, and exposing/managing
+         *     them is scoped as an AAASM-5174 follow-up. `builtin` is therefore always
+         *     `true` on the current response.
+         */
+        get: operations["get_patterns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scrub/posture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/scrub/posture` — leak posture over a window.
+         * @description Reports `leaks_intercepted` (the count of `secret_detected` alerts in the
+         *     window) and `distinct_kinds`. A leak *rate* is not derivable — the store
+         *     does not persist the total-payloads-scanned denominator — so `leak_rate` is
+         *     surfaced as explicitly absent with `rate_computed: false` rather than
+         *     fabricated (AAASM-5174 truthfulness requirement). Confined to the caller's
+         *     tenant and bounded by [`MAX_SCRUB_ALERTS`].
+         */
+        get: operations["get_posture"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/breakdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/breakdown` — findings grouped by one bounded
+         *     dimension.
+         * @description Read scope, tenant-confined. `group_by` admits only ADR 0032 §9's six
+         *     permitted labels; `agent_id`, `destination`, `session_id`, `trace_id` and any
+         *     fingerprint are refused with 400 and named in the message, because those are
+         *     event-store dimensions and grouping a series by one is unbounded cardinality.
+         */
+        get: operations["get_breakdown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/events` — the drill-down list behind an aggregate.
+         * @description Read scope, tenant-confined. `total` is the true count for the filter, not
+         *     the length of the page — the storage layer documents that pairing a capped
+         *     list with an uncapped count is deliberate, and the field names say which is
+         *     which.
+         */
+        get: operations["list_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/events/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/events/{event_id}` — one event and its findings.
+         * @description Read scope, tenant-confined: the lookup runs inside the caller's scope, so an
+         *     event id belonging to another tenant is a 404 rather than a cross-tenant
+         *     read. That the id exists elsewhere is itself not something to disclose.
+         */
+        get: operations["get_event"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/export` — the compliance export.
+         * @description **Authorisation**: `Scope::Admin` *and* an explicit `acknowledge_export=true`.
+         *     The scope says who may export; the acknowledgement says that this particular
+         *     export was intended, so a link followed by accident does not release a
+         *     tenant's whole governance record.
+         *
+         *     **Access logging**: the export is recorded in
+         *     [`AppState::sensitive_data_export_log`] **before** the body is produced, and
+         *     a record that cannot be written is a 503 with nothing released. An export
+         *     nobody can attribute is the outcome this ordering exists to prevent.
+         *
+         *     Tenant-confined by [`resolve_scope`] like every other endpoint here: admin
+         *     scope authorises the *act*, it does not widen the *rows* — a cross-tenant
+         *     admin still names the organisation it is exporting.
+         */
+        get: operations["export_compliance_records"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/summary` — the ADR 0032 §8 metric dictionary
+         *     over a window.
+         * @description Read scope, tenant-confined by [`resolve_scope`]. Every counter is derived
+         *     from the durable projection; see [`metrics`] for why two of them deliberately
+         *     do not read the column that shares their name.
+         */
+        get: operations["get_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/timeseries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/timeseries` — the counters, bucketed.
+         * @description Read scope, tenant-confined. Empty buckets are emitted with zeroed counters
+         *     so a chart renders a gap rather than interpolating across one.
+         */
+        get: operations["get_timeseries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sensitive-data/top-offenders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/sensitive-data/top-offenders` — the worst agents, tools or
+         *     destinations, with a trend against the preceding window.
+         * @description Read scope, tenant-confined.
+         *
+         *     **This ranks the event store, not a metric series.** ADR 0032 §9 forbids
+         *     `agent_id` and `destination` as *metric labels* because a label multiplies
+         *     series; a ranked list over a queryable store is exactly what §9 sends those
+         *     dimensions to instead, and it returns a bounded number of rows by
+         *     construction.
+         */
+        get: operations["get_top_offenders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List all auto-discovered AI dev tools on the gateway host.
+         * @description Runs all registered [`DevToolAdapter`][aa_core::DevToolAdapter]
+         *     implementations concurrently and returns the subset that are installed.
+         *     If no tools are detected, an empty array is returned (not an error).
+         */
+        get: operations["list_tools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topology": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * `GET /api/v1/topology` — the node+edge graph rendered by the dashboard
+         *     Topology page (AAASM-5040).
+         * @description Returns every agent the caller's tenant may see as a graph node — reusing
+         *     the same [`AgentNode`] projection as `/topology/overview`, so the per-node
+         *     enforcement-mode / flagged / trust badges added in AAASM-5036 flow through
+         *     end-to-end — plus every stored edge between those nodes, in all six relation
+         *     kinds with a `cross_team` flag (AAASM-5099).
+         *
+         *     Unlike the sibling `/topology/*` routes, this handler additionally enriches
+         *     each node's `owner` / `policy_count` / `budget` (AAASM-5045) and
+         *     `effective_permissions` (AAASM-5099) from registry metadata, the policy-engine
+         *     cascade, and the budget tracker respectively, so the dashboard node-detail
+         *     panel renders real values rather than placeholders.
+         *
+         *     Tenant-scoped, `RequireRead`, deny-by-default exactly like the sibling
+         *     `/topology/*` routes: a non-admin caller with no tenant scope receives an
+         *     empty graph rather than a cross-tenant dump (AAASM-3483). An edge is emitted
+         *     only when BOTH of its endpoints are visible nodes, so the graph never leaks
+         *     an out-of-tenant peer and never references a node the client didn't receive
+         *     (mirrors the edges.rs BFS tenant boundary, AAASM-3825).
+         */
+        get: operations["get_topology_graph"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topology/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List all topology edges, optionally filtered by team.
+         * @description Iterates every known edge type and collects up to `limit` edges total
+         *     (default 500, max 1 000). When `team_id` is provided, only edges where
+         *     the source **or** target agent belongs to that team are returned.
+         */
+        get: operations["list_topology_edges"];
         put?: never;
         /**
          * Record a new directed topology edge.
@@ -1275,14 +2682,122 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * @description Response body carrying a freshly minted access token (login / refresh /
+         *     invite-accept). The refresh token is NOT in the body — it rides in the
+         *     HttpOnly cookie.
+         */
+        AccessTokenResponse: {
+            /** @description The short-lived access JWT to present as `Authorization: Bearer`. */
+            access_token: string;
+            /**
+             * Format: int64
+             * @description Access-token lifetime in seconds.
+             */
+            expires_in: number;
+        };
+        /** @description Response for `GET /api/v1/analytics/action-volume`. */
+        ActionVolumeResponse: {
+            /** @description One series per action category (empty when no audit events matched). */
+            series: components["schemas"]["ActionVolumeSeries"][];
+        };
+        /** @description One named series in the action-volume chart (an action category). */
+        ActionVolumeSeries: {
+            /** @description Stable series key. */
+            key: string;
+            /** @description Human-readable series name. */
+            name: string;
+            /** @description Time-bucketed points for the series. */
+            points: components["schemas"]["SeriesPoint"][];
+        };
         /** @description Summary of an active session in the API response. */
         ActiveSessionResponse: {
+            /**
+             * Format: int32
+             * @description Number of governed actions observed on this session so far (AAASM-5088).
+             */
+            actions_count: number;
             /** @description Hex-encoded session UUID. */
             session_id: string;
             /** @description ISO 8601 timestamp when the session started. */
             started_at: string;
             /** @description Current status of the session. */
             status: string;
+        };
+        /**
+         * @description One policy document in the agent's effective cascade.
+         *
+         *     AAASM-5098 — the honest identity of a document already loaded in the engine:
+         *     its scope-qualified id, human name, optional version, and scope label. Mirrors
+         *     the `Policy` identity the capability matrix emits (`{scope}/{name}` id) so the
+         *     Config-YAML tab and the Capability page name the same document the same way.
+         */
+        AgentConfigPolicyRef: {
+            /**
+             * @description Scope-qualified id (`{scope}/{name}`, or the bare scope when the document
+             *     is unnamed) — matches the capability matrix's per-policy id.
+             */
+            id: string;
+            /** @description Human-readable document name, falling back to the scope label when unnamed. */
+            name: string;
+            /** @description Wire-format scope label (e.g. `"global"`, `"team:platform"`). */
+            scope: string;
+            /** @description Document `policy_version`, if the source declared one. */
+            version?: string | null;
+        };
+        /**
+         * @description A qualitative posture recommendation for the agent (AAASM-5098, ADR-0022).
+         *
+         *     Names the resources that dominate the agent's recent denials so an operator
+         *     can see *what* to narrow, without asserting a quantified improvement. The
+         *     `−N%` counterfactual is deliberately withheld — producing it requires the
+         *     traffic replay AAASM-5094 builds, and fabricating a percentage would ship a
+         *     number the product cannot stand behind (ADR-0022 §Option C). Every count here
+         *     is a historical denial tally over the window, not a prediction.
+         */
+        AgentConfigRecommendation: {
+            /**
+             * @description Human-readable qualitative finding, e.g. "3 resources account for 78% of
+             *     this agent's denials in the last 7 days". Names resources, never a policy
+             *     (naming a specific policy needs a matcher that does not exist) and never a
+             *     projected improvement percentage.
+             */
+            summary: string;
+            /** @description The resources responsible for the most denials, most-denied first. */
+            top_resources: components["schemas"]["DeniedResourceShare"][];
+            /**
+             * Format: double
+             * @description Share of the window's denials the `top_resources` together account for,
+             *     as a 0–100 percentage of `total_denials` (a historical count ratio, not a
+             *     projected improvement).
+             */
+            top_resources_share_pct: number;
+            /**
+             * Format: int64
+             * @description Total denials (`PolicyViolation` audit events) counted in the window.
+             */
+            total_denials: number;
+            /** @description Recent window the finding covers (e.g. `"7d"`). */
+            window: string;
+        };
+        /**
+         * @description Per-agent config projection returned by `GET /api/v1/agents/{id}/config`.
+         *
+         *     AAASM-5098 (ADR-0022, narrow Option C). Backs the Agent-Detail Config-YAML
+         *     tab. **Every field carries a real per-agent server-side source** — the
+         *     contract deliberately omits the mock's `fail_open`, `rate_limit`,
+         *     `observability`, and `issuer` because ADR-0022 verified none of them has a
+         *     per-agent source. They are absent from this schema entirely rather than
+         *     emitted as `null`: a null `observability` would imply the concept exists and
+         *     is unset, a stronger claim than the truth.
+         */
+        AgentConfigResponse: {
+            /** @description Hex-encoded agent UUID. */
+            agent_id: string;
+            enforcement_mode?: null | components["schemas"]["EnforcementModeLabel"];
+            /** @description The policy documents in the agent's effective cascade, broadest → narrowest. */
+            policies: components["schemas"]["AgentConfigPolicyRef"][];
+            recommendation?: null | components["schemas"]["AgentConfigRecommendation"];
         };
         /** @description Per-agent cost entry within the budget summary. */
         AgentCostEntry: {
@@ -1294,6 +2809,168 @@ export interface components {
             date: string;
             /** @description Total spend this month in USD for this agent (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
+        };
+        /**
+         * @description One agent's decision-outcome distribution over the requested window.
+         *
+         *     The five fields are the Agent-Detail traffic-mix vocabulary
+         *     (`allowed / narrowed / scrubbed / pending / denied`, see
+         *     `dashboard/src/features/trace/decision.ts`). Four are sourced from the audit
+         *     log's recorded decision event types; `narrow` has no audit source and is
+         *     always `0` (see [`get_agent_decision_mix`]).
+         */
+        AgentDecisionMixCounts: {
+            /**
+             * @description Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+             *     uses, so the dashboard can join this mix directly onto its fleet/agent rows.
+             */
+            agent_id: string;
+            /**
+             * Format: int64
+             * @description Allowed decisions: `ToolCallIntercepted` audit events (the gateway records
+             *     proto `Decision::ALLOW` as this event type).
+             */
+            allow: number;
+            /**
+             * Format: int64
+             * @description Denied decisions: `PolicyViolation` audit events (the gateway records
+             *     proto `Decision::DENY` as this event type).
+             */
+            deny: number;
+            /**
+             * Format: int64
+             * @description Narrowed decisions. **No audit source exists**: the proto `Decision` enum
+             *     has no `NARROW` variant and the gateway never writes a narrow event type
+             *     (narrowing is a capability-plane concept, not a per-invocation audit
+             *     decision), so this is always `0` — a truthful absence rather than a
+             *     fabricated count.
+             */
+            narrow: number;
+            /**
+             * Format: int64
+             * @description Pending decisions: `ApprovalRequested` audit events (the gateway records
+             *     proto `Decision::PENDING` as this event type).
+             */
+            pending: number;
+            /**
+             * Format: int64
+             * @description Scrubbed decisions: `CredentialLeakBlocked` audit events (the gateway
+             *     records proto `Decision::REDACT` as this event type).
+             */
+            scrub: number;
+        };
+        /**
+         * @description One row of the agent's recent decision stream (AAASM-5058).
+         *
+         *     Backs the agent-detail Traffic tab's per-decision table
+         *     (`design/v1/hi-fi/agent-detail.jsx`), one row per governance decision the
+         *     gateway recorded for this agent. Every field is read straight from the
+         *     existing audit log — no enforcement or audit-write path is touched. Columns
+         *     the audit log has no source for are surfaced as `null` rather than
+         *     fabricated (see [`AgentDecisionResponse::latency_ms`]).
+         */
+        AgentDecisionResponse: {
+            /**
+             * Format: int64
+             * @description The policy `decision` as the proto [`Decision`](aa_proto::assembly::common::v1::Decision)
+             *     enum's **integer** discriminant, exactly as the gateway writes it (see
+             *     the AAASM-5035 note in `analytics::decision_is_error`): `1` = Allow,
+             *     `2` = Deny, `3` = Pending, `4` = Redact, `0` = Unspecified.
+             */
+            decision: number;
+            /**
+             * @description Lowercase label derived from `decision` (`allow` / `deny` / `pending` /
+             *     `redact` / `unspecified`) so the UI can map to its verdict styling
+             *     without re-deriving the enum. Derived, not a separate audit field.
+             */
+            decisionLabel: components["schemas"]["DecisionLabel"];
+            /**
+             * Format: int64
+             * @description The design's `latency` column. **Always `null`: the audit log records no
+             *     per-decision latency today**, so it is surfaced nullable rather than
+             *     fabricated. Wired through so the column lands the day a latency source is
+             *     added, without another contract change.
+             */
+            latencyMs?: number | null;
+            /**
+             * @description The matched policy rule id (audit `policy_rule`, top-level or under
+             *     `detail`). The design's `policy` column. `null` when the decision
+             *     recorded no rule (e.g. a baseline allow with no matching rule).
+             */
+            matchedPolicy?: string | null;
+            /**
+             * @description The action's primary target derived from the audit `detail` (tool name,
+             *     file path, network host, process command, or LLM model). The design's
+             *     `resource` column. `null` when the detail carries no resolvable target.
+             */
+            resource?: string | null;
+            sensitiveDataDisposition?: null | components["schemas"]["SensitiveDataDisposition"];
+            /**
+             * Format: int64
+             * @description Per-session monotonic sequence of the audit entry. Combined with
+             *     `sessionId` it uniquely identifies the row.
+             */
+            seq: number;
+            /**
+             * @description Hex-encoded id of the session the decision was recorded under. Lets the
+             *     UI link a row to its trace; not part of the visible design columns.
+             */
+            sessionId: string;
+            /** @description Decision timestamp as an RFC 3339 UTC string (audit `timestamp_ns`). */
+            timestamp: string;
+            /**
+             * @description Distributed-trace id linking this decision to its session trace
+             *     (`/api/v1/traces/...`). **Always `null` today**: the audit log records no
+             *     per-decision trace id, so it is surfaced nullable rather than fabricated.
+             *     Populated once trace-id propagation lands on the runtime — the
+             *     ADR-0018-gated follow-up (ADR 0018 / AAASM-5086 follow-up).
+             */
+            traceId?: string | null;
+            /**
+             * @description The recorded action category (audit payload `action_type`, e.g.
+             *     `TOOL_CALL` / `FILE_OPERATION`). The design's `verb` column: the audit
+             *     log records the action *category*, not a fine-grained read/write verb,
+             *     so this is the closest recorded source. `null` when unrecorded.
+             */
+            verb?: string | null;
+            verdict?: null | components["schemas"]["RuntimeVerdict"];
+        };
+        /** @description Recent per-agent decision stream (AAASM-5058). */
+        AgentDecisionsResponse: {
+            /** @description Decisions newest-first, capped to the request's `limit`. */
+            decisions: components["schemas"]["AgentDecisionResponse"][];
+        };
+        /** @description One agent's blocked + scrubbed decision counts over the requested window. */
+        AgentEnforcementCounts: {
+            /**
+             * @description Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+             *     uses, so the dashboard can join these counts directly onto its fleet rows.
+             */
+            agent_id: string;
+            /**
+             * Format: int64
+             * @description Blocked decisions in the window: `PolicyViolation` audit events (the
+             *     gateway records proto `Decision::DENY` as this event type).
+             */
+            blocked: number;
+            /**
+             * Format: int64
+             * @description Scrubbed decisions in the window: `CredentialLeakBlocked` audit events
+             *     (the gateway records proto `Decision::REDACT` as this event type).
+             */
+            scrubbed: number;
+        };
+        /** @description One agent's health sparkline. */
+        AgentHealth: {
+            /** @description Hex-encoded agent id. */
+            id: string;
+            /** @description Display name (metadata `name`, falling back to the id). */
+            name: string;
+            /**
+             * @description Health samples. The v1 view emits a single current sample per agent
+             *     (the registry exposes point-in-time status, not a health time series).
+             */
+            points: components["schemas"]["HealthPoint"][];
         };
         /**
          * @description An agent's complete ancestry chain ordered root-first.
@@ -1360,30 +3037,106 @@ export interface components {
          *     }
          *     ```
          * @example {
+         *       "budget": {
+         *         "limit_usd": 100,
+         *         "spend_usd": 4.1
+         *       },
          *       "depth": 1,
+         *       "flagged": false,
          *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "mode": "enforce",
          *       "name": "my-agent",
+         *       "owner": "platform-team",
+         *       "policy_count": 3,
          *       "status": "active",
-         *       "team_id": "team-alpha"
+         *       "team_id": "team-alpha",
+         *       "trust": null
          *     }
          */
         AgentNode: {
+            budget?: null | components["schemas"]["NodeBudget"];
             /**
              * Format: int32
              * @description Delegation depth — 0 for root agents.
              */
             depth: number;
+            effective_permissions?: null | components["schemas"]["NodeEffectivePermissions"];
+            /**
+             * @description Whether the agent is policy-flagged — it has recorded at least one
+             *     `PolicyViolation` audit event (`count > 0`, AAASM-5103). Drives the
+             *     danger-tinted node card and ⚑ marker in the topology graph.
+             *
+             *     Derived from the per-agent audit aggregate
+             *     ([`crate::routes::agent_violations::AgentViolationCounts`]), which the
+             *     topology handlers build once per request and set here — the
+             *     `From<&AgentRecord>` conversion leaves it `false` because the record no
+             *     longer carries a violation counter (the dead field it used to read was
+             *     removed in AAASM-5103).
+             */
+            flagged: boolean;
             /** @description Governance level — included only when `show_budget=true`. */
             governance_level?: string | null;
             /** @description Hex-encoded agent UUID. */
             id: string;
+            /**
+             * @description Enforcement-mode badge: `enforce`, `shadow`, or `off`. Derived from the
+             *     canonical `AgentRecord::enforcement_mode` field the gateway actually
+             *     consults (AAASM-5289) — not the free-form `metadata["mode"]` — so the
+             *     badge cannot show a mode enforcement is not in. `None` (no per-agent
+             *     override) resolves to `enforce`, the server-wide default. See
+             *     [`agent_mode`].
+             */
+            mode: string;
             /** @description Human-readable agent name. */
             name: string;
+            /**
+             * @description Operator / engineer who owns this agent, read from the agent record's
+             *     `metadata["owner"]` (AAASM-5045). `null` when the registrant supplied no
+             *     owner tag — kept present (not omitted) so the node-detail panel renders an
+             *     explicit "no data" state rather than inferring a value.
+             */
+            owner?: string | null;
+            /**
+             * Format: int32
+             * @description Number of governance policies whose scope cascade applies to this agent
+             *     — `Global → Org → Team → Agent`, the same walk `PolicyEngine::evaluate`
+             *     uses (AAASM-5045). `null` when this projection is built without a
+             *     policy-engine lookup: only the whole-fleet graph endpoint
+             *     (`GET /api/v1/topology`) resolves it; the list / tree / team endpoints
+             *     leave it `null` rather than emitting a misleading `0`.
+             */
+            policy_count?: number | null;
             /** @description Runtime status: `active`, `suspended`, or `deregistered`. */
-            status: string;
+            status: components["schemas"]["AgentNodeStatus"];
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
+            /**
+             * Format: int32
+             * @description Trust score as an integer on a 0–100 scale, or `null` when no
+             *     trust-analytics source exists yet.
+             *     The registry does not compute a per-agent trust score today, so this is
+             *     currently always `null` — the same placeholder the Fleet page uses. Kept
+             *     present (not omitted) so the client renders an explicit "no data" state
+             *     instead of inferring a misleading default.
+             */
+            trust: number | null;
         };
+        /**
+         * @description Runtime status of an agent node in the topology projection.
+         *
+         *     AAASM-5218 — constrains the wire vocabulary of [`AgentNode::status`] at the
+         *     OpenAPI derive to exactly the three values `status_str` can emit, so the
+         *     generated spec (and the TypeScript client) advertises a closed enum instead
+         *     of an unconstrained `string`. Serializes lowercase, matching the strings the
+         *     registry's [`AgentStatus`] mapped to before this was a free-form field.
+         *
+         *     Deliberately distinct from the runtime registry [`AgentStatus`], whose
+         *     `Suspended(_)` variant carries a parameterised reason an enum cannot express,
+         *     and from the capability-view `AgentStatus` — the three agent-status
+         *     vocabularies are not reconciled here (that is an ADR question, see AAASM-5209).
+         * @enum {string}
+         */
+        AgentNodeStatus: "active" | "suspended" | "deregistered";
         /** @description JSON representation of an agent returned by the API. */
         AgentResponse: {
             /** @description Currently active sessions for this agent. */
@@ -1392,6 +3145,13 @@ export interface components {
             framework: string;
             /** @description Hex-encoded agent UUID. */
             id: string;
+            /**
+             * @description Whether the agent is policy-flagged — it has recorded at least one policy
+             *     violation (`policy_violations_count > 0`, AAASM-5103). Clients should read
+             *     this rather than re-deriving a threshold, so the Fleet and Topology
+             *     surfaces cannot diverge on whether a given agent is flagged.
+             */
+            is_flagged: boolean;
             /** @description ISO 8601 timestamp of the most recent event. */
             last_event?: string | null;
             /** @description Governance layer this agent is assigned to (e.g. "advisory", "enforced"). */
@@ -1409,7 +3169,10 @@ export interface components {
             pid?: number | null;
             /**
              * Format: int32
-             * @description Number of policy violations recorded.
+             * @description Number of policy violations recorded for this agent, derived from the
+             *     `PolicyViolation` audit events (AAASM-5103) — the same canonical source
+             *     the analytics `agent-enforcement` aggregation counts. `0` when the agent
+             *     has recorded none.
              */
             policy_violations_count: number;
             /** @description Most recent events emitted by this agent. */
@@ -1453,11 +3216,14 @@ export interface components {
          *       "children": [],
          *       "delegation_reason": null,
          *       "depth": 0,
+         *       "flagged": false,
          *       "id": "0102030405060708090a0b0c0d0e0f10",
+         *       "mode": "enforce",
          *       "name": "root-agent",
          *       "spawned_by_tool": null,
          *       "status": "active",
-         *       "team_id": "team-alpha"
+         *       "team_id": "team-alpha",
+         *       "trust": null
          *     }
          */
         AgentTree: {
@@ -1469,10 +3235,20 @@ export interface components {
              * @description Delegation depth — 0 for root agents.
              */
             depth: number;
+            /**
+             * @description Whether the agent is policy-flagged (`count > 0`). Same derivation and
+             *     audit source as [`AgentNode::flagged`] (AAASM-5103).
+             */
+            flagged: boolean;
             /** @description Governance level — included only when `show_budget=true`. */
             governance_level?: string | null;
             /** @description Hex-encoded agent UUID. */
             id: string;
+            /**
+             * @description Enforcement-mode badge: `enforce`, `shadow`, or `off`. Same canonical
+             *     `enforcement_mode` derivation as [`AgentNode::mode`] (AAASM-5289).
+             */
+            mode: string;
             /** @description Human-readable agent name. */
             name: string;
             /** @description Tool that spawned this agent, if known. */
@@ -1481,6 +3257,30 @@ export interface components {
             status: string;
             /** @description Team this agent belongs to, if any. */
             team_id?: string | null;
+            /**
+             * Format: int32
+             * @description Trust score as an integer on a 0–100 scale, or `null` when no
+             *     trust-analytics source exists yet.
+             *     Same representation, placeholder, and null contract as
+             *     [`AgentNode::trust`] (AAASM-5104).
+             */
+            trust: number | null;
+        };
+        /** @description One agent's trust score over the fixed 7-day window (AAASM-5083). */
+        AgentTrustScore: {
+            /**
+             * @description Hex-encoded agent id — the same 32-char lower-hex form `AgentResponse.id`
+             *     uses, so the dashboard can join scores directly onto its fleet rows.
+             */
+            agent_id: string;
+            /**
+             * Format: int32
+             * @description Trust score on a 0–100 scale, or `null` when the agent has fewer than
+             *     `MIN_ACTIONS` governed actions in the window (cold start) — the same
+             *     `Option<u8>` contract the topology / capability projections carry. A
+             *     score is only ever a whole number; `null` is never `0` or `50`.
+             */
+            trust: number | null;
         };
         /**
          * @description Rich alert detail response used by `GET /api/v1/alerts/:id`.
@@ -1719,6 +3519,8 @@ export interface components {
         ApiKeyResponse: {
             assigned_policies: string[];
             created_at: string;
+            /** @description AAASM-5177 — RFC3339 expiry instant, or `null` for a non-expiring key. */
+            expires_at?: string | null;
             id: string;
             label: string;
             last_used?: string | null;
@@ -1735,7 +3537,45 @@ export interface components {
          */
         ApiKeyScopeResponse: "read:members" | "write:members" | "read:policies" | "write:policies" | "read:audit" | "admin";
         /** @enum {string} */
-        ApiKeyStatusResponse: "active" | "revoked";
+        ApiKeyStatusResponse: "active" | "revoked" | "expired";
+        /** @description Response for `GET /api/v1/analytics/approvals`. */
+        ApprovalAnalyticsResponse: {
+            /**
+             * Format: double
+             * @description Approval rate = approved / (approved + rejected + expired), `0.0` when none.
+             */
+            approvalRate: number;
+            /** @description Breakdown by final outcome. */
+            byOutcome: components["schemas"]["ApprovalOutcome"];
+            /**
+             * Format: double
+             * @description Median time-to-answer in seconds across resolved (non-expired) approvals.
+             */
+            medianTta: number;
+            /**
+             * Format: int64
+             * @description Total resolved approvals in the window (approved + rejected + expired).
+             */
+            volume: number;
+        };
+        /** @description Resolved-outcome counts for the approvals analytics panel. */
+        ApprovalOutcome: {
+            /**
+             * Format: int64
+             * @description Approvals granted.
+             */
+            approved: number;
+            /**
+             * Format: int64
+             * @description Approvals that expired without a decision (`timed_out`).
+             */
+            expired: number;
+            /**
+             * Format: int64
+             * @description Approvals rejected.
+             */
+            rejected: number;
+        };
         /**
          * @description Payload for `event_type: "approval"` events.
          *
@@ -1796,6 +3636,7 @@ export interface components {
             expires_at: string;
             /** @description Unique approval request identifier. */
             id: string;
+            quorum?: null | components["schemas"]["QuorumStatus"];
             /** @description Human-readable reason for the approval request. */
             reason: string;
             routing_status?: null | components["schemas"]["RoutingStatusInfo"];
@@ -1803,6 +3644,17 @@ export interface components {
             status: string;
             /** @description Team the approval was routed to, if known. */
             team_id?: string | null;
+        };
+        /**
+         * @description Response body for `GET /auth/methods` (ADR 0031 §Q5). Advertises which
+         *     credential paths this deployment can serve so the frontend degrades honestly.
+         */
+        AuthMethodsResponse: {
+            /**
+             * @description `["api_key"]` on an in-memory deployment; `["api_key","password"]` when a
+             *     Postgres store backs native accounts.
+             */
+            methods: string[];
         };
         /**
          * @description Payload for `event_type: "budget"` events.
@@ -1850,6 +3702,54 @@ export interface components {
             /** @description Total USD spent in the period (string-encoded Decimal). */
             spent_usd: string;
         };
+        /** @description One node in the budget-inheritance tree. */
+        BudgetTreeNode: {
+            /**
+             * @description Configured daily budget limit in USD for this node, if any (decimal
+             *     string). Agent nodes fall back to the global limit when they carry no
+             *     per-agent override, mirroring the enforcement path's resolution.
+             */
+            budget_limit_usd?: string | null;
+            children: components["schemas"]["BudgetTreeNode"][];
+            /**
+             * Format: int32
+             * @description Depth from the org root (org = 0, team = 1, agents from 2 and deeper).
+             */
+            depth: number;
+            /**
+             * @description Governance level for agent nodes (e.g. `L0Discover`), read from the
+             *     registry record; absent for org/team nodes.
+             */
+            governance_level?: string | null;
+            /** @description Stable node id: the org id, the team id, or the hex agent id. */
+            id: string;
+            /** @description Node tier: `org` | `team` | `agent`. */
+            kind: string;
+            /** @description Human-readable label: org/team id, or the agent's registered name. */
+            label: string;
+            /**
+             * @description Configured calendar-month budget limit in USD for this node, if any
+             *     (decimal string). Populated for team nodes from the tracker-wide team
+             *     monthly envelope (AAASM-5087) so the Teams monthly-budget card can read
+             *     the limit off the tree; `None` for tiers without a configured monthly
+             *     cap. This is a calendar-month window, not a rolling window.
+             */
+            monthly_budget_limit_usd?: string | null;
+            /**
+             * @description Spend attributable to this node itself, excluding descendants (USD
+             *     string). Org and team nodes never spend directly, so this is `"0"`.
+             */
+            own_spend_usd: string;
+            /**
+             * @description Spend across this node and its entire subtree (USD string) — the figure a
+             *     parent's budget constrains.
+             */
+            subtree_spend_usd: string;
+        };
+        /** @description Response for `GET /api/v1/costs/budget-tree`. */
+        BudgetTreeResponse: {
+            root?: null | components["schemas"]["BudgetTreeNode"];
+        };
         /**
          * @description One node in the hierarchical call stack rendered beneath an
          *     expanded Live Ops row in the dashboard.
@@ -1886,7 +3786,14 @@ export interface components {
         CapCell: {
             delete: components["schemas"]["Decision"];
             exec: components["schemas"]["Decision"];
-            /** @description Marks this cell for UI attention (e.g. over-permissioned). */
+            /**
+             * @description `Some(true)` when this cell's grant is over-permission — the agent is
+             *     effectively allowed a destructive system verb its declared `RiskTier`
+             *     baseline does not warrant (AAASM-5175, ADR 0029). Absent when the cell is
+             *     within baseline, or when the agent is not evaluated (no resolvable tier,
+             *     or an empty cascade). Only the offending marker is emitted; a per-cell
+             *     `false` is not, so the UI highlights positives without negative clutter.
+             */
             flag?: boolean | null;
             read: components["schemas"]["Decision"];
             write: components["schemas"]["Decision"];
@@ -1897,21 +3804,48 @@ export interface components {
             caps: {
                 [key: string]: components["schemas"]["CapCell"];
             };
+            /**
+             * @description Over-permission verdict (AAASM-5175, ADR 0029): `Some(true)` when the
+             *     agent is effectively granted a destructive system capability its declared
+             *     `RiskTier` baseline does not warrant, `Some(false)` when it was evaluated
+             *     and found within baseline. Absent when the agent is *not* evaluated — it
+             *     declared no resolvable risk tier, or its policy cascade is empty (in which
+             *     case every cell is `Allow` by fall-through and flagging would be a false
+             *     positive). This is a structural grant-vs-posture signal, distinct from the
+             *     behavioural `trust` score (ADR 0019) and the topology violation-volume flag.
+             */
             flagged?: boolean | null;
             framework: string;
+            /** @description Hex-encoded agent UUID, as registered. */
             id: string;
-            /** @description Human-readable relative-time string (e.g. `"2m ago"`). */
+            /** @description ISO 8601 UTC timestamp of the agent's most recent heartbeat. */
             lastSeen: string;
-            mode: components["schemas"]["AgentMode"];
+            mode?: null | components["schemas"]["AgentMode"];
             name: string;
+            /**
+             * @description When `flagged` is `Some(true)`, a human-readable explanation naming the
+             *     tier and the offending grants (e.g. "Low-risk agent granted file_delete,
+             *     terminal_exec beyond its tier baseline"). Absent otherwise — there is no
+             *     operator-authored note source, so a note only ever accompanies a flag.
+             */
             note?: string | null;
-            owner: string;
+            /**
+             * @description Owning team, from the registry's first-class `team_id` (falling back to
+             *     `org_id`). Absent when the agent registered without either.
+             */
+            owner?: string | null;
             status: components["schemas"]["AgentStatus"];
             /**
              * Format: int32
-             * @description Trust score on a 0–100 scale.
+             * @description Trust score as an integer on a 0–100 scale, or `null` when no
+             *     trust-analytics source exists yet.
+             *
+             *     Always `null`: no trust score is computed anywhere in the gateway today.
+             *     Deriving one would be a new scoring rule, which is the subject of its own
+             *     story (AAASM-5083) — emitting a placeholder here would be indistinguishable
+             *     from a real score to every consumer.
              */
-            trust: number;
+            trust: number | null;
         };
         /**
          * @description Top-level response shape for `GET /api/v1/capability/matrix`. Mirrors
@@ -1919,6 +3853,25 @@ export interface components {
          */
         CapabilityMatrix: {
             agents: components["schemas"]["CapabilityAgent"][];
+            /**
+             * @description Whether the projecting engine actually carries a policy cascade
+             *     (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: when the cascade
+             *     is unloaded — the state of every shipped aa-api deployment today, which
+             *     loads its policy through `load_from_file` and leaves `scope_index` empty —
+             *     `decide()` falls through to `Allow` for every cell, so the grid asserts an
+             *     unbroken wall of `ALLOW` for capabilities the primary policy actually
+             *     denies. `false` here is the matrix-level "not evaluated — policy cascade
+             *     not loaded" signal the dashboard renders as an unavailable state, so an
+             *     operator never reads a fabricated `Allow` as a real grant. It is a fact
+             *     about the projection's *data*, never an operator choice; the enforcement
+             *     path (`evaluate_primary`) is unaffected.
+             *
+             *     Required-but-always-present, not optional: the key is always on the wire,
+             *     so a client reads an explicit `false` it must handle rather than a missing
+             *     field it can shrug off — the same absent-vs-unknown discipline as
+             *     [`CapabilityAgent::trust`] and `TeamPoliciesResponse::policies`.
+             */
+            cascadeLoaded: boolean;
             policies: components["schemas"]["Policy"][];
             resources: components["schemas"]["Resource"][];
             sampleCalls: components["schemas"]["SampleCall"][];
@@ -1955,6 +3908,28 @@ export interface components {
             updated: components["schemas"]["CapabilityAgent"][];
         };
         /**
+         * @description Echo-back confirmation a cascade apply must carry (AAASM-5340).
+         *
+         *     The `/enforcement-mode/preview` dry-run returns the explicit affected-id set
+         *     and count; a subsequent cascade apply echoes them back here. The handler
+         *     recomputes the current subtree and compares as an **order-independent set**
+         *     (plus the count): if the tree changed between preview and apply — an agent
+         *     spawned or deregistered, a mis-click on a stale UI — the apply is rejected
+         *     `409` so the operator re-previews rather than acting on a stale picture.
+         */
+        CascadeConfirmation: {
+            /**
+             * @description The affected-agent count the caller was shown by the preview. Must equal
+             *     the recomputed subtree size.
+             */
+            expected_count: number;
+            /**
+             * @description The hex-encoded affected agent ids the caller was shown by the preview.
+             *     Compared as a set (order-independent) against the recomputed subtree.
+             */
+            expected_ids: string[];
+        };
+        /**
          * @description Classifier for what a proposed-vs-current decision change represents.
          * @enum {string}
          */
@@ -1976,6 +3951,17 @@ export interface components {
          * @enum {string}
          */
         ColdActionDto: "drop" | "archive";
+        /** @description Response for `GET /api/v1/sensitive-data/export`. */
+        ComplianceExportResponse: {
+            /** @description The access record written **before** this body was produced. */
+            access_record: components["schemas"]["ExportAccessRecord"];
+            /** @description Every matching event in the window. */
+            events: components["schemas"]["SensitiveDataEventSummary"][];
+            /** @description Their findings, keyed by `event_id`. */
+            findings: components["schemas"]["ExportedFindings"][];
+            /** @description What was exported. */
+            scope: components["schemas"]["QueryScope"];
+        };
         /** @description Response body for a failed test-fire (502). */
         ConnectorFailedBody: {
             /**
@@ -1990,6 +3976,53 @@ export interface components {
             connector_status: number;
             /** @description Always `"connector_failed"`. */
             error: string;
+        };
+        /** @description Response for `GET /api/v1/analytics/cost-breakdown`. */
+        CostBreakdownResponse: {
+            /**
+             * @description Ordered cost buckets. The v1 view emits a single current-day bucket
+             *     (the budget tracker exposes point-in-time spend, not a time series).
+             */
+            buckets: components["schemas"]["CostBucket"][];
+        };
+        /** @description A single bucket (x-axis position) of the cost-breakdown chart. */
+        CostBucket: {
+            /** @description Bucket label (the current calendar date for the v1 point-in-time view). */
+            label: string;
+            /** @description Per-dimension spend segments within this bucket. */
+            segments: components["schemas"]["CostSegment"][];
+        };
+        /** @description One calendar day of the spend-history series. */
+        CostHistoryPoint: {
+            /** @description Calendar date (YYYY-MM-DD, in the tracker's timezone) for this bucket. */
+            date: string;
+            /**
+             * @description Total spend recorded on this date in USD, serialized as a decimal string
+             *     so money precision is never lost to float rounding (mirrors `/costs`).
+             */
+            spend_usd: string;
+        };
+        /** @description Response for `GET /api/v1/costs/history`. */
+        CostHistoryResponse: {
+            /**
+             * Format: int32
+             * @description Number of days in the returned series (the resolved, clamped `days`).
+             */
+            days: number;
+            /** @description Daily spend buckets, oldest first, dense (zero-filled) across the window. */
+            points: components["schemas"]["CostHistoryPoint"][];
+        };
+        /** @description One stacked segment within a cost bucket (a single agent / team / model). */
+        CostSegment: {
+            /** @description Stable segment key (agent id hex, team id, or model name). */
+            key: string;
+            /** @description Human-readable segment label. */
+            name: string;
+            /**
+             * Format: double
+             * @description Spend for this segment in USD.
+             */
+            value: number;
         };
         /** @description JSON representation of the cost/budget summary. */
         CostSummary: {
@@ -2020,10 +4053,10 @@ export interface components {
             /** @description Raw YAML content of the governance policy. */
             policy_yaml: string;
             /**
-             * @description Governance scope this policy targets (e.g. `"global"`, `"team:platform"`).
-             *
-             *     Used for RBAC authorization — the caller must hold the role required
-             *     to mutate policies at this scope. Defaults to `"global"` when absent.
+             * @description Optional client-declared governance scope (e.g. `"global"`,
+             *     `"team:platform"`). Advisory: authorization is derived from the policy
+             *     document's own declared scope, and a value that disagrees with the
+             *     document is rejected.
              */
             scope?: string | null;
         };
@@ -2040,6 +4073,13 @@ export interface components {
         DecideRequest: {
             /** @description Identity of the operator making the decision. */
             by?: string | null;
+            /**
+             * @description Structured approval conditions attached to an approve decision
+             *     (AAASM-5095). Each entry is a condition slug such as `"this-once"`,
+             *     `"policy-exception"`, or `"time-boxed"`. Ignored on reject. Absent or
+             *     empty ⇒ an unconditional approval.
+             */
+            conditions?: string[] | null;
             /** @description Optional reason for the decision. */
             reason?: string | null;
         };
@@ -2048,6 +4088,32 @@ export interface components {
          * @enum {string}
          */
         Decision: "allow" | "narrow" | "approval" | "deny" | "na";
+        /**
+         * @description Wire vocabulary for [`AgentDecisionResponse::decision_label`].
+         *
+         *     AAASM-5219 — constrains the `decisionLabel` field to the closed set of
+         *     lowercase labels [`decision_label`] can emit, one per proto
+         *     [`Decision`](aa_proto::assembly::common::v1::Decision) discriminant plus the
+         *     `unspecified` fallback, so the generated OpenAPI spec advertises an enum
+         *     rather than a free-form `string`. Serializes lowercase.
+         * @enum {string}
+         */
+        DecisionLabel: "allow" | "deny" | "pending" | "redact" | "unspecified";
+        /** @description One resource's contribution to an agent's recent denials. */
+        DeniedResourceShare: {
+            /**
+             * Format: int64
+             * @description Denials attributed to this resource in the window.
+             */
+            denials: number;
+            /** @description The denied resource (the audit `blocked_action`, e.g. `"gmail/write"`). */
+            resource: string;
+            /**
+             * Format: double
+             * @description This resource's share of `total_denials`, as a 0–100 percentage.
+             */
+            share_pct: number;
+        };
         /**
          * @description Per-kind configuration payload for a `Destination`.
          *
@@ -2114,6 +4180,22 @@ export interface components {
             name: string;
             /** @description RFC 3339 last-mutation timestamp. */
             updated_at: string;
+        };
+        /** @description One group of a breakdown, counted both ways. */
+        DimensionBucket: {
+            /**
+             * Format: int64
+             * @description How many distinct **events** carried at least one. Frequently smaller
+             *     than `finding_count`, and never the same measure.
+             */
+            event_count: number;
+            /**
+             * Format: int64
+             * @description How many **findings** fell in this group.
+             */
+            finding_count: number;
+            /** @description The dimension value this group is keyed by. */
+            value: string;
         };
         /** @description Request body for `POST /api/v1/dispatch_tool`. */
         DispatchToolRequest: {
@@ -2191,6 +4273,155 @@ export interface components {
             /** @description Per-scope contribution, in cascade order (broadest → narrowest). */
             sources: components["schemas"]["PermissionSourceResponse"][];
         };
+        /** @description One time bucket of the enforcement timeline: decision counts by verdict. */
+        EnforcementBucket: {
+            /**
+             * Format: int64
+             * @description Permitted decisions (`ToolCallIntercepted` = proto `Decision::ALLOW`).
+             */
+            allow: number;
+            /**
+             * Format: int64
+             * @description Blocked decisions (`PolicyViolation` = proto `Decision::DENY`).
+             */
+            deny: number;
+            /**
+             * Format: int64
+             * @description Held-for-approval decisions (`ApprovalRequested` = proto `Decision::PENDING`).
+             */
+            narrow: number;
+            /**
+             * Format: int64
+             * @description Credential/secret redactions (`CredentialLeakBlocked` = proto `Decision::REDACT`).
+             */
+            scrub: number;
+            /**
+             * Format: int64
+             * @description Bucket-start timestamp, epoch milliseconds.
+             */
+            ts: number;
+        };
+        /**
+         * @description The body of a successful `POST /api/v1/agents/{id}/enforcement-mode`
+         *     response (AAASM-5340). Untagged so the wire shape is exactly the inner
+         *     variant: a single-agent toggle (no `cascade` field) serializes as an
+         *     [`EnforcementModeResponse`] — byte-identical to AAASM-5338 — while a cascade
+         *     serializes as an [`EnforcementModeCascadeResponse`]. Discriminated by the
+         *     presence of `affected_ids`.
+         */
+        EnforcementModeApplyResponse: components["schemas"]["EnforcementModeResponse"] | components["schemas"]["EnforcementModeCascadeResponse"];
+        /**
+         * @description Response from `POST /api/v1/agents/{id}/enforcement-mode/preview`
+         *     (AAASM-5340).
+         *
+         *     The explicit affected-agent set for a cascade rooted at `{id}`, computed
+         *     without mutating anything. The order is deterministic: the root first, then
+         *     its descendants in the BFS order [`AgentRegistry::descendants_of`] returns.
+         *     The set is what a subsequent cascade apply must echo back verbatim.
+         */
+        EnforcementModeCascadePreviewResponse: {
+            /** @description Hex-encoded affected agent ids: root first, then descendants in BFS order. */
+            affected_ids: string[];
+            /** @description The number of affected agents (`affected_ids.len()`, i.e. root + descendants). */
+            count: number;
+        };
+        /**
+         * @description Response from a cascade `POST /api/v1/agents/{id}/enforcement-mode`
+         *     (AAASM-5340) — returned only when the request carried a `cascade`
+         *     confirmation. Reports the full affected set the mode was applied to.
+         */
+        EnforcementModeCascadeResponse: {
+            /**
+             * @description Hex-encoded affected agent ids the mode was applied to: root first, then
+             *     descendants in BFS order.
+             */
+            affected_ids: string[];
+            /** @description The number of affected agents the mode was applied to. */
+            count: number;
+            /**
+             * Format: date-time
+             * @description The shadow-window deadline, echoed on a weakening cascade; `null` on a
+             *     strengthening cascade (the expiry is cleared).
+             */
+            expires_at?: string | null;
+            /** @description The enforcement mode now in force across the whole affected set. */
+            new_mode: components["schemas"]["EnforcementModeLabel"];
+        };
+        /**
+         * @description Wire vocabulary for [`AgentConfigResponse::enforcement_mode`].
+         *
+         *     AAASM-5098 / ADR-0022 — the agent's registered enforcement-mode override,
+         *     serialized as the same `snake_case` labels the core [`aa_core::EnforcementMode`]
+         *     uses. A dedicated schema (rather than surfacing the core enum) so the
+         *     generated OpenAPI advertises a closed enum. Emitted only when the agent
+         *     declares an override; see [`AgentConfigResponse::enforcement_mode`].
+         * @enum {string}
+         */
+        EnforcementModeLabel: "enforce" | "observe" | "disabled";
+        /** @description Request body for `POST /api/v1/agents/:id/enforcement-mode` (AAASM-5097). */
+        EnforcementModeRequest: {
+            cascade?: null | components["schemas"]["CascadeConfirmation"];
+            /**
+             * Format: date-time
+             * @description When the shadow window ends. **Required on a weakening (`observe`)
+             *     change**, must be in the future and within [`SHADOW_MAX_HOURS`] of now;
+             *     ignored (and cleared) on a strengthening (`enforce`) change.
+             */
+            expires_at?: string | null;
+            /**
+             * @description Target enforcement mode. `enforce` (strengthen) or `observe` (weaken /
+             *     shadow); `disabled` is not accepted (ADR 0021).
+             */
+            mode: components["schemas"]["EnforcementModeTarget"];
+            /**
+             * @description Operator justification. **Required and non-empty on a weakening
+             *     (`observe`) change** — the audit record has nothing to say otherwise;
+             *     ignored on a strengthening (`enforce`) change.
+             */
+            reason?: string | null;
+        };
+        /** @description Response from `POST /api/v1/agents/:id/enforcement-mode`. */
+        EnforcementModeResponse: {
+            /** @description Hex-encoded agent UUID. */
+            agent_id: string;
+            /**
+             * Format: date-time
+             * @description The shadow-window deadline, echoed back on a weakening change; `null` on a
+             *     strengthening change (the expiry is cleared).
+             */
+            expires_at?: string | null;
+            /** @description The enforcement mode now in force after the change. */
+            new_mode: components["schemas"]["EnforcementModeLabel"];
+            previous_mode?: null | components["schemas"]["EnforcementModeLabel"];
+        };
+        /**
+         * @description Target enforcement mode a `POST /api/v1/agents/{id}/enforcement-mode` request
+         *     may ask for (AAASM-5097 / ADR 0021).
+         *
+         *     **`Disabled` is intentionally not a variant.** ADR 0021 §Decision item 2
+         *     forbids exposing `Disabled` via the API under any input (its own definition
+         *     restricts it to hermetic test environments), so it is unrepresentable here —
+         *     a body of `{"mode":"disabled"}` fails deserialization and never reaches the
+         *     handler. Serializes the same `snake_case` wire labels as
+         *     [`aa_core::EnforcementMode`].
+         * @enum {string}
+         */
+        EnforcementModeTarget: "enforce" | "observe";
+        /** @description Response for `GET /api/v1/overview/enforcement-timeline`. */
+        EnforcementTimelineResponse: {
+            /**
+             * Format: int64
+             * @description Width of each bucket in seconds (`window / 24`).
+             */
+            bucketSecs: number;
+            /**
+             * @description Ordered buckets, oldest first — always [`SERIES_BUCKETS`] of them,
+             *     including empty buckets, so the timeline renders a continuous axis.
+             */
+            buckets: components["schemas"]["EnforcementBucket"][];
+            /** @description Echo of the resolved window preset (`1h` | `24h` | `7d` | `30d`). */
+            window: string;
+        };
         /**
          * @description Discriminated union of all possible `GovernanceEvent.payload` shapes.
          *
@@ -2209,9 +4440,102 @@ export interface components {
          * @enum {string}
          */
         EventType: "violation" | "approval" | "budget" | "ops_change";
+        /** @description One recorded compliance-export access. */
+        ExportAccessRecord: {
+            /** @description When the export was authorised, RFC 3339. */
+            at: string;
+            /**
+             * Format: int64
+             * @description How many event rows were released.
+             */
+            event_count: number;
+            /**
+             * Format: int64
+             * @description How many finding rows were released.
+             */
+            finding_count: number;
+            /**
+             * Format: int64
+             * @description Inclusive lower bound of the exported window, epoch nanoseconds.
+             */
+            from_ns: number;
+            /** @description The organisation whose records were exported. */
+            org_id: string;
+            /** @description The authenticated caller's key id or JWT subject. Never a credential. */
+            principal: string;
+            /** @description The tenant within it. */
+            tenant_id: string;
+            /**
+             * Format: int64
+             * @description Exclusive upper bound, epoch nanoseconds.
+             */
+            to_ns: number;
+        };
+        /** @description One event's findings, in the export. */
+        ExportedFindings: {
+            /** @description The event these belong to. */
+            event_id: string;
+            /** @description Its findings, in ordinal order. */
+            findings: components["schemas"]["SensitiveDataFindingDetail"][];
+        };
+        /**
+         * @description A currently-open agent session in the fleet-wide active-sessions listing
+         *     (AAASM-5038).
+         *
+         *     Enriches the per-agent [`ActiveSessionResponse`] with the owning agent's
+         *     identity so the dashboard Fleet → Active Sessions tab can render one flat,
+         *     fleet-wide table without a second lookup. `actions_count` is now sourced
+         *     from real gateway traffic (AAASM-5088): each CheckAction / BatchCheck the
+         *     gateway evaluates for the session increments it. `current_task` from the
+         *     design mock stays omitted — the session layer has no real source for a task
+         *     label, and this endpoint surfaces only state that already exists.
+         */
+        FleetActiveSessionResponse: {
+            /**
+             * Format: int32
+             * @description Number of governed actions observed on this session so far (AAASM-5088).
+             */
+            actions_count: number;
+            /** @description Hex-encoded UUID of the agent that owns the session. */
+            agent_id: string;
+            /** @description Human-readable name of the owning agent. */
+            agent_name: string;
+            /** @description Hex-encoded session UUID. */
+            session_id: string;
+            /** @description ISO 8601 timestamp when the session started. */
+            started_at: string;
+            /** @description Current status of the session (e.g. "running", "idle"). */
+            status: string;
+            /** @description Team the owning agent belongs to, if any. */
+            team_id?: string | null;
+        };
+        /** @description Response for `GET /api/v1/analytics/fleet-health`. */
+        FleetHealthResponse: {
+            /** @description One entry per agent the caller may see. */
+            agents: components["schemas"]["AgentHealth"][];
+        };
+        /** @description Request body for the forward/reassign action (AAASM-5095). */
+        ForwardRequest: {
+            /**
+             * @description Identity of the operator performing the forward. Optional; recorded for
+             *     audit context.
+             */
+            by?: string | null;
+            /** @description Optional reason for the reassignment. */
+            reason?: string | null;
+            /** @description Approver identifier (user id or role) to reassign the request to. */
+            to: string;
+        };
         GenerateApiKeyRequest: {
             label: string;
             scopes: components["schemas"]["ApiKeyScopeResponse"][];
+            /**
+             * Format: int64
+             * @description AAASM-5177 — optional time-to-live in seconds. When omitted, the server
+             *     applies [`DEFAULT_API_KEY_TTL_SECS`] (a safe, bounded default) rather than
+             *     issuing a non-expiring key. Must be positive; `0` is rejected.
+             */
+            ttl_seconds?: number | null;
         };
         /**
          * @description One-shot reveal shape returned by generate / rotate. `secret` MUST be
@@ -2262,6 +4586,19 @@ export interface components {
             /** @description Root agent ID used for the BFS. */
             root_agent_id: string;
         };
+        /** @description A single fleet-health sample: `t` epoch milliseconds, `score` 0–100. */
+        HealthPoint: {
+            /**
+             * Format: int64
+             * @description Health score in `[0, 100]`.
+             */
+            score: number;
+            /**
+             * Format: int64
+             * @description Epoch-millisecond timestamp of the sample.
+             */
+            t: number;
+        };
         /** @description Response body for the health endpoint. */
         HealthResponse: {
             /**
@@ -2289,6 +4626,54 @@ export interface components {
             uptime_secs: number;
             /** @description Gateway version (semver from Cargo.toml). */
             version: string;
+        };
+        /** @description Request body for `POST /auth/invite/accept`. */
+        InviteAcceptRequest: {
+            /** @description The initial password to set on the account (must clear the floor). */
+            password: string;
+            /** @description The raw invite token delivered to the invitee. */
+            token: string;
+        };
+        /** @description Request body for `POST /auth/invite` (admin only). */
+        InviteRequest: {
+            /** @description The email to invite. */
+            email: string;
+            /** @description The role the invited account will receive on accept. */
+            role: components["schemas"]["Role"];
+        };
+        /**
+         * @description Response body for `POST /auth/invite`. The raw invite token is returned once
+         *     to the inviting admin to deliver out of band; only its hash is stored.
+         */
+        InviteResponse: {
+            /** @description The created invite id (UUID string). */
+            invite_id: string;
+            /**
+             * @description The single-use, expiring raw invite token. Returned exactly once, here;
+             *     the server stores only its SHA-256 hash and can never surface it again.
+             */
+            token: string;
+        };
+        /**
+         * @description Response for `GET /api/v1/analytics/kpis` — a single scalar KPI plus the
+         *     fractional change versus the previous equivalent window.
+         */
+        KpiResponse: {
+            /**
+             * Format: double
+             * @description Fractional change vs the previous equivalent window
+             *     (`0.12` = +12%). `0.0` when no prior window is available.
+             */
+            delta: number;
+            /** @description Echo of the requested metric key. */
+            metric: string;
+            /** @description Unit hint for the value (e.g. `USD`, `ms`), when meaningful. */
+            unit?: string | null;
+            /**
+             * Format: double
+             * @description Current value of the metric over the requested window.
+             */
+            value: number;
         };
         /**
          * @description One step in an agent's ancestry chain.
@@ -2325,7 +4710,7 @@ export interface components {
             /** @description Hex-encoded agent ID that produced this log entry. */
             agent_id: string;
             /** @description Type of audit event. */
-            event_type: string;
+            event_type: components["schemas"]["LogEventType"];
             /** @description Pre-serialized JSON payload. */
             payload: string;
             /**
@@ -2337,6 +4722,181 @@ export interface components {
             session_id: string;
             /** @description ISO 8601 timestamp of the event. */
             timestamp: string;
+        };
+        /**
+         * @description Category of an audit log entry, mirroring [`aa_core::AuditEventType`].
+         *
+         *     AAASM-5221 — constrains the [`LogEntry::event_type`] wire vocabulary to the
+         *     closed set of labels [`AuditEventType::as_str`] emits, so the generated
+         *     OpenAPI spec advertises an enum rather than a free-form `string`. Variants
+         *     serialize verbatim (PascalCase), matching the strings the audit log has
+         *     always written, so the wire shape is unchanged.
+         *
+         *     Kept in lock-step with `AuditEventType`: the [`From`] impl is exhaustive, so
+         *     adding an audit variant without extending this enum is a compile error.
+         * @enum {string}
+         */
+        LogEventType: "ToolCallIntercepted" | "PolicyViolation" | "CredentialLeakBlocked" | "ApprovalRequested" | "ApprovalGranted" | "ApprovalDenied" | "BudgetLimitApproached" | "BudgetLimitExceeded" | "ApprovalTimedOut" | "ApprovalRouted" | "ApprovalEscalated" | "AgentForceDeregistered" | "MessageBlocked" | "ToolDispatched" | "A2ACallIntercepted" | "A2AImpersonationAttempted" | "SandboxStarted" | "SandboxFilesystemBlocked" | "SandboxCpuTimeout" | "SandboxOomKilled" | "SandboxTerminated" | "SandboxHostFnRateLimited" | "GovernanceMutation";
+        /** @description Request body for `POST /auth/login`. */
+        LoginRequest: {
+            /** @description The account email (case-insensitive). */
+            email: string;
+            /** @description The account password. */
+            password: string;
+            /** @description When true, the refresh session is issued with an extended lifetime. */
+            remember_me?: boolean;
+        };
+        /**
+         * @description A dimension a breakdown may group by.
+         *
+         *     **This enum is ADR 0032 §9's bounded label set, spelled as a type.** The
+         *     permitted names are exactly
+         *     [`SensitiveDataMetricLabels::LABEL_NAMES`], and
+         *     [`PERMITTED_NAMES_MATCH_THE_ADR`](Self::names) is asserted against that
+         *     constant rather than against a second hand-written list, so the two cannot
+         *     drift.
+         *
+         *     The forbidden dimensions — `agent_id`, `destination`, `session_id`,
+         *     `trace_id`, any fingerprint — have no variant, so `?group_by=agent_id`
+         *     cannot deserialize and the request is refused rather than answered with an
+         *     unbounded series. They remain available as **filters** and as drill-down
+         *     columns on the event surface, which is the queryable event store §9 sends
+         *     them to.
+         * @enum {string}
+         */
+        MetricDimension: "category" | "severity" | "confidence_band" | "outcome" | "detection_method" | "provider_id";
+        /**
+         * @description Per-agent daily budget projection for a topology node (AAASM-5045).
+         *
+         *     A slim read-only view of the gateway `BudgetTracker` state for one agent —
+         *     the same source the `/api/v1/costs` per-agent
+         *     breakdown reads. `spend_usd` is today's accrued spend (0 when the agent has
+         *     no accrual yet); `limit_usd` is the agent's effective daily limit
+         *     (per-agent override, else the server-wide daily limit) or `null` when no
+         *     limit is configured. Emitted as `f64` (not the tracker's `Decimal`) because
+         *     the dashboard budget bar renders numbers directly — the two decimals of a
+         *     USD amount are well within `f64`'s exact range.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "spend_usd": 4.10, "limit_usd": 100.0 }
+         *     ```
+         * @example {
+         *       "limit_usd": 100,
+         *       "spend_usd": 4.1
+         *     }
+         */
+        NodeBudget: {
+            /**
+             * Format: double
+             * @description Effective daily budget limit in USD (per-agent override, else the
+             *     server-wide daily limit), or `null` when no limit is configured.
+             */
+            limit_usd?: number | null;
+            /**
+             * Format: double
+             * @description Daily spend accrued for this agent today, in USD.
+             */
+            spend_usd: number;
+        };
+        /**
+         * @description The policy cascade that governs one agent, with per-tier provenance
+         *     (AAASM-5099) — the data behind the node-detail Policy-Inheritance panel.
+         *
+         *     `chain` is the `Global → Org → Team → Agent` walk, broadest first. `allow` /
+         *     `deny` are the capability set that walk produces after the *earlier*
+         *     enforcement stages are folded in — a capability blocked by the network or
+         *     tool stage appears in `deny` and never in `allow`, even though the merged
+         *     capability set alone says nothing about it. See
+         *     `routes::topology::project_effective_permissions` for exactly which stages are
+         *     mirrored and which cannot be.
+         *
+         *     Two consequences for a reader of this payload:
+         *
+         *     * `allow_restricted` must be read together with `allow`: an empty `allow` with
+         *       `allow_restricted = true` is deny-all, not "unrestricted" (AAASM-4154).
+         *     * Absence from `deny` is **not** a grant. A `tools: { "*": { allow: false } }`
+         *       cascade denies tools that have never been named, and no list can enumerate
+         *       them.
+         *
+         *     The hi-fi mock (`design/v1/hi-fi/topology.jsx`) additionally draws a
+         *     "parent" row. There is no parent tier in the product's scope vocabulary
+         *     (`aa_gateway::policy::scope::PolicyScope` is `Global | Org | Team | Agent |
+         *     Tool`) — a parent agent's own `agent:`-scoped policies are not inherited by
+         *     its children — so no parent row is emitted rather than fabricating one.
+         *
+         *     Distinct from `agents::EffectivePermissionsResponse`
+         *     (`GET /api/v1/agents/{id}/capabilities`), which lists one row per *document*
+         *     that declares capabilities. This one lists one row per *tier* — including a
+         *     tier that carries no policy, which is what the panel renders as "no team
+         *     policy" — and is embedded per node so the graph needs no per-agent fan-out.
+         *
+         *     # Example JSON
+         *     ```json
+         *     {
+         *       "chain": [{ "tier": "global", "scope": "global", "policies": ["baseline"] }],
+         *       "allow": ["file_read"],
+         *       "deny": ["terminal_exec"],
+         *       "allow_restricted": true
+         *     }
+         *     ```
+         * @example {
+         *       "allow": [
+         *         "file_read"
+         *       ],
+         *       "allow_restricted": true,
+         *       "cascade_loaded": true,
+         *       "chain": [
+         *         {
+         *           "policies": [
+         *             "baseline"
+         *           ],
+         *           "scope": "global",
+         *           "tier": "global"
+         *         }
+         *       ],
+         *       "deny": [
+         *         "terminal_exec"
+         *       ]
+         *     }
+         */
+        NodeEffectivePermissions: {
+            /**
+             * @description Capabilities the merged cascade explicitly allows, canonical wire names
+             *     (`file_read`, `mcp_tool:<name>`, …), sorted.
+             */
+            allow: string[];
+            /**
+             * @description Whether an allow-list restriction is in force — anything absent from
+             *     `allow` is denied, even when `allow` is empty.
+             */
+            allow_restricted: boolean;
+            /**
+             * @description Whether the projecting engine actually carries a policy cascade
+             *     (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: with no cascade
+             *     loaded — every shipped aa-api deployment — the walk resolves nothing, so
+             *     every tier's `policies` is empty and `allow` / `deny` are empty. That is
+             *     **not** the real permission set: enforcement falls back to the primary
+             *     policy slot this projection cannot enumerate. `false` here is the
+             *     loaded/unavailable signal the dashboard renders as "policy inheritance
+             *     unknown — cascade not loaded", so an empty chain never reads as a real
+             *     "no policies apply". Distinct from a *loaded* cascade whose walk carries no
+             *     document at a tier, which is real state ("no team policy"). This changes
+             *     no enforcement; it only annotates the projection's confidence in its own
+             *     output.
+             *
+             *     Required-but-always-present, matching `AgentNode`'s null discipline for
+             *     unmeasured fields: the key is always on the wire so a client cannot read
+             *     an empty chain as authoritative by omission.
+             */
+            cascade_loaded: boolean;
+            /** @description Cascade tiers that apply to this agent, broadest → narrowest. */
+            chain: components["schemas"]["PolicyChainTier"][];
+            /**
+             * @description Capabilities the merged cascade explicitly denies, canonical wire names,
+             *     sorted.
+             */
+            deny: string[];
         };
         /**
          * @description Acknowledgement returned by the per-op lifecycle endpoints.
@@ -2352,6 +4912,25 @@ export interface components {
             action: string;
             /** @description Operation id from the URL path. */
             op_id: string;
+        };
+        /** @description Acknowledgement returned by the agent-wide / global halt endpoints. */
+        OpHaltAck: {
+            /** @description Server-side timestamp when the halt was accepted (RFC 3339). */
+            accepted_at: string;
+            /** @description Action that was emitted — one of `"pause"`, `"resume"`, `"terminate"`. */
+            action: string;
+            /** @description Halt scope — `"agent"` for an agent-wide halt, `"global"` for fleet-wide. */
+            scope: string;
+            /** @description Targeted agent id for an agent-scoped halt; empty for a global halt. */
+            target: string;
+        };
+        /**
+         * @description Request body for the operator kill-switch endpoints
+         *     ([`halt_agent_for_op`], [`halt_global`]).
+         */
+        OpHaltRequest: {
+            /** @description Signal to emit — one of `"pause"`, `"resume"`, `"terminate"`. */
+            action: string;
         };
         /** @description Snapshot of a registered operation returned by the registry and API. */
         OpRecord: {
@@ -2418,8 +4997,10 @@ export interface components {
          */
         OverrideRecord: {
             /**
-             * @description Whether the override is still active. Always `true` in the current
-             *     implementation (no TTL or explicit delete support yet).
+             * @description Whether the override is still replayed over the projection. Set to
+             *     `false` by an explicit `DELETE /capability/override/{id}` or by the TTL
+             *     timer firing; entries are never removed, so a revoked override stays
+             *     visible in the log with `active: false`.
              */
             active: boolean;
             /** @description Agent identifiers this override was applied to. */
@@ -2434,6 +5015,56 @@ export interface components {
             resourceId: string;
             /** @description Verb within the cell that was changed. */
             verb: components["schemas"]["Verb"];
+        };
+        /**
+         * @description Paginated `GET /api/v1/agents` body (AAASM-4892).
+         *
+         *     A named wrapper (mirroring `PaginatedApprovalResponse`) so the OpenAPI schema
+         *     `$ref`s `AgentResponse` and matches the `{ items, total }` object the handler
+         *     actually serializes — not the bare array a generic `Vec<T>` annotation implied.
+         */
+        PaginatedAgentResponse: {
+            /** @description Agents in the current page. */
+            items: components["schemas"]["AgentResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total agents visible to the caller across all pages.
+             */
+            total: number;
+        };
+        /**
+         * @description Paginated `GET /api/v1/alerts` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `AlertResponse` and matches the `{ items, total }`
+         *     object the handler serializes, not a bare array.
+         */
+        PaginatedAlertResponse: {
+            /** @description Alerts in the current page. */
+            items: components["schemas"]["AlertResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total alerts visible to the caller across all pages.
+             */
+            total: number;
         };
         /**
          * @description Paginated wire-format envelope for `GET /api/v1/approvals`.
@@ -2467,6 +5098,122 @@ export interface components {
              */
             total: number;
         };
+        /**
+         * @description Paginated `GET /api/v1/logs` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `LogEntry` and matches the `{ items, total }` object
+         *     the handler serializes, not a bare array.
+         */
+        PaginatedLogResponse: {
+            /** @description Audit log entries in the current page. */
+            items: components["schemas"]["LogEntry"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total entries matching the filter across all pages.
+             */
+            total: number;
+        };
+        /**
+         * @description Paginated `GET /api/v1/policies` body (AAASM-4892) — a named wrapper so the
+         *     OpenAPI schema `$ref`s `PolicyResponse` and matches the `{ items, total }`
+         *     object the handler serializes, not a bare array.
+         */
+        PaginatedPolicyResponse: {
+            /** @description Policy versions in the current page. */
+            items: components["schemas"]["PolicyResponse"][];
+            /**
+             * Format: int32
+             * @description 1-indexed page number echoed from the request.
+             */
+            page: number;
+            /**
+             * Format: int32
+             * @description Items per page echoed from the request.
+             */
+            per_page: number;
+            /**
+             * Format: int64
+             * @description Total policy versions across all pages.
+             */
+            total: number;
+        };
+        /** @description Request body for `POST /auth/password/reset/confirm` (ADR 0031 §Q4). */
+        PasswordResetConfirmRequest: {
+            /** @description The new password to set (must clear the minimum-length floor). */
+            new_password: string;
+            /**
+             * @description The raw reset token delivered by email. Only its hash is stored server-
+             *     side; this is checked against that hash and consumed single-use.
+             */
+            token: string;
+        };
+        /** @description Request body for `POST /auth/password/reset` (ADR 0031 §Q4). */
+        PasswordResetRequest: {
+            /**
+             * @description The account email to send a reset link to (case-insensitive). Whether it
+             *     exists is never revealed — the response is always `202`.
+             */
+            email: string;
+        };
+        /** @description A per-kind hit count within the queried window. */
+        PatternCount: {
+            /**
+             * Format: int64
+             * @description Number of `secret_detected` **alerts** whose first detected kind was this
+             *     one — an *action* count, not a finding count.
+             *
+             *     **This is not "how many secrets of this kind were found."** One alert is
+             *     raised per inspected action, `SecretAlert::primary_kind` takes the first
+             *     entry of its `kinds` list, and this tally increments that single bucket
+             *     by one. An action carrying one AWS key and three email addresses adds 1
+             *     to `AwsAccessKey` and **0** to the email kind — the three emails are not
+             *     represented anywhere in this response.
+             *
+             *     Recorded here rather than fixed, because a fix is a contract change:
+             *     `StoredAlert.detected_pattern_type` is a single `Option<String>` and is
+             *     published on `/api/v1/alerts` as well, so carrying every kind and its
+             *     finding count means widening a shipped, dashboard-consumed shape
+             *     (AAASM-5359 follow-up). The finding-accurate surface is
+             *     `GET /api/v1/sensitive-data/breakdown?group_by=category`, which reports
+             *     `finding_count` and `event_count` separately and never collapses them
+             *     (ADR 0032 forbidden design #11).
+             */
+            hits: number;
+            /**
+             * @description Detected credential kind, e.g. `"AwsAccessKey"`. This is the
+             *     `detected_pattern_type` recorded on each `secret_detected` alert, which
+             *     is the alert's **first** kind — see [`hits`](Self::hits).
+             */
+            kind: string;
+        };
+        /** @description Response for `GET /api/v1/scrub/pattern-counts`. */
+        PatternCountsResponse: {
+            /**
+             * @description Per-kind counts, ordered by kind. Only kinds that fired at least once in
+             *     the window appear (an idle window yields an empty list — no fabricated
+             *     activity).
+             */
+            counts: components["schemas"]["PatternCount"][];
+            /**
+             * Format: int64
+             * @description Total `secret_detected` alerts counted across all kinds in the window.
+             */
+            total_hits: number;
+            /**
+             * Format: int64
+             * @description Length of the aggregation window in seconds.
+             */
+            window_seconds: number;
+        };
         /** @description Per-scope contribution to an agent's effective permissions. */
         PermissionSourceResponse: {
             /** @description Capability identifiers this scope explicitly allows. */
@@ -2478,23 +5225,125 @@ export interface components {
         };
         /** @description A policy version shown in the dashboard Capability Matrix's policies tab. */
         Policy: {
+            /** @description Ids of the agents whose cascade includes this policy scope. */
             affects: string[];
             /**
              * Format: int64
-             * @description Number of times this policy fired in the last 24 hours.
+             * @description Number of times this policy document fired in the last 24 hours.
+             *
+             *     Sourced (AAASM-5107) by joining this row's document content digest against
+             *     the per-document decision counts from the last-24h audit window — each
+             *     policy decision records the deciding document's digest on its audit entry.
+             *     Absent, never `0`, when the document recorded no decision in the window: a
+             *     `0` would be indistinguishable from "fired zero times".
              */
-            hits24h: number;
+            hits24h?: number | null;
             id: string;
             name: string;
             rules: components["schemas"]["PolicyRule"][];
             scope: string;
             status: components["schemas"]["PolicyStatus"];
-            version: string;
+            /**
+             * @description Revision from the policy document's `metadata.version`. Absent for
+             *     documents parsed from the flat (non-envelope) format, which declare none.
+             */
+            version?: string | null;
+        };
+        /**
+         * @description One scope tier of an agent's policy-inheritance chain (AAASM-5099).
+         *
+         *     A tier is emitted only when the agent actually has that selector: an agent
+         *     with no `org_id` has no Org tier, so no Org row appears. The `Tool` tier is
+         *     deliberately absent — it is selected per *action* (see
+         *     `aa_gateway::engine::action_tool_name`), not per agent, so there is no
+         *     agent-level answer to project.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "tier": "team", "scope": "team:platform", "policies": ["team-baseline"] }
+         *     ```
+         * @example {
+         *       "policies": [
+         *         "team-baseline"
+         *       ],
+         *       "scope": "team:platform",
+         *       "tier": "team"
+         *     }
+         */
+        PolicyChainTier: {
+            /**
+             * @description Names of the loaded policy documents at this tier, in cascade order.
+             *     Empty when the tier applies to the agent but carries no policy — that is
+             *     real state ("no team policy"), not missing data.
+             */
+            policies: string[];
+            /**
+             * @description Wire-format scope selector this tier resolves to, e.g. `team:platform`
+             *     — the same string `PolicyScope`'s `Display` produces, so it matches the
+             *     `scope` a policy document declares.
+             */
+            scope: string;
+            /** @description Cascade tier: `global`, `org`, `team`, or `agent`. */
+            tier: string;
+        };
+        /** @description Per-rule, per-day policy outcome counts. */
+        PolicyDay: {
+            /**
+             * Format: int64
+             * @description Blocked evaluations (policy violations / denies) for the rule that day.
+             */
+            blocks: number;
+            /** @description UTC calendar date (`YYYY-MM-DD`). */
+            date: string;
+            /**
+             * Format: int64
+             * @description Passed (allowed) evaluations for the rule that day.
+             */
+            passes: number;
+            /**
+             * Format: int64
+             * @description Warned (shadow / dry-run) evaluations for the rule that day.
+             */
+            warns: number;
+        };
+        /** @description Response for `GET /api/v1/analytics/policy-effectiveness`. */
+        PolicyEffectivenessResponse: {
+            /** @description One entry per policy rule that recorded at least one evaluation. */
+            rules: components["schemas"]["PolicyRuleStat"][];
         };
         /** @description JSON representation of a governance policy version. */
         PolicyResponse: {
             /** @description Whether this is the currently active policy. */
             active: boolean;
+            /**
+             * @description Names of the agents this policy version is in force for — the agents
+             *     whose live policy cascade carries this document (AAASM-5096).
+             *
+             *     Absent, never `[]`, when the version is not in force for any agent the
+             *     caller may see: an archived version, or one whose document the running
+             *     engine does not carry. `[]` would assert "this policy targets nobody",
+             *     which is a different and stronger claim than "not currently loaded".
+             */
+            affects?: string[] | null;
+            /**
+             * Format: int64
+             * @description Number of times this policy document fired in the last 24 hours.
+             *
+             *     Sourced (AAASM-5107) by joining this row's document content digest against
+             *     the per-document decision counts tallied from the last-24h audit window —
+             *     each policy decision now records the deciding document's digest on its
+             *     audit entry (`AuditEntry::policy_doc_id`, stamped at the enforcement
+             *     boundary from `PolicyDocument::content_digest`). The digest distinguishes
+             *     two versions of the same `(scope, name)` pair.
+             *
+             *     **Absent, never `0`.** A document that recorded no decision in the window,
+             *     a row whose snapshot cannot be parsed to a digest, or a key shared by two
+             *     distinct live documents (no single "the" document to count) all report
+             *     absent — preserving the absent-vs-"fired zero times" distinction
+             *     AAASM-5096 established. The same sourcing applies to the capability
+             *     matrix's `Policy.hits24h`.
+             */
+            hits24h?: number | null;
             /** @description Policy name from metadata. */
             name: string;
             /**
@@ -2518,11 +5367,65 @@ export interface components {
             resource: string;
             verb: components["schemas"]["Verb"][];
         };
+        /** @description One policy rule's daily effectiveness series. */
+        PolicyRuleStat: {
+            /** @description Per-day outcome counts, ordered by date ascending. */
+            days: components["schemas"]["PolicyDay"][];
+            /** @description Rule identifier (from the audit payload `policy_rule`). */
+            id: string;
+            /** @description Human-readable rule name (equals the id in v1). */
+            name: string;
+        };
         /**
          * @description Lifecycle status of a policy version in the capability view.
          * @enum {string}
          */
         PolicyStatus: "active" | "proposed" | "archived";
+        /**
+         * @description Response for `GET /api/v1/scrub/posture`.
+         *
+         *     The v1 leak-posture figure is the count of distinct outbound payloads that
+         *     the gateway's credential scanner **caught and redacted** in the window —
+         *     i.e. the number of `secret_detected` alerts. This is a real, defensible
+         *     "leaks intercepted" figure derived entirely from persisted alerts.
+         *
+         *     A *leak-rate* (leaks caught ÷ payloads scanned) is deliberately **not**
+         *     reported: the alert store persists only the detections, not the denominator
+         *     of total payloads scanned, so a rate could not be computed without inventing
+         *     the denominator. When that denominator is unavailable the rate fields are
+         *     surfaced as explicitly absent (`leak_rate: null`, `rate_computed: false`)
+         *     rather than fabricated.
+         */
+        PostureResponse: {
+            /**
+             * Format: int64
+             * @description Number of distinct credential kinds observed leaking in the window.
+             */
+            distinct_kinds: number;
+            /**
+             * Format: double
+             * @description Fraction of scanned payloads that contained a leak, or `null` when it is
+             *     not computable from the available state (see the type doc). Never
+             *     fabricated.
+             */
+            leak_rate?: number | null;
+            /**
+             * Format: int64
+             * @description Number of outbound payloads that were caught and redacted in the window
+             *     (count of `secret_detected` alerts). Always a real figure.
+             */
+            leaks_intercepted: number;
+            /**
+             * @description Whether [`leak_rate`](Self::leak_rate) was computable. `false` today
+             *     because the total-payloads-scanned denominator is not persisted.
+             */
+            rate_computed: boolean;
+            /**
+             * Format: int64
+             * @description Length of the posture window in seconds.
+             */
+            window_seconds: number;
+        };
         /**
          * @description RFC 7807 Problem Details JSON body.
          * @example {
@@ -2559,6 +5462,65 @@ export interface components {
             /** @description URI reference identifying the problem type. */
             type: string;
         };
+        /** @description The window and tenant a response describes. */
+        QueryScope: {
+            /**
+             * Format: int64
+             * @description Inclusive lower bound, epoch nanoseconds.
+             */
+            from_ns: number;
+            /** @description Organisation read. */
+            org_id: string;
+            /** @description Tenant read. */
+            tenant_id: string;
+            /**
+             * Format: int64
+             * @description Exclusive upper bound, epoch nanoseconds.
+             */
+            to_ns: number;
+        };
+        /** @description Response state of a single approver in a multi-approver quorum (AAASM-5095). */
+        QuorumApproverStatus: {
+            /** @description Approver identifier (user id or role) participating in the quorum. */
+            approver: string;
+            /**
+             * @description This approver's response so far: `"pending"`, `"approved"`, or
+             *     `"rejected"`. Never fabricated — reflects the approver's real recorded
+             *     response.
+             */
+            status: string;
+        };
+        /**
+         * @description Multi-approver quorum status for an approval request (AAASM-5095).
+         *
+         *     Present **only** when the approval is a quorum approval (more than one
+         *     approver is required). It carries a truthful "`responded` of `required`
+         *     responded" tally plus the per-approver breakdown — the counts always
+         *     reflect real approver responses and are never fabricated. Absent
+         *     (serialized as omitted) for single-target approvals.
+         *
+         *     NOTE: full N-approver quorum *enforcement* (gateway-side routing that
+         *     blocks resolution until the quorum is met) is scoped as a follow-up. This
+         *     type is the wire contract; until the gateway can supply real per-approver
+         *     responses the field is emitted as absent rather than with a fabricated
+         *     count.
+         */
+        QuorumStatus: {
+            /** @description Per-approver response breakdown. Length is the quorum size. */
+            approvers: components["schemas"]["QuorumApproverStatus"][];
+            /**
+             * Format: int32
+             * @description Number of approver responses required to satisfy the quorum (N).
+             */
+            required: number;
+            /**
+             * Format: int32
+             * @description Number of approvers that have responded so far — a real count of the
+             *     entries in `approvers` whose status is not `"pending"`. Never a
+             *     fabricated value.
+             */
+            responded: number;
+        };
         RecentActivityResponse: {
             action: string;
             id: string;
@@ -2585,6 +5547,143 @@ export interface components {
         RegisterOpRequest: {
             /** @description Stable identifier for the operation, typically a `GovernanceEvent.id`. */
             op_id: string;
+        };
+        /** @description Request body for `POST /auth/register`. */
+        RegisterRequest: {
+            /**
+             * @description The new account email (case-insensitive). OSS is single-workspace, so no
+             *     `tenant_name` is accepted (ADR 0031 §4).
+             */
+            email: string;
+            /** @description The new account password (must clear the minimum-length floor). */
+            password: string;
+        };
+        /** @description Response body for a successful `POST /auth/register`. */
+        RegisterResponse: {
+            /**
+             * @description The short-lived access JWT for the bootstrap owner (the refresh token is
+             *     delivered as the HttpOnly cookie alongside).
+             */
+            access_token: string;
+            /**
+             * Format: int64
+             * @description Access-token lifetime in seconds.
+             */
+            expires_in: number;
+            /** @description The id of the newly created account (UUID string). */
+            user_id: string;
+        };
+        /**
+         * @description Request body for `POST /api/v1/policies/replay` (AAASM-5094).
+         *
+         *     Describes a *proposed* (unloaded) policy plus the corpus window to replay it
+         *     against. Nothing here is persisted and the proposed policy is never applied —
+         *     it is a pure, read-only what-if over recorded traffic.
+         */
+        ReplayPolicyRequest: {
+            /**
+             * @description Proposed policy document as raw YAML. Parsed and validated exactly like a
+             *     `create_policy` body, but evaluated through an ephemeral engine
+             *     ([`aa_gateway::engine::PolicyEngine::simulate_against`]) so it is never
+             *     loaded, applied, or persisted.
+             */
+            policy_yaml: string;
+            /**
+             * @description Maximum number of per-request before/after sample diffs to return.
+             *     Defaults to [`REPLAY_DEFAULT_SAMPLE_SIZE`], capped at
+             *     [`REPLAY_MAX_SAMPLE_SIZE`]. Does not affect the aggregate counts, which
+             *     always reflect the whole replayed corpus.
+             */
+            sample_size?: number | null;
+            /**
+             * Format: int64
+             * @description How many hours of recent recorded traffic to replay. Defaults to
+             *     [`REPLAY_DEFAULT_WINDOW_HOURS`] (24h) when omitted. The read is bounded to
+             *     the most recent [`REPLAY_MAX_EVENTS`] events within the window.
+             */
+            window_hours?: number | null;
+        };
+        /**
+         * @description Response body for `POST /api/v1/policies/replay` (AAASM-5094).
+         *
+         *     Aggregate impact of the proposed policy over the replayed corpus, plus a
+         *     bounded sample of the per-request verdict changes. Every count is a real
+         *     tally of re-evaluating recorded actions — an empty corpus yields all-zero
+         *     counts and no samples, never a fabricated figure.
+         *
+         *     ## Fidelity caveat
+         *
+         *     The audit log deliberately persists only non-secret action *metadata* (tool
+         *     name, path, host) and never the raw tool arguments/target
+         *     (`aa_runtime::audit_publisher::conversion::build_payload`). Replay therefore
+         *     reconstructs each action from its persisted tool name with **empty
+         *     arguments**, so target-sensitive predicates and the credential/PII scrubber
+         *     cannot be re-exercised from the corpus. Verdict changes driven purely by
+         *     per-tool allow/deny/approval rules are faithful; changes that would depend on
+         *     argument content are out of reach and are not counted. See
+         *     [`replayable_actions`] and the endpoint doc comment.
+         */
+        ReplayPolicyResponse: {
+            /**
+             * Format: int64
+             * @description Number of corpus entries whose recorded verdict was a clean `allow` but
+             *     the proposed policy would now require human approval — a false-positive /
+             *     friction increase short of an outright block.
+             */
+            false_positives: number;
+            /**
+             * Format: int64
+             * @description Number of corpus entries the proposed policy would newly block (recorded
+             *     verdict allowed/narrowed/approval, proposed verdict `deny`).
+             */
+            newly_blocked: number;
+            /**
+             * Format: int64
+             * @description Number of corpus entries the proposed policy would newly narrow — allowed
+             *     but with sensitive content scrubbed (recorded verdict `allow`, proposed
+             *     verdict `narrow`).
+             */
+            newly_narrowed: number;
+            /**
+             * Format: int64
+             * @description Number of corpus entries whose recorded verdict was a block/deny but the
+             *     proposed policy would now allow — a regression that opens previously
+             *     closed traffic.
+             */
+            regressions: number;
+            /**
+             * Format: int64
+             * @description Total corpus entries replayed (tool-call decisions in the window that
+             *     carried a recorded verdict and a tool name). Denominator for the counts
+             *     above; `0` when the corpus is empty.
+             */
+            replayed: number;
+            /**
+             * @description A bounded sample of the per-request verdict changes, capped by the
+             *     request's `sample_size`. Empty when no verdict changed.
+             */
+            samples: components["schemas"]["ReplaySampleDiff"][];
+        };
+        /**
+         * @description One per-request before/after diff in a replay response: the recorded verdict
+         *     vs. the verdict the proposed policy would have produced for the same action.
+         *
+         *     Only entries whose verdict actually *changed* are returned as samples — an
+         *     unchanged entry carries no impact to illustrate.
+         */
+        ReplaySampleDiff: {
+            /** @description Verdict the proposed policy would produce for the same action. */
+            after: components["schemas"]["SimulateVerdict"];
+            /**
+             * @description Verdict recorded when this action actually ran, mapped from the audit
+             *     entry's persisted decision.
+             */
+            before: components["schemas"]["SimulateVerdict"];
+            /**
+             * @description Tool/capability the recorded action invoked (from the audit entry's
+             *     persisted `detail.tool_name`).
+             */
+            tool: string;
         };
         /** @description Request body for recording a new directed edge. */
         ReportEdgeRequest: {
@@ -2619,13 +5718,21 @@ export interface components {
          *     dashboard Capability Matrix.
          */
         Resource: {
-            /** @description Coarse group this resource belongs to. */
-            group: components["schemas"]["ResourceGroup"];
-            /** @description Stable identifier (e.g. `"gmail"`, `"pg"`, `"shell"`). */
+            group?: null | components["schemas"]["ResourceGroup"];
+            /**
+             * @description Stable identifier — the wire-format [`aa_core::Capability`] family this
+             *     column projects (`"filesystem"`, `"terminal"`, `"network_outbound"`) or
+             *     the declared MCP tool name for a tool column.
+             */
             id: string;
-            /** @description Human-readable display name (e.g. `"Postgres"`). */
+            /** @description Human-readable display name. */
             name: string;
-            /** @description Globbed paths covered by this resource (e.g. `["pg.public.*"]`). */
+            /**
+             * @description Globbed paths covered by this resource.
+             *
+             *     Always empty: the capability model grants a whole family or tool, it
+             *     does not carry per-path sub-scopes, so there is no real source for this.
+             */
             paths: string[];
         };
         /**
@@ -2717,6 +5824,28 @@ export interface components {
             /** @description Timestamp (UTC) at which the run completed (ISO 8601). */
             ran_at: string;
         };
+        /**
+         * @description A native-account user role (ADR 0031 data model).
+         *
+         *     Roles are a coarse, human-facing label stored on the user row; authorization
+         *     is still driven by the [`Scope`] set [`Role::scopes`] expands each role to.
+         *     Serialized lowercase to match the `users.role` enum values in the migration.
+         * @enum {string}
+         */
+        Role: "owner" | "admin" | "developer" | "viewer";
+        /** @description One built-in RBAC role and the governance capabilities it grants. */
+        RoleCapabilitiesResponse: {
+            /**
+             * @description Capability grant strings derived from the policy-RBAC table. Read grants
+             *     (`read:policies` / `read:audit`) reflect each role's read authority;
+             *     `write:policies:<scope>` grants come straight from `required_role_for`.
+             */
+            capabilities: string[];
+            /** @description Human-readable summary of what the role may do. */
+            description: string;
+            /** @description Canonical role identifier, snake_case (e.g. `org_admin`). */
+            role: string;
+        };
         /** @description One step in the routing history of an approval request. */
         RoutingHistoryEntry: {
             /** @description Whether this step was an initial routing or an escalation: `"routed"` or `"escalated"`. */
@@ -2801,6 +5930,16 @@ export interface components {
              */
             dry_run?: boolean;
         };
+        /**
+         * @description The canonical 5-way runtime verdict for a single enforced action.
+         *
+         *     Wire form is lowercase (`"allow"`, `"narrow"`, `"scrub"`, `"pending"`,
+         *     `"deny"`) to match the dashboard's verdict styling keys. The variants are
+         *     ordered least-to-most restrictive; do not reorder for wire stability, but the
+         *     order carries no serialized meaning (each variant serializes by name).
+         * @enum {string}
+         */
+        RuntimeVerdict: "allow" | "narrow" | "scrub" | "pending" | "deny";
         /**
          * @description A representative call sample shown alongside the matrix to explain the
          *     effect of the current (and any proposed) policy.
@@ -2910,6 +6049,378 @@ export interface components {
          * @enum {string}
          */
         Scope: "read" | "write" | "admin";
+        /** @description Response for `GET /api/v1/scrub/patterns`. */
+        ScrubCatalogueResponse: {
+            /** @description Every built-in detector, in the scanner's stable declaration order. */
+            patterns: components["schemas"]["ScrubPattern"][];
+            /** @description Total number of built-in detectors (equals `patterns.len()`). */
+            total: number;
+        };
+        /** @description One entry in the effective pattern catalogue. */
+        ScrubPattern: {
+            /**
+             * @description Whether this is a built-in detector (always `true` here — custom
+             *     policy-defined patterns are not yet exposed through this endpoint; see
+             *     the AAASM-5174 follow-up notes).
+             */
+            builtin: boolean;
+            /**
+             * @description Coarse detector family: `api_key` | `cloud_credential` | `auth_token` |
+             *     `database_url` | `private_key` | `pii` | `generic`.
+             */
+            category: string;
+            /**
+             * @description Canonical detector kind label, e.g. `"AwsAccessKey"`. Stable identifier
+             *     and the value that appears in the `[REDACTED:<kind>]` replacement.
+             */
+            kind: string;
+            /**
+             * @description The exact replacement string this detector emits when it redacts a
+             *     match, e.g. `"[REDACTED:AwsAccessKey]"`.
+             */
+            redaction_label: string;
+            /** @description Fixed leak severity: `critical` | `high` | `medium` | `low`. */
+            severity: string;
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/breakdown`. */
+        SensitiveDataBreakdownResponse: {
+            /** @description Groups, highest finding count first. */
+            buckets: components["schemas"]["DimensionBucket"][];
+            /** @description The dimension grouped by. */
+            group_by: components["schemas"]["MetricDimension"];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+        };
+        /**
+         * @description The counters of the ADR 0032 §8 dictionary, over one filtered set of events.
+         *
+         *     All `u64`: an aggregate over a window can exceed `u32` where a single
+         *     event's tallies cannot.
+         */
+        SensitiveDataCounters: {
+            /**
+             * Format: int64
+             * @description **Events** whose action was refused outright (verdict `deny`).
+             *     Denominator: `event_count`.
+             */
+            blocked_event_count: number;
+            /**
+             * Format: int64
+             * @description **Findings** carried by the events that were refused — the whole finding
+             *     set of each blocked action, per ADR 0032 §8's worked example.
+             *     Denominator: `finding_count`.
+             */
+            blocked_finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** inspected that carried at least one finding, within the
+             *     filter. The denominator for every event-level rate below.
+             */
+            event_count: number;
+            /**
+             * Format: int64
+             * @description **Findings** those events carried in total. The denominator for every
+             *     finding-level share below. Never interchangeable with `event_count`.
+             */
+            finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** whose detection pass did not run to completion — failed open,
+             *     failed closed, or answered from a reduced path. Never folded into a
+             *     "clean" count (ADR 0032 forbidden design #2). Denominator: `event_count`.
+             */
+            inspection_incomplete_event_count: number;
+            /**
+             * Format: int64
+             * @description **Events** meeting all four ADR 0032 §8 prevention conditions.
+             *     Denominator: `event_count`.
+             */
+            prevented_event_count: number;
+            /**
+             * Format: int64
+             * @description **Findings** carried by those events. Denominator: `finding_count`.
+             */
+            prevented_finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** whose payload was rewritten and then forwarded (verdict
+             *     `scrub`). A redacted action is a transformed transmission, so a blocked
+             *     action never contributes here however many of its findings were
+             *     rewritten first. Denominator: `event_count`.
+             */
+            redacted_event_count: number;
+            /**
+             * Format: int64
+             * @description **Transformation operations performed**, across every matching event
+             *     including blocked ones. Not "findings whose redacted form was
+             *     transmitted" — see the module doc. Denominator: `finding_count`.
+             */
+            redacted_finding_count: number;
+            /**
+             * Format: int64
+             * @description **Events** for which no transmission evidence was recorded at all, so
+             *     they could not satisfy the prevention test whatever actually happened
+             *     to the payload. Denominator: `event_count`.
+             *
+             *     # Why this counter exists next to `prevented_event_count`
+             *
+             *     Without it, `prevention_rate = 0` has two completely different meanings
+             *     and renders identically: *"we prevented nothing"* and *"nothing measured
+             *     whether we prevented anything."* That is the same distinction AAASM-5660
+             *     drew for the proxy's evidence sink, arriving here.
+             *
+             *     It is load-bearing right now, not hypothetical. The gateway producer
+             *     writes `TransmissionEvidence::NotRecorded` unconditionally
+             *     (`aa-gateway/src/engine/sensitive_data.rs`) — it decides, it does not
+             *     observe the bytes — so **every** row this build can read has no
+             *     transmission evidence, and `prevention_rate` is structurally `0`. A
+             *     reader who cannot see that reads a truthful zero as a measured one.
+             *
+             *     When this equals `event_count`, `prevention_rate` carries no information
+             *     about prevention and must not be presented as though it does.
+             */
+            unmeasured_transmission_event_count: number;
+        };
+        /**
+         * @description What the sensitive-data pipeline did to an action's payload and to the
+         *     approval of the action, at a granularity the 5-way runtime verdict
+         *     deliberately does not carry (ADR 0032 §10 D-2).
+         *
+         *     A **record of** a decision the gateway already made, never an input to one:
+         *     the runtime verdict remains the authoritative outcome, and every disposition
+         *     but `none` maps onto one, so a client that reads only the verdict still
+         *     reaches a correct if coarser conclusion.
+         *
+         *     These eight values are a closed vocabulary. Adding a ninth is the same
+         *     category of breaking wire change ADR 0024 forbids for the runtime verdict.
+         *
+         *     This doc comment is published as the schema description in `openapi/v1.yaml`;
+         *     the implementation rationale — including how "never an authorisation input"
+         *     is enforced rather than promised — is in the module documentation, which is
+         *     not.
+         * @enum {string}
+         */
+        SensitiveDataDisposition: "redact" | "mask" | "tokenize" | "require_approval" | "approval_granted" | "approval_denied" | "shadow_only" | "none";
+        /** @description Response for `GET /api/v1/sensitive-data/events/{event_id}`. */
+        SensitiveDataEventDetailResponse: {
+            /** @description The event. */
+            event: components["schemas"]["SensitiveDataEventSummary"];
+            /** @description Its normalized findings, in ordinal order. */
+            findings: components["schemas"]["SensitiveDataFindingDetail"][];
+        };
+        /**
+         * @description One event on the drill-down list.
+         *
+         *     Built field-by-field from the projection row. No offsets, no lengths, no
+         *     payload — see the module doc.
+         */
+        SensitiveDataEventSummary: {
+            /** @description The agent that acted. */
+            acting_agent_id: string;
+            /**
+             * Format: int32
+             * @description Delegation hops from the root.
+             */
+            delegation_depth: number;
+            /** @description The destination's name. */
+            destination_id: string;
+            /** @description What kind of thing the destination is. */
+            destination_kind: string;
+            /** @description Which way the payload was travelling. */
+            direction: string;
+            /** @description Whether enforcement was applied or merely computed. Prevention condition 4. */
+            enforcement_mode: string;
+            /** @description Where the decision was applied. Prevention condition 1. */
+            enforcement_point: string;
+            /** @description The event's identity, and the key for the detail endpoint. */
+            event_id: string;
+            /**
+             * Format: int32
+             * @description How many findings this action carried.
+             */
+            finding_count: number;
+            /** @description Names of the inspected fields — the §9 drill-down granularity. */
+            inspected_field_paths: string[];
+            /** @description How the detection pass terminated. Never a synonym for "found nothing". */
+            inspection_failure_path: string;
+            /** @description Rules that matched. */
+            matched_rule_ids: string[];
+            /**
+             * Format: int64
+             * @description When the action was inspected, epoch nanoseconds.
+             */
+            occurred_at_ns: number;
+            /** @description What kind of operation it was. */
+            operation: string;
+            /** @description The agent that delegated, if any. */
+            parent_agent_id?: string | null;
+            /** @description Policy document in force, when attributed. */
+            policy_document_id?: string | null;
+            /**
+             * @description Whether this event meets all four §8 prevention conditions. Derived from
+             *     the three evidence columns on read, never stored.
+             */
+            prevented_transmission: boolean;
+            /** @description Machine-aggregatable reasons for the decision. */
+            reason_codes: string[];
+            /** @description The agent at the root of the delegation chain. */
+            root_agent_id: string;
+            /** @description Agent session, when recorded. A correlation id, not a value. */
+            session_id?: string | null;
+            /** @description Owning team, when attributable. */
+            team_id?: string | null;
+            /** @description Distributed-trace id, when recorded. */
+            trace_id?: string | null;
+            /**
+             * Format: int32
+             * @description How many of them were rewritten before the decision was applied.
+             */
+            transformed_finding_count: number;
+            /** @description What was observed about the forwarded bytes. Prevention condition 3. */
+            transmission_evidence: string;
+            /** @description How far outside the boundary the destination sits. */
+            trust_zone: string;
+            /** @description The enforcement outcome (ADR 0018's frozen verdict). */
+            verdict: string;
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/events`. */
+        SensitiveDataEventsResponse: {
+            /** @description The page, newest first. */
+            events: components["schemas"]["SensitiveDataEventSummary"][];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+            /**
+             * Format: int64
+             * @description **Every** matching event in the window, not the length of `events`. A UI
+             *     pairing the two must label this as the total.
+             */
+            total: number;
+        };
+        /** @description One finding on the drill-down detail. */
+        SensitiveDataFindingDetail: {
+            /** @description What was found, in provider-neutral terms. */
+            category: string;
+            /** @description How much the recognizer trusted it. Never an authorisation input. */
+            confidence: string;
+            /**
+             * @description The inspected field's **name**. §9's drill-down granularity, in place of
+             *     an offset.
+             */
+            field_path: string;
+            /**
+             * Format: int32
+             * @description Position within its event.
+             */
+            finding_ordinal: number;
+            /** @description The technique that produced it. */
+            method: string;
+            /** @description Which recognizer claims to have produced it. */
+            recognizer: string;
+            /** @description That recognizer's version. Descriptive, not a trust signal. */
+            recognizer_version: string;
+            /** @description The `[REDACTED:…]` label this finding redacts to. A label, not a value. */
+            redaction_label: string;
+            /** @description How damaging exposure would be. */
+            severity: string;
+            /** @description Its triage state. Nothing in this vocabulary means "clean". */
+            status: string;
+        };
+        /**
+         * @description The derived ratios, each `null` when its denominator is zero.
+         *
+         *     An absent rate is reported rather than `0.0`: over an empty window "we
+         *     blocked nothing" and "nothing happened" are different answers, and the
+         *     second one rendered as 0% is a fabricated posture.
+         */
+        SensitiveDataRates: {
+            /**
+             * Format: double
+             * @description `blocked_event_count / event_count`.
+             */
+            block_rate?: number | null;
+            /**
+             * Format: double
+             * @description `blocked_finding_count / finding_count`.
+             */
+            blocked_finding_share?: number | null;
+            /**
+             * Format: double
+             * @description `finding_count / event_count` — how much sensitive data an average
+             *     inspected action carried. The one figure that makes the event/finding
+             *     distinction visible on a dashboard.
+             */
+            findings_per_event?: number | null;
+            /**
+             * Format: double
+             * @description `inspection_incomplete_event_count / event_count`.
+             */
+            inspection_incomplete_rate?: number | null;
+            /**
+             * Format: double
+             * @description `prevented_event_count / event_count`. Never increments without
+             *     execution evidence.
+             */
+            prevention_rate?: number | null;
+            /**
+             * Format: double
+             * @description `redacted_finding_count / finding_count`.
+             */
+            redacted_finding_share?: number | null;
+            /**
+             * Format: double
+             * @description `redacted_event_count / event_count`.
+             */
+            redaction_rate?: number | null;
+            /**
+             * Format: double
+             * @description `unmeasured_transmission_event_count / event_count` — the share of the
+             *     window over which `prevention_rate` could not have been measured at all.
+             *
+             *     At `1.0`, `prevention_rate` is a rate over an unmeasured denominator and
+             *     says nothing about prevention. A consumer must read the two together;
+             *     this field exists so it cannot fail to notice.
+             */
+            unmeasured_transmission_rate?: number | null;
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/summary`. */
+        SensitiveDataSummaryResponse: {
+            /** @description Findings grouped by category, highest first. */
+            by_category: components["schemas"]["DimensionBucket"][];
+            /** @description The ADR 0032 §8 counters. */
+            counters: components["schemas"]["SensitiveDataCounters"];
+            /** @description The derived ratios. Absent rather than zero where undefined. */
+            rates: components["schemas"]["SensitiveDataRates"];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/timeseries`. */
+        SensitiveDataTimeseriesResponse: {
+            /**
+             * Format: int64
+             * @description Bucket width in seconds.
+             */
+            bucket_seconds: number;
+            /**
+             * @description Buckets in ascending time order. Empty buckets are present with zeroed
+             *     counters so a chart shows a gap rather than joining across it.
+             */
+            points: components["schemas"]["TimeseriesPoint"][];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+        };
+        /** @description A single time-series point: `t` is epoch milliseconds, `value` the count. */
+        SeriesPoint: {
+            /**
+             * Format: int64
+             * @description Epoch-millisecond timestamp of the bucket (bucket start).
+             */
+            t: number;
+            /**
+             * Format: double
+             * @description Aggregated value for the bucket.
+             */
+            value: number;
+        };
         /**
          * @description Active silence record attached to an alert.
          *
@@ -2971,6 +6482,65 @@ export interface components {
             /** @description ISO 8601 timestamp at which the silence took effect. */
             starts_at: string;
         };
+        /**
+         * @description Request body for `POST /api/v1/policies/simulate` (AAASM-5037).
+         *
+         *     Describes a hypothetical `(agent, tool, target)` request to evaluate against
+         *     the active policy. No part of it is persisted — it is a pure what-if.
+         */
+        SimulatePolicyRequest: {
+            /**
+             * @description Identifier (id or name) of the hypothetical agent to evaluate as. Mapped
+             *     to the same internal `AgentId` a live request for this agent would use,
+             *     so a registered agent's org/team lineage is honored.
+             */
+            agent_id: string;
+            /**
+             * @description Optional organization attribute used for policy-cascade lineage when the
+             *     agent is not resolvable from the registry.
+             */
+            org_id?: string | null;
+            /**
+             * @description Optional target/resource of the action (e.g. a recipient, host, or path).
+             *     Folded into the simulated tool-call arguments so target-sensitive
+             *     predicates and credential/PII scanning apply.
+             */
+            target?: string | null;
+            /**
+             * @description Optional team attribute used for policy-cascade lineage when the agent is
+             *     not resolvable from the registry.
+             */
+            team_id?: string | null;
+            /** @description Tool or capability the agent would invoke (e.g. `"gmail.send"`, `"shell"`). */
+            tool: string;
+        };
+        /** @description Response body for `POST /api/v1/policies/simulate` (AAASM-5037). */
+        SimulatePolicyResponse: {
+            /**
+             * @description Label of the policy rule / reason that produced the verdict. `null` for a
+             *     clean allow with no matched narrowing or deny rule.
+             */
+            matched_rule?: string | null;
+            /** @description Human-readable explanation of the verdict. */
+            reason: string;
+            /**
+             * @description Whether the payload would be scrubbed before reaching the model because
+             *     credential/PII content was detected (drives the `"narrow"` verdict).
+             */
+            redacted: boolean;
+            /** @description Dry-run verdict: `allow`, `narrow`, `approval`, or `deny`. */
+            verdict: components["schemas"]["SimulateVerdict"];
+        };
+        /**
+         * @description Dry-run verdict returned by `POST /api/v1/policies/simulate`.
+         *
+         *     AAASM-5220 — constrains the [`SimulatePolicyResponse::verdict`] wire
+         *     vocabulary to the closed set the simulate handler emits, so the generated
+         *     OpenAPI spec advertises an enum rather than a free-form `string`. Serializes
+         *     lowercase.
+         * @enum {string}
+         */
+        SimulateVerdict: "allow" | "narrow" | "approval" | "deny";
         /** @description Response for `GET /api/v1/agents/{id}/subtree-burn`. */
         SubtreeBurnResponse: {
             /** @description Hex-encoded root agent ID. */
@@ -3000,10 +6570,87 @@ export interface components {
             daily_spend_usd: string;
             /** @description Calendar date (YYYY-MM-DD) the daily spend applies to. */
             date: string;
+            /**
+             * @description Configured per-team calendar-month budget limit in USD, if set
+             *     (AAASM-5087). This is the tracker-wide team envelope — the same limit
+             *     applies to every team — surfaced so the Teams monthly-budget card can
+             *     render spend against limit. `None` when no team monthly limit is
+             *     configured. This is a calendar-month window, not a rolling window.
+             */
+            monthly_limit_usd?: string | null;
             /** @description Total spend this month in USD for this team (if monthly tracking is enabled). */
             monthly_spend_usd?: string | null;
             /** @description Team identifier. */
             team_id: string;
+        };
+        /** @description Response body for `GET /api/v1/policies/team/{team_id}` (AAASM-5096). */
+        TeamPoliciesResponse: {
+            /**
+             * @description Every policy document in force for at least one visible agent in the
+             *     team, ordered by scope then name.
+             *
+             *     **`null`, never `[]`, when the mapping could not be resolved** — the same
+             *     absent-vs-empty discipline as [`PolicyResponse::affects`], and for a
+             *     sharper reason. `[]` is a positive governance claim: "nothing governs this
+             *     team". That claim is only true when the team has no agent this caller can
+             *     see, so there is nothing for a policy to be in force over — the one case
+             *     that serializes `[]`.
+             *
+             *     When the team *does* have visible agents but not one of them resolved a
+             *     cascade document, the honest answer is "unknown", not "none":
+             *     `PolicyEngine::evaluate` falls back to `evaluate_primary` for exactly
+             *     those agents, so the primary policy slot is still in force over them —
+             *     this projection just cannot name it. That is the state of **every shipped
+             *     aa-api deployment today**: `AppState::local_in_memory` loads the policy
+             *     through `load_from_file`, which populates the primary slot and leaves
+             *     `scope_index` empty, and nothing else in aa-api ever calls
+             *     `load_cascade_from_dir` (AAASM-5106). Emitting `[]` there would render as
+             *     "No policy is in force for this team" while a policy *is* being enforced.
+             *
+             *     The handler reads that state from the engine's authoritative
+             *     [`cascade_loaded`](aa_gateway::engine::PolicyEngine::cascade_loaded) signal
+             *     (`false` ⇒ `null`), rather than inferring it from an empty result — an
+             *     empty result over a team with no visible agents is otherwise
+             *     indistinguishable from the genuinely-empty case and used to leak `[]`.
+             */
+            policies: components["schemas"]["TeamPolicyResponse"][] | null;
+            /** @description The team the mapping was resolved for, echoed from the request. */
+            team_id: string;
+        };
+        /**
+         * @description One policy document in force for a team, as shown on the Teams surface's
+         *     Active-policies card (`design/v1/hi-fi/teams.jsx`).
+         */
+        TeamPolicyResponse: {
+            /**
+             * Format: int64
+             * @description Number of times this policy document fired in the last 24 hours. Sourced
+             *     from per-document decision counts (AAASM-5107); absent, never `0`, when
+             *     the document recorded no decision in the window — see
+             *     [`PolicyResponse::hits_24h`] for the full sourcing and absent-vs-zero rule.
+             */
+            hits24h?: number | null;
+            /**
+             * @description Scope-qualified document id (`"{scope}/{name}"`, or the bare scope for a
+             *     document declaring no `metadata.name`). Matches the id the capability
+             *     matrix emits for the same document.
+             */
+            id: string;
+            /**
+             * @description The document's `metadata.name`, falling back to its scope label when the
+             *     document declares none (the flat, non-envelope policy format).
+             */
+            name: string;
+            /**
+             * @description The document's declared scope (`global` / `org:x` / `team:x` / `agent:x`),
+             *     so the card can show which tier of the cascade the policy comes from.
+             */
+            scope: string;
+            /**
+             * @description Revision from the document's `metadata.version`. Absent for a document
+             *     that declares none.
+             */
+            version?: string | null;
         };
         /**
          * @description High-level statistics for a single team.
@@ -3066,6 +6713,21 @@ export interface components {
             /** @description RFC 3339 timestamp when the connector reported success. */
             delivered_at: string;
         };
+        /** @description One bucket of the timeseries. */
+        TimeseriesPoint: {
+            /** @description The counters for the events in this bucket. */
+            counters: components["schemas"]["SensitiveDataCounters"];
+            /**
+             * Format: int64
+             * @description Bucket end (exclusive), epoch nanoseconds.
+             */
+            end_ns: number;
+            /**
+             * Format: int64
+             * @description Bucket start, epoch nanoseconds.
+             */
+            start_ns: number;
+        };
         /** @description Request body for `POST /auth/token`. */
         TokenRequest: {
             /**
@@ -3085,6 +6747,175 @@ export interface components {
             scopes: components["schemas"]["Scope"][];
             /** @description The issued JWT token string. */
             token: string;
+        };
+        /**
+         * @description Schema wrapper so utoipa can derive the OpenAPI schema for [`DevToolInfo`].
+         *
+         *     The real handler returns `Vec<DevToolInfo>` directly; this wrapper is only
+         *     referenced by utoipa's `#[utoipa::path]` macro so it can generate a schema
+         *     entry without requiring [`DevToolInfo`] itself to implement `ToSchema`.
+         */
+        ToolInfoSchema: {
+            governance_level: string;
+            install_path: string;
+            kind: string;
+            supports_managed_settings: boolean;
+            supports_mcp: boolean;
+            version?: string | null;
+        };
+        /** @description Per-tool call statistics. */
+        ToolStat: {
+            /**
+             * Format: int64
+             * @description Number of intercepted / dispatched calls in the window.
+             */
+            calls: number;
+            /**
+             * Format: double
+             * @description Fraction (0.0–1.0) of this tool's calls that were blocked/denied.
+             */
+            errorRate: number;
+            /** @description Tool name as recorded in the audit payload. */
+            name: string;
+        };
+        /** @description Response for `GET /api/v1/analytics/tool-usage`. */
+        ToolUsageResponse: {
+            /** @description Per-tool statistics (empty when no tool events carried a tool name). */
+            tools: components["schemas"]["ToolStat"][];
+        };
+        /** @description One ranked offender, with its comparison against the preceding window. */
+        TopOffenderEntry: {
+            /** @description Counters over the requested window. */
+            counters: components["schemas"]["SensitiveDataCounters"];
+            /**
+             * Format: int64
+             * @description `finding_count` minus the previous window's, as a signed change.
+             */
+            finding_count_delta: number;
+            /** @description The agent id, tool name or destination this row ranks. */
+            key: string;
+            /** @description Counters over the window of the same length immediately before it. */
+            previous: components["schemas"]["SensitiveDataCounters"];
+            /** @description Which way it moved. */
+            trend: components["schemas"]["TrendDirection"];
+        };
+        /** @description Response for `GET /api/v1/sensitive-data/top-offenders`. */
+        TopOffendersResponse: {
+            /**
+             * Format: int64
+             * @description The preceding window the trend compares against.
+             */
+            comparison_from_ns: number;
+            /**
+             * Format: int64
+             * @description Its exclusive upper bound — equal to `scope.from_ns`.
+             */
+            comparison_to_ns: number;
+            /** @description Which drill-down dimension was ranked. */
+            dimension: string;
+            /** @description Entries, highest current finding count first. */
+            entries: components["schemas"]["TopOffenderEntry"][];
+            /** @description What was read. */
+            scope: components["schemas"]["QueryScope"];
+        };
+        /** @description All edges in the topology graph, optionally filtered by team membership. */
+        TopologyEdgeListResponse: {
+            /** @description Total number of edges returned. */
+            count: number;
+            /** @description Matching edges, sorted newest-first within each edge type. */
+            edges: components["schemas"]["EdgeResponse"][];
+        };
+        /**
+         * @description One directed edge in the dashboard topology graph (AAASM-5040, widened in
+         *     AAASM-5099).
+         *
+         *     A slim projection of a stored [`aa_core::topology::Edge`] carrying what the
+         *     dashboard graph renders: the two hex-encoded endpoints, the relation `kind`,
+         *     and whether the edge crosses a team boundary.
+         *
+         *     `kind` covers all six stored [`aa_core::topology::EdgeType`] variants. The
+         *     two structural kinds keep the graph vocabulary the frontend already renders
+         *     (`delegates_to` → `delegation`, `calls` → `call`); the other four pass the
+         *     stored wire string through unchanged (`reads`, `writes`, `approves`,
+         *     `messages`), matching the frontend `TopologyEdge` 1:1 so the client consumes
+         *     edges without remapping.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "source": "0102030405060708090a0b0c0d0e0f10", "target": "aabbccdd00112233aabbccdd00112233", "kind": "delegation", "cross_team": false }
+         *     ```
+         * @example {
+         *       "cross_team": false,
+         *       "kind": "delegation",
+         *       "source": "0102030405060708090a0b0c0d0e0f10",
+         *       "target": "aabbccdd00112233aabbccdd00112233"
+         *     }
+         */
+        TopologyGraphEdge: {
+            /**
+             * @description Whether the two endpoints belong to different teams. Matches the
+             *     `is_cross_team` rule `/topology/edges` uses (`edges::compute_cross_team`):
+             *     true only when both endpoints carry a `team_id` and the two differ — an
+             *     endpoint with no team is never counted as crossing a boundary.
+             */
+            cross_team: boolean;
+            /**
+             * @description Relation kind rendered by the graph: `delegation`, `call`, `reads`,
+             *     `writes`, `approves`, or `messages`.
+             */
+            kind: string;
+            /** @description Hex-encoded UUID of the source (delegating / calling) agent. */
+            source: string;
+            /** @description Hex-encoded UUID of the target agent. */
+            target: string;
+        };
+        /**
+         * @description The whole-fleet topology graph rendered by the dashboard Topology page
+         *     (AAASM-5040): every agent visible to the caller as a node, plus every stored
+         *     edge between those nodes (all six relation kinds, AAASM-5099).
+         *
+         *     Nodes reuse the [`AgentNode`] projection (so the per-node enforcement-mode,
+         *     flagged, and trust badges from AAASM-5036 are carried through), letting the
+         *     dashboard render those badges from live registry data instead of a fixture.
+         *
+         *     # Example JSON
+         *     ```json
+         *     { "nodes": [], "edges": [], "unclaimed_observable": true }
+         *     ```
+         * @example {
+         *       "edges": [],
+         *       "nodes": [],
+         *       "unclaimed_observable": true
+         *     }
+         */
+        TopologyGraphResponse: {
+            /**
+             * @description Edges of every stored relation kind whose endpoints are both visible
+             *     nodes.
+             */
+            edges: components["schemas"]["TopologyGraphEdge"][];
+            /** @description All agents visible to the caller, one graph node each (sorted by id). */
+            nodes: components["schemas"]["AgentNode"][];
+            /**
+             * @description Whether the caller's scope can observe unclaimed (team-less) agents at
+             *     all (AAASM-5183).
+             *
+             *     Scope-derived, not data-derived: it mirrors what
+             *     [`crate::routes::topology::record_visible_to`] does with a `team_id: None`
+             *     record. An admin, and any caller not confined to a specific team, CAN
+             *     observe unclaimed agents; a team-scoped (non-admin) caller structurally
+             *     CANNOT — `record_visible_to` drops every `team_id: None` record for it —
+             *     so a team-scoped caller's `nodes` never contains an unclaimed agent even
+             *     when the registry holds some.
+             *
+             *     The Teams page reads this to decide whether an empty unclaimed set is the
+             *     honest "no unclaimed agents" (the caller could have seen them and there
+             *     are none) or "unclaimed agents are not available in your scope" (the
+             *     caller could not have seen them either way). It deliberately carries no
+             *     count: disclosing how many unclaimed agents exist to a caller whose scope
+             *     cannot see them is not authorised (no product/security sign-off).
+             */
+            unclaimed_observable: boolean;
         };
         /**
          * @description Overview of the entire agent topology across all teams.
@@ -3243,6 +7074,72 @@ export interface components {
             start_time: string;
         };
         /**
+         * @description Which way a top-offender entry moved against the preceding window.
+         * @enum {string}
+         */
+        TrendDirection: "up" | "down" | "flat" | "new";
+        /** @description Response for `GET /api/v1/analytics/trust` (AAASM-5083, ADR 0019 Option D). */
+        TrustResponse: {
+            /**
+             * @description Per-agent trust scores. Every agent that recorded at least one governed
+             *     action in the window appears; its `trust` is `null` below `MIN_ACTIONS`
+             *     (cold start). Empty when the window is truncated (see `truncated`).
+             */
+            agents: components["schemas"]["AgentTrustScore"][];
+            /**
+             * Format: int64
+             * @description The minimum governed-action count below which `trust` is `null` (cold
+             *     start). Fixed at `MIN_ACTIONS` in v1.
+             */
+            minActions: number;
+            /**
+             * @description Whether the audit window was truncated at the analytics cap. When `true`,
+             *     `agents` is empty and no score is emitted — a truncated window yields
+             *     `null`, never a partial score (ADR 0019 Guardrail 2).
+             */
+            truncated: boolean;
+            /**
+             * @description The tenant's effective weight-set that produced these scores (ADR 0019
+             *     Guardrail 1). A score is only comparable to another computed under the
+             *     same weights — the client must not rank raw scores across tenants.
+             */
+            weights: components["schemas"]["TrustWeightSet"];
+            /** @description The fixed scoring window (`7d` in v1 — not tenant-tunable). */
+            window: string;
+        };
+        /**
+         * @description The effective per-signal weight in the response's echoed weight-set.
+         *
+         *     ADR 0019 Guardrail 1 — the score is labelled with the weight-set that
+         *     produced it, so a client never compares a `78` under one tenant's weights to
+         *     a `78` under another's. Mirrors [`crate::trust::SignalConfig`] on the wire.
+         */
+        TrustSignalWeight: {
+            /** @description Whether this signal contributed to the penalty for this score. */
+            enabled: boolean;
+            /**
+             * Format: double
+             * @description The weight applied to this signal's count when enabled.
+             */
+            weight: number;
+        };
+        /**
+         * @description The tenant's effective trust weight-set, echoed on every trust response
+         *     (ADR 0019 Guardrail 1). Deserializable so it also serves as the config
+         *     read/write body.
+         */
+        TrustWeightSet: {
+            /**
+             * @description Penalty weight for an approval rejection (`ApprovalDenied` +
+             *     `ApprovalTimedOut`). Default 0.5.
+             */
+            approval_rejection: components["schemas"]["TrustSignalWeight"];
+            /** @description Penalty weight for a `CredentialLeakBlocked` (DLP redaction). Default 1.5. */
+            credential_redaction: components["schemas"]["TrustSignalWeight"];
+            /** @description Penalty weight for a `PolicyViolation` (denied action). Default 1.0. */
+            policy_violation: components["schemas"]["TrustSignalWeight"];
+        };
+        /**
          * @description Body for `PUT /api/v1/alerts/destinations/{id}`.
          *
          *     All fields are optional — supplying just `enabled` toggles dispatch
@@ -3318,6 +7215,19 @@ export interface components {
              *     steps). Omitted when the producer did not record a stack.
              */
             call_stack?: components["schemas"]["CallStackNode"][] | null;
+            /**
+             * @description Governance decision bucket from the proto `Decision`, in the
+             *     dashboard's decision-mix vocabulary — one of `"allow"` (proto
+             *     `ALLOW`), `"scrub"` (proto `REDACT`), `"pending"` (proto
+             *     `PENDING`), or `"deny"` (proto `DENY`). Distinct from `status`,
+             *     which collapses allow/redact into `"running"` and so cannot feed
+             *     the Live Ops allow/scrub/deny/await counters. Omitted when the
+             *     decision is unspecified. There is deliberately no `"narrow"`
+             *     bucket: the proto `Decision` enum has no such variant, so no
+             *     event can be attributed to it (matches
+             *     `analytics::decision_mix_bucket`).
+             */
+            decision?: string | null;
             /** @enum {string} */
             kind: "audit";
             /**
@@ -3383,6 +7293,33 @@ export interface components {
              * @description Time window used for aggregation, in seconds.
              */
             window_secs: number;
+        };
+        /**
+         * @description What a ticket authorizes. A ticket minted for one purpose is rejected by any
+         *     other WS endpoint, so a leaked live-ops ticket can't open the alert stream.
+         * @enum {string}
+         */
+        WsTicketPurpose: "events" | "alerts";
+        /** @description Request body for `POST /auth/ws-ticket` (AAASM-4861). */
+        WsTicketRequest: {
+            /**
+             * @description Which WebSocket stream the ticket will open. A ticket minted for one
+             *     purpose is rejected by any other WS endpoint.
+             */
+            purpose: components["schemas"]["WsTicketPurpose"];
+        };
+        /** @description Response body for `POST /auth/ws-ticket` (AAASM-4861). */
+        WsTicketResponse: {
+            /**
+             * Format: int64
+             * @description Unix timestamp when the ticket expires. It is also invalidated the moment
+             *     it is used; whichever comes first.
+             */
+            expires_at: number;
+            /** @description The stream this ticket may open (echoes the request). */
+            purpose: components["schemas"]["WsTicketPurpose"];
+            /** @description The opaque, single-use ticket to present as `?ticket=` on the WS upgrade. */
+            ticket: string;
         };
     };
     responses: never;
@@ -3526,7 +7463,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AgentResponse"][];
+                    "application/json": components["schemas"]["PaginatedAgentResponse"];
                 };
             };
         };
@@ -3677,6 +7614,114 @@ export interface operations {
             };
         };
     };
+    get_agent_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent config projection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentConfigResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks access to the agent's team */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_decisions: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Maximum number of decision rows to return (newest-first). Defaults to
+                 *     [`DEFAULT_DECISIONS_LIMIT`], clamped to [`MAX_DECISIONS_LIMIT`].
+                 */
+                limit?: number | null;
+            };
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent per-agent decisions, newest-first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDecisionsResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks access to the agent's team */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_agent_edges: {
         parameters: {
             query?: {
@@ -3736,6 +7781,133 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
                 };
+            };
+        };
+    };
+    set_enforcement_mode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnforcementModeRequest"];
+            };
+        };
+        responses: {
+            /** @description Enforcement mode changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnforcementModeApplyResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the scope required for the requested direction, or a subtree agent is out of tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cascade echo-back set/count differs from the current subtree (re-preview) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Weakening request missing/invalid reason or expires_at, or cascade exceeds the maximum agent count */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_enforcement_mode_cascade: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Hex-encoded root agent UUID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Affected agent set for the cascade */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnforcementModeCascadePreviewResponse"];
+                };
+            };
+            /** @description Invalid agent ID format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks access to the root or a subtree agent */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Root agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Cascade exceeds the maximum affected-agent count */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -3924,7 +8096,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AlertResponse"][];
+                    "application/json": components["schemas"]["PaginatedAlertResponse"];
                 };
             };
         };
@@ -4367,6 +8539,14 @@ export interface operations {
                 severity?: string | null;
                 /** @description Restrict the stream to a single hex-encoded agent id. */
                 agent_id?: string | null;
+                /**
+                 * @description Short-lived, single-use WebSocket ticket (AAASM-4861). Browsers can't set
+                 *     an `Authorization` header on a WS handshake, so the dashboard mints a
+                 *     ticket via `POST /api/v1/auth/ws-ticket` and presents it here instead of
+                 *     putting a long-lived credential in the URL. Non-browser clients may
+                 *     instead send an `Authorization: Bearer` header and omit this.
+                 */
+                ticket?: string | null;
             };
             header?: never;
             path?: never;
@@ -4457,6 +8637,418 @@ export interface operations {
             };
             /** @description Alert not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_action_volume: {
+        parameters: {
+            query?: {
+                /** @description Time range preset or custom range. See [`KpiParams::range`]. */
+                range?: string | null;
+                /** @description Comma-separated agent filter (reserved). */
+                agents?: string | null;
+                /** @description Comma-separated team filter (reserved). */
+                teams?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-category action-volume time series */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionVolumeResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_decision_mix: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+                 *     `24h` — the window the Agent-Detail "traffic mix · last 24h" card shows;
+                 *     any unrecognised value also falls back to `24h`.
+                 */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent allow/narrow/scrub/pending/deny decision distribution over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDecisionMixCounts"][];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_agent_enforcement: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+                 *     `24h` — the window the Fleet "/24h" columns and Agent-Detail tiles show;
+                 *     any unrecognised value also falls back to `24h`.
+                 */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent blocked + scrubbed decision counts over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentEnforcementCounts"][];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_approvals: {
+        parameters: {
+            query?: {
+                /** @description Time range preset or custom range. See [`KpiParams::range`]. */
+                range?: string | null;
+                /** @description Comma-separated agent filter (reserved). */
+                agents?: string | null;
+                /** @description Comma-separated team filter (reserved). */
+                teams?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approval volume, rate and latency */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalAnalyticsResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_cost_breakdown: {
+        parameters: {
+            query?: {
+                /** @description Grouping dimension: `agent` | `team` | `model`. */
+                groupBy?: string | null;
+                /** @description Time range preset or custom range. See [`KpiParams::range`]. */
+                range?: string | null;
+                /** @description Comma-separated agent filter (reserved). */
+                agents?: string | null;
+                /** @description Comma-separated team filter (reserved). */
+                teams?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cost broken down into stacked segments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostBreakdownResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_fleet_health: {
+        parameters: {
+            query?: {
+                /** @description Time range preset or custom range. See [`KpiParams::range`]. */
+                range?: string | null;
+                /** @description Comma-separated agent filter (reserved). */
+                agents?: string | null;
+                /** @description Comma-separated team filter (reserved). */
+                teams?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent health sparklines */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetHealthResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_kpis: {
+        parameters: {
+            query?: {
+                /** @description KPI to compute: `agents` | `invocations` | `p99` | `cost` | `anomalies`. */
+                metric?: string | null;
+                /**
+                 * @description Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+                 *     `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`.
+                 */
+                range?: string | null;
+                /** @description Comma-separated agent filter (reserved; not yet applied to KPIs). */
+                agents?: string | null;
+                /** @description Comma-separated team filter (reserved; not yet applied to KPIs). */
+                teams?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description KPI value and window-over-window delta */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KpiResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_policy_effectiveness: {
+        parameters: {
+            query?: {
+                /** @description Time range preset or custom range. See [`KpiParams::range`]. */
+                range?: string | null;
+                /** @description Comma-separated agent filter (reserved). */
+                agents?: string | null;
+                /** @description Comma-separated team filter (reserved). */
+                teams?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-rule daily policy effectiveness */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyEffectivenessResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_tool_usage: {
+        parameters: {
+            query?: {
+                /** @description Time range preset or custom range. See [`KpiParams::range`]. */
+                range?: string | null;
+                /** @description Comma-separated agent filter (reserved). */
+                agents?: string | null;
+                /** @description Comma-separated team filter (reserved). */
+                teams?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-tool call statistics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolUsageResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_trust: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-agent trust scores and the weight-set that produced them */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_trust_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller tenant's effective trust weight-set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustWeightSet"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    put_trust_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TrustWeightSet"];
+            };
+        };
+        responses: {
+            /** @description The updated weight-set */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustWeightSet"];
+                };
+            };
+            /** @description Caller has no tenant org to configure */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the write scope */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4561,6 +9153,47 @@ export interface operations {
             };
         };
     };
+    forward_action: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Approval request identifier */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForwardRequest"];
+            };
+        };
+        responses: {
+            /** @description Approval reassigned; still pending */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalResponse"];
+                };
+            };
+            /** @description Missing forward target or invalid UUID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Approval request not found or already resolved */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reject_action: {
         parameters: {
             query?: never;
@@ -4625,6 +9258,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     get_violations_by_lineage: {
@@ -4656,6 +9296,364 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    invite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteRequest"];
+            };
+        };
+        responses: {
+            /** @description Invite created */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteResponse"];
+                };
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    invite_accept: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Invite accepted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessTokenResponse"];
+                };
+            };
+            /** @description Token expired/used or weak password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessTokenResponse"];
+                };
+            };
+            /** @description Invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Account locked */
+            423: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logged out (refresh revoked) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    auth_methods: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available auth methods */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthMethodsResponse"];
+                };
+            };
+        };
+    };
+    password_reset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Reset request accepted (always, enumeration-safe) */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    password_reset_confirm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordResetConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Password reset; outstanding sessions revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token expired/used/unknown or weak password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    refresh: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Refreshed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessTokenResponse"];
+                };
+            };
+            /** @description Missing / revoked / expired refresh token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Registered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisterResponse"];
+                };
+            };
+            /** @description Registration closed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Email already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Weak password */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Native auth not available (no Postgres) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
             };
         };
     };
@@ -4701,6 +9699,39 @@ export interface operations {
             };
         };
     };
+    issue_ws_ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WsTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description Ticket issued successfully */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WsTicketResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
     get_matrix: {
         parameters: {
             query?: {
@@ -4736,6 +9767,20 @@ export interface operations {
                     "application/json": components["schemas"]["CapabilityMatrix"];
                 };
             };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the admin role required to read the capability matrix */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     list_overrides: {
@@ -4758,6 +9803,20 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["OverrideRecord"][];
                 };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the admin role required to read the global override log */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -4792,7 +9851,7 @@ export interface operations {
                     "application/json": components["schemas"]["CapabilityOverrideResponse"];
                 };
             };
-            /** @description Unknown agent id */
+            /** @description Unknown agent id, or a decision the projection cannot express (narrow / approval) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -4827,6 +9886,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Caller lacks the role required to mutate capability state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description No active override with this id */
             404: {
                 headers: {
@@ -4856,6 +9922,73 @@ export interface operations {
                     "application/json": components["schemas"]["CostSummary"];
                 };
             };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_budget_tree: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Org → team → agent budget-inheritance tree */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetTreeResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_cost_history: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Trailing calendar days to return. Defaults to 7; clamped to 1..=90 so a
+                 *     single request can never ask for an unbounded series.
+                 */
+                days?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trailing daily spend history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostHistoryResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     dispatch_tool: {
@@ -4878,6 +10011,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DispatchToolResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Caller lacks the write scope required to dispatch */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
                 };
             };
             /** @description Unknown placeholder referenced in args */
@@ -4905,6 +10056,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    list_active_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active agent sessions across the fleet */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FleetActiveSessionResponse"][];
                 };
             };
         };
@@ -4965,6 +10136,13 @@ export interface operations {
                     "application/json": components["schemas"]["ApiKeyResponse"][];
                 };
             };
+            /** @description Caller lacks the admin role required to read IAM state */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     generate_api_key: {
@@ -4988,6 +10166,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GeneratedApiKeyResponse"];
                 };
+            };
+            /** @description ttl_seconds is zero or out of range */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Caller lacks the role required to mutate IAM state */
             403: {
@@ -5084,6 +10269,40 @@ export interface operations {
             };
         };
     };
+    list_roles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Built-in roles with derived capability grants, highest privilege first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleCapabilitiesResponse"][];
+                };
+            };
+            /** @description Caller is unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks the read scope required to view IAM roles */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_logs: {
         parameters: {
             query?: {
@@ -5117,8 +10336,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LogEntry"][];
+                    "application/json": components["schemas"]["PaginatedLogResponse"];
                 };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -5166,6 +10392,129 @@ export interface operations {
             };
             /** @description Empty or missing op_id */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    halt_global: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpHaltRequest"];
+            };
+        };
+        responses: {
+            /** @description Global halt emitted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpHaltAck"];
+                };
+            };
+            /** @description Unknown action */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Caller lacks admin scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op-control channel not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    halt_agent_for_op: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Operation id identifying the agent to halt. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpHaltRequest"];
+            };
+        };
+        responses: {
+            /** @description Agent-wide halt emitted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpHaltAck"];
+                };
+            };
+            /** @description Empty op id or unknown action */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Caller not authorized for this op */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op has no resolvable owning agent */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Op-control channel not configured */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5316,6 +10665,39 @@ export interface operations {
             };
         };
     };
+    get_enforcement_timeline: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Recent window to summarise: `1h` | `24h` | `7d` | `30d`. Defaults to
+                 *     `24h`; any unrecognised value also falls back to `24h`.
+                 */
+                window?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Windowed enforcement decision counts by verdict */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnforcementTimelineResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_policies: {
         parameters: {
             query?: {
@@ -5341,8 +10723,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PolicyResponse"][];
+                    "application/json": components["schemas"]["PaginatedPolicyResponse"];
                 };
+            };
+            /** @description Caller lacks admin scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -5402,12 +10791,999 @@ export interface operations {
                     "application/json": components["schemas"]["PolicyResponse"];
                 };
             };
+            /** @description Caller lacks admin scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description No active policy loaded */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    replay_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplayPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Aggregate impact of the proposed policy over the replayed corpus */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayPolicyResponse"];
+                };
+            };
+            /** @description Proposed policy YAML failed validation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    simulate_policy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimulatePolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Dry-run verdict for the hypothetical request */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SimulatePolicyResponse"];
+                };
+            };
+            /** @description Caller lacks read scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_team_policies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Team identifier */
+                team_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Policies in force for the team */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPoliciesResponse"];
+                };
+            };
+            /** @description Caller lacks admin scope or membership in this team */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_pattern_counts: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+                 *     `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`. Matches the analytics
+                 *     routes' range grammar.
+                 */
+                range?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-pattern-kind detection counts over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatternCountsResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_patterns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective built-in pattern catalogue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScrubCatalogueResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_posture: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Time range preset (`24h`, `7d`, `30d`, `90d`) or custom
+                 *     `YYYY-MM-DD..YYYY-MM-DD`. Defaults to `7d`. Matches the analytics
+                 *     routes' range grammar.
+                 */
+                range?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Leak posture over the window (leak rate absent when not derivable) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostureResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_breakdown: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /**
+                 * @description Which bounded dimension to group by. Defaults to `category`. Only ADR
+                 *     0032 §9's six labels are accepted — anything else is a 400.
+                 */
+                group_by?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Findings grouped by a bounded dimension */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataBreakdownResponse"];
+                };
+            };
+            /** @description `group_by` is not one of the six ADR 0032 §9 labels */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_events: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matching events, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataEventsResponse"];
+                };
+            };
+            /** @description Malformed window, or a cross-tenant caller that named no organisation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_event: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description The event's identity */
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The event and its findings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataEventDetailResponse"];
+                };
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such event within the caller's tenant and window */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    export_compliance_records: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /**
+                 * @description Must be `true`. An export is a deliberate act with a recorded principal,
+                 *     so it is not something a caller performs by navigating to a URL — the
+                 *     admin scope says *who may*, this says *this one, on purpose*.
+                 */
+                acknowledge_export?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The exported events and findings, plus the access record written for them */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComplianceExportResponse"];
+                };
+            };
+            /** @description `acknowledge_export=true` was not supplied, or the window is malformed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks admin scope, or may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The projection is not enabled, or the export could not be recorded */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_summary: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sensitive-data counters and rates over the window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataSummaryResponse"];
+                };
+            };
+            /** @description Malformed window, or a cross-tenant caller that named no organisation */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_timeseries: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /** @description Bucket width: `1h`, `6h`, `1d` or `7d`. Defaults to `1d`. */
+                bucket?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bucketed sensitive-data counters */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SensitiveDataTimeseriesResponse"];
+                };
+            };
+            /** @description Unknown bucket width, malformed window, or too many buckets */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_top_offenders: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Organisation to read. Optional for a tenant-scoped caller (its own org
+                 *     is used); **required** for a cross-tenant admin, because there is no
+                 *     unscoped read to fall back to.
+                 */
+                org_id?: string;
+                /**
+                 * @description Time-range preset (`24h`, `7d`, `30d`, `90d`) or `YYYY-MM-DD..YYYY-MM-DD`.
+                 *     Defaults to `7d`. Ignored when `from`/`to` are given.
+                 */
+                range?: string;
+                /** @description Inclusive lower bound, RFC 3339. */
+                from?: string;
+                /** @description Exclusive upper bound, RFC 3339. */
+                to?: string;
+                /** @description Restrict to one acting agent. A drill-down dimension, never a metric label. */
+                agent_id?: string;
+                /** @description Restrict to one delegation-root agent. */
+                root_agent_id?: string;
+                /** @description Restrict to one team. */
+                team_id?: string;
+                /** @description Restrict to one tool — a destination whose kind is `tool`. */
+                tool?: string;
+                /** @description Restrict to one destination of any kind. */
+                destination?: string;
+                /** @description Restrict to one operation kind (`tool_call`, `network_egress`, …). */
+                operation?: string;
+                /**
+                 * @description Restrict to one enforcement outcome (`allow`, `narrow`, `scrub`,
+                 *     `pending`, `deny`).
+                 */
+                outcome?: string;
+                /** @description Restrict to one policy document. */
+                policy_document_id?: string;
+                /** @description Restrict to events carrying a finding of this category. */
+                category?: string;
+                /** @description Restrict to events carrying a finding from this recognizer. */
+                provider?: string;
+                /** @description Restrict to events carrying a finding in this confidence band. */
+                confidence?: string;
+                /** @description Restrict to events carrying a finding in this triage status. */
+                status?: string;
+                /** @description Restrict to events carrying a finding of this severity. */
+                severity?: string;
+                /** @description Restrict to events carrying a finding produced by this detection method. */
+                detection_method?: string;
+                /** @description Maximum rows on the **list** surfaces. Aggregates are never capped. */
+                limit?: number;
+                /** @description Rank by `agent`, `tool` or `destination`. Defaults to `agent`. */
+                dimension?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ranked offenders with trend comparison */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopOffendersResponse"];
+                };
+            };
+            /** @description `dimension` is not `agent`, `root_agent`, `tool` or `destination` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read the requested organisation */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The sensitive-data projection is not enabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_tools: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discovered tools */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolInfoSchema"][];
+                };
+            };
+        };
+    };
+    get_topology_graph: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent topology graph (nodes + edges) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyGraphResponse"];
+                };
+            };
+            /** @description Edge store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    list_topology_edges: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Return only edges where at least one endpoint belongs to this team.
+                 * @example team-alpha
+                 */
+                team_id?: string | null;
+                /**
+                 * @description Maximum number of edges to return. Defaults to 500, capped at 1000.
+                 * @example 500
+                 */
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Edge list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopologyEdgeListResponse"];
+                };
+            };
+            /** @description Store error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProblemDetail"];
+                };
             };
         };
     };
@@ -5684,6 +12060,14 @@ export interface operations {
                  *     The server keeps the last 1000 events in a circular buffer.
                  */
                 since?: number | null;
+                /**
+                 * @description Short-lived, single-use WebSocket ticket (AAASM-4861). Browsers can't set
+                 *     an `Authorization` header on a WS handshake, so the dashboard mints a
+                 *     ticket via `POST /api/v1/auth/ws-ticket` and presents it here instead of
+                 *     putting a long-lived credential in the URL. Non-browser clients may
+                 *     instead send an `Authorization: Bearer` header and omit this.
+                 */
+                ticket?: string | null;
             };
             header?: never;
             path?: never;

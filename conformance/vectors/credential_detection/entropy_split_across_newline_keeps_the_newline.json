@@ -1,0 +1,9 @@
+{
+  "description": "AAASM-5368: a secret split across a newline in a YAML document. The pair is scored, because a newline is a splitting separator, but the two runs are reported as two findings that bracket the newline rather than one span covering it. The expected output pins that the newline and the following key survive: a single joined span redacted them together and left invalid YAML behind, which is the same clause-swallowing failure AAASM-5344 was opened to fix, reached by a different route.",
+  "input_text": "token: aB3dEf7hJk9mNp2qRs5\nreplicas: 3",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 7 },
+    { "kind": "GenericHighEntropy", "offset": 27 }
+  ],
+  "expected_redacted": "token: [REDACTED:GenericHighEntropy]\n[REDACTED:GenericHighEntropy]: 3"
+}

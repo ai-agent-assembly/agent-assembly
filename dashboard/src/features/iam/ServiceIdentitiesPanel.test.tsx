@@ -1,22 +1,26 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { ServiceIdentitiesPanel } from './ServiceIdentitiesPanel'
 import { ToastProvider } from '../../components/ToastProvider'
 import { _apiKeysInternal } from './apiKeys'
 import { REVEAL_AUTOCLOSE_MS } from './RevealOnceModal'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <ToastProvider>
-        <MemoryRouter>
-          <ServiceIdentitiesPanel />
-        </MemoryRouter>
-      </ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>
+          <MemoryRouter>
+            <ServiceIdentitiesPanel />
+          </MemoryRouter>
+        </ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>,
   )
 }
@@ -54,6 +58,20 @@ describe('ServiceIdentitiesPanel — listing', () => {
     await screen.findByTestId('api-key-row-key-3')
     expect(screen.queryByTestId('api-key-revoke-key-3')).not.toBeInTheDocument()
     expect(screen.getByTestId('api-key-revoke-key-1')).toBeInTheDocument()
+  })
+
+  it('shows the empty hint until a key is selected, then the detail card', async () => {
+    const user = userEvent.setup()
+    renderPanel()
+    await screen.findByTestId('api-key-row-key-1')
+    expect(screen.getByTestId('iam-services-detail-empty')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('api-key-row-key-1'))
+    expect(await screen.findByTestId('identity-detail-card')).toBeInTheDocument()
+    expect(screen.queryByTestId('iam-services-detail-empty')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('identity-detail-card-close'))
+    expect(screen.getByTestId('iam-services-detail-empty')).toBeInTheDocument()
   })
 })
 
@@ -158,6 +176,25 @@ describe('ServiceIdentitiesPanel — generate-and-reveal flow', () => {
       expect(screen.queryByTestId('confirm-destroy-unseen-key')).not.toBeInTheDocument(),
     )
     expect(screen.getByTestId('reveal-once-modal')).toBeInTheDocument()
+  })
+
+  it('surfaces a generate failure via toast without revealing a secret', async () => {
+    _apiKeysInternal.setGenerateOverride(() =>
+      Promise.reject(new Error('quota exceeded')),
+    )
+    const user = userEvent.setup()
+    renderPanel()
+    await screen.findByTestId('api-key-row-key-1')
+
+    await user.click(screen.getByTestId('generate-key-button'))
+    await user.type(screen.getByTestId('generate-key-label-input'), 'doomed')
+    await user.click(screen.getByTestId('generate-key-scope-admin'))
+    await user.click(screen.getByTestId('generate-key-submit'))
+
+    await waitFor(() =>
+      expect(screen.getByTestId('toast-container').textContent).toContain('quota exceeded'),
+    )
+    expect(screen.queryByTestId('reveal-once-modal')).not.toBeInTheDocument()
   })
 
   it('blocks generate submit until label + scope are present', async () => {
@@ -268,9 +305,7 @@ describe('ServiceIdentitiesPanel — rotate', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('api-key-rotate-key-1')).not.toBeInTheDocument(),
     )
-    await waitFor(() =>
-      expect(screen.getByTestId('api-key-row-gen-rotated-1')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('api-key-row-gen-rotated-1')).toBeInTheDocument()
     expect(
       screen.getByTestId('api-key-row-gen-rotated-1').textContent,
     ).toContain('aa_live_zzzz')
@@ -305,6 +340,3 @@ describe('ServiceIdentitiesPanel — rotate', () => {
     expect(screen.getByTestId('api-key-rotate-key-1')).toBeInTheDocument()
   })
 })
-
-// helper import kept after definitions to avoid hoisting hassles in tests
-import { within } from '@testing-library/react'

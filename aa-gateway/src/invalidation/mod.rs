@@ -8,5 +8,5 @@
 mod hub;
 mod service;
 
-pub use hub::{AssemblyId, InvalidationHub, SubscriptionHandle};
+pub use hub::{AssemblyId, InvalidationHub, SubscribeError, SubscriptionHandle};
 pub use service::InvalidationServiceImpl;

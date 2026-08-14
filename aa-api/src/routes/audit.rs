@@ -13,7 +13,27 @@ use utoipa::{IntoParams, ToSchema};
 use aa_core::AgentId;
 use aa_core::AuditEntry;
 
+use crate::auth::scope::{RequireRead, Scope};
+use crate::auth::AuthenticatedCaller;
 use crate::state::AppState;
+
+/// AAASM-3846 — confine audit aggregation to the caller's tenant.
+///
+/// The audit log is per-tenant data. Mirrors the org scoping `logs.rs` applies
+/// to `GET /api/v1/logs`: an admin sees every org's entries; a tenant-scoped
+/// caller sees only its own org; a non-admin caller with no org scope sees
+/// nothing (rather than a cross-tenant dump). Entries with `org_id = None`
+/// never match an explicit org filter, so multi-tenancy isolation requires
+/// explicit org tagging on the entry at write time.
+fn scope_entries_to_caller(caller: &AuthenticatedCaller, entries: Vec<AuditEntry>) -> Vec<AuditEntry> {
+    if caller.scopes.contains(&Scope::Admin) {
+        return entries;
+    }
+    match caller.tenant.org_id.as_deref() {
+        Some(org) => entries.into_iter().filter(|e| e.org_id() == Some(org)).collect(),
+        None => Vec::new(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -128,11 +148,13 @@ pub struct SandboxSummaryParams {
     params(ViolationsParams),
     responses(
         (status = 200, description = "Violation heatmap nodes", body = ViolationsByLineageResponse),
-        (status = 400, description = "Invalid query parameter")
+        (status = 400, description = "Invalid query parameter"),
+        (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "audit"
 )]
 pub async fn get_violations_by_lineage(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<ViolationsParams>,
 ) -> impl IntoResponse {
@@ -150,6 +172,9 @@ pub async fn get_violations_by_lineage(
         .list_violations(since_ns, root_agent)
         .await
         .unwrap_or_default();
+
+    // AAASM-3846 — bind the aggregation to the caller's tenant.
+    let entries = scope_entries_to_caller(&caller, entries);
 
     let nodes = aggregate_violations(&entries);
 
@@ -176,11 +201,13 @@ pub async fn get_violations_by_lineage(
     params(SandboxSummaryParams),
     responses(
         (status = 200, description = "Sandbox / observe-mode aggregate counts", body = SandboxSummaryResponse),
-        (status = 400, description = "Invalid query parameter")
+        (status = 400, description = "Invalid query parameter"),
+        (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "audit"
 )]
 pub async fn get_sandbox_summary(
+    RequireRead(caller): RequireRead,
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<SandboxSummaryParams>,
 ) -> impl IntoResponse {
@@ -198,6 +225,9 @@ pub async fn get_sandbox_summary(
         .list_dry_run(since_ns, root_agent)
         .await
         .unwrap_or_default();
+
+    // AAASM-3846 — bind the aggregation to the caller's tenant.
+    let entries = scope_entries_to_caller(&caller, entries);
 
     let (counts, top_rule) = aggregate_sandbox_summary(&entries);
 

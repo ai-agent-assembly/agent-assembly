@@ -7,12 +7,14 @@
 //!   2 = EventReport  (AuditEvent)
 //!   3 = ApprovalResponse (ApprovalDecision)
 //!   4 = Heartbeat    (no payload)
+//!   5 = HandshakeProof (HandshakeProof) — AAASM-3583
 //!
 //! Outbound tags (runtime → SDK):
 //!   1 = PolicyResponse   (CheckActionResponse)
 //!   2 = ApprovalDecision (ApprovalDecision)
-//!   3 = Ack              (zero-length varint + empty body: [0x03][0x00])
+//!   3 = Ack              (zero-length varint + empty body: `0x03 0x00`)
 //!   4 = ViolationAlert   (PolicyViolation)
+//!   5 = HandshakeChallenge (HandshakeChallenge) — AAASM-3583
 
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -22,6 +24,9 @@ use aa_proto::assembly::audit::v1::AuditEvent;
 #[cfg(test)]
 use aa_proto::assembly::audit::v1::PolicyViolation;
 use aa_proto::assembly::event::v1::ApprovalDecision;
+#[cfg(test)]
+use aa_proto::assembly::ipc::v1::HandshakeChallenge;
+use aa_proto::assembly::ipc::v1::HandshakeProof;
 use aa_proto::assembly::policy::v1::CheckActionRequest;
 #[cfg(test)]
 use aa_proto::assembly::policy::v1::CheckActionResponse;
@@ -32,6 +37,8 @@ pub const TAG_POLICY_QUERY: u8 = 1;
 pub const TAG_EVENT_REPORT: u8 = 2;
 pub const TAG_APPROVAL_RESPONSE: u8 = 3;
 pub const TAG_HEARTBEAT: u8 = 4;
+/// SDK → runtime signed handshake proof (AAASM-3583).
+pub const TAG_HANDSHAKE_PROOF: u8 = 5;
 
 // ── Outbound tag constants ────────────────────────────────────────────────────
 
@@ -39,6 +46,18 @@ pub const TAG_POLICY_RESPONSE: u8 = 1;
 pub const TAG_APPROVAL_DECISION: u8 = 2;
 pub const TAG_ACK: u8 = 3;
 pub const TAG_VIOLATION_ALERT: u8 = 4;
+/// runtime → SDK per-session nonce challenge (AAASM-3583).
+pub const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
+
+/// Maximum accepted length-delimited payload size, in bytes (8 MiB).
+///
+/// The wire length prefix is attacker-controlled: a peer on the UDS can send a
+/// varint claiming a multi-gigabyte payload, and `vec![0u8; len]` would attempt
+/// to allocate it before a single payload byte is read — a trivial local DoS
+/// (AAASM-3132). We reject any frame larger than this bound *before* allocating.
+/// 8 MiB comfortably exceeds any legitimate `CheckActionRequest` / `AuditEvent`
+/// while keeping a single hostile frame from exhausting memory.
+pub const MAX_FRAME_LEN: usize = 8 * 1024 * 1024;
 
 /// Errors that can occur during frame encoding or decoding.
 #[derive(Debug)]
@@ -46,6 +65,12 @@ pub enum CodecError {
     Io(std::io::Error),
     UnknownTag(u8),
     DecodeError(prost::DecodeError),
+    /// The wire length prefix exceeded [`MAX_FRAME_LEN`]. Rejected before any
+    /// allocation so a hostile peer cannot force a large buffer alloc.
+    FrameTooLarge {
+        len: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for CodecError {
@@ -54,6 +79,9 @@ impl std::fmt::Display for CodecError {
             CodecError::Io(e) => write!(f, "IO error: {e}"),
             CodecError::UnknownTag(t) => write!(f, "unknown frame tag: {t}"),
             CodecError::DecodeError(e) => write!(f, "prost decode error: {e}"),
+            CodecError::FrameTooLarge { len, max } => {
+                write!(f, "frame length {len} exceeds maximum {max}")
+            }
         }
     }
 }
@@ -98,6 +126,11 @@ where
             let msg = ApprovalDecision::decode(bytes.as_ref())?;
             Ok(IpcFrame::ApprovalResponse(msg))
         }
+        TAG_HANDSHAKE_PROOF => {
+            let bytes = read_length_delimited(reader).await?;
+            let msg = HandshakeProof::decode(bytes.as_ref())?;
+            Ok(IpcFrame::HandshakeProof(msg))
+        }
         other => Err(CodecError::UnknownTag(other)),
     }
 }
@@ -127,6 +160,11 @@ where
             let bytes = msg.encode_to_vec();
             write_length_delimited(writer, &bytes).await?;
         }
+        IpcResponse::HandshakeChallenge(msg) => {
+            writer.write_u8(TAG_HANDSHAKE_CHALLENGE).await?;
+            let bytes = msg.encode_to_vec();
+            write_length_delimited(writer, &bytes).await?;
+        }
     }
     writer.flush().await?;
     Ok(())
@@ -141,6 +179,15 @@ where
 {
     // Read the varint length (prost uses unsigned varint).
     let len = read_varint(reader).await? as usize;
+    // AAASM-3132: bound the claimed length BEFORE allocating. The prefix comes
+    // off the wire from an untrusted peer, so allocating `len` bytes first would
+    // let a single hostile frame exhaust memory.
+    if len > MAX_FRAME_LEN {
+        return Err(CodecError::FrameTooLarge {
+            len,
+            max: MAX_FRAME_LEN,
+        });
+    }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
@@ -208,6 +255,26 @@ mod tests {
         let mut buf = Vec::new();
         write_response(&mut buf, response).await.unwrap();
         buf
+    }
+
+    #[test]
+    fn codec_error_display_covers_all_variants() {
+        let io = CodecError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"));
+        assert!(io.to_string().contains("IO error"), "got: {io}");
+
+        let unknown = CodecError::UnknownTag(0xAB);
+        assert!(unknown.to_string().contains("unknown frame tag"), "got: {unknown}");
+
+        // Build a genuine prost decode error from malformed wire bytes (a field
+        // header promising a varint with no body).
+        use prost::Message;
+        let decode_err = aa_proto::assembly::policy::v1::CheckActionRequest::decode([0x08u8].as_slice())
+            .expect_err("truncated varint must fail to decode");
+        let decode = CodecError::DecodeError(decode_err);
+        assert!(decode.to_string().contains("decode"), "got: {decode}");
+
+        let too_large = CodecError::FrameTooLarge { len: 10, max: 5 };
+        assert!(too_large.to_string().contains("exceeds maximum"), "got: {too_large}");
     }
 
     #[tokio::test]
@@ -361,6 +428,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handshake_proof_inbound_round_trip() {
+        let proof = HandshakeProof {
+            agent_did: "did:key:z6MkExample".to_string(),
+            public_key: "ab".repeat(32),
+            signature: vec![7u8; 64],
+            sdk_version: "1.2.3".to_string(),
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.push(TAG_HANDSHAKE_PROOF);
+        let payload = proof.encode_to_vec();
+        write_varint(&mut buf, payload.len() as u64).await.unwrap();
+        buf.extend_from_slice(&payload);
+
+        let mut cursor = Cursor::new(buf);
+        let frame = read_frame(&mut cursor).await.unwrap();
+
+        match frame {
+            IpcFrame::HandshakeProof(decoded) => {
+                assert_eq!(decoded.agent_did, "did:key:z6MkExample");
+                assert_eq!(decoded.public_key, "ab".repeat(32));
+                assert_eq!(decoded.signature, vec![7u8; 64]);
+                assert_eq!(decoded.sdk_version, "1.2.3");
+            }
+            other => panic!("expected HandshakeProof, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_challenge_outbound_round_trip() {
+        let nonce = crate::ipc::handshake::generate_nonce().to_vec();
+        let challenge = HandshakeChallenge { nonce: nonce.clone() };
+
+        let bytes = encode_response(IpcResponse::HandshakeChallenge(challenge)).await;
+        assert_eq!(bytes[0], TAG_HANDSHAKE_CHALLENGE);
+
+        // Decode payload back.
+        let mut cursor = Cursor::new(&bytes[1..]);
+        let len = read_varint(&mut cursor).await.unwrap() as usize;
+        let varint_bytes = cursor.position() as usize;
+        let payload_start = 1 + varint_bytes;
+        let payload = &bytes[payload_start..payload_start + len];
+        let decoded = HandshakeChallenge::decode(payload).unwrap();
+        assert_eq!(decoded.nonce, nonce);
+    }
+
+    #[tokio::test]
     async fn violation_alert_encodes_with_correct_tag_and_decodes() {
         let violation = PolicyViolation {
             policy_rule: "block-files".to_string(),
@@ -385,5 +499,42 @@ mod tests {
         assert_eq!(decoded.policy_rule, "block-files");
         assert_eq!(decoded.blocked_action, "FILE_OPERATION");
         assert_eq!(decoded.reason, "file access not permitted");
+    }
+
+    #[tokio::test]
+    async fn oversized_frame_prefix_rejected_before_alloc() {
+        // AAASM-3132: a hostile peer claims a ~4 GiB payload via the varint
+        // length prefix but sends no payload bytes. The decoder must reject it
+        // with FrameTooLarge *before* allocating, so the tiny cursor (just the
+        // tag + varint) does not hang on `read_exact` and no huge buffer is
+        // allocated.
+        let mut buf: Vec<u8> = vec![TAG_POLICY_QUERY];
+        write_varint(&mut buf, u32::MAX as u64).await.unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let result = read_frame(&mut cursor).await;
+        match result {
+            Err(CodecError::FrameTooLarge { len, max }) => {
+                assert_eq!(len, u32::MAX as usize);
+                assert_eq!(max, MAX_FRAME_LEN);
+            }
+            other => panic!("expected FrameTooLarge, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_at_max_len_boundary_is_accepted() {
+        // A prefix exactly equal to MAX_FRAME_LEN must not be rejected by the
+        // bound itself; here it fails later (truncated payload) — proving the
+        // limit is `>` and not `>=`.
+        let mut buf: Vec<u8> = vec![TAG_POLICY_QUERY];
+        write_varint(&mut buf, MAX_FRAME_LEN as u64).await.unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let result = read_frame(&mut cursor).await;
+        assert!(
+            !matches!(result, Err(CodecError::FrameTooLarge { .. })),
+            "MAX_FRAME_LEN itself must be accepted by the bound"
+        );
     }
 }

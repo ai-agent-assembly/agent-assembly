@@ -18,7 +18,7 @@
 //! ## Value-type ownership
 //!
 //! The storage layer defines its own value types ([`AuditEvent`],
-//! [`AgentRecord`], [`PolicyVersion`], …) rather than reusing the gateway's
+//! `AgentRecord`, [`PolicyVersion`], …) rather than reusing the gateway's
 //! richer runtime structs. Keeping the two sides separate prevents the
 //! storage schema from drifting whenever a runtime type grows new fields.
 
@@ -28,6 +28,7 @@ pub mod audit_bridge;
 pub mod backend;
 pub mod boot;
 pub mod cache;
+pub mod challenge;
 pub mod error;
 pub mod health;
 pub mod metric;
@@ -39,6 +40,7 @@ pub mod retention;
 pub mod retention_boot;
 pub mod retention_config;
 pub mod retention_engine;
+pub mod sensitive_data;
 pub mod sqlite;
 pub mod timescale;
 
@@ -48,6 +50,8 @@ pub use audit_bridge::audit_entry_to_storage_event;
 pub use backend::StorageBackend;
 pub use boot::{open_postgres_backend, open_sqlite_backend};
 pub use cache::{PolicyCache, PolicyCacheLike, RedisConfig};
+#[cfg(feature = "redis-cache")]
+pub use challenge::RedisChallengeStore;
 pub use error::{StorageError, StorageResult};
 pub use health::{HealthStatus, RowCounts, StorageHealth};
 pub use metric::{Metric, MetricPoint, MetricQuery};
@@ -58,5 +62,10 @@ pub use retention::{ColdAction, RetentionPolicy, RetentionStats};
 pub use retention_boot::spawn_retention_engine;
 pub use retention_config::{RetentionConfig, RetentionConfigError};
 pub use retention_engine::RetentionEngine;
+pub use sensitive_data::{
+    CategoryFindingAggregate, CategoryTally, ProjectionError, SensitiveDataEventFilter, SensitiveDataEventRow,
+    SensitiveDataFindingRow, SensitiveDataProjection, SensitiveDataProjectionConfig, SensitiveDataProjectionWriter,
+    TenantScope, WriteOutcome,
+};
 pub use sqlite::{SqliteBackend, SqliteConfig};
 pub use timescale::TimescaleStats;

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { extractEnforcementMode, withEnforcementMode } from './policyYamlHelpers'
+import {
+  DEFAULT_SCOPE,
+  extractEnforcementMode,
+  extractScope,
+  scopeFromMetadata,
+  withEnforcementMode,
+} from './policyYamlHelpers'
 
 describe('extractEnforcementMode', () => {
   it('returns the top-level mode when set', () => {
@@ -56,5 +62,47 @@ describe('withEnforcementMode', () => {
   it('returns input unchanged for empty or malformed YAML', () => {
     expect(withEnforcementMode('', 'enforce')).toBe('')
     expect(withEnforcementMode(': : : not valid', 'enforce')).toBe(': : : not valid')
+  })
+})
+
+describe('extractScope', () => {
+  it('returns metadata.scope when present', () => {
+    expect(extractScope('metadata:\n  name: p1\n  scope: team:research\nrules: []\n')).toBe(
+      'team:research',
+    )
+  })
+
+  it('trims surrounding whitespace on the scope value', () => {
+    expect(extractScope('metadata:\n  scope: "  agent:bot-04  "\n')).toBe('agent:bot-04')
+  })
+
+  it('falls back to the default scope when metadata.scope is absent', () => {
+    expect(extractScope('metadata:\n  name: p1\nrules: []\n')).toBe(DEFAULT_SCOPE)
+    expect(extractScope('rules: []\n')).toBe(DEFAULT_SCOPE)
+  })
+
+  it('falls back to the default scope for a blank scope value', () => {
+    expect(extractScope('metadata:\n  scope: "   "\n')).toBe(DEFAULT_SCOPE)
+  })
+
+  it('falls back to the default scope for empty / whitespace input', () => {
+    expect(extractScope('')).toBe(DEFAULT_SCOPE)
+    expect(extractScope('   \n')).toBe(DEFAULT_SCOPE)
+  })
+
+  it('falls back to the default scope for malformed YAML', () => {
+    expect(extractScope(': : : not valid')).toBe(DEFAULT_SCOPE)
+  })
+})
+
+describe('scopeFromMetadata', () => {
+  it('reads scope from an already-parsed document', () => {
+    expect(scopeFromMetadata({ metadata: { scope: 'global' } })).toBe('global')
+  })
+
+  it('returns the default for a null / scope-less document', () => {
+    expect(scopeFromMetadata(null)).toBe(DEFAULT_SCOPE)
+    expect(scopeFromMetadata({ metadata: {} })).toBe(DEFAULT_SCOPE)
+    expect(scopeFromMetadata({})).toBe(DEFAULT_SCOPE)
   })
 })

@@ -1,21 +1,37 @@
-import { useState, useCallback, type ReactNode } from 'react'
+import { useState, useCallback, useMemo, type ReactNode } from 'react'
 import { ToastContext, type ToastVariant, type ToastMessage } from './ToastContext'
 
 let _nextId = 0
 
-export function ToastProvider({ children }: { children: ReactNode }) {
+const TOAST_TTL_MS = 4000
+
+/** Remove the toast with `id` from a toast list (module-scope to avoid deep nesting). */
+function removeToast(list: ToastMessage[], id: number): ToastMessage[] {
+  return list.filter((t) => t.id !== id)
+}
+
+// ToastVariant is a closed 3-member app union, not a raw wire string —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
+const TOAST_BACKGROUND: Record<ToastVariant, string> = {
+  success: 'var(--status-success-solid)',
+  error: 'var(--status-danger-solid)',
+  info: 'var(--status-info-solid)',
+}
+
+export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [toasts, setToasts] = useState<ToastMessage[]>([])
 
   const toast = useCallback((message: string, variant: ToastVariant = 'info') => {
     const id = _nextId++
     setToasts((prev) => [...prev, { id, message, variant }])
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id))
-    }, 4000)
+    setTimeout(() => setToasts((prev) => removeToast(prev, id)), TOAST_TTL_MS)
   }, [])
 
+  const value = useMemo(() => ({ toast }), [toast])
+
   return (
-    <ToastContext.Provider value={{ toast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <div
         style={{
@@ -37,12 +53,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             style={{
               padding: '0.75rem 1rem',
               borderRadius: '0.375rem',
-              background:
-                t.variant === 'success'
-                  ? 'var(--status-success-solid)'
-                  : t.variant === 'error'
-                    ? 'var(--status-danger-solid)'
-                    : 'var(--status-info-solid)',
+              background: TOAST_BACKGROUND[t.variant],
               color: 'var(--toast-text)',
               fontSize: '0.875rem',
               maxWidth: '24rem',

@@ -1,16 +1,22 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
 import { ActionVolumePanel } from './ActionVolumePanel'
-import { transformSeries } from './actionVolumeUtils'
+import { transformSeries, makeTickFormatter } from './actionVolumeUtils'
 import type { ActionVolumeSeries } from './useActionVolumeQuery'
 
 // recharts uses ResizeObserver which is not available in jsdom
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub
 
@@ -20,7 +26,7 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeQC()}>
       <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>
@@ -32,7 +38,7 @@ function mockFetchActionVolume(series: ActionVolumeSeries[]) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve({ series }),
-  } as Response)
+  })
 }
 
 const TWO_SERIES: ActionVolumeSeries[] = [
@@ -97,6 +103,71 @@ describe('transformSeries', () => {
     expect(row['agent-a']).toBe(20)
     expect(row['agent-b']).toBe(8)
   })
+
+  it('retains a "__proto__" series key as an own property instead of dropping it (AAASM-5240)', () => {
+    // The series key comes from an unvalidated fetch response. When rows were
+    // plain object literals, `row['__proto__'] = value` was a silent no-op, so a
+    // "__proto__" series vanished from the chart data. Rows built on a null-proto
+    // object keep it as a real own property that Recharts can plot.
+    const withProtoKey: ActionVolumeSeries[] = [
+      {
+        key: '__proto__',
+        name: 'Proto',
+        points: [
+          { t: 1000, value: 7 },
+          { t: 2000, value: 9 },
+        ],
+      },
+    ]
+    const rows = transformSeries(withProtoKey)
+    const row = rows.find(r => r['t'] === 1000)!
+    expect(Object.prototype.hasOwnProperty.call(row, '__proto__')).toBe(true)
+    expect(row['__proto__']).toBe(7)
+  })
+
+  it('clamps out-of-range values so the axis domain stays finite (AAASM-4334)', () => {
+    // A malformed 200 can carry the schema-boundary value -Number.MAX_VALUE,
+    // which previously collapsed the Recharts Y axis and spawned duplicate tick
+    // keys. Every value reaching the chart must be finite and in-range.
+    const degenerate: ActionVolumeSeries[] = [
+      {
+        key: 'bad',
+        name: 'Bad',
+        points: [
+          { t: 1000, value: -Number.MAX_VALUE },
+          { t: 2000, value: Number.POSITIVE_INFINITY },
+          { t: 3000, value: Number.NaN },
+        ],
+      },
+    ]
+    const rows = transformSeries(degenerate)
+    for (const row of rows) {
+      expect(Number.isFinite(row['bad'])).toBe(true)
+      expect(Math.abs(row['bad'])).toBeLessThanOrEqual(1e12)
+    }
+  })
+})
+
+// ── makeTickFormatter guard tests ─────────────────────────────────────────────
+
+describe('makeTickFormatter', () => {
+  it('formats an in-range timestamp instead of throwing', () => {
+    const fmt = makeTickFormatter('30d')
+    expect(fmt(1_700_000_000_000)).not.toBe('—')
+  })
+
+  it('returns a placeholder for a timestamp beyond JS Date range', () => {
+    const fmt = makeTickFormatter('24h')
+    // 8.64e15 is the max; anything larger makes Intl.DateTimeFormat throw.
+    expect(fmt(8.64e15 + 1)).toBe('—')
+    expect(fmt(-8.64e15 - 1)).toBe('—')
+  })
+
+  it('returns a placeholder for non-finite ticks', () => {
+    const fmt = makeTickFormatter('7d')
+    expect(fmt(Number.NaN)).toBe('—')
+    expect(fmt(Number.POSITIVE_INFINITY)).toBe('—')
+  })
 })
 
 // ── ActionVolumePanel integration tests ──────────────────────────────────────
@@ -131,7 +202,7 @@ describe('ActionVolumePanel', () => {
   })
 
   it('renders error message when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<ActionVolumePanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load action volume data/)).toBeInTheDocument()
   })

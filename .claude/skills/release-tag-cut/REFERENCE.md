@@ -25,13 +25,13 @@ All of the following MUST hold before any step below runs. If any fails,
 stop and report — do not attempt to remediate from inside this skill.
 
 1. **Working tree clean** — `git status --porcelain` returns no output.
-2. **On `master`, up to date with `remote/master`** —
-   `git rev-parse --abbrev-ref HEAD` is `master`, and
-   `git rev-list --count remote/master..HEAD` and
-   `git rev-list --count HEAD..remote/master` both return `0`.
+2. **On `main`, up to date with `remote/main`** —
+   `git rev-parse --abbrev-ref HEAD` is `main`, and
+   `git rev-list --count remote/main..HEAD` and
+   `git rev-list --count HEAD..remote/main` both return `0`.
    (Run `git fetch remote` first.)
-3. **Most recent CI run on master is green** — query via
-   `gh run list --branch master --limit 1 --json conclusion,status`
+3. **Most recent CI run on main is green** — query via
+   `gh run list --branch main --limit 1 --json conclusion,status`
    and confirm `status=completed` and `conclusion=success`.
 4. **Target version provided** — the operator supplies `<X>` (e.g.
    `0.0.1-alpha.10`). The skill does not invent or bump version numbers.
@@ -57,7 +57,8 @@ if `$CURRENT` equals `<X>` (no-op release) or if the value cannot be parsed.
 ### 2. Bump every Cargo.toml version literal + regenerate Cargo.lock
 
 Run the helper script — it enumerates `**/Cargo.toml` declaring `$CURRENT`,
-sed-replaces each, regenerates `Cargo.lock`, and refuses no-op invocations:
+sed-replaces each, bumps `sonar.projectVersion`, regenerates `Cargo.lock`, and
+refuses no-op invocations:
 
 ```bash
 ./scripts/release-tag-cut.sh "$CURRENT" "<X>"
@@ -67,10 +68,18 @@ The script prints the file list before mutating (sanity check it), then
 runs `cargo update --workspace`. For reference, the AAASM-2849 alpha-9 cut
 touched **~16 crates with ~43 literal occurrences**.
 
-### 3. Commit the version bump — Cargo.toml diff only
+It also bumps `sonar.projectVersion` in `sonar-project.properties` from
+`$CURRENT` to `<X>` so SonarCloud's reported project version tracks the release
+instead of going stale (AAASM-3819). The static value is the source of truth /
+local-scan fallback; `ci.yml` additionally overrides it dynamically from the
+Cargo version at scan time, so the line only needs to match `$CURRENT` for the
+helper to rewrite it — if it has drifted, the helper warns and leaves it
+untouched rather than failing the release.
+
+### 3. Commit the version bump — manifests + sonar
 
 ```bash
-git add '**/Cargo.toml' Cargo.toml
+git add '**/Cargo.toml' Cargo.toml sonar-project.properties
 git commit -m "🔧 (release): Bump workspace to v<X>"
 ```
 
@@ -107,7 +116,7 @@ git tag -a "v<X>" -m "Release v<X>
 See docs/release/v<X>.md for details."
 ```
 
-Do not push intermediate commits to master from inside this skill — the
+Do not push intermediate commits to main from inside this skill — the
 bump PR (RUNBOOK section 1) should already be merged before invocation.
 This skill's only push is the tag itself.
 
@@ -139,6 +148,12 @@ Surface both confirmations to the operator, then suggest:
 > `/release-validate-channels v<X>` to walk through the downstream channel
 > matrix (GH Release, crates.io, Homebrew tap PR, ghcr.io images, npm,
 > PyPI) per `docs/release/RUNBOOK.md` sections 3–5.
+
+Then **advance the Jira Fix Version ladder** (SKILL.md → "advance the Jira Fix
+Version ladder"): mark the just-cut version released and create the next one for
+the `agent-assembly` core train and each affected SDK/component train, per
+`ticket-authoring`'s `references/fix-versions.md`. Reminder only — the operator
+(or a credentialed release job) creates the versions.
 
 ## What's expected when done
 

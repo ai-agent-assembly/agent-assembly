@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import type { CapabilityAgent, Policy, Resource, SampleCall, Verb } from './types'
-import { DECISIONS } from './types'
+import { decisionMeta } from './types'
 import type { CellSelection } from './CapabilityMatrixGrid'
 import './CellInspectDrawer.css'
 
@@ -9,6 +9,12 @@ export interface CellInspectDrawerProps {
   policies: Policy[]
   sampleCalls: SampleCall[]
   onClose: () => void
+  /**
+   * Navigate to the policy editor. Called with a specific policy id from a
+   * per-policy `edit →` link, or with no argument from the footer's "open in
+   * Policy editor" action (open the editor without a pre-selected policy).
+   */
+  onOpenPolicy?: (policyId?: string) => void
 }
 
 function policiesFor(
@@ -32,7 +38,13 @@ function callsFor(
   return sampleCalls.filter((c) => c.agent === agent.id && c.verb === verb).slice(0, 5)
 }
 
-export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: CellInspectDrawerProps) {
+export function CellInspectDrawer({
+  cell,
+  policies,
+  sampleCalls,
+  onClose,
+  onOpenPolicy,
+}: Readonly<CellInspectDrawerProps>) {
   useEffect(() => {
     if (!cell) return
     const onKey = (e: KeyboardEvent) => {
@@ -44,18 +56,32 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Cell
 
   if (!cell) return null
   const { agent, resource, verb, decision } = cell
-  const decMeta = DECISIONS[decision]
+  const decMeta = decisionMeta(decision)
   const respPolicies = policiesFor(policies, agent, resource, verb)
   const recentCalls = callsFor(sampleCalls, agent, verb)
 
   return (
-    <div className="cap-drawer-scrim" onClick={onClose} data-testid="cell-inspect-scrim">
+    <div
+      className="cap-drawer-scrim"
+      onClick={onClose}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        onClose()
+      }}
+      role="button"
+      tabIndex={-1}
+      aria-label="Close cell inspector"
+      data-testid="cell-inspect-scrim"
+    >
       <aside
         className="cap-drawer"
         role="dialog"
         aria-modal
         aria-label="capability cell inspect"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <header className="cap-drawer-head">
           <div>
@@ -94,7 +120,7 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Cell
             <div className="cap-drawer-claimed">
               <div>
                 <div className="cap-drawer-mini-label">agent claims</div>
-                <div className="mono">{verb}({resource.id}/*)</div>
+                <div className="mono">{`${verb}(${resource.id}/*)`}</div>
                 <div className="cap-drawer-mini-note">declared in agent manifest</div>
               </div>
               <div>
@@ -118,11 +144,22 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Cell
             ) : (
               respPolicies.map((p) => (
                 <div key={p.id} className="cap-drawer-policy">
-                  <div>
-                    <span className="cap-drawer-policy-id mono">
-                      {p.id} · {p.version}
-                    </span>
-                    <div className="cap-drawer-policy-name">{p.name}</div>
+                  <div className="cap-drawer-policy-row">
+                    <div>
+                      <span className="cap-drawer-policy-id mono">
+                        {p.id} · {p.version}
+                      </span>
+                      <div className="cap-drawer-policy-name">{p.name}</div>
+                    </div>
+                    {onOpenPolicy && (
+                      <button
+                        type="button"
+                        className="cap-drawer-btn cap-drawer-btn--sm"
+                        onClick={() => onOpenPolicy(p.id)}
+                      >
+                        edit →
+                      </button>
+                    )}
                   </div>
                   <div className="cap-drawer-policy-scope mono">scope: {p.scope}</div>
                 </div>
@@ -156,6 +193,24 @@ export function CellInspectDrawer({ cell, policies, sampleCalls, onClose }: Cell
             )}
           </section>
         </div>
+
+        <footer className="cap-drawer-foot">
+          <button type="button" className="cap-drawer-btn">
+            simulate change
+          </button>
+          <div className="cap-drawer-foot-actions">
+            <button type="button" className="cap-drawer-btn">
+              narrow further…
+            </button>
+            <button
+              type="button"
+              className="cap-drawer-btn cap-drawer-btn--primary"
+              onClick={() => onOpenPolicy?.(respPolicies[0]?.id)}
+            >
+              open in Policy editor
+            </button>
+          </div>
+        </footer>
       </aside>
     </div>
   )

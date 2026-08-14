@@ -71,6 +71,12 @@ pub enum PolicyDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+// Schema-described because `ExecutionEvidence` embeds the mode: whether
+// enforcement was applied or merely computed is condition 4 of ADR 0032 §8's
+// prevention test, so a consumer reading the schema of a sensitive-data event
+// has to see it. Additive and feature-gated — no other type in this module is
+// schema-described, and none needs to be.
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EnforcementMode {
     /// Default: deny blocks, redact strips, pending halts execution.
     #[default]
@@ -91,6 +97,32 @@ impl EnforcementMode {
             1 => Some(Self::Enforce),
             2 => Some(Self::Observe),
             3 => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    /// Canonical lower-case wire string for this mode.
+    ///
+    /// Matches the `serde(rename_all = "snake_case")` representation and the
+    /// values persisted in the `agent_registry.enforcement_mode` column so the
+    /// storage layer can round-trip the mode without a serde-json hop.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Observe => "observe",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Parse the canonical wire string back into a mode.
+    ///
+    /// Returns `None` for any unrecognized value so callers can fall back to a
+    /// server-side default rather than silently coercing.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "enforce" => Some(Self::Enforce),
+            "observe" => Some(Self::Observe),
+            "disabled" => Some(Self::Disabled),
             _ => None,
         }
     }
@@ -380,6 +412,26 @@ mod tests {
         assert_eq!(EnforcementMode::from_proto_i32(99), None);
     }
 
+    #[test]
+    fn enforcement_mode_wire_round_trips_and_matches_snake_case() {
+        // as_wire/from_wire back the durable `agent_registry.enforcement_mode`
+        // column; they must agree with the snake_case serde tokens and reject
+        // anything else so a corrupt column falls back to a server default.
+        for mode in [
+            EnforcementMode::Enforce,
+            EnforcementMode::Observe,
+            EnforcementMode::Disabled,
+        ] {
+            assert_eq!(EnforcementMode::from_wire(mode.as_wire()), Some(mode));
+        }
+        assert_eq!(EnforcementMode::Enforce.as_wire(), "enforce");
+        assert_eq!(EnforcementMode::Observe.as_wire(), "observe");
+        assert_eq!(EnforcementMode::Disabled.as_wire(), "disabled");
+        assert_eq!(EnforcementMode::from_wire("shadow"), None);
+        assert_eq!(EnforcementMode::from_wire(""), None);
+        assert_eq!(EnforcementMode::from_wire("Enforce"), None);
+    }
+
     #[cfg(feature = "serde")]
     #[test]
     fn enforcement_mode_serde_snake_case_round_trip() {
@@ -512,6 +564,31 @@ pub fn is_host_allowed_by_egress_allowlist(host: &str, allowlist: &[alloc::strin
     false
 }
 
+/// Fail-closed egress decision: like [`is_host_allowed_by_egress_allowlist`],
+/// but an **empty** allowlist denies all hosts instead of allowing them.
+///
+/// AAASM-3730: the policy layer (`aa-gateway` cascade + single-file engine, and
+/// the `aa-proxy` L2 egress gate) treats the presence of a `network:` clause as
+/// "egress is governed". A governed-but-empty allowlist is the most restrictive
+/// posture — "permit nothing" — not "permit everything". Defaulting an empty
+/// allowlist to allow-all silently disabled the entire egress control whenever
+/// an operator wrote an empty list, the canonical fail-open footgun.
+///
+/// Callers that genuinely mean "no allowlist configured ⇒ no restriction" must
+/// gate on the *absence* of the network policy before reaching this matcher, not
+/// on the allowlist being empty.
+///
+/// Non-empty allowlists match identically to
+/// [`is_host_allowed_by_egress_allowlist`] (exact, leftmost-label wildcard,
+/// universal `*`, case-insensitive).
+#[cfg(feature = "alloc")]
+pub fn is_host_allowed_by_egress_allowlist_fail_closed(host: &str, allowlist: &[alloc::string::String]) -> bool {
+    if allowlist.is_empty() {
+        return false;
+    }
+    is_host_allowed_by_egress_allowlist(host, allowlist)
+}
+
 #[cfg(feature = "alloc")]
 fn egress_pattern_matches(pattern: &str, host_lower: &str) -> bool {
     let pattern_lower = pattern.to_ascii_lowercase();
@@ -596,5 +673,29 @@ mod egress_tests {
         assert!(is_host_allowed_by_egress_allowlist("api.openai.com", &list));
         assert!(is_host_allowed_by_egress_allowlist("api.anthropic.com", &list));
         assert!(!is_host_allowed_by_egress_allowlist("api.cohere.com", &list));
+    }
+
+    // AAASM-3730: fail-closed matcher — empty allowlist DENIES all hosts.
+    use super::is_host_allowed_by_egress_allowlist_fail_closed as fail_closed;
+
+    #[test]
+    fn fail_closed_empty_allowlist_denies_every_host() {
+        assert!(!fail_closed("api.openai.com", &[]));
+        assert!(!fail_closed("evil.attacker.net", &[]));
+    }
+
+    #[test]
+    fn fail_closed_non_empty_matches_like_default_matcher() {
+        let list = vec!["api.openai.com".to_string(), "*.anthropic.com".to_string()];
+        assert!(fail_closed("api.openai.com", &list));
+        assert!(fail_closed("chat.anthropic.com", &list));
+        assert!(!fail_closed("evil.attacker.net", &list));
+    }
+
+    #[test]
+    fn fail_closed_universal_wildcard_still_allows_any_host() {
+        let list = vec!["*".to_string()];
+        assert!(fail_closed("api.openai.com", &list));
+        assert!(fail_closed("evil.attacker.net", &list));
     }
 }

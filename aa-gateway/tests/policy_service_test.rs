@@ -278,7 +278,6 @@ budget:
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: std::collections::VecDeque::new(),
         recent_traces: Vec::new(),
@@ -293,6 +292,7 @@ budget:
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     };
     registry.register(record).unwrap();
@@ -371,7 +371,6 @@ budget:
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: std::collections::VecDeque::new(),
         recent_traces: Vec::new(),
@@ -386,6 +385,7 @@ budget:
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     };
     registry.register(record).unwrap();
@@ -482,7 +482,6 @@ fn level_test_record(
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: std::collections::VecDeque::new(),
         recent_traces: Vec::new(),
@@ -497,6 +496,7 @@ fn level_test_record(
         children: Vec::new(),
         parent_key: None,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }
@@ -598,6 +598,7 @@ tools:
             ApprovalDecision::Approved {
                 by: "test".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .unwrap();

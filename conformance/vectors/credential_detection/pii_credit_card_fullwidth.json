@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5345: the Visa test number of pii_credit_card.json written in full-width digits (U+FF10–U+FF19) is detected as the same kind. Full-width digits render near-identically to ASCII, are one keystroke away on any CJK input method and survive JSON round-trips unchanged, so comparing raw ASCII bytes made them a working evasion. The redacted output pins the span too: each digit is 3 bytes, so an offset computed on the normalised form would splice the wrong region.",
+  "input_text": "card=４５３２０１５１１２８３０３６６",
+  "expected_findings": [
+    { "kind": "CreditCardLuhn", "offset": 5 }
+  ],
+  "expected_redacted": "card=[REDACTED:CreditCardLuhn]"
+}

@@ -1,5 +1,5 @@
 import { render, screen, act, renderHook } from '@testing-library/react'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router'
 import { describe, it, expect } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppShell } from './AppShell'
@@ -72,7 +72,7 @@ describe('OverlayProvider + useOverlay', () => {
 
 describe('AppShell overlay mount points', () => {
   it('renders one <div data-overlay={name}> per OVERLAY_NAMES entry', () => {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
     render(withQueryClient(
       <MemoryRouter initialEntries={['/']}>
         <AuthProvider>
@@ -87,15 +87,15 @@ describe('AppShell overlay mount points', () => {
     for (const name of OVERLAY_NAMES) {
       const mount = screen.getByTestId(`overlay-mount-${name}`)
       expect(mount).toBeInTheDocument()
-      expect(mount.getAttribute('data-overlay')).toBe(name)
+      expect(mount.dataset.overlay).toBe(name)
     }
-    localStorage.clear()
+    sessionStorage.clear()
   })
 })
 
 describe('AppShell canonical nav', () => {
   function renderShell() {
-    localStorage.setItem('aa_token', 'test-token')
+    sessionStorage.setItem('aa_token', 'test-token')
     render(withQueryClient(
       <MemoryRouter initialEntries={['/']}>
         <AuthProvider>
@@ -107,7 +107,7 @@ describe('AppShell canonical nav', () => {
         </AuthProvider>
       </MemoryRouter>,
     ))
-    return () => localStorage.clear()
+    return () => sessionStorage.clear()
   }
 
   it('renders one nav-link-{id} per CANONICAL_ROUTES entry', () => {

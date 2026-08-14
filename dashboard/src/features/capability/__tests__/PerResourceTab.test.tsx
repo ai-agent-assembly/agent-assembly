@@ -122,6 +122,24 @@ describe('PerResourceTab', () => {
     expect(screen.getByTestId('per-resource-empty-body')).toBeInTheDocument()
   })
 
+  // AAASM-5104 — same no-data discipline as the matrix grid: an explicit `null`
+  // renders as `—` with no bar, never as a zero-width "scored zero" bar.
+  it('renders an unmeasured trust as the no-data placeholder with no bar', () => {
+    const { container } = render(
+      <PerResourceTab
+        resources={RESOURCES}
+        agents={[{ ...AGENTS[0], trust: null }]}
+        verb="write"
+        selectedResourceId="gmail"
+        onSelectResource={vi.fn()}
+      />,
+    )
+    const num = container.querySelector('.cap-prt-trust-num')!
+    expect(num).toHaveTextContent('—')
+    expect(num.textContent).not.toMatch(/\b(0|NaN|undefined|null)\b/)
+    expect(container.querySelector('.cap-prt-trust-bar')).toBeNull()
+  })
+
   it('shows the page-level empty state when no resources are provided', () => {
     render(
       <PerResourceTab

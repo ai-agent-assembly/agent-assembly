@@ -57,17 +57,27 @@ pub enum AuditEventType {
     /// recorded. (AAASM-1920 / Secret Injection.)
     ToolDispatched = 13,
     /// An agent-to-agent (A2A) call was intercepted. The audit `payload`
-    /// carries both `caller_agent_id` (the originating agent) and
-    /// `callee_agent_id` (the agent performing the action), so reviewers
-    /// can reconstruct cross-agent delegation graphs even when the call
-    /// was allowed. Emitted only when the request's `caller_agent_id` is
-    /// populated and differs from `agent_id`. (AAASM-1944 / Zero-trust A2A.)
+    /// carries `caller_agent_id` (the originating agent) and
+    /// `callee_agent_id` (the agent performing the action). Emitted only when
+    /// the request's `caller_agent_id` is populated and differs from
+    /// `agent_id`. (AAASM-1944 / Zero-trust A2A.)
+    ///
+    /// AAASM-5665 — **`callee_agent_id` is nullable, so a delegation graph
+    /// cannot always be reconstructed from these entries.** It is the *claimed*
+    /// subject, and a caller may name none: an A2A call whose `agent_id` is
+    /// blank or omitted is recorded with `callee_agent_id: null` and the
+    /// reserved unattributed id on the entry. Read `agent_identity_assurance`
+    /// alongside it — a populated callee is a claim, corroborated only when
+    /// that field says `bound`. Consumers must handle null rather than assume
+    /// an edge exists for every entry.
     A2ACallIntercepted = 14,
     /// An impersonation attempt was rejected: the request claimed an
     /// `agent_id` whose registered `credential_token` does not match the
-    /// token supplied. The audit `payload` carries `claimed_agent_id` and
-    /// the agent whose `credential_token` was actually presented (when
-    /// resolvable). The action is denied before policy evaluation runs.
+    /// token supplied, or presented a token owning a registered agent while
+    /// claiming no subject at all. The audit `payload` carries
+    /// `agent_id_claimed` (null when nothing was claimed) and the agent whose
+    /// `credential_token` was actually presented (when resolvable). The action
+    /// is denied before policy evaluation runs.
     /// (AAASM-1944 / Zero-trust A2A.)
     A2AImpersonationAttempted = 15,
     /// A sandboxed (WASM/WASI) tool invocation has begun. Emitted by
@@ -112,6 +122,28 @@ pub enum AuditEventType {
     /// tool-defined error — this variant marks lifecycle completion,
     /// not outcome semantics. (AAASM-1965 / F116 ST-W.)
     SandboxTerminated = 20,
+    /// A sandboxed tool's host-function call was denied because the
+    /// per-tenant host-function rate limit
+    /// (`aa-sandbox::policy::HostFnRateLimit`) was exceeded for the
+    /// invocation. A deny outcome that terminates the lifecycle started by
+    /// [`SandboxStarted`], emitted by `aa-sandbox::runtime` mapping to
+    /// `SandboxError::HostFnRateLimited`. Caps host-fn abuse/fuzzing
+    /// throughput so a single tenant cannot brute-force a host-fn weakness
+    /// or DoS the host. (AAASM-3617.)
+    ///
+    /// [`SandboxStarted`]: Self::SandboxStarted
+    SandboxHostFnRateLimited = 21,
+    /// An operator changed an enforcement- or authorization-relevant governance
+    /// state on an agent through an aa-api mutation endpoint (e.g. suspend /
+    /// resume). Unlike the agent-produced events above, this records an
+    /// *operator* action, so its audit `payload` carries the actor identity
+    /// (`actor` = the authenticated caller's key id), the verified `tenant`
+    /// (`org` / `team`, taken from the authenticated identity — never the
+    /// request body), a required non-empty `reason`, and the `before` / `after`
+    /// governance values. The credential-bearing parts of the identity are
+    /// never included. Emitted via [`GovernanceMutationAudit`]. (AAASM-5287 —
+    /// the actor-attributed audit prerequisite from ADR 0021 / AAASM-237.)
+    GovernanceMutation = 22,
 }
 
 impl AuditEventType {
@@ -141,6 +173,8 @@ impl AuditEventType {
             Self::SandboxCpuTimeout => "SandboxCpuTimeout",
             Self::SandboxOomKilled => "SandboxOomKilled",
             Self::SandboxTerminated => "SandboxTerminated",
+            Self::SandboxHostFnRateLimited => "SandboxHostFnRateLimited",
+            Self::GovernanceMutation => "GovernanceMutation",
         }
     }
 }
@@ -253,6 +287,15 @@ pub struct AuditEntry {
     #[cfg(feature = "std")]
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
     redacted_payload: Option<String>,
+    /// AAASM-5107 — content digest (`"sha256:<hex>"`) of the policy document that
+    /// produced this decision. `None` for entries not emitted from a cascade
+    /// policy decision (e.g. lifecycle / approval-routing events, or the
+    /// primary-policy path that carries no cascade document). Appended last in
+    /// the hash input and contributing zero bytes when `None`, so entries
+    /// without it hash identically to pre-AAASM-5107 output and existing chains
+    /// keep verifying.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none", default))]
+    policy_doc_id: Option<String>,
 }
 
 impl AuditEntry {
@@ -307,6 +350,7 @@ impl AuditEntry {
             &Lineage::default(),
             #[cfg(feature = "std")]
             &Redaction::default(),
+            None,
         );
         Self {
             seq,
@@ -328,6 +372,7 @@ impl AuditEntry {
             credential_findings: alloc::vec::Vec::new(),
             #[cfg(feature = "std")]
             redacted_payload: None,
+            policy_doc_id: None,
         }
     }
 
@@ -359,6 +404,7 @@ impl AuditEntry {
             &lineage,
             #[cfg(feature = "std")]
             &Redaction::default(),
+            None,
         );
         Self {
             seq,
@@ -380,6 +426,7 @@ impl AuditEntry {
             credential_findings: alloc::vec::Vec::new(),
             #[cfg(feature = "std")]
             redacted_payload: None,
+            policy_doc_id: None,
         }
     }
 
@@ -407,6 +454,46 @@ impl AuditEntry {
         lineage: Lineage,
         redaction: Redaction,
     ) -> Self {
+        Self::new_with_lineage_redaction_and_attribution(
+            seq,
+            timestamp_ns,
+            event_type,
+            agent_id,
+            session_id,
+            payload,
+            previous_hash,
+            lineage,
+            redaction,
+            None,
+        )
+    }
+
+    /// Create a new [`AuditEntry`] carrying lineage, credential-scanner output,
+    /// **and** the deciding policy document's content digest (`policy_doc_id`),
+    /// computing `entry_hash` over all tamper-meaningful fields (AAASM-5107).
+    ///
+    /// When `policy_doc_id == None`, the resulting `entry_hash` is identical to
+    /// [`AuditEntry::new_with_lineage_and_redaction`] with the same base fields —
+    /// the digest contributes zero bytes to the hash — so existing chains on disk
+    /// verify unchanged. The digest is a decision-attribution attribute derived
+    /// independently of this chain hash and never weakens it.
+    ///
+    /// Gated on `std` because [`Redaction`] holds
+    /// [`CredentialFinding`](aa_security::CredentialFinding) values.
+    #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_lineage_redaction_and_attribution(
+        seq: u64,
+        timestamp_ns: u64,
+        event_type: AuditEventType,
+        agent_id: AgentId,
+        session_id: SessionId,
+        payload: String,
+        previous_hash: [u8; 32],
+        lineage: Lineage,
+        redaction: Redaction,
+        policy_doc_id: Option<String>,
+    ) -> Self {
         let entry_hash = Self::compute_hash(
             seq,
             timestamp_ns,
@@ -417,6 +504,7 @@ impl AuditEntry {
             &payload,
             &lineage,
             &redaction,
+            policy_doc_id.as_deref(),
         );
         Self {
             seq,
@@ -436,6 +524,7 @@ impl AuditEntry {
             depth: lineage.depth,
             credential_findings: redaction.credential_findings,
             redacted_payload: redaction.redacted_payload,
+            policy_doc_id,
         }
     }
 
@@ -557,6 +646,15 @@ impl AuditEntry {
         self.redacted_payload.as_deref()
     }
 
+    /// AAASM-5107 — content digest (`"sha256:<hex>"`) of the policy document that
+    /// produced the decision this entry records, if it was emitted from a
+    /// cascade policy decision. `None` otherwise. This is the stable, version-
+    /// distinguishing identity a per-document 24h hit count is keyed on.
+    #[inline]
+    pub fn policy_doc_id(&self) -> Option<&str> {
+        self.policy_doc_id.as_deref()
+    }
+
     // -----------------------------------------------------------------------
     // Integrity
     // -----------------------------------------------------------------------
@@ -592,6 +690,7 @@ impl AuditEntry {
             &lineage,
             #[cfg(feature = "std")]
             &redaction,
+            self.policy_doc_id.as_deref(),
         );
         expected == self.entry_hash
     }
@@ -619,6 +718,7 @@ impl AuditEntry {
         payload: &str,
         lineage: &Lineage,
         #[cfg(feature = "std")] redaction: &Redaction,
+        policy_doc_id: Option<&str>,
     ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(seq.to_be_bytes());
@@ -677,6 +777,14 @@ impl AuditEntry {
                 }
             }
         }
+        // AAASM-5107 — policy_doc_id appended last so that entries with
+        // policy_doc_id=None hash identically to pre-AAASM-5107 output and the
+        // existing audit chain on disk keeps verifying. Length-prefixed so it is
+        // unambiguous against whatever follows in a future revision.
+        if let Some(s) = policy_doc_id {
+            hasher.update((s.len() as u32).to_be_bytes());
+            hasher.update(s.as_bytes());
+        }
         hasher.finalize().into()
     }
 }
@@ -722,6 +830,185 @@ pub fn audit_entry_for_tool_dispatch(
         payload,
         previous_hash,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Governance mutation audit (AAASM-5287 / ADR 0021 prerequisite 1)
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`GovernanceMutationAudit::new`] when a required field is
+/// missing or blank.
+///
+/// The only currently-modelled failure is an empty `reason`: ADR 0021's
+/// security model requires every enforcement-affecting change to carry a
+/// human-supplied justification, so an operator mutation with no reason is
+/// rejected rather than recorded with an empty one.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GovernanceMutationError {
+    /// The supplied `reason` was empty or whitespace-only.
+    EmptyReason,
+}
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for GovernanceMutationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptyReason => write!(f, "governance mutation requires a non-empty reason"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for GovernanceMutationError {}
+
+/// A reusable, actor-attributed record of an enforcement- or authorization-
+/// relevant governance mutation performed by an operator through an aa-api
+/// mutation endpoint (AAASM-5287 / ADR 0021 prerequisite 1).
+///
+/// ADR 0021's ratified security model requires every enforcement-affecting
+/// change to record **actor + tenant + reason + before/after + timestamp**,
+/// and the actor and tenant must be taken from the *authenticated identity* —
+/// never from the request body, which the caller controls and could spoof.
+///
+/// This type does not itself read any request or identity. The calling handler
+/// is responsible for passing `actor`, `org`, and `team` **from the
+/// authenticated caller** (e.g. `AuthenticatedCaller::key_id` and
+/// `AuthenticatedCaller::tenant`), and `reason` from the validated request. By
+/// keeping actor/tenant as explicit parameters sourced by the handler from the
+/// verified identity, the spoofing surface is confined to that one call site
+/// and is directly testable.
+///
+/// ## What is *not* recorded
+///
+/// No credential, token, or API key secret is placed in the payload — only the
+/// caller's `key_id` (a non-secret identifier) and the verified tenant labels.
+/// `before` / `after` are the governance values that changed (e.g. agent
+/// status), not credentials.
+///
+/// Gated on `feature = "std"` because it serialises the payload via
+/// `serde_json`.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernanceMutationAudit {
+    /// The mutated resource — the agent whose governance state changed.
+    pub agent_id: AgentId,
+    /// The authenticated caller's identifier (JWT `sub` / API-key id). This is
+    /// a non-secret principal identifier taken from the verified identity, not
+    /// the request body.
+    pub actor: String,
+    /// The verified organization of the caller, taken from the authenticated
+    /// tenant — never the request body. `None` for a cross-tenant / admin
+    /// caller with no org scope.
+    pub org: Option<String>,
+    /// The verified team of the caller, taken from the authenticated tenant —
+    /// never the request body. `None` for a caller with no team scope.
+    pub team: Option<String>,
+    /// The kind of governance mutation (e.g. `"suspend"`, `"resume"`), so audit
+    /// consumers can filter operator actions by operation.
+    pub action: String,
+    /// The required, non-empty operator-supplied justification.
+    pub reason: String,
+    /// The governance value before the mutation (e.g. the prior agent status).
+    pub before: String,
+    /// The governance value after the mutation (e.g. the new agent status).
+    pub after: String,
+}
+
+#[cfg(feature = "std")]
+impl GovernanceMutationAudit {
+    /// Build a governance-mutation record, validating that `reason` is
+    /// non-empty (ADR 0021's mandatory-reason requirement).
+    ///
+    /// `actor`, `org`, and `team` must be sourced by the caller from the
+    /// authenticated identity, never the request body. Returns
+    /// [`GovernanceMutationError::EmptyReason`] if `reason` is empty or
+    /// whitespace-only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        agent_id: AgentId,
+        actor: impl Into<String>,
+        org: Option<String>,
+        team: Option<String>,
+        action: impl Into<String>,
+        reason: impl Into<String>,
+        before: impl Into<String>,
+        after: impl Into<String>,
+    ) -> Result<Self, GovernanceMutationError> {
+        let reason = reason.into();
+        if reason.trim().is_empty() {
+            return Err(GovernanceMutationError::EmptyReason);
+        }
+        Ok(Self {
+            agent_id,
+            actor: actor.into(),
+            org,
+            team,
+            action: action.into(),
+            reason,
+            before: before.into(),
+            after: after.into(),
+        })
+    }
+
+    /// Serialise this record to the canonical JSON payload string used as the
+    /// [`AuditEntry`] `payload`.
+    ///
+    /// The payload carries only the non-secret actor identifier, verified
+    /// tenant labels, action, reason, and before/after values — never any
+    /// credential.
+    pub fn to_payload(&self) -> String {
+        let value = serde_json::json!({
+            "actor": self.actor,
+            "org": self.org,
+            "team": self.team,
+            "action": self.action,
+            "reason": self.reason,
+            "before": self.before,
+            "after": self.after,
+        });
+        serde_json::to_string(&value).unwrap_or_else(|_| {
+            // A `serde_json::Value` built from owned strings cannot fail to
+            // serialise; this branch exists only so the method is total and the
+            // audit chain stays well-formed.
+            String::from("{\"error\":\"failed to serialize governance mutation\"}")
+        })
+    }
+
+    /// Build the [`AuditEntry`] for this governance mutation, tagged
+    /// [`AuditEventType::GovernanceMutation`].
+    ///
+    /// The verified tenant `org` / `team` are carried in the entry's
+    /// [`Lineage`] (`org_id` / `team_id`) so the existing audit-log tenant
+    /// scoping applies to operator actions exactly as it does to agent events;
+    /// the actor, reason, and before/after live in the JSON payload.
+    ///
+    /// `seq` / `previous_hash` are supplied by the caller (or `0` / `[0u8; 32]`
+    /// when the entry is emitted onto a channel that re-sequences downstream,
+    /// matching the existing aa-api dispatch pattern).
+    pub fn to_audit_entry(
+        &self,
+        seq: u64,
+        timestamp_ns: u64,
+        session_id: SessionId,
+        previous_hash: [u8; 32],
+    ) -> AuditEntry {
+        let lineage = Lineage {
+            team_id: self.team.clone(),
+            org_id: self.org.clone(),
+            ..Lineage::default()
+        };
+        AuditEntry::new_with_lineage(
+            seq,
+            timestamp_ns,
+            AuditEventType::GovernanceMutation,
+            self.agent_id,
+            session_id,
+            self.to_payload(),
+            previous_hash,
+            lineage,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1303,11 @@ mod tests {
         assert_eq!(AuditEventType::SandboxCpuTimeout.as_str(), "SandboxCpuTimeout");
         assert_eq!(AuditEventType::SandboxOomKilled.as_str(), "SandboxOomKilled");
         assert_eq!(AuditEventType::SandboxTerminated.as_str(), "SandboxTerminated");
+        assert_eq!(
+            AuditEventType::SandboxHostFnRateLimited.as_str(),
+            "SandboxHostFnRateLimited"
+        );
+        assert_eq!(AuditEventType::GovernanceMutation.as_str(), "GovernanceMutation");
     }
 
     #[test]
@@ -1037,6 +1329,8 @@ mod tests {
         assert_eq!(AuditEventType::SandboxCpuTimeout as u32, 18);
         assert_eq!(AuditEventType::SandboxOomKilled as u32, 19);
         assert_eq!(AuditEventType::SandboxTerminated as u32, 20);
+        assert_eq!(AuditEventType::SandboxHostFnRateLimited as u32, 21);
+        assert_eq!(AuditEventType::GovernanceMutation as u32, 22);
     }
 
     #[test]
@@ -1059,6 +1353,8 @@ mod tests {
             AuditEventType::SandboxCpuTimeout,
             AuditEventType::SandboxOomKilled,
             AuditEventType::SandboxTerminated,
+            AuditEventType::SandboxHostFnRateLimited,
+            AuditEventType::GovernanceMutation,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
@@ -1252,6 +1548,10 @@ mod tests {
             (AuditEventType::SandboxCpuTimeout, "event=SandboxCpuTimeout]"),
             (AuditEventType::SandboxOomKilled, "event=SandboxOomKilled]"),
             (AuditEventType::SandboxTerminated, "event=SandboxTerminated]"),
+            (
+                AuditEventType::SandboxHostFnRateLimited,
+                "event=SandboxHostFnRateLimited]",
+            ),
         ];
         for (event_type, expected_tail) in sandbox_events {
             let entry = AuditEntry::new(
@@ -1780,6 +2080,89 @@ mod lineage_tests {
 }
 
 #[cfg(all(test, feature = "std", feature = "serde"))]
+mod governance_mutation_tests {
+    use super::*;
+
+    const AGENT: AgentId = AgentId::from_bytes([5u8; 16]);
+    const SESSION: SessionId = SessionId::from_bytes([6u8; 16]);
+
+    fn record() -> GovernanceMutationAudit {
+        GovernanceMutationAudit::new(
+            AGENT,
+            "operator-key-1",
+            Some("org-A".to_string()),
+            Some("team-platform".to_string()),
+            "suspend",
+            "investigating incident",
+            "Active",
+            "Suspended(Manual)",
+        )
+        .expect("non-empty reason is valid")
+    }
+
+    #[test]
+    fn new_rejects_empty_reason() {
+        let err = GovernanceMutationAudit::new(
+            AGENT,
+            "operator-key-1",
+            None,
+            None,
+            "suspend",
+            "",
+            "Active",
+            "Suspended(Manual)",
+        )
+        .unwrap_err();
+        assert_eq!(err, GovernanceMutationError::EmptyReason);
+    }
+
+    #[test]
+    fn new_rejects_whitespace_only_reason() {
+        let err = GovernanceMutationAudit::new(AGENT, "op", None, None, "resume", "   \t\n", "S", "A").unwrap_err();
+        assert_eq!(err, GovernanceMutationError::EmptyReason);
+    }
+
+    #[test]
+    fn payload_carries_actor_tenant_reason_and_before_after() {
+        let payload = record().to_payload();
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["actor"], "operator-key-1");
+        assert_eq!(value["org"], "org-A");
+        assert_eq!(value["team"], "team-platform");
+        assert_eq!(value["action"], "suspend");
+        assert_eq!(value["reason"], "investigating incident");
+        assert_eq!(value["before"], "Active");
+        assert_eq!(value["after"], "Suspended(Manual)");
+    }
+
+    #[test]
+    fn to_audit_entry_tags_governance_mutation_and_carries_verified_tenant_in_lineage() {
+        let entry = record().to_audit_entry(0, 1_700_000_000_000_000_000, SESSION, [0u8; 32]);
+        assert_eq!(entry.event_type(), AuditEventType::GovernanceMutation);
+        assert_eq!(entry.agent_id(), AGENT);
+        // The verified tenant flows into the entry's lineage, so the existing
+        // audit-log tenant scoping applies to operator actions too.
+        assert_eq!(entry.org_id(), Some("org-A"));
+        assert_eq!(entry.team_id(), Some("team-platform"));
+        assert!(entry.verify_integrity());
+    }
+
+    #[test]
+    fn payload_never_contains_a_credential_secret() {
+        // The record is built only from a non-secret key id and tenant labels;
+        // a raw credential passed to the endpoint (e.g. as the API-key bearer
+        // token) must never reach the payload. We assert the payload contains
+        // only the fields we put there and no bearer-token-shaped bytes.
+        let payload = record().to_payload();
+        assert!(!payload.contains("aa_"), "payload must not embed an API-key token");
+        assert!(
+            !payload.contains("Bearer"),
+            "payload must not embed an auth header value"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "std", feature = "serde"))]
 mod redaction_tests {
     use super::*;
     use aa_security::CredentialScanner;
@@ -1842,6 +2225,150 @@ mod redaction_tests {
             entry.verify_integrity(),
             "verify_integrity must pass on a freshly constructed redacted entry",
         );
+    }
+
+    // --- policy_doc_id attribution (AAASM-5107) ---
+
+    #[test]
+    fn attribution_default_none_preserves_legacy_hash() {
+        // new_with_lineage_and_redaction(..) and
+        // new_with_lineage_redaction_and_attribution(.., None) must produce an
+        // identical entry_hash for the same base fields, so an entry carrying no
+        // policy_doc_id hashes exactly as it did pre-AAASM-5107 and the audit
+        // chain on disk keeps verifying.
+        let payload = String::from(r#"{"tool":"bash"}"#);
+        let legacy = AuditEntry::new_with_lineage_and_redaction(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload.clone(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+        );
+        let with_none = AuditEntry::new_with_lineage_redaction_and_attribution(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            payload,
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            None,
+        );
+        assert_eq!(
+            legacy.entry_hash(),
+            with_none.entry_hash(),
+            "policy_doc_id=None must contribute 0 bytes to the hash",
+        );
+        assert!(with_none.policy_doc_id().is_none());
+    }
+
+    #[test]
+    fn attribution_present_changes_hash_and_is_stored() {
+        let base = || (0u64, 1_700_000_000_000_000_000u64, AuditEventType::PolicyViolation);
+        let (seq, ts, et) = base();
+        let no_id = AuditEntry::new_with_lineage_redaction_and_attribution(
+            seq,
+            ts,
+            et,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            None,
+        );
+        let with_id = AuditEntry::new_with_lineage_redaction_and_attribution(
+            seq,
+            ts,
+            et,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            Some("sha256:abc123".to_string()),
+        );
+        assert_ne!(
+            no_id.entry_hash(),
+            with_id.entry_hash(),
+            "a present policy_doc_id must be committed to the hash",
+        );
+        assert_eq!(with_id.policy_doc_id(), Some("sha256:abc123"));
+        assert!(with_id.verify_integrity(), "entry with attribution must self-verify");
+    }
+
+    #[test]
+    fn attribution_distinguishes_two_document_versions_at_audit_level() {
+        // Two audit entries identical except for the deciding document's digest
+        // must be distinct records — this is what lets a per-document 24h count
+        // separate two versions of the same (scope, name).
+        let build = |doc_id: &str| {
+            AuditEntry::new_with_lineage_redaction_and_attribution(
+                0,
+                1_700_000_000_000_000_000,
+                AuditEventType::PolicyViolation,
+                AGENT,
+                SESSION,
+                "{}".into(),
+                [0u8; 32],
+                Lineage::default(),
+                Redaction::default(),
+                Some(doc_id.to_string()),
+            )
+        };
+        let v1 = build("sha256:1111");
+        let v2 = build("sha256:2222");
+        assert_ne!(v1.policy_doc_id(), v2.policy_doc_id());
+        assert_ne!(v1.entry_hash(), v2.entry_hash());
+    }
+
+    #[test]
+    fn attribution_survives_serde_round_trip() {
+        let entry = AuditEntry::new_with_lineage_redaction_and_attribution(
+            0,
+            1_000,
+            AuditEventType::PolicyViolation,
+            AGENT,
+            SESSION,
+            "{}".into(),
+            [0u8; 32],
+            Lineage::default(),
+            Redaction::default(),
+            Some("sha256:deadbeef".to_string()),
+        );
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("policy_doc_id"), "present id must serialize");
+        let restored: AuditEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.policy_doc_id(), Some("sha256:deadbeef"));
+        assert!(restored.verify_integrity());
+    }
+
+    #[test]
+    fn legacy_jsonl_without_policy_doc_id_deserialises_and_verifies() {
+        // An entry written before AAASM-5107 carries no policy_doc_id key; it
+        // must deserialize (field defaults to None) and still verify.
+        let pre = AuditEntry::new(
+            0,
+            1_700_000_000_000_000_000,
+            AuditEventType::ToolCallIntercepted,
+            AGENT,
+            SESSION,
+            r#"{"tool":"bash"}"#.into(),
+            [0u8; 32],
+        );
+        let json = serde_json::to_string(&pre).unwrap();
+        assert!(!json.contains("policy_doc_id"), "None must not appear in JSON");
+        let restored: AuditEntry = serde_json::from_str(&json).unwrap();
+        assert!(restored.policy_doc_id().is_none());
+        assert!(restored.verify_integrity());
     }
 
     #[test]

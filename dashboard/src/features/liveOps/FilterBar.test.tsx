@@ -14,10 +14,10 @@ const TEAMS: FilterOption[] = [{ id: 'support' }, { id: 'devops' }]
 function ControlledHarness({
   initial = EMPTY_FILTERS,
   onChange,
-}: {
+}: Readonly<{
   initial?: LiveOpsFilters
   onChange?: (next: LiveOpsFilters) => void
-}) {
+}>) {
   const [filters, setFilters] = useState<LiveOpsFilters>(initial)
   return (
     <FilterBar

@@ -8,8 +8,8 @@ import type { TeamSummary } from './useTeamsQuery'
 const DEFAULT_FILTERS: FilterParams = { range: '7d', agents: [], teams: [] }
 
 const MOCK_AGENTS: Agent[] = [
-  { id: 'a1', name: 'Agent One', framework: 'langgraph', active_sessions: [], metadata: {}, policy_violations_count: 0, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
-  { id: 'a2', name: 'Agent Two', framework: 'crewai', active_sessions: [], metadata: {}, policy_violations_count: 0, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
+  { id: 'a1', name: 'Agent One', framework: 'langgraph', active_sessions: [], metadata: {}, policy_violations_count: 0, is_flagged: false, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
+  { id: 'a2', name: 'Agent Two', framework: 'crewai', active_sessions: [], metadata: {}, policy_violations_count: 0, is_flagged: false, recent_events: [], recent_traces: [], session_count: 0, status: 'active', tool_names: [], version: '0.0.1' },
 ]
 
 const MOCK_TEAMS: TeamSummary[] = [
@@ -18,24 +18,14 @@ const MOCK_TEAMS: TeamSummary[] = [
 ]
 
 describe('FilterBar — data-testid attributes', () => {
-  it('has data-testid="analytics-filter-bar" on wrapper', () => {
+  it.each([
+    { testId: 'analytics-filter-bar', on: 'wrapper' },
+    { testId: 'filter-range', on: 'range select' },
+    { testId: 'filter-agents', on: 'agents select' },
+    { testId: 'filter-teams', on: 'teams select' },
+  ])('has data-testid="$testId" on $on', ({ testId }) => {
     render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('analytics-filter-bar')).toBeInTheDocument()
-  })
-
-  it('has data-testid="filter-range" on range select', () => {
-    render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('filter-range')).toBeInTheDocument()
-  })
-
-  it('has data-testid="filter-agents" on agents select', () => {
-    render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('filter-agents')).toBeInTheDocument()
-  })
-
-  it('has data-testid="filter-teams" on teams select', () => {
-    render(<FilterBar filters={DEFAULT_FILTERS} onFiltersChange={() => {}} />)
-    expect(screen.getByTestId('filter-teams')).toBeInTheDocument()
+    expect(screen.getByTestId(testId)).toBeInTheDocument()
   })
 })
 
@@ -127,6 +117,16 @@ describe('FilterBar — agents multi-select', () => {
     const select = screen.getByTestId<HTMLSelectElement>('filter-agents')
     expect(Array.from(select.selectedOptions).map(o => o.value)).toEqual(['a1'])
   })
+
+  it('emits the chosen agent ids on selection', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(
+      <FilterBar filters={DEFAULT_FILTERS} onFiltersChange={onChange} agents={MOCK_AGENTS} />,
+    )
+    await user.selectOptions(screen.getByTestId('filter-agents'), 'a2')
+    expect(onChange).toHaveBeenLastCalledWith({ agents: ['a2'] })
+  })
 })
 
 describe('FilterBar — teams multi-select', () => {
@@ -148,6 +148,16 @@ describe('FilterBar — teams multi-select', () => {
     )
     const select = screen.getByTestId<HTMLSelectElement>('filter-teams')
     expect(Array.from(select.selectedOptions).map(o => o.value)).toEqual(['team-alpha'])
+  })
+
+  it('emits the chosen team ids on selection', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(
+      <FilterBar filters={DEFAULT_FILTERS} onFiltersChange={onChange} teams={MOCK_TEAMS} />,
+    )
+    await user.selectOptions(screen.getByTestId('filter-teams'), ['team-beta'])
+    expect(onChange).toHaveBeenLastCalledWith({ teams: ['team-beta'] })
   })
 })
 

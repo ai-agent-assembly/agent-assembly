@@ -27,6 +27,12 @@ pub struct AlertsWsQueryParams {
     pub severity: Option<String>,
     /// Restrict the stream to a single hex-encoded agent id.
     pub agent_id: Option<String>,
+    /// Short-lived, single-use WebSocket ticket (AAASM-4861). Browsers can't set
+    /// an `Authorization` header on a WS handshake, so the dashboard mints a
+    /// ticket via `POST /api/v1/auth/ws-ticket` and presents it here instead of
+    /// putting a long-lived credential in the URL. Non-browser clients may
+    /// instead send an `Authorization: Bearer` header and omit this.
+    pub ticket: Option<String>,
 }
 
 /// Discriminator for the three [`AlertEvent`] variants. Carried in
@@ -169,44 +175,26 @@ impl AlertsWsQueryParams {
         let mut filter = AlertsFilter::unfiltered();
 
         if let Some(raw) = &self.events {
-            if raw.trim().is_empty() {
-                // Treat empty string as "no filter override".
-            } else {
-                filter.events.clear();
-                for tok in raw.split(',') {
-                    let tok = tok.trim();
-                    if tok.is_empty() {
-                        continue;
-                    }
-                    let kind = match tok.to_ascii_lowercase().as_str() {
-                        "fire" => AlertEventKind::Fire,
-                        "resolve" => AlertEventKind::Resolve,
-                        "silence" => AlertEventKind::Silence,
-                        _ => return Err(FilterError::UnknownEvent(tok.to_string())),
-                    };
-                    filter.events.insert(kind);
-                }
-                if filter.events.is_empty() {
-                    // Whitespace-only csv → fall back to unfiltered.
-                    filter.events = AlertsFilter::unfiltered().events;
-                }
-            }
+            parse_csv_filter(
+                raw,
+                &mut filter.events,
+                AlertsFilter::unfiltered().events,
+                |tok| match tok.to_ascii_lowercase().as_str() {
+                    "fire" => Ok(AlertEventKind::Fire),
+                    "resolve" => Ok(AlertEventKind::Resolve),
+                    "silence" => Ok(AlertEventKind::Silence),
+                    _ => Err(FilterError::UnknownEvent(tok.to_string())),
+                },
+            )?;
         }
 
         if let Some(raw) = &self.severity {
-            if !raw.trim().is_empty() {
-                filter.severities.clear();
-                for tok in raw.split(',') {
-                    let tok = tok.trim();
-                    if tok.is_empty() {
-                        continue;
-                    }
-                    filter.severities.insert(WireSeverity::parse(tok)?);
-                }
-                if filter.severities.is_empty() {
-                    filter.severities = AlertsFilter::unfiltered().severities;
-                }
-            }
+            parse_csv_filter(
+                raw,
+                &mut filter.severities,
+                AlertsFilter::unfiltered().severities,
+                WireSeverity::parse,
+            )?;
         }
 
         filter.agent_id = self
@@ -219,6 +207,38 @@ impl AlertsWsQueryParams {
     }
 }
 
+/// Parse a comma-separated `raw` filter value into `target`.
+///
+/// An empty/whitespace-only `raw` leaves `target` untouched (no override). A
+/// non-empty value clears `target`, parses each non-empty token via `parse`,
+/// and inserts the result. If every token was whitespace the set falls back to
+/// `default`. The first unparseable token short-circuits with its error.
+fn parse_csv_filter<T, E>(
+    raw: &str,
+    target: &mut std::collections::BTreeSet<T>,
+    default: std::collections::BTreeSet<T>,
+    parse: impl Fn(&str) -> Result<T, E>,
+) -> Result<(), E>
+where
+    T: Ord,
+{
+    if raw.trim().is_empty() {
+        return Ok(());
+    }
+    target.clear();
+    for tok in raw.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        target.insert(parse(tok)?);
+    }
+    if target.is_empty() {
+        *target = default;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +249,7 @@ mod tests {
             events: events.map(str::to_string),
             severity: severity.map(str::to_string),
             agent_id: agent_id.map(str::to_string),
+            ticket: None,
         }
     }
 

@@ -1,0 +1,20 @@
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: file-delete-example
+  version: "1.0.0"
+  description: >
+    Let an agent read and write files but never delete them. `file_delete`
+    is a distinct capability from `file_write` (AAASM-4103): allowing writes
+    does not grant deletion, so it must be denied (or simply omitted from the
+    allow list) explicitly. This is the canonical "allow-write, deny-delete"
+    shape — e.g. a report-generating agent that may edit its outputs but must
+    not remove existing files.
+spec:
+  scope: global
+  capabilities:
+    allow:
+      - file_read
+      - file_write
+    deny:
+      - file_delete

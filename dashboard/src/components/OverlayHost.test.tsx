@@ -20,7 +20,7 @@ interface HarnessProps {
   children?: ReactNode
 }
 
-function Harness({ withMount = true, onRequestClose, children }: HarnessProps) {
+function Harness({ withMount = true, onRequestClose, children }: Readonly<HarnessProps>) {
   return (
     <OverlayProvider>
       {withMount ? (

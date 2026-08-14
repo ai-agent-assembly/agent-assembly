@@ -22,6 +22,9 @@ impl NotificationConnector for PagerDutyConnector {
         &self,
         destination: &Destination,
         req: &DispatchRequest,
+        // PagerDuty POSTs to a hard-coded vendor host, so there is no
+        // caller-controlled SSRF surface to pin (AAASM-3826).
+        _pinned: &[std::net::SocketAddr],
     ) -> Result<DispatchOutcome, ConnectorError> {
         let (routing_key, severity_map) = match &destination.config {
             DestinationConfig::PagerDuty {
@@ -57,7 +60,11 @@ impl NotificationConnector for PagerDutyConnector {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ConnectorError::Transport(e.to_string()))?;
+            // AAASM-4744: strip the request URL from the surfaced error. A
+            // reqwest error's Display embeds the URL; `without_url` keeps it out
+            // of the 502 body and logs, consistent with the caller-controlled
+            // connectors.
+            .map_err(|e| ConnectorError::Transport(e.without_url().to_string()))?;
         let status = resp.status().as_u16();
         let resp_body = resp.text().await.unwrap_or_default();
         let resp_body = truncate_body(resp_body);

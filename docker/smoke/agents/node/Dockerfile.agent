@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1.7
+#
+# Smoke overlay for the Node base image (AAASM-3524).
+#
+# Adds ONLY the agent source onto the published base image — no npm install, no
+# local package.json — to prove a developer's agent "runs on the base image with
+# no manual config". The base image already sets NODE_PATH so the globally
+# installed `@agent-assembly/sdk` resolves from a bare `require()`.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+WORKDIR /agent
+COPY agent.cjs /agent/agent.cjs
+
+CMD ["node", "/agent/agent.cjs"]

@@ -17,6 +17,7 @@ use aa_proto::assembly::gateway::v1::invalidation_service_server::InvalidationSe
 use aa_proto::assembly::gateway::v1::{subscribe_request::Kind, InvalidationEvent, SubscribeRequest};
 
 use super::InvalidationHub;
+use crate::iam::VerifiedCaller;
 
 /// gRPC adapter exposing an [`InvalidationHub`] over the bidi-streaming
 /// `InvalidationService`. Clone-cheap: holds only an `Arc` to the shared hub.
@@ -48,6 +49,15 @@ impl InvalidationService for InvalidationServiceImpl {
         &self,
         request: Request<Streaming<SubscribeRequest>>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
+        // The fail-closed auth interceptor (AAASM-3828) injects the verified
+        // caller; capture its team so the hub scopes tenant-bound events to this
+        // subscriber's tenant (AAASM-3890). A missing caller yields `None`, which
+        // restricts the subscriber to global events only (fail-closed).
+        let tenant = request
+            .extensions()
+            .get::<VerifiedCaller>()
+            .and_then(|caller| caller.team_id.clone());
+
         let mut inbound = request.into_inner();
 
         let Some(first) = inbound.message().await? else {
@@ -66,14 +76,23 @@ impl InvalidationService for InvalidationServiceImpl {
             _ => 0,
         };
 
-        let handle = self.hub.subscribe(assembly_id.clone(), last_seq_seen);
+        // AAASM-3997: the hub keys subscribers by `(tenant, assembly_id)`, so a
+        // cross-tenant `assembly_id` clash yields an independent slot rather than
+        // hijacking (or being denied service by) another tenant's subscription.
+        // The `tenant` is also needed to trim the correct ring on Ack below.
+        let tenant_for_ack = tenant.clone();
+        let handle = self.hub.subscribe(assembly_id.clone(), tenant, last_seq_seen).map_err(
+            |super::SubscribeError::TenantMismatch| {
+                Status::permission_denied("assembly_id is registered to a different tenant")
+            },
+        )?;
 
         // Drain client→server Acks so the hub can trim each subscriber's ring.
         let hub = Arc::clone(&self.hub);
         tokio::spawn(async move {
             while let Ok(Some(message)) = inbound.message().await {
                 if let Some(Kind::Ack(ack)) = message.kind {
-                    hub.ack(&assembly_id, ack.seq);
+                    hub.ack(tenant_for_ack.as_deref(), &assembly_id, ack.seq);
                 }
             }
         });

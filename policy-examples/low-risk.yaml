@@ -1,23 +1,39 @@
+# low-risk.yaml — section-based PolicyDocument: permissive / low-risk agent
+#
+# Permissive policy for low-risk AI agents. Every tool is allowed, network
+# egress is unrestricted, the budget is generous, and the agent may run at
+# any hour. No approval gates and no sensitive-data redaction. Useful for
+# trusted internal agents or for baselining behaviour before tightening.
 apiVersion: agent-assembly/v1
 kind: Policy
 metadata:
   name: low-risk-default
-  description: >
-    Permissive policy for low-risk AI agents. All actions are allowed
-    and logged. No approval gates are required.
-
+  version: "1.0.0"
 spec:
-  tier: low
+  network:
+    allowlist:
+      - "*"
 
-  rules:
-    - id: allow-all-actions
-      description: Permit all agent actions and emit an audit event.
-      match:
-        actions: ["*"]
-      effect: allow
-      audit: true
+  tools:
+    web_search:
+      allow: true
+    code_interpreter:
+      allow: true
+    file_read:
+      allow: true
+    file_write:
+      allow: true
+    shell:
+      allow: true
 
-  notifications:
-    on_block: false
-    on_allow: false
-    on_anomaly: true
+  data:
+    sensitive_patterns: []
+
+  budget:
+    daily_limit_usd: 500.00
+
+  schedule:
+    active_hours:
+      start: "00:00"
+      end: "23:59"
+      timezone: UTC

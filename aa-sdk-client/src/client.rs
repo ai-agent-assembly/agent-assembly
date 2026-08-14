@@ -8,11 +8,22 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
+use zeroize::Zeroizing;
+
+use crate::config::AssemblyConfig;
 use crate::error::SdkClientError;
+use crate::gateway::{build_challenge_request, build_register_request, GatewayRegistrationClient};
 use crate::ipc::{IpcCommand, IpcHandle};
 #[cfg(feature = "preflight")]
 use crate::preflight::Preflight;
+
+/// How long [`AssemblyClient::query_policy`] blocks for a runtime decision
+/// before returning the non-OK [`SdkClientError::QueryFailed`] sentinel (which
+/// [`resolve_decision`](crate::decision::resolve_decision) fails closed under
+/// enforce, AAASM-3958).
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Handle to an active Agent Assembly session.
 ///
@@ -23,6 +34,15 @@ use crate::preflight::Preflight;
 pub struct AssemblyClient {
     inner: Mutex<Option<IpcHandle>>,
     detected_frameworks: Vec<String>,
+    /// Credential token issued by the gateway at [`register`](Self::register).
+    /// `None` until registration succeeds; attached to every `CheckActionRequest`
+    /// so the gateway's `validate_credential_token` does not deny the call.
+    ///
+    /// Held in [`Zeroizing`] so the plaintext heap copy is overwritten when the
+    /// client drops (or the token is replaced) rather than lingering in a core
+    /// dump readable by a host attacker (AAASM-3629). The plaintext is only
+    /// cloned out transiently when attached to an outgoing request.
+    credential_token: Mutex<Option<Zeroizing<String>>>,
     #[cfg(feature = "preflight")]
     preflight: Option<Preflight>,
 }
@@ -34,6 +54,7 @@ impl AssemblyClient {
         Self {
             inner: Mutex::new(Some(ipc_handle)),
             detected_frameworks,
+            credential_token: Mutex::new(None),
             #[cfg(feature = "preflight")]
             preflight: Some(Preflight::new()),
         }
@@ -52,6 +73,7 @@ impl AssemblyClient {
         Self {
             inner: Mutex::new(Some(ipc_handle)),
             detected_frameworks,
+            credential_token: Mutex::new(None),
             preflight,
         }
     }
@@ -70,6 +92,58 @@ impl AssemblyClient {
     #[cfg(not(feature = "preflight"))]
     fn apply_preflight(&self, details: String) -> String {
         details
+    }
+
+    /// Register this agent with the governance gateway over a direct gRPC call
+    /// and store the issued `credential_token`.
+    ///
+    /// Per ADR 0004 this is the *only* direct SDK→gateway call; `CheckAction`
+    /// continues to flow through the `aa-runtime` UDS forward. The stored token
+    /// is then attached to every [`query_policy`](Self::query_policy) request so
+    /// the gateway's `validate_credential_token` does not deny a registered
+    /// agent.
+    ///
+    /// `config` supplies the agent identity (its `agent_id` selects the durable
+    /// identity key, whose public half becomes the `did:key` and the
+    /// `public_key`) and the gateway gRPC endpoint. Returns the assigned policy
+    /// id from the gateway on success, and
+    /// [`SdkClientError::IdentityUnavailable`] if the durable key cannot be
+    /// established — an agent with no identity does not register.
+    pub async fn register(
+        &self,
+        config: &AssemblyConfig,
+        name: String,
+        framework: String,
+    ) -> Result<String, SdkClientError> {
+        let endpoint = config.resolve_gateway_endpoint();
+        let mut client = GatewayRegistrationClient::connect(endpoint).await?;
+
+        // AAASM-3866: obtain a fresh server-issued nonce, then sign it in the
+        // register request. This round-trip is what makes the possession proof
+        // non-replayable — the gateway rejects any proof over a stale, reused, or
+        // attacker-derivable challenge.
+        let challenge = client.request_challenge(build_challenge_request(config)?).await?;
+        let request = build_register_request(config, name, framework, &challenge.nonce)?;
+        let response = client.register(request).await?;
+
+        {
+            let mut guard = self.credential_token.lock().map_err(|_| SdkClientError::LockPoisoned)?;
+            *guard = Some(Zeroizing::new(response.credential_token));
+        }
+
+        Ok(response.assigned_policy)
+    }
+
+    /// Return the stored gateway credential token, if registration has run.
+    ///
+    /// Clones the plaintext out of its zeroizing wrapper transiently for the
+    /// caller — used only to attach the token to an outgoing `CheckActionRequest`
+    /// immediately before send (AAASM-3629).
+    pub fn credential_token(&self) -> Option<String> {
+        self.credential_token
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|t| t.to_string()))
     }
 
     /// Enqueue an already-built event onto the IPC command channel.
@@ -155,6 +229,53 @@ impl AssemblyClient {
         };
 
         self.send(event)
+    }
+
+    /// Synchronously query the runtime for a policy decision on an action.
+    ///
+    /// Sends a `CheckActionRequest` to `aa-runtime` over the IPC connection and
+    /// blocks (up to [`QUERY_TIMEOUT`]) for the `CheckActionResponse`. Returns
+    /// the non-OK sentinel [`SdkClientError::QueryFailed`] when the runtime does
+    /// not answer in time or the connection closes; it never fabricates a
+    /// decision. Callers must map the outcome to a final decision through
+    /// [`resolve_decision`](crate::decision::resolve_decision), which fails
+    /// *closed* under enforce (AAASM-3958) and preserves the advisory fail-open
+    /// only when fail-closed is disabled — never treat a raw `Err` as Allow.
+    ///
+    /// FFI shims that hold a language-runtime lock (e.g. Python's GIL) should
+    /// release it around this call, since it blocks the calling thread.
+    pub fn query_policy(
+        &self,
+        mut request: aa_proto::assembly::policy::v1::CheckActionRequest,
+    ) -> Result<aa_proto::assembly::policy::v1::CheckActionResponse, SdkClientError> {
+        // Attach the credential token issued at registration so the gateway's
+        // `validate_credential_token` does not deny a registered agent. Only
+        // fill it when the caller did not supply one, so an explicitly-set
+        // token still wins. The check is forwarded verbatim by the runtime.
+        if request.credential_token.is_empty() {
+            if let Some(token) = self.credential_token() {
+                request.credential_token = token;
+            }
+        }
+
+        let (resp_tx, resp_rx) = std::sync::mpsc::channel();
+
+        // Enqueue under the lock, then release it before blocking on the
+        // response so a slow runtime cannot stall shutdown or other calls.
+        {
+            let guard = self.inner.lock().map_err(|_| SdkClientError::LockPoisoned)?;
+            let ipc = guard.as_ref().ok_or(SdkClientError::Shutdown)?;
+            ipc.cmd_tx
+                .blocking_send(IpcCommand::QueryPolicy {
+                    request: Box::new(request),
+                    resp: resp_tx,
+                })
+                .map_err(|_| SdkClientError::ChannelClosed)?;
+        }
+
+        resp_rx
+            .recv_timeout(QUERY_TIMEOUT)
+            .map_err(|_| SdkClientError::QueryFailed)
     }
 
     /// Shut down the IPC connection and join the background thread.
@@ -327,6 +448,125 @@ mod tests {
             }
             other => panic!("expected SendEvent, got {other:?}"),
         }
+    }
+
+    /// Test-only seam: set the stored credential token without a live gateway.
+    /// The end-to-end registered path is covered by the with-core gateway test.
+    impl AssemblyClient {
+        fn set_credential_token_for_test(&self, token: &str) {
+            *self.credential_token.lock().unwrap() = Some(Zeroizing::new(token.to_string()));
+        }
+
+        /// Test-only: clear the stored token, dropping (and thus zeroizing) the
+        /// `Zeroizing<String>` it held.
+        fn clear_credential_token_for_test(&self) {
+            *self.credential_token.lock().unwrap() = None;
+        }
+    }
+
+    #[test]
+    fn credential_token_is_zeroizing_and_clears_on_take() {
+        // The slot is backed by a zeroizing wrapper (AAASM-3629): on drop the
+        // plaintext heap copy is overwritten rather than lingering for a core
+        // dump. Functionally we assert the value round-trips while held and is
+        // gone once the slot is cleared (which drops/zeroizes the wrapper).
+        let (client, _rx) = test_client(vec![]);
+        client.set_credential_token_for_test("tok-zero");
+        assert_eq!(client.credential_token().as_deref(), Some("tok-zero"));
+
+        client.clear_credential_token_for_test();
+        assert_eq!(client.credential_token(), None);
+
+        // Compile-time guard: the field is a `Zeroizing<String>`, so this
+        // type annotation must hold (a plain `String` would fail to compile).
+        let guard = client.credential_token.lock().unwrap();
+        let _typed: &Option<Zeroizing<String>> = &guard;
+    }
+
+    #[test]
+    fn credential_token_never_appears_in_any_debug_output() {
+        // Regression guard for the token-hygiene contract (AAASM-3638): a unique
+        // sentinel token set on the client must not surface in the Debug output
+        // of the client or any IpcCommand carrying it, while the public accessor
+        // still round-trips it (positive control).
+        use aa_proto::assembly::policy::v1::CheckActionRequest;
+
+        const SENTINEL: &str = "SENTINEL-TOK-DO-NOT-LOG";
+
+        let (client, _rx) = test_client(vec![]);
+        client.set_credential_token_for_test(SENTINEL);
+
+        // (1) `AssemblyClient` deliberately derives no `Debug`, so there is no
+        // `{:?}` path on the client itself that could print the token. The IPC
+        // command below is the only structured path the token reaches.
+        //
+        // (2) An IpcCommand carrying the token must not leak it via Debug.
+        let request = CheckActionRequest {
+            credential_token: client.credential_token().unwrap(),
+            ..Default::default()
+        };
+        let (resp_tx, _resp_rx) = std::sync::mpsc::channel();
+        let cmd = IpcCommand::QueryPolicy {
+            request: Box::new(request),
+            resp: resp_tx,
+        };
+        let cmd_debug = format!("{cmd:?}");
+        assert!(
+            !cmd_debug.contains(SENTINEL),
+            "IpcCommand Debug must not contain the sentinel token, got: {cmd_debug}"
+        );
+
+        // (3) Positive control: the accessor still returns the real token, so
+        // the redaction above is not a false pass from the value being absent.
+        assert_eq!(client.credential_token().as_deref(), Some(SENTINEL));
+    }
+
+    #[test]
+    fn query_policy_attaches_stored_credential_token() {
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (client, mut rx) = test_client(vec![]);
+        client.set_credential_token_for_test("tok-abc");
+
+        // Run query_policy on a thread and answer it from the test thread so the
+        // blocking recv_timeout does not deadlock.
+        let handle = std::thread::spawn(move || {
+            client.query_policy(CheckActionRequest::default()).unwrap();
+        });
+
+        match rx.blocking_recv().expect("should receive a command") {
+            IpcCommand::QueryPolicy { request, resp } => {
+                assert_eq!(request.credential_token, "tok-abc");
+                resp.send(CheckActionResponse::default()).unwrap();
+            }
+            other => panic!("expected QueryPolicy, got {other:?}"),
+        }
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn query_policy_keeps_explicit_credential_token() {
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (client, mut rx) = test_client(vec![]);
+        client.set_credential_token_for_test("stored-tok");
+
+        let explicit = CheckActionRequest {
+            credential_token: "explicit-tok".to_string(),
+            ..Default::default()
+        };
+        let handle = std::thread::spawn(move || {
+            client.query_policy(explicit).unwrap();
+        });
+
+        match rx.blocking_recv().expect("should receive a command") {
+            IpcCommand::QueryPolicy { request, resp } => {
+                assert_eq!(request.credential_token, "explicit-tok");
+                resp.send(CheckActionResponse::default()).unwrap();
+            }
+            other => panic!("expected QueryPolicy, got {other:?}"),
+        }
+        handle.join().unwrap();
     }
 
     #[cfg(feature = "preflight")]

@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+#
+# Smoke overlay for the Go base image (AAASM-3524).
+#
+# Adds ONLY the agent module onto the published base image — no toolchain setup —
+# to prove a developer's agent "runs on the base image with no manual config".
+# The base image keeps `git` and has already `go install`ed the SDK, so the
+# module resolves from the populated module cache / GOPROXY.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+WORKDIR /agent
+COPY go.mod /agent/go.mod
+COPY agent.go /agent/agent.go
+
+# The go-sdk requires go 1.26 (its go.mod's `go 1.26.0` directive), but the
+# published base images include go 1.24 / 1.25 / 1.26. GOTOOLCHAIN=auto (Go's
+# default since 1.21) auto-fetches the 1.26 toolchain on the 1.24/1.25 images
+# when the dependency demands it — so this overlay build is a REAL check that an
+# agent depending on the current go-sdk can build on each base image. Set it
+# explicitly to document the dependency and guard against an env that pins it off.
+ENV GOTOOLCHAIN=auto
+
+# Resolve go.sum from the module cache the base image already populated (and
+# fetch the required toolchain if newer). Done at build time so a missing/
+# unfetchable dependency or too-old toolchain fails the overlay build rather than
+# surfacing as a runtime surprise. `go vet` is a cheap "the agent compiles
+# against the in-image SDK" build-time smoke.
+RUN go mod tidy && go vet ./...
+
+CMD ["go", "run", "."]

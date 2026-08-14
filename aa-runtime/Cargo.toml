@@ -8,26 +8,64 @@ description = "Tokio async runtime wrapper and lifecycle management for Agent As
 
 [features]
 default = []
+# AAASM-5280: exposes `devint::fixture`, the configurable DevToolIntegration the
+# DI-API's end-to-end tests drive. `aa-cli` enables it as a dev-dependency so
+# its command tests run against the same boundary and the same adapter the
+# runtime's own tests do, rather than a second copy that would drift.
+test-fixtures = []
 # Enables integration tests that exercise both proxy and eBPF layers together.
 # Requires Linux + root (CAP_BPF + CAP_PERFMON). Not included in default features.
 # Usage: sudo cargo test -p aa-runtime --features integration-test --test layer_integration
 integration-test = []
 
 [dependencies]
-aa-core                     = { path = "../aa-core", version = "0.0.1-beta.1", features = ["serde"] }
-aa-security                 = { path = "../aa-security", version = "0.0.1-beta.1", features = ["serde"] }
-aa-proto                    = { path = "../aa-proto", version = "0.0.1-beta.1" }
-aa-storage-sqlite-buffer    = { path = "../aa-storage-sqlite-buffer", version = "0.0.1-beta.1" }
+aa-core                     = { path = "../aa-core", version = "0.0.1-rc.6", features = ["serde"] }
+aa-policy                   = { path = "../aa-policy", version = "0.0.1-rc.6" }
+# strip-for-publish:begin devtool
+# AAASM-5280: the DI-API lifecycle service registers the built-in dev-tool
+# adapters (ADR 0030 §6.1 — explicit construction into an in-memory registry at
+# startup, resolved through `aa_devtool::registry` so one table decides which
+# implementation backs a tool). `aa-devtool*` are `publish = false`
+# (AAASM-2340), and cargo's publish verification rejects any dep whose target
+# is not on crates.io, so `.ci/strip-for-publish.sh` removes this region and
+# `src/devint/adapters.rs` before `cargo workspaces publish`.
+#
+# AAASM-5309: a published aa-runtime does NOT bind the DI-API. The same script
+# also removes `spawn_devint` and its call site from `src/runtime.rs`, leaving
+# `devint/testkit.rs` (`#[cfg(test)]`) as the only `DevIntServer::bind` in the
+# tree — so no published binary opens the socket, and the CLI's client for it,
+# `aasm integrations`, is stripped alongside. Binding anyway with an empty
+# registry was rejected: no built-in adapter crate publishes, so it could only
+# ever report "no tools detected".
+aa-devtool                  = { path = "../aa-devtool" }
+# AAASM-5281: Claude Code is the first natively migrated adapter, and its
+# registration needs three surfaces the registry's `Box<dyn DevToolAdapter>`
+# cannot carry — the lifecycle implementation, the renderer for its plan's
+# content, and the executor for the launch-environment steps `FilesystemExecutor`
+# refuses. Named directly for those; `aa_devtool::registry` remains the one place
+# that decides *which* tools exist.
+aa-devtool-claude-code      = { path = "../aa-devtool-claude-code" }
+# strip-for-publish:end devtool
+aa-security                 = { path = "../aa-security", version = "0.0.1-rc.6", features = ["serde"] }
+aa-proto                    = { path = "../aa-proto", version = "0.0.1-rc.6" }
+aa-storage-sqlite-buffer    = { path = "../aa-storage-sqlite-buffer", version = "0.0.1-rc.6" }
 async-nats                  = { workspace = true }
 async-trait                 = { workspace = true }
 axum                        = { workspace = true }
 bitflags                    = "2"
 bytes                       = { workspace = true }
 dashmap                     = { workspace = true }
+# IPC handshake: verify the SDK's Ed25519 proof of key possession (AAASM-3585).
+ed25519-dalek               = "3"
+hex                         = { workspace = true }
 uuid                        = { workspace = true, features = ["v4"] }
 metrics                     = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 prost                       = { workspace = true }
+# Value-returning CSPRNG for the 32-byte per-session handshake nonce (AAASM-3585);
+# `rand::random` sources from a ChaCha-based, OS-seeded thread RNG and returns the
+# bytes directly, so no zero-initialized buffer literal enters the nonce data-flow.
+rand                        = "0.10"
 serde                       = { workspace = true }
 sha2                        = { workspace = true }
 serde_json                  = { workspace = true }
@@ -41,12 +79,24 @@ tracing-subscriber          = { workspace = true, features = ["json", "env-filte
 which                       = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-beta.1" }
-libc    = { workspace = true }
+aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-rc.6" }
+
+# Peer-credential (geteuid) check on the IPC socket — all Unix targets
+# (AAASM-3579). Backed by getpeereid/SO_PEERCRED via tokio's peer_cred.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# Linux-only dev dep: the AAASM-3128 regression test constructs a
+# `TlsCaptureEvent` to prove the DEBUG log never emits its plaintext payload.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+aa-ebpf-common = { path = "../aa-ebpf-common", version = "0.0.1-rc.6", features = ["std"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+# `net` (TcpListenerStream) lets the invalidation-dispatch test stand up an
+# in-process mock gateway InvalidationService over loopback (AAASM-3805).
+tokio-stream = { workspace = true, features = ["net"] }
 tower = { workspace = true }
 # Captures emitted metric values so the audit-publisher metric tests can assert
 # the exact counter values recorded by `metrics::counter!`.

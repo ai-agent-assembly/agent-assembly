@@ -361,6 +361,11 @@ fn node_init_assembly_throws_when_missing() {
         .env("NODE_SDK_PATH", node_sdk_path())
         .env("PATH", EMPTY_PATH_DIR)
         .env("HOME", fake_home.path())
+        // AAASM-3124 (node #153) gated sidecar auto-start behind AA_AUTO_START.
+        // Opt in so init exercises the resolve-and-throw path (binary lookup
+        // followed by the INSTALL_HINT error) rather than the auto-start-disabled
+        // early return, which is what this test asserts.
+        .env("AA_AUTO_START", "1")
         .output()
         .expect("spawn node");
     let stderr = String::from_utf8_lossy(&out.stderr);

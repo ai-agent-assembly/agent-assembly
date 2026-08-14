@@ -22,7 +22,7 @@ Does this PR introduce any breaking changes to public APIs or behaviour?
 
 ## Related Issues
 
-- Related Jira ticket: AAASM-XX
+- Related Jira ticket: AAASM-XX _(optional — leave as `N/A` if you don't have Jira access; a maintainer will assign a tracking ticket)_
 - Related GitHub issues: #XX
 
 ## Testing
@@ -41,3 +41,4 @@ Describe the testing performed for this PR:
 - [ ] Documentation updated if behaviour changed
 - [ ] All CI checks passing
 - [ ] Commits are small and follow the Gitmoji convention
+- [ ] Commits are signed off (`git commit -s`) — DCO sign-off is optional/advisory here, not enforced

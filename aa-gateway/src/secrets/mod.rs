@@ -17,9 +17,11 @@
 
 pub mod error;
 pub mod resolver;
+pub mod scope;
 pub mod store;
 pub mod types;
 
 pub use error::{SecretInjectionError, SecretsError};
+pub use scope::{tenant_namespace, TenantScopedStore};
 pub use store::{InMemorySecretsStore, SecretsStore};
 pub use types::Secret;

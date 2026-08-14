@@ -170,7 +170,7 @@ export const HIFI_TOKENS = {
  * doesn't bounce to /login.
  */
 export async function injectToken(page: Page): Promise<void> {
-  await page.addInitScript(() => localStorage.setItem('aa_token', 'fidelity-token'))
+  await page.addInitScript(() => sessionStorage.setItem('aa_token', 'fidelity-token'))
 }
 
 /**

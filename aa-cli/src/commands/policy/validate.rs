@@ -14,7 +14,7 @@ pub struct ValidateArgs {
 
 /// Execute the `aasm policy validate` command.
 ///
-/// Validates the policy YAML file locally using [`PolicyValidator::from_yaml`].
+/// Validates the policy YAML file locally using `aa_gateway::policy::PolicyValidator::from_yaml`.
 /// Exits 0 if valid, 1 if invalid with error details printed to stderr.
 pub fn run(args: ValidateArgs) -> ExitCode {
     let yaml = match std::fs::read_to_string(&args.file) {
@@ -58,14 +58,8 @@ kind: Policy
 metadata:
   name: test-policy
 spec:
-  tier: low
-  rules:
-    - id: allow-all
-      description: Allow all
-      match:
-        actions: ["*"]
-      effect: allow
-      audit: true"#
+  budget:
+    daily_limit_usd: 100.0"#
         )
         .unwrap();
 
@@ -95,9 +89,55 @@ spec:
     }
 
     #[test]
-    fn unknown_key_produces_warning_not_error() {
+    fn unknown_top_level_key_exits_failure() {
+        // AAASM-4191: unknown top-level keys must fail closed (exit 1), not
+        // silently pass with a warning. A typo'd section would otherwise drop
+        // the restriction entirely.
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         writeln!(tmp, "risk_tier: high").unwrap();
+
+        let args = ValidateArgs {
+            file: tmp.path().to_path_buf(),
+        };
+        assert_eq!(run(args), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn misspelled_section_key_exits_failure() {
+        // AAASM-4191: a typo'd section (e.g. `capabilties`) must fail closed.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "capabilties:\n  deny:\n    - file_delete").unwrap();
+
+        let args = ValidateArgs {
+            file: tmp.path().to_path_buf(),
+        };
+        assert_eq!(run(args), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn nested_unknown_key_exits_failure() {
+        // AAASM-4330: a typo INSIDE a section (e.g. `capabilities.dney` for
+        // `deny`) must fail closed at the CLI (exit 1), not pass with a warning
+        // while silently dropping the restriction.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "capabilities:\n  dney:\n    - file_delete").unwrap();
+
+        let args = ValidateArgs {
+            file: tmp.path().to_path_buf(),
+        };
+        assert_eq!(run(args), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn valid_nested_policy_exits_success() {
+        // AAASM-4330 over-rejection guard: a policy whose nested keys are all
+        // spelled correctly must still validate (exit 0).
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            "capabilities:\n  deny:\n    - file_delete\ntools:\n  bash:\n    allow: true\n    limit_per_hour: 5"
+        )
+        .unwrap();
 
         let args = ValidateArgs {
             file: tmp.path().to_path_buf(),

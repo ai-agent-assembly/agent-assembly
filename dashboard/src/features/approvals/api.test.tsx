@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent, act, renderHook } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi, type Mock } from 'vitest'
 import { ApprovalsPage } from '../../pages/ApprovalsPage'
@@ -12,7 +12,7 @@ import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query'
 // ── WebSocket mock ─────────────────────────────────────────────────────────────
 
 class MockWebSocket {
-  static instances: MockWebSocket[] = []
+  static readonly instances: MockWebSocket[] = []
   onopen: (() => void) | null = null
   onmessage: ((evt: { data: string }) => void) | null = null
   onclose: (() => void) | null = null
@@ -28,9 +28,11 @@ class MockWebSocket {
     }, 0)
   }
   close() { this.onclose?.() }
-  send() {}
+  send() {
+    /* intentionally empty: test WebSocket mock — outbound frames are ignored */
+  }
 
-  static reset() { MockWebSocket.instances = [] }
+  static reset() { MockWebSocket.instances.length = 0 }
 }
 
 vi.stubGlobal('WebSocket', MockWebSocket)
@@ -51,7 +53,7 @@ function mockMutation<TData, TVariables>(
   return p as unknown as UseMutationResult<TData, Error, TVariables>
 }
 
-function Wrapper({ client, children }: { client: QueryClient; children: React.ReactNode }) {
+function Wrapper({ client, children }: Readonly<{ client: QueryClient; children: React.ReactNode }>) {
   return (
     <QueryClientProvider client={client}>
       <ToastProvider>
@@ -131,7 +133,7 @@ describe('ApprovalsPage', () => {
 
   it('shows empty state when no pending approvals', async () => {
     setup([])
-    await waitFor(() => expect(screen.getByTestId('empty-state-approvals')).toBeInTheDocument())
+    expect(await screen.findByTestId('empty-state-approvals')).toBeInTheDocument()
   })
 
   it('shows loading skeletons while fetching', () => {
@@ -159,9 +161,11 @@ describe('ApprovalsPage', () => {
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     )
 
-    renderHook(() => useApprovalsStream(), { wrapper })
+    // AAASM-4861: the stream mints a WS ticket before connecting; inject a
+    // resolved mint so no real network call is attempted in the test.
+    renderHook(() => useApprovalsStream({ mintTicket: () => Promise.resolve('wst_test') }), { wrapper })
 
-    // Wait for WS to open
+    // Wait for WS to open (the socket is created after the mint microtask).
     await waitFor(() => expect(MockWebSocket.instances.length).toBeGreaterThan(0))
     const ws = MockWebSocket.instances[0]
     await waitFor(() => ws.readyState === 1)
@@ -203,11 +207,9 @@ describe('ApprovalsPage', () => {
     fireEvent.click(checkboxes[0])
     fireEvent.click(checkboxes[1])
 
-    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('bulk-toolbar')).toBeInTheDocument()
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('bulk-approve-btn'))
-    })
+    fireEvent.click(screen.getByTestId('bulk-approve-btn'))
 
     await waitFor(() => {
       expect(approveFn).toHaveBeenCalledTimes(2)
@@ -221,7 +223,7 @@ describe('ApprovalsPage', () => {
     await waitFor(() => expect(screen.getAllByTestId('approval-row')).toHaveLength(1))
 
     fireEvent.click(screen.getByTestId('reject-btn'))
-    await waitFor(() => expect(screen.getByTestId('reject-dialog')).toBeInTheDocument())
+    expect(await screen.findByTestId('reject-dialog')).toBeInTheDocument()
 
     // Confirm should be disabled with empty reason
     expect(screen.getByTestId('reject-confirm-btn')).toBeDisabled()
@@ -256,17 +258,15 @@ describe('ApprovalsPage', () => {
     fireEvent.click(checkboxes[0])
     fireEvent.click(checkboxes[1])
 
-    await waitFor(() => expect(screen.getByTestId('bulk-toolbar')).toBeInTheDocument())
+    expect(await screen.findByTestId('bulk-toolbar')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('bulk-reject-btn'))
-    await waitFor(() => expect(screen.getByTestId('reject-dialog')).toBeInTheDocument())
+    expect(await screen.findByTestId('reject-dialog')).toBeInTheDocument()
 
     fireEvent.change(screen.getByTestId('reject-reason-input'), {
       target: { value: 'policy violation' },
     })
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('reject-confirm-btn'))
-    })
+    fireEvent.click(screen.getByTestId('reject-confirm-btn'))
 
     await waitFor(() => {
       expect(rejectFn).toHaveBeenCalledTimes(2)

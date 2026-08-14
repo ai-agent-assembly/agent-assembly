@@ -42,7 +42,7 @@ use super::error::{StorageError, StorageResult};
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::QueryFailed`] when the query against
+/// Returns `StorageError` when the query against
 /// `pg_extension` cannot execute (transport failure, permission denied,
 /// etc.). Treat the failure as "extension status unknown" — the caller
 /// typically downgrades to the no-TimescaleDB code path.
@@ -96,7 +96,7 @@ pub struct TimescaleStats {
 ///
 /// # Errors
 ///
-/// Returns [`StorageError::QueryFailed`] when the chunks rollup query
+/// Returns `StorageError` when the chunks rollup query
 /// fails (transport / permission / extension uninstalled).
 pub(crate) async fn query_timescale_stats(pool: &PgPool) -> StorageResult<TimescaleStats> {
     let (total, compressed, oldest_age_days): (i64, i64, i32) = sqlx::query_as(

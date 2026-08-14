@@ -32,6 +32,14 @@ pub enum RegistryError {
     /// `rehydrate_from_storage` (Epic 18 Story S-I.2) returned an error.
     #[error("storage backend error: {0}")]
     Storage(#[from] crate::storage::StorageError),
+    /// AAASM-4190: the team_id or org_id contains invalid characters (e.g.
+    /// control characters like `\u{1}` that could cause bucket-key collisions
+    /// in rate-limit or budget scoping).
+    #[error("invalid tenant id: {field} contains control characters")]
+    InvalidTenantId {
+        /// Which field failed validation ("team_id" or "org_id").
+        field: &'static str,
+    },
 }
 
 /// Error returned when agent lineage validation fails during registration.

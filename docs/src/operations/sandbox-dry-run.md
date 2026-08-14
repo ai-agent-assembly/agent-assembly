@@ -6,6 +6,15 @@ Sandbox mode is the governance analogue of a database transaction ROLLBACK: the 
 
 The feature is part of the open-source core — not an enterprise add-on.
 
+> **`aasm run` is missing from `cargo install aasm`.** Several examples below
+> drive dry-run mode through `aasm run --observe`. That command group is stripped
+> by `.ci/strip-for-publish.sh` in `release.yml`'s `publish-crates` job — the
+> crates.io publish and nothing else — so `cargo install aasm` does not have it,
+> including on a CI runner. A source build, the GitHub Release tarballs, the
+> `curl` installer and the Homebrew formula do. If you are on the crates.io
+> binary, the SDK's `enforcement_mode` and the gateway-side policy setting reach
+> the same posture.
+
 ---
 
 ## How it works
@@ -26,66 +35,87 @@ Every shadow event carries the full decision context: which rule matched (`shado
 ## Quick start — 5 steps
 
 ```bash
-# 1. Author a policy in observe mode (zero risk to running agents)
+# 1. Author a policy (the section-based schema the gateway loads)
 cat > coding-team-sandbox.yaml << 'EOF'
-name: coding-team-sandbox
-enforcement_mode: observe       # ← the one new field
-
-rules:
-  - action: deny
-    match:
-      tool_name: bash
-      command_pattern: "rm -rf"
-  - action: redact
-    match:
-      output_contains_pattern: "(AKIA|ghp_)[A-Za-z0-9]+"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: coding-team-sandbox
+spec:
+  # Block destructive shell tooling.
+  tools:
+    bash:
+      allow: false
+  # Detect leaked AWS / GitHub credentials and redact them.
+  data:
+    credential_action: redact_only
+    sensitive_patterns:
+      - "(AKIA|ghp_)[A-Za-z0-9]+"
 EOF
 
-# 2. Apply the policy
+# 2. Apply the policy to the gateway
 aasm policy apply --file coding-team-sandbox.yaml
 
-# 3. Run an agent under observe-mode governance
-aasm run --observe claude --workspace .
+# 3. Run an agent under observe-mode governance (posture is a runtime flag,
+#    not a policy-document field — see "Policy configuration" below)
+aasm run --policy coding-team-sandbox.yaml --observe claude --workspace .
 
 # 4. After a few days, review what would have been blocked
 aasm audit list --dry-run-only --since 7d
 
-# 5. Confident the policy is right? Flip to live enforcement.
-sed -i 's/enforcement_mode: observe/enforcement_mode: enforce/' coding-team-sandbox.yaml
-aasm policy apply --file coding-team-sandbox.yaml
+# 5. Confident the policy is right? Drop --observe to enforce for real.
+aasm run --policy coding-team-sandbox.yaml claude --workspace .
 ```
+
+> **`--policy` is not optional here, and `--observe` does not make it so.**
+> `aasm run` resolves its own effective policy and refuses the launch when none
+> resolves — an absent policy is not permission, and observe mode only chooses
+> what happens to a decision it does not have. Step 2 does not cover this:
+> `aasm policy apply` uploads the document to the gateway's version history and
+> writes nothing to the locations `aasm run` searches (`--policy` → `$AA_POLICY`
+> → `~/.aasm/policy.yaml` → …). Install the file at `~/.aasm/policy.yaml` if you
+> would rather not pass the flag every time. See
+> [Policy YAML Reference → Where a governed launch finds this file](../policy-reference.md#where-a-governed-launch-finds-this-file).
 
 ---
 
 ## Policy configuration
 
-`enforcement_mode` is a top-level optional field on the policy document:
+The **policy document** describes *what* the rules are using the section-based
+schema (`network` / `tools` / `data` / `budget` / `schedule` / `capabilities`).
+It does **not** carry the enforcement posture — observe vs enforce is a
+**per-agent runtime setting**, so the same policy can run in observe mode for
+one agent and live `enforce` for the rest.
 
 ```yaml
-name: my-policy
-enforcement_mode: observe       # "enforce" (default) | "observe" | "disabled"
-
-rules: [ ... ]
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: my-policy
+spec:
+  tools:
+    bash:
+      allow: false
+  data:
+    credential_action: redact_only
+    sensitive_patterns:
+      - "(AKIA|ghp_)[A-Za-z0-9]+"
 ```
 
-When the field is **omitted**, the policy defaults to `enforce` — the pre-feature behaviour. Existing on-disk policies upgrade transparently.
+The enforcement posture is chosen where the agent is launched or registered:
 
-Per-agent overrides via `agent_overrides` are also supported, so you can run a single experimental agent in observe mode while the rest of the team stays in live `enforce`:
-
-```yaml
-name: coding-team-policy
-enforcement_mode: enforce
-
-agent_overrides:
-  - agent_glob: "experimental-*"
-    enforcement_mode: observe
-```
+- **CLI** — `aasm run --observe <tool>` (or `--enforcement-mode observe`) for the
+  duration of that session.
+- **SDK** — pass `enforcement_mode="observe"` (Python / Go) or
+  `enforcementMode: "observe"` (Node.js) at `initAssembly` / agent registration.
 
 Resolution order (highest priority first):
 
-1. **Per-agent override** — `agent_overrides` block in the policy YAML, or `enforcement_mode` on the agent's `RegisterAgent` RPC payload.
-2. **Policy document default** — the top-level `enforcement_mode` field.
-3. **Server-wide default** — `enforce`.
+1. **Per-agent override** — `enforcement_mode` on the agent's `RegisterAgent` RPC payload (set via the CLI flag or SDK option above).
+2. **Server-wide default** — `enforce`.
+
+When no override is supplied, the gateway applies its server-side `enforce`
+default — the pre-feature behaviour.
 
 ---
 
@@ -95,17 +125,23 @@ Resolution order (highest priority first):
 
 Launches a managed AI dev tool with observe-mode governance for the duration of the session.
 
+Every form below still needs an effective policy — `--policy <FILE>` here, or an
+artifact at one of the searched locations. A posture flag selects what to do with
+a decision; it never substitutes for the rules the decision comes from.
+
 ```bash
 # Boolean shorthand — most common case
-aasm run --observe claude --workspace .
+aasm run --policy ./sandbox.yaml --observe claude --workspace .
 
 # Explicit form — interchangeable with the above
-aasm run --enforcement-mode observe claude --workspace .
+aasm run --policy ./sandbox.yaml --enforcement-mode observe claude --workspace .
 
 # Disabled mode — only valid in hermetic test environments
-aasm run --enforcement-mode disabled codex --workspace .
+aasm run --policy ./sandbox.yaml --enforcement-mode disabled codex --workspace .
 
-# Combine with --dry-run to preview the launch without executing the tool
+# Combine with --dry-run to preview the launch without executing the tool.
+# A preview reports the policy state instead of refusing on it, so this is also
+# how you check what a live run would resolve to.
 aasm run --observe --dry-run claude --workspace .
 ```
 
@@ -144,13 +180,19 @@ The flag is **exclusive**: by default `aasm audit list` HIDES shadow events so o
 
 All three SDKs expose the same posture surface. Pass an `enforcement_mode` (Python / Go) or `enforcementMode` (Node.js) at agent registration:
 
+The SDK never talks to the core over HTTP. The public API delegates to the native
+`aa-sdk-client` shim, which speaks gRPC (over a Unix domain socket by default, or
+TCP for cross-host) to `aa-gateway` — see [ADR 0004](../adr/0004-governance-enforcement-flow.md).
+`gateway_url` / `gatewayUrl` / `WithGatewayURL` is therefore the gateway's gRPC
+endpoint as `host:port` (no scheme); the OSS local default is `localhost:7391`.
+
 ### Python
 
 ```python
 from agent_assembly import init_assembly
 
 ctx = init_assembly(
-    gateway_url="http://localhost:8080",
+    gateway_url="localhost:7391",   # gRPC endpoint, host:port (no scheme)
     api_key="...",
     agent_id="experimental-agent-001",
     enforcement_mode="observe",   # "enforce" | "observe" | "disabled"
@@ -165,7 +207,7 @@ The parameter is keyword-only; the type is `Literal["enforce", "observe", "disab
 import { initAssembly, type EnforcementMode } from "@agent-assembly/sdk";
 
 const ctx = await initAssembly({
-  gatewayUrl: "http://localhost:8080",
+  gatewayUrl: "localhost:7391",   // gRPC endpoint, host:port (no scheme)
   apiKey: "...",
   agentId: "experimental-agent-001",
   enforcementMode: "observe",   // 'enforce' | 'observe' | 'disabled'
@@ -180,7 +222,7 @@ The `EnforcementMode` union narrows at compile time; runtime validation catches 
 import "github.com/agent-assembly/go-sdk/assembly"
 
 a, err := assembly.Init(ctx,
-    assembly.WithGatewayURL("http://localhost:8080"),
+    assembly.WithGatewayURL("localhost:7391"),   // gRPC endpoint, host:port (no scheme)
     assembly.WithAPIKey("..."),
     assembly.WithSelfAgentID("experimental-agent-001"),
     assembly.WithEnforcementMode(assembly.EnforcementModeObserve),
@@ -200,8 +242,10 @@ A common observe-mode use case: gate every PR on "would my policy change block a
 jobs:
   policy-regression:
     steps:
+      # The policy is checked in alongside the workflow: a CI run has no
+      # ~/.aasm/policy.yaml, so a bare `aasm run` here refuses to launch.
       - name: Run agent under observe-mode governance
-        run: aasm run --observe codex -- codex "refactor src/auth.py"
+        run: aasm run --policy .aasm/policy.yaml --observe codex -- codex "refactor src/auth.py"
 
       - name: Fail the PR on any would-be deny
         run: |
@@ -252,16 +296,14 @@ Once you've reviewed the shadow events and tuned the policy:
      | jq 'group_by(.shadow_decision) | map({decision: .[0].shadow_decision, count: length})'
    ```
 2. **Adjust the policy** — tighten matchers that fired too eagerly, relax ones that blocked legitimate work.
-3. **Re-apply in observe mode** for another short window to confirm the tuned policy behaves as expected.
-4. **Flip to enforce**:
-   ```yaml
-   enforcement_mode: enforce
-   ```
+3. **Re-apply and re-run in observe mode** for another short window to confirm the tuned policy behaves as expected.
+4. **Flip to enforce** — drop the observe flag where the agent is launched:
    ```bash
-   aasm policy apply --file my-policy.yaml
+   # was: aasm run --policy ./sandbox.yaml --observe claude --workspace .
+   aasm run --policy ./sandbox.yaml claude --workspace .
    ```
 
-The cutover is instantaneous from the next `CheckAction` call onward — no agent restart required. Already-in-flight actions evaluated before the swap keep their original posture.
+The cutover takes effect from the agent's next registration onward — the policy document itself is unchanged. Already-in-flight actions evaluated under the observe session keep their original posture.
 
 ---
 
@@ -274,12 +316,11 @@ No measurable difference. The rule pipeline runs identically; the only added wor
 No. The `redact` decision in observe mode forwards the **unredacted** payload to the agent (that's the whole point — "what would have happened if we'd enforced"). The shadow audit event records that a redact rule matched, but neither the would-be redacted version nor the raw payload is persisted as a separate artefact. The audit pipeline's existing PII-scanner pass still applies before any event is written.
 
 **Can I set observe mode per-agent without changing the policy?**
-Yes — three ways:
+Yes — the posture is always per-agent, never baked into the policy document:
 1. CLI: `aasm run --observe <tool>` for the duration of that session.
 2. SDK: pass `enforcement_mode="observe"` (Python / Go) or `enforcementMode: "observe"` (Node.js) at `initAssembly`.
-3. Policy YAML: `agent_overrides` block targeting an `agent_glob`.
 
-The per-agent override always wins over the policy document's default.
+The per-agent posture always wins over the server-wide `enforce` default.
 
 **What happens to an agent that's mid-action when I flip from observe to enforce?**
 The action that's already through `CheckAction` keeps its observe-mode disposition (allowed). The very next `CheckAction` call sees the new posture and starts enforcing. There's no in-flight rollback.

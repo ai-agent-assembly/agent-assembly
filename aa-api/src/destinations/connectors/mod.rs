@@ -5,6 +5,7 @@
 //! sub-modules; PagerDuty and OpsGenie are gated behind cargo features so
 //! the binary footprint stays small when only webhook / Slack are needed.
 
+use std::net::SocketAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -84,11 +85,35 @@ pub enum ConnectorError {
 #[async_trait::async_trait]
 pub trait NotificationConnector: Send + Sync {
     /// Dispatch `req` to `destination` and return the outcome.
+    ///
+    /// `pinned` carries the socket addresses the SSRF egress guard already
+    /// vetted for this destination's caller-controlled URL (AAASM-3826).
+    /// Connectors that egress to a caller-controlled host (webhook, Slack)
+    /// MUST pin their outbound connection to exactly these addresses so a
+    /// DNS-rebind between the guard's check and the actual connect cannot
+    /// redirect traffic to an internal target. An empty slice means "no
+    /// pinning" — used for hard-coded vendor hosts (PagerDuty / OpsGenie) and
+    /// when the operator has opted out of the egress guard.
     async fn dispatch(
         &self,
         destination: &Destination,
         req: &DispatchRequest,
+        pinned: &[SocketAddr],
     ) -> Result<DispatchOutcome, ConnectorError>;
+}
+
+/// Common `reqwest::ClientBuilder` carrying the connectors' shared hardening:
+/// bounded connect/overall timeouts and a no-redirect policy.
+///
+/// AAASM-3789: never follow redirects. A redirect can bounce an
+/// otherwise-allowlisted destination to an internal address (cloud metadata,
+/// loopback, RFC1918), re-opening the SSRF the egress guard closes. A 3xx is
+/// surfaced to the caller as a non-2xx outcome instead of being chased inward.
+fn client_builder() -> reqwest::ClientBuilder {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
 }
 
 /// Shared `reqwest::Client` used by every connector. Constructed once so
@@ -96,21 +121,67 @@ pub trait NotificationConnector: Send + Sync {
 #[allow(dead_code)] // wired up by per-kind connectors in subsequent commits
 pub(crate) fn shared_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        Client::builder()
-            .connect_timeout(Duration::from_secs(8))
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("reqwest client construction failed")
-    })
+    CLIENT.get_or_init(|| client_builder().build().expect("reqwest client construction failed"))
+}
+
+/// Build the client a caller-controlled-host connector (webhook / Slack) uses
+/// to egress, pinning DNS resolution for `host` to the SSRF-vetted `pinned`
+/// addresses (AAASM-3826).
+///
+/// When `pinned` is non-empty the returned client resolves `host` only to those
+/// exact addresses, so the connection lands on the address the egress guard
+/// already vetted — a DNS-rebind to an internal target after the check cannot
+/// take effect. An empty `pinned` (vendor hosts, or the guard opt-out) returns
+/// the shared pooled client unchanged.
+pub(crate) fn egress_client(host: &str, pinned: &[SocketAddr]) -> Client {
+    if pinned.is_empty() {
+        return shared_client().clone();
+    }
+    client_builder()
+        .resolve_to_addrs(host, pinned)
+        .build()
+        .expect("reqwest pinned client construction failed")
 }
 
 /// Cap a response body at 2048 bytes so error envelopes stay bounded.
+///
+/// Truncates on a UTF-8 char boundary at or below the 2048-byte cap. A naive
+/// `body[..2048]` byte slice panics when 2048 lands in the middle of a
+/// multibyte character, which a connector `/test` could trigger with a crafted
+/// >2048-byte response body (remote DoS, AAASM-3843).
 #[allow(dead_code)] // wired up by per-kind connectors in subsequent commits
 pub(crate) fn truncate_body(body: String) -> String {
-    if body.len() > 2048 {
-        body[..2048].to_string()
+    const MAX: usize = 2048;
+    if body.len() > MAX {
+        let mut end = MAX;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body[..end].to_string()
     } else {
         body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_body_handles_multibyte_boundary() {
+        // 683 × 3-byte '€' = 2049 bytes, so the 2048-byte cap lands mid-character.
+        // A naive `body[..2048]` slice would panic (AAASM-3843 remote DoS). The
+        // truncation must back up to a valid char boundary at or below the cap.
+        let over = "€".repeat(683);
+        assert_eq!(over.len(), 2049);
+        let out = truncate_body(over);
+        assert!(out.len() <= 2048);
+        assert!(out.is_char_boundary(out.len()));
+        assert_eq!(out.chars().count(), 682);
+    }
+
+    #[test]
+    fn truncate_body_leaves_short_body_untouched() {
+        assert_eq!(truncate_body("hi".to_string()), "hi");
     }
 }

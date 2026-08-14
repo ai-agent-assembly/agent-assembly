@@ -2,7 +2,7 @@
 
 This chapter is the engineering map of `agent-assembly` — the open-source core
 that governs AI agents by intercepting their actions at three independent layers
-and routing every action through one central **gateway**.
+and routing the governed actions through one central **gateway**.
 
 It is written for contributors and integrators who want to understand *how the
 system is built*, not just how to operate it. For the system-level overview,

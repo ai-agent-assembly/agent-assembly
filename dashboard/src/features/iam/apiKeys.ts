@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ignorePromise } from '../../lib/ignorePromise'
 import { api } from '../../api/client'
 import { iamQueryKeys } from './queryKeys'
 import type { ApiKey, GenerateApiKeyInput, GeneratedApiKey } from './types'
@@ -73,6 +74,12 @@ let _revokeOverride: ((id: string) => Promise<void>) | null = null
 let _rotateOverride: ((id: string) => Promise<GeneratedApiKey>) | null = null
 let _testSeed: readonly ApiKey[] = SEED_API_KEYS
 
+// `as ApiKey[]` / `as GeneratedApiKey` (below and in `rotateApiKey`) are bare
+// casts (AAASM-5217 audit). Accepted-risk: none of `ApiKey`'s fields —
+// `status`, `role`, `scopes`, `recent_activity[].action` — are ever used as an
+// object/Map lookup key anywhere in `features/iam`. `ApiKeyList.tsx` compares
+// `status`/`role` with `===` and renders them as text; `GenerateKeyDialog.tsx`
+// checks `scopes` membership with `Array.includes`, not indexing.
 async function fetchApiKeys(): Promise<ApiKey[]> {
   if (_listOverride) return _listOverride()
   const { data, error } = await api.GET('/api/v1/iam/api-keys')
@@ -126,7 +133,7 @@ export function useGenerateApiKeyMutation() {
   return useMutation({
     mutationFn: (input: GenerateApiKeyInput) => generateApiKey(input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() }))
     },
   })
 }
@@ -136,7 +143,7 @@ export function useRevokeApiKeyMutation() {
   return useMutation({
     mutationFn: (id: string) => revokeApiKey(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() }))
     },
   })
 }
@@ -146,7 +153,7 @@ export function useRotateApiKeyMutation() {
   return useMutation({
     mutationFn: (id: string) => rotateApiKey(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() })
+      ignorePromise(queryClient.invalidateQueries({ queryKey: iamQueryKeys.apiKeys() }))
     },
   })
 }

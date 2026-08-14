@@ -4,7 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AlertRuleForm } from './AlertRuleForm'
 import { ToastProvider } from '../../components/ToastProvider'
+import { AuthContext, type AuthContextValue, type Scope } from '../../auth/AuthContext'
 import type { AlertRule, Destination } from './types'
+import { GrantScopes } from '../../auth/GrantScopes'
+import { WRITE_SCOPES } from '../../auth/testScopes'
 
 // ── fetch stub mirroring the AAASM-1075 test setup ─────────────────────────
 
@@ -20,7 +23,7 @@ let responses: Record<string, unknown>
 beforeEach(() => {
   calls = []
   responses = {}
-  localStorage.setItem('aa_token', 'test-token')
+  sessionStorage.setItem('aa_token', 'test-token')
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -45,7 +48,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  localStorage.clear()
+  sessionStorage.clear()
 })
 
 // ── fixtures ───────────────────────────────────────────────────────────────
@@ -77,18 +80,64 @@ const FIXTURE_RULE: AlertRule = {
   updatedAt: '2026-05-13T00:00:00Z',
 }
 
-function Wrapper({ children }: { children: React.ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
     <QueryClientProvider client={client}>
-      <ToastProvider>{children}</ToastProvider>
+      <GrantScopes scopes={WRITE_SCOPES}>
+        <ToastProvider>{children}</ToastProvider>
+      </GrantScopes>
     </QueryClientProvider>
+  )
+}
+
+function renderWithScopes(scopes: Scope[]) {
+  const auth: AuthContextValue = {
+    token: 'tok',
+    scopes,
+    login: async () => {},
+    loginWithCredentials: async () => {},
+    signup: async () => {},
+    logout: () => {},
+  }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <AuthContext.Provider value={auth}>
+        <ToastProvider>
+          <AlertRuleForm open={true} onClose={vi.fn()} />
+        </ToastProvider>
+      </AuthContext.Provider>
+    </QueryClientProvider>,
   )
 }
 
 // ── specs ──────────────────────────────────────────────────────────────────
 
 describe('AlertRuleForm', () => {
+  // AAASM-5147: the form is the last gate before the create/update mutation, so
+  // it must hold regardless of which control opened it.
+  it('disables submit for a read-only caller', () => {
+    responses['/api/v1/alerts/destinations'] = [SLACK]
+    renderWithScopes(['read'])
+    expect(screen.getByTestId('alert-rule-form-submit')).toBeDisabled()
+  })
+
+  it('enables submit for a write caller', () => {
+    responses['/api/v1/alerts/destinations'] = [SLACK]
+    renderWithScopes(['write'])
+    expect(screen.getByTestId('alert-rule-form-submit')).toBeEnabled()
+  })
+
+  it('issues no create request when a read-only caller clicks submit', async () => {
+    responses['/api/v1/alerts/destinations'] = [SLACK]
+    const user = userEvent.setup()
+    renderWithScopes(['read'])
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
+    await user.click(screen.getByTestId('alert-rule-form-submit'))
+    expect(calls.filter((c) => c.init.method === 'POST')).toHaveLength(0)
+  })
+
   it('does not render anything when closed', () => {
     render(<AlertRuleForm open={false} onClose={vi.fn()} />, { wrapper: Wrapper })
     expect(screen.queryByTestId('alert-rule-form')).not.toBeInTheDocument()
@@ -108,17 +157,15 @@ describe('AlertRuleForm', () => {
     const onClose = vi.fn()
     render(<AlertRuleForm open={true} onClose={onClose} />, { wrapper: Wrapper })
 
-    await waitFor(() =>
-      expect(screen.getByTestId('rule-destination-d-slack')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
     await user.click(screen.getByTestId('rule-destination-d-slack'))
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.clear(screen.getByTestId('rule-threshold'))
     await user.click(screen.getByTestId('alert-rule-form-submit'))
 
-    await waitFor(() =>
-      expect(screen.getByText(/threshold must be (a number|a finite number)/i)).toBeInTheDocument(),
-    )
+    expect(
+      await screen.findByText(/threshold must be (a number|a finite number)/i),
+    ).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
     expect(calls.some((c) => c.init.method === 'POST' && c.url.endsWith('/rules'))).toBe(false)
   })
@@ -129,11 +176,9 @@ describe('AlertRuleForm', () => {
     render(<AlertRuleForm open={true} onClose={vi.fn()} />, { wrapper: Wrapper })
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.click(screen.getByTestId('alert-rule-form-submit'))
-    await waitFor(() =>
-      expect(
-        screen.getByText(/at least one destination is required/i),
-      ).toBeInTheDocument(),
-    )
+    expect(
+      await screen.findByText(/at least one destination is required/i),
+    ).toBeInTheDocument()
   })
 
   it('POSTs to /alerts/rules on a valid create submit and closes the modal', async () => {
@@ -147,9 +192,7 @@ describe('AlertRuleForm', () => {
       { wrapper: Wrapper },
     )
 
-    await waitFor(() =>
-      expect(screen.getByTestId('rule-destination-d-slack')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.click(screen.getByTestId('rule-destination-d-slack'))
     await user.click(screen.getByTestId('alert-rule-form-submit'))
@@ -191,9 +234,7 @@ describe('AlertRuleForm', () => {
     const onClose = vi.fn()
     render(<AlertRuleForm open={true} onClose={onClose} />, { wrapper: Wrapper })
 
-    await waitFor(() =>
-      expect(screen.getByTestId('rule-destination-d-slack')).toBeInTheDocument(),
-    )
+    expect(await screen.findByTestId('rule-destination-d-slack')).toBeInTheDocument()
     await user.type(screen.getByTestId('rule-name'), 'Budget guardrail')
     await user.click(screen.getByTestId('rule-destination-d-slack'))
     await user.click(screen.getByTestId('alert-rule-form-submit'))

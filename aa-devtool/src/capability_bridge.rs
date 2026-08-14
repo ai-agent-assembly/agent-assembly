@@ -1,4 +1,4 @@
-use aa_core::{AdapterError, Capability, CapabilitySet, DevToolAdapter};
+use aa_devtool_contract::{AdapterError, Capability, CapabilitySet, DevToolAdapter};
 
 /// Translate a [`CapabilitySet`] into an `apply_mcp_governance` call on `adapter`.
 ///
@@ -36,7 +36,7 @@ pub async fn apply_capability_policy(adapter: &dyn DevToolAdapter, caps: &Capabi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::{Capability, CapabilitySet};
+    use aa_devtool_contract::{Capability, CapabilitySet};
     use std::sync::Mutex;
 
     struct MockAdapter {
@@ -57,11 +57,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl DevToolAdapter for MockAdapter {
-        fn detect(&self) -> Option<aa_core::DevToolInfo> {
+        fn detect(&self) -> Option<aa_devtool_contract::DevToolInfo> {
             None
         }
 
-        async fn generate_managed_settings(&self, _: &aa_core::PolicyDocument) -> Result<String, AdapterError> {
+        async fn generate_managed_settings(
+            &self,
+            _: &aa_devtool_contract::PolicyDocument,
+        ) -> Result<String, AdapterError> {
             Err(AdapterError::SettingsGenerationFailed("mock".into()))
         }
 
@@ -79,7 +82,7 @@ mod tests {
             Err(AdapterError::LaunchFailed("mock".into()))
         }
 
-        async fn list_mcp_servers(&self) -> Result<Vec<aa_core::McpServerInfo>, AdapterError> {
+        async fn list_mcp_servers(&self) -> Result<Vec<aa_devtool_contract::McpServerInfo>, AdapterError> {
             Ok(vec![])
         }
 
@@ -88,8 +91,8 @@ mod tests {
             Ok(())
         }
 
-        fn governance_level(&self) -> aa_core::GovernanceLevel {
-            aa_core::GovernanceLevel::L2Enforce
+        fn governance_level(&self) -> aa_devtool_contract::GovernanceLevel {
+            aa_devtool_contract::GovernanceLevel::L2Enforce
         }
     }
 

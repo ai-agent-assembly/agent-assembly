@@ -6,10 +6,66 @@
 use std::path::{Path, PathBuf};
 
 use rcgen::PKCS_ECDSA_P256_SHA256;
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+use rcgen::{
+    BasicConstraints, CertificateParams, CidrSubnet, DnType, GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    NameConstraints,
+};
 use time::{Duration, OffsetDateTime};
 
 use crate::error::ProxyError;
+
+/// Build the [`CertificateParams`] for the MitM root CA.
+///
+/// AAASM-4133 — the CA is installed as a system trust root with 10-year
+/// validity, so a leak of `~/.aa/ca/ca-key.pem` is high-impact. The proxy only
+/// ever signs leaf certs for *outbound public egress* endpoints, so the CA is
+/// name-constrained to **exclude** the internal / private namespaces it never
+/// legitimately intercepts: loopback, mDNS (`.local`), `.internal`,
+/// `home.arpa`, and the RFC 1918 / loopback / link-local / IPv6 ULA IP ranges.
+/// A leaked key then cannot mint trusted certs impersonating those internal
+/// services. Only excluded subtrees are set (no permitted list), so
+/// interception of arbitrary *public* domains is unchanged.
+fn build_ca_params() -> Result<CertificateParams, ProxyError> {
+    let mut ca_params = CertificateParams::new(vec![]).map_err(|e| ProxyError::CertGen(e.to_string()))?;
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "Agent Assembly CA");
+    ca_params.name_constraints = Some(NameConstraints {
+        permitted_subtrees: vec![],
+        excluded_subtrees: vec![
+            GeneralSubtree::DnsName("localhost".into()),
+            GeneralSubtree::DnsName("local".into()),
+            GeneralSubtree::DnsName("internal".into()),
+            GeneralSubtree::DnsName("home.arpa".into()),
+            GeneralSubtree::IpAddress(CidrSubnet::from_v4_prefix([10, 0, 0, 0], 8)),
+            GeneralSubtree::IpAddress(CidrSubnet::from_v4_prefix([172, 16, 0, 0], 12)),
+            GeneralSubtree::IpAddress(CidrSubnet::from_v4_prefix([192, 168, 0, 0], 16)),
+            GeneralSubtree::IpAddress(CidrSubnet::from_v4_prefix([127, 0, 0, 0], 8)),
+            GeneralSubtree::IpAddress(CidrSubnet::from_v4_prefix([169, 254, 0, 0], 16)),
+            // ::1/128 loopback, fc00::/7 unique-local, fe80::/10 link-local.
+            GeneralSubtree::IpAddress(CidrSubnet::from_v6_prefix(
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                128,
+            )),
+            GeneralSubtree::IpAddress(CidrSubnet::from_v6_prefix(
+                [0xfc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                7,
+            )),
+            GeneralSubtree::IpAddress(CidrSubnet::from_v6_prefix(
+                [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                10,
+            )),
+        ],
+    });
+    let now = OffsetDateTime::now_utc();
+    ca_params.not_before = now;
+    ca_params.not_after = now
+        .checked_add(Duration::days(365 * 10))
+        .expect("date arithmetic cannot overflow for 10-year span");
+    Ok(ca_params)
+}
 
 /// A signed TLS certificate and its corresponding private key in DER encoding.
 ///
@@ -50,6 +106,21 @@ impl CaStore {
             tokio::fs::read_to_string(&key_path).await,
         ) {
             (Ok(ca_cert_pem), Ok(ca_key_pem)) => {
+                // AAASM-4936 (L4): 0600 is enforced only at creation time, so a
+                // key written by an older build, restored from a backup, or
+                // copied in with loose perms would be served group/other-
+                // readable. Re-assert 0600 on every load so the private key can
+                // never be left world-readable across a proxy restart.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let key_path_clone = key_path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        std::fs::set_permissions(&key_path_clone, std::fs::Permissions::from_mode(0o600))
+                    })
+                    .await
+                    .map_err(|e| ProxyError::Io(std::io::Error::other(e)))??;
+                }
                 return Ok(Self {
                     ca_dir: ca_dir.to_path_buf(),
                     ca_cert_pem,
@@ -65,17 +136,7 @@ impl CaStore {
         // Generate a new EC P-256 CA key pair.
         let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| ProxyError::CertGen(e.to_string()))?;
 
-        let mut ca_params = CertificateParams::new(vec![]).map_err(|e| ProxyError::CertGen(e.to_string()))?;
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        ca_params
-            .distinguished_name
-            .push(DnType::CommonName, "Agent Assembly CA");
-        let now = OffsetDateTime::now_utc();
-        ca_params.not_before = now;
-        ca_params.not_after = now
-            .checked_add(Duration::days(365 * 10))
-            .expect("date arithmetic cannot overflow for 10-year span");
+        let ca_params = build_ca_params()?;
 
         let ca_cert = ca_params
             .self_signed(&ca_key)
@@ -178,6 +239,22 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn ca_cert_carries_name_constraints_extension() {
+        // AAASM-4133: the root CA must be name-constrained. The X.509
+        // NameConstraints extension is OID 2.5.29.30, which DER-encodes to the
+        // byte sequence `06 03 55 1D 1E`; assert it appears in the cert DER.
+        let params = build_ca_params().unwrap();
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        let der = cert.der();
+        let needle = [0x06u8, 0x03, 0x55, 0x1d, 0x1e];
+        assert!(
+            der.as_ref().windows(needle.len()).any(|w| w == needle),
+            "CA cert must carry the X.509 NameConstraints extension (OID 2.5.29.30)"
+        );
+    }
+
     #[tokio::test]
     async fn load_or_create_generates_pem_files() {
         let dir = TempDir::new().unwrap();
@@ -202,6 +279,32 @@ mod tests {
         CaStore::load_or_create(dir.path()).await.unwrap();
         let perms = std::fs::metadata(dir.path().join("ca-key.pem")).unwrap().permissions();
         assert_eq!(perms.mode() & 0o777, 0o600, "ca-key.pem must be owner-read-write only");
+    }
+
+    /// AAASM-4936 (L4): perms are enforced only at creation, so a key that
+    /// already exists with loose perms (older build, restored backup, manual
+    /// copy) must be re-tightened to 0600 when it is loaded.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn load_or_create_reasserts_600_on_loose_existing_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        // First create a valid CA, then loosen the key perms to world-readable.
+        CaStore::load_or_create(dir.path()).await.unwrap();
+        let key_path = dir.path().join("ca-key.pem");
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        // Loading the existing CA must re-tighten the key to 0600.
+        CaStore::load_or_create(dir.path()).await.unwrap();
+        assert_eq!(
+            std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "load must re-assert 0600 on an existing loose key"
+        );
     }
 
     #[tokio::test]

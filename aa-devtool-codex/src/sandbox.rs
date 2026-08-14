@@ -8,7 +8,7 @@
 //!
 //! [AAASM-978]: https://lightning-dust-mite.atlassian.net/browse/AAASM-978
 
-use aa_core::policy::{PolicyDecision, PolicyDocument};
+use aa_devtool_contract::{PolicyDecision, PolicyDocument};
 use serde::Serialize;
 
 /// Codex sandbox mode, mapping to Codex's `sandbox_mode` config key.
@@ -80,7 +80,7 @@ pub fn network_block_list(policy: &PolicyDocument) -> Vec<String> {
 /// `full-auto`, `suggest`, or `ask`. When such a rule is present it wins
 /// over the enforcement-level inference, regardless of `decision`.
 ///
-/// [`PolicyRule`]: aa_core::policy::PolicyRule
+/// [`PolicyRule`]: aa_devtool_contract::PolicyRule
 const CODEX_SANDBOX_OVERRIDE_PREFIX: &str = "dev_tools.codex.sandbox_mode:";
 
 /// Translate a [`PolicyDocument`] into the [`CodexSandboxMode`] Codex
@@ -135,7 +135,7 @@ fn find_sandbox_override(policy: &PolicyDocument) -> Option<CodexSandboxMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_core::policy::{EnforcementMode, PolicyDecision, PolicyDocument, PolicyRule};
+    use aa_devtool_contract::{EnforcementMode, PolicyDecision, PolicyDocument, PolicyRule};
 
     fn make_policy(rules: Vec<(&str, PolicyDecision)>) -> PolicyDocument {
         PolicyDocument {

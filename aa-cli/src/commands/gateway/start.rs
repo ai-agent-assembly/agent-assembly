@@ -17,7 +17,9 @@ const READINESS_POLL: Duration = Duration::from_millis(200);
 /// Arguments for `aasm gateway start`.
 #[derive(Debug, Args)]
 pub struct StartArgs {
-    /// Path to the policy YAML file (overrides $AA_POLICY and default locations).
+    /// Path to the policy YAML file, or a directory of scoped `*.yaml`
+    /// documents for the multi-document cascade (AAASM-3499). Overrides
+    /// $AA_POLICY and the default locations.
     #[arg(long)]
     pub policy: Option<PathBuf>,
 
@@ -45,7 +47,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         None => {
             eprintln!(
                 "error: aa-gateway binary not found.\n\
-                 Tried: $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
+                 Tried: alongside aasm, $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
             );
             return ExitCode::FAILURE;
         }
@@ -55,9 +57,10 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         Some(p) => p,
         None => {
             eprintln!(
-                "error: no policy file found.\n\
-                 Tried: $AA_POLICY, ~/.aasm/policy.yaml, /etc/aasm/policy.yaml\n\
-                 Use --policy FILE to specify a path."
+                "error: no policy file or directory found.\n\
+                 Tried: $AA_POLICY, ~/.aasm/policy.yaml, ~/.aasm/policies/, \
+                 /etc/aasm/policy.yaml, /etc/aasm/policies/\n\
+                 Use --policy FILE or --policy DIR to specify a path."
             );
             return ExitCode::FAILURE;
         }
@@ -146,9 +149,20 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 
 /// Resolve the `aa-gateway` binary path.
 ///
-/// Search order: directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
+/// Search order: directory of the running `aasm` executable →
+/// directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
 /// `./target/release/aa-gateway` → `./target/debug/aa-gateway`.
+///
+/// The exe-dir lookup is first so a release / Homebrew install — where
+/// `aa-gateway` ships alongside `aasm` in the same directory (AAASM-2975) —
+/// works even when that directory is not on `$PATH` (e.g. a tarball unpacked
+/// to an arbitrary location).
 pub fn resolve_binary() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(candidate) = sibling_binary(&exe) {
+            return Some(candidate);
+        }
+    }
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in path_var.split(':') {
             let candidate = PathBuf::from(dir).join("aa-gateway");
@@ -172,6 +186,13 @@ pub fn resolve_binary() -> Option<PathBuf> {
     None
 }
 
+/// Return the `aa-gateway` binary sitting next to the given `aasm` executable
+/// path, if it exists and is executable.
+fn sibling_binary(exe: &std::path::Path) -> Option<PathBuf> {
+    let candidate = exe.parent()?.join("aa-gateway");
+    is_executable(&candidate).then_some(candidate)
+}
+
 #[cfg(unix)]
 fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -183,10 +204,16 @@ fn is_executable(path: &std::path::Path) -> bool {
     path.exists()
 }
 
-/// Resolve the policy file path.
+/// Resolve the policy path — a single file or a cascade directory.
 ///
 /// Resolution order: `--policy` flag → `$AA_POLICY` → `~/.aasm/policy.yaml` →
-/// `/etc/aasm/policy.yaml`.
+/// `~/.aasm/policies/` → `/etc/aasm/policy.yaml` → `/etc/aasm/policies/`.
+///
+/// AAASM-3499 — the `--policy` flag and `$AA_POLICY` accept either a file or a
+/// directory (forwarded verbatim to `aa-gateway --policy`, which routes a
+/// directory to the multi-document cascade loader). The default `policies/`
+/// directory locations let an operator drop scoped `*.yaml` documents into a
+/// well-known path without any flag.
 pub fn resolve_policy(args: &StartArgs) -> Option<PathBuf> {
     if let Some(ref p) = args.policy {
         return Some(p.clone());
@@ -200,14 +227,22 @@ pub fn resolve_policy(args: &StartArgs) -> Option<PathBuf> {
         }
     }
     if let Some(home) = dirs::home_dir() {
-        let p = home.join(".aasm").join("policy.yaml");
-        if p.exists() {
-            return Some(p);
+        let file = home.join(".aasm").join("policy.yaml");
+        if file.exists() {
+            return Some(file);
+        }
+        let dir = home.join(".aasm").join("policies");
+        if dir.is_dir() {
+            return Some(dir);
         }
     }
-    let system = PathBuf::from("/etc/aasm/policy.yaml");
-    if system.exists() {
-        return Some(system);
+    let system_file = PathBuf::from("/etc/aasm/policy.yaml");
+    if system_file.exists() {
+        return Some(system_file);
+    }
+    let system_dir = PathBuf::from("/etc/aasm/policies");
+    if system_dir.is_dir() {
+        return Some(system_dir);
     }
     None
 }
@@ -288,6 +323,44 @@ mod tests {
         assert_eq!(resolve_policy(&args), Some(PathBuf::from("/tmp/policy.yaml")));
     }
 
+    /// AAASM-3499 — `--policy` must accept a cascade *directory*, forwarded
+    /// verbatim to `aa-gateway --policy` (which routes a directory to the
+    /// multi-document cascade loader). Before the fix the dir was usable from
+    /// Rust test code only; the operator path rejected it.
+    #[test]
+    fn resolve_policy_accepts_directory_via_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let args = StartArgs {
+            policy: Some(dir.clone()),
+            listen: DEFAULT_LISTEN.to_string(),
+            socket: None,
+            no_detach: false,
+            log_file: None,
+        };
+        let resolved = resolve_policy(&args).expect("a directory must resolve");
+        assert_eq!(resolved, dir);
+        assert!(resolved.is_dir(), "the resolved policy path is a directory");
+    }
+
+    /// `$AA_POLICY` pointing at a directory resolves too (the env-var path uses
+    /// `.exists()`, which is true for directories).
+    #[test]
+    fn resolve_policy_accepts_directory_via_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let _guard = PolicyEnvGuard::set(dir.to_str().unwrap());
+
+        let args = StartArgs {
+            policy: None,
+            listen: DEFAULT_LISTEN.to_string(),
+            socket: None,
+            no_detach: false,
+            log_file: None,
+        };
+        assert_eq!(resolve_policy(&args), Some(dir));
+    }
+
     #[test]
     fn resolve_policy_uses_env_when_no_flag_and_file_exists() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -339,5 +412,48 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         assert!(wait_for_tcp(&addr, Duration::from_secs(1)));
+    }
+
+    /// Create an executable file at `path` (sets the user-exec bit on Unix).
+    fn touch_executable(path: &std::path::Path) {
+        std::fs::write(path, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn sibling_binary_resolves_aa_gateway_next_to_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        let gateway = dir.path().join("aa-gateway");
+        touch_executable(&gateway);
+
+        assert_eq!(sibling_binary(&exe), Some(gateway));
+    }
+
+    #[test]
+    fn sibling_binary_returns_none_when_gateway_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        // No aa-gateway alongside it.
+        assert_eq!(sibling_binary(&exe), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sibling_binary_returns_none_when_gateway_not_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("aasm");
+        touch_executable(&exe);
+        // A non-executable file named aa-gateway must not be selected.
+        std::fs::write(dir.path().join("aa-gateway"), b"not a binary").unwrap();
+        assert_eq!(sibling_binary(&exe), None);
     }
 }

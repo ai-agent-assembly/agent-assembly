@@ -84,6 +84,10 @@ export const APPROVER_SLA_OPTS = ['5m', '15m', '30m', '1h', '4h', '24h'] as cons
 
 export const ENV_OPTS = ['prod', 'staging'] as const
 
+// ResourceOption is a closed local union of the editor's own resource
+// picklist (RES_OPTS above), not a raw wire string — narrow-union Record gap
+// (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const DEFAULT_NARROW: Record<ResourceOption, string[]> = {
   s3: ['s3://reports/*'],
   http: ['allowlist.acme.io', 'api.internal'],
@@ -128,18 +132,6 @@ export function emptyDraft(): PolicyDraft {
     scope: 'global',
     version: '0.1.0',
     status: 'proposed',
-    rules: [defaultRule()],
-  }
-}
-
-/** Stub draft for the "edit existing policy" path until ST-5 wires real loading. */
-export function stubDraftFromIdentity(name: string, version: string): PolicyDraft {
-  return {
-    id: `pol-${name}`,
-    name,
-    scope: 'global',
-    version,
-    status: 'active',
     rules: [defaultRule()],
   }
 }

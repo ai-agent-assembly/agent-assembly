@@ -14,6 +14,7 @@ use crate::client;
 use crate::config::ResolvedContext;
 use crate::error::CliError;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Per-scope contribution mirroring `aa_api::routes::agents::PermissionSourceResponse`.
 #[derive(Debug, Clone, Deserialize)]
@@ -180,11 +181,12 @@ fn render_text<W: std::io::Write>(perms: &EffectivePermissions, w: &mut W) -> st
             .map(|s| s.scope.as_str())
             .collect();
         let effective = effective_for(cap, perms);
+        // Capability ids and source scopes are server-supplied; strip escapes.
         table.add_row(vec![
-            cap.to_string(),
+            sanitize_terminal(cap),
             effective.label().to_string(),
-            granted_by.join(", "),
-            denied_by.join(", "),
+            sanitize_terminal(&granted_by.join(", ")),
+            sanitize_terminal(&denied_by.join(", ")),
         ]);
     }
 

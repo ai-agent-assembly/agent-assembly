@@ -33,7 +33,7 @@
 .iam-identity-detail-card__title {
   margin: 0.125rem 0 0;
   font-size: 1rem;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .iam-identity-detail-card__close {
@@ -67,7 +67,7 @@
 .iam-identity-detail-card__section-value {
   font-size: 0.875rem;
   color: var(--shell-text);
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .iam-identity-detail-card__empty {

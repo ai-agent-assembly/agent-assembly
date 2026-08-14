@@ -28,13 +28,18 @@ use axum::Extension;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 
-use crate::alerts::{AlertEvent, AlertStore};
+use aa_gateway::registry::AgentRegistry;
+
+use crate::alerts::{AlertEvent, AlertStore, StoredAlert};
 use crate::auth::AuthenticatedCaller;
 use crate::error::ProblemDetail;
 use crate::models::alert_ws_payloads::AlertWsFrame;
 use crate::routes::alerts::alert_response_from_stored;
 use crate::state::AppState;
 use crate::ws::alerts_params::{AlertsFilter, AlertsWsQueryParams};
+use crate::ws::auth::{resolve_ws_caller, WsHeaderCaller};
+use crate::ws::tenant::{agent_id_to_bytes, caller_can_view, resolve_event_tenant};
+use crate::ws::ticket::{WsTicketPurpose, WsTicketStore};
 
 /// Required client-offered WebSocket subprotocol.
 pub const SUBPROTOCOL: &str = "aaasm-alerts-v1";
@@ -67,10 +72,11 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
     tag = "alerts-stream"
 )]
 pub async fn ws_alerts_handler(
-    _caller: AuthenticatedCaller,
+    WsHeaderCaller(header_caller): WsHeaderCaller,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
     Query(params): Query<AlertsWsQueryParams>,
+    Extension(ticket_store): Extension<WsTicketStore>,
     Extension(state): Extension<AppState>,
 ) -> Response {
     if !client_offered_subprotocol(&headers, SUBPROTOCOL) {
@@ -81,15 +87,35 @@ pub async fn ws_alerts_handler(
             .into_response();
     }
 
+    // Parse the filter before consuming the ticket so a malformed request is
+    // rejected (400) without burning the client's single-use ticket.
     let filter = match params.try_into_filter() {
         Ok(f) => f,
         Err(err) => return err.into_response(),
     };
 
+    // AAASM-4861: authenticate from a single-use `?ticket=` (browser path) or the
+    // Bearer header (non-browser). The ticket must have been minted for the
+    // alerts stream; an events ticket or a used/expired ticket is a 401.
+    let caller = match resolve_ws_caller(
+        &ticket_store,
+        params.ticket.as_deref(),
+        WsTicketPurpose::Alerts,
+        header_caller,
+    )
+    .await
+    {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
+
     let conn_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
     let alert_store = state.alert_store.clone();
+    // AAASM-3980: the caller's tenant + the registry (for org lineage) travel
+    // into the socket so each alert is tenant-gated before it is forwarded.
+    let registry = state.agent_registry.clone();
     ws.protocols([SUBPROTOCOL])
-        .on_upgrade(move |socket| run_alerts_socket(socket, filter, alert_store, conn_id))
+        .on_upgrade(move |socket| run_alerts_socket(socket, filter, alert_store, registry, caller, conn_id))
         .into_response()
 }
 
@@ -107,7 +133,14 @@ fn client_offered_subprotocol(headers: &HeaderMap, wanted: &str) -> bool {
 /// Drive a single WebSocket connection: subscribe to the alert bus,
 /// forward filtered events, send periodic heartbeats, and close on
 /// client disconnect or unexpected client frame.
-async fn run_alerts_socket(socket: WebSocket, filter: AlertsFilter, alert_store: Arc<dyn AlertStore>, conn_id: u64) {
+async fn run_alerts_socket(
+    socket: WebSocket,
+    filter: AlertsFilter,
+    alert_store: Arc<dyn AlertStore>,
+    registry: Arc<AgentRegistry>,
+    caller: AuthenticatedCaller,
+    conn_id: u64,
+) {
     let (mut sender, mut receiver) = socket.split();
     let mut rx = alert_store.subscribe();
 
@@ -146,6 +179,18 @@ async fn run_alerts_socket(socket: WebSocket, filter: AlertsFilter, alert_store:
             event_result = rx.recv() => {
                 match event_result {
                     Ok(event) => {
+                        // AAASM-3980: fail-closed tenant gate before the
+                        // client's own filter — an alert stream must not leak
+                        // another tenant's budget / secret / rule alerts.
+                        let stored = alert_stored(&event);
+                        let (team_id, org_id) = resolve_event_tenant(
+                            &registry,
+                            stored.team_id.clone(),
+                            agent_id_to_bytes(&stored.agent_id),
+                        );
+                        if !caller_can_view(&caller, team_id.as_deref(), org_id.as_deref()) {
+                            continue;
+                        }
                         if !filter.matches(&event) {
                             continue;
                         }
@@ -182,6 +227,14 @@ async fn run_alerts_socket(socket: WebSocket, filter: AlertsFilter, alert_store:
                 }
             }
         }
+    }
+}
+
+/// Borrow the [`StoredAlert`] carried by any [`AlertEvent`] variant, so the
+/// tenant gate (AAASM-3980) can read its `team_id` / `agent_id` uniformly.
+fn alert_stored(event: &AlertEvent) -> &StoredAlert {
+    match event {
+        AlertEvent::Fire(stored) | AlertEvent::Resolve(stored) | AlertEvent::Silence(stored) => stored,
     }
 }
 

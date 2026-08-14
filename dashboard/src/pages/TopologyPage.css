@@ -20,8 +20,9 @@
 
 .topology-page__head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
+  gap: 1rem;
 }
 
 .topology-page__title {
@@ -39,13 +40,30 @@
 
 .topology-page__body {
   display: grid;
-  grid-template-columns: 1fr 22rem;
+  grid-template-columns: 12rem 1fr 22rem;
   gap: 1rem;
-  min-height: 28rem;
+  min-height: 32rem;
+  align-items: stretch;
 }
 
-.topology-page__graph,
+/* Graph canvas: solid framed surface (the force layout + pan/zoom live here). */
+.topology-page__graph {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--paper-2);
+  min-height: 32rem;
+}
+
+/* Panel column hosts the node/team detail panel or the empty hint. */
 .topology-page__panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.topology-page__panel-empty {
   border: 1px dashed var(--line);
   border-radius: 8px;
   padding: 1rem;
@@ -56,6 +74,7 @@
   align-items: center;
   justify-content: center;
   text-align: center;
+  flex: 1;
 }
 
 .topology-page__loading {

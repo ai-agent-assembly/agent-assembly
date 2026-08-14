@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { analyticsFetch } from './analyticsFetch'
 import { encodeFilters } from './urlState'
 import type { FilterParams } from './urlState'
 
@@ -22,9 +23,9 @@ export function useFleetHealthQuery(filters: FilterParams) {
     queryKey: ['analytics', 'fleet-health', filters],
     queryFn: async (): Promise<FleetHealthResponse> => {
       const params = encodeFilters(filters)
-      const res = await fetch(`/api/v1/analytics/fleet-health?${params}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return res.json() as Promise<FleetHealthResponse>
+      return analyticsFetch<FleetHealthResponse>(
+        `/api/v1/analytics/fleet-health?${params}`,
+      )
     },
   })
 }

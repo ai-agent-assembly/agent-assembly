@@ -11,6 +11,17 @@ export interface PolicyRule {
   days: PolicyDay[]
 }
 
+const DATE_FMT = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+const DATE_PLACEHOLDER = '—'
+
+// A malformed 200 response can carry an unparseable date string; new Date(iso)
+// then yields an Invalid Date and Intl.DateTimeFormat throws "Invalid time
+// value" mid-render. Fall back to a placeholder instead of throwing.
+export function formatDate(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? DATE_PLACEHOLDER : DATE_FMT.format(d)
+}
+
 export function computeRatio(day: PolicyDay): number {
   const total = day.blocks + day.warns + day.passes
   return total === 0 ? 0 : day.blocks / total
@@ -35,9 +46,9 @@ function rgbFromCssVar(
     .getPropertyValue(varName)
     .trim()
     .replace(/^#/, '')
-  const m = hex.match(/^([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/)
+  const m = /^([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex)
   if (!m) return fallback
-  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)]
+  return [Number.parseInt(m[1], 16), Number.parseInt(m[2], 16), Number.parseInt(m[3], 16)]
 }
 
 const LOW = rgbFromCssVar('--heatmap-low', FALLBACK_LOW)
@@ -95,5 +106,5 @@ export function collectDates(rules: PolicyRule[]): string[] {
       }
     }
   }
-  return result.sort()
+  return result.sort((a, b) => a.localeCompare(b))
 }

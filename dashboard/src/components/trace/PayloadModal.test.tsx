@@ -1,35 +1,63 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PayloadModal } from './PayloadModal'
-import type { TraceEvent } from '../../features/trace/types'
+import { NO_DATA, absent, known } from '../../lib/truthfulness'
+import type { TraceEvent, TraceSeverity } from '../../features/trace/types'
+
+const NOT_ON_SPAN =
+  'TraceSpan carries only span_id, parent_span_id, operation, decision and timestamps'
+
+/** The five fields `TraceSpan` has no source for, exactly as `api.ts` maps them. */
+const UNSOURCED = {
+  payload: absent<unknown>('not-supported', NOT_ON_SPAN),
+  payloadPreview: absent<string>('not-supported', NOT_ON_SPAN),
+  severity: absent<TraceSeverity>('not-supported', NOT_ON_SPAN),
+  redactedFields: absent<readonly string[]>('not-supported', NOT_ON_SPAN),
+  violationReason: absent<string>('not-supported', NOT_ON_SPAN),
+}
 
 const EVENT: TraceEvent = {
   id: 'evt-1',
   timestamp: '2026-04-23T14:23:01Z',
-  type: 'policy_violation',
+  type: 'ToolCallIntercepted',
   agent: 'support-agent',
-  durationMs: 12,
-  payloadPreview: 'refund > $100',
-  payload: {
+  parentSpanId: null,
+  durationMs: known(12),
+  decision: known('scrub'),
+  ...UNSOURCED,
+}
+
+/**
+ * The same span once the backend supplies payload and redaction (AAASM-5100),
+ * so the "redacted values never reach the DOM" claim stays asserted through the
+ * modal rather than only in `RedactionPreview.test.tsx`.
+ */
+const EVENT_WITH_PAYLOAD: TraceEvent = {
+  ...EVENT,
+  payload: known({
     action: 'process_refund',
     amount: 250,
     user_id: 4521,
     notes: 'manual review',
-  },
-  severity: 'critical',
-  redactedFields: ['user_id'],
-  violationReason: 'refund > $100 requires human approval',
+  }),
+  payloadPreview: known('refund > $100'),
+  severity: known<TraceSeverity>('critical'),
+  redactedFields: known(['user_id']),
+  violationReason: known('refund > $100 requires human approval'),
+}
+
+/** The ordinary audit-reconstruction case: `end_time` was never recorded. */
+const EVENT_NO_DURATION: TraceEvent = {
+  ...EVENT,
+  id: 'evt-2',
+  durationMs: absent<number>(
+    'unknown',
+    'This span recorded no end time, so its duration was never measured',
+  ),
 }
 
 describe('PayloadModal', () => {
-  beforeEach(() => {
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
-    })
-  })
-
   afterEach(() => { vi.restoreAllMocks() })
 
   it('renders nothing when event is null', () => {
@@ -37,36 +65,43 @@ describe('PayloadModal', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('renders the pretty-printed JSON, header, Close button, and Copy button', () => {
+  it('renders the decision explainer body, the header verdict chip, and Close', () => {
     render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
 
     expect(screen.getByTestId('payload-modal')).toBeInTheDocument()
-    const json = screen.getByTestId('payload-modal-json')
-    expect(json.textContent).toContain('"action": "process_refund"')
-    expect(json.textContent).toContain('"amount": 250')
-
+    expect(screen.getByTestId('decision-explainer')).toBeInTheDocument()
+    expect(screen.getByTestId('layer-steps')).toBeInTheDocument()
+    expect(screen.getByTestId('decision-outcome-band')).toBeInTheDocument()
+    // decision "scrub" → scrubbed verdict on the header chip.
+    expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-verdict', 'scrubbed')
+    // Ratified square corners for the Trace surface (AAASM-5075).
+    expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-shape', 'square')
     expect(screen.getByTestId('payload-modal-close')).toBeInTheDocument()
-    expect(screen.getByTestId('payload-modal-copy')).toHaveTextContent('Copy JSON')
   })
 
-  it('substitutes redacted fields with the sentinel string and marks the line', () => {
-    render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
+  it('shows redacted values as █ blocks and never leaks the real value', () => {
+    render(<PayloadModal event={EVENT_WITH_PAYLOAD} onClose={vi.fn()} />)
 
-    const redactedRows = screen.getAllByTestId('redacted-field')
-    expect(redactedRows).toHaveLength(1)
-    expect(redactedRows[0]).toHaveTextContent('"user_id"')
-    expect(redactedRows[0]).toHaveTextContent('"<redacted: user_id>"')
-    // Real value (4521) must not leak into the rendered output for redacted fields.
-    expect(redactedRows[0].textContent).not.toContain('4521')
+    expect(screen.getByTestId('redaction-block').textContent).toMatch(/^█+$/)
+    expect(screen.getByTestId('redaction-preview-body').textContent).not.toContain('4521')
+    // Non-redacted values are still shown.
+    expect(screen.getByTestId('redaction-preview-body')).toHaveTextContent('process_refund')
   })
 
-  it('shows a Redacted-by-policy tooltip on hover over the lock icon', async () => {
-    render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
+  it('renders the duration as an absence when the span was never measured', () => {
+    const { container } = render(<PayloadModal event={EVENT_NO_DURATION} onClose={vi.fn()} />)
 
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
-    const lock = screen.getAllByTestId('redacted-field')[0].querySelector('.payload-modal__lock')!
-    await userEvent.hover(lock)
-    expect(screen.getByRole('tooltip')).toHaveTextContent('Redacted by policy')
+    const duration = screen.getByTestId('payload-modal-duration')
+    expect(duration).not.toHaveAttribute('data-truth-state', 'known')
+    expect(duration).toHaveAttribute('data-truth-state', 'unknown')
+    expect(duration).toHaveTextContent(NO_DATA)
+
+    // AAASM-5165: the subtitle used to interpolate the raw number, so an
+    // unmeasured span printed "null ms" next to the agent name.
+    const subtitle = container.querySelector('.payload-modal__subtitle')?.textContent ?? ''
+    expect(subtitle).toContain('support-agent')
+    expect(subtitle).not.toContain('null')
+    expect(subtitle).not.toContain('NaN')
   })
 
   it('closes on Escape and on backdrop click', async () => {
@@ -84,19 +119,8 @@ describe('PayloadModal', () => {
     const onClose = vi.fn()
     render(<PayloadModal event={EVENT} onClose={onClose} />)
 
-    await userEvent.click(screen.getByTestId('payload-modal-json'))
+    await userEvent.click(screen.getByTestId('payload-modal-body'))
     expect(onClose).not.toHaveBeenCalled()
-  })
-
-  it('copies the pretty-printed JSON to clipboard and shows "Copied" feedback', async () => {
-    render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
-
-    const button = screen.getByTestId('payload-modal-copy')
-    await userEvent.click(button)
-    expect(navigator.clipboard.writeText).toHaveBeenCalledOnce()
-    const written = vi.mocked(navigator.clipboard.writeText).mock.calls[0][0]
-    expect(written).toContain('"action": "process_refund"')
-    expect(button).toHaveTextContent('Copied')
   })
 
   it('autofocuses the Close button when the modal opens', () => {
@@ -104,22 +128,37 @@ describe('PayloadModal', () => {
     expect(screen.getByTestId('payload-modal-close')).toHaveFocus()
   })
 
-  it('traps Tab focus inside the dialog (cycles from last → first and first → last)', async () => {
+  it('keeps focus trapped on the sole focusable (Close) when Tab is pressed', async () => {
     render(<PayloadModal event={EVENT} onClose={vi.fn()} />)
     const close = screen.getByTestId('payload-modal-close')
-    const copy = screen.getByTestId('payload-modal-copy')
 
-    // Initial focus is on Close. Tab → Copy (the only other focusable in actions).
     expect(close).toHaveFocus()
     await userEvent.tab()
-    expect(copy).toHaveFocus()
-
-    // From last (Copy), Tab cycles back to first (Close).
-    await userEvent.tab()
     expect(close).toHaveFocus()
-
-    // Shift+Tab from first → last.
     await userEvent.tab({ shift: true })
-    expect(copy).toHaveFocus()
+    expect(close).toHaveFocus()
+  })
+})
+
+describe('a span whose verdict was never recorded', () => {
+  it('shows the absence marker in the title instead of a chip', () => {
+    // The ordinary production case: `ToolCallIntercepted` records that the
+    // governance layer saw the call, never how it ruled, and the
+    // audit-reconstruction path leaves `decision` null. The title must not
+    // reach for a chip it has no basis for.
+    render(
+      <PayloadModal
+        event={{
+          ...EVENT,
+          decision: absent<string>('not-evaluated', 'This span recorded no governance decision'),
+        }}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByTestId('verdict-chip')).not.toBeInTheDocument()
+    const marker = screen.getByTestId('payload-modal-verdict-absent')
+    expect(marker).toHaveAttribute('data-truth-state', 'not-evaluated')
+    expect(screen.getByTestId('payload-modal').textContent).not.toContain('ALLOWED')
   })
 })

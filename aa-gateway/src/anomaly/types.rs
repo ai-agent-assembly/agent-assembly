@@ -80,13 +80,24 @@ impl AnomalyResponse {
             AnomalyType::CrossAgentIdentitySpoofing => Self::Alert,
         }
     }
+
+    /// Whether this response must block the current action (turn an otherwise
+    /// `Allow` decision into a hard `Deny`).
+    ///
+    /// `Block` and `Quarantine` both deny the in-flight action — `Quarantine`
+    /// additionally isolates the agent. `Pause` and `Alert` do not block the
+    /// current action (`Pause` suspends future actions; `Alert` only notifies),
+    /// so they are not block-equivalent here. AAASM-3384.
+    pub fn is_blocking(self) -> bool {
+        matches!(self, Self::Block | Self::Quarantine)
+    }
 }
 
 /// An anomaly detection event emitted when the engine identifies suspicious
 /// agent behavior.
 ///
 /// Carries the anomaly classification, the chosen response action, and enough
-/// context to populate an [`AlertTriggered`](proto) message once the event bus
+/// context to populate an `AlertTriggered` message once the event bus
 /// (AAASM-141) is wired up.
 #[derive(Debug, Clone)]
 pub struct AnomalyEvent {
@@ -238,6 +249,14 @@ mod tests {
             AnomalyResponse::default_for(AnomalyType::CrossAgentIdentitySpoofing),
             AnomalyResponse::Alert,
         );
+    }
+
+    #[test]
+    fn is_blocking_only_for_block_and_quarantine() {
+        assert!(AnomalyResponse::Block.is_blocking());
+        assert!(AnomalyResponse::Quarantine.is_blocking());
+        assert!(!AnomalyResponse::Pause.is_blocking());
+        assert!(!AnomalyResponse::Alert.is_blocking());
     }
 
     #[test]

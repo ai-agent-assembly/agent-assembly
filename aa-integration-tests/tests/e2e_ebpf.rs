@@ -33,6 +33,8 @@
 //! | 4 | `ebpf_catches_traffic_without_sdk_init` | enabled (root + libssl) |
 //! | 5 | `ebpf_event_includes_pid_and_cgroup` | enabled (root) |
 //! | 6 | `ebpf_load_and_unload_clean` | enabled (root) |
+//! | 7 | `ebpf_runtime_orchestration_drives_loaderd` | enabled (root + loaderd) |
+//! | 8 | `ebpf_loaderd_boot_liveness_degrades_without_hanging` | enabled (no BPF) |
 //!
 //! ## Why direct ring-buffer reads instead of HTTP gateway lookup
 //!
@@ -48,6 +50,61 @@
 //! is what the gateway path will read once wired. When the HTTP path is
 //! complete, the gateway-side assertion can be added in a follow-up
 //! without changing the probe-fired half of the check.
+//!
+//! ## runtime → loaderd orchestration — covered by AAASM-4033 (tests 7 & 8)
+//!
+//! Tests 1–6 load and attach probes **directly in-process** via `EbpfLoader` /
+//! `UprobeManager` / `TracepointManager` under `sudo`. That validates the probes
+//! themselves, but it bypasses the production control path AAASM-4011 wired up:
+//! the **unprivileged** runtime driving the **privileged** `aa-ebpf-loaderd`
+//! daemon over its control socket (`aa_runtime::ebpf_control::drive_ebpf_layer` →
+//! `aa_ebpf::control::client::LoaderControlClient` → `aa_ebpf::control::server`).
+//! AAASM-4033 adds the missing coverage:
+//!
+//! - **Test 7 — orchestration loads probes via the control protocol.** Spawns
+//!   the real `aa-ebpf-loaderd` binary on a private control socket and drives the
+//!   exact plan `drive_ebpf_layer` executes (`plan_control_ops`): `LoadProbeSet`
+//!   for the TLS / file-I/O / exec observe-only sets, `UpdatePathMap` with a
+//!   sensitive-path deny lowered through the canonical `lower_to_ebpf`, then
+//!   `LoadProbeSet` for the syscall guard scoped to a throwaway sandbox PID
+//!   followed by `UpdateSyscallAllowlist`. Every op returning `Ok` is
+//!   ground-truth that the probe actually loaded/attached and the map updated in
+//!   the kernel *through the daemon over the socket* — the half of the AAASM-4011
+//!   path no test previously touched. The guard is deliberately scoped to the
+//!   sandbox PID, never the runtime's own PID (the observe sets), so the
+//!   default-deny SIGKILL probe can never confine the test process.
+//! - **Test 8 — boot-liveness / degrade-not-hang.** `drive_ebpf_layer` wraps
+//!   every round-trip in `await_loaderd` under `loaderd_deadline`
+//!   (`AA_EBPF_LOADERD_TIMEOUT_MS`) so a wedged daemon degrades the layer instead
+//!   of hanging runtime boot. Test 8 exercises that discipline at the client
+//!   layer: an **absent** daemon makes `connect` fail fast, and a **hung** daemon
+//!   (accepts, never replies) makes a control op block indefinitely on its own —
+//!   completing only because the runtime-style deadline wrapper elapses it.
+//!
+//! ### Still deferred (out of scope for AAASM-4033)
+//!
+//! Test 7 asserts the control ops *land*; it does not assert the in-kernel
+//! *observation/enforcement side effects*, because the daemon does not surface
+//! them to the client:
+//!
+//! 1. **Observe-only telemetry over the control channel.** `LoadProbeSet`'s doc
+//!    promises the daemon "begins streaming events back", but
+//!    `aa_ebpf::control::server::dispatch` only loads/attaches — it does not
+//!    stream. So TLS/file-I/O/exec events captured by the daemon-owned readers do
+//!    not reach the runtime over the control channel, and the client cannot
+//!    observe them. Asserting the file-I/O path-deny *flag bit* and the exec/TLS
+//!    captures *via the daemon path* waits on that streaming follow-up.
+//! 2. **Syscall-guard SIGKILL assertion.** Enforcement (the guard SIGKILLing a
+//!    confined process on a non-allowlisted syscall) is autonomous in-kernel, but
+//!    asserting it end-to-end needs a confined helper that issues a controlled
+//!    forbidden syscall at a deterministic instant — fragile without a
+//!    purpose-built sandbox binary. Test 7 asserts the guard *loads and is
+//!    configured* via the protocol; observing the kill is deferred.
+//! 3. **Load→allowlist ordering hazard.** The protocol couples
+//!    load+attach+PID-filter insertion in one `LoadProbeSet`, leaving a window
+//!    where the confined PID runs with an empty (default-deny) allowlist before
+//!    `UpdateSyscallAllowlist`. A race-free fix (`load-without-filter → set
+//!    allowlist → add PID`) is a follow-up on `aa_ebpf::control`.
 
 // NOTE: The whole file is cfg-gated. There is intentionally nothing else at
 // the top level — without the feature/OS combo, the test binary is empty.
@@ -58,6 +115,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use aa_ebpf::control::client::LoaderControlClient;
+use aa_ebpf::control::{PathRuleWire, ProbeSet};
 use aa_ebpf::loader::EbpfLoader;
 use aa_ebpf::ringbuf::{EbpfEvent, RingBufReader};
 use aa_ebpf::tracepoint::TracepointManager;
@@ -65,8 +124,15 @@ use aa_ebpf::uprobe::UprobeManager;
 use aa_ebpf::AA_EXEC_BPF;
 use aa_ebpf_common::exec::ExecEvent;
 use aa_ebpf_common::tls::TlsCaptureEvent;
+use aa_security::policy::{lower_to_ebpf, EbpfRuleSet, PathVerdict, PolicyDocument, SyscallAllowlist, ToolRule};
 use aya::Ebpf;
+use tokio::net::UnixListener;
 use tokio::time::timeout;
+
+// AAASM-5311: pure path-resolution helpers, shared with the cross-platform
+// regression test in `tests/loaderd_bin_path.rs` — see that module's doc
+// comment for why this lives outside this (Linux-only) file.
+mod loaderd_path_support;
 
 // =============================================================================
 // Helpers — shared across the six tests
@@ -471,4 +537,315 @@ async fn ebpf_load_and_unload_clean() {
             UprobeManager::attach(&mut bpf, None).expect("cycle 2: re-attach after first cycle dropped — clean unload");
         let _reader = RingBufReader::new(bpf).expect("cycle 2: ring-buffer reader after re-load");
     }
+}
+
+// =============================================================================
+// AAASM-4033 — runtime → loaderd orchestration helpers (tests 7 & 8)
+// =============================================================================
+
+/// Name of the daemon binary this function locates.
+const LOADERD_BIN_NAME: &str = "aa-ebpf-loaderd";
+
+/// Resolve the `aa-ebpf-loaderd` binary: an explicit override, a fast
+/// sibling-search near the test executable, or the authoritative artifact
+/// path Cargo itself reports for a one-shot build.
+///
+/// `cargo +nightly test -p aa-integration-tests` (the CI invocation) does not
+/// build sibling-crate binaries, so the daemon may not exist yet. The build
+/// fallback reuses the already-compiled `aa-ebpf` lib artifacts, so it is
+/// incremental.
+///
+/// AAASM-5311: this used to derive the daemon's directory from
+/// `current_exe().parent().parent()`, assuming `current_exe()` was always
+/// `<target>/<profile>/deps/e2e_ebpf-<hash>`. A Cargo nightly build-directory
+/// layout change moved the test binary itself elsewhere
+/// (`<target>/<profile>/build/aa-integration-tests/<hash>/out/...`), so that
+/// fixed two-`.parent()` chain silently pointed at the wrong directory and
+/// the subsequent `candidate.exists()` check failed even though the earlier
+/// `cargo build` fallback had *already* placed the binary at the real
+/// `<target>/<profile>/aa-ebpf-loaderd`. `current_exe()`-relative `target/`
+/// layout is a Cargo implementation detail, not a stable contract — it has
+/// moved before and will move again, so do not reintroduce a fixed-depth
+/// `.parent()` chain here. [`loaderd_path_support::find_sibling_binary`]
+/// tolerates any depth, and the `cargo build` fallback below now asks Cargo
+/// directly (via `--message-format=json-render-diagnostics`) where it put
+/// the artifact instead of re-deriving the path, so it stays correct under
+/// any future layout too.
+fn loaderd_bin_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("AA_EBPF_LOADERD_BIN") {
+        return PathBuf::from(p);
+    }
+    let exe = std::env::current_exe().expect("current_exe");
+    if let Some(candidate) = loaderd_path_support::find_sibling_binary(&exe, LOADERD_BIN_NAME) {
+        return candidate;
+    }
+
+    let cargo = option_env!("CARGO").unwrap_or("cargo");
+    let output = Command::new(cargo)
+        .args([
+            "build",
+            "-p",
+            "aa-ebpf",
+            "--bin",
+            LOADERD_BIN_NAME,
+            "--message-format=json-render-diagnostics",
+        ])
+        .output()
+        .expect("failed to invoke cargo to build aa-ebpf-loaderd");
+    // Distinct failure mode #1: the build itself failed — surface stderr so
+    // this reads differently from "build succeeded but we couldn't find it".
+    assert!(
+        output.status.success(),
+        "`cargo build -p aa-ebpf --bin {LOADERD_BIN_NAME}` failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Distinct failure mode #2: the build succeeded but Cargo's own JSON
+    // output doesn't mention the artifact — a lookup/parsing bug, not a
+    // build failure.
+    loaderd_path_support::parse_executable_from_cargo_json(&stdout, LOADERD_BIN_NAME).unwrap_or_else(|| {
+        panic!(
+            "cargo build -p aa-ebpf --bin {LOADERD_BIN_NAME} succeeded but no matching \
+             compiler-artifact executable was found in its JSON output"
+        )
+    })
+}
+
+/// A spawned `aa-ebpf-loaderd` daemon bound to a private control socket, killed
+/// on drop. Mirrors the production topology: a privileged daemon process the
+/// runtime drives over the control socket (here client and daemon share the same
+/// root UID, which the daemon's peer-credential gate admits).
+struct LoaderDaemon {
+    child: std::process::Child,
+    sock: PathBuf,
+}
+
+impl LoaderDaemon {
+    /// Spawn the daemon with `AA_EBPF_LOADERD_SOCK` pointed at a private path.
+    fn spawn() -> Self {
+        let sock = std::env::temp_dir().join(format!("aa-loaderd-e2e-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock);
+        let child = Command::new(loaderd_bin_path())
+            .env("AA_EBPF_LOADERD_SOCK", &sock)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("failed to spawn aa-ebpf-loaderd (needs root: CAP_BPF + CAP_PERFMON)");
+        Self { child, sock }
+    }
+
+    /// Poll the control socket until the daemon answers a `Ping`, or panic after
+    /// `deadline`.
+    async fn wait_ready(&self, deadline: Duration) {
+        let start = Instant::now();
+        loop {
+            if start.elapsed() >= deadline {
+                panic!("aa-ebpf-loaderd did not become ready within {deadline:?}");
+            }
+            if let Ok(mut client) = LoaderControlClient::connect(&self.sock).await {
+                if client.ping().await.is_ok() {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Open a fresh control client to the daemon.
+    async fn client(&self) -> LoaderControlClient {
+        LoaderControlClient::connect(&self.sock)
+            .await
+            .expect("connect to loaderd control socket")
+    }
+}
+
+impl Drop for LoaderDaemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+/// Build the same lowered rule set the runtime feeds the daemon: a sensitive
+/// path deny plus a non-empty syscall allowlist, produced through the canonical
+/// `lower_to_ebpf` pipeline `aa_runtime::ebpf_control::load_ebpf_ruleset` uses.
+fn orchestration_ruleset() -> EbpfRuleSet {
+    let doc = PolicyDocument {
+        name: Some("aaasm-4033-e2e".to_string()),
+        network: None,
+        capabilities: None,
+        tools: vec![ToolRule {
+            name: "write_file".to_string(),
+            allow: true,
+            requires_approval_if: Some("path starts_with \"/etc/shadow\"".to_string()),
+        }],
+        syscall_allowlist: Some(
+            SyscallAllowlist::from_names(["read", "write", "close", "exit"]).expect("known syscall names"),
+        ),
+    };
+    lower_to_ebpf(&doc)
+}
+
+// =============================================================================
+// Test 7 — runtime → loaderd orchestration loads probes via the control protocol
+// =============================================================================
+
+/// AAASM-4033 test 7 — `ebpf_runtime_orchestration_drives_loaderd`.
+///
+/// Closes the AAASM-4011 NOTE's core gap: the production control path (an
+/// unprivileged runtime driving the privileged `aa-ebpf-loaderd` over its socket)
+/// was validated by no test. This spawns the real daemon binary and drives the
+/// exact plan `aa_runtime::ebpf_control::drive_ebpf_layer` executes
+/// (`plan_control_ops`): `LoadProbeSet` for the three observe-only sets,
+/// `UpdatePathMap` with a lowered sensitive-path deny, then `LoadProbeSet` for
+/// the syscall guard (scoped to a throwaway sandbox PID) and
+/// `UpdateSyscallAllowlist`. Each op returning `Ok` is ground truth that the
+/// probe actually loaded/attached and the map updated in the kernel *through the
+/// daemon over the socket*.
+///
+/// Observation/enforcement side effects (path-flag bit, guard SIGKILL) are NOT
+/// asserted here — the daemon does not stream events back over the control
+/// channel, so the client cannot observe them; see the file-level "Still
+/// deferred" note.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_runtime_orchestration_drives_loaderd() {
+    let daemon = LoaderDaemon::spawn();
+    daemon.wait_ready(Duration::from_secs(10)).await;
+    let mut client = daemon.client().await;
+
+    let ruleset = orchestration_ruleset();
+    assert!(!ruleset.path_rules.is_empty(), "fixture must lower to a path rule");
+    assert!(
+        !ruleset.syscall_allowlist.is_empty(),
+        "fixture must lower to a non-empty syscall allowlist"
+    );
+
+    // Observe-only sets are scoped to this process, exactly as
+    // `drive_ebpf_layer` scopes them to the runtime's own PID.
+    let observe_pid = std::process::id();
+
+    // A quiescent sandbox child is the syscall-guard confine target. The guard is
+    // a default-deny SIGKILL probe, so it must NEVER be scoped to the test
+    // process — only to this throwaway PID.
+    let mut sandbox = Command::new("sleep")
+        .arg("300")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn sandbox sleep");
+    let confine_pid = sandbox.id();
+    assert_ne!(
+        observe_pid, confine_pid,
+        "guard confine target must be the sandbox, never the runtime process"
+    );
+
+    // 1. LoadProbeSet for the three observe-only sets — probes load + attach
+    //    through the real daemon over the control socket.
+    for set in [ProbeSet::Tls, ProbeSet::FileIo, ProbeSet::Exec] {
+        client
+            .load_probe_set(set, observe_pid)
+            .await
+            .unwrap_or_else(|e| panic!("LoadProbeSet({set:?}) must succeed via loaderd: {e}"));
+    }
+
+    // 2. UpdatePathMap lands the lowered sensitive-path deny into the file-I/O
+    //    BPF map (requires the FileIo set loaded above).
+    let path_wire: Vec<PathRuleWire> = ruleset
+        .path_rules
+        .iter()
+        .map(|r| PathRuleWire {
+            pattern: r.pattern.clone(),
+            deny: r.verdict == PathVerdict::Deny,
+        })
+        .collect();
+    client
+        .update_path_map(path_wire)
+        .await
+        .unwrap_or_else(|e| panic!("UpdatePathMap must succeed via loaderd: {e}"));
+
+    // 3. SyscallGuard load (scoped to the sandbox PID) then UpdateSyscallAllowlist
+    //    — the enforcing half of the plan.
+    client
+        .load_probe_set(ProbeSet::SyscallGuard, confine_pid)
+        .await
+        .unwrap_or_else(|e| panic!("LoadProbeSet(SyscallGuard) must succeed via loaderd: {e}"));
+    client
+        .update_syscall_allowlist(ruleset.syscall_allowlist.clone())
+        .await
+        .unwrap_or_else(|e| panic!("UpdateSyscallAllowlist must succeed via loaderd: {e}"));
+
+    // Tear down the confined probes so nothing survives the test.
+    let _ = client.detach(ProbeSet::SyscallGuard).await;
+
+    let _ = sandbox.kill();
+    let _ = sandbox.wait();
+}
+
+// =============================================================================
+// Test 8 — boot-liveness: the layer degrades (does not hang) on a bad daemon
+// =============================================================================
+
+/// AAASM-4033 test 8 — `ebpf_loaderd_boot_liveness_degrades_without_hanging`.
+///
+/// `drive_ebpf_layer` wraps every control round-trip in `await_loaderd` under
+/// `loaderd_deadline` (`AA_EBPF_LOADERD_TIMEOUT_MS`) so a wedged daemon degrades
+/// the eBPF layer instead of hanging runtime boot. `drive_ebpf_layer` itself is
+/// `pub(crate)` in `aa-runtime`, so this asserts that liveness property at the
+/// exact client layer the runtime relies on:
+///
+/// - **Absent daemon** — `LoaderControlClient::connect` fails fast (no hang).
+/// - **Hung daemon** — accepts the connection but never replies; the client's
+///   `read_frame` has no timeout of its own, so a control op blocks indefinitely
+///   and only elapses because a runtime-style deadline wraps it. That elapse is
+///   what `drive_ebpf_layer` turns into a sub-layer degradation.
+#[tokio::test(flavor = "multi_thread")]
+async fn ebpf_loaderd_boot_liveness_degrades_without_hanging() {
+    // Mirrors a small `AA_EBPF_LOADERD_TIMEOUT_MS` — the runtime's per-op bound.
+    const RUNTIME_STYLE_DEADLINE: Duration = Duration::from_millis(300);
+
+    // --- Absent daemon: connect must fail fast, not hang. ---
+    let absent = std::env::temp_dir().join(format!("aa-loaderd-absent-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&absent);
+    let connect = timeout(Duration::from_secs(2), LoaderControlClient::connect(&absent)).await;
+    assert!(
+        connect.is_ok(),
+        "connecting to an absent daemon must fail fast, not hang"
+    );
+    assert!(
+        connect.unwrap().is_err(),
+        "connecting to an absent control socket must return an error"
+    );
+
+    // --- Hung daemon: accepts but never replies. ---
+    let hung = std::env::temp_dir().join(format!("aa-loaderd-hung-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&hung);
+    let listener = UnixListener::bind(&hung).expect("bind hung listener");
+    let server = tokio::spawn(async move {
+        // Accept the connection and hold it open forever without ever writing a
+        // response. Keeping `_stream` alive across the never-resolving future is
+        // load-bearing: dropping it would close the socket and hand the client an
+        // EOF (a completed op), defeating the point — a truly wedged daemon keeps
+        // the connection up but silent.
+        if let Ok((_stream, _addr)) = listener.accept().await {
+            std::future::pending::<()>().await;
+        }
+    });
+
+    let mut client = LoaderControlClient::connect(&hung)
+        .await
+        .expect("a hung daemon still accepts the connection");
+    let op = timeout(
+        RUNTIME_STYLE_DEADLINE,
+        client.load_probe_set(ProbeSet::Tls, std::process::id()),
+    )
+    .await;
+    assert!(
+        op.is_err(),
+        "a control op against a hung daemon must not complete on its own — the runtime's \
+         deadline wrapper is what prevents a boot hang"
+    );
+
+    server.abort();
+    let _ = std::fs::remove_file(&hung);
 }

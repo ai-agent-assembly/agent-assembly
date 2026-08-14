@@ -156,6 +156,131 @@ async fn missing_publisher_returns_unavailable() {
     assert_eq!(err.code(), tonic::Code::Unavailable);
 }
 
+// ── AAASM-3881: operator agent-wide / global halts under reserved op-ids ────
+
+/// Block until the publisher reports at least `n` subscribers (the gRPC stream
+/// has registered server-side) or a short deadline elapses.
+async fn await_subscribers(publisher: &SharedOpControlPublisher, n: usize) {
+    for _ in 0..40 {
+        if publisher.subscriber_count() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("expected at least {n} subscribers");
+}
+
+/// An operator agent-wide terminate emitted by the gateway (via the OpsRegistry
+/// halt path that the ops API drives) is delivered to the agent's stream under
+/// the reserved `agent:{agent_id}` op-id — the key AAASM-3873 makes the runtime
+/// consult on every request — and, fed into the runtime's op-control store,
+/// records the agent as Terminated regardless of any trace_id.
+#[tokio::test]
+async fn agent_level_terminate_delivered_under_reserved_agent_key_and_halts() {
+    let publisher = Arc::new(OpControlPublisher::new());
+    let addr = start_server(Some(Arc::clone(&publisher))).await;
+    // The registry shares the same publisher the policy service streams from —
+    // this is exactly the wiring the ops API uses to emit a halt.
+    let registry = OpsRegistry::new().with_publisher(Arc::clone(&publisher));
+
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let mut stream = client
+        .op_control_stream(OpControlSubscribeRequest {
+            agent_id: Some(agent("agent-7")),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    await_subscribers(&publisher, 1).await;
+
+    // Operator issues an agent-wide terminate for agent-7.
+    assert!(registry.halt_agent(agent("agent-7"), OpControlSignal::Terminate));
+
+    let msg = timeout(Duration::from_secs(2), stream.message())
+        .await
+        .expect("recv did not time out")
+        .expect("stream did not error")
+        .expect("stream had a message");
+    assert_eq!(msg.op_id, aa_runtime::op_control::agent_halt_op_id("agent-7"));
+    assert_eq!(msg.op_id, "agent:agent-7");
+    assert_eq!(msg.signal, OpControlSignal::Terminate as i32);
+
+    // Prove the runtime would halt: applying the delivered signal to the
+    // runtime's op-control store records the agent's reserved key as Terminated,
+    // which the per-request check consults independently of any trace_id.
+    let store = aa_runtime::op_control::OpControlStore::new();
+    store.apply(&msg.op_id, msg.signal());
+    assert_eq!(
+        store.state(&aa_runtime::op_control::agent_halt_op_id("agent-7")),
+        Some(aa_runtime::op_control::OpState::Terminated),
+    );
+}
+
+/// An agent-wide halt for one agent must not leak to a different agent's stream.
+#[tokio::test]
+async fn agent_level_halt_does_not_reach_other_agents() {
+    let publisher = Arc::new(OpControlPublisher::new());
+    let addr = start_server(Some(Arc::clone(&publisher))).await;
+    let registry = OpsRegistry::new().with_publisher(Arc::clone(&publisher));
+
+    let mut client_other = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let mut other = client_other
+        .op_control_stream(OpControlSubscribeRequest {
+            agent_id: Some(agent("agent-other")),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    await_subscribers(&publisher, 1).await;
+
+    registry.halt_agent(agent("agent-7"), OpControlSignal::Terminate);
+
+    assert!(
+        timeout(Duration::from_millis(300), other.message()).await.is_err(),
+        "an agent-7 halt must not be delivered to agent-other",
+    );
+}
+
+/// A global halt is delivered to every connected subscriber regardless of their
+/// agent_id, under the reserved global op-id `"*"`.
+#[tokio::test]
+async fn global_terminate_delivered_to_all_subscribers() {
+    let publisher = Arc::new(OpControlPublisher::new());
+    let addr = start_server(Some(Arc::clone(&publisher))).await;
+    let registry = OpsRegistry::new().with_publisher(Arc::clone(&publisher));
+
+    let mut client_a = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let mut a = client_a
+        .op_control_stream(OpControlSubscribeRequest {
+            agent_id: Some(agent("agent-a")),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut client_b = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+    let mut b = client_b
+        .op_control_stream(OpControlSubscribeRequest {
+            agent_id: Some(agent("agent-b")),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    await_subscribers(&publisher, 2).await;
+
+    assert!(registry.halt_global(OpControlSignal::Terminate));
+
+    for stream in [&mut a, &mut b] {
+        let msg = timeout(Duration::from_secs(2), stream.message())
+            .await
+            .expect("recv did not time out")
+            .expect("stream did not error")
+            .expect("stream had a message");
+        assert_eq!(msg.op_id, aa_runtime::op_control::GLOBAL_HALT_OP_ID);
+        assert_eq!(msg.op_id, "*");
+        assert_eq!(msg.signal, OpControlSignal::Terminate as i32);
+    }
+}
+
 #[tokio::test]
 async fn missing_agent_id_returns_invalid_argument() {
     let publisher = Arc::new(OpControlPublisher::new());

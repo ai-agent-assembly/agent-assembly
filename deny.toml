@@ -1,10 +1,30 @@
+# AAASM-3565 — supply-chain advisory gate.
+#
+# This is the enforced advisory/license gate for the whole workspace, including
+# the transitive dependency graph of every aa-devtool-* plugin (the `deny` CI
+# job runs `cargo deny check --all-features`, so devtool deps are in scope).
+# The threat model is a poisoned transitive dependency carrying a known
+# advisory: this gate must FAIL CI on such a dep rather than let it merge.
+#
+# cargo-deny v2 (the pinned EmbarkStudios/cargo-deny-action) always treats
+# RUSTSEC vulnerability and unsound advisories as errors — there is no opt-out
+# key — and fetches the RustSec advisory DB fresh on every run. The settings
+# below make the remaining knobs explicit and non-silent.
 [advisories]
-# Scope selectors: "all", "workspace", "transitive", "none"
-# "workspace" = flag advisories only for crates you directly depend on
-unmaintained = "workspace"
-# Lint level for yanked crates: "allow", "warn", "deny"
-yanked = "warn"
-# Advisory IDs or crate@version entries to suppress (RUSTSEC-YYYY-NNNN)
+# Scope selectors: "all", "workspace", "transitive", "none".
+# AAASM-4022: "all" = flag unmaintained advisories across the ENTIRE dependency
+# graph (direct + transitive), not just workspace-direct crates. An unmaintained
+# transitive dep is the more likely supply-chain risk (no upstream to patch a
+# future advisory), so it must surface in the gate rather than hide behind a
+# direct dep.
+unmaintained = "all"
+# Yanked crates are denied (was "warn"): a yanked version is a supply-chain
+# signal — it must fail the gate, not merely warn.
+yanked = "deny"
+# Audited exception list. MUST stay empty unless a security reviewer signs off:
+# every entry here suppresses a real advisory, so adding one requires the
+# devtool/deny.toml CODEOWNERS security reviewer (see .github/CODEOWNERS).
+# Format: advisory IDs ("RUSTSEC-YYYY-NNNN") or "crate@version".
 ignore = []
 
 [licenses]
@@ -31,12 +51,24 @@ allow = [
     # BSL-1.0 — Boost Software License 1.0, OSI-approved permissive license;
     # used by xxhash-rust (transitive dep of redis 1.x under redis-cache feature)
     "BSL-1.0",
+    # 0BSD — BSD Zero Clause License, OSI-approved public-domain-equivalent
+    # permissive license (no attribution required); the license of `lettre`, the
+    # SMTP mailer added for native-account password reset (AAASM-5306).
+    "0BSD",
 ]
 
 [[licenses.exceptions]]
 # webpki-roots ships Mozilla's CA certificate bundle under a permissive data
 # license; allow it only for this specific crate.
 crate = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
+[[licenses.exceptions]]
+# AAASM-4431: reqwest 0.13's "rustls" feature now pulls in
+# rustls-platform-verifier, which depends on webpki-root-certs — the same
+# Mozilla CA certificate bundle data (and the same CDLA-Permissive-2.0 data
+# license) as webpki-roots above, just split into its own crate upstream.
+crate = "webpki-root-certs"
 allow = ["CDLA-Permissive-2.0"]
 
 [bans]

@@ -1,7 +1,8 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
 import { ProtectedRoute } from './pages/ProtectedRoute'
 import { AppShell } from './components/AppShell'
 import { LoginPage } from './pages/LoginPage'
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { FleetPage } from './pages/FleetPage'
 import { AgentDetailPage } from './pages/AgentDetailPage'
 import { ApprovalsPage } from './pages/ApprovalsPage'
@@ -14,12 +15,15 @@ import { TraceViewPage } from './pages/TraceViewPage'
 import { TopologyPage } from './pages/TopologyPage'
 import { LiveOpsPage } from './pages/LiveOpsPage'
 import { ScrubPage } from './pages/ScrubPage'
+import { SensitiveDataPage } from './pages/SensitiveDataPage'
 import { OnboardingPage } from './pages/OnboardingPage'
-import { ComingSoon } from './pages/ComingSoon'
 import { IdentityPage } from './pages/IdentityPage'
 import { TeamDetailPage } from './pages/TeamDetailPage'
 import { TeamsPage } from './pages/TeamsPage'
+import { CostsPage } from './pages/CostsPage'
 import { ViolationHeatmapPage } from './pages/ViolationHeatmapPage'
+import { AuditLogPage } from './pages/AuditLogPage'
+import { OverviewPage } from './pages/OverviewPage'
 import {
   SettingsLayout,
   SettingsGeneralPlaceholder,
@@ -32,14 +36,15 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
-            {/* Landing — keeps the working approvals queue at root for now. */}
-            <Route path="/" element={<ApprovalsPage />} />
+            {/* Landing — Overview per AAASM-5144 (mock: index.html route init + onboarding finish). */}
+            <Route path="/" element={<Navigate to="/overview" replace />} />
 
             {/* ── Canonical 12 routes (AAASM-94 AC #5, #6) ──────────────── */}
             {/* monitor */}
-            <Route path="/overview" element={<ComingSoon name="Overview" />} />
+            <Route path="/overview" element={<OverviewPage />} />
             <Route path="/agents" element={<FleetPage />}>
               {/* Agent Detail drawer overlays the Fleet page so filter state stays mounted. */}
               <Route path=":id" element={<AgentDetailPage />} />
@@ -47,14 +52,15 @@ function App() {
             <Route path="/topology" element={<TopologyPage />} />
             <Route path="/live" element={<LiveOpsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
-            <Route path="/audit" element={<ComingSoon name="Audit Log" />} />
+            <Route path="/audit" element={<AuditLogPage />} />
             <Route path="/audit/violations" element={<ViolationHeatmapPage />} />
             {/* control */}
             <Route path="/capability" element={<CapabilityPage />} />
             <Route path="/policies" element={<PoliciesPage />} />
             <Route path="/scrub" element={<ScrubPage />} />
+            <Route path="/sensitive-data" element={<SensitiveDataPage />} />
             {/* manage */}
-            <Route path="/costs" element={<ComingSoon name="Cost & Budget" />} />
+            <Route path="/costs" element={<CostsPage />} />
             <Route path="/teams" element={<TeamsPage />} />
             <Route path="/identity" element={<IdentityPage />} />
 

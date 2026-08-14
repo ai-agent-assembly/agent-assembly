@@ -52,7 +52,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Resolve the probes source dir. Sibling takes priority over _embedded;
     // never touch _embedded outside of the publish-staging flow.
-    let probes_dir: Option<PathBuf> = if sibling_probes.join("Cargo.toml").exists() {
+    //
+    // docs.rs mounts the crate source tree read-only outside OUT_DIR. It
+    // always builds from the published tarball (never a sibling workspace
+    // checkout), so it would otherwise always take the _embedded branch and
+    // call restore_manifest_from_stage(), which renames a file *inside*
+    // that read-only tree and hard-fails the build (AAASM-4715 — the first
+    // fix only guarded the later `rustup`/Command call below, not this
+    // earlier and unconditional one). Skip resolution entirely under
+    // DOCS_RS: the Linux build_ok check further down already routes a
+    // `None` probes_dir to the stub-emission fallback.
+    let probes_dir: Option<PathBuf> = if std::env::var_os("DOCS_RS").is_some() {
+        None
+    } else if sibling_probes.join("Cargo.toml").exists() {
         println!("cargo:rerun-if-changed={}", sibling_probes.display());
         Some(sibling_probes)
     } else if embedded_probes.join(STAGED_MANIFEST).exists() || embedded_probes.join("Cargo.toml").exists() {
@@ -75,9 +87,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // lib.rs embeds the binary at OUT_DIR/aa-ebpf-probes/bpfel-unknown-none/release/aa-hello
         let target_dir = PathBuf::from(&out_dir).join("aa-ebpf-probes");
         let release_dir = target_dir.join("bpfel-unknown-none/release");
-        let binaries = ["aa-file-io", "aa-exec-probes", "aa-tls-probes"];
+        let binaries = ["aa-file-io", "aa-exec-probes", "aa-tls-probes", "aa-syscall-guard"];
 
-        let build_ok = if let Some(dir) = probes_dir.as_ref() {
+        // docs.rs's sandbox mounts everything except OUT_DIR/CARGO_TARGET_DIR
+        // read-only, but `current_dir(dir)` below points at the probes'
+        // *source* directory — cargo writing there (e.g. Cargo.lock) hard-fails
+        // the whole build.rs with a raw io::Error instead of falling through to
+        // the stub path. docs.rs sets DOCS_RS=1 for exactly this situation:
+        // skip the subprocess entirely and go straight to stubs (AAASM-4715).
+        let build_ok = if env::var_os("DOCS_RS").is_some() {
+            false
+        } else if let Some(dir) = probes_dir.as_ref() {
             // Run `cargo build --release` inside the probes workspace.
             // aa-ebpf-probes/.cargo/config.toml sets:
             //   target      = "bpfel-unknown-none"
@@ -110,10 +130,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+
+        // AAASM-3602: emit the sha256 of each embedded probe object as a
+        // compile-time env var so the load-time integrity check can detect
+        // post-build, in-binary corruption of the embedded bytecode. The digest
+        // is sourced from the *same* compiled object that is embedded, so it is
+        // NOT an independent supply-chain anchor (see aa-ebpf/src/integrity.rs):
+        // tampering before the build moves both the bytes and this digest
+        // together. The cosign-signed EBPF_SHA256SUMS (AAASM-3601) is a separate
+        // download-time artifact and is not consumed here.
+        // TODO(AAASM-3601): bake the digest from an independently-signed
+        // SHA256SUMS to make the load-time check a real supply-chain guarantee.
+        // A stub (empty file) hashes to the well-known empty digest, which the
+        // runtime treats as "unverifiable stub" and refuses to load —
+        // fail-closed, never degrade-to-allow.
+        emit_object_digest(&release_dir, "aa-file-io", "AA_FILE_IO_BPF_SHA256")?;
+        emit_object_digest(&release_dir, "aa-exec-probes", "AA_EXEC_BPF_SHA256")?;
+        emit_object_digest(&release_dir, "aa-tls-probes", "AA_TLS_BPF_SHA256")?;
+        emit_object_digest(&release_dir, "aa-syscall-guard", "AA_SYSCALL_GUARD_BPF_SHA256")?;
+    }
+
+    // On non-Linux the BPF statics in lib.rs are cfg'd out, so the digest env
+    // vars are never read; emit empty placeholders so any `env!()` resolves.
+    #[cfg(not(target_os = "linux"))]
+    {
+        for var in [
+            "AA_FILE_IO_BPF_SHA256",
+            "AA_EXEC_BPF_SHA256",
+            "AA_TLS_BPF_SHA256",
+            "AA_SYSCALL_GUARD_BPF_SHA256",
+        ] {
+            println!("cargo:rustc-env={var}=");
+        }
     }
 
     // Suppress unused warning on non-Linux hosts.
     let _ = probes_dir;
+    Ok(())
+}
+
+/// Hash a compiled probe object and emit `cargo:rustc-env=<var>=<hex>`.
+#[cfg(target_os = "linux")]
+fn emit_object_digest(release_dir: &Path, object: &str, var: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+
+    let path = release_dir.join(object);
+    let bytes = std::fs::read(&path)?;
+    let digest = Sha256::digest(&bytes);
+    println!("cargo:rustc-env={var}={}", hex::encode(digest));
     Ok(())
 }
 

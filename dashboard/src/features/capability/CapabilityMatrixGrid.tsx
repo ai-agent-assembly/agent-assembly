@@ -1,7 +1,8 @@
 import type { CapabilityAgent, Decision, Resource, Verb } from './types'
-import { DECISIONS } from './types'
+import { DECISIONS, decisionMeta } from './types'
 import type { SortState } from './sort'
 import './CapabilityMatrixGrid.css'
+import { orNoData } from './display'
 
 export interface CapabilityMatrixGridProps {
   agents: CapabilityAgent[]
@@ -13,6 +14,15 @@ export interface CapabilityMatrixGridProps {
   selectedIds?: Set<string>
   onToggleSelect?: (agentId: string) => void
   onToggleSelectAll?: (next: boolean) => void
+  /**
+   * Open the agent named by a row header (AAASM-5154).
+   *
+   * A callback rather than a `<Link>` so the grid stays router-free, matching
+   * `onCellClick` and `onSortChange`. Omitting it renders the name as plain
+   * text: a row header that looks navigable but goes nowhere is worse than one
+   * that never offered.
+   */
+  onOpenAgent?: (agent: CapabilityAgent) => void
 }
 
 export interface CellSelection {
@@ -38,14 +48,15 @@ export function CapabilityMatrixGrid({
   selectedIds,
   onToggleSelect,
   onToggleSelectAll,
-}: CapabilityMatrixGridProps) {
+  onOpenAgent,
+}: Readonly<CapabilityMatrixGridProps>) {
   const selectable = Boolean(selectedIds && onToggleSelect)
   const allSelected =
     selectable && agents.length > 0 && agents.every((a) => selectedIds?.has(a.id))
   const templateColumns = `260px repeat(${resources.length}, minmax(110px, 1fr))`
 
   function sortIndicator(resourceId: string): string {
-    if (!sort || sort.resourceId !== resourceId || !sort.direction) return '↕'
+    if (sort?.resourceId !== resourceId || !sort.direction) return '↕'
     return sort.direction === 'desc' ? '↓' : '↑'
   }
 
@@ -78,19 +89,19 @@ export function CapabilityMatrixGrid({
         {resources.map((r) => {
           const sortable = Boolean(onSortChange)
           const active = sort?.resourceId === r.id && sort?.direction
+          let ariaSort: 'ascending' | 'descending' | 'none' = 'none'
+          if (active) ariaSort = sort?.direction === 'asc' ? 'ascending' : 'descending'
           return (
             <button
               key={r.id}
               type="button"
               className={`cap-mx-col-h cap-mx-col-h-btn${active ? ' is-sorted' : ''}`}
               role="columnheader"
-              aria-sort={
-                active ? (sort?.direction === 'asc' ? 'ascending' : 'descending') : 'none'
-              }
+              aria-sort={ariaSort}
               disabled={!sortable}
               onClick={sortable ? () => onSortChange?.(r.id) : undefined}
             >
-              <div className="cap-mx-col-h-group">{r.group}</div>
+              <div className="cap-mx-col-h-group">{r.group ?? ''}</div>
               <span>
                 {r.name} <span className="cap-mx-sort-ind">{sortIndicator(r.id)}</span>
               </span>
@@ -107,6 +118,7 @@ export function CapabilityMatrixGrid({
             onCellClick={onCellClick}
             selected={selectedIds?.has(agent.id) ?? false}
             onToggleSelect={onToggleSelect}
+            onOpenAgent={onOpenAgent}
           />
         ))}
       </div>
@@ -121,6 +133,7 @@ interface RowGroupProps {
   onCellClick?: (cell: CellSelection) => void
   selected?: boolean
   onToggleSelect?: (agentId: string) => void
+  onOpenAgent?: (agent: CapabilityAgent) => void
 }
 
 function RowGroup({
@@ -130,7 +143,8 @@ function RowGroup({
   onCellClick,
   selected,
   onToggleSelect,
-}: RowGroupProps) {
+  onOpenAgent,
+}: Readonly<RowGroupProps>) {
   return (
     <>
       <div
@@ -147,7 +161,21 @@ function RowGroup({
               className="cap-mx-row-select"
             />
           )}
-          {agent.name}
+          {onOpenAgent ? (
+            <button
+              type="button"
+              className="cap-mx-row-h-link"
+              // The visible text is the agent name alone, as the mock draws it;
+              // the accessible name says where the control goes, so the row
+              // header is not announced as an unexplained button.
+              aria-label={`open agent ${agent.name}`}
+              onClick={() => onOpenAgent(agent)}
+            >
+              {agent.name}
+            </button>
+          ) : (
+            agent.name
+          )}
           {agent.flagged && (
             <span className="cap-flag-dot" aria-label="agent flagged">
               ●
@@ -157,15 +185,18 @@ function RowGroup({
         <div className="cap-mx-row-h-meta">
           <span>{agent.framework}</span>
           <span aria-hidden>·</span>
-          <span>{agent.owner}</span>
-          <span className="cap-mx-row-h-trust">trust {agent.trust}</span>
+          <span>{orNoData(agent.owner)}</span>
+          <span className="cap-mx-row-h-trust">trust {orNoData(agent.trust)}</span>
         </div>
-        <div className="cap-trust-bar" aria-hidden>
-          <div
-            className={`cap-trust-bar-fill ${trustToneClass(agent.trust)}`}
-            style={{ width: `${agent.trust}%` }}
-          />
-        </div>
+        {/* No trust score means no bar to draw — an empty bar would read as 0. */}
+        {agent.trust != null && (
+          <div className="cap-trust-bar" aria-hidden>
+            <div
+              className={`cap-trust-bar-fill ${trustToneClass(agent.trust)}`}
+              style={{ width: `${agent.trust}%` }}
+            />
+          </div>
+        )}
       </div>
       {resources.map((r) => {
         const cap = agent.caps[r.id]
@@ -200,7 +231,7 @@ function RowGroup({
               }
             }}
           >
-            {DECISIONS[decision].label}
+            {decisionMeta(decision).label}
             {flagged && <span className="cap-mx-cell-flag" aria-label="recent flag" />}
           </div>
         )

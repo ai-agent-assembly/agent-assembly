@@ -9,6 +9,43 @@
   padding: 22px 24px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--paper-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.scrub-head-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.scrub-head-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scrub-head-btn:hover {
+  background: var(--paper-3);
+}
+
+/* An affordance with no production path is disabled rather than removed, so the
+   operator can see the capability is intended and is told why it is inert. */
+.scrub-head-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.scrub-head-btn:disabled:hover {
+  background: var(--paper);
 }
 
 .scrub-page-title {
@@ -37,6 +74,11 @@
 }
 
 .scrub-stats {
+  /* Reset <fieldset> UA defaults (margin/border/min-inline-size) so the strip
+     renders identically now that it is a semantic <fieldset> group. */
+  margin: 0;
+  border: 0;
+  min-inline-size: 0;
   padding: 8px 24px;
   background: var(--paper-2);
   border-bottom: 1px solid var(--line);
@@ -46,15 +88,33 @@
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   color: var(--ink-3);
+  /* The segments carry state labels now, not two-word literals, so they wrap
+     on a narrow viewport instead of overflowing the strip. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .scrub-stats-item {
   color: var(--ink-3);
 }
 
-.scrub-stats-ok {
-  color: var(--ok);
+/* The one live region on the page (AAASM-5112, preserved by AAASM-5347). It
+   groups the *fetched* figures so assistive tech hears a measurement or the
+   reason there is not one, and never the static "the API cannot answer this"
+   segments that sit outside it. Rendered as a flex row so grouping them costs
+   no visual change to the strip. */
+.scrub-stats-measured {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  color: var(--ink-3);
 }
+
+/* `.scrub-stats-ok` is gone: its only user was the hardcoded "● 0 leaks (30d)"
+   all-clear, and nothing on this strip is entitled to a success colour
+   (AAASM-5112). Absence tone now comes from the shared truthfulness palette. */
 
 .scrub-stats-scrubbed {
   color: var(--scrub);
@@ -65,6 +125,11 @@
   height: 14px;
   background: var(--line);
   display: inline-block;
+}
+
+.scrub-stats-policy {
+  margin-left: auto;
+  color: var(--ink-4);
 }
 
 .scrub-body {
@@ -83,4 +148,16 @@
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+}
+
+/* Shown in place of the whole surface when `/scrub/patterns` answers with an
+   impossible catalogue — a 200 carrying no detectors. Deliberately not the
+   `ErrorState` retry panel: nothing failed, so there is nothing to retry, and
+   offering a retry button would misdescribe the problem. */
+.scrub-catalogue-absent {
+  padding: 48px 24px;
+  display: flex;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
 }

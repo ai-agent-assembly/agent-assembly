@@ -17,7 +17,7 @@ For component-level detail behind each box, see
 ## Policy evaluation
 
 When `aa-gateway` receives a `PolicyService.CheckAction` RPC, the policy engine
-under [`aa-gateway/src/policy/`](https://github.com/ai-agent-assembly/agent-assembly/tree/master/aa-gateway/src/policy)
+under [`aa-gateway/src/policy/`](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/aa-gateway/src/policy)
 walks parse → compile → scope cascade → budget → decision, then audits the
 result. The decision type (`engine/decision.rs`) is one of **Allow**, **Deny**,
 or **RequireApproval**.
@@ -65,7 +65,7 @@ Latency targets and current p99 measurements live in
 ## Agent registration
 
 Registration flows through `AgentLifecycleService.Register`
-([`aa-gateway/src/service/lifecycle_service.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/aa-gateway/src/service/lifecycle_service.rs)),
+([`aa-gateway/src/service/lifecycle_service.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-gateway/src/service/lifecycle_service.rs)),
 which validates delegation depth and writes into the `DashMap`-backed
 `AgentRegistry`. Agents then keep their record live with periodic `Heartbeat`s.
 
@@ -192,7 +192,10 @@ Key invariants from `aa-runtime/src/pipeline/enforcement.rs`:
   `already_scanned` / `clean` wire marker, and none is honoured.
 - Enforcement is **fail-closed**: a field larger than `max_field_bytes`
   (default 64 KiB) cannot be fully scanned, so it is redacted *whole*
-  (`[REDACTED:OVERSIZED]`) rather than partially forwarded.
+  (`[REDACTED:OVERSIZED]`) rather than partially forwarded. Likewise a `bytes`
+  field that is not valid UTF-8 is scanned but cannot be spliced faithfully, so a
+  finding redacts it *whole* (`[REDACTED:UNDECODABLE]`); when it is clean it is
+  forwarded byte-identical.
 - The credential scanner / redaction primitives come from the `aa-security`
   leaf crate.
 

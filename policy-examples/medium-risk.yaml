@@ -1,43 +1,54 @@
+# medium-risk.yaml — section-based PolicyDocument: balanced / medium-risk agent
+#
+# Moderate policy for medium-risk AI agents. Read-only and low-cost tools
+# are allowed with rate limits; write and high-cost operations require human
+# approval before they run. Broad-but-named network allowlist, a moderate
+# daily budget, and a 24/7 schedule. Common secrets are redacted.
 apiVersion: agent-assembly/v1
 kind: Policy
 metadata:
   name: medium-risk-approval-gate
-  description: >
-    Moderate policy for medium-risk AI agents. Sensitive actions require
-    human approval before execution. All decisions are audited.
-
+  version: "1.0.0"
 spec:
-  tier: medium
+  # Approval requests expire after five minutes (the default).
+  approval_timeout_secs: 300
 
-  rules:
-    - id: require-approval-for-writes
-      description: Block write/delete actions until a human approves.
-      match:
-        actions:
-          - "fs:write"
-          - "fs:delete"
-          - "db:write"
-          - "db:delete"
-          - "api:post"
-          - "api:put"
-          - "api:delete"
-      effect: require_approval
-      approval:
-        timeout_seconds: 300
-        approvers: ["ops-team"]
-      audit: true
+  network:
+    allowlist:
+      - "*.openai.com"
+      - "*.anthropic.com"
+      - api.github.com
+      - pypi.org
+      - registry.npmjs.org
 
-    - id: allow-read-actions
-      description: Permit all read-only actions without approval.
-      match:
-        actions:
-          - "fs:read"
-          - "db:read"
-          - "api:get"
-      effect: allow
-      audit: true
+  tools:
+    web_search:
+      allow: true
+      limit_per_hour: 20
+    code_interpreter:
+      allow: true
+      limit_per_hour: 10
+      requires_approval_if: "governance_level >= L2"
+    file_read:
+      allow: true
+      limit_per_hour: 50
+    file_write:
+      allow: true
+      requires_approval_if: 'path starts_with "/etc" OR path starts_with "/usr"'
+    shell:
+      allow: false
 
-  notifications:
-    on_block: true
-    on_allow: false
-    on_anomaly: true
+  data:
+    sensitive_patterns:
+      - "sk-[A-Za-z0-9]{32,}"
+      - "ghp_[A-Za-z0-9]{36}"
+      - "AKIA[0-9A-Z]{16}"
+
+  budget:
+    daily_limit_usd: 25.00
+
+  schedule:
+    active_hours:
+      start: "00:00"
+      end: "23:59"
+      timezone: UTC

@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5345: the documentation SSN of pii_ssn.json written in full-width digits with ASCII separators is detected as the same kind. This is the mixed-width span the offset arithmetic is least likely to survive — 3-byte digits interleaved with 1-byte hyphens — and the exact-11-byte SSN shape check has to run against the normalised digits while the reported span stays in original-text bytes.",
+  "input_text": "ssn=１２３-４５-６７８９",
+  "expected_findings": [
+    { "kind": "SsnPattern", "offset": 4 }
+  ],
+  "expected_redacted": "ssn=[REDACTED:SsnPattern]"
+}

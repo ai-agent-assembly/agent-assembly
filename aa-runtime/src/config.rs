@@ -4,6 +4,13 @@ use std::path::PathBuf;
 
 use crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES;
 
+/// Default per-RPC deadline for a gateway policy query, in milliseconds.
+///
+/// A few seconds is generous for a healthy in-cluster gateway hop yet short
+/// enough that a hung gateway cannot stall the runtime's policy checks for long
+/// (AAASM-3987).
+pub const DEFAULT_GATEWAY_TIMEOUT_MS: u64 = 5_000;
+
 /// Configuration for the `aa-runtime` sidecar process.
 ///
 /// All fields are populated by [`RuntimeConfig::from_env`].
@@ -14,6 +21,21 @@ pub struct RuntimeConfig {
     /// Read from `AA_AGENT_ID`. Required — startup fails if unset.
     /// Used to name the Unix socket: `/tmp/aa-runtime-<agent_id>.sock`.
     pub agent_id: String,
+
+    /// Team component of this agent's composite identity.
+    ///
+    /// Read from `AA_AGENT_TEAM_ID` (default empty). Combined with
+    /// [`agent_org_id`](Self::agent_org_id) and [`agent_id`](Self::agent_id) to
+    /// build the `AgentId` triple the runtime uses to subscribe to the
+    /// gateway's `OpControlStream`, which the gateway routes by the full
+    /// `(org_id, team_id, agent_id)` triple (AAASM-3491).
+    pub agent_team_id: String,
+
+    /// Org component of this agent's composite identity.
+    ///
+    /// Read from `AA_AGENT_ORG_ID` (default empty). See
+    /// [`agent_team_id`](Self::agent_team_id).
+    pub agent_org_id: String,
 
     /// Number of Tokio worker threads.
     ///
@@ -114,6 +136,44 @@ pub struct RuntimeConfig {
     /// Read from `AA_ENFORCEMENT_MAX_FIELD_BYTES`. Defaults to
     /// [`DEFAULT_MAX_FIELD_BYTES`] (64 KiB). Zero falls back to the default.
     pub enforcement_max_field_bytes: usize,
+
+    /// Whether a policy check **denies** when the gateway is configured but
+    /// unreachable (fail-closed), instead of falling back to permissive local
+    /// evaluation (fail-open).
+    ///
+    /// Read from `AA_GATEWAY_FAIL_CLOSED`. Defaults to `true` — the enforce
+    /// posture. The gateway is the authoritative policy decision point; when it
+    /// cannot be reached we must not silently default to Allow (AAASM-3110), so
+    /// the safe default is to deny. Set to `false` only for an observe /
+    /// disabled posture where the runtime should fall back to local rules and
+    /// allow on no match. Accepts `false`/`0`/`no`/`off` (case-insensitive) to
+    /// disable; any other value (or unset) keeps fail-closed.
+    pub gateway_fail_closed: bool,
+
+    /// Per-RPC deadline, in milliseconds, applied to each gateway policy query
+    /// (`check_action`).
+    ///
+    /// Read from `AA_GATEWAY_TIMEOUT_MS`; defaults to [`DEFAULT_GATEWAY_TIMEOUT_MS`].
+    /// A gateway that accepts a connection but then stops responding would
+    /// otherwise block the policy check forever, stalling every agent's checks
+    /// behind the shared client — a runtime-wide head-of-line DoS (AAASM-3987).
+    /// The deadline bounds that: on elapse the query is treated as a failure and
+    /// routed into the same fail-closed path as a transport error. Zero falls
+    /// back to the default so the deadline can never be disabled (that would
+    /// reintroduce the hang).
+    pub gateway_timeout_ms: u64,
+
+    /// Whether to serve the Developer Integration API (ADR 0030 Decision 5).
+    ///
+    /// Read from `AA_DEVINT_ENABLED`; **off by default**. The DI-API is a
+    /// developer-workstation lifecycle surface, not part of the enforcement
+    /// path, so a container runtime enforcing policy for one agent has no use
+    /// for it and must not open a socket it will never serve. `aasm` sets this
+    /// when it auto-starts a runtime for `aasm integrations …` (AAASM-5280).
+    ///
+    /// Accepts `1`/`true`/`yes` (case-insensitive); anything else is off, so a
+    /// typo fails closed rather than opening the surface.
+    pub devint_enabled: bool,
 }
 
 impl RuntimeConfig {
@@ -143,6 +203,10 @@ impl RuntimeConfig {
     /// | `AA_NATS_CONFIG_PATH` | `Option<PathBuf>` | `None` (publisher disabled) |
     /// | `AA_AUDIT_BUFFER_PATH` | `PathBuf` | `<temp>/aa-audit-buffer-<agent_id>.db` |
     /// | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | `usize` | `65536` (64 KiB) |
+    /// | `AA_GATEWAY_FAIL_CLOSED` | `bool` | `true` (deny on gateway unreachable) |
+    /// | `AA_GATEWAY_TIMEOUT_MS` | `u64` | `5000` (per-RPC gateway deadline) |
+    /// | `AA_AGENT_TEAM_ID` | `String` | `""` (op-control subscription identity) |
+    /// | `AA_AGENT_ORG_ID` | `String` | `""` (op-control subscription identity) |
     pub fn from_env() -> Result<Self, String> {
         let agent_id = std::env::var("AA_AGENT_ID").map_err(|_| "AA_AGENT_ID is required but not set".to_string())?;
 
@@ -153,6 +217,12 @@ impl RuntimeConfig {
         if agent_id.contains('/') || agent_id.contains("..") {
             return Err("AA_AGENT_ID must not contain path separators ('/' or '..')".to_string());
         }
+
+        // Optional composite-identity components — empty when the agent is not
+        // scoped to a team/org. Used only to address the OpControlStream
+        // subscription (AAASM-3491).
+        let agent_team_id = std::env::var("AA_AGENT_TEAM_ID").unwrap_or_default();
+        let agent_org_id = std::env::var("AA_AGENT_ORG_ID").unwrap_or_default();
 
         let worker_threads = std::env::var("AA_RUNTIME_WORKER_THREADS")
             .ok()
@@ -233,8 +303,28 @@ impl RuntimeConfig {
             .filter(|&n| n > 0)
             .unwrap_or(DEFAULT_MAX_FIELD_BYTES);
 
+        // Fail-closed by default; only an explicit falsey value opts out.
+        let gateway_fail_closed = std::env::var("AA_GATEWAY_FAIL_CLOSED")
+            .ok()
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no" | "off"))
+            .unwrap_or(true);
+
+        // Zero (or unparseable) falls back to the default: the deadline must not
+        // be disable-able, or the head-of-line DoS it guards against returns.
+        let gateway_timeout_ms = std::env::var("AA_GATEWAY_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_GATEWAY_TIMEOUT_MS);
+
+        let devint_enabled = std::env::var("AA_DEVINT_ENABLED")
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
         Ok(Self {
             agent_id,
+            agent_team_id,
+            agent_org_id,
             worker_threads,
             shutdown_timeout_secs,
             ipc_max_connections,
@@ -250,6 +340,9 @@ impl RuntimeConfig {
             nats_config_path,
             audit_buffer_path,
             enforcement_max_field_bytes,
+            gateway_fail_closed,
+            gateway_timeout_ms,
+            devint_enabled,
         })
     }
 }
@@ -287,6 +380,36 @@ mod tests {
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.ipc_max_connections, 64);
 
+        std::env::remove_var("AA_AGENT_ID");
+    }
+
+    /// The DI-API is off unless it was asked for, and a value that is not a
+    /// recognisable yes leaves it off — a typo must not open a local surface.
+    #[test]
+    fn the_developer_integration_api_is_opt_in_and_fails_closed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "devint-config-test");
+
+        std::env::remove_var("AA_DEVINT_ENABLED");
+        assert!(!RuntimeConfig::from_env().expect("config").devint_enabled);
+
+        for on in ["1", "true", "TRUE", "yes", " Yes "] {
+            std::env::set_var("AA_DEVINT_ENABLED", on);
+            assert!(
+                RuntimeConfig::from_env().expect("config").devint_enabled,
+                "{on:?} should enable the DI-API"
+            );
+        }
+
+        for off in ["0", "false", "no", "", "ture", "on"] {
+            std::env::set_var("AA_DEVINT_ENABLED", off);
+            assert!(
+                !RuntimeConfig::from_env().expect("config").devint_enabled,
+                "{off:?} must not enable the DI-API"
+            );
+        }
+
+        std::env::remove_var("AA_DEVINT_ENABLED");
         std::env::remove_var("AA_AGENT_ID");
     }
 
@@ -772,5 +895,59 @@ mod tests {
         );
 
         std::env::remove_var("AA_AGENT_ID");
+    }
+
+    #[test]
+    fn gateway_fail_closed_defaults_true_and_honors_falsey_opt_out() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "agent-fc");
+
+        // Unset → fail-closed (the safe enforce default, AAASM-3110).
+        std::env::remove_var("AA_GATEWAY_FAIL_CLOSED");
+        assert!(RuntimeConfig::from_env().unwrap().gateway_fail_closed);
+
+        // Explicit falsey values opt out (observe/disabled posture).
+        for falsey in ["false", "0", "no", "off", "OFF", "False"] {
+            std::env::set_var("AA_GATEWAY_FAIL_CLOSED", falsey);
+            assert!(
+                !RuntimeConfig::from_env().unwrap().gateway_fail_closed,
+                "{falsey} should disable fail-closed"
+            );
+        }
+
+        // Any other value keeps fail-closed.
+        std::env::set_var("AA_GATEWAY_FAIL_CLOSED", "true");
+        assert!(RuntimeConfig::from_env().unwrap().gateway_fail_closed);
+
+        std::env::remove_var("AA_AGENT_ID");
+        std::env::remove_var("AA_GATEWAY_FAIL_CLOSED");
+    }
+
+    #[test]
+    fn gateway_timeout_defaults_and_rejects_zero() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_AGENT_ID", "agent-to");
+
+        // Unset → the default deadline.
+        std::env::remove_var("AA_GATEWAY_TIMEOUT_MS");
+        assert_eq!(
+            RuntimeConfig::from_env().unwrap().gateway_timeout_ms,
+            DEFAULT_GATEWAY_TIMEOUT_MS
+        );
+
+        // A positive value is honoured verbatim.
+        std::env::set_var("AA_GATEWAY_TIMEOUT_MS", "1500");
+        assert_eq!(RuntimeConfig::from_env().unwrap().gateway_timeout_ms, 1_500);
+
+        // Zero must NOT disable the deadline — fall back to the default so the
+        // head-of-line DoS guard (AAASM-3987) cannot be turned off.
+        std::env::set_var("AA_GATEWAY_TIMEOUT_MS", "0");
+        assert_eq!(
+            RuntimeConfig::from_env().unwrap().gateway_timeout_ms,
+            DEFAULT_GATEWAY_TIMEOUT_MS
+        );
+
+        std::env::remove_var("AA_AGENT_ID");
+        std::env::remove_var("AA_GATEWAY_TIMEOUT_MS");
     }
 }

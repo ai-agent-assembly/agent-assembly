@@ -17,8 +17,10 @@ use sqlx::sqlite::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+use crate::auth::AuthExtensions;
 use crate::dashboard_server::{dashboard_router, find_dashboard_dist};
 use crate::routes::admin_status::{admin_status, AdminStatusState};
+use crate::routes::api_health::{api_health, ApiHealthState};
 use crate::routes::healthz::{healthz, HealthzState};
 use crate::storage::{SqliteBackend, SqliteConfig, StorageBackend, StorageError};
 
@@ -213,13 +215,13 @@ pub enum LocalModeError {
     /// Distinct from [`LocalModeError::Storage`] so the underlying
     /// `sqlx::Error` chain stays intact in the existing variant while
     /// this one carries the richer
-    /// [`StorageError`](crate::storage::StorageError) surface introduced
+    /// `StorageError` surface introduced
     /// by Epic 18 Story S-I.
     #[error("storage backend error at {path}: {source}", path = path.display())]
     StorageBackend {
         /// The resolved on-disk path the gateway tried to open.
         path: PathBuf,
-        /// Underlying [`StorageError`] from
+        /// Underlying `StorageError` from
         /// `SqliteBackend::open` / `migrate`.
         #[source]
         source: StorageError,
@@ -264,6 +266,16 @@ pub(crate) fn router_with_resolved_dist(
 ) -> Router {
     let state = HealthzState::new("local", "sqlite");
     let mut app = Router::new().route("/healthz", get(healthz)).layer(Extension(state));
+    // AAASM-3354: serve the REST surface's liveness probe at /api/v1/health
+    // so `curl http://127.0.0.1:7391/api/v1/health` returns JSON, not a 404,
+    // in local mode. The full `aa-api` router cannot be nested here — `aa-api`
+    // depends on `aa-gateway` (circular) and requires the heavyweight
+    // `aa_api::AppState` local mode does not construct — so this is the
+    // smallest viable wiring; remaining `/api/v1/*` data routes are a
+    // documented follow-up (see the AAASM-3354 PR body).
+    app = app
+        .route("/api/v1/health", get(api_health))
+        .layer(Extension(ApiHealthState::new()));
     if let Some(backend) = storage {
         let admin_state = AdminStatusState::new(
             "local",
@@ -286,7 +298,11 @@ pub(crate) fn router_with_resolved_dist(
             ),
         }
     }
-    app
+    // AAASM-3909: layer the four `aa-auth` extensions so the `RequireAdmin`
+    // guard on `/api/v1/admin/status` can resolve. BYPASS-DEFAULT — with no
+    // auth env set this builds an `AuthMode::Off` config so a bare local-mode
+    // gateway keeps answering `aasm status` with no credential (AAASM-1591).
+    AuthExtensions::from_env().apply(app)
 }
 
 /// Create the parent directory tree for `path` if it does not yet exist.
@@ -593,6 +609,45 @@ mod tests {
 
         assert_eq!(body["mode"], "local", "mode label");
         assert_eq!(body["storage"], "sqlite", "storage label");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"), "crate version");
+        assert!(
+            body["uptime_secs"].is_u64(),
+            "uptime_secs must be present and a u64; got {body}",
+        );
+    }
+
+    /// AAASM-3354: the local-mode router serves `/api/v1/health` with a
+    /// 200 + `application/json` body (wire-compatible with
+    /// `aa_api::routes::health::HealthResponse`) so the REST surface is
+    /// reachable in local mode instead of returning a blanket 404. The
+    /// route is mounted regardless of whether a storage backend is wired.
+    #[tokio::test]
+    async fn router_serves_api_v1_health_with_json() {
+        let cfg = healthz_only_config();
+        let app = router(&cfg, None);
+        let request = Request::builder()
+            .uri("/api/v1/health")
+            .body(Body::empty())
+            .expect("build request");
+
+        let response = app.oneshot(request).await.expect("router.oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let ctype = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            ctype.starts_with("application/json"),
+            "expected application/json, got {ctype}"
+        );
+
+        let bytes = to_bytes(response.into_body(), 8 * 1024).await.expect("read body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse json");
+
+        assert_eq!(body["status"], "ok", "status label");
+        assert_eq!(body["api_version"], "v1", "api version");
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"), "crate version");
         assert!(
             body["uptime_secs"].is_u64(),
@@ -930,35 +985,52 @@ mod tests {
         let _ = second.shutdown_tx.send(());
     }
 
-    /// AAASM-1576 AC #5: wall-clock from `start_local()` call to a
-    /// successful `/healthz` round-trip must be **under 500 ms** on a
-    /// standard developer laptop. The ceiling is generous against the
-    /// real expected latency (single-digit ms locally) so we catch
-    /// genuine regressions — e.g. someone adding a blocking migration
-    /// step to `open_storage` — without flaking on slow CI runners.
+    /// AAASM-1576 AC #5 (de-flaked per AAASM-3650): `start_local()`
+    /// brings the gateway up and a `/healthz` round-trip succeeds with a
+    /// ready response. The required assertion is **functional** — the
+    /// round-trip completes and reports `mode == "local"` — not a
+    /// wall-clock latency bound.
+    ///
+    /// The original test asserted the round-trip finished in under
+    /// **500 ms** to catch a regression such as a blocking migration
+    /// added to `open_storage`. On loaded/shared CI runners that hard
+    /// bound was exceeded even when the code was correct (observed p99
+    /// 1.2–2.7 s under concurrent test load), so a busy runner could
+    /// fail this *correctness* gate purely on latency. We removed the
+    /// performance assertion from the required gate and keep only a
+    /// generous deadline that bounds a true hang (start-up wedged /
+    /// server never binds), never normal slow-runner jitter. The
+    /// latency-regression signal lives in the non-gating `Benchmark`
+    /// job and the `policy_*` benches, not here.
     #[tokio::test]
-    async fn start_local_healthz_round_trip_completes_within_500ms() {
+    async fn start_local_healthz_round_trip_succeeds() {
         let (config, _tmp, port) = test_config_with_ephemeral_port().await;
         let pid_path = _tmp.path().join("gateway.pid");
 
-        let started = std::time::Instant::now();
-        let handle = start_local_with_pid_path(&config, &pid_path)
-            .await
-            .expect("start_local");
-        let _ = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
-            .await
-            .expect("GET /healthz")
-            .json::<serde_json::Value>()
-            .await
-            .expect("parse json");
-        let elapsed = started.elapsed();
+        // Generous ceiling — large enough that a healthy gateway on the
+        // slowest CI runner clears it comfortably; small enough to fail
+        // fast on a genuine hang instead of waiting on the test harness
+        // timeout.
+        let body = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let handle = start_local_with_pid_path(&config, &pid_path)
+                .await
+                .expect("start_local");
+            let body = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+                .await
+                .expect("GET /healthz")
+                .json::<serde_json::Value>()
+                .await
+                .expect("parse json");
+            (handle, body)
+        })
+        .await
+        .map(|(handle, body)| {
+            let _ = handle.shutdown_tx.send(());
+            body
+        })
+        .expect("start_local → /healthz round-trip must complete (a timeout here means a true hang)");
 
-        assert!(
-            elapsed < std::time::Duration::from_millis(500),
-            "AAASM-1576 AC #5: start_local → /healthz round-trip must be < 500 ms, took {elapsed:?}"
-        );
-
-        let _ = handle.shutdown_tx.send(());
+        assert_eq!(body["mode"], "local", "healthz must report a ready local-mode gateway");
     }
 
     /// AAASM-1576 AC #8 (server stops accepting connections): after

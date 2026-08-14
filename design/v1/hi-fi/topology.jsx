@@ -1,4 +1,23 @@
 /* global React */
+/*
+ * ─── SUPERSESSION NOTE — Topology (AAASM-5071 / AAASM-5077, ratified 2026-07-25) ───
+ * The shipped implementation (dashboard/src/) is AUTHORITATIVE over this mock for the
+ * ratified items below. The prior mock behavior is NO LONGER the required
+ * implementation target. See ADR 0017
+ * (docs/src/adr/0017-dashboard-design-parity-ratified-evolutions.md).
+ *
+ * Ratified (shipped authoritative; the mock behavior noted is superseded):
+ *   • Layout — shipped uses a D3 FORCE-DIRECTED graph; this mock's hierarchical
+ *     team-grid layout is superseded (deliberate, depth-informed: AAASM-1335/5033).
+ *   • Team budget bars on clusters — shipped renders them; kept.
+ *   • 5s polling as the "live" stand-in — authoritative until a live event-stream
+ *     backend lands.
+ *
+ * NOT superseded: the FE-parity spec sections in this file (sidebar, zoom/pan,
+ * node-panel, edge-kinds, badges, cross-team/cycle affordances) remain the reference
+ * for in-flight FE-buildable / backend-blocked work — do not delete them.
+ * ──────────────────────────────────────────────────────────────────────────────────
+ */
 const {
   useState: useTopoSt, useMemo: useTopoMemo,
   useRef: useTopoRef,  useEffect: useTopoEff,

@@ -43,12 +43,17 @@ fn proxy_config(ca_dir: &std::path::Path, network_allowlist: Vec<String>) -> Pro
         ca_dir: ca_dir.to_path_buf(),
         cert_cache_capacity: 10,
         llm_only: false,
+        mitm_hosts: Vec::new(),
         denied_hosts: Vec::new(),
         network_allowlist,
         skip_upstream_tls_verify: true,
         credential_action: CredentialAction::default(),
         upstream_override: None,
         gateway_endpoint: None,
+        mcp_fail_open: false,
+        // These tests allowlist `127.0.0.1` as a loopback stand-in upstream,
+        // which the AAASM-3130 SSRF guard blocks in production.
+        allow_private_connect_targets: true,
     }
 }
 

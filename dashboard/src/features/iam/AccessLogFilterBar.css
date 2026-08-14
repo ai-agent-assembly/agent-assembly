@@ -32,3 +32,11 @@
   background: var(--shell-surface);
   color: var(--shell-text);
 }
+
+/* Kept legible rather than faded out of sight: the operator should still see
+   which axes this tab *would* filter on once it has a source (AAASM-5111). */
+.iam-access-log-filter-bar--disabled .iam-access-log-filter-bar__select,
+.iam-access-log-filter-bar--disabled .iam-access-log-filter-bar__date {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useState } from "react";
+import { getToken } from "../auth/tokenStorage";
 import { ViolationHeatmap, ViolationNode } from "../components/ViolationHeatmap";
 
 // ---------------------------------------------------------------------------
@@ -49,7 +50,20 @@ export function ViolationHeatmapPage() {
     const params = new URLSearchParams({ window: window_ });
     if (root) params.set("root", root);
 
-    fetch(`/api/v1/audit/violations-by-lineage?${params}`)
+    // Prepend VITE_API_BASE_URL and attach the stored bearer token so this
+    // page reaches the authenticated API origin the same way every other data
+    // path does (mirrors api/client.ts; endpoint not yet in the OpenAPI schema).
+    const base = import.meta.env.VITE_API_BASE_URL ?? "";
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    // `r.json() as Promise<ApiResponse>` is a bare cast (AAASM-5217 audit).
+    // Accepted-risk: `ApiResponse.nodes[].agent_id` is used as a React list
+    // `key` and a d3 hierarchy id (`ViolationHeatmap.tsx`), never as an
+    // object/Map lookup key, and `violation_count`/`window_secs` are plain
+    // numbers consumed arithmetically, not as keys.
+    fetch(`${base}/api/v1/audit/violations-by-lineage?${params}`, { headers })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<ApiResponse>;
@@ -90,7 +104,7 @@ export function ViolationHeatmapPage() {
       {status === "success" && (
         <>
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
-            {data.nodes.length} agent{data.nodes.length !== 1 ? "s" : ""} with violations ·
+            {data.nodes.length} agent{data.nodes.length === 1 ? "" : "s"} with violations ·
             window {data.window_secs}s · generated {data.generated_at}
           </p>
           {data.nodes.length === 0 ? (

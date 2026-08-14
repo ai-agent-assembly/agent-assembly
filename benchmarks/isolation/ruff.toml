@@ -1,0 +1,18 @@
+# Scoped to benchmarks/isolation/. ruff resolves the nearest config walking up
+# from each file, so this applies to the harness and to nothing else in the
+# repository, which has no Python lint config of its own.
+target-version = "py39"
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RET", "C4", "A", "N", "S", "ARG", "PTH"]
+ignore = [
+    # The harness's whole job is running subprocesses with operator-supplied
+    # launcher argv; flagging every exec as untrusted input is noise here.
+    "S603",
+    "S606",
+    "S607",
+    # os.path is deliberate: this code targets py39 on whatever Python a Linux
+    # benchmark host happens to ship, and pathlib buys nothing at this size.
+    "PTH",
+]

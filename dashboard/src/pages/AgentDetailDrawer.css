@@ -58,6 +58,13 @@
   color: var(--danger);
 }
 
+.ad-head__note {
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--danger);
+}
+
 .ad-head__chip {
   display: inline-flex;
   align-items: center;
@@ -170,6 +177,13 @@
 .ad-identity__trust-summary {
   font-size: 11px;
   color: var(--ink-3);
+}
+
+/* ADR 0019 Guardrail 1 — the "under your configured weights" caveat, kept
+   deliberately quiet: a comparability caveat, not a headline. */
+.ad-identity__trust-weights {
+  font-size: 10px;
+  color: var(--ink-4);
 }
 
 .ad-identity__chips {
@@ -296,47 +310,6 @@
 
 .ad-card--span-2 {
   grid-column: span 2;
-}
-
-.ad-minibar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-}
-
-.ad-minibar__label {
-  width: 130px;
-  font-size: 11px;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  color: var(--ink-3);
-}
-
-.ad-minibar__track {
-  flex: 1;
-  height: 6px;
-  background: var(--paper-3);
-  border-radius: 1px;
-  overflow: hidden;
-}
-
-.ad-minibar__fill {
-  display: block;
-  height: 100%;
-}
-
-.ad-minibar__fill--ok    { background: var(--ok); }
-.ad-minibar__fill--warn  { background: var(--warn); }
-.ad-minibar__fill--deny  { background: var(--danger); }
-.ad-minibar__fill--info  { background: var(--info); }
-
-.ad-minibar__value {
-  width: 60px;
-  text-align: right;
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ink-2);
 }
 
 .ad-traffic-mix {

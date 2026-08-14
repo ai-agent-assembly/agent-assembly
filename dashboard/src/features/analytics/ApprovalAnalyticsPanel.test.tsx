@@ -1,14 +1,20 @@
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
 import { ApprovalAnalyticsPanel } from './ApprovalAnalyticsPanel'
 import type { ApprovalAnalyticsResponse } from './useApprovalAnalyticsQuery'
 
 class ResizeObserverStub {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+  observe() {
+    /* intentionally empty: jsdom test stub — recharts only needs the API to exist */
+  }
+  unobserve() {
+    /* intentionally empty: jsdom test stub */
+  }
+  disconnect() {
+    /* intentionally empty: jsdom test stub */
+  }
 }
 globalThis.ResizeObserver = ResizeObserverStub
 
@@ -16,7 +22,7 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
 }
 
-function Wrapper({ children }: { children: ReactNode }) {
+function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <QueryClientProvider client={makeQC()}>
       <MemoryRouter initialEntries={['/analytics']}>{children}</MemoryRouter>
@@ -35,7 +41,7 @@ function mockFetch(data: ApprovalAnalyticsResponse) {
   globalThis.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: () => Promise.resolve(data),
-  } as Response)
+  })
 }
 
 // ── formatter unit tests ──────────────────────────────────────────────────────
@@ -46,22 +52,14 @@ function mockFetch(data: ApprovalAnalyticsResponse) {
 describe('ApprovalAnalyticsPanel — stat formatting', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('formats volume as localized number', async () => {
+  it.each([
+    { label: 'volume as localized number', text: '1,240' },
+    { label: 'medianTta in minutes and seconds', text: '3m 5s' }, // 185s = 3m 5s
+    { label: 'approvalRate as percentage', text: '87.4%' }, // 0.874 → 87.4%
+  ])('formats $label', async ({ text }) => {
     mockFetch(FIXTURE)
     render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
-    expect(await screen.findByText('1,240')).toBeInTheDocument()
-  })
-
-  it('formats medianTta in minutes and seconds', async () => {
-    mockFetch(FIXTURE) // 185s = 3m 5s
-    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
-    expect(await screen.findByText('3m 5s')).toBeInTheDocument()
-  })
-
-  it('formats approvalRate as percentage', async () => {
-    mockFetch(FIXTURE) // 0.874 → 87.4%
-    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
-    expect(await screen.findByText('87.4%')).toBeInTheDocument()
+    expect(await screen.findByText(text)).toBeInTheDocument()
   })
 })
 
@@ -83,7 +81,7 @@ describe('ApprovalAnalyticsPanel', () => {
   })
 
   it('renders error state when fetch fails', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 } as Response)
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 })
     render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
     expect(await screen.findByText(/Failed to load approval data/)).toBeInTheDocument()
   })
@@ -118,5 +116,28 @@ describe('ApprovalAnalyticsPanel', () => {
     await screen.findByText('1,083')
     expect(screen.getByText('124')).toBeInTheDocument()
     expect(screen.getByText('33')).toBeInTheDocument()
+  })
+
+  it('degrades to a zero-state when scalar fields are missing on a partial response', async () => {
+    // A 200 with an empty body (no volume/medianTta/approvalRate/byOutcome) must
+    // render a zero-state instead of crashing the route into the error boundary.
+    mockFetch({} as ApprovalAnalyticsResponse)
+    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
+    // Panel body renders (donut present) rather than the error boundary taking over.
+    expect(await screen.findByTestId('approval-donut')).toBeInTheDocument()
+    // Each unguarded scalar falls back to its zero formatting.
+    expect(screen.getAllByText('0').length).toBeGreaterThan(0) // volume → 0
+    expect(screen.getByText('0s')).toBeInTheDocument() // medianTta → 0s
+    expect(screen.getByText('0.0%')).toBeInTheDocument() // approvalRate → 0.0%
+    expect(screen.getByText('Total volume')).toBeInTheDocument()
+  })
+
+  it('renders without crashing when byOutcome is missing on a partial response', async () => {
+    // A 200 with a partial object (no `byOutcome`) must not crash the panel.
+    mockFetch({ volume: 0, medianTta: 0, approvalRate: 0 } as ApprovalAnalyticsResponse)
+    render(<ApprovalAnalyticsPanel />, { wrapper: Wrapper })
+    expect(await screen.findByTestId('approval-donut')).toBeInTheDocument()
+    // The legend falls back to zeroed outcome counts rather than throwing.
+    expect(screen.getByText('Approved')).toBeInTheDocument()
   })
 })

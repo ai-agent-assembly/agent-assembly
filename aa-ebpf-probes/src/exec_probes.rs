@@ -1,12 +1,40 @@
 //! BPF tracepoint programs for process exec monitoring (AAASM-39).
 //!
-//! Two tracepoints share a single ring buffer (`EVENTS`) and a PID
+//! Three tracepoints share a single ring buffer (`EVENTS`) and a PID
 //! filter map (`EXEC_PID_FILTER`):
 //!
+//! - `handle_sched_process_fork` — fires on every `fork`/`clone`. When the
+//!   parent is monitored it records the child→parent tgid mapping in
+//!   `PARENT_TGID` and propagates `EXEC_PID_FILTER` membership to the child
+//!   (AAASM-3916/3921). This is what supplies the **real** parent pid to the
+//!   exec event below.
 //! - `handle_sched_process_exec` — fires on every `execve`/`execveat` and
-//!   emits an [`ExecEvent`] with pid, ppid, uid, filename, and argv.
+//!   emits an [`ExecEvent`] with pid, ppid, uid, filename, and a best-effort
+//!   `args` field. NOTE (AAASM-3872): this tracepoint does not expose argv, so
+//!   `args` currently holds the truncated 16-byte `comm`, not the real argv —
+//!   see the in-body comment for the `sys_enter_execve` follow-up.
 //! - `handle_sched_process_exit` — fires on process exit and emits a
 //!   [`ProcessExitEvent`] so userspace can clean up the lineage map.
+//!
+//! ## Parent pid resolution (AAASM-3921c)
+//!
+//! The `sched_process_exec` tracepoint's `pid` field is the *new* process's own
+//! pid, not its parent. Reading it into `ppid` produced `ppid == pid`, which
+//! made the userspace `ProcessLineageTracker::is_descendant_of` walk terminate
+//! immediately (it treats `ppid == pid` as a self-cycle) and always return
+//! false.
+//!
+//! The exec handler now resolves the real parent with a CO-RE read of
+//! `current->real_parent->tgid` at exec time (see [`real_parent_tgid`]), using
+//! `task_struct` field byte-offsets that the userspace loader resolves from the
+//! running kernel's BTF and publishes in [`TASK_OFFSETS`]. This is independent
+//! of the fork tracepoint: the earlier map-based path (reading `PARENT_TGID`,
+//! populated at `sched_process_fork`) proved unreliable under load — the map
+//! could fill or the specific child entry be missing — leaving `ppid == 0`.
+//! `PARENT_TGID` is kept only as a fallback for kernels without BTF; the final
+//! fallback is `0` (unknown root), never the bogus self-parent. The fork
+//! tracepoint is retained purely for AAASM-3916 descendant confinement (the
+//! `EXEC_PID_FILTER` propagation), decoupled from exec-ppid resolution.
 //!
 //! ## Stack-limit workaround
 //!
@@ -19,9 +47,12 @@
 
 use aa_ebpf_common::exec::{ExecEvent, ProcessExitEvent, MAX_ARGS_LEN, MAX_FILENAME_LEN};
 use aya_ebpf::{
-    helpers::{bpf_get_current_pid_tgid, bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel_str_bytes},
+    helpers::{
+        bpf_get_current_pid_tgid, bpf_get_current_task, bpf_get_current_uid_gid, bpf_ktime_get_ns,
+        bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes,
+    },
     macros::{map, tracepoint},
-    maps::{HashMap, RingBuf},
+    maps::{Array, HashMap, RingBuf},
     programs::TracePointContext,
     EbpfContext,
 };
@@ -45,6 +76,42 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(262_144, 0);
 #[map]
 static EXEC_PID_FILTER: HashMap<u32, u8> = HashMap::with_max_entries(256, 0);
 
+/// Child tgid → parent tgid, populated by the `sched_process_fork` tracepoint
+/// (AAASM-3921c). The exec handler reads the real parent pid from here because
+/// the `sched_process_exec` tracepoint only exposes the new process's own pid.
+#[map]
+static PARENT_TGID: HashMap<u32, u32> = HashMap::with_max_entries(1024, 0);
+
+/// `task_struct` field byte-offsets, resolved from the running kernel's BTF by
+/// the userspace loader (AAASM-3921c CO-RE). The `sched_process_exec`
+/// tracepoint only carries the new process's own pid, and the fork-populated
+/// `PARENT_TGID` map is unreliable under load (it fills / races), so the exec
+/// handler reads the real parent directly from `current->real_parent->tgid` at
+/// exec time using these offsets.
+///
+/// - index [`TASK_OFFSET_REAL_PARENT`] — byte offset of `task_struct.real_parent`
+/// - index [`TASK_OFFSET_TGID`] — byte offset of `task_struct.tgid`
+///
+/// A value of `0` means "unresolved" (BTF unavailable); the handler then falls
+/// back to the fork-populated `PARENT_TGID` map, and finally to `0`.
+#[map]
+static TASK_OFFSETS: Array<u32> = Array::with_max_entries(2, 0);
+
+/// `TASK_OFFSETS` index of the `task_struct.real_parent` byte offset.
+const TASK_OFFSET_REAL_PARENT: u32 = 0;
+/// `TASK_OFFSETS` index of the `task_struct.tgid` byte offset.
+const TASK_OFFSET_TGID: u32 = 1;
+
+/// `sched:sched_process_fork` layout — byte offset of the `child_pid` field:
+///
+/// ```text
+/// field:char  parent_comm[16]; offset:8;  size:16;
+/// field:pid_t parent_pid;      offset:24; size:4;
+/// field:char  child_comm[16];  offset:28; size:16;
+/// field:pid_t child_pid;       offset:44; size:4;
+/// ```
+const SCHED_FORK_CHILD_PID_OFFSET: usize = 44;
+
 // ---------------------------------------------------------------------------
 // PID filter helper
 // ---------------------------------------------------------------------------
@@ -66,6 +133,41 @@ fn pid_allowed(tgid: u32) -> bool {
             return true;
         }
         EXEC_PID_FILTER.get(&tgid).is_some()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Real-parent resolution (AAASM-3921c CO-RE)
+// ---------------------------------------------------------------------------
+
+/// Resolve the real parent tgid of the current task at exec time by walking
+/// `current->real_parent->tgid` with BTF-resolved byte offsets.
+///
+/// Returns `None` when the offsets are unresolved (BTF unavailable — both
+/// offsets left `0` by the loader) or when either kernel read fails, so the
+/// caller can fall back to the fork-populated `PARENT_TGID` map. This does not
+/// depend on the fork tracepoint having observed the fork, which is why it is
+/// robust where the map-based path was not.
+#[inline(always)]
+fn real_parent_tgid() -> Option<u32> {
+    let real_parent_off = *TASK_OFFSETS.get(TASK_OFFSET_REAL_PARENT)? as usize;
+    let tgid_off = *TASK_OFFSETS.get(TASK_OFFSET_TGID)? as usize;
+    if real_parent_off == 0 || tgid_off == 0 {
+        return None;
+    }
+
+    unsafe {
+        let task = bpf_get_current_task() as *const u8;
+        if task.is_null() {
+            return None;
+        }
+        // task->real_parent is a `struct task_struct *`.
+        let parent = bpf_probe_read_kernel(task.add(real_parent_off) as *const *const u8).ok()?;
+        if parent.is_null() {
+            return None;
+        }
+        // real_parent->tgid is a `pid_t` (i32); read as u32.
+        bpf_probe_read_kernel(parent.add(tgid_off) as *const u32).ok()
     }
 }
 
@@ -104,9 +206,20 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
     //   field:pid_t pid;                       offset:12; size:4;
     //   field:pid_t old_pid;                   offset:16; size:4;
     //
-    // We read the parent PID from the tracepoint pid field at offset 12;
-    // __data_loc is a u32 (low 16 bits = offset, high 16 bits = length).
-    let tp_pid: i32 = unsafe { ctx.read_at(12) }.map_err(|_| -1i64)?;
+    // NOTE (AAASM-3921c): the `pid` field at offset 12 is the *new* process's
+    // own pid, NOT its parent — reading it into `ppid` produced `ppid == pid`
+    // and broke lineage walks. The real parent tgid is recorded at fork time in
+    // `PARENT_TGID`; resolve it here, falling back to 0 (unknown root) rather
+    // than the bogus self-parent when the fork was not observed.
+    //   __data_loc is a u32 (low 16 bits = offset, high 16 bits = length).
+    //
+    // Prefer the CO-RE `current->real_parent->tgid` read (AAASM-3921c): it is
+    // resolved directly from the current task at exec time and does not depend
+    // on the fork tracepoint having observed (and still holding) the child's
+    // entry, which the map-based path could not guarantee under load. Fall back
+    // to the fork-populated `PARENT_TGID` map when BTF offsets are unavailable,
+    // and finally to 0 (unknown root) — never the bogus self-parent.
+    let ppid = real_parent_tgid().unwrap_or_else(|| unsafe { PARENT_TGID.get(&tgid) }.copied().unwrap_or(0));
     let data_loc: u32 = unsafe { ctx.read_at(8) }.map_err(|_| -1i64)?;
     // ctx.command() returns [u8; 16] — already raw bytes, not a string.
     let comm = ctx.command().map_err(|_| -1i64)?;
@@ -120,7 +233,7 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
         (*event_ptr).pid = tgid;
         (*event_ptr).uid = uid;
         (*event_ptr)._pad = 0;
-        (*event_ptr).ppid = tp_pid as u32;
+        (*event_ptr).ppid = ppid;
 
         let filename_offset = (data_loc & 0xFFFF) as usize;
 
@@ -133,8 +246,17 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
             &mut (*event_ptr).filename,
         );
 
-        // Zero the args buffer — argv extraction from tracepoints is
-        // limited; we capture what the comm provides.
+        // Zero the args buffer.
+        //
+        // KNOWN LIMITATION (AAASM-3872, exec comm-not-argv): the
+        // `sched_process_exec` tracepoint carries only the executable path +
+        // pids — it does NOT expose argv — so we fall back to the 16-byte
+        // `comm`. This means `/bin/sh -c 'curl … | sh'` logs only `sh`; the
+        // arguments that carry the actual command are invisible here. Genuine
+        // argv capture requires a `syscalls:sys_enter_execve` tracepoint that
+        // reads the `const char *const *argv` pointer array (bounded), then
+        // flattens it via `aa_ebpf_common::exec::flatten_argv_bounded`. Tracked
+        // as a follow-up under AAASM-3872.
         (*event_ptr).args = [0u8; MAX_ARGS_LEN];
 
         // Copy comm bytes (up to 16) into the args buffer byte by byte.
@@ -158,10 +280,15 @@ fn try_sched_process_exec(ctx: &TracePointContext) -> Result<u32, i64> {
 // sched_process_exit tracepoint
 // ---------------------------------------------------------------------------
 
-/// Tracepoint on `sched/sched_process_exit`: fires when a process exits.
+/// Tracepoint on `sched/sched_process_exit`: fires on every *thread* exit.
 ///
-/// Emits a [`ProcessExitEvent`] so the userspace `ProcessLineageTracker`
-/// can remove the PID from the lineage map.
+/// Map cleanup removes the EXITING THREAD'S OWN tid key from `PARENT_TGID` and
+/// `EXEC_PID_FILTER` on every thread exit (AAASM-3982) — reaping the inert tid
+/// keys the fork handler inserts for CLONE_THREAD children, which the old
+/// leader-only cleanup leaked. A [`ProcessExitEvent`] is still emitted only on
+/// whole-process exit (the thread-group leader, `pid == tgid`) so the userspace
+/// `ProcessLineageTracker` does not drop a live multithreaded process mid-flight
+/// (AAASM-3921c).
 #[tracepoint]
 pub fn handle_sched_process_exit(ctx: TracePointContext) -> u32 {
     try_sched_process_exit(&ctx).unwrap_or_default()
@@ -170,8 +297,38 @@ pub fn handle_sched_process_exit(ctx: TracePointContext) -> u32 {
 fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let tgid = (pid_tgid >> 32) as u32;
+    let pid = pid_tgid as u32;
 
-    if !pid_allowed(tgid) {
+    // Capture monitoring status BEFORE cleanup (the reap below removes this
+    // thread's own key, which on a leader exit is the tgid key `pid_allowed`
+    // consults). The wildcard key (0) is never an exiting tid.
+    let allowed = pid_allowed(tgid);
+
+    // `sched_process_exit` fires PER-THREAD. Reap the EXITING THREAD'S OWN tid
+    // key from both maps unconditionally (AAASM-3982). The fork handler inserts
+    // each new fork/thread's `child_pid` into `PARENT_TGID` and
+    // `EXEC_PID_FILTER`; for a CLONE_THREAD child that key is a tid whose tgid
+    // is already the monitored parent's, so it is inert but was NEVER reclaimed
+    // under the old leader-only (pid == tgid) cleanup — `EXEC_PID_FILTER`
+    // (cap 256) / `PARENT_TGID` (cap 1024) leaked toward exhaustion, after which
+    // fork propagation fails open and reused pids inherit stale entries.
+    // Removing by the exiting thread's own tid frees leaked tid keys on thread
+    // exit while leaving a still-live multithreaded process's tgid entry intact
+    // (a non-leader exit removes only its own inert key); the tgid entry is
+    // released when the leader exits (`pid == tgid`).
+    let _ = PARENT_TGID.remove(&pid);
+    let _ = EXEC_PID_FILTER.remove(&pid);
+
+    // Only whole-process exit (thread-group leader, `pid == tgid`) emits a
+    // `ProcessExitEvent`. A non-leader thread of a multithreaded monitored
+    // process (Go/Node/Python agents are all multithreaded) exiting must NOT
+    // make the lineage tracker drop the still-live process (AAASM-3921c).
+    if pid != tgid {
+        return Ok(0);
+    }
+
+    // Only emit the exit event for monitored processes (lineage cleanup).
+    if !allowed {
         return Ok(0);
     }
 
@@ -185,6 +342,40 @@ fn try_sched_process_exit(_ctx: &TracePointContext) -> Result<u32, i64> {
     }
 
     entry.submit(0);
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// sched_process_fork tracepoint (AAASM-3921c / AAASM-3916)
+// ---------------------------------------------------------------------------
+
+/// Tracepoint on `sched/sched_process_fork`: records the child→parent tgid
+/// mapping so the exec handler can report the real parent pid, and propagates
+/// `EXEC_PID_FILTER` membership to children of monitored processes so the
+/// lineage tree covers the whole family.
+#[tracepoint]
+pub fn handle_sched_process_fork(ctx: TracePointContext) -> u32 {
+    try_sched_process_fork(&ctx).unwrap_or_default()
+}
+
+fn try_sched_process_fork(ctx: &TracePointContext) -> Result<u32, i64> {
+    // The fork tracepoint fires in the parent's context, so the current tgid is
+    // the parent's. Only track children of monitored processes.
+    let parent_tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    if !pid_allowed(parent_tgid) {
+        return Ok(0);
+    }
+
+    // For a real new process `child_pid == child_tgid` (the key used by the
+    // exec handler and the filter); for a thread the tgid is already the
+    // monitored parent's, so the extra tid key is inert — and is reaped by
+    // [`try_sched_process_exit`] when that thread exits (AAASM-3982).
+    let child_pid: u32 = unsafe { ctx.read_at(SCHED_FORK_CHILD_PID_OFFSET) }.map_err(|_| -1i64)?;
+
+    // Record the real parent for the exec handler, and confine the child to the
+    // exec filter so its own exec is observed (descendant coverage).
+    let _ = PARENT_TGID.insert(&child_pid, &parent_tgid, 0);
+    let _ = EXEC_PID_FILTER.insert(&child_pid, &1u8, 0);
     Ok(0)
 }
 

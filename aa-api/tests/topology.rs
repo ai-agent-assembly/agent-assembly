@@ -27,7 +27,6 @@ fn make_agent(id_byte: u8, name: &str, depth: u32, team_id: Option<&str>, parent
         pid: None,
         session_count: 0,
         last_event: None,
-        policy_violations_count: 0,
         active_sessions: Vec::new(),
         recent_events: std::collections::VecDeque::new(),
         recent_traces: Vec::new(),
@@ -42,12 +41,52 @@ fn make_agent(id_byte: u8, name: &str, depth: u32, team_id: Option<&str>, parent
         children: Vec::new(),
         parent_key: parent_id,
         enforcement_mode: None,
+        enforcement_mode_expires_at: None,
         org_id: None,
     }
 }
 
 fn hex_id(id_byte: u8) -> String {
     format!("{id_byte:02x}").repeat(16)
+}
+
+/// Seed a temp audit dir with one `PolicyViolation` event per `agent_ids` entry
+/// and point `state.audit_reader` at it, so the audit-derived `flagged` badge
+/// (AAASM-5103) reflects real recorded violations. Returns the state with the
+/// reader swapped in. The temp dir name is unique per call so parallel tests do
+/// not collide.
+fn state_with_violations(state: aa_api::state::AppState, agent_ids: &[[u8; 16]]) -> aa_api::state::AppState {
+    use aa_core::audit::{AuditEntry, AuditEventType};
+    use aa_core::{AgentId, SessionId};
+
+    let dir = std::env::temp_dir().join(format!(
+        "aa-5103-topo-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create audit dir");
+    let mut contents = String::new();
+    for (seq, id) in agent_ids.iter().enumerate() {
+        let entry = AuditEntry::new(
+            seq as u64,
+            1_000 + seq as u64,
+            AuditEventType::PolicyViolation,
+            AgentId::from_bytes(*id),
+            SessionId::from_bytes([0xEE; 16]),
+            "{}".to_string(),
+            [0u8; 32],
+        );
+        contents.push_str(&serde_json::to_string(&entry).unwrap());
+        contents.push('\n');
+    }
+    std::fs::write(dir.join("audit.jsonl"), contents).expect("write jsonl");
+
+    let mut state = state;
+    state.audit_reader = std::sync::Arc::new(aa_gateway::AuditReader::new(dir));
+    state
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +451,71 @@ async fn topology_tree_returns_subtree_for_known_agent() {
     assert_eq!(json["name"], "root");
     assert_eq!(json["depth"], 0);
     assert_eq!(json["status"], "active");
+    // AAASM-5036 — every node carries the badge fields. Defaults: enforce mode,
+    // not flagged, no trust source yet (null, present-not-omitted).
+    assert_eq!(json["mode"], "enforce");
+    assert_eq!(json["flagged"], false);
+    assert!(json.get("trust").is_some() && json["trust"].is_null());
+    assert_eq!(json["children"][0]["mode"], "enforce");
+    assert!(json["children"][0]["trust"].is_null());
+}
+
+/// AAASM-5036 / AAASM-5103 — the overview (AgentNode) and tree (AgentTree)
+/// responses both carry per-node `mode` (from the canonical `enforcement_mode`,
+/// AAASM-5289), `flagged` (a recorded `PolicyViolation`, count > 0), and a
+/// nullable `trust`.
+#[tokio::test]
+async fn topology_response_carries_mode_flagged_trust() {
+    let state = common::test_state();
+    // Standalone root: shadow mode. AAASM-5289 — the badge now derives `mode`
+    // from the canonical `enforcement_mode` (Observe → "shadow"), NOT the
+    // free-form `metadata["mode"]`. Set a DIVERGENT metadata.mode too, so this
+    // asserts the canonical field wins over the stale metadata blob.
+    let mut root = make_agent(0x01, "shadow-root", 0, None, None);
+    root.enforcement_mode = Some(aa_core::EnforcementMode::Observe);
+    root.metadata.insert("mode".to_string(), "enforce".to_string());
+    state.agent_registry.register(root).unwrap();
+    // AAASM-5103 — flag it by seeding a real PolicyViolation audit event, the
+    // canonical source the badge now derives from (the record no longer carries a
+    // violation counter).
+    let state = state_with_violations(state, &[[0x01; 16]]);
+
+    let app = aa_api::server::build_app(state);
+
+    // Overview → AgentNode in standalone_root_agents.
+    let overview = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(overview.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let node = &json["standalone_root_agents"][0];
+    assert_eq!(node["mode"], "shadow");
+    assert_eq!(node["flagged"], true);
+    assert!(node.get("trust").is_some() && node["trust"].is_null());
+
+    // Tree → AgentTree root node carries the same fields.
+    let id = hex_id(0x01);
+    let tree = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/topology/tree/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(tree.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["mode"], "shadow");
+    assert_eq!(json["flagged"], true);
+    assert!(json["trust"].is_null());
 }
 
 #[tokio::test]
@@ -717,4 +821,78 @@ async fn topology_stats_large_fixture_histograms_are_correct() {
 
     // avg_children_per_parent > 0 (root-a has 4 children, a1 has 2, root-b has 3)
     assert!(json["avg_children_per_parent"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn topology_stats_counts_suspended_and_orphan_agents() {
+    let state = common::test_state();
+    // Active root in a team.
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, Some("team-a"), None))
+        .unwrap();
+    // Suspended child in the team → exercises the Suspended arm.
+    let mut suspended = make_agent(0x02, "child", 1, Some("team-a"), Some([0x01; 16]));
+    suspended.status = AgentStatus::Suspended(SuspendReason::Manual);
+    state.agent_registry.register(suspended).unwrap();
+    // Orphan: depth > 0 but no team_id → exercises the orphan branch.
+    let orphan = make_agent(0x03, "orphan", 1, None, Some([0x01; 16]));
+    state.agent_registry.register(orphan).unwrap();
+
+    let app = aa_api::server::build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["total_agents"], 3);
+    // root + orphan are Active; child is Suspended.
+    assert_eq!(json["active_count"], 2);
+    assert_eq!(json["suspended_count"], 1);
+    assert_eq!(json["orphan_count"], 1);
+}
+
+#[tokio::test]
+async fn topology_stats_second_call_is_served_from_cache() {
+    let state = common::test_state();
+    state
+        .agent_registry
+        .register(make_agent(0x01, "root", 0, Some("team-a"), None))
+        .unwrap();
+
+    let app = aa_api::server::build_app(state);
+    // First call populates the stats cache.
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = axum::body::to_bytes(first.into_body(), usize::MAX).await.unwrap();
+
+    // Second call hits the cache-return branch and must yield identical bytes.
+    let second = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/topology/stats")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = axum::body::to_bytes(second.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(first_body, second_body);
 }

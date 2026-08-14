@@ -57,6 +57,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
         capabilities: Some(CapabilitySet {
             allow: allow.iter().cloned().collect::<BTreeSet<_>>(),
             deny: deny.iter().cloned().collect::<BTreeSet<_>>(),
+            allow_restricted: false,
         }),
     }
 }
@@ -338,5 +339,169 @@ fn mcp_tool_capability_allowlist_permits_only_listed_tools() {
         PolicyResult::Allow,
         "expected Allow for git (in MCP tool allowlist), got {:?}",
         git_result
+    );
+}
+
+// ── FileDelete governance (AAASM-4103) ──────────────────────────────────────────
+
+/// A policy that allows `file_write` (but not `file_delete`) must deny a delete:
+/// a write grant no longer implies delete (fail-closed).
+#[test]
+fn delete_denied_when_only_file_write_is_granted() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(
+        PolicyScope::Global,
+        &[Capability::FileRead, Capability::FileWrite],
+        &[],
+    ));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/data.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: a file_write grant must not imply delete, got {:?}",
+        result
+    );
+}
+
+/// A policy that explicitly allows `file_delete` must allow a delete action.
+#[test]
+fn delete_allowed_when_file_delete_is_granted() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(
+        PolicyScope::Global,
+        &[Capability::FileRead, Capability::FileWrite, Capability::FileDelete],
+        &[],
+    ));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/data.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert_eq!(
+        result,
+        PolicyResult::Allow,
+        "expected Allow: file_delete explicitly granted, got {:?}",
+        result
+    );
+}
+
+/// The headline allow-write-deny-delete shape: with `allow=[file_write]` and
+/// `deny=[file_delete]`, a write is allowed but a delete is denied.
+#[test]
+fn allow_write_deny_delete_governs_verbs_independently() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(
+        PolicyScope::Global,
+        &[Capability::FileWrite],
+        &[Capability::FileDelete],
+    ));
+
+    let ctx = make_ctx();
+
+    let write = engine
+        .evaluate(
+            &ctx,
+            &GovernanceAction::FileAccess {
+                path: "/tmp/report.txt".into(),
+                mode: aa_core::FileMode::Write,
+            },
+        )
+        .decision;
+    assert_eq!(write, PolicyResult::Allow, "write must be allowed, got {:?}", write);
+
+    let delete = engine
+        .evaluate(
+            &ctx,
+            &GovernanceAction::FileAccess {
+                path: "/tmp/report.txt".into(),
+                mode: aa_core::FileMode::Delete,
+            },
+        )
+        .decision;
+    assert!(
+        matches!(delete, PolicyResult::Deny { .. }),
+        "delete must be denied, got {:?}",
+        delete
+    );
+}
+
+/// Defense-in-depth: a pre-4103 policy that only denies `file_write` (to lock
+/// down all mutation) must keep blocking delete even though it never names
+/// `file_delete`.
+#[test]
+fn legacy_file_write_deny_still_blocks_delete() {
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(PolicyScope::Global, &[], &[Capability::FileWrite]));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/data.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: a stale file_write deny must keep blocking delete, got {:?}",
+        result
+    );
+}
+
+// ── Disjoint cascade allow-lists (AAASM-4154) ───────────────────────────────────
+
+/// The headline fail-open: two cascade tiers with DISJOINT non-empty allow-lists
+/// (Global `allow=[file_read]`, Team `allow=[file_write]`) intersect to an empty
+/// merged allow. Before the fix an empty merged allow was read as "no
+/// restriction", so an unlisted capability like `TerminalExec` was permitted —
+/// combining two restrictive whitelists escalated privilege to allow-all. The
+/// merged set must instead stay restricted and DENY the unlisted capability.
+#[test]
+fn cascade_disjoint_allow_lists_deny_unlisted_capability() {
+    let agent_id = AgentId::from_bytes([1u8; 16]);
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(PolicyScope::Global, &[Capability::FileRead], &[]));
+    engine.load_policy(cap_doc(PolicyScope::Agent(agent_id), &[Capability::FileWrite], &[]));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::ProcessExec { command: "sh".into() };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: disjoint allow-lists must not collapse to allow-all, got {:?}",
+        result
+    );
+}
+
+/// The same disjoint collapse must not nullify a delete restriction: with the
+/// merged allow-list emptied, `FileDelete` (whitelisted by neither tier) is not
+/// implicitly permitted — the set stays restricted and denies it (AAASM-4154).
+#[test]
+fn cascade_disjoint_allow_lists_deny_file_delete() {
+    let agent_id = AgentId::from_bytes([1u8; 16]);
+    let mut engine = make_engine();
+    engine.load_policy(cap_doc(PolicyScope::Global, &[Capability::FileRead], &[]));
+    engine.load_policy(cap_doc(PolicyScope::Agent(agent_id), &[Capability::FileWrite], &[]));
+
+    let ctx = make_ctx();
+    let action = GovernanceAction::FileAccess {
+        path: "/tmp/secret.txt".into(),
+        mode: aa_core::FileMode::Delete,
+    };
+
+    let result = engine.evaluate(&ctx, &action).decision;
+    assert!(
+        matches!(result, PolicyResult::Deny { .. }),
+        "expected Deny: a collapsed disjoint allow-list must still deny delete, got {:?}",
+        result
     );
 }

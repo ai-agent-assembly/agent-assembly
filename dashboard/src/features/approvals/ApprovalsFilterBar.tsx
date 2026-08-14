@@ -15,7 +15,7 @@ const SELECT_STYLE = {
   fontSize: '0.875rem',
 } as const
 
-export function ApprovalsFilterBar({ filter, onChange, options }: ApprovalsFilterBarProps) {
+export function ApprovalsFilterBar({ filter, onChange, options }: Readonly<ApprovalsFilterBarProps>) {
   function update<K extends keyof ApprovalsFilter>(key: K, value: ApprovalsFilter[K]) {
     onChange({ ...filter, [key]: value })
   }
@@ -35,7 +35,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: ApprovalsFilte
       }}
     >
       <label>
-        Agent
+        <span>Agent</span>
         <select
           data-testid="filter-agent"
           value={filter.agent}
@@ -48,7 +48,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: ApprovalsFilte
       </label>
 
       <label>
-        Team
+        <span>Team</span>
         <select
           data-testid="filter-team"
           value={filter.team}
@@ -61,7 +61,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: ApprovalsFilte
       </label>
 
       <label>
-        Action
+        <span>Action</span>
         <select
           data-testid="filter-action"
           value={filter.action}
@@ -74,7 +74,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: ApprovalsFilte
       </label>
 
       <label>
-        Urgency
+        <span>Urgency</span>
         <select
           data-testid="filter-urgency"
           value={filter.urgency}
@@ -90,6 +90,7 @@ export function ApprovalsFilterBar({ filter, onChange, options }: ApprovalsFilte
 
       {isActive && (
         <button
+          type="button"
           data-testid="filter-clear"
           onClick={() => onChange(EMPTY_FILTER)}
           style={{

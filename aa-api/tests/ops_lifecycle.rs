@@ -6,6 +6,7 @@
 
 mod common;
 
+use aa_api::auth::scope::Scope;
 use aa_api::server::build_app;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -126,4 +127,150 @@ async fn unknown_action_falls_through_to_404() {
     let app = build_app(common::test_state());
     let (status, _body) = post_empty(app, "/api/v1/ops/op-1/delete").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn list_ops_returns_200_with_all_registered_ops() {
+    let app = build_app(common::test_state());
+    // Register two ops then list them.
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-list-a"})).await;
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-list-b"})).await;
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/ops")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let ops = body.as_array().unwrap();
+    assert_eq!(ops.len(), 2);
+}
+
+#[tokio::test]
+async fn register_op_empty_op_id_returns_400() {
+    let app = build_app(common::test_state());
+    let (status, body) = post_json(app, "/api/v1/ops", json!({"op_id": "   "})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("op_id must not be empty"));
+}
+
+#[tokio::test]
+async fn invalid_transition_returns_409() {
+    let app = build_app(common::test_state());
+    // Register then immediately try to resume — resume from running is invalid.
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-conflict"})).await;
+    let (status, body) = post_empty(app, "/api/v1/ops/op-conflict/resume").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("state does not permit"));
+}
+
+// ── AAASM-3881: operator agent-wide / global halt endpoints ────────────────
+
+#[tokio::test]
+async fn halt_agent_unknown_op_returns_404() {
+    let app = build_app(common::test_state());
+    let (status, _body) = post_json(app, "/api/v1/ops/no-such-op/halt-agent", json!({"action": "terminate"})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn halt_agent_unknown_action_returns_400() {
+    let app = build_app(common::test_state());
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-h1"})).await;
+    let (status, body) = post_json(app, "/api/v1/ops/op-h1/halt-agent", json!({"action": "explode"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Unknown halt action"));
+}
+
+#[tokio::test]
+async fn halt_agent_op_without_owning_agent_returns_409() {
+    // An op registered via POST /api/v1/ops carries no agent identity, so there
+    // is no server-side agent to address an agent-wide halt to.
+    let app = build_app(common::test_state());
+    post_json(app.clone(), "/api/v1/ops", json!({"op_id": "op-h2"})).await;
+    let (status, body) = post_json(app, "/api/v1/ops/op-h2/halt-agent", json!({"action": "terminate"})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("no resolvable owning agent"));
+}
+
+#[tokio::test]
+async fn halt_global_unknown_action_returns_400() {
+    let app = build_app(common::test_state());
+    let (status, body) = post_json(app, "/api/v1/ops/global/halt", json!({"action": "explode"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Unknown halt action"));
+}
+
+#[tokio::test]
+async fn halt_global_without_publisher_returns_503() {
+    // The default test state attaches no op-control publisher, so the channel
+    // is unavailable and the endpoint must say so explicitly.
+    let app = build_app(common::test_state());
+    let (status, _body) = post_json(app, "/api/v1/ops/global/halt", json!({"action": "terminate"})).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn halt_global_requires_admin_scope() {
+    // A write-but-not-admin caller may drive per-op lifecycle, but the
+    // fleet-wide kill switch is gated to admins by the `RequireAdmin` extractor.
+    let (plaintext, entry) = common::generate_test_api_key("writer", vec![Scope::Read, Scope::Write]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/ops/global/halt")
+                .header("authorization", format!("Bearer {plaintext}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"action":"terminate"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn halt_global_admin_passes_scope_gate() {
+    // An admin-scoped caller clears the `RequireAdmin` gate and proceeds into
+    // the handler body. The test app attaches no op-control publisher, so the
+    // request gets past the 403 gate and surfaces 503 (channel not configured)
+    // rather than being rejected at the scope check.
+    let (plaintext, entry) = common::generate_test_api_key("admin", vec![Scope::Admin]);
+    let app = common::test_app_with_auth(&[entry], 1000);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/ops/global/halt")
+                .header("authorization", format!("Bearer {plaintext}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"action":"terminate"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }

@@ -19,6 +19,15 @@ use crate::storage::StorageBackend;
 /// Maximum number of recent events retained per agent.
 pub const MAX_RECENT_EVENTS: usize = 20;
 
+/// Maximum number of concurrently-tracked active sessions retained per agent.
+///
+/// The gateway has no per-session end RPC (see [`AgentRegistry::close_session`]),
+/// so on a long-lived agent `active_sessions` would otherwise grow without
+/// bound. When a newly-observed session would exceed this cap, the oldest
+/// session (by `started_at`) is evicted — mirroring the `MAX_RECENT_EVENTS`
+/// bound on `recent_events`.
+pub const MAX_ACTIVE_SESSIONS: usize = 50;
+
 /// Maximum allowed delegation depth. Agents that would exceed this depth are rejected at registration.
 pub const DEFAULT_MAX_AGENT_DEPTH: u32 = 10;
 
@@ -31,6 +40,14 @@ pub struct ActiveSession {
     pub started_at: DateTime<Utc>,
     /// Current status of the session (e.g. "running", "idle").
     pub status: String,
+    /// Number of governed actions observed on this session so far.
+    ///
+    /// Incremented once per `CheckAction` / `BatchCheck` the gateway evaluates
+    /// for the owning agent under this session's trace id (AAASM-5088). Starts
+    /// at 1 when the session is first observed. There is no `current_task`
+    /// counterpart: the session layer has no real source for a task label, so
+    /// that column stays absent rather than fabricated.
+    pub actions_count: u32,
 }
 
 /// Summary of a recent event emitted by an agent.
@@ -86,8 +103,6 @@ pub struct AgentRecord {
     pub session_count: u32,
     /// Timestamp of the most recent event emitted by this agent.
     pub last_event: Option<DateTime<Utc>>,
-    /// Number of policy violations recorded for this agent.
-    pub policy_violations_count: u32,
     /// Currently active sessions for this agent.
     pub active_sessions: Vec<ActiveSession>,
     /// Most recent events emitted by this agent (bounded by [`MAX_RECENT_EVENTS`]).
@@ -141,6 +156,17 @@ pub struct AgentRecord {
     /// `None` means inherit — the resolver falls through to the policy
     /// document and finally to `Enforce` as the server-wide default.
     pub enforcement_mode: Option<aa_core::EnforcementMode>,
+    /// Expiry of a time-limited (shadow) enforcement window, if any (AAASM-5288).
+    ///
+    /// `Some(_)` marks `enforcement_mode` as a bounded window; once the
+    /// deadline passes the override is treated as reverted to the base mode.
+    /// Persisted through the storage bridge so the deadline survives a
+    /// gateway restart — on rehydrate an already-expired window resolves to
+    /// the base mode (`enforcement_mode = None`) rather than being silently
+    /// kept active (ADR 0021 prerequisite). There is no HTTP path to set this
+    /// today; it exists so the future shadow toggle (AAASM-5097) can persist a
+    /// deadline safely.
+    pub enforcement_mode_expires_at: Option<DateTime<Utc>>,
 }
 
 /// Channel sender type for pushing [`ControlCommand`]s to an agent's control stream.
@@ -189,6 +215,15 @@ pub struct AgentRegistry {
     /// constructs an [`AgentRegistry::new`] without storage. Wired in by
     /// Epic 18 Story S-I.2 (AAASM-1864).
     storage: Option<Arc<dyn StorageBackend>>,
+}
+
+/// Validated outcome of a reparent precheck: the values the mutation step of
+/// [`AgentRegistry::reparent`] needs after the cycle/depth checks pass.
+struct ReparentPlan {
+    /// The child's parent before the move (used to unlink its children list).
+    old_parent_key: Option<[u8; 16]>,
+    /// The child's depth under the new parent (`new_parent.depth + 1`).
+    new_child_depth: u32,
 }
 
 impl AgentRegistry {
@@ -264,9 +299,29 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// AAASM-4190: validate that a tenant id (team_id or org_id) contains no
+    /// control characters. Control characters in the id could cause bucket-key
+    /// collisions when the id is used as part of a composite key with a
+    /// separator (e.g. `\u{1}` in rate-limit bucket keys).
+    fn validate_tenant_id(id: Option<&str>, field: &'static str) -> Result<(), RegistryError> {
+        if let Some(s) = id {
+            if s.chars().any(|c| c.is_control()) {
+                return Err(RegistryError::InvalidTenantId { field });
+            }
+        }
+        Ok(())
+    }
+
     /// Insert a new agent record. Returns an error if the ID is already registered.
     pub fn register(&self, record: AgentRecord) -> Result<(), RegistryError> {
         use dashmap::mapref::entry::Entry;
+
+        // AAASM-4190: reject tenant ids containing control characters to prevent
+        // bucket-key collision attacks (e.g. team_id containing `\u{1}` could
+        // alias onto a different team's rate-limit bucket).
+        Self::validate_tenant_id(record.team_id.as_deref(), "team_id")?;
+        Self::validate_tenant_id(record.org_id.as_deref(), "org_id")?;
+
         let agent_id = record.agent_id;
         let parent_key = record.parent_key;
         let team_id = record.team_id.clone();
@@ -359,7 +414,7 @@ impl AgentRegistry {
     }
 
     /// Remove an agent from the registry. Returns the removed record and a list of
-    /// [`OrphanEffect`]s describing what happened to each descendant under `mode`.
+    /// `OrphanEffect`s describing what happened to each descendant under `mode`.
     ///
     /// Also removes any associated control stream sender.
     pub fn deregister(
@@ -486,72 +541,83 @@ impl AgentRegistry {
     /// into a `Vec` before any mutation so there is no re-entrant `get_mut`.
     fn apply_orphan_mode_recursive(&self, child_key: [u8; 16], mode: OrphanMode, effects: &mut Vec<OrphanEffect>) {
         match mode {
-            OrphanMode::Suspend => {
-                // Collect grandchildren BEFORE mutating this entry (avoid re-entrant lock).
-                let grandchildren = self.children_of(&child_key);
+            OrphanMode::Suspend => self.orphan_suspend(child_key, mode, effects),
+            OrphanMode::PromoteToRoot => self.orphan_promote_to_root(child_key, effects),
+            OrphanMode::CascadeDeregister => self.orphan_cascade_deregister(child_key, mode, effects),
+        }
+    }
 
-                if let Some(mut entry) = self.agents.get_mut(&child_key) {
-                    let old_status = format!("{:?}", entry.status);
-                    entry.status = AgentStatus::Suspended(SuspendReason::ParentDeregistered);
-                    effects.push(OrphanEffect {
-                        agent_key: child_key,
-                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
-                        action: "suspended",
-                        old_status,
-                        new_status: "suspended:parent_deregistered".to_string(),
-                    });
-                }
+    /// `Suspend` arm of [`apply_orphan_mode_recursive`]: mark this child
+    /// suspended (ParentDeregistered) then recurse into grandchildren.
+    fn orphan_suspend(&self, child_key: [u8; 16], mode: OrphanMode, effects: &mut Vec<OrphanEffect>) {
+        // Collect grandchildren BEFORE mutating this entry (avoid re-entrant lock).
+        let grandchildren = self.children_of(&child_key);
 
-                for gk in grandchildren {
-                    self.apply_orphan_mode_recursive(gk, mode, effects);
+        if let Some(mut entry) = self.agents.get_mut(&child_key) {
+            let old_status = format!("{:?}", entry.status);
+            entry.status = AgentStatus::Suspended(SuspendReason::ParentDeregistered);
+            effects.push(OrphanEffect {
+                agent_key: child_key,
+                agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                action: "suspended",
+                old_status,
+                new_status: "suspended:parent_deregistered".to_string(),
+            });
+        }
+
+        for gk in grandchildren {
+            self.apply_orphan_mode_recursive(gk, mode, effects);
+        }
+    }
+
+    /// `PromoteToRoot` arm of [`apply_orphan_mode_recursive`]: detach this
+    /// direct child into a new root and recompute its subtree depths. Only
+    /// direct children become roots; their children keep relative structure.
+    fn orphan_promote_to_root(&self, child_key: [u8; 16], effects: &mut Vec<OrphanEffect>) {
+        if let Some(mut entry) = self.agents.get_mut(&child_key) {
+            let old_status = format!("{:?}", entry.status);
+            entry.parent_key = None;
+            entry.parent_agent_id = None;
+            entry.root_agent_id = None;
+            entry.depth = 0;
+            effects.push(OrphanEffect {
+                agent_key: child_key,
+                agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                action: "promoted_to_root",
+                old_status,
+                new_status: "active:root".to_string(),
+            });
+        }
+
+        // Recalculate depth for this subtree now that the promoted child is depth 0.
+        self.recalculate_depth_recursive(child_key, 0);
+    }
+
+    /// `CascadeDeregister` arm of [`apply_orphan_mode_recursive`]: post-order
+    /// teardown — recurse into grandchildren first, then remove this child and
+    /// detach it from the team index.
+    fn orphan_cascade_deregister(&self, child_key: [u8; 16], mode: OrphanMode, effects: &mut Vec<OrphanEffect>) {
+        // Post-order teardown: recurse into grandchildren first.
+        let grandchildren = self.children_of(&child_key);
+        for gk in grandchildren {
+            self.apply_orphan_mode_recursive(gk, mode, effects);
+        }
+
+        // Now remove this child.
+        self.control_senders.remove(&child_key);
+        if let Some((_, record)) = self.agents.remove(&child_key) {
+            if let Some(ref tid) = record.team_id {
+                if let Some(set) = self.team_index.get(tid) {
+                    set.remove(&child_key);
                 }
             }
-
-            OrphanMode::PromoteToRoot => {
-                // Only direct children become new roots; their children keep relative structure.
-                if let Some(mut entry) = self.agents.get_mut(&child_key) {
-                    let old_status = format!("{:?}", entry.status);
-                    entry.parent_key = None;
-                    entry.parent_agent_id = None;
-                    entry.root_agent_id = None;
-                    entry.depth = 0;
-                    effects.push(OrphanEffect {
-                        agent_key: child_key,
-                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
-                        action: "promoted_to_root",
-                        old_status,
-                        new_status: "active:root".to_string(),
-                    });
-                }
-
-                // Recalculate depth for this subtree now that the promoted child is depth 0.
-                self.recalculate_depth_recursive(child_key, 0);
-            }
-
-            OrphanMode::CascadeDeregister => {
-                // Post-order teardown: recurse into grandchildren first.
-                let grandchildren = self.children_of(&child_key);
-                for gk in grandchildren {
-                    self.apply_orphan_mode_recursive(gk, mode, effects);
-                }
-
-                // Now remove this child.
-                self.control_senders.remove(&child_key);
-                if let Some((_, record)) = self.agents.remove(&child_key) {
-                    if let Some(ref tid) = record.team_id {
-                        if let Some(set) = self.team_index.get(tid) {
-                            set.remove(&child_key);
-                        }
-                    }
-                    effects.push(OrphanEffect {
-                        agent_key: child_key,
-                        agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
-                        action: "deregistered",
-                        old_status: format!("{:?}", record.status),
-                        new_status: "deregistered".to_string(),
-                    });
-                }
-            }
+            effects.push(OrphanEffect {
+                agent_key: child_key,
+                agent_id_str: uuid::Uuid::from_bytes(child_key).to_string(),
+                action: "deregistered",
+                old_status: format!("{:?}", record.status),
+                new_status: "deregistered".to_string(),
+            });
         }
     }
 
@@ -568,33 +634,17 @@ impl AgentRegistry {
         }
     }
 
-    /// Move `child` from its current parent (if any) to `new_parent`.
+    /// Validate a proposed reparent and compute the values the mutation needs.
     ///
-    /// Updates `child`'s `parent_key`, `parent_agent_id`, `root_agent_id`,
-    /// and `depth`; maintains the old and new parent `children` lists; and
-    /// recursively recomputes `depth` and `root_agent_id` for the entire
-    /// subtree rooted at `child` so topology-aware policy evaluations see
-    /// the new ancestry on the next call.
-    ///
-    /// Idempotent: when `child`'s current parent already equals `new_parent`,
-    /// returns `Ok(())` without touching any record.
-    ///
-    /// # Errors
-    ///
-    /// * [`RegistryError::NotFound`] — `child` or `new_parent` is not in the
-    ///   registry.
-    /// * [`RegistryError::Lineage`] with
-    ///   [`LineageError::CircularDelegation`] — `new_parent` is `child`
-    ///   itself or sits within `child`'s subtree, so the move would create
-    ///   a cycle.
-    /// * [`RegistryError::Lineage`] with [`LineageError::MaxDepthExceeded`]
-    ///   — the deepest leaf of the moved subtree would land at or past
-    ///   [`DEFAULT_MAX_AGENT_DEPTH`] under `new_parent`.
-    pub fn reparent(&self, child: &[u8; 16], new_parent: &[u8; 16]) -> Result<(), RegistryError> {
-        // Serialise against concurrent register / reparent so the cycle and
-        // depth checks stay consistent with the eventual mutation.
-        let _guard = self.registration_lock.lock().unwrap_or_else(|e| e.into_inner());
-
+    /// Returns `Ok(None)` for the idempotent same-parent fast path (no work
+    /// needed), `Ok(Some(plan))` when the move is valid, or an error when
+    /// `child`/`new_parent` is missing or the move would create a cycle or
+    /// exceed the depth bound.
+    fn validate_reparent(
+        &self,
+        child: &[u8; 16],
+        new_parent: &[u8; 16],
+    ) -> Result<Option<ReparentPlan>, RegistryError> {
         let (old_parent_key, current_child_depth) = match self.agents.get(child) {
             Some(r) => (r.parent_key, r.depth),
             None => return Err(RegistryError::NotFound(*child)),
@@ -602,7 +652,7 @@ impl AgentRegistry {
 
         // Idempotent same-parent fast path.
         if old_parent_key.as_ref() == Some(new_parent) {
-            return Ok(());
+            return Ok(None);
         }
 
         if !self.agents.contains_key(new_parent) {
@@ -643,6 +693,50 @@ impl AgentRegistry {
                 max: DEFAULT_MAX_AGENT_DEPTH,
             }));
         }
+
+        Ok(Some(ReparentPlan {
+            old_parent_key,
+            new_child_depth,
+        }))
+    }
+
+    /// Move `child` from its current parent (if any) to `new_parent`.
+    ///
+    /// Updates `child`'s `parent_key`, `parent_agent_id`, `root_agent_id`,
+    /// and `depth`; maintains the old and new parent `children` lists; and
+    /// recursively recomputes `depth` and `root_agent_id` for the entire
+    /// subtree rooted at `child` so topology-aware policy evaluations see
+    /// the new ancestry on the next call.
+    ///
+    /// Idempotent: when `child`'s current parent already equals `new_parent`,
+    /// returns `Ok(())` without touching any record.
+    ///
+    /// # Errors
+    ///
+    /// * [`RegistryError::NotFound`] — `child` or `new_parent` is not in the
+    ///   registry.
+    /// * [`RegistryError::Lineage`] with
+    ///   [`LineageError::CircularDelegation`] — `new_parent` is `child`
+    ///   itself or sits within `child`'s subtree, so the move would create
+    ///   a cycle.
+    /// * [`RegistryError::Lineage`] with [`LineageError::MaxDepthExceeded`]
+    ///   — the deepest leaf of the moved subtree would land at or past
+    ///   [`DEFAULT_MAX_AGENT_DEPTH`] under `new_parent`.
+    pub fn reparent(&self, child: &[u8; 16], new_parent: &[u8; 16]) -> Result<(), RegistryError> {
+        // Serialise against concurrent register / reparent so the cycle and
+        // depth checks stay consistent with the eventual mutation.
+        let _guard = self.registration_lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Validate the move (existence, idempotency, cycle, depth bound) and
+        // recover the values the mutation below needs.
+        let Some(plan) = self.validate_reparent(child, new_parent)? else {
+            // Idempotent same-parent fast path.
+            return Ok(());
+        };
+        let ReparentPlan {
+            old_parent_key,
+            new_child_depth,
+        } = plan;
 
         // The new subtree root is the new_parent's own root (the new_parent
         // itself when it is a root agent).
@@ -700,6 +794,76 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Record activity for a session and return its current action count.
+    ///
+    /// AAASM-5088 — the gateway's session-lifecycle hook. On the first activity
+    /// seen for `session_id`, opens a new [`ActiveSession`] (status `"running"`,
+    /// `actions_count = 1`) on the agent's record and increments the agent's
+    /// lifetime `session_count`. On subsequent activity for the same
+    /// `session_id`, increments that session's `actions_count`. This is what
+    /// makes `active_sessions` — and therefore the Fleet Active-Sessions surface
+    /// — populate in production rather than staying empty.
+    ///
+    /// Returns `Ok(count)` with the session's new `actions_count`, or
+    /// [`RegistryError::NotFound`] when the agent is not registered (an
+    /// unregistered agent has no record to attach a session to).
+    pub fn record_session_activity(&self, agent_id: &[u8; 16], session_id: &str) -> Result<u32, RegistryError> {
+        let mut entry = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or(RegistryError::NotFound(*agent_id))?;
+        if let Some(session) = entry.active_sessions.iter_mut().find(|s| s.session_id == session_id) {
+            session.actions_count = session.actions_count.saturating_add(1);
+            Ok(session.actions_count)
+        } else {
+            entry.active_sessions.push(ActiveSession {
+                session_id: session_id.to_string(),
+                started_at: Utc::now(),
+                status: "running".to_string(),
+                actions_count: 1,
+            });
+            entry.session_count = entry.session_count.saturating_add(1);
+            // Bound the tracked set: with no per-session end signal, evict the
+            // oldest session once the cap is exceeded so a long-lived agent's
+            // `active_sessions` stays bounded (mirrors MAX_RECENT_EVENTS).
+            if entry.active_sessions.len() > MAX_ACTIVE_SESSIONS {
+                if let Some((idx, _)) = entry
+                    .active_sessions
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, s)| s.started_at)
+                {
+                    entry.active_sessions.remove(idx);
+                }
+            }
+            Ok(1)
+        }
+    }
+
+    /// Close a single active session on an agent, removing it from
+    /// `active_sessions`.
+    ///
+    /// AAASM-5088 — the per-session end primitive. A full agent deregister
+    /// already drops every open session with the record (the record is removed
+    /// wholesale), so the only end this primitive adds is closing one session
+    /// while its agent stays registered. The gateway has no per-session end
+    /// signal today (no SessionEnd RPC and `recent_traces` is likewise never
+    /// populated at runtime), so this stands ready for a first-class end RPC
+    /// rather than being called on a live path yet — see the ticket's
+    /// "remained absent" note. Returns `Ok(true)` when a matching session was
+    /// found and removed, `Ok(false)` when the agent had no such open session
+    /// (idempotent — a double-close is not an error), or
+    /// [`RegistryError::NotFound`] when the agent is not registered.
+    pub fn close_session(&self, agent_id: &[u8; 16], session_id: &str) -> Result<bool, RegistryError> {
+        let mut entry = self
+            .agents
+            .get_mut(agent_id)
+            .ok_or(RegistryError::NotFound(*agent_id))?;
+        let before = entry.active_sessions.len();
+        entry.active_sessions.retain(|s| s.session_id != session_id);
+        Ok(entry.active_sessions.len() != before)
+    }
+
     /// Open a control stream for a registered agent.
     ///
     /// Creates an `mpsc` channel, stores the sender side in the registry,
@@ -734,7 +898,7 @@ impl AgentRegistry {
     }
 
     /// Deregister any active agent whose age (now_secs - registered_at) exceeds the
-    /// maximum configured for its team via [`set_team_max_age`].
+    /// maximum configured for its team via `set_team_max_age`.
     ///
     /// Returns the agent keys of every agent that was force-deregistered so callers
     /// can emit [`aa_core::AuditEventType::AgentForceDeregistered`] events.
@@ -777,6 +941,15 @@ impl AgentRegistry {
                 .team_id
                 .clone()
                 .or_else(|| record.metadata.get("team_id").cloned()),
+            // AAASM-3377 — propagate the full delegation lineage (mirroring the
+            // first-class fields the TopologyService already reads) so the
+            // CheckAction audit entry carries root / parent / depth /
+            // delegation_reason / spawned_by_tool instead of dropping them.
+            root_agent_id: record.root_agent_id,
+            parent_agent_id: record.parent_key,
+            depth: Some(record.depth),
+            delegation_reason: record.delegation_reason.clone(),
+            spawned_by_tool: record.spawned_by_tool.clone(),
         })
     }
 
@@ -847,6 +1020,92 @@ impl AgentRegistry {
             .ok_or(RegistryError::NotFound(*agent_id))?;
         entry.status = AgentStatus::Active;
         Ok(())
+    }
+
+    /// Set a single agent's per-agent enforcement-mode override **and** write
+    /// through to durable storage (AAASM-5097 / ADR 0021).
+    ///
+    /// Sets `enforcement_mode` and `enforcement_mode_expires_at` on the
+    /// in-memory record, then — when a storage handle is attached — persists the
+    /// full record via [`StorageBackend::upsert_agent`](crate::storage::StorageBackend::upsert_agent)
+    /// so a shadow window survives a restart (the storage bridge and
+    /// rehydrate path from AAASM-5288 already round-trip both columns). If the
+    /// storage write fails, the in-memory mutation is rolled back to the prior
+    /// values so the two views never diverge.
+    ///
+    /// `mode` is the canonical override to store (`Some(Observe)` for a shadow
+    /// weaken, `Some(Enforce)` for a strengthen, matching how the enforcement
+    /// resolver reads it); `expires_at` is the mandatory shadow deadline on a
+    /// weaken and must be `None` on a strengthen (the caller clears it). This
+    /// method does not itself gate direction or validate the deadline — the
+    /// HTTP handler owns the direction-asymmetric authz and 72h bound; this is
+    /// the durable write primitive only.
+    ///
+    /// Returns [`RegistryError::NotFound`] if the agent is not registered.
+    pub async fn set_enforcement_mode_persisted(
+        &self,
+        agent_id: &[u8; 16],
+        mode: Option<aa_core::EnforcementMode>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(), RegistryError> {
+        // Mutate in-memory first, capturing the prior values so a failed storage
+        // write can be rolled back. The updated clone is what we persist, so the
+        // durable row matches the in-memory record exactly.
+        let (prior_mode, prior_expiry, durable) = {
+            let mut entry = self
+                .agents
+                .get_mut(agent_id)
+                .ok_or(RegistryError::NotFound(*agent_id))?;
+            let prior_mode = entry.enforcement_mode;
+            let prior_expiry = entry.enforcement_mode_expires_at;
+            entry.enforcement_mode = mode;
+            entry.enforcement_mode_expires_at = expires_at;
+            let durable = self
+                .storage
+                .as_ref()
+                .map(|_| super::storage_bridge::runtime_to_storage(&entry));
+            (prior_mode, prior_expiry, durable)
+        };
+
+        if let (Some(storage), Some(durable)) = (self.storage.as_ref(), durable) {
+            if let Err(err) = storage.upsert_agent(durable).await {
+                // Roll back the in-memory mutation so the registry never
+                // diverges from durable state after a failed persist.
+                if let Some(mut entry) = self.agents.get_mut(agent_id) {
+                    entry.enforcement_mode = prior_mode;
+                    entry.enforcement_mode_expires_at = prior_expiry;
+                }
+                return Err(RegistryError::Storage(err));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the registry keys of every agent whose time-limited shadow
+    /// (Observe) enforcement window has expired at `now` (AAASM-5339).
+    ///
+    /// An agent qualifies when its `enforcement_mode` is `Some(Observe)` **and**
+    /// its `enforcement_mode_expires_at` is `Some(t)` with `t <= now`. The
+    /// boundary is inclusive — a window whose deadline is exactly `now` is
+    /// treated as expired, matching the silence-expiry watcher's convention.
+    ///
+    /// This is the read-only query the shadow-expiry reconciler ticks against;
+    /// it never mutates state. The reconciler reverts each returned agent to
+    /// `Enforce` via [`set_enforcement_mode_persisted`](Self::set_enforcement_mode_persisted)
+    /// so the durable row is cleaned too. Because the query keys off the
+    /// persisted `enforcement_mode` / `enforcement_mode_expires_at` fields, an
+    /// already-expired window rehydrated on restart (Observe + past deadline) is
+    /// caught on the reconciler's first tick.
+    pub fn agents_with_expired_shadow(&self, now: DateTime<Utc>) -> Vec<[u8; 16]> {
+        self.agents
+            .iter()
+            .filter(|entry| {
+                let record = entry.value();
+                record.enforcement_mode == Some(aa_core::EnforcementMode::Observe)
+                    && record.enforcement_mode_expires_at.is_some_and(|t| t <= now)
+            })
+            .map(|entry| *entry.key())
+            .collect()
     }
 
     /// Suspend an agent and recursively suspend all its descendants.
@@ -1078,7 +1337,6 @@ mod tree_tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: Default::default(),
             recent_traces: vec![],
@@ -1093,8 +1351,42 @@ mod tree_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn set_enforcement_mode_persisted_updates_in_memory_and_rejects_unknown() {
+        // No storage attached → the write-through path is a no-op and the
+        // in-memory record is mutated directly (AAASM-5097).
+        let reg = AgentRegistry::new();
+        let id = [7u8; 16];
+        reg.register(make_record(id, None, Some("teamA"), 0)).unwrap();
+
+        // Weaken: set Observe with a deadline.
+        let deadline = Utc::now() + chrono::Duration::hours(2);
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Observe), Some(deadline))
+            .await
+            .expect("setting a registered agent's mode succeeds");
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+        assert_eq!(rec.enforcement_mode_expires_at, Some(deadline));
+
+        // Strengthen: back to Enforce, clearing the expiry.
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Enforce), None)
+            .await
+            .expect("clearing the shadow window succeeds");
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Enforce));
+        assert_eq!(rec.enforcement_mode_expires_at, None);
+
+        // An unknown agent is a NotFound, not a silent success.
+        let err = reg
+            .set_enforcement_mode_persisted(&[0xFFu8; 16], Some(aa_core::EnforcementMode::Enforce), None)
+            .await
+            .expect_err("an unregistered agent must be NotFound");
+        assert!(matches!(err, RegistryError::NotFound(_)));
     }
 
     #[test]
@@ -1346,7 +1638,6 @@ mod lineage_tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: std::collections::VecDeque::new(),
             recent_traces: vec![],
@@ -1361,6 +1652,7 @@ mod lineage_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -1487,7 +1779,6 @@ mod cascade_tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: Default::default(),
             recent_traces: vec![],
@@ -1502,6 +1793,7 @@ mod cascade_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -1654,7 +1946,6 @@ mod orphan_mode_tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: Default::default(),
             recent_traces: vec![],
@@ -1669,6 +1960,7 @@ mod orphan_mode_tests {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -1865,7 +2157,6 @@ mod cross_mode_integration {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: Default::default(),
             recent_traces: vec![],
@@ -1880,6 +2171,7 @@ mod cross_mode_integration {
             children: vec![],
             parent_key,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -2010,7 +2302,6 @@ mod sweep_aged_agents_tests {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: Default::default(),
             recent_traces: vec![],
@@ -2025,6 +2316,7 @@ mod sweep_aged_agents_tests {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         }
     }
@@ -2078,5 +2370,121 @@ mod sweep_aged_agents_tests {
 
         assert!(evicted.is_empty(), "unconfigured team must not trigger eviction");
         assert_eq!(reg.get(&id).unwrap().status, AgentStatus::Active);
+    }
+}
+
+#[cfg(test)]
+mod tenant_id_validation_tests {
+    use super::*;
+    use crate::registry::{AgentStatus, RegistryError};
+
+    fn minimal_record(id: [u8; 16], team_id: Option<&str>, org_id: Option<&str>) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "test-agent".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: "tok".into(),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: team_id.map(str::to_string),
+            org_id: org_id.map(str::to_string),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+            enforcement_mode: None,
+            enforcement_mode_expires_at: None,
+        }
+    }
+
+    #[test]
+    fn register_rejects_team_id_with_control_chars() {
+        // AAASM-4190: team_id containing control characters (e.g. SOH \u{1})
+        // must be rejected to prevent bucket-key collision attacks.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([1u8; 16], Some("team\u{1}evil"), None);
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "team_id" })),
+            "expected InvalidTenantId for team_id with control char, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn register_rejects_org_id_with_control_chars() {
+        // AAASM-4190: org_id containing control characters must be rejected.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([2u8; 16], Some("valid-team"), Some("org\u{0}bad"));
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "org_id" })),
+            "expected InvalidTenantId for org_id with control char, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn register_accepts_valid_tenant_ids() {
+        // Valid team_id and org_id (no control characters) should succeed.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([3u8; 16], Some("valid-team-123"), Some("org_456"));
+        let result = reg.register(record);
+
+        assert!(result.is_ok(), "valid tenant ids should be accepted");
+        assert!(reg.get(&[3u8; 16]).is_some(), "agent should be registered");
+    }
+
+    #[test]
+    fn register_accepts_none_tenant_ids() {
+        // None team_id and org_id should be accepted (anonymous/unregistered path).
+        let reg = AgentRegistry::new();
+        let record = minimal_record([4u8; 16], None, None);
+        let result = reg.register(record);
+
+        assert!(result.is_ok(), "None tenant ids should be accepted");
+    }
+
+    #[test]
+    fn register_rejects_team_id_with_newline() {
+        // Newline is also a control character.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([5u8; 16], Some("team\ninjection"), None);
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "team_id" })),
+            "expected InvalidTenantId for team_id with newline"
+        );
+    }
+
+    #[test]
+    fn register_rejects_team_id_with_tab() {
+        // Tab is also a control character.
+        let reg = AgentRegistry::new();
+        let record = minimal_record([6u8; 16], Some("team\tevil"), None);
+        let result = reg.register(record);
+
+        assert!(
+            matches!(result, Err(RegistryError::InvalidTenantId { field: "team_id" })),
+            "expected InvalidTenantId for team_id with tab"
+        );
     }
 }

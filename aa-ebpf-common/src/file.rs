@@ -30,6 +30,27 @@ pub enum SyscallType {
     Rename = 4,
 }
 
+/// Returned by `TryFrom<u32> for SyscallType` when the raw value does not
+/// correspond to any known variant (e.g. version skew between the BPF
+/// object and the userspace loader — AAASM-4739).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidSyscallType(pub u32);
+
+impl core::convert::TryFrom<u32> for SyscallType {
+    type Error = InvalidSyscallType;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(SyscallType::Openat),
+            1 => Ok(SyscallType::Read),
+            2 => Ok(SyscallType::Write),
+            3 => Ok(SyscallType::Unlink),
+            4 => Ok(SyscallType::Rename),
+            other => Err(InvalidSyscallType(other)),
+        }
+    }
+}
+
 /// A file I/O event emitted by a kprobe, in BPF-compatible layout.
 ///
 /// This struct is written by BPF programs into a `PerfEventArray` and read
@@ -43,8 +64,15 @@ pub struct FileIoEventRaw {
     pub tid: u32,
     /// Kernel timestamp in nanoseconds (from `bpf_ktime_get_ns`).
     pub timestamp_ns: u64,
-    /// Which syscall was intercepted.
-    pub syscall: SyscallType,
+    /// Which syscall was intercepted, as the raw `u32` discriminant.
+    ///
+    /// Stored as a plain `u32` rather than [`SyscallType`] directly: this
+    /// struct is materialized straight from raw kernel/perf bytes, and an
+    /// out-of-range value in a `SyscallType`-typed field would be an
+    /// invalid enum discriminant — instant undefined behavior (AAASM-4739).
+    /// Convert via `SyscallType::try_from` (see `FileIoEvent::from_raw`),
+    /// which turns an unexpected value into a handled error instead.
+    pub syscall: u32,
     /// Syscall-specific flags (e.g., `O_RDONLY` for `openat`).
     pub flags: u32,
     /// Syscall return code.

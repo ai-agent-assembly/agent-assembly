@@ -3,7 +3,7 @@
 This guide walks through the real, day-to-day tasks an operator performs with
 Agent Assembly, using the `aasm` CLI, the governance gateway, the three
 interception layers, and the dashboard. Every command and every screenshot on
-these pages was produced against the actual `0.0.1-alpha.5` build — where a
+these pages was produced against the actual `0.0.1-beta.4` build — where a
 scenario needs a platform Agent Assembly does not target locally (for example
 the Linux-only eBPF layer, or the SaaS control-plane API the web dashboard
 talks to), the page says so explicitly rather than showing a mock-up.
@@ -53,9 +53,7 @@ Commands:
   cost        Query cost summary and forecast spending
   dashboard   Open an interactive TUI dashboard for real-time governance monitoring
   gateway     Manage the aa-gateway governance daemon
-  run         Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring
   sandbox     Run a WebAssembly tool inside the Agent Assembly sandbox
-  tools       List and manage AI dev tools on this system
   topology    Visualize agent topology, trees, lineage, and statistics
   proxy       Manage the aa-proxy sidecar — lifecycle, CA trust, and log tailing
   start       Start the locally-managed Agent Assembly gateway process

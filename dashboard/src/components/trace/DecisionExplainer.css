@@ -1,0 +1,53 @@
+/* ============================================================
+   DecisionExplainer — L0–L3 explainer body (AAASM-5027)
+   Outcome band ports the hi-fi `.trc-outcome` rule; the verdict
+   colour drives the 3px left border.
+   ============================================================ */
+
+.decision-explainer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.decision-explainer__eyebrow {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
+}
+
+.decision-explainer__band {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 3px;
+  margin: 12px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.decision-explainer__verdict {
+  font-weight: 700;
+}
+
+.decision-explainer__ms {
+  color: var(--ink-3);
+}
+
+.decision-explainer__policy {
+  margin-left: auto;
+  color: var(--ink-4);
+  font-style: italic;
+}
+
+.decision-explainer__note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-4);
+}

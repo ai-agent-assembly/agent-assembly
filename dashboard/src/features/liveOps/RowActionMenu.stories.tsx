@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react'
 import { useEffect } from 'react'
+import { known } from '../../lib/truthfulness'
 import { RowActionMenu } from './RowActionMenu'
 import type { LiveOperation } from './types'
 
@@ -7,11 +8,11 @@ function op(status: LiveOperation['status']): LiveOperation {
   return {
     id: 'op-1',
     agent: 'support-agent',
-    opType: 'write',
-    resource: 'pg.users',
+    opType: known('write'),
+    resource: known('pg.users'),
     status,
     startedAt: '2026-05-14T01:00:00Z',
-    latencyMs: 84,
+    latencyMs: known(84),
   }
 }
 

@@ -40,7 +40,7 @@ export function applyFleetFilters(
 
 /** Distinct framework values present in the current agent list. */
 export function frameworkOptions(agents: readonly FleetAgent[]): string[] {
-  return Array.from(new Set(agents.map((a) => a.framework))).sort()
+  return Array.from(new Set(agents.map((a) => a.framework))).sort((a, b) => a.localeCompare(b))
 }
 
 /** Parse `FleetFilters` from a URL `URLSearchParams` instance. */

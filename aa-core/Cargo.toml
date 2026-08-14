@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Pure domain logic for Agent Assembly — no_std compatible"
 
 [dependencies]
-aa-security  = { path = "../aa-security", version = "0.0.1-beta.1", optional = true }
+aa-security  = { path = "../aa-security", version = "0.0.1-rc.6", optional = true }
 async-trait  = { workspace = true, optional = true }
 cfg-if       = "1"
 chrono       = { workspace = true, default-features = false, features = ["clock"], optional = true }
@@ -30,6 +30,9 @@ test-utils = []
 [dev-dependencies]
 proptest   = { workspace = true }
 serde_json = { workspace = true }
+# AAASM-5278: the filesystem receipt store's tests assert real permission bits
+# and real atomic renames, so they need a real directory rather than a mock.
+tempfile   = { workspace = true }
 # Self dev-dependency: turns on `serde` + `schemars` for aa-core's own test
 # build so the `types::` property tests and JsonSchema derives compile and run
 # under `cargo nextest run -p aa-core` without making those features default

@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5353 negative: hard negatives of the shape the 統一編號 checksum is weakest against. The checksum admits roughly one 8-digit string in five, so the boundary rule is what carries the precision here: eight digits inside a longer run, after a decimal point, or inside a git SHA prefix are fragments of one value and are not reported. (A bare standalone 8-digit date IS a documented residual - see the module docs - and is deliberately absent from this vector.)",
+  "input_text": "訂單 1000000945 與版本 3.10000009 及提交 10000009abcdef 均非統一編號。",
+  "expected_findings": [],
+  "expected_redacted": "訂單 1000000945 與版本 3.10000009 及提交 10000009abcdef 均非統一編號。"
+}

@@ -114,9 +114,9 @@ build-baseline:
 standalone-smoke:
 	@bash scripts/standalone-build-smoke.sh
 
-## install-hooks: Install git pre-commit hooks via pre-commit
+## install-hooks: Install git hooks via Lefthook (the repo's hook manager; config in lefthook.toml)
 install-hooks:
-	@pre-commit install
+	@lefthook install
 
 ## install-tools: Check required toolchains via scripts/install.sh
 install-tools:

@@ -4,7 +4,6 @@ import './StateView.css'
 export type EmptyStatePage =
   | 'overview'
   | 'fleet'
-  | 'policy'
   | 'scrub'
   | 'capability'
   | 'live'
@@ -20,6 +19,9 @@ interface CopyEntry {
   secondary: string | null
 }
 
+// EmptyStatePage is a closed app union of page names, not a raw wire string —
+// narrow-union Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const COPY: Record<EmptyStatePage, CopyEntry> = {
   overview: {
     icon: '⊘',
@@ -41,29 +43,24 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     tag: 'fleet · 0 results',
     title: 'No agents match current filters',
     msg: (
-      <>All filters can be cleared from the bar above. Or check that agents are still phoning home.</>
+      <>
+        All filters can be cleared from the bar above. Or check that agents are still phoning home — last
+        fleet sync <code>4s ago</code>.
+      </>
     ),
     cta: 'Clear filters',
     secondary: null,
-  },
-  policy: {
-    icon: '⌬',
-    tag: 'policies · 0 active',
-    title: 'No policies defined',
-    msg: (
-      <>
-        Without policies, all agent calls fall through to the runtime default (<code>sandbox · log-only</code>).
-        Define your first allow-list rule to start enforcing.
-      </>
-    ),
-    cta: '+ New policy',
-    secondary: 'Import from preset',
   },
   scrub: {
     icon: '✶',
     tag: 'patterns · awaiting input',
     title: 'No payload to scan',
-    msg: <>Paste a request body or LLM prompt into the editor on the left.</>,
+    msg: (
+      <>
+        Paste a request body or LLM prompt into the editor on the left. Patterns marked enabled will scan
+        and replace matches in real time.
+      </>
+    ),
     cta: null,
     secondary: null,
   },
@@ -74,7 +71,8 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     msg: (
       <>
         The capability matrix renders once at least one agent has registered AND at least one resource
-        integration is connected. Connect a resource (Gmail, S3, GitHub, …) or onboard an agent.
+        integration is connected. Connect a resource (Gmail, S3, GitHub, …) or onboard an agent to populate
+        this view.
       </>
     ),
     cta: 'Connect resource',
@@ -98,7 +96,9 @@ const COPY: Record<EmptyStatePage, CopyEntry> = {
     title: 'Agent registered, no activity yet',
     msg: (
       <>
-        Identity issued and trust score initialized at <code>50</code>. Trust will adjust on first authenticated call.
+        Identity issued and trust score initialized at <code>50</code>. Trust will adjust on first
+        authenticated call. If the agent never phones home, check that <code>AGENT_ASSEMBLY_TOKEN</code> is
+        set in its runtime env.
       </>
     ),
     cta: 'Copy enrollment command',
@@ -125,10 +125,10 @@ export interface EmptyStateProps {
   onSecondary?: () => void
 }
 
-export function EmptyState({ page = 'overview', onCta, onSecondary }: EmptyStateProps) {
+export function EmptyState({ page = 'overview', onCta, onSecondary }: Readonly<EmptyStateProps>) {
   const c = COPY[page] ?? COPY.overview
   return (
-    <div className="state-page" role="status" data-testid={`empty-state-${page}`}>
+    <output className="state-page" data-testid={`empty-state-${page}`}>
       <div className="state-block">
         <div className="state-icon" aria-hidden>
           {c.icon}
@@ -136,14 +136,14 @@ export function EmptyState({ page = 'overview', onCta, onSecondary }: EmptyState
         <div className="state-tag">{c.tag}</div>
         <div className="state-title">{c.title}</div>
         <div className="state-msg">{c.msg}</div>
-        {((c.cta && onCta) || (c.secondary && onSecondary)) && (
+        {(c.cta || c.secondary) && (
           <div className="state-actions">
-            {c.cta && onCta && (
+            {c.cta && (
               <button type="button" className="state-btn state-btn--primary" onClick={onCta}>
                 ▸ {c.cta}
               </button>
             )}
-            {c.secondary && onSecondary && (
+            {c.secondary && (
               <button type="button" className="state-btn" onClick={onSecondary}>
                 {c.secondary}
               </button>
@@ -151,6 +151,6 @@ export function EmptyState({ page = 'overview', onCta, onSecondary }: EmptyState
           </div>
         )}
       </div>
-    </div>
+    </output>
   )
 }

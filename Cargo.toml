@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "aa-core",
+    "aa-auth",
     "aa-security",
     "aa-storage",
     "aa-storage-memory",
@@ -16,11 +17,19 @@ members = [
     "aa-sdk-client",
     "aa-wasm",
     "aa-sandbox",
+    "aa-isolation",
+    "aa-isolation-sandlock",
+    "aa-policy",
     "aa-gateway",
     "aa-api",
     "aa-cli",
     "conformance",
     "examples/aa-devtool-sample-myeditor",
+    # Serves a real DI-API socket for the TypeScript reference client's contract
+    # tests (AAASM-5282). A binary rather than a `#[cfg(test)]` helper because the
+    # consumer under test is a separate process in another language.
+    "examples/aa-devint-reference-client/harness",
+    "aa-devtool-contract",
     "aa-devtool",
     "aa-devtool-claude-code",
     "aa-devtool-codex",
@@ -36,11 +45,11 @@ members = [
 # `cargo metadata` fails to read the inner manifest because the outer
 # workspace claims the path without listing it as a member, which
 # breaks `pnpm native:build` (AAASM-1602).
-exclude = ["node-sdk"]
+exclude = ["node-sdk", "aa-sandbox/fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1-beta.1"
+version = "0.0.1-rc.6"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/ai-agent-assembly/agent-assembly"
@@ -77,15 +86,19 @@ metrics-util = "0.20"
 # Protobuf / gRPC
 prost = "0.14"
 tonic = { version = "0.14", features = ["transport"] }
+# Standard gRPC Health Checking Protocol (grpc.health.v1.Health) service so the
+# published gateway container is probeable by orchestrators/liveness checks
+# (AAASM-4759). Version-locked to tonic 0.14.
+tonic-health = "0.14"
 # HTTP / web
 axum = "0.8"
 hyper = "1"
 http = "1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = "0.6"
-reqwest = { version = "0.12", default-features = false }
+tower-http = "0.7"
+reqwest = { version = "0.13", default-features = false }
 utoipa = { version = "5", features = ["axum_extras"] }
-tokio-tungstenite = "0.29"
+tokio-tungstenite = "0.30"
 url = "2"
 clap = "4"
 # TLS / crypto
@@ -95,7 +108,8 @@ rcgen = "0.14"
 sha2 = "0.11"
 hex = "0.4"
 hmac = "0.13"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }
 time = "0.3"
 # Data structures / domain
 dashmap = "6"
@@ -114,7 +128,7 @@ bytes = "1"
 # themselves, matching their pre-centralization manifests.
 sqlx = { version = "0.8" }
 redis = { version = "1.2", default-features = false }
-async-nats = "0.49"
+async-nats = "0.50"
 testcontainers-modules = "0.15"
 # Config / system
 dirs = "6"
@@ -144,11 +158,19 @@ opt-level = 2
 lto = "thin"
 codegen-units = 16
 strip = true
-panic = "abort"
+# AAASM-4151: MUST stay "unwind", not "abort". The shipped aa-gateway daemon
+# (built with this profile via release.yml) installs a tower `CatchPanicLayer`
+# as its DoS backstop — a handler panic becomes a 500 instead of crashing the
+# whole multi-tenant worker. `catch_unwind` cannot intercept a panic under
+# `panic = "abort"`, which would silently make that layer inert in production.
+# The original AAASM-1206 switch to "abort" was a binary-size optimization only;
+# abort-on-panic is the wrong default for a long-lived server. The `dist` profile
+# below inherits this, so both shipped profiles keep unwinding.
+panic = "unwind"
 
 # Size-optimized profile for shipped binaries only (release.yml --profile dist).
-# Inherits release (strip + panic=abort) and restores the slowest, smallest
-# settings that the default `release` profile used to carry.
+# Inherits release (strip + panic=unwind — see AAASM-4151) and restores the
+# slowest, smallest settings that the default `release` profile used to carry.
 [profile.dist]
 inherits = "release"
 opt-level = "z"

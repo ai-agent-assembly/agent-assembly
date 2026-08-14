@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "_about": [
+    "AAASM-5714 — provenance and license manifest for execution-isolation backends.",
+    "",
+    "WHY THIS FILE EXISTS: cargo-deny (deny.toml) is the workspace's license and",
+    "advisory gate, but it can only see crates in the cargo dependency graph. An",
+    "isolation backend that ships as a PREBUILT BINARY — bundled into a release",
+    "tarball, downloaded by the installer, or pulled into a container image —",
+    "never enters that graph, so cargo-deny never evaluates its license. Before",
+    "this manifest there was no mechanism at all covering that class of artifact.",
+    "",
+    "This file is the machine-readable source of truth the gate",
+    "(scripts/check-backend-license-compliance.sh) evaluates. It records, per",
+    "backend: exact upstream name/version/source/release checksum, SPDX license,",
+    "whether AASM carries modifications, who reviewed it, and — per distribution",
+    "channel — whether AASM bundles, downloads, expects a system install, builds",
+    "from source, or does not distribute it at all.",
+    "",
+    "FAIL-CLOSED BY DESIGN: `license_policy` is an ALLOWLIST with implicit deny,",
+    "mirroring deny.toml's `[licenses] allow` model. A license that is merely",
+    "unlisted is a build failure, not a warning. `known_incompatible_spdx` exists",
+    "only to turn that failure into a legible message; it is not the enforcement",
+    "mechanism, and removing an entry from it does not permit anything.",
+    "",
+    "NOT LEGAL ADVICE: entries describe license identifiers and obligations as",
+    "stated in the license texts themselves. They are an engineering record for",
+    "release review, not a legal conclusion about any particular distribution."
+  ],
+
+  "license_policy": {
+    "_about": [
+      "Two allowlists, because the obligations that matter differ by whether the",
+      "consuming channel is the Apache-2.0 open-source distribution or a",
+      "proprietary (Enterprise / SaaS) one. A license in neither list is denied.",
+      "",
+      "Any change to either list requires the security/licensing reviewer named",
+      "in .github/CODEOWNERS, for the same reason `[advisories] ignore` in",
+      "deny.toml must stay empty: each added entry silently widens what can ship."
+    ],
+
+    "oss_allowed_spdx": [
+      "Apache-2.0",
+      "Apache-2.0 WITH LLVM-exception",
+      "MIT",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "Zlib",
+      "0BSD",
+      "BSL-1.0",
+      "CC0-1.0",
+      "Unicode-3.0",
+      "Unicode-DFS-2016",
+      "MPL-2.0"
+    ],
+
+    "proprietary_allowed_spdx": [
+      "Apache-2.0",
+      "Apache-2.0 WITH LLVM-exception",
+      "MIT",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "ISC",
+      "Zlib",
+      "0BSD",
+      "BSL-1.0",
+      "CC0-1.0",
+      "Unicode-3.0",
+      "Unicode-DFS-2016"
+    ],
+
+    "_proprietary_delta": [
+      "MPL-2.0 is allowed for OSS channels but NOT for proprietary ones. Reason:",
+      "MPL-2.0 §3.2 attaches per-file source-availability obligations to the",
+      "distribution of a covered work in executable form. Whether a given",
+      "proprietary bundle satisfies those obligations is a per-case decision, so",
+      "the default here is 'stop and decide', not 'allow'. Adding MPL-2.0 to",
+      "proprietary_allowed_spdx is that decision being made explicitly — which is",
+      "exactly what this ticket asks the gate to force."
+    ],
+
+    "known_incompatible_spdx": {
+      "_about": "Diagnostic only — enforcement is the allowlist above. Maps a license likely to be proposed to the reason it needs an explicit decision first.",
+      "AGPL-3.0-only": "Network-use source-disclosure obligation (§13) reaches hosted/SaaS deployment, not only redistribution.",
+      "AGPL-3.0-or-later": "Network-use source-disclosure obligation (§13) reaches hosted/SaaS deployment, not only redistribution.",
+      "GPL-2.0-only": "Strong copyleft; combination and distribution terms need an explicit decision.",
+      "GPL-3.0-only": "Strong copyleft; combination and distribution terms need an explicit decision.",
+      "GPL-3.0-or-later": "Strong copyleft; combination and distribution terms need an explicit decision.",
+      "SSPL-1.0": "Not an OSI-approved license; service-source obligations reach the hosting stack.",
+      "BUSL-1.1": "Source-available with a use limitation and a change date, not an open-source license.",
+      "Elastic-2.0": "Source-available with a hosted-service use limitation, not an open-source license.",
+      "CC-BY-NC-4.0": "Non-commercial use restriction."
+    }
+  },
+
+  "channels": [
+    {
+      "id": "github-release",
+      "distribution": "oss",
+      "artifact": "aasm-*.tar.gz release assets + SHA256SUMS",
+      "owner": ".github/workflows/release.yml",
+      "notes": "Assets are checksummed into SHA256SUMS and cosign keyless-signed. A bundled backend binary must get the same treatment (see docs/release/isolation-backend-licensing.md)."
+    },
+    {
+      "id": "crates-io",
+      "distribution": "oss",
+      "artifact": "published workspace crates",
+      "owner": ".github/workflows/release.yml (publish-crates job)",
+      "notes": "Source-only channel. crates.io packages carry no prebuilt backend binary; a build.rs that downloaded one would make this a `downloaded` channel and is deliberately not permitted without a review decision."
+    },
+    {
+      "id": "homebrew-tap",
+      "distribution": "oss",
+      "artifact": "ai-agent-assembly/homebrew-tap formulas",
+      "owner": ".github/workflows/release.yml (update-homebrew-tap job)",
+      "notes": "Generator model — metadata/versions.rb IN THE TAP REPO is source of truth and formulas are regenerated from it. The formulas resolve GitHub Release assets, so this channel inherits whatever github-release ships."
+    },
+    {
+      "id": "ghcr-container",
+      "distribution": "oss",
+      "artifact": "ghcr.io container images",
+      "owner": ".github/workflows/docker.yml",
+      "notes": "The only channel with existing SBOM coverage today (buildx `sbom: true`). An image-layer SBOM covers a backend binary baked into the image; it does NOT cover one the container downloads at runtime."
+    },
+    {
+      "id": "shell-installer",
+      "distribution": "oss",
+      "artifact": "scripts/install-cli.sh",
+      "owner": "scripts/install-cli.sh",
+      "notes": "Fetches GitHub Release assets and verifies SHA256SUMS via cosign. If it is ever taught to fetch a backend from a non-AASM origin, that channel's strategy becomes `downloaded` and the license gate applies to it."
+    },
+    {
+      "id": "enterprise",
+      "distribution": "proprietary",
+      "artifact": "ai-agent-assembly/agent-assembly-enterprise distributions",
+      "owner": "agent-assembly-enterprise (separate repo)",
+      "notes": "Declared here so the stricter proprietary allowlist is evaluated for it. This repo cannot enforce what the enterprise repo builds; the manifest records the intended boundary and this gate fails if a backend's license is not cleared for it."
+    },
+    {
+      "id": "saas",
+      "distribution": "proprietary",
+      "artifact": "hosted control plane / runners",
+      "owner": "ai-agent-assembly/cloud (separate repo)",
+      "notes": "Hosted execution. Recorded because network-use obligations (e.g. AGPL §13) bite on this channel even when nothing is redistributed — the case a redistribution-only review would miss."
+    }
+  ],
+
+  "backends": [
+    {
+      "id": "sandlock",
+      "status": "active",
+      "tracking_ticket": "AAASM-5708",
+      "upstream_name": "sandlock",
+      "version": "0.8.6",
+      "source_url": "https://github.com/multikernel/sandlock/releases/download/v0.8.6/sandlock-x86_64-unknown-linux-gnu.tar.gz",
+      "release_sha256": "86e89e5bdb2da748e683cda6908a95504ae6751f73d9dadf79cf0fc6843873fb",
+      "spdx_license": "Apache-2.0",
+      "modifications": {
+        "modified": false
+      },
+      "review": {
+        "ticket": "AAASM-5708",
+        "reviewed_at": "2026-08-13",
+        "capability_evidence": "ci.yml job `isolation-backend-linux` installs exactly this artifact (digest verified by `sha256sum -c` in the job), then runs `aa-isolation-sandlock`'s confinement suite, which measures each claimed capability against observed behaviour with a control for every scenario: a forbidden write leaves an existing file byte-for-byte unchanged and creates nothing (pre-effect), a forbidden read returns no bytes, a connection to an unpermitted loopback destination never reaches a listener this repository owns, a process ceiling of one stops a grandchild from existing, and a descendant re-invoking the mechanism with a wider grant is still denied while the identical command outside the boundary succeeds. `.ci/test-evidence-summary.sh --require-evidence` fails the job if every scenario declined, so a green lane cannot mean an unmeasured one. A version bump must re-run that lane: the capability reports in `aa-isolation-sandlock/src/capability.rs` are gated on the live probe, so a version that stops denying reports itself as unable to prevent rather than passing on the strength of this record."
+      },
+      "channels": {
+        "github-release": "system",
+        "crates-io": "not-distributed",
+        "homebrew-tap": "system",
+        "ghcr-container": "system",
+        "shell-installer": "system",
+        "enterprise": "system",
+        "saas": "system"
+      },
+      "notes": [
+        "MEASURED, NOT QUOTED. Every field above was taken from the artifact:",
+        "the digest was computed locally with `shasum -a 256` over the downloaded",
+        "tarball and matches the digest GitHub publishes for that release asset;",
+        "the SPDX identifier was read from the LICENSE file at tag v0.8.6.",
+        "",
+        "AASM DISTRIBUTES NOTHING. The backend is an external executable the",
+        "operator installs, so no channel is `bundled`, `downloaded` or `source`",
+        "and none is license-gated by this file. `crates-io` is",
+        "`not-distributed` rather than `system` for a different reason: the",
+        "consuming crate `aa-isolation-sandlock` carries `publish = false`, so",
+        "nothing on that channel could use the backend even if it were present.",
+        "",
+        "The digest is not decoration. `ci.yml`'s `isolation-backend-linux` job",
+        "pins this exact version and verifies this exact digest before it",
+        "measures anything, so a drifted upstream artifact fails CI instead of",
+        "silently changing what was measured. Bumping `version` without bumping",
+        "`release_sha256` breaks that job.",
+        "",
+        "WHAT THIS ROW DOES NOT SAY: it records provenance, not capability. What",
+        "the backend can actually enforce is measured per host at run time and",
+        "reported through `aa-isolation`'s capability contract; the mechanism's",
+        "own feature documentation is not used as an AASM claim anywhere."
+      ]
+    }
+  ]
+}

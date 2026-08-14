@@ -3,9 +3,9 @@
 To govern an action, the runtime first has to *see* it. Agent Assembly intercepts
 agent actions at **three independent layers**, each catching what the layers
 above it might miss, and routes every observed action to one central
-[gateway](../architecture/README.md) for a decision. This page is a teaser; the
+[gateway](../architecture/index.md) for a decision. This page is a teaser; the
 [Security Model](../security/overview.md) covers *why* the layers are arranged this
-way and what each defends against, and [Architecture](../architecture/README.md)
+way and what each defends against, and [Architecture](../architecture/index.md)
 covers *how* each is implemented.
 
 ## The three layers
@@ -15,16 +15,24 @@ highest detection authority first**:
 
 | Layer | Runs in | Crate(s) | Latency | Catches | Trade-off |
 |---|---|---|---|---|---|
-| **1 — SDK (in-process)** | The agent's own process | `aa-sdk-client` + per-language shims, `aa-wasm` | Lowest | What the SDK is wired into | Fastest path; but requires the agent to adopt the SDK, and an agent could skip it. |
-| **2 — Sidecar proxy** | An adjacent process / sidecar | `aa-proxy` | Medium | Outbound HTTPS, with no code change | Catches network egress the SDK missed; sees only what is routed through it. |
-| **3 — eBPF (kernel)** | The Linux kernel | `aa-ebpf` and friends | Highest cost | Everything else, including bypass attempts | Highest detection authority; Linux-only and needs elevated privileges. |
+| **1 — SDK (in-process)** | The agent's own process | `aa-sdk-client` + per-language shims, `aa-wasm` | Lowest | Framework tool calls the SDK is wired into | Fastest path; but requires the agent to adopt the SDK and call its initializer, and an agent could skip it. |
+| **2 — Sidecar proxy** | An adjacent process / sidecar | `aa-proxy` | Medium | Outbound HTTP/1.1 that is *routed to it* and whose host is under MitM | No agent code change, but the process must honour the proxy environment and trust the local CA; sees only what is routed through it. |
+| **3 — eBPF (kernel)** | The Linux kernel | `aa-ebpf` and friends | Highest cost | OpenSSL TLS plaintext, `exec` and file syscalls — **observed, not blocked** | Highest *detection* authority; Linux only (file-I/O kprobes x86_64-only), needs a privileged loader daemon, and fails open if it cannot attach. |
 
 The **latency-vs-authority trade-off** is the key idea. The in-process SDK is the
 cheapest place to make a decision, but it is also the easiest for an agent to
 avoid — it lives inside the very process you do not fully trust. The eBPF layer is
 the most expensive to run, but it watches from the kernel, below anything the
-agent can reach, so it catches actions the higher layers never saw — including
-deliberate attempts to bypass the SDK.
+agent can reach, so it can *report* actions the higher layers never saw —
+including deliberate attempts to bypass the SDK.
+
+Note the distinction the table draws, because it decides what each layer can
+promise: layer 2 **denies an action before it runs**; layer 1 evaluates before
+the call but is **advisory** — `aa-sdk-client` has no in-tree caller that
+refuses, and a non-cooperating process simply never asks it
+(`aa-sdk-client/src/decision.rs:32-33`, ADR 0002); layer 3 **reports
+what it observed**. Its probes emit telemetry and return no verdict, so an action
+it sees is an action that already happened.
 
 ## How they compose
 
@@ -33,8 +41,17 @@ subset fits its constraints, and because every layer reports to the same gateway
 using the same audit wire format, the gateway sees one unified view no matter
 which layers produced the events. Coverage is the **union** of the layers you
 deploy: the SDK handles the fast common path, the proxy backstops network egress
-without touching agent code, and eBPF is the floor that catches what slips past
-both. Run all three and an action has nowhere to hide.
+without touching agent code, and eBPF is the observation floor that reports what
+slipped past both.
+
+Running all three narrows the gap; it does not close it. Coverage is still
+bounded by each layer's own preconditions — an action escapes governance
+entirely if it is not a wrapped tool call, is not routed through the proxy, and
+either does not use OpenSSL or does not run on a Linux host with the eBPF
+layer loaded. The
+[known limitations](../devtools/limitations.md) page enumerates the residual
+gaps, split into the ones that have been *demonstrated* and the ones that are
+*inferred*.
 
 ```mermaid
 graph TD
@@ -53,7 +70,7 @@ graph TD
     end
 
     GW["Gateway (aa-gateway)<br/>policy · budget · decision"]:::gw
-    Audit[("Immutable audit log")]
+    Audit[("Hash-chained audit log")]
 
     Agent -->|"action"| L1
     Agent -.->|"network egress"| L2
@@ -75,5 +92,5 @@ and appends the [audit](concepts.md#audit) record before answering allow or deny
 
 - [Security Model](../security/overview.md) — the threat model and *why* this layered
   defense closes the gaps, including what each layer is and is not trusted to do.
-- [Architecture](../architecture/README.md) — the crate-level *how*: the gateway,
+- [Architecture](../architecture/index.md) — the crate-level *how*: the gateway,
   the policy engine, the transports, and the full interception data flow.

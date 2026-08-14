@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.7
+#
+# Smoke overlay for the Python base image (AAASM-3524).
+#
+# The whole point: take the published base image UNCHANGED and add ONLY the
+# agent source — no pip install, no env wiring — to prove a developer's agent
+# "runs on the base image with no manual config". BASE_IMAGE is the locally
+# built/pulled base image under test.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+WORKDIR /agent
+COPY agent.py /agent/agent.py
+
+# No ENTRYPOINT/CMD inheritance assumptions: run the agent explicitly. The base
+# image already has `python` + the `agent_assembly` SDK + the `aasm` binary.
+CMD ["python", "/agent/agent.py"]

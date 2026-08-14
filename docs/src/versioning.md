@@ -16,7 +16,7 @@ The protocol uses **Semantic Versioning (MAJOR.MINOR.PATCH)**:
 | `MINOR` | Non-breaking addition — new fields, new RPCs, new enum values (backward compatible) |
 | `PATCH` | Non-breaking fix — documentation corrections, description updates, no wire format change |
 
-The current protocol version is **`protocol/v1`** (pre-stable: `v0.0.1`).
+The current protocol version is **`{{#include generated/protocol-version.md:2}}`** (pre-stable: `v0.0.1`).
 
 ---
 

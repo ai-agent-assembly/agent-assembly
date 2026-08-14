@@ -122,6 +122,7 @@ async fn check_action_submits_to_approval_queue() {
             ApprovalDecision::Approved {
                 by: "test".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .unwrap();
@@ -146,6 +147,7 @@ async fn approval_approved_maps_to_allow() {
             ApprovalDecision::Approved {
                 by: "alice".to_string(),
                 reason: Some("looks safe".to_string()),
+                conditions: vec![],
             },
         )
         .unwrap();
@@ -287,6 +289,7 @@ async fn batch_check_with_mixed_decisions() {
             ApprovalDecision::Approved {
                 by: "operator".to_string(),
                 reason: None,
+                conditions: vec![],
             },
         )
         .unwrap();

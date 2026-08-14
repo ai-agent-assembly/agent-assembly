@@ -124,6 +124,19 @@ pub struct Destination {
     pub created_at: String,
     /// RFC 3339 last-mutation timestamp.
     pub updated_at: String,
+    /// AAASM-3911: owning team, stamped from the creating caller's tenant.
+    ///
+    /// Internal-only: `#[serde(skip)]` keeps it off the wire (the public
+    /// `DestinationResponse` DTO does not carry it) and out of the OpenAPI
+    /// schema. It confines list/get/update/delete/test to the destination's
+    /// tenant (an admin sees every tenant). `None` for destinations created by
+    /// an admin / bypass caller with no tenant scope — untagged, admin-only.
+    #[serde(skip)]
+    pub team_id: Option<String>,
+    /// AAASM-3911: owning org, stamped from the creating caller's tenant.
+    /// Internal-only — see [`Self::team_id`].
+    #[serde(skip)]
+    pub org_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -199,6 +212,8 @@ mod tests {
             enabled: true,
             created_at: "2026-05-20T00:00:00Z".to_string(),
             updated_at: "2026-05-20T00:00:00Z".to_string(),
+            team_id: None,
+            org_id: None,
         };
         let json = serde_json::to_value(&dst).unwrap();
         assert_eq!(json["id"], "dst_1");

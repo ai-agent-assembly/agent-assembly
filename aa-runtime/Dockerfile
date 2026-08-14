@@ -50,12 +50,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     TARGET=$(cat /tmp/rust_target) && \
     cargo build --release --target "$TARGET" -p aa-runtime && \
     strip "target/$TARGET/release/aa-runtime" && \
-    cp "target/$TARGET/release/aa-runtime" /app/aa-runtime
+    cp "target/$TARGET/release/aa-runtime" /aa-runtime-bin
 
 # Final stage: minimal distroless image running as non-root.
 FROM gcr.io/distroless/static:nonroot AS runtime
 
-COPY --from=builder /app/aa-runtime /aa-runtime
+COPY --from=builder /aa-runtime-bin /aa-runtime
 
 LABEL org.opencontainers.image.source="https://github.com/ai-agent-assembly/agent-assembly" \
       org.opencontainers.image.description="aa-runtime sidecar — AI agent assembly runtime" \

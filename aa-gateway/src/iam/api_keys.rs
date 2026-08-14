@@ -33,6 +33,11 @@ pub enum ApiKeyScope {
 pub enum ApiKeyStatus {
     Active,
     Revoked,
+    /// AAASM-5177 — the key has passed its `expires_at` instant. This is a
+    /// *computed* display status (see [`ApiKeyEntry::effective_status`]); it is
+    /// never stored — the persisted `status` stays `Active` until an operator
+    /// revokes it, so an expiry that is later extended re-activates cleanly.
+    Expired,
 }
 
 /// One entry in the "Recent activity" timeline shown in the dashboard's
@@ -59,6 +64,11 @@ pub struct ApiKeyEntry {
     pub scopes: Vec<ApiKeyScope>,
     pub status: ApiKeyStatus,
     pub created_at: DateTime<Utc>,
+    /// AAASM-5177 — when the key expires. `None` means it never expires. Once
+    /// this instant passes, [`IamApiKeyStore::list`] reports the key's status as
+    /// `Expired` (see [`ApiKeyEntry::effective_status`]); the enforcing gate for
+    /// *incoming* auth is `aa-auth::api_key::ApiKeyStore::validate_detailed`.
+    pub expires_at: Option<DateTime<Utc>>,
     pub last_used: Option<DateTime<Utc>>,
     /// Operator who owns the key (display only).
     pub owner: String,
@@ -68,6 +78,23 @@ pub struct ApiKeyEntry {
     pub assigned_policies: Vec<String>,
     /// Audit-style activity feed for the IdentityDetailCard.
     pub recent_activity: Vec<RecentActivityEntry>,
+}
+
+impl ApiKeyEntry {
+    /// AAASM-5177 — the status to *display*, folding expiry into the stored
+    /// state. A `Revoked` key stays revoked (revocation wins). An `Active` key
+    /// whose `expires_at` has passed (relative to `now`) displays as `Expired`;
+    /// otherwise the stored status is returned unchanged. The stored `status`
+    /// field is never mutated by this.
+    pub fn effective_status(&self, now: DateTime<Utc>) -> ApiKeyStatus {
+        match self.status {
+            ApiKeyStatus::Revoked => ApiKeyStatus::Revoked,
+            ApiKeyStatus::Active | ApiKeyStatus::Expired => match self.expires_at {
+                Some(exp) if now >= exp => ApiKeyStatus::Expired,
+                _ => ApiKeyStatus::Active,
+            },
+        }
+    }
 }
 
 /// One-shot reveal returned by `generate` and `rotate`. The `secret` field
@@ -109,14 +136,38 @@ impl IamApiKeyStore {
     }
 
     /// Return every entry, sorted by `created_at` descending (newest first).
+    ///
+    /// AAASM-5177 — each returned entry's `status` is projected through
+    /// [`ApiKeyEntry::effective_status`] so a key past its `expires_at` reads as
+    /// `Expired`. The stored records are not mutated; only the returned clones
+    /// carry the computed status.
     pub fn list(&self) -> Vec<ApiKeyEntry> {
-        let mut out: Vec<ApiKeyEntry> = self.keys.iter().map(|e| e.value().clone()).collect();
+        let now = Utc::now();
+        let mut out: Vec<ApiKeyEntry> = self
+            .keys
+            .iter()
+            .map(|e| {
+                let mut entry = e.value().clone();
+                entry.status = entry.effective_status(now);
+                entry
+            })
+            .collect();
         out.sort_by_key(|e| std::cmp::Reverse(e.created_at));
         out
     }
 
     /// Issue a new key. Returns the [`GeneratedApiKey`] one-shot reveal.
-    pub fn generate(&self, label: &str, scopes: Vec<ApiKeyScope>, owner: &str) -> GeneratedApiKey {
+    ///
+    /// AAASM-5177 — `expires_at` sets the key's expiry. `None` issues a key that
+    /// never expires; callers that want the safe default TTL should compute
+    /// `Some(now + ttl)` before calling (the API handler applies the default).
+    pub fn generate(
+        &self,
+        label: &str,
+        scopes: Vec<ApiKeyScope>,
+        owner: &str,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> GeneratedApiKey {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let id = format!("key-gen-{seq}");
         let prefix = format!("aa_live_{}", random_suffix(4));
@@ -130,6 +181,7 @@ impl IamApiKeyStore {
             scopes,
             status: ApiKeyStatus::Active,
             created_at: now,
+            expires_at,
             last_used: None,
             owner: owner.to_string(),
             role: "service:reader".to_string(),
@@ -175,18 +227,25 @@ impl IamApiKeyStore {
     pub fn rotate(&self, id: &str, actor: &str) -> Result<GeneratedApiKey, RotateError> {
         // Snapshot the old entry up front so we can re-use its label / scopes
         // / owner without holding a write reference across `generate`.
-        let (label, scopes, owner) = {
+        let (label, scopes, owner, expires_at) = {
             let entry = self.keys.get(id).ok_or(RotateError::NotFound)?;
             if entry.status == ApiKeyStatus::Revoked {
                 return Err(RotateError::AlreadyRevoked);
             }
-            (entry.label.clone(), entry.scopes.clone(), entry.owner.clone())
+            (
+                entry.label.clone(),
+                entry.scopes.clone(),
+                entry.owner.clone(),
+                entry.expires_at,
+            )
         };
 
         // Revoke the old entry first so the audit trail records the
         // revocation before the new issuance.
         self.revoke(id, actor).map_err(RotateError::from)?;
-        let generated = self.generate(&label, scopes, &owner);
+        // AAASM-5177 — the replacement inherits the source key's expiry so a
+        // rotation does not silently extend (or shorten) the key's lifetime.
+        let generated = self.generate(&label, scopes, &owner, expires_at);
 
         // Note the rotation linkage on the *new* entry's activity feed so
         // operators can trace it back.
@@ -282,7 +341,7 @@ mod tests {
     #[test]
     fn generate_returns_secret_and_persists_active_entry() {
         let s = store();
-        let gen = s.generate("gateway-ci", vec![ApiKeyScope::ReadMembers], "alice");
+        let gen = s.generate("gateway-ci", vec![ApiKeyScope::ReadMembers], "alice", None);
         assert!(
             gen.secret.starts_with(&gen.prefix),
             "secret should embed the public prefix"
@@ -304,8 +363,8 @@ mod tests {
     #[test]
     fn generate_assigns_distinct_ids_under_concurrent_calls() {
         let s = store();
-        let a = s.generate("k-a", vec![], "alice");
-        let b = s.generate("k-b", vec![], "alice");
+        let a = s.generate("k-a", vec![], "alice", None);
+        let b = s.generate("k-b", vec![], "alice", None);
         assert_ne!(a.id, b.id);
         assert_ne!(a.prefix, b.prefix);
     }
@@ -313,7 +372,7 @@ mod tests {
     #[test]
     fn revoke_marks_entry_revoked_and_appends_activity() {
         let s = store();
-        let gen = s.generate("k", vec![], "alice");
+        let gen = s.generate("k", vec![], "alice", None);
         assert!(s.revoke(&gen.id, "alice").is_ok());
 
         let entry = s.list().into_iter().find(|e| e.id == gen.id).unwrap();
@@ -329,7 +388,7 @@ mod tests {
     #[test]
     fn revoke_is_idempotent_only_in_the_sense_of_returning_an_explicit_error_on_second_call() {
         let s = store();
-        let gen = s.generate("k", vec![], "alice");
+        let gen = s.generate("k", vec![], "alice", None);
         s.revoke(&gen.id, "alice").unwrap();
         assert_eq!(s.revoke(&gen.id, "alice"), Err(RevokeError::AlreadyRevoked));
     }
@@ -337,7 +396,7 @@ mod tests {
     #[test]
     fn rotate_revokes_old_and_issues_new_entry_preserving_label_and_owner() {
         let s = store();
-        let gen = s.generate("ci-runner", vec![ApiKeyScope::ReadAudit], "alice");
+        let gen = s.generate("ci-runner", vec![ApiKeyScope::ReadAudit], "alice", None);
         let rotated = s.rotate(&gen.id, "alice").unwrap();
 
         assert_ne!(rotated.id, gen.id);
@@ -365,7 +424,7 @@ mod tests {
     #[test]
     fn rotate_refuses_already_revoked_key() {
         let s = store();
-        let gen = s.generate("k", vec![], "alice");
+        let gen = s.generate("k", vec![], "alice", None);
         s.revoke(&gen.id, "alice").unwrap();
         assert_eq!(s.rotate(&gen.id, "alice"), Err(RotateError::AlreadyRevoked));
     }
@@ -373,12 +432,112 @@ mod tests {
     #[test]
     fn list_sorts_newest_first() {
         let s = store();
-        let _a = s.generate("a", vec![], "alice");
+        let _a = s.generate("a", vec![], "alice", None);
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let b = s.generate("b", vec![], "alice");
+        let b = s.generate("b", vec![], "alice", None);
 
         let entries = s.list();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, b.id, "newest entry should appear first");
+    }
+
+    // ── AAASM-5177 — expiry status computation ──
+
+    /// A minimal entry with a given status and expiry, for status tests.
+    fn entry_with_expiry(id: &str, status: ApiKeyStatus, expires_at: Option<DateTime<Utc>>) -> ApiKeyEntry {
+        ApiKeyEntry {
+            id: id.to_string(),
+            label: id.to_string(),
+            prefix: "aa_live_test".to_string(),
+            scopes: vec![],
+            status,
+            created_at: Utc::now(),
+            expires_at,
+            last_used: None,
+            owner: "alice".to_string(),
+            role: "service:reader".to_string(),
+            assigned_policies: vec![],
+            recent_activity: vec![],
+        }
+    }
+
+    #[test]
+    fn effective_status_active_without_expiry_stays_active() {
+        let e = entry_with_expiry("k", ApiKeyStatus::Active, None);
+        assert_eq!(e.effective_status(Utc::now()), ApiKeyStatus::Active);
+    }
+
+    #[test]
+    fn effective_status_reports_expired_once_past_expiry() {
+        let now = Utc::now();
+        let past = now - chrono::Duration::hours(1);
+        let e = entry_with_expiry("k", ApiKeyStatus::Active, Some(past));
+        assert_eq!(
+            e.effective_status(now),
+            ApiKeyStatus::Expired,
+            "an active key past its expiry displays as Expired"
+        );
+    }
+
+    #[test]
+    fn effective_status_active_before_expiry_stays_active() {
+        let now = Utc::now();
+        let future = now + chrono::Duration::hours(1);
+        let e = entry_with_expiry("k", ApiKeyStatus::Active, Some(future));
+        assert_eq!(e.effective_status(now), ApiKeyStatus::Active);
+    }
+
+    #[test]
+    fn effective_status_revoked_wins_over_expiry() {
+        let now = Utc::now();
+        let past = now - chrono::Duration::hours(1);
+        let e = entry_with_expiry("k", ApiKeyStatus::Revoked, Some(past));
+        assert_eq!(
+            e.effective_status(now),
+            ApiKeyStatus::Revoked,
+            "revocation takes precedence over expiry"
+        );
+    }
+
+    #[test]
+    fn list_projects_expired_status_without_mutating_storage() {
+        let s = store();
+        let past = Utc::now() - chrono::Duration::hours(1);
+        s.seed([entry_with_expiry("expired-1", ApiKeyStatus::Active, Some(past))]);
+
+        let listed = s.list();
+        assert_eq!(listed[0].status, ApiKeyStatus::Expired, "list() surfaces Expired");
+
+        // The stored record's status is untouched — only the returned clone is
+        // projected. A later expiry extension can therefore re-activate it.
+        s.seed([entry_with_expiry(
+            "expired-1",
+            ApiKeyStatus::Active,
+            Some(Utc::now() + chrono::Duration::hours(1)),
+        )]);
+        assert_eq!(
+            s.list()[0].status,
+            ApiKeyStatus::Active,
+            "extending the expiry re-activates the displayed status"
+        );
+    }
+
+    #[test]
+    fn generated_key_carries_supplied_expiry() {
+        let s = store();
+        let expiry = Utc::now() + chrono::Duration::days(90);
+        let gen = s.generate("ttl-key", vec![], "alice", Some(expiry));
+        let entry = s.list().into_iter().find(|e| e.id == gen.id).unwrap();
+        assert_eq!(entry.expires_at, Some(expiry), "generate stores the supplied expiry");
+    }
+
+    #[test]
+    fn rotate_preserves_source_key_expiry() {
+        let s = store();
+        let expiry = Utc::now() + chrono::Duration::days(30);
+        let gen = s.generate("rot", vec![ApiKeyScope::ReadAudit], "alice", Some(expiry));
+        let rotated = s.rotate(&gen.id, "alice").unwrap();
+        let new = s.list().into_iter().find(|e| e.id == rotated.id).unwrap();
+        assert_eq!(new.expires_at, Some(expiry), "rotation carries the expiry over");
     }
 }

@@ -1,0 +1,6 @@
+{
+  "description": "AAASM-5353 negative: ordinary Traditional-Chinese prose carrying the numeric content real documents carry - dates, versions, ports, counts and monetary amounts - must produce no locale findings. This is the defect the Epic exists to fix, approached from the other side: AAASM-5344 took 32 KB of clean zh-TW prose from 87 findings to zero, and recognizers loose enough to flag ordinary numbers would be the same defect with a different cause. Numerically dense on purpose: a pure-Han corpus would pass even if every recognizer matched any digit run.",
+  "input_text": "本文件對應版本 v0.0.1-rc.7，最後更新於 2026-08-01，前一版是 2026-07-24 發布。閘道器預設監聽 50051 埠，儀表板使用 3000 埠。第一季共處理 1,250,000 次決策請求，其中 3,412 次被拒絕。稽核事件保留 365 天，每批最多 5000 筆。會議記錄編號 20260715，與會者 12 人。",
+  "expected_findings": [],
+  "expected_redacted": "本文件對應版本 v0.0.1-rc.7，最後更新於 2026-08-01，前一版是 2026-07-24 發布。閘道器預設監聽 50051 埠，儀表板使用 3000 埠。第一季共處理 1,250,000 次決策請求，其中 3,412 次被拒絕。稽核事件保留 365 天，每批最多 5000 筆。會議記錄編號 20260715，與會者 12 人。"
+}

@@ -9,6 +9,7 @@ use super::client;
 use super::models::CostSummaryDisplay;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 /// Time period for cost aggregation.
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
@@ -102,13 +103,15 @@ fn render_table(display: &CostSummaryDisplay, args: &SummaryArgs) {
     // Global summary
     println!("COST SUMMARY ({spend_label})");
     println!("──────────────────");
-    println!("  {spend_label} spend: ${spend_value}");
+    // spend_value/limit_val/date are server-supplied; strip terminal escapes
+    // (utilization is computed from the raw values, then itself is numeric).
+    println!("  {spend_label} spend: ${}", sanitize_terminal(spend_value));
     if let Some(limit_val) = limit {
         let pct = compute_utilization_pct(spend_value, limit_val);
-        println!("  Budget limit:  ${limit_val}");
+        println!("  Budget limit:  ${}", sanitize_terminal(limit_val));
         println!("  Utilization:   {pct}");
     }
-    println!("  Date:          {}", display.date);
+    println!("  Date:          {}", sanitize_terminal(&display.date));
     println!();
 }
 
@@ -124,13 +127,16 @@ fn render_agent_table(display: &CostSummaryDisplay, args: &SummaryArgs) {
                 .as_ref()
                 .map_or("N/A".to_string(), |v| format!("${v}")),
         };
+        // agent_id and the spend strings come from the server; sanitize them.
         table.add_row(vec![
-            &agent.agent_id,
-            &format!("${}", agent.daily_spend_usd),
-            &agent
-                .monthly_spend_usd
-                .as_ref()
-                .map_or("N/A".to_string(), |v| format!("${v}")),
+            sanitize_terminal(&agent.agent_id),
+            sanitize_terminal(&format!("${}", agent.daily_spend_usd)),
+            sanitize_terminal(
+                &agent
+                    .monthly_spend_usd
+                    .as_ref()
+                    .map_or("N/A".to_string(), |v| format!("${v}")),
+            ),
         ]);
         // Use spend to suppress unused warning in the match above
         let _ = spend;

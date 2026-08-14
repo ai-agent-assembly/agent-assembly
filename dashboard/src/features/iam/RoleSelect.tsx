@@ -7,7 +7,7 @@ export interface RoleSelectProps {
   onBeforeChange?: (member: Member, next: Role) => boolean | Promise<boolean>
 }
 
-export function RoleSelect({ member, onBeforeChange }: RoleSelectProps) {
+export function RoleSelect({ member, onBeforeChange }: Readonly<RoleSelectProps>) {
   const { mutate, isPending } = useUpdateMemberRoleMutation()
   const { toast } = useToast()
 

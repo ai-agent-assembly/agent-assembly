@@ -13,10 +13,88 @@
    All colors come from CSS variables in src/styles.css. No hex.
    ============================================================ */
 
+/* Wrapper hosts the SVG + the absolutely-positioned zoom controls overlay. */
+.topology-graph-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: inherit;
+}
+
 .topology-graph {
   width: 100%;
   height: 100%;
   background: var(--paper-2);
+  user-select: none;
+}
+
+/* ── Pan/zoom controls (AAASM-5071) ─────────────────────────── */
+
+.topology-graph__controls {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
+}
+
+.topology-graph__zoom-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--ink-3);
+}
+
+.topology-graph__zoom-btn:hover {
+  background: var(--paper-3);
+  color: var(--ink);
+}
+
+.topology-graph__zoom-btn:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 1px;
+}
+
+.topology-graph__zoom-readout {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  color: var(--ink-5);
+  margin-top: 2px;
+}
+
+/* Selected node/cluster emphasis (panel selection mirror). */
+.topology-node[data-selected='true'] .topology-node__card {
+  stroke: var(--ink-2);
+  stroke-width: 1.8;
+}
+
+.topology-cluster[data-selected='true'] .topology-cluster__outline {
+  stroke: var(--ink-3);
+  stroke-dasharray: none;
+  opacity: 1;
+}
+
+/* Neighbour focus on node select (AAASM-5137): a selected node keeps itself and
+   its immediate neighbours at full opacity while everything unconnected recedes,
+   mirroring design/v2/hi-fi/topology.jsx (nodes → 0.2, edges → 0.07). The
+   `data-dimmed` attribute is only present while a node is selected, so with no
+   selection nothing dims. */
+.topology-node[data-dimmed='true'] {
+  opacity: 0.2;
+}
+
+.topology-edge[data-dimmed='true'] {
+  opacity: 0.07;
 }
 
 .topology-node__card {
@@ -45,6 +123,17 @@
   stroke: var(--danger);
 }
 
+/* Live registry statuses (AAASM-5040): a suspended agent is an operator
+   intervention worth surfacing (amber); a deregistered agent is inactive
+   (grey, same as idle). */
+.topology-node[data-status='suspended'] .topology-node__stripe {
+  fill: var(--warn);
+}
+
+.topology-node[data-status='deregistered'] .topology-node__stripe {
+  fill: var(--ink-4);
+}
+
 .topology-node:hover .topology-node__card {
   stroke: var(--ink-2);
 }
@@ -67,10 +156,171 @@
   fill: var(--ink-4);
 }
 
+/* ── Node badges & markers (AAASM-5033) ─────────────────────────
+   Root/depth, enforcement-mode, flagged, and delegation-cycle affordances.
+   All colours are tokens so every badge re-themes in light/dark, mirroring
+   design/v1/hi-fi/topology.jsx (which used raw hex). */
+
+/* Root / depth badge (top-right of the card). */
+.topology-node__depth {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  fill: var(--ink-4);
+}
+
+.topology-node__depth--root {
+  fill: var(--info);
+  font-weight: 700;
+}
+
+/* Enforcement-mode badge — dot glyph + label, coloured per mode. */
+.topology-node__mode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  fill: var(--ink-4);
+}
+
+.topology-node__mode--enforce {
+  fill: var(--ok);
+}
+
+.topology-node__mode--shadow {
+  fill: var(--warn);
+}
+
+.topology-node__mode--off {
+  fill: var(--ink-4);
+}
+
+/* Cross-team badge (⇆N) — relationships the active team filter is hiding from
+   the canvas (AAASM-5138). Carries its own fill so it stays legible when it sits
+   inside the mode badge's per-mode colour. */
+.topology-node__crossteam {
+  fill: var(--ink-3);
+  font-weight: 700;
+}
+
+/* Trust badge (top-left) — the agent's trust score. Only rendered when a real
+   trust value is present (currently always null server-side, AAASM-5036). */
+.topology-node__trust {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  fill: var(--info);
+}
+
+/* Flagged agents: danger-tinted card + name (mirrors the Fleet danger row). */
+.topology-node[data-flagged='true'] .topology-node__card {
+  stroke: var(--danger);
+}
+
+.topology-node[data-flagged='true'] .topology-node__name {
+  fill: var(--danger);
+}
+
+/* Delegation cycle: dashed danger border is the primary marker; the ⟳ glyph
+   (bottom-right) confirms it. Placed after the flagged rule so a node that is
+   both flagged and on a cycle still shows the emphasised cycle border. */
+.topology-node[data-in-cycle='true'] .topology-node__card {
+  stroke: var(--danger);
+  stroke-width: 2;
+  stroke-dasharray: 4 2;
+}
+
+.topology-node__cycle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  fill: var(--danger);
+}
+
 .topology-node__budget {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 8px;
   fill: var(--ink-3);
+}
+
+/* No configured ceiling (AAASM-5135). `--warn` is the `caution` tone the shared
+   truthfulness vocabulary assigns to `unconfigured`; the colour is duplicated
+   here rather than the class reused because `.truth-tone--caution` sets `color`,
+   which SVG text does not paint with. */
+.topology-node__budget[data-truth-state='unconfigured'] {
+  fill: var(--warn);
+}
+
+/* ── Relationship edges (AAASM-5019) ────────────────────────────
+   Mirrors design/v1/hi-fi/topology.jsx TOPO_EC. Each of the six kinds maps
+   to a token so lines re-theme in light/dark; the two structural ones:
+     delegation → --ink-3  (primary solid line)
+     call       → --info   (secondary dashed line)
+   Arrowheads reuse the same token via fill so head + line match. */
+
+.topology-edge {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.topology-edge--delegation {
+  stroke: var(--ink-3);
+  opacity: 0.75;
+}
+
+.topology-edge--call {
+  stroke: var(--info);
+  opacity: 0.7;
+}
+
+/* Long-range cross-team relationships read slightly lighter so the curved
+   connectors don't dominate the intra-team structure. */
+.topology-edge[data-cross-team='true'] {
+  opacity: 0.55;
+}
+
+.topology-edge__arrow--delegation {
+  fill: var(--ink-3);
+}
+
+.topology-edge__arrow--call {
+  fill: var(--info);
+}
+
+/* The four non-structural edge kinds (reads / writes / approves / messages),
+   emitted by the `/topology` projection since AAASM-5099. Colours mirror
+   src/features/topology/edgeKinds.ts so an edge matches its sidebar swatch. */
+.topology-edge--reads {
+  stroke: var(--ok);
+  opacity: 0.7;
+}
+
+.topology-edge--writes {
+  stroke: var(--warn);
+  opacity: 0.7;
+}
+
+.topology-edge--approves {
+  stroke: var(--edge-approves);
+  opacity: 0.7;
+}
+
+.topology-edge--messages {
+  stroke: var(--ink-4);
+  opacity: 0.6;
+}
+
+/* Arrowheads reuse each kind's stroke token via fill so head + line match. */
+.topology-edge__arrow--reads {
+  fill: var(--ok);
+}
+
+.topology-edge__arrow--writes {
+  fill: var(--warn);
+}
+
+.topology-edge__arrow--approves {
+  fill: var(--edge-approves);
+}
+
+.topology-edge__arrow--messages {
+  fill: var(--ink-4);
 }
 
 /* ── Team clusters (AAASM-1339) ─────────────────────────────── */
@@ -81,6 +331,17 @@
   stroke-width: 1;
   stroke-dasharray: 4 3;
   opacity: 0.7;
+}
+
+/* The unclaimed group is drawn as a distinct treatment, not as one more team
+   box (design/v2/hi-fi/topology.jsx:190). */
+.topology-cluster--unclaimed .topology-cluster__outline {
+  stroke: var(--warn);
+  stroke-dasharray: 3 3;
+}
+
+.topology-cluster--unclaimed .topology-cluster__label {
+  color: var(--warn);
 }
 
 .topology-cluster__overlay {

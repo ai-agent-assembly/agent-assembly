@@ -1,12 +1,18 @@
 .cap-bulk {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   padding: 10px 24px;
   background: var(--ink);
   color: var(--paper);
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
+}
+
+/* The controls stay one row; the confirmation step stacks beneath them so
+   opening it never reflows the control the operator just pressed. */
+.cap-bulk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .cap-bulk-count {
@@ -62,6 +68,44 @@
   font-weight: 600;
 }
 
-.cap-bulk-btn:hover {
+.cap-bulk-btn:hover:not(:disabled) {
   filter: brightness(0.95);
+}
+
+/* Disabled until a decision is chosen (AAASM-5124). Kept visibly present rather
+   than hidden, so the operator can see the action exists and why it is not yet
+   available — the reason rides on the button's `title`. */
+.cap-bulk-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* A `<fieldset>` (see BulkActionBar.tsx) — so the UA's default border, margin
+   and `min-inline-size: min-content` are reset before the panel's own styling. */
+.cap-bulk-confirm {
+  min-width: 0;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 3px;
+  background: var(--warn-bg);
+  color: var(--ink);
+  max-width: 720px;
+}
+
+.cap-bulk-confirm-q {
+  margin: 0;
+  font-size: 12px;
+}
+
+.cap-bulk-confirm-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.cap-bulk-confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
 }

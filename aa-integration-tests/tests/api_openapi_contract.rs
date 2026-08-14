@@ -45,7 +45,7 @@ fn load_spec() -> Value {
     serde_yaml::from_str(&yaml).expect("openapi/v1.yaml must be valid YAML")
 }
 
-// ── TC-1: spec file loads and has 51 paths ───────────────────────────────────
+// ── TC-1: spec file loads and has 62 paths ───────────────────────────────────
 
 #[test]
 fn openapi_spec_loads_without_errors() {
@@ -59,9 +59,58 @@ fn openapi_spec_loads_without_errors() {
 
     let path_count = spec["paths"].as_object().expect("spec must have a paths object").len();
 
+    // AAASM-3881 added the two operator kill-switch endpoints (halt-agent,
+    // global/halt), bringing the path count from 53 to 55. AAASM-4141 added the
+    // seven /api/v1/analytics/* dashboard aggregation endpoints, bringing it to 62.
+    // AAASM-4861 added the /api/v1/auth/ws-ticket mint endpoint, bringing it to 63.
+    // AAASM-5031 added /api/v1/overview/enforcement-timeline (64); AAASM-5032 added
+    // /api/v1/costs/history + /api/v1/costs/budget-tree, bringing it to 66.
+    // AAASM-5037 added /api/v1/policies/simulate (dry-run), bringing it to 67.
+    // AAASM-5040 added /api/v1/topology (the dashboard node+edge graph), bringing it to 68.
+    // AAASM-5038 added /api/v1/fleet/active-sessions (fleet-wide open sessions), bringing it to 69.
+    // AAASM-5046 added /api/v1/iam/roles (role->capability grant mapping), bringing it to 70.
+    // AAASM-5058 added /api/v1/agents/{id}/decisions (recent per-agent decision stream),
+    // bringing it to 71. AAASM-5084 added /api/v1/analytics/agent-enforcement (per-agent
+    // blocked + scrubbed 24h counts), bringing it to 72. AAASM-5096 added
+    // /api/v1/policies/team/{team_id} (policies in force for one team — a separate
+    // path because /api/v1/policies is Admin-only), bringing it to 73.
+    // AAASM-5085 added /api/v1/analytics/agent-decision-mix (per-agent
+    // allow/narrow/scrub/pending/deny distribution), bringing it to 74.
+    // AAASM-5174 added the DLP/secret-scrub read surface: /api/v1/scrub/patterns
+    // (effective pattern catalogue), /api/v1/scrub/pattern-counts (per-kind hit
+    // counts over a window), and /api/v1/scrub/posture (leak posture or explicit
+    // not-computed), bringing it to 77. AAASM-5094 added
+    // /api/v1/policies/replay (replay recorded traffic against a proposed policy
+    // for aggregate impact — distinct from the single-request /policies/simulate),
+    // bringing it to 78. AAASM-5095 added /api/v1/approvals/{id}/forward
+    // (reassign a pending approval to a different approver — distinct from the
+    // approve/reject decide endpoints), bringing it to 79. AAASM-5098 added
+    // /api/v1/agents/{id}/config (per-agent config projection — enforcement mode,
+    // policy cascade, and a qualitative denial recommendation), bringing it to 80.
+    // AAASM-5083 added the trust-score surface (ADR 0019 Option D):
+    // /api/v1/analytics/trust (per-agent behavioural trust score) and
+    // /api/v1/analytics/trust/config (per-tenant weight-set read/write),
+    // bringing it to 82. AAASM-5305 added the ADR 0031 native email/password
+    // auth surface: /api/v1/auth/login, /register, /invite, /invite/accept,
+    // /refresh, /logout, and the public /auth/methods capability probe —
+    // seven paths that coexist with the unchanged /auth/token — bringing it to 89.
+    // AAASM-5306 added the ADR 0031 §Q4 password-reset pair:
+    // /api/v1/auth/password/reset (request, always 202) and
+    // /api/v1/auth/password/reset/confirm (consume token + set password),
+    // bringing it to 91. AAASM-5097 added
+    // /api/v1/agents/{id}/enforcement-mode (the ADR 0021 direction-asymmetric
+    // enforcement-mode toggle — Write to strengthen, Admin + reason + bounded
+    // expiry to weaken to shadow), bringing it to 92. AAASM-5340 added
+    // /api/v1/agents/{id}/enforcement-mode/preview (the cascade dry-run — the
+    // affected subtree, root + descendants, for a subtree-wide enforcement-mode
+    // change; the apply path echoes this set back), bringing it to 93.
+    // AAASM-5359 added the ADR 0032 §8 sensitive-data analytics surface over the
+    // durable projection: /api/v1/sensitive-data/summary, /timeseries,
+    // /breakdown, /events, /events/{event_id}, /top-offenders and /export —
+    // seven paths, bringing it to 100.
     assert_eq!(
-        path_count, 52,
-        "openapi/v1.yaml must declare exactly 52 paths, found {path_count}"
+        path_count, 100,
+        "openapi/v1.yaml must declare exactly 100 paths, found {path_count}"
     );
 
     for schema in ["HealthResponse", "ProblemDetail", "PolicyResponse", "AlertResponse"] {
@@ -94,11 +143,32 @@ fn openapi_spec_paths_match_implemented_routes() {
     let mut expected: Vec<&str> = vec![
         "/api/v1/admin/retention-policy",
         "/api/v1/admin/retention-policy/run",
+        "/api/v1/analytics/action-volume",
+        // AAASM-5085 — per-agent allow/narrow/scrub/pending/deny distribution.
+        "/api/v1/analytics/agent-decision-mix",
+        // AAASM-5084 — per-agent blocked + scrubbed 24h counts.
+        "/api/v1/analytics/agent-enforcement",
+        "/api/v1/analytics/approvals",
+        "/api/v1/analytics/cost-breakdown",
+        "/api/v1/analytics/fleet-health",
+        "/api/v1/analytics/kpis",
+        "/api/v1/analytics/policy-effectiveness",
+        "/api/v1/analytics/tool-usage",
+        // AAASM-5083 — per-agent behavioural trust score + per-tenant weight config.
+        "/api/v1/analytics/trust",
+        "/api/v1/analytics/trust/config",
         "/api/v1/agents",
         "/api/v1/agents/{id}",
         "/api/v1/agents/{id}/budget",
         "/api/v1/agents/{id}/capabilities",
+        // AAASM-5098 — per-agent config projection (Config-YAML tab).
+        "/api/v1/agents/{id}/config",
+        "/api/v1/agents/{id}/decisions",
         "/api/v1/agents/{id}/edges",
+        // AAASM-5097 — ADR 0021 direction-asymmetric enforcement-mode toggle.
+        "/api/v1/agents/{id}/enforcement-mode",
+        // AAASM-5340 — cascade dry-run: the affected subtree for a subtree-wide toggle.
+        "/api/v1/agents/{id}/enforcement-mode/preview",
         "/api/v1/agents/{id}/graph",
         "/api/v1/agents/{id}/resume",
         "/api/v1/agents/{id}/subtree-burn",
@@ -116,32 +186,74 @@ fn openapi_spec_paths_match_implemented_routes() {
         "/api/v1/approvals",
         "/api/v1/approvals/{id}",
         "/api/v1/approvals/{id}/approve",
+        // AAASM-5095 — reassign a pending approval to a different approver.
+        "/api/v1/approvals/{id}/forward",
         "/api/v1/approvals/{id}/reject",
         "/api/v1/audit/sandbox-summary",
         "/api/v1/audit/violations-by-lineage",
+        // AAASM-5305 — ADR 0031 native email/password auth (coexists with /auth/token).
+        "/api/v1/auth/invite",
+        "/api/v1/auth/invite/accept",
+        "/api/v1/auth/login",
+        "/api/v1/auth/logout",
+        "/api/v1/auth/methods",
+        // AAASM-5306 — ADR 0031 §Q4 password reset (request + confirm).
+        "/api/v1/auth/password/reset",
+        "/api/v1/auth/password/reset/confirm",
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/register",
         "/api/v1/auth/token",
+        "/api/v1/auth/ws-ticket",
         "/api/v1/capability/matrix",
         "/api/v1/capability/override",
         "/api/v1/capability/override/{id}",
         "/api/v1/costs",
+        "/api/v1/costs/budget-tree",
+        "/api/v1/costs/history",
         "/api/v1/dispatch_tool",
+        "/api/v1/fleet/active-sessions",
         "/api/v1/health",
         "/api/v1/iam/api-keys",
         "/api/v1/iam/api-keys/{id}/revoke",
         "/api/v1/iam/api-keys/{id}/rotate",
+        // AAASM-5046 — role→capability grant mapping (read-only).
+        "/api/v1/iam/roles",
         "/api/v1/logs",
         "/api/v1/ops",
+        "/api/v1/ops/global/halt",
+        "/api/v1/ops/{id}/halt-agent",
         "/api/v1/ops/{id}/pause",
         "/api/v1/ops/{id}/resume",
         "/api/v1/ops/{id}/terminate",
+        "/api/v1/overview/enforcement-timeline",
         "/api/v1/policies",
         "/api/v1/policies/active",
+        // AAASM-5094 — replay recorded traffic against a proposed policy for aggregate impact.
+        "/api/v1/policies/replay",
+        "/api/v1/policies/simulate",
+        // AAASM-5096 — policies in force for one team (Teams Active-policies card).
+        "/api/v1/policies/team/{team_id}",
+        "/api/v1/scrub/pattern-counts",
+        "/api/v1/scrub/patterns",
+        "/api/v1/scrub/posture",
+        // AAASM-5359 — sensitive-data analytics over the ADR 0032 §8 projection.
+        // Read-scoped and tenant-confined; /export additionally requires Admin
+        // plus an explicit acknowledgement and is access-logged.
+        "/api/v1/sensitive-data/breakdown",
+        "/api/v1/sensitive-data/events",
+        "/api/v1/sensitive-data/events/{event_id}",
+        "/api/v1/sensitive-data/export",
+        "/api/v1/sensitive-data/summary",
+        "/api/v1/sensitive-data/timeseries",
+        "/api/v1/sensitive-data/top-offenders",
+        "/api/v1/topology",
         "/api/v1/topology/edges",
         "/api/v1/topology/lineage/{agent_id}",
         "/api/v1/topology/overview",
         "/api/v1/topology/stats",
         "/api/v1/topology/team/{team_id}",
         "/api/v1/topology/tree/{root_id}",
+        "/api/v1/tools",
         "/api/v1/traces/{session_id}",
         "/api/v1/ws/events",
     ];
@@ -357,4 +469,72 @@ async fn openapi_spec_security_schemes_enforced() {
 
     let body: Value = resp.json().await.expect("401 response must have a JSON body");
     assert!(body.is_object(), "401 response body must be a JSON object; got: {body}");
+}
+
+// ── TC-6: paginated list endpoints declare an OBJECT body, not an array ───────
+//
+// AAASM-4892: the paginated list handlers return `PaginatedResponse { items,
+// page, per_page, total }`, but four of them were annotated `body = Vec<T>`, so
+// the spec advertised a bare array while the wire body was an object — dashboard
+// consumers that `.map`ed the (non-array) body crashed. This guards every
+// paginated list endpoint: its 200 body must be an object with `items` (array)
+// and `total`, never `type: array`.
+
+/// Resolve a possibly-`$ref` schema node to the concrete schema object.
+fn resolve_schema<'a>(spec: &'a Value, node: &'a Value) -> &'a Value {
+    match node.get("$ref").and_then(Value::as_str) {
+        Some(r) => {
+            let name = r.rsplit('/').next().expect("$ref has a component name");
+            spec.pointer(&format!("/components/schemas/{name}"))
+                .unwrap_or_else(|| panic!("referenced schema {name} must exist"))
+        }
+        None => node,
+    }
+}
+
+#[test]
+fn paginated_list_endpoints_declare_object_body_not_array() {
+    let spec = load_spec();
+    // Every list endpoint whose handler returns a PaginatedResponse wrapper.
+    let paginated_paths = [
+        "/api/v1/agents",
+        "/api/v1/alerts",
+        "/api/v1/policies",
+        "/api/v1/logs",
+        "/api/v1/approvals",
+    ];
+    for path in paginated_paths {
+        // JSON-pointer-escape the path key's slashes (`/` → `~1`).
+        let escaped = path.replace('~', "~0").replace('/', "~1");
+        let schema_node = spec
+            .pointer(&format!(
+                "/paths/{escaped}/get/responses/200/content/application~1json/schema"
+            ))
+            .unwrap_or_else(|| panic!("{path} GET 200 must declare a JSON schema"));
+        let schema = resolve_schema(&spec, schema_node);
+
+        assert_eq!(
+            schema.get("type").and_then(Value::as_str),
+            Some("object"),
+            "{path} 200 body must be an object (paginated wrapper), not a bare array — \
+             a `Vec<T>` annotation over a PaginatedResponse handler is the AAASM-4892 drift"
+        );
+        let props = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("{path} 200 schema must have properties"));
+        assert!(
+            props.contains_key("items"),
+            "{path} 200 body must expose an `items` array"
+        );
+        assert_eq!(
+            props["items"].get("type").and_then(Value::as_str),
+            Some("array"),
+            "{path} 200 `items` must be the array of results"
+        );
+        assert!(
+            props.contains_key("total"),
+            "{path} 200 body must expose a `total` count"
+        );
+    }
 }

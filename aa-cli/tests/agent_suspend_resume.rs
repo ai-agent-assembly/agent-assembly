@@ -139,3 +139,77 @@ async fn resume_returns_failure_on_404() {
 
     assert_eq!(result, ExitCode::FAILURE);
 }
+
+// ── render-format coverage (AAASM-3812) ───────────────────────────────
+//
+// The success tests above only render in `Json`; the `Table` and `Yaml`
+// success-render arms of `suspend`/`resume` were never exercised.
+
+async fn suspend_ok(uri: String, fmt: aa_cli::output::OutputFormat) -> ExitCode {
+    std::thread::spawn(move || {
+        let args = aa_cli::commands::agent::suspend::SuspendArgs {
+            agent_id: "aabbccdd00112233".to_string(),
+            reason: "drift".to_string(),
+            force: true,
+        };
+        aa_cli::commands::agent::suspend::run(args, &make_context(&uri), fmt)
+    })
+    .join()
+    .unwrap()
+}
+
+async fn mount_suspend_ok(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/api/v1/agents/aabbccdd00112233/suspend"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "agent_id": "aabbccdd00112233",
+            "previous_status": "Active",
+            "new_status": "Suspended(Manual)"
+        })))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn suspend_table_success_renders() {
+    let server = MockServer::start().await;
+    mount_suspend_ok(&server).await;
+    assert_eq!(
+        suspend_ok(server.uri(), aa_cli::output::OutputFormat::Table).await,
+        ExitCode::SUCCESS
+    );
+}
+
+#[tokio::test]
+async fn suspend_yaml_success_renders() {
+    let server = MockServer::start().await;
+    mount_suspend_ok(&server).await;
+    assert_eq!(
+        suspend_ok(server.uri(), aa_cli::output::OutputFormat::Yaml).await,
+        ExitCode::SUCCESS
+    );
+}
+
+#[tokio::test]
+async fn resume_yaml_success_renders() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/agents/aabbccdd00112233/resume"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "agent_id": "aabbccdd00112233",
+            "previous_status": "Suspended(Manual)",
+            "new_status": "Active"
+        })))
+        .mount(&server)
+        .await;
+    let uri = server.uri();
+    let result = std::thread::spawn(move || {
+        let args = aa_cli::commands::agent::resume::ResumeArgs {
+            agent_id: "aabbccdd00112233".to_string(),
+        };
+        aa_cli::commands::agent::resume::run(args, &make_context(&uri), aa_cli::output::OutputFormat::Yaml)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(result, ExitCode::SUCCESS);
+}

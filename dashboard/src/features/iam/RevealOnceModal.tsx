@@ -24,7 +24,7 @@ export function RevealOnceModal({
   onCopied,
   onClose,
   onAttemptCloseBeforeCopy,
-}: RevealOnceModalProps) {
+}: Readonly<RevealOnceModalProps>) {
   const { toast } = useToast()
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -54,12 +54,26 @@ export function RevealOnceModal({
   return (
     <div
       className="iam-dialog__backdrop"
-      role="dialog"
-      aria-modal="true"
+      role="button"
+      tabIndex={-1}
+      aria-label="Close modal"
       data-testid="reveal-once-modal"
       onClick={handleBackdropAttempt}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        e.preventDefault()
+        handleBackdropAttempt()
+      }}
     >
-      <div className="iam-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="iam-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="API key reveal"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
         <h2 className="iam-dialog__title">Your new API key</h2>
         <p style={{ fontSize: '0.85rem', margin: '0 0 0.75rem' }}>
           Copy this secret now — it will not be shown again.

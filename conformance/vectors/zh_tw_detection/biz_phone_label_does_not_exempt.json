@@ -1,0 +1,13 @@
+{
+  "description": "AAASM-5353, added after delta review: a context keyword is evidence about the category it names and nothing else. Pooling the keyword sets let the phone label 電話 exempt a machine-delimited 8-digit run from the tax recognizer's prose boundary rule, so an ordinary zh-TW contact record emitted a spurious TAX_IDENTIFIER beside the correct PHONE_NUMBER. Only the mobile number is a finding here.",
+  "input_text": "電話 0912345678 order_id=12345675",
+  "expected_findings": [
+    {
+      "category": "PHONE_NUMBER[zh-TW/mobile]",
+      "offset": 7,
+      "end": 17,
+      "confidence": "high"
+    }
+  ],
+  "expected_redacted": "電話 [REDACTED] order_id=12345675"
+}

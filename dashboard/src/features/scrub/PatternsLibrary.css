@@ -63,8 +63,19 @@
   z-index: 1;
 }
 
-.scrub-patterns-col-toggle {
-  width: 28px;
+.scrub-patterns-note {
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--ink-4);
+}
+
+.scrub-patterns-col-sev {
+  width: 88px;
 }
 
 .scrub-patterns-col-hits {
@@ -84,22 +95,30 @@
   background: var(--paper-3);
 }
 
-.scrub-patterns-row.is-disabled {
-  opacity: 0.55;
-}
-
 .scrub-patterns-row td {
   padding: 8px 10px;
   vertical-align: middle;
 }
 
-.scrub-patterns-toggle-cell {
-  width: 28px;
+/* Severity is the API's `CredentialKind::severity()`, restored to the column the
+   design mock had (AAASM-5347). AAASM-5156 removed it because nothing behind the
+   product modelled it and the values shown were the mock's; the scrub catalogue
+   route models and serves it now, so the ranking is the gateway's, not ours.
+   The provenance column it replaces had become uniform — this endpoint serves
+   only built-ins, so every row said "built-in". */
+.scrub-patterns-sev {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
-.scrub-patterns-toggle-cell input {
-  cursor: pointer;
-}
+.scrub-patterns-sev--critical { color: var(--danger); }
+.scrub-patterns-sev--high { color: var(--warn); }
+.scrub-patterns-sev--medium { color: var(--info); }
+.scrub-patterns-sev--low { color: var(--ink-3); }
 
 .scrub-patterns-name {
   font-weight: 600;
@@ -128,17 +147,27 @@
   text-transform: lowercase;
 }
 
-.scrub-patterns-sev {
+/* Category as `/scrub/patterns` serves it. The API spells it `api_key`; the
+   class is slugged to the hyphenated form these rules have used since
+   AAASM-5156, while the cell still displays the served value verbatim. Colour
+   distinguishes the groups; the risk ranking lives in the severity column, which
+   the API sources separately. */
+.scrub-patterns-cat {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
 }
 
-.scrub-patterns-sev--critical { color: var(--danger); }
-.scrub-patterns-sev--high { color: var(--warn); }
-.scrub-patterns-sev--medium { color: var(--info); }
-.scrub-patterns-sev--low { color: var(--ink-3); }
+.scrub-patterns-cat--api-key,
+.scrub-patterns-cat--private-key { color: var(--danger); }
+.scrub-patterns-cat--auth-token,
+.scrub-patterns-cat--cloud-credential { color: var(--warn); }
+.scrub-patterns-cat--database-url,
+.scrub-patterns-cat--pii { color: var(--info); }
+.scrub-patterns-cat--generic,
+.scrub-patterns-cat--policy-defined { color: var(--ink-3); }
 
 .scrub-patterns-hits {
   text-align: right;
@@ -164,4 +193,17 @@
   height: 1px;
   overflow: hidden;
   clip: rect(0 0 0 0);
+}
+
+/* The alerts column's total. Sits above the table, not in the stat strip — see
+   the component for both placement decisions. */
+.scrub-patterns-total {
+  margin: 0;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--ink-2);
 }

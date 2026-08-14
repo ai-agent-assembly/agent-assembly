@@ -8,11 +8,14 @@ use crate::models::{EventType, GovernanceEvent};
 // AAASM-1657 PR-H: the ops-change channel reuses the typed OpsChangePayload
 // shipped in PR-B (AAASM-1651).
 use crate::state::AppState;
+use crate::ws::auth::{resolve_ws_caller, WsHeaderCaller};
 use crate::ws::params::WsQueryParams;
+use crate::ws::tenant::{agent_id_to_bytes, caller_can_view, resolve_event_tenant};
+use crate::ws::ticket::{WsTicketPurpose, WsTicketStore};
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::Extension;
 use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
@@ -58,33 +61,58 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
     tag = "events"
 )]
 pub async fn ws_events_handler(
-    _caller: AuthenticatedCaller,
+    WsHeaderCaller(header_caller): WsHeaderCaller,
     ws: WebSocketUpgrade,
     Query(params): Query<WsQueryParams>,
+    Extension(ticket_store): Extension<WsTicketStore>,
     Extension(state): Extension<AppState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, params, state))
+) -> Response {
+    // AAASM-4861: authenticate the upgrade from a single-use `?ticket=` (the
+    // browser path — a WS handshake can't carry an `Authorization` header) or,
+    // for non-browser clients, the Bearer header. A failure is a 401 before the
+    // protocol switch, never an anonymous stream.
+    let caller = match resolve_ws_caller(
+        &ticket_store,
+        params.ticket.as_deref(),
+        WsTicketPurpose::Events,
+        header_caller,
+    )
+    .await
+    {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
+
+    // AAASM-3980: the authenticated caller's tenant travels into the dispatch
+    // loop so every live and replayed event is gated against it — the shared
+    // broadcast channels are cross-tenant and must not leak to a scoped caller.
+    ws.on_upgrade(move |socket| handle_socket(socket, params, state, caller))
+        .into_response()
 }
 
 /// Drive a single WebSocket connection: replay, then stream live events.
-async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState) {
-    let (sender, mut receiver) = socket.split();
+async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState, caller: AuthenticatedCaller) {
+    let (sender, receiver) = socket.split();
     let sender = std::sync::Arc::new(tokio::sync::Mutex::new(sender));
 
     let allowed_types = params.event_types();
     let agent_filter = params.agent_id.clone();
 
-    // Replay buffered events if `since` was provided.
+    // Replay buffered events if `since` was provided. A send failure during
+    // replay means the client is gone — abandon the connection.
     if let Some(since_id) = params.since {
-        let events = state.replay_buffer.events_since(since_id);
-        let replay_sender = sender.clone();
-        for event in events {
-            if !matches_filter(&event, &allowed_types, agent_filter.as_deref()) {
-                continue;
-            }
-            if send_event(&replay_sender, &event).await.is_err() {
-                return;
-            }
+        if replay_buffered_events(
+            &state,
+            &caller,
+            &sender,
+            since_id,
+            &allowed_types,
+            agent_filter.as_deref(),
+        )
+        .await
+        .is_err()
+        {
+            return;
         }
     }
 
@@ -96,143 +124,272 @@ async fn handle_socket(socket: WebSocket, params: WsQueryParams, state: AppState
     let mut ops_change_rx = state.events.subscribe_ops_change();
 
     let live_sender = sender.clone();
-    let ping_sender = sender.clone();
 
-    // Spawn ping/pong keep-alive task.
+    // Spawn ping/pong keep-alive + reader tasks. `pong_received` is shared:
+    // the reader sets it on each Pong, the ping task checks-and-clears it.
     let pong_received = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let pong_flag = pong_received.clone();
-
-    let ping_handle = tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(PING_INTERVAL).await;
-            // Check that client responded to the previous ping.
-            if !pong_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                tracing::debug!("pong timeout — closing WebSocket");
-                let _ = ping_sender.lock().await.close().await;
-                return;
-            }
-            pong_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-            if ping_sender
-                .lock()
-                .await
-                .send(Message::Ping(Bytes::new()))
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-    });
-
-    // Spawn reader task to track pong responses and detect client close.
-    let reader_pong = pong_received.clone();
-    let reader_handle = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            match msg {
-                Message::Pong(_) => {
-                    reader_pong.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                Message::Close(_) => break,
-                _ => {}
-            }
-        }
-    });
+    let ping_handle = tokio::spawn(ping_loop(sender.clone(), pong_received.clone()));
+    let reader_handle = tokio::spawn(reader_loop(receiver, pong_received));
 
     // Event sequence counter for GovernanceEvent ids.
     let next_id = state.next_event_id.clone();
 
-    // Main event dispatch loop.
-    loop {
-        let event = tokio::select! {
-            Ok(pipeline_ev) = pipeline_rx.recv() => {
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Violation,
-                    agent_id: extract_pipeline_agent_id(&pipeline_ev),
-                    payload: serde_json::to_value(EventPayload::Violation(
-                        build_violation_payload(&pipeline_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
-            }
-            Ok(approval_ev) = approval_rx.recv() => {
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Approval,
-                    agent_id: approval_ev.agent_id.clone(),
-                    payload: serde_json::to_value(EventPayload::Approval(
-                        build_approval_payload(&approval_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
-            }
-            Ok(expired_ev) = approval_expiry_rx.recv() => {
-                // AAASM-1453: a pending request's per-request timeout
-                // elapsed without a human decision. Propagate as an
-                // `approval` event with `status: "expired"` so the
-                // dashboard can move the row to the Expired section.
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Approval,
-                    agent_id: expired_ev.agent_id.clone(),
-                    payload: serde_json::to_value(EventPayload::Approval(
-                        build_expired_approval_payload(&expired_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
-            }
-            Ok(budget_ev) = budget_rx.recv() => {
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::Budget,
-                    agent_id: format!("{:02x?}", budget_ev.agent_id.as_bytes()),
-                    payload: serde_json::to_value(EventPayload::Budget(
-                        build_budget_alert_payload(&budget_ev),
-                    ))
-                    .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
-            }
-            Ok(ops_ev) = ops_change_rx.recv() => {
-                // AAASM-1657 PR-H: forward operator-driven ops registry
-                // transitions to the dashboard so it can clear optimistic
-                // overrides and update the row in place by op_id.
-                let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(GovernanceEvent {
-                    id,
-                    event_type: EventType::OpsChange,
-                    agent_id: ops_ev.agent_id,
-                    payload: serde_json::to_value(EventPayload::OpsChange(ops_ev.payload))
-                        .unwrap_or_default(),
-                    timestamp: chrono::Utc::now(),
-                })
-            }
-            else => None,
-        };
-
-        let Some(event) = event else { break };
-
-        // Store in replay buffer before filtering.
-        state.replay_buffer.push(event.clone());
-
-        if !matches_filter(&event, &allowed_types, agent_filter.as_deref()) {
-            continue;
-        }
-
-        if send_event(&live_sender, &event).await.is_err() {
-            break;
-        }
-    }
+    // Main event dispatch loop. Drains live channels until one of them closes
+    // or the client goes away; the keep-alive/reader tasks run alongside.
+    dispatch_live_events(DispatchCtx {
+        state: &state,
+        caller: &caller,
+        sender: &live_sender,
+        next_id: &next_id,
+        allowed_types: &allowed_types,
+        agent_filter: agent_filter.as_deref(),
+        pipeline_rx: &mut pipeline_rx,
+        approval_rx: &mut approval_rx,
+        approval_expiry_rx: &mut approval_expiry_rx,
+        budget_rx: &mut budget_rx,
+        ops_change_rx: &mut ops_change_rx,
+    })
+    .await;
 
     ping_handle.abort();
     reader_handle.abort();
+}
+
+/// Shared sink handle for the WebSocket: an `Arc<Mutex<…>>` so the ping task,
+/// the dispatch loop, and the replay path can all send frames concurrently.
+type SharedSender = std::sync::Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>;
+
+/// Server-initiated keep-alive task. Every [`PING_INTERVAL`] it verifies the
+/// client answered the previous ping (closing the socket on timeout), then
+/// clears the flag and sends a fresh ping. Returns when the socket closes or a
+/// send fails — i.e. the client is gone.
+async fn ping_loop(sender: SharedSender, pong_flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    loop {
+        tokio::time::sleep(PING_INTERVAL).await;
+        // Check that client responded to the previous ping.
+        if !pong_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!("pong timeout — closing WebSocket");
+            let _ = sender.lock().await.close().await;
+            return;
+        }
+        pong_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        if sender.lock().await.send(Message::Ping(Bytes::new())).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Reader task: records each client Pong (so [`ping_loop`] sees the connection
+/// is alive) and stops on a client Close frame. Other inbound frames are ignored.
+async fn reader_loop(
+    mut receiver: futures::stream::SplitStream<WebSocket>,
+    pong_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    while let Some(Ok(msg)) = receiver.next().await {
+        match msg {
+            Message::Pong(_) => pong_flag.store(true, std::sync::atomic::Ordering::Relaxed),
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+}
+
+/// Borrowed context for [`dispatch_live_events`]. Bundles the per-connection
+/// state and the five live receivers so the dispatch loop has a flat signature.
+struct DispatchCtx<'a> {
+    state: &'a AppState,
+    /// The connecting caller — its tenant gates every forwarded event (AAASM-3980).
+    caller: &'a AuthenticatedCaller,
+    sender: &'a SharedSender,
+    next_id: &'a std::sync::atomic::AtomicU64,
+    allowed_types: &'a [EventType],
+    agent_filter: Option<&'a str>,
+    pipeline_rx: &'a mut tokio::sync::broadcast::Receiver<aa_runtime::pipeline::event::PipelineEvent>,
+    approval_rx: &'a mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    approval_expiry_rx: &'a mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    budget_rx: &'a mut tokio::sync::broadcast::Receiver<aa_gateway::budget::types::BudgetAlert>,
+    ops_change_rx: &'a mut tokio::sync::broadcast::Receiver<crate::events::OpsChangeBroadcast>,
+}
+
+/// Main live-event dispatch loop: pulls the next event from any channel, buffers
+/// it for replay, applies the client's filters, and sends it. Terminates when
+/// every channel has closed or a send fails (the client is gone).
+async fn dispatch_live_events(ctx: DispatchCtx<'_>) {
+    loop {
+        let Some(event) = next_governance_event(
+            ctx.state.agent_registry.as_ref(),
+            ctx.next_id,
+            ctx.pipeline_rx,
+            ctx.approval_rx,
+            ctx.approval_expiry_rx,
+            ctx.budget_rx,
+            ctx.ops_change_rx,
+        )
+        .await
+        else {
+            break;
+        };
+
+        // Store in replay buffer before filtering. The buffered copy keeps its
+        // resolved tenant so a later reconnect from a *different* caller is
+        // re-gated against that caller's tenant on replay.
+        ctx.state.replay_buffer.push(event.clone());
+
+        // AAASM-3980: tenant gate first (fail-closed) — never forward an event
+        // the caller isn't entitled to — then the client's type/agent filters.
+        if !caller_can_view(ctx.caller, event.team_id.as_deref(), event.org_id.as_deref()) {
+            continue;
+        }
+
+        if !matches_filter(&event, ctx.allowed_types, ctx.agent_filter) {
+            continue;
+        }
+
+        if send_event(ctx.sender, &event).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Await the next event from any of the five live broadcast channels and map it
+/// onto a [`GovernanceEvent`]. Returns `None` only when every channel has closed
+/// (the `else` arm), which signals the dispatch loop to terminate.
+#[allow(clippy::too_many_arguments)]
+async fn next_governance_event(
+    registry: &aa_gateway::registry::AgentRegistry,
+    next_id: &std::sync::atomic::AtomicU64,
+    pipeline_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::pipeline::event::PipelineEvent>,
+    approval_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    approval_expiry_rx: &mut tokio::sync::broadcast::Receiver<aa_runtime::approval::ApprovalRequest>,
+    budget_rx: &mut tokio::sync::broadcast::Receiver<aa_gateway::budget::types::BudgetAlert>,
+    ops_change_rx: &mut tokio::sync::broadcast::Receiver<crate::events::OpsChangeBroadcast>,
+) -> Option<GovernanceEvent> {
+    tokio::select! {
+        Ok(pipeline_ev) = pipeline_rx.recv() => {
+            let agent_id = extract_pipeline_agent_id(&pipeline_ev);
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                pipeline_explicit_team(&pipeline_ev),
+                agent_id_to_bytes(&agent_id),
+            );
+            Some(build_governance_event(
+                next_id,
+                EventType::Violation,
+                agent_id,
+                EventPayload::Violation(build_violation_payload(&pipeline_ev)),
+                team_id,
+                org_id,
+            ))
+        }
+        Ok(approval_ev) = approval_rx.recv() => {
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                approval_ev.team_id.clone(),
+                agent_id_to_bytes(&approval_ev.agent_id),
+            );
+            Some(build_governance_event(
+                next_id,
+                EventType::Approval,
+                approval_ev.agent_id.clone(),
+                EventPayload::Approval(build_approval_payload(&approval_ev)),
+                team_id,
+                org_id,
+            ))
+        }
+        Ok(expired_ev) = approval_expiry_rx.recv() => {
+            // AAASM-1453: a pending request's per-request timeout
+            // elapsed without a human decision. Propagate as an
+            // `approval` event with `status: "expired"` so the
+            // dashboard can move the row to the Expired section.
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                expired_ev.team_id.clone(),
+                agent_id_to_bytes(&expired_ev.agent_id),
+            );
+            Some(build_governance_event(
+                next_id,
+                EventType::Approval,
+                expired_ev.agent_id.clone(),
+                EventPayload::Approval(build_expired_approval_payload(&expired_ev)),
+                team_id,
+                org_id,
+            ))
+        }
+        Ok(budget_ev) = budget_rx.recv() => {
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                budget_ev.team_id.clone(),
+                Some(*budget_ev.agent_id.as_bytes()),
+            );
+            Some(build_governance_event(
+                next_id,
+                EventType::Budget,
+                format!("{:02x?}", budget_ev.agent_id.as_bytes()),
+                EventPayload::Budget(build_budget_alert_payload(&budget_ev)),
+                team_id,
+                org_id,
+            ))
+        }
+        Ok(ops_ev) = ops_change_rx.recv() => {
+            // AAASM-1657 PR-H: forward operator-driven ops registry
+            // transitions to the dashboard so it can clear optimistic
+            // overrides and update the row in place by op_id.
+            // The ops-change envelope carries no tenant tag, so resolve it
+            // from the agent-registry lineage keyed by the agent id.
+            let (team_id, org_id) = resolve_event_tenant(
+                registry,
+                None,
+                agent_id_to_bytes(&ops_ev.agent_id),
+            );
+            Some(build_governance_event(
+                next_id,
+                EventType::OpsChange,
+                ops_ev.agent_id,
+                EventPayload::OpsChange(ops_ev.payload),
+                team_id,
+                org_id,
+            ))
+        }
+        else => None,
+    }
+}
+
+/// The explicit owning team carried by a pipeline event, if any. Audit events
+/// carry it on `inner.team_id` (empty string when unset → `None`); layer
+/// degradation is a deployment-wide system notice with no owning team.
+fn pipeline_explicit_team(ev: &aa_runtime::pipeline::event::PipelineEvent) -> Option<String> {
+    use aa_runtime::pipeline::event::PipelineEvent;
+    match ev {
+        PipelineEvent::Audit(enriched) if !enriched.inner.team_id.is_empty() => Some(enriched.inner.team_id.clone()),
+        _ => None,
+    }
+}
+
+/// Assemble a [`GovernanceEvent`] with the next monotonic id and current
+/// timestamp. A failed payload serialization falls back to `Value::Null`
+/// (`unwrap_or_default`), preserving the prior per-arm behaviour.
+///
+/// `team_id` / `org_id` are the event's resolved owning tenant (AAASM-3980),
+/// carried server-side only so the dispatch loop can gate live and replayed
+/// events; they are never serialized onto the wire.
+#[allow(clippy::too_many_arguments)]
+fn build_governance_event(
+    next_id: &std::sync::atomic::AtomicU64,
+    event_type: EventType,
+    agent_id: String,
+    payload: EventPayload,
+    team_id: Option<String>,
+    org_id: Option<String>,
+) -> GovernanceEvent {
+    GovernanceEvent {
+        id: next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        event_type,
+        agent_id,
+        payload: serde_json::to_value(payload).unwrap_or_default(),
+        timestamp: chrono::Utc::now(),
+        team_id,
+        org_id,
+    }
 }
 
 /// Check whether an event passes the client's type and agent filters.
@@ -281,6 +438,7 @@ fn build_violation_payload(ev: &aa_runtime::pipeline::event::PipelineEvent) -> V
 
             let op_type = action_type_label(enriched.inner.action_type);
             let status = decision_label(enriched.inner.decision);
+            let decision = decision_bucket_label(enriched.inner.decision);
             let team = if enriched.inner.team_id.is_empty() {
                 None
             } else {
@@ -296,6 +454,7 @@ fn build_violation_payload(ev: &aa_runtime::pipeline::event::PipelineEvent) -> V
                 op_type,
                 resource,
                 status,
+                decision,
                 latency_ms,
                 team,
                 call_stack,
@@ -419,6 +578,25 @@ fn decision_label(raw: i32) -> Option<String> {
     Some(label.to_string())
 }
 
+/// Map the proto `Decision` enum (raw `i32`) to the dashboard's decision-mix
+/// bucket vocabulary for the Live-Ops allow/scrub/pending/deny counters
+/// (AAASM-5089). Unlike [`decision_label`], which collapses Allow and Redact
+/// into `running`, this keeps them distinct: `Redact` is the scrub outcome the
+/// counters need to separate from a plain allow. There is no `narrow` bucket —
+/// the proto `Decision` has no such variant.
+fn decision_bucket_label(raw: i32) -> Option<String> {
+    use aa_proto::assembly::common::v1::Decision;
+    let decision = Decision::try_from(raw).ok()?;
+    let label = match decision {
+        Decision::Allow => "allow",
+        Decision::Redact => "scrub",
+        Decision::Pending => "pending",
+        Decision::Deny => "deny",
+        Decision::Unspecified => return None,
+    };
+    Some(label.to_string())
+}
+
 /// Extract per-detail resource + latency fields. The resource label
 /// is the most-identifying string per variant (model / tool name /
 /// path / host / command / blocked action); latency comes from the
@@ -458,6 +636,31 @@ fn detail_op_fields(
         Detail::Violation(d) => (Some(d.blocked_action.clone()), nonzero_latency(d.latency_ms)),
         Detail::Approval(_) => (None, None),
     }
+}
+
+/// Replay buffered events with id > `since_id`, applying the client's type and
+/// agent filters. Returns `Err(())` if a send fails (the client is gone) so the
+/// caller can abandon the connection; `Ok(())` when all matching events are sent.
+async fn replay_buffered_events(
+    state: &AppState,
+    caller: &AuthenticatedCaller,
+    sender: &std::sync::Arc<tokio::sync::Mutex<SplitSink<WebSocket, Message>>>,
+    since_id: u64,
+    allowed_types: &[EventType],
+    agent_filter: Option<&str>,
+) -> Result<(), ()> {
+    for event in state.replay_buffer.events_since(since_id) {
+        // AAASM-3980: apply the same fail-closed tenant gate as the live path —
+        // a reconnecting caller must not replay another tenant's buffered events.
+        if !caller_can_view(caller, event.team_id.as_deref(), event.org_id.as_deref()) {
+            continue;
+        }
+        if !matches_filter(&event, allowed_types, agent_filter) {
+            continue;
+        }
+        send_event(sender, &event).await?;
+    }
+    Ok(())
 }
 
 /// Serialise a governance event and send it as a WebSocket text frame.
@@ -529,6 +732,8 @@ mod tests {
             agent_id: "support-agent".into(),
             connection_id: 0,
             sequence_number: 42,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }))
     }
 
@@ -552,6 +757,7 @@ mod tests {
                 op_type,
                 resource,
                 status,
+                decision: _,
                 latency_ms,
                 team,
                 call_stack: _,
@@ -629,6 +835,7 @@ mod tests {
                 bytes: 1024,
                 source: "sdk_hook".into(),
                 latency_ms: 0,
+                sensitive: false,
             })),
         );
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
@@ -707,6 +914,7 @@ mod tests {
                 bytes: 1024,
                 source: "ebpf".into(),
                 latency_ms: 42,
+                sensitive: false,
             })),
         );
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
@@ -742,6 +950,22 @@ mod tests {
         let ev = pipeline_audit(ActionType::ToolCall, Decision::Redact, "", None);
         let fields = unwrap_audit_fields(build_violation_payload(&ev));
         assert_eq!(fields.status.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn decision_bucket_separates_allow_from_scrub_unlike_status() {
+        // The Live-Ops counters (AAASM-5089) need allow and scrub distinct — the
+        // `status` field collapses both into "running", so the bucket must not.
+        assert_eq!(decision_bucket_label(Decision::Allow as i32).as_deref(), Some("allow"));
+        assert_eq!(decision_bucket_label(Decision::Redact as i32).as_deref(), Some("scrub"));
+        assert_eq!(
+            decision_bucket_label(Decision::Pending as i32).as_deref(),
+            Some("pending")
+        );
+        assert_eq!(decision_bucket_label(Decision::Deny as i32).as_deref(), Some("deny"));
+        // Unspecified / unknown carry no bucket rather than a fabricated one.
+        assert_eq!(decision_bucket_label(Decision::Unspecified as i32), None);
+        assert_eq!(decision_bucket_label(9999), None);
     }
 
     fn extract_call_stack(p: ViolationPayload) -> Option<Vec<CallStackNode>> {
@@ -780,6 +1004,8 @@ mod tests {
             agent_id: "support-agent".into(),
             connection_id: 0,
             sequence_number: 42,
+            observed_sdk_identity: Default::default(),
+            tamper: None,
         }));
         let stack = extract_call_stack(build_violation_payload(&ev)).expect("call_stack");
         assert_eq!(stack.len(), 1);

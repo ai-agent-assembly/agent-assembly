@@ -1,16 +1,66 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
+import { AbsenceMarker } from '../../components/truthfulness'
+import {
+  certainFromShapedQuery,
+  isKnown,
+  TRUTH_STATE_META,
+  type TruthState,
+} from '../../lib/truthfulness'
 import { useApprovalsQuery } from './api'
+import { decodeApprovalList } from './schema'
 
+/**
+ * Header affordance for the pending-approvals queue.
+ *
+ * AAASM-5167: `count = data?.length ?? 0` with the badge hidden at zero meant an
+ * approvals **outage** rendered exactly like a clear queue — `data` is
+ * `undefined` on a failed request, so the badge disappeared and the header said
+ * nothing was waiting. This is the one approvals surface present on every
+ * route, so it carried the widest reach of the defect the Live-Ops pane had.
+ *
+ * AAASM-5380 closes the case that outlived that fix: a successful `200` whose
+ * body is not an approvals list. `useApprovalsQuery` used to return
+ * `data?.items ?? []`, so a body with no `items` counted to zero and the
+ * aria-label read "no approvals are waiting" from a body nobody could parse. The
+ * count is now folded through `certainFromShapedQuery` with `decodeApprovalList`
+ * (`features/approvals/schema.ts`): only a validated array reaches `.length`, so
+ * a malformed or absent body renders the shared absence marker, and the four
+ * cases stay distinct — work, a real empty queue (no badge, a real zero is a
+ * real answer), an outage, and an unreadable body. The link's `aria-label`
+ * carries the same distinction, because the badge itself is decorative to
+ * assistive tech.
+ */
 export function ApprovalsBellButton() {
-  const { data } = useApprovalsQuery()
-  const count = data?.length ?? 0
-  const hasPending = count > 0
+  const query = useApprovalsQuery()
+  const approvals = certainFromShapedQuery(query, decodeApprovalList)
+
+  // Destructured up front so the absence branch stays narrowed for both the
+  // label and the marker below — `count === null` alone tells TypeScript
+  // nothing about the union.
+  let count: number | null = null
+  let absentState: TruthState | null = null
+  let absentDetail: string | undefined
+  if (isKnown(approvals)) {
+    count = approvals.value.length
+  } else {
+    absentState = approvals.state
+    absentDetail = approvals.detail
+  }
+
+  let label: string
+  if (absentState !== null) {
+    label = `Approval queue — ${TRUTH_STATE_META[absentState].announcement}`
+  } else if (count !== null && count > 0) {
+    label = `${count} pending approvals`
+  } else {
+    label = 'Approval queue — no approvals are waiting'
+  }
 
   return (
     <Link
       to="/approvals"
       data-testid="approvals-bell"
-      aria-label={hasPending ? `${count} pending approvals` : 'Approval queue'}
+      aria-label={label}
       style={{
         position: 'relative',
         display: 'inline-flex',
@@ -26,9 +76,16 @@ export function ApprovalsBellButton() {
         fontSize: '0.75rem',
       }}
     >
-      <span aria-hidden>▣</span>
+      <span aria-hidden>⚑</span>
       <span>approvals</span>
-      {hasPending && (
+      {absentState !== null && (
+        <AbsenceMarker
+          state={absentState}
+          detail={absentDetail}
+          testId="approvals-bell-absent"
+        />
+      )}
+      {count !== null && count > 0 && (
         <span
           data-testid="approvals-bell-badge"
           aria-hidden

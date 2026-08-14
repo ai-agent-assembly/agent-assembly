@@ -46,13 +46,25 @@ pub enum ResourceGroup {
 /// dashboard Capability Matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Resource {
-    /// Stable identifier (e.g. `"gmail"`, `"pg"`, `"shell"`).
+    /// Stable identifier — the wire-format [`aa_core::Capability`] family this
+    /// column projects (`"filesystem"`, `"terminal"`, `"network_outbound"`) or
+    /// the declared MCP tool name for a tool column.
     pub id: String,
-    /// Human-readable display name (e.g. `"Postgres"`).
+    /// Human-readable display name.
     pub name: String,
     /// Coarse group this resource belongs to.
-    pub group: ResourceGroup,
-    /// Globbed paths covered by this resource (e.g. `["pg.public.*"]`).
+    ///
+    /// Only populated for the fixed system capability families, whose domain
+    /// the `Capability` enum itself names (`file_*` → `files`, `network_*` /
+    /// `terminal_exec` → `infra`). An MCP tool is an operator-supplied string
+    /// with no classification anywhere in the policy model, so its group is
+    /// left absent rather than guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<ResourceGroup>,
+    /// Globbed paths covered by this resource.
+    ///
+    /// Always empty: the capability model grants a whole family or tool, it
+    /// does not carry per-path sub-scopes, so there is no real source for this.
     pub paths: Vec<String>,
 }
 
@@ -64,7 +76,12 @@ pub struct CapCell {
     pub write: Decision,
     pub delete: Decision,
     pub exec: Decision,
-    /// Marks this cell for UI attention (e.g. over-permissioned).
+    /// `Some(true)` when this cell's grant is over-permission — the agent is
+    /// effectively allowed a destructive system verb its declared `RiskTier`
+    /// baseline does not warrant (AAASM-5175, ADR 0029). Absent when the cell is
+    /// within baseline, or when the agent is not evaluated (no resolvable tier,
+    /// or an empty cascade). Only the offending marker is emitted; a per-cell
+    /// `false` is not, so the UI highlights positives without negative clutter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flag: Option<bool>,
 }
@@ -110,12 +127,22 @@ pub struct PolicyRule {
 pub struct Policy {
     pub id: String,
     pub name: String,
-    pub version: String,
+    /// Revision from the policy document's `metadata.version`. Absent for
+    /// documents parsed from the flat (non-envelope) format, which declare none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub scope: String,
     pub status: PolicyStatus,
-    /// Number of times this policy fired in the last 24 hours.
-    #[serde(rename = "hits24h")]
-    pub hits_24h: u64,
+    /// Number of times this policy document fired in the last 24 hours.
+    ///
+    /// Sourced (AAASM-5107) by joining this row's document content digest against
+    /// the per-document decision counts from the last-24h audit window — each
+    /// policy decision records the deciding document's digest on its audit entry.
+    /// Absent, never `0`, when the document recorded no decision in the window: a
+    /// `0` would be indistinguishable from "fired zero times".
+    #[serde(default, rename = "hits24h", skip_serializing_if = "Option::is_none")]
+    pub hits_24h: Option<u64>,
+    /// Ids of the agents whose cascade includes this policy scope.
     pub affects: Vec<String>,
     pub rules: Vec<PolicyRule>,
 }
@@ -161,24 +188,82 @@ pub struct CapabilityMatrix {
     pub agents: Vec<CapabilityAgent>,
     pub policies: Vec<Policy>,
     pub sample_calls: Vec<SampleCall>,
+    /// Whether the projecting engine actually carries a policy cascade
+    /// (`PolicyEngine::cascade_loaded`). AAASM-5106 / ADR 0024: when the cascade
+    /// is unloaded — the state of every shipped aa-api deployment today, which
+    /// loads its policy through `load_from_file` and leaves `scope_index` empty —
+    /// `decide()` falls through to `Allow` for every cell, so the grid asserts an
+    /// unbroken wall of `ALLOW` for capabilities the primary policy actually
+    /// denies. `false` here is the matrix-level "not evaluated — policy cascade
+    /// not loaded" signal the dashboard renders as an unavailable state, so an
+    /// operator never reads a fabricated `Allow` as a real grant. It is a fact
+    /// about the projection's *data*, never an operator choice; the enforcement
+    /// path (`evaluate_primary`) is unaffected.
+    ///
+    /// Required-but-always-present, not optional: the key is always on the wire,
+    /// so a client reads an explicit `false` it must handle rather than a missing
+    /// field it can shrug off — the same absent-vs-unknown discipline as
+    /// [`CapabilityAgent::trust`] and `TeamPoliciesResponse::policies`.
+    #[schema(required = true)]
+    pub cascade_loaded: bool,
 }
 
 /// One agent row in the dashboard Capability Matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityAgent {
+    /// Hex-encoded agent UUID, as registered.
     pub id: String,
     pub name: String,
     pub framework: String,
-    pub owner: String,
-    /// Trust score on a 0–100 scale.
-    pub trust: u8,
-    pub mode: AgentMode,
+    /// Owning team, from the registry's first-class `team_id` (falling back to
+    /// `org_id`). Absent when the agent registered without either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Trust score as an integer on a 0–100 scale, or `null` when no
+    /// trust-analytics source exists yet.
+    ///
+    /// Always `null`: no trust score is computed anywhere in the gateway today.
+    /// Deriving one would be a new scoring rule, which is the subject of its own
+    /// story (AAASM-5083) — emitting a placeholder here would be indistinguishable
+    /// from a real score to every consumer.
+    //
+    // AAASM-5104 — one representation and one null contract for `trust` across
+    // every schema that carries it ([`crate::models::topology::AgentNode`],
+    // [`crate::models::topology::AgentTree`], and here): an integer 0–100,
+    // required-but-nullable. Integer because the ratified mock renders a whole
+    // number (`design/v1/hi-fi/fleet.jsx:90`, `agent-detail.jsx:27`) and a float
+    // implies a precision no formula has agreed to. Required-but-nullable
+    // because an *absent* key invites `?? 0`, which silently turns "unmeasured"
+    // into "scored zero" — the worst possible misread for a trust score; an
+    // explicit `null` on an always-present key surfaces in TypeScript as a
+    // non-optional `| null` the consumer has to handle. Same discipline as
+    // `TeamPoliciesResponse::policies` (AAASM-5096).
+    #[schema(required = true, minimum = 0, maximum = 100)]
+    pub trust: Option<u8>,
+    /// Enforcement posture, from the agent's registered `enforcement_mode`
+    /// override. Absent when the agent declared none (the effective mode is then
+    /// per-policy-document, so there is no single agent-level answer) or when it
+    /// declared `Disabled`, which this two-value view cannot represent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<AgentMode>,
     pub status: AgentStatus,
-    /// Human-readable relative-time string (e.g. `"2m ago"`).
+    /// ISO 8601 UTC timestamp of the agent's most recent heartbeat.
     pub last_seen: String,
+    /// Over-permission verdict (AAASM-5175, ADR 0029): `Some(true)` when the
+    /// agent is effectively granted a destructive system capability its declared
+    /// `RiskTier` baseline does not warrant, `Some(false)` when it was evaluated
+    /// and found within baseline. Absent when the agent is *not* evaluated — it
+    /// declared no resolvable risk tier, or its policy cascade is empty (in which
+    /// case every cell is `Allow` by fall-through and flagging would be a false
+    /// positive). This is a structural grant-vs-posture signal, distinct from the
+    /// behavioural `trust` score (ADR 0019) and the topology violation-volume flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flagged: Option<bool>,
+    /// When `flagged` is `Some(true)`, a human-readable explanation naming the
+    /// tier and the offending grants (e.g. "Low-risk agent granted file_delete,
+    /// terminal_exec beyond its tier baseline"). Absent otherwise — there is no
+    /// operator-authored note source, so a note only ever accompanies a flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Resource-id → CapCell mapping for this agent.
@@ -237,8 +322,10 @@ pub struct OverrideRecord {
     pub decision: Decision,
     /// ISO 8601 UTC timestamp when the override was applied.
     pub created_at: String,
-    /// Whether the override is still active. Always `true` in the current
-    /// implementation (no TTL or explicit delete support yet).
+    /// Whether the override is still replayed over the projection. Set to
+    /// `false` by an explicit `DELETE /capability/override/{id}` or by the TTL
+    /// timer firing; entries are never removed, so a revoked override stays
+    /// visible in the log with `active: false`.
     pub active: bool,
 }
 
@@ -281,7 +368,7 @@ mod tests {
         let r = Resource {
             id: "pg".to_string(),
             name: "Postgres".to_string(),
-            group: ResourceGroup::Data,
+            group: Some(ResourceGroup::Data),
             paths: vec!["pg.public.*".to_string(), "pg.public.users".to_string()],
         };
         let json = serde_json::to_value(&r).unwrap();
@@ -326,10 +413,10 @@ mod tests {
         let p = Policy {
             id: "policy-1".to_string(),
             name: "Default Policy".to_string(),
-            version: "1".to_string(),
+            version: Some("1".to_string()),
             scope: "global".to_string(),
             status: PolicyStatus::Active,
-            hits_24h: 1234,
+            hits_24h: Some(1234),
             affects: vec!["support-triage".to_string()],
             rules: vec![PolicyRule {
                 resource: "pg".to_string(),
@@ -346,12 +433,56 @@ mod tests {
     }
 
     #[test]
+    fn capability_agent_emits_trust_null_not_omitted() {
+        // AAASM-5104 — `trust` has no data source yet, but the key is always on
+        // the wire so the client must handle an explicit "no data" rather than
+        // shrug off a missing key with `?? 0`. Same contract as `AgentNode` /
+        // `AgentTree`.
+        let agent = CapabilityAgent {
+            id: "a".to_string(),
+            name: "a".to_string(),
+            framework: "CrewAI".to_string(),
+            owner: None,
+            trust: None,
+            mode: None,
+            status: AgentStatus::Active,
+            last_seen: "12s ago".to_string(),
+            flagged: None,
+            note: None,
+            caps: BTreeMap::new(),
+        };
+        let json = serde_json::to_value(&agent).unwrap();
+        assert!(json.get("trust").is_some(), "trust key must be present");
+        assert!(json["trust"].is_null(), "trust must serialize as null");
+        assert!(!json["trust"].is_number(), "an unmeasured trust must not be a number");
+        assert_ne!(json["trust"], 0, "trust must never fold to a scored zero");
+    }
+
+    #[test]
+    fn capability_agent_deserializes_a_missing_trust_key_as_no_score() {
+        // Dropping `skip_serializing_if` must not make the key mandatory on the
+        // way in: an older producer that omits it still reads back as "no
+        // score", never as a zero.
+        let raw = r#"{
+            "id": "a",
+            "name": "a",
+            "framework": "CrewAI",
+            "status": "active",
+            "lastSeen": "12s ago",
+            "caps": {}
+        }"#;
+        let agent: CapabilityAgent = serde_json::from_str(raw).unwrap();
+        assert!(agent.trust.is_none(), "a missing trust key is no score, not 0");
+    }
+
+    #[test]
     fn capability_matrix_serializes_sample_calls_in_camel_case() {
         let matrix = CapabilityMatrix {
             resources: vec![],
             agents: vec![],
             policies: vec![],
             sample_calls: vec![],
+            cascade_loaded: false,
         };
         let json = serde_json::to_value(&matrix).unwrap();
         assert!(json["resources"].is_array());
@@ -359,6 +490,11 @@ mod tests {
         assert!(json["policies"].is_array());
         assert!(json["sampleCalls"].is_array(), "field must be `sampleCalls`");
         assert!(json.get("sample_calls").is_none());
+        // AAASM-5106 — the loaded/unavailable signal is always on the wire in
+        // camelCase, so a client cannot silently drop it and read a fabricated
+        // Allow as real.
+        assert_eq!(json["cascadeLoaded"], serde_json::json!(false));
+        assert!(json.get("cascade_loaded").is_none(), "snake_case must not appear");
     }
 
     #[test]
@@ -399,9 +535,9 @@ mod tests {
             id: "support-triage".to_string(),
             name: "support-triage".to_string(),
             framework: "CrewAI".to_string(),
-            owner: "cx-tools".to_string(),
-            trust: 78,
-            mode: AgentMode::Enforce,
+            owner: Some("cx-tools".to_string()),
+            trust: Some(78),
+            mode: Some(AgentMode::Enforce),
             status: AgentStatus::Active,
             last_seen: "12s ago".to_string(),
             flagged: None,

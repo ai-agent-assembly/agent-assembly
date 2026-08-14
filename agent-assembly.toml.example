@@ -21,6 +21,15 @@ lifecycle_store    = "postgres"
 
 # Per-driver connection settings live under `[storage.<driver-name>]`. Provide a
 # subsection for every driver named above; each driver parses the keys it needs.
+#
+# NOTE: a subsection is required for EVERY named driver — including `memory`,
+# even though the in-memory driver takes no connection keys. An all-memory
+# config (every kind set to "memory") must still declare an (otherwise empty)
+# `[storage.memory]` table, or boot fails with a missing-subsection error.
+# For an all-memory setup, set the six kinds above to "memory" and add:
+#
+#     [storage.memory]
+#
 [storage.redis]
 url = "redis://localhost:6379"
 

@@ -1,0 +1,54 @@
+.enforcement-timeline .etl-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.etl-legend {
+  display: flex;
+  gap: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.etl-legend__item {
+  white-space: nowrap;
+}
+
+.etl-grid {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 6px 8px;
+  align-items: center;
+}
+
+/* Each row's label + bar drop into the parent grid tracks. */
+.etl-row {
+  display: contents;
+}
+
+.etl-row__label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-4);
+}
+
+.etl-bar {
+  display: block;
+  width: 100%;
+  height: 28px;
+}
+
+.etl-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--ink-4);
+}

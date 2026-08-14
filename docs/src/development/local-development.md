@@ -2,7 +2,7 @@
 
 This page covers the from-clone development loop for the `agent-assembly`
 monorepo. For contribution conventions (commit style, PR process) see
-[`CONTRIBUTING.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/CONTRIBUTING.md).
+[`CONTRIBUTING.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/CONTRIBUTING.md).
 
 ## Prerequisites
 

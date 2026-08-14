@@ -23,7 +23,7 @@ protobuf wire format defined in `aa-proto` and the same `PolicyService` RPC.
 ## Workspace at a glance
 
 The Cargo workspace declares **28 member crates** in the top-level
-[`Cargo.toml`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/Cargo.toml).
+[`Cargo.toml`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/Cargo.toml).
 They group into a handful of architectural roles:
 
 | Role | Crates | What they own |
@@ -194,11 +194,11 @@ flowchart LR
 | **Unix domain socket (UDS)** | per-agent socket | `IpcFrame` events from the in-process SDK | SDK shim → `aa-runtime` |
 
 The seven gRPC services are registered together in
-[`aa-gateway/src/server.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/aa-gateway/src/server.rs);
+[`aa-gateway/src/server.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-gateway/src/server.rs);
 the gateway can serve them over either TCP (`serve_tcp`) or a Unix socket
 (`serve_uds`). The default gRPC listen address is `127.0.0.1:50051`; the HTTP API
 default bind is `127.0.0.1:7700` (constant `DEFAULT_ADDR` in
-[`aa-api/src/config.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/master/aa-api/src/config.rs),
+[`aa-api/src/config.rs`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-api/src/config.rs),
 overridable via `AA_API_ADDR`).
 
 ## Where to go next

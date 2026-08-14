@@ -308,6 +308,10 @@ async fn get_unknown_returns_404_destination_not_found() {
 
 #[tokio::test]
 async fn test_webhook_returns_200_and_hits_connector() {
+    // AAASM-3789: the test-fire egress guard blocks loopback/private targets by
+    // default; opt in so this happy-path can drive a loopback httpmock server.
+    // (nextest runs each test in its own process, so this env is test-local.)
+    std::env::set_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS", "1");
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(MOCK_POST).path("/hook");
@@ -342,6 +346,8 @@ async fn test_webhook_returns_200_and_hits_connector() {
 
 #[tokio::test]
 async fn test_webhook_returns_502_connector_failed() {
+    // AAASM-3789: opt in to private egress so the loopback mock is reachable.
+    std::env::set_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS", "1");
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(MOCK_POST).path("/hook");
@@ -372,6 +378,663 @@ async fn test_webhook_returns_502_connector_failed() {
     let body = body_json(resp).await;
     assert_eq!(body["error"], "connector_failed");
     assert_eq!(body["connector_status"], 401);
-    assert_eq!(body["connector_body"], "Invalid token");
+    // AAASM-3789: the upstream error body is no longer reflected to the caller.
+    assert_eq!(body["connector_body"], "");
     mock.assert();
+}
+
+#[tokio::test]
+async fn test_webhook_to_internal_host_is_rejected() {
+    // AAASM-3789: a webhook test-fire aimed at an internal address (cloud
+    // metadata, loopback, RFC1918) must be refused with 400 before any request
+    // is dispatched — the SSRF the egress guard closes. The guard is on by
+    // default, so this test must NOT opt in to private egress.
+    std::env::remove_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS");
+
+    for internal in [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1/hook",
+        "http://10.0.0.1/hook",
+    ] {
+        let app = common::test_app();
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/alerts/destinations",
+                webhook_payload("hook", internal),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "create should still succeed for {internal}"
+        );
+        let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+        let resp = app
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/alerts/destinations/{id}/test"),
+                json!({ "severity": "LOW" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "test-fire to internal host {internal} must be rejected"
+        );
+        let body = body_json(resp).await;
+        assert_eq!(body["detail"], "webhook.url resolves to a disallowed internal address");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-3688 — destination handlers require read/write scope, and the webhook
+// secret_header is never returned in cleartext.
+// ---------------------------------------------------------------------------
+
+use aa_api::auth::config::AuthMode;
+use aa_api::auth::scope::Scope;
+
+fn bearer_json(method: &str, uri: &str, token: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
+
+fn bearer_empty(method: &str, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_destination_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let resp = app
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token,
+            webhook_payload("hook", "https://example.com/hook"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not create a destination"
+    );
+}
+
+#[tokio::test]
+async fn delete_destination_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let resp = app
+        .oneshot(bearer_empty("DELETE", "/api/v1/alerts/destinations/dst_x", &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not delete a destination"
+    );
+}
+
+#[tokio::test]
+async fn update_destination_read_only_token_is_403() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let token = common::generate_test_jwt("u", &[Scope::Read]);
+    let resp = app
+        .oneshot(bearer_json(
+            "PUT",
+            "/api/v1/alerts/destinations/dst_x",
+            &token,
+            json!({ "enabled": false }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a read-only caller must not update a destination"
+    );
+}
+
+#[tokio::test]
+async fn webhook_secret_header_is_not_returned_in_cleartext() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    // A tenant-scoped Write caller creates a webhook destination with a secret.
+    // AAASM-3911: destination mutations are Write scope, confined to the
+    // caller's tenant; a same-tenant reader (below) can then fetch it.
+    let write_token = common::generate_test_jwt_for_team("w", &[Scope::Read, Scope::Write], "team-x");
+    let payload = json!({
+        "name": "hook",
+        "kind": "webhook",
+        "config": { "url": "https://example.com/hook", "secret_header": "shh" },
+        "enabled": true,
+    });
+    let resp = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &write_token,
+            payload,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = body_json(resp).await;
+    // The create response must not echo the raw secret.
+    assert_ne!(
+        created["config"]["secret_header"], "shh",
+        "create response leaked the raw webhook secret"
+    );
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // A same-tenant read caller fetching the destination must not receive the
+    // raw secret.
+    let read_token = common::generate_test_jwt_for_team("r", &[Scope::Read], "team-x");
+    let resp = app
+        .oneshot(bearer_empty(
+            "GET",
+            &format!("/api/v1/alerts/destinations/{id}"),
+            &read_token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fetched = body_json(resp).await;
+    assert_ne!(
+        fetched["config"]["secret_header"], "shh",
+        "GET response leaked the raw webhook secret in cleartext"
+    );
+}
+
+#[tokio::test]
+async fn update_with_masked_secret_preserves_stored_secret() {
+    // AAASM-3751: GET masks `secret_header` to a fixed sentinel. A
+    // GET → edit → PUT round-trip resubmits that sentinel; the update must
+    // PRESERVE the real stored secret rather than clobber it with the mask.
+    // Verified end-to-end: after the masked round-trip, a test-fire must still
+    // ship the ORIGINAL secret in the `X-AAASM-Token` header.
+    // AAASM-3789: opt in to private egress so the loopback mock is reachable.
+    std::env::set_var("AA_ALLOW_PRIVATE_WEBHOOK_EGRESS", "1");
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(MOCK_POST).path("/hook").header("X-AAASM-Token", "shh");
+        then.status(200).body("ok");
+    });
+
+    let app = common::test_app();
+
+    // Create a webhook destination carrying a real secret.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            json!({
+                "name": "hook",
+                "kind": "webhook",
+                "config": { "url": server.url("/hook"), "secret_header": "shh" },
+                "enabled": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // GET returns the secret masked to the sentinel.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/alerts/destinations/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let fetched = body_json(resp).await;
+    let masked = fetched["config"]["secret_header"].as_str().unwrap().to_string();
+    assert_eq!(masked, "********", "GET should mask the secret to the sentinel");
+
+    // PUT the fetched config back verbatim (the classic edit-in-place flow):
+    // the masked sentinel is resubmitted alongside an unrelated name change.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/alerts/destinations/{id}"),
+            json!({
+                "name": "hook-renamed",
+                "kind": "webhook",
+                "config": { "url": server.url("/hook"), "secret_header": masked },
+                "enabled": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Fire a test notification: the connector must send the ORIGINAL secret,
+    // proving the masked round-trip did not overwrite it with the sentinel.
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/alerts/destinations/{id}/test"),
+            json!({ "severity": "LOW" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // The mock only matches when `X-AAASM-Token: shh` is present — asserting it
+    // was hit proves the real secret survived the masked update.
+    mock.assert();
+}
+
+// ── Additional coverage tests (AAASM-3805) ────────────────────────────────────
+
+#[tokio::test]
+async fn create_destination_with_empty_name_returns_400() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            json!({"name": "  ", "kind": "webhook", "config": {"url": "https://example.com"}, "enabled": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("name must be non-empty"));
+}
+
+#[tokio::test]
+async fn update_destination_with_empty_name_returns_400() {
+    // Create a destination, then try to rename it to blank.
+    let app = common::test_app();
+    let create_resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            webhook_payload("keep-me", "https://example.com/keep"),
+        ))
+        .await
+        .unwrap();
+    let id = body_json(create_resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/alerts/destinations/{id}"),
+            json!({"name": "  "}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn update_destination_returns_404_for_unknown_id() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/alerts/destinations/nonexistent-id",
+            json!({"name": "new-name"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert_eq!(body["detail"].as_str(), Some("destination_not_found"));
+}
+
+#[tokio::test]
+async fn delete_destination_returns_404_for_unknown_id() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/alerts/destinations/nonexistent-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ── PagerDuty connector not compiled in → 502 connector_failed (transport) ────
+
+/// PagerDuty/OpsGenie connectors are feature-gated and disabled in the default
+/// build, so `connector_for` returns `UnsupportedConnector`, whose `dispatch`
+/// always fails with a transport error. Firing a test against a pagerduty
+/// destination must surface as 502 `connector_failed` with status 0.
+///
+/// AAASM-3832: gated to the default (feature-off) build. Under `--all-features`
+/// — which the CI Coverage job uses — `connector-pagerduty` compiles the real
+/// connector, so `connector_for` no longer returns `UnsupportedConnector` and
+/// this stub-failure assertion would instead attempt a live PagerDuty call.
+/// Skipping it there keeps the Coverage job deterministic and offline.
+#[cfg(not(feature = "connector-pagerduty"))]
+#[tokio::test]
+async fn test_pagerduty_destination_returns_502_transport_error() {
+    let app = common::test_app();
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            json!({
+                "name": "pd",
+                "kind": "pagerduty",
+                "config": { "routing_key": "R0UTINGKEY123456" },
+                "enabled": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = body_json(resp).await;
+    assert_eq!(created["kind"], "pagerduty");
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/alerts/destinations/{id}/test"),
+            json!({ "severity": "HIGH" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"], "connector_failed");
+    // Transport failures carry a synthetic status of 0.
+    assert_eq!(body["connector_status"], 0);
+    assert!(body["connector_body"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("not enabled"));
+}
+
+// ── malformed JSON (not an unknown-variant error) → generic 400 ───────────────
+
+#[tokio::test]
+async fn create_destination_with_malformed_json_returns_400() {
+    let app = common::test_app();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/alerts/destinations")
+                .header("content-type", "application/json")
+                // Valid kind, but `config` has the wrong type → serde error that
+                // is NOT "unknown variant", exercising the generic 400 branch.
+                .body(Body::from(r#"{"name":"x","kind":"webhook","config":"not-an-object","enabled":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn update_destination_with_malformed_json_returns_400() {
+    let app = common::test_app();
+    // Create a webhook to target.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/alerts/destinations",
+            webhook_payload("upd", "https://example.com/hook"),
+        ))
+        .await
+        .unwrap();
+    let id = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/alerts/destinations/{id}"))
+                .header("content-type", "application/json")
+                // `name` must be a string; a number is a non-variant serde
+                // error → generic 400 (not the invalid_kind branch).
+                .body(Body::from(r#"{"name": 12345}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ── AAASM-3911 — destination mutations are tenant-scoped Write ────────────────
+//
+// AAASM-3894 gated destination mutations on admin scope as a stopgap because
+// destinations carried no tenant. Now each destination is stamped with (and
+// confined to) its creating tenant, so mutations revert to Write scope: a
+// tenant-confined Write key manages ONLY its own tenant's destinations, while
+// an admin key retains cross-tenant access.
+
+/// A tenant-confined Write key manages ONLY its own tenant's destinations: it
+/// cannot list, read, update, delete, or test-fire another tenant's, while an
+/// admin key retains cross-tenant access.
+#[tokio::test]
+async fn write_key_is_confined_to_its_own_tenant_destinations() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+
+    let write = &[Scope::Read, Scope::Write];
+    let token_a = common::generate_test_jwt_for_team("key-a", write, "team-a");
+    let token_b = common::generate_test_jwt_for_team("key-b", write, "team-b");
+    let token_admin = common::generate_test_jwt("key-admin", &[Scope::Admin]);
+
+    // Team A (Write) creates a destination → 201 (reverted from the 3894 stopgap
+    // that required admin).
+    let resp = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token_a,
+            webhook_payload("hook-a", "https://example.com/hook-a"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "team-A Write key can create");
+    let dst_a = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // Team B (Write) creates its own destination → 201.
+    let resp = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token_b,
+            webhook_payload("hook-b", "https://example.com/hook-b"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let dst_b = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // Team B's list must contain only its own destination — never team-A's.
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty("GET", "/api/v1/alerts/destinations", &token_b))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let items = body_json(resp).await;
+    let items = items.as_array().unwrap();
+    assert_eq!(items.len(), 1, "team-B sees only its own destination");
+    assert_eq!(items[0]["id"], dst_b);
+
+    // Team B cannot read / update / delete / test-fire team-A's destination.
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty(
+            "GET",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_b,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "team-B cannot read team-A's destination"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(bearer_json(
+            "PUT",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_b,
+            json!({ "enabled": false }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "team-B cannot update team-A's destination"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty(
+            "DELETE",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_b,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "team-B cannot delete team-A's destination"
+    );
+
+    // Test-fire ownership is enforced before any egress, so a wrong-tenant
+    // caller is rejected with 403 without a network round-trip.
+    let resp = app
+        .clone()
+        .oneshot(bearer_json(
+            "POST",
+            &format!("/api/v1/alerts/destinations/{dst_a}/test"),
+            &token_b,
+            json!({ "severity": "LOW" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "team-B cannot test-fire team-A's destination"
+    );
+
+    // Team A still sees and can read its own destination (untouched by B).
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty("GET", "/api/v1/alerts/destinations", &token_a))
+        .await
+        .unwrap();
+    let items = body_json(resp).await;
+    let items = items.as_array().unwrap();
+    assert_eq!(items.len(), 1, "team-A sees only its own destination");
+    assert_eq!(items[0]["id"], dst_a);
+
+    // Admin sees every tenant's destinations and can act cross-tenant.
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty("GET", "/api/v1/alerts/destinations", &token_admin))
+        .await
+        .unwrap();
+    let items = body_json(resp).await;
+    assert_eq!(
+        items.as_array().unwrap().len(),
+        2,
+        "admin sees both tenants' destinations"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(bearer_empty(
+            "GET",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "admin reads any tenant's destination");
+
+    let resp = app
+        .oneshot(bearer_empty(
+            "DELETE",
+            &format!("/api/v1/alerts/destinations/{dst_a}"),
+            &token_admin,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "admin deletes any tenant's destination"
+    );
+}
+
+#[tokio::test]
+async fn create_destination_admin_token_is_allowed() {
+    let state = common::test_state_with_auth(AuthMode::On, &[], 1000);
+    let app = aa_api::build_app(state);
+    let token = common::generate_test_jwt("admin", &[Scope::Admin]);
+    let resp = app
+        .oneshot(bearer_json(
+            "POST",
+            "/api/v1/alerts/destinations",
+            &token,
+            webhook_payload("hook", "https://example.com/hook"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "an admin caller must be able to create a destination"
+    );
 }

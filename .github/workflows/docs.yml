@@ -1,25 +1,42 @@
 name: Docs
 
+# Least-privilege default for every job. The PR/main-push `build` and
+# `verify-commands` jobs only read the repo; the elevated `pages: write` +
+# `id-token: write` scopes are granted to the `deploy` job alone (AAASM-3877).
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 on:
   pull_request:
-    branches: [master]
-    paths:
-      - 'docs/**'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
-      - '.github/workflows/docs.yml'
+    branches: [main]
+    # AAASM-5677: deliberately NOT path-filtered — the selection that used to
+    # live here now lives in the `changes` router below, glob for glob.
+    #
+    # `metadata-drift` and `version-drift` are governance-bearing (CONTRIBUTING,
+    # "Which CI checks are governance-bearing"): `metadata-drift` is what
+    # carries scripts/check_absolutes_unwaivable.py in CI, and AAASM-5677
+    # recorded that a PR editing the capability coverage matrix and threat
+    # model was not scanned by it at all — no failing check, no warning, simply
+    # fewer check runs. So this workflow has to be a required status check, and
+    # a required check only works if it reliably reports: a path-filtered
+    # workflow that does not trigger produces no check run at all, and a
+    # required check that never arrives blocks the pull request forever.
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - 'docs/**'
       - 'README.md'
       - 'CONTRIBUTING.md'
       - '.github/workflows/docs.yml'
+      - 'metadata/**'
+      - 'scripts/generate_docs_metadata.py'
+      - 'Cargo.toml'
+      - 'scripts/propagate_versions.py'
+      - '.ci/check-metadata-drift.sh'
+      - 'scripts/check_absolutes_unwaivable.py'
+      - 'TRUTH-ADOPTION.md'
+      # AAASM-5677 AC3 — paired with the router filter below.
+      - 'verification-reports/**/*.md'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -30,29 +47,93 @@ on:
     types: [completed]
 
 jobs:
+  # AAASM-5677: the selection that used to be `on.pull_request.paths`, glob for
+  # glob. Consulted for `pull_request` only — the `push` and `workflow_run`
+  # triggers keep their own filters and their existing behaviour, because they
+  # are backstops (and `workflow_run` has no diff for a paths filter to read).
+  changes:
+    name: Detect changed areas (Docs)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            docs:
+              - 'docs/**'
+              - 'README.md'
+              - 'CONTRIBUTING.md'
+              - '.github/workflows/docs.yml'
+              # AAASM-4310: shared metadata sources feed docs/src/generated/. A
+              # drift in either without a matching snippet update must fail docs CI.
+              - 'metadata/**'
+              - 'scripts/generate_docs_metadata.py'
+              - 'Cargo.toml'
+              # AAASM-4911: the version-drift gate stamps README / installation.md
+              # / docs.yml pins / CONTRIBUTING.md from the SoT; a change to the
+              # gate script itself must re-run it (a dead trigger otherwise).
+              - 'scripts/propagate_versions.py'
+              # AAASM-4922: the metadata-drift lint (ADR 0014); re-run it when it changes.
+              - '.ci/check-metadata-drift.sh'
+              # AAASM-5671: the banned-absolutes waiver-eligibility gate (ADR 0034
+              # W10); a change to the gate itself must re-run it, or it is a dead
+              # trigger.
+              - 'scripts/check_absolutes_unwaivable.py'
+              # The gate also scans the root adoption record ADR 0034 Decision 4
+              # requires of every repository. It does not exist here yet; listing
+              # it now means the first one committed is gated, rather than sitting
+              # outside the trigger unnoticed — the vacuous-pass guard cannot catch
+              # that, since the docs/ globs still match.
+              - 'TRUTH-ADOPTION.md'
+              # AAASM-5677 AC3. Capability, claim and evidence records — the
+              # capability coverage matrix and threat model among them. The
+              # `metadata-drift` job carries scripts/check_absolutes_unwaivable.py,
+              # and Finding 2 was a pull request editing two of these that the
+              # job never ran on. Paired with the same entry in that script's
+              # DEFAULT_GLOBS: this glob alone would only make the job RUN, and
+              # it would then scan nothing.
+              - 'verification-reports/**/*.md'
+
   build:
     name: Build mdBook
+    needs: [changes]
     runs-on: ubuntu-latest
-    # PR + master-push always build. A workflow_run only proceeds when the
-    # upstream Release succeeded AND it was a release tag (vX.Y.Z[-pre]).
+    # PR + main-push always build. A workflow_run only proceeds when the
+    # upstream Release succeeded, was a TAG PUSH (not a pull_request / dispatch
+    # dry-run — AAASM-3714; our branch names also start with 'v', so the
+    # head_branch check alone is insufficient), and the tag looks like a release
+    # version (vX.Y.Z[-pre]).
+    #
+    # AAASM-5677: `!cancelled()` stops a skipped `changes` (every non-PR event)
+    # from force-skipping this job — without a status function in the
+    # expression GitHub propagates the skip. A *failed* `changes` leaves the
+    # router clause false, so this skips and `Docs Success` turns red on the
+    # failure: fail closed.
     if: >-
-      github.event_name != 'workflow_run' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true') &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')))
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so the last-changed preprocessor can read per-page
           # git dates; a shallow clone would collapse every page to one commit.
           fetch-depth: 0
-          # For a release cut, build the docs from the tagged commit, not master.
+          # For a release cut, build the docs from the tagged commit, not main.
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch @ 2026-06-27
 
       - name: Cache mdBook binaries
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/bin/mdbook
@@ -77,6 +158,22 @@ jobs:
       - name: Run channel-gate unit tests
         run: python3 docs/ci/test_channels.py
 
+      # AAASM-4310: verify the shared metadata snippets in docs/src/generated/
+      # are up to date with Cargo.toml + metadata/docs.yaml. The generator is
+      # idempotent; a non-empty diff means someone edited a source without
+      # regenerating (or edited a generated file by hand). Fail early — before
+      # `mdbook build docs` — so the CI log points at the drift immediately.
+      - name: Regenerate shared docs metadata
+        run: python3 scripts/generate_docs_metadata.py
+
+      - name: Fail if generated docs metadata is stale
+        run: |
+          if ! git diff --exit-code -- docs/src/generated/; then
+            echo "::error::docs/src/generated/ is out of date with Cargo.toml / metadata/docs.yaml." >&2
+            echo "Run 'python3 scripts/generate_docs_metadata.py' locally and commit the result." >&2
+            exit 1
+          fi
+
       - name: Build book
         run: mdbook build docs
 
@@ -84,19 +181,19 @@ jobs:
       # The Pages site is laid out as per-version subpaths under `_site/`:
       #   _site/index.html      -> root redirect (stable -> pre-release -> latest)
       #   _site/versions.json   -> manifest read by the selector + warning banner
-      #   _site/latest/         -> live docs tracking master
+      #   _site/latest/         -> live docs tracking main
       #   _site/<vX.Y.Z[-pre]>/ -> frozen, immutable release snapshots
       #
       # versions.json describes moving CHANNELS that point at a concrete
       # subpath, plus immutable ARCHIVED concrete versions:
       #   { "channels": [ {id,title,target}, ... ],
       #     "archived": [ {id,title}, ... ] }
-      # Channels: latest (master), pre-release (newest vX.Y.Z-pre tag),
+      # Channels: latest (main), pre-release (newest vX.Y.Z-pre tag),
       #           stable (newest vX.Y.Z tag). Channel id classification:
       #   ^v\d+\.\d+\.\d+$    -> stable
       #   ^v\d+\.\d+\.\d+-.+  -> pre-release
       #
-      # On master push we publish into latest/. On a *successful* Release
+      # On main push we publish into latest/. On a *successful* Release
       # (workflow_run) we publish into <tag>/, archive it, and repoint the
       # stable or pre-release channel to it.
       - name: Resolve target version subpath
@@ -240,6 +337,20 @@ jobs:
           mkdir -p "_site/$VERSION"
           cp -R docs/book/. "_site/$VERSION/"
 
+          # 1b. Always materialise the `latest/` channel directory (AAASM-3733).
+          #     `latest` is a guaranteed channel in versions.json and the root
+          #     redirect's final fallback target, but it was only written on a
+          #     main-push cut (VERSION=latest). A release-only deploy (the only
+          #     kind this site has had) left `latest/` as a dangling target, so
+          #     the documented entry point /latest/ 404'd. On a release cut the
+          #     freshly built book is the newest live docs, so it is the correct
+          #     content for `latest/` too; on a main cut this is a no-op copy.
+          if [ "$VERSION" != "latest" ]; then
+            rm -rf "_site/latest"
+            mkdir -p "_site/latest"
+            cp -R docs/book/. "_site/latest/"
+          fi
+
           # 2. Recompute versions.json via the testable channel module
           #    (docs/ci/channels.py), which applies the pre-release semver
           #    gate and unions extra-archived.txt (written by the rebuild
@@ -254,7 +365,7 @@ jobs:
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
 
@@ -263,21 +374,30 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    # Pages deployment needs the elevated scopes; scoped here so the
+    # PR-triggered build/verify jobs run with contents:read only (AAASM-3877).
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
 
   verify-commands:
     name: Verify documented commands (Linux)
-    # Only on PR / master push; a release cut re-verifies nothing new.
-    if: github.event_name != 'workflow_run'
+    needs: [changes]
+    # Only on PR / main push; a release cut re-verifies nothing new.
+    # AAASM-5677: see the note on `build` for why `!cancelled()` is required.
+    if: >-
+      !cancelled() && github.event_name != 'workflow_run' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies (protoc, pkg-config, libssl-dev)
         run: |
@@ -285,16 +405,112 @@ jobs:
           sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch @ 2026-06-27
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Verify README "Getting Started" build command
         run: cargo build --workspace --exclude aa-ebpf
 
       - name: Verify api-reference.md rustdoc command
         run: cargo doc --workspace --no-deps --exclude aa-ebpf
+
+  # AAASM-4911 (ADR 0013 rollout): the blocking version-drift gate. The `build`
+  # job above already fails on stale `docs/src/generated/` snippets, but that
+  # only covers the generated tier. `propagate_versions.py --check` extends the
+  # SoT → consumer contract to the hand-maintained literal tier the ADR audit
+  # flagged (README install/Project-Status lines, docs/src/quick-start/
+  # installation.md, this workflow's mdBook pins, CONTRIBUTING.md) plus a
+  # re-check of the snippet tier — so a version literal that drifts from the
+  # Cargo.toml / metadata/docs.yaml SoT fails the build instead of shipping.
+  # Kept as its own lightweight job (no Rust/mdBook toolchain) so the drift
+  # signal is fast and independent of the heavy book build.
+  version-drift:
+    name: Version-drift gate (propagate_versions --check)
+    needs: [changes]
+    # PR + main push only; a release-cut workflow_run rebuilds no sources.
+    # AAASM-5677: see the note on `build` for why `!cancelled()` is required.
+    if: >-
+      !cancelled() && github.event_name != 'workflow_run' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The propagator uses `tomllib` (Python 3.11+); pin 3.12 rather than rely
+      # on the runner's default `python3`, which is not guaranteed to be ≥3.11.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Fail if any version-bearing site drifts from the SoT
+        run: python3 scripts/propagate_versions.py --check
+
+  # AAASM-4922 (ADR 0014 rollout): blocking hardcoded-value lint for registry-owned
+  # canonical metadata. The `.github` registry owns the governance-doc branch and
+  # the canonical URL set; this gate fails the build if one of those canonical
+  # literals drifts back into the tree (e.g. a `.github/blob/main` governance link,
+  # or a `/install.sh` path on the host-root `.dev` installer alt). Pure git/bash,
+  # no toolchain — kept fast and independent of the book build like version-drift.
+  # NOTE: this job now runs two independent pure-script docs gates —
+  # check-metadata-drift.sh and check_absolutes_unwaivable.py (AAASM-5671). The
+  # display name still names only the first; the steps are the accurate list.
+  # AAASM-5677 corrected the reason this name is frozen: this job was never a
+  # required status check (at the time, `main` required none at all), and the
+  # required context is now `Docs Success` below, which exists precisely so an
+  # internal rename cannot silently drop the requirement. Renaming this job is
+  # therefore safe with respect to branch protection — it is left alone only to
+  # keep run history comparable.
+  metadata-drift:
+    name: Metadata-drift gate (check-metadata-drift.sh)
+    needs: [changes]
+    # AAASM-5677: see the note on `build` for why `!cancelled()` is required.
+    if: >-
+      !cancelled() && github.event_name != 'workflow_run' &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fail if a registry-owned canonical value drifts
+        run: bash .ci/check-metadata-drift.sh
+
+      # AAASM-5671 (ADR 0034 Decision 10, W10): banned absolutes are unwaivable.
+      # ADR 0034 shipped saying both things at once, in nine places, and no gate
+      # could see it. This rides in the existing pure-script docs job rather than
+      # a job of its own — same trigger set, same no-toolchain shape, and the job
+      # name is left alone because it is a required check. The selftest runs first
+      # so a detector that has stopped detecting fails loudly instead of passing
+      # everything.
+      - name: Fail if a governance page makes banned absolutes waiver-eligible
+        run: |
+          python3 scripts/check_absolutes_unwaivable.py --selftest
+          python3 scripts/check_absolutes_unwaivable.py
+
+  # AAASM-5677: the stable required context for this workflow. `deploy` is
+  # deliberately NOT a need — it only runs off a pull request, and a Pages
+  # deployment failure is an operational problem, not a merge gate.
+  docs-success:
+    name: Docs Success
+    needs: [changes, build, verify-commands, version-drift, metadata-drift]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A required Docs job concluded with '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required Docs jobs passed or were intentionally skipped."
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

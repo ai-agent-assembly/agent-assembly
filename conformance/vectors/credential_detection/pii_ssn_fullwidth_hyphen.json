@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5364: the documentation SSN of pii_ssn.json written entirely in full-width form — full-width digits grouped by U+FF0D FULLWIDTH HYPHEN-MINUS. This is what a CJK input method in full-width mode actually produces when the hyphen key is pressed, so it is the form a Taiwanese or Japanese user types by default rather than an adversarial one. AAASM-5345 normalised the digits but is_ssn still demanded ASCII hyphens, so this read as an ungrouped nine-digit run and was not SSN-shaped at all. Every character of the value is three bytes, so the offset stays in original-text bytes while the exact-11-byte shape check runs against the normalised string.",
+  "input_text": "ssn=１２３－４５－６７８９",
+  "expected_findings": [
+    { "kind": "SsnPattern", "offset": 4 }
+  ],
+  "expected_redacted": "ssn=[REDACTED:SsnPattern]"
+}

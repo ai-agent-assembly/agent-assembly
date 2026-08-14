@@ -13,10 +13,13 @@
 //! | Filter params: `category`, `enabled`, `team_id` | No query params accepted; handler calls `discover_all()` directly |
 //! | Response shape `{tools:[…], total:N}` | Plain `Vec<DevToolInfo>` JSON array |
 //! | Fields: `id`, `name`, `description`, `category`, `enabled` | Actual fields: `kind`, `version`, `install_path`, `governance_level`, `supports_mcp`, `supports_managed_settings` |
-//! | Harness baseline non-empty | Default harness wires `DiscoveryService::with_adapters(vec![])` → always `[]` |
 //!
 //! Tests that require non-empty results use `TopologyTestEnv::start_with_discovery`
-//! with local stub adapters. Tests with the default env confirm empty-baseline behaviour.
+//! with local stub adapters — that harness builds `AppState` field-by-field and
+//! never exercises `AppState::local_in_memory()`. `tools_list_uses_production_app_state_discovery_registry`
+//! below covers the production construction path directly (AAASM-5296: it used
+//! to wire `DiscoveryService::with_adapters(vec![])`, so every deployment mode
+//! reported zero adapters regardless of what was actually installed).
 
 mod common;
 
@@ -309,4 +312,63 @@ async fn tools_list_content_type_is_application_json() {
         content_type.contains("application/json"),
         "Content-Type should be application/json, got: {content_type}"
     );
+}
+
+/// Regression test for AAASM-5296.
+///
+/// Every other test in this file goes through `TopologyTestEnv`, which builds
+/// `AppState` field-by-field and never calls the production constructor — so
+/// none of them could have caught `aa-api/src/state.rs` hard-coding
+/// `DiscoveryService::with_adapters(vec![])` inside `local_in_memory()`. This
+/// test exercises that production construction path directly: it asserts the
+/// resulting `AppState.discovery` is wired to the same authoritative adapter
+/// table `aasm tools list` / `aasm run` resolve from
+/// (`aa_devtool::registry::built_in_adapters`, AAASM-5274), then drives the
+/// real HTTP endpoint over that state to confirm the wiring is actually used
+/// end-to-end.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_list_uses_production_app_state_discovery_registry() {
+    let state = aa_api::state::AppState::local_in_memory().expect("local_in_memory should build a valid AppState");
+
+    // The core assertion: the production state's discovery service must carry
+    // one adapter per `SUPPORTED_TOOLS` entry, not the empty stub list that
+    // regressed every deployment mode's `GET /api/v1/tools` to `[]`. This
+    // doesn't depend on which dev tools happen to be installed on the host
+    // running the test, unlike asserting on detected results.
+    assert_eq!(
+        state.discovery.adapters().len(),
+        aa_devtool::registry::SUPPORTED_TOOLS.len(),
+        "production AppState discovery must be wired to aa_devtool::registry::built_in_adapters(), \
+         not an empty adapter list"
+    );
+
+    // Drive the real endpoint over this production state to prove the HTTP
+    // layer resolves through the same wiring, not just that the field is set.
+    let port = portpicker::pick_unused_port().expect("no free TCP port");
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().expect("valid local addr");
+    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind local listener");
+    let app = aa_api::server::build_app(state);
+    let server_handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let url = format!("http://{addr}/api/v1/tools");
+    let mut last_err = None;
+    let mut body: Option<serde_json::Value> = None;
+    for _ in 0..50 {
+        match reqwest::get(&url).await {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+                body = Some(resp.json().await.expect("body should be valid JSON"));
+                break;
+            }
+            Ok(resp) => last_err = Some(format!("unexpected status {}", resp.status())),
+            Err(e) => last_err = Some(e.to_string()),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let body = body.unwrap_or_else(|| panic!("GET /api/v1/tools never returned 200: {last_err:?}"));
+
+    assert!(body.is_array(), "response should be a JSON array, got: {body:?}");
+
+    server_handle.abort();
 }

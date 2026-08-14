@@ -8,7 +8,7 @@ export interface StepperProps {
   onJump?: (step: StepId) => void
 }
 
-export function Stepper({ currentStep, onJump }: StepperProps) {
+export function Stepper({ currentStep, onJump }: Readonly<StepperProps>) {
   const ci = stepIndex(currentStep)
   return (
     <nav

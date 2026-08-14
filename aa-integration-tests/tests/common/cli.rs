@@ -183,7 +183,6 @@ impl CliFixture {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: VecDeque::new(),
             recent_traces: vec![],
@@ -198,6 +197,7 @@ impl CliFixture {
             children: vec![],
             parent_key: None,
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         };
 
@@ -357,7 +357,6 @@ impl CliFixture {
             pid: None,
             session_count: 0,
             last_event: None,
-            policy_violations_count: 0,
             active_sessions: vec![],
             recent_events: VecDeque::new(),
             recent_traces: vec![],
@@ -372,6 +371,7 @@ impl CliFixture {
             children: vec![],
             parent_key: Some(parent_id),
             enforcement_mode: None,
+            enforcement_mode_expires_at: None,
             org_id: None,
         };
         self.env

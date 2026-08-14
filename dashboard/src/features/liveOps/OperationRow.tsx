@@ -1,4 +1,6 @@
 import { useId, useState } from 'react'
+import { TruthfulValue } from '../../components/truthfulness'
+import { absent, isKnown, known, type Certain } from '../../lib/truthfulness'
 import { RowActionMenu } from './RowActionMenu'
 import type {
   CallStackNode,
@@ -17,8 +19,14 @@ interface OperationRowProps {
   onPause?: () => void
   onResume?: () => void
   onTerminate?: () => void
+  /** Optional agent-wide halt; forwarded to the row action menu when set. */
+  onHaltAgent?: () => void
 }
 
+// OperationStatus is a closed app union, validated onto an op by
+// `coerceStatus`/`opStateToStatus` in useLiveOpsStream.ts — narrow-union
+// Record gap (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const STATUS_LABEL: Record<OperationStatus, string> = {
   running: 'RUNNING',
   pending: 'PENDING',
@@ -27,6 +35,10 @@ const STATUS_LABEL: Record<OperationStatus, string> = {
   terminated: 'TERMINATED',
 }
 
+// OperationOverride is a closed local union set only by this page's own
+// optimistic row-action state, never from the wire — narrow-union Record gap
+// (AAASM-5245 gap 2).
+// eslint-disable-next-line no-restricted-syntax
 const OVERRIDE_LABEL: Record<OperationOverride, string> = {
   pausing: 'pausing…',
   resuming: 'resuming…',
@@ -42,10 +54,43 @@ function formatStartedAt(iso: string): string {
   return `${hh}:${mm}:${ss}`
 }
 
+/**
+ * Render a latency that was actually measured (AAASM-5129).
+ *
+ * A measured `0` prints as `0ms`, not `<1ms`. `<1ms` is a claim about a
+ * sub-millisecond duration; the wire reports whole milliseconds, so `0` means
+ * "under the reporting resolution", and saying so is not the same as inventing
+ * a bound. `<1ms` is kept for the fractional values call-stack nodes carry.
+ *
+ * Only ever called with a value that has already been admitted as measured —
+ * `TruthfulValue` formats known values only, and `callStackLatency` is the gate
+ * on the tree path. It deliberately does not return a bare `—` for a bad input:
+ * a dash emitted from here would land in a plain `<span>` with no state, no
+ * tone and no screen-reader sentence, which is the one thing the vocabulary
+ * forbids. Rejecting a value is `callStackLatency`'s job, not this function's.
+ */
 function formatLatency(ms: number): string {
+  if (ms === 0) return '0ms'
   if (ms < 1) return '<1ms'
   if (ms < 1000) return `${Math.round(ms)}ms`
   return `${(ms / 1000).toFixed(2)}s`
+}
+
+/**
+ * Lift a call-stack node's latency into the vocabulary.
+ *
+ * `null` means the node carries no duration at all, and the tree simply renders
+ * no latency element — a tree row is a label, not a table cell, so there is no
+ * column left blank for an operator to read as zero. A value that *is* present
+ * but uninterpretable (non-finite, or negative against the wire's
+ * `minimum: 0`) is a genuine absence and renders the marker with its state.
+ */
+function callStackLatency(ms: number | undefined): Certain<number> | null {
+  if (ms === undefined) return null
+  if (!Number.isFinite(ms) || ms < 0) {
+    return absent<number>('unknown', `Uninterpretable latency on the wire: ${String(ms)}`)
+  }
+  return known(ms)
 }
 
 /**
@@ -62,7 +107,8 @@ export function OperationRow({
   onPause,
   onResume,
   onTerminate,
-}: OperationRowProps) {
+  onHaltAgent,
+}: Readonly<OperationRowProps>) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const treeId = useId()
   const canExpand = (op.callStack?.length ?? 0) > 0
@@ -97,11 +143,25 @@ export function OperationRow({
         <span className="op-row__agent" title={op.agent}>
           {op.agent}
         </span>
-        <span className="op-row__op-type">{op.opType}</span>
+        <span className="op-row__op-type">
+          <TruthfulValue value={op.opType} testId="op-row-op-type" />
+        </span>
         <span className="op-row__started-at">{formatStartedAt(op.startedAt)}</span>
-        <span className="op-row__latency">{formatLatency(op.latencyMs)}</span>
-        <span className="op-row__resource" title={op.resource}>
-          {op.resource}
+        <span className="op-row__latency">
+          <TruthfulValue
+            value={op.latencyMs}
+            format={formatLatency}
+            testId="op-row-latency"
+          />
+        </span>
+        {/* The tooltip is dropped when the resource is absent — `AbsenceMarker`
+            installs its own `title` naming the state, and a wrapping `—` title
+            would shadow it. */}
+        <span
+          className="op-row__resource"
+          title={isKnown(op.resource) ? op.resource.value : undefined}
+        >
+          <TruthfulValue value={op.resource} testId="op-row-resource" />
         </span>
         {override && (
           <span className="op-row__override" data-testid="op-row-override">
@@ -115,6 +175,7 @@ export function OperationRow({
             onPause={onPause}
             onResume={onResume}
             onTerminate={onTerminate}
+            onHaltAgent={onHaltAgent}
           />
         )}
       </div>
@@ -125,7 +186,7 @@ export function OperationRow({
   )
 }
 
-function CallStackTree({ id, nodes }: { id: string; nodes: CallStackNode[] }) {
+function CallStackTree({ id, nodes }: Readonly<{ id: string; nodes: CallStackNode[] }>) {
   return (
     <ul
       id={id}
@@ -140,7 +201,8 @@ function CallStackTree({ id, nodes }: { id: string; nodes: CallStackNode[] }) {
   )
 }
 
-function CallStackTreeNode({ node }: { node: CallStackNode }) {
+function CallStackTreeNode({ node }: Readonly<{ node: CallStackNode }>) {
+  const latency = callStackLatency(node.latencyMs)
   return (
     <li className="op-row__tree-node" role="treeitem">
       <div className="op-row__tree-row">
@@ -148,8 +210,14 @@ function CallStackTreeNode({ node }: { node: CallStackNode }) {
           {node.kind}
         </span>
         <span className="op-row__tree-label">{node.label}</span>
-        {typeof node.latencyMs === 'number' && (
-          <span className="op-row__tree-latency">{formatLatency(node.latencyMs)}</span>
+        {latency && (
+          <span className="op-row__tree-latency">
+            <TruthfulValue
+              value={latency}
+              format={formatLatency}
+              testId="op-row-tree-latency"
+            />
+          </span>
         )}
       </div>
       {node.children && node.children.length > 0 && (

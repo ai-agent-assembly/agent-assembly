@@ -14,9 +14,22 @@ description = "Shared SDK runtime-client for Agent Assembly — UDS transport, I
 aa-proto = { path = "../aa-proto" }
 # Advisory preflight only — pulled in by the `preflight` feature (default on).
 aa-security = { path = "../aa-security", optional = true }
+# did:key derivation for gateway registration identity (AAASM-3387).
+bs58 = "0.5"
+# Deterministic Ed25519 keypair backing the registration did:key + public_key
+# (AAASM-3396); the gateway validates public_key as a real Ed25519 verifying key.
+ed25519-dalek = "3"
+hex = { workspace = true }
 prost = { workspace = true }
+sha2 = { workspace = true }
+# Direct gateway gRPC Register client (AAASM-3396). CheckAction stays via the
+# runtime UDS forward; only AgentLifecycleService.Register is called directly.
+tonic = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "io-util", "macros"] }
 tracing = { workspace = true }
+# Zeroizes the gateway `credential_token` from process memory on drop so it does
+# not linger in a heap/core-dump readable by a host attacker (AAASM-3629).
+zeroize = { workspace = true }
 
 [features]
 default = ["preflight"]
@@ -27,7 +40,13 @@ default = ["preflight"]
 preflight = ["dep:aa-security"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "rt", "sync", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["test-util", "rt", "rt-multi-thread", "sync", "macros", "net", "io-util"] }
+# Mock gateway gRPC server for the with-core register+check test (AAASM-3398).
+tokio-stream = { workspace = true }
+# CSPRNG for fresh per-test handshake challenge nonces. `rand` returns the
+# value directly (no `[0u8; 32]` buffer literal in the data-flow → CodeQL-clean),
+# used by every test that generates a nonce (unit + lifecycle_e2e fixture).
+rand = "0.10"
 
 [lints]
 workspace = true

@@ -30,9 +30,17 @@ These flags are defined on the root parser (`aa-cli/src/lib.rs`) and are
 | `--context <CONTEXT>` | string | _(default context, if any)_ | Named context from `~/.aa/config.yaml` to use for the API URL and key. |
 | `--output <OUTPUT>` | `table` \| `json` \| `yaml` | `table` | Output format for list/get commands. |
 | `--api-url <API_URL>` | string | `http://localhost:8080` | Override the gateway API base URL. Takes precedence over the resolved context. |
-| `--api-key <API_KEY>` | string | _(none)_ | Override the API key. Takes precedence over the context's stored key. |
+| `--api-key <API_KEY>` | string | _(none)_ | Override the API key. Takes precedence over the context's stored key. For interactive use prefer [`aasm login`](auth.md) over putting the key on argv/env (see the note below). |
 | `-h, --help` | flag | — | Print help. |
 | `-V, --version` | flag | — | Print the `aasm` version. |
+
+> **Authenticating.** `--api-key` / `AASM_API_KEY` still work and are the right
+> choice for CI and other non-interactive environments. For interactive use,
+> prefer [`aasm login`](auth.md): it exchanges the key **once** for a short-lived
+> scoped session (stored per context) so the raw key never sits on argv, in your
+> shell history, or in the environment. See [Authentication](auth.md) for the
+> session model, expiry/auto-refresh, and the `login` / `logout` / `whoami`
+> commands.
 
 > Several commands also expose a local `--output` or `--json` flag that
 > overrides the global `--output` for that command only (e.g. `aasm logs
@@ -79,6 +87,12 @@ The active API URL and key are resolved with this precedence (highest first):
 
 Manage contexts with the [`aasm context`](context.md) command group.
 
+> **Sessions live separately from config.** When you [`aasm login`](auth.md), the
+> resulting scoped session is stored in **`~/.aa/credentials.yaml`** (locked
+> `0600`), kept distinct from `~/.aa/config.yaml` so that clearing a session
+> (`aasm logout`) never rewrites your context definitions. See
+> [Authentication](auth.md).
+
 > **Note on paths.** The CLI *config* file is `~/.aa/config.yaml`. Separately,
 > the locally-managed gateway uses `~/.aasm/` for its runtime artifacts —
 > `~/.aasm/config.yaml` (gateway config, see [`aasm start`](start-stop.md)),
@@ -102,11 +116,13 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm policy simulate`](policy.md) | The simulation detected policy violations. |
 | [`aasm policy validate`](policy.md), [`aasm config validate`](config.md) | The file is invalid (error printed to stderr). |
 | [`aasm audit verify-chain`](audit.md) | The audit hash chain failed verification. |
+| [`aasm integrations`](integrations.md) | One of **eight** distinct failure outcomes — `1` and `3`–`9` each name a different next action (`2` is left to `clap`). They are the non-zero half of the nine-value `Outcome` vocabulary. See [its exit-code table](integrations.md#exit-codes). |
 
 ## Command groups
 
 | Command | Talks to | Purpose |
 |---|---|---|
+| [`aasm login`](auth.md) / [`logout`](auth.md) / [`whoami`](auth.md) | Gateway HTTP + local | Exchange an API key for a scoped session, clear it, or inspect it. |
 | [`aasm status`](status.md) | Gateway HTTP | Fleet health, agents, approvals, budget at a glance. |
 | [`aasm agent`](agent.md) | Gateway HTTP | List, inspect, suspend, resume, kill registered agents. |
 | [`aasm policy`](policy.md) | Gateway HTTP + local | Apply, version, diff, simulate, validate, show policies. |
@@ -120,18 +136,34 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm dashboard`](dashboard.md) | Gateway HTTP/WS + local | TUI dashboard and embedded SPA server. |
 | [`aasm gateway`](gateway.md) | Local process | Manage the `aa-gateway` daemon. |
 | [`aasm proxy`](proxy.md) | Local process | Manage the `aa-proxy` sidecar and its CA. |
+| [`aasm integrations`](integrations.md) | `aa-runtime` DI-API (UDS) | Install, verify, repair, remove Developer Integrations for AI dev tools. **Not in `cargo install aasm` — see below.** |
 | [`aasm start`](start-stop.md) / [`aasm stop`](start-stop.md) | Local process | Start/stop the locally-managed gateway. |
 | [`aasm sandbox`](sandbox.md) | Local | Run a WASM tool under the sandbox. |
 | [`aasm config`](config.md) | Local | Validate / boot an `agent-assembly.toml`. |
 | [`aasm context`](context.md) | Local | Manage `~/.aa/config.yaml` contexts. |
 | [`aasm admin`](admin.md) | Gateway HTTP | Administrative operations (retention). |
+| [`aasm uninstall`](uninstall.md) | Local | Remove Agent Assembly tools installed via the curl installer (`--purge` also removes local data; Homebrew installs are redirected to `brew uninstall`). |
 | [`aasm version`](version.md) | Gateway HTTP | CLI + gateway/api versions. |
 | [`aasm completion`](completion.md) | Local | Generate shell completion scripts. |
 
-> **Developer-only commands.** The source tree also defines `aasm run`
-> (launch a governed AI dev tool) and `aasm tools` (discover installed AI dev
-> tools). Both are gated behind the `devtool` region in
-> `aa-cli/src/commands/mod.rs` and `aa-cli/Cargo.toml` and are **stripped from
-> the published crate** by `.ci/strip-for-publish.sh` before release. They are
-> intentionally **not documented** here because they are not part of the
-> published `aasm` surface.
+> **Developer-only commands.** Three command groups — `aasm run` (launch a
+> governed AI dev tool), `aasm tools` (discover installed AI dev tools), and
+> [`aasm integrations`](integrations.md) (the Developer Integration lifecycle —
+> added to this set by AAASM-5309) — are gated behind the `devtool` region in
+> `aa-cli/src/commands/mod.rs` and `aa-cli/Cargo.toml`.
+>
+> **Which channel you installed from decides whether you have them.**
+> `.ci/strip-for-publish.sh` removes that region in the `publish-crates` job of
+> `release.yml`, so the strip applies to the **crates.io** publish and nothing
+> else. `cargo install aasm` does not have the three commands. A source build
+> (`cargo build -p aa-cli`), the GitHub Release tarballs, the `curl` installer
+> and the Homebrew formula are all built from the unstripped tree in the `build`
+> job, so **those `aasm` binaries do have them** — and their `aa-runtime` still
+> carries the Developer Integration API bring-up.
+>
+> `aasm integrations` is documented here because it is a shipped, user-facing
+> surface on every channel except crates.io, and the omission was itself a
+> documentation gap. `aasm run` and `aasm tools` remain undocumented in this
+> reference. Where the strip does apply it is not cosmetic in the `integrations`
+> case: a crates.io `aa-runtime` never binds the Developer Integration API
+> socket, so the command would have nothing to connect to.

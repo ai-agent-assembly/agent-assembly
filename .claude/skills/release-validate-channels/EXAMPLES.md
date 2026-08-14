@@ -32,7 +32,8 @@ gh release view v0.0.1-alpha.9 --repo ai-agent-assembly/agent-assembly \
 ```
 
 - `isDraft = false`, `isPrerelease = true`
-- 6 assets:
+- 6 assets (`release.yml` signs `SHA256SUMS` with a single self-contained
+  `.cosign.bundle` — there are no detached `.sig`/`.pem` files):
   - `aasm-aarch64-apple-darwin.tar.gz`
   - `aasm-x86_64-apple-darwin.tar.gz`
   - `aasm-aarch64-unknown-linux-gnu.tar.gz`
@@ -80,7 +81,7 @@ triple.
 
 ### 5. Homebrew tap
 
-`ai-agent-assembly/homebrew-agent-assembly` `master` carries
+`ai-agent-assembly/homebrew-tap` `master` carries
 `Formula/aasm.rb` with `version "0.0.1-alpha.9"` and 4 `sha256` literals
 that match the sums in the release's `SHA256SUMS` asset.
 

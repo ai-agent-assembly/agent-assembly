@@ -179,7 +179,7 @@ const SCRUB_CONFIG = {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 async function injectToken(page: Page) {
-  await page.addInitScript(() => localStorage.setItem('aa_token', 'aaasm94-token'))
+  await page.addInitScript(() => sessionStorage.setItem('aa_token', 'aaasm94-token'))
 }
 
 async function mockApi(page: Page) {

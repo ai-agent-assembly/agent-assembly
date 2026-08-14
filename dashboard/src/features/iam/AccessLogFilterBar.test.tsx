@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { AccessLogFilterBar } from './AccessLogFilterBar'
@@ -101,5 +101,118 @@ describe('AccessLogFilterBar (AAASM-1398)', () => {
     const days = (toMs - fromMs) / (24 * 60 * 60 * 1000)
     expect(days).toBeGreaterThanOrEqual(6.5)
     expect(days).toBeLessThanOrEqual(7.5)
+  })
+
+  it('selecting a preset range emits a non-custom timeRange of that kind', async () => {
+    const onChange = vi.fn<(next: AccessLogFilter) => void>()
+    render(
+      <AccessLogFilterBar identities={IDENTITIES} value={{}} onChange={onChange} />,
+    )
+    await userEvent.selectOptions(
+      screen.getByTestId('access-log-filter-time-range'),
+      '7d',
+    )
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ timeRange: { kind: '7d' } }),
+    )
+  })
+
+  it('selecting "Any time" clears the timeRange back to undefined', async () => {
+    const onChange = vi.fn<(next: AccessLogFilter) => void>()
+    render(
+      <AccessLogFilterBar
+        identities={IDENTITIES}
+        value={{ timeRange: { kind: '24h' } }}
+        onChange={onChange}
+      />,
+    )
+    await userEvent.selectOptions(
+      screen.getByTestId('access-log-filter-time-range'),
+      '',
+    )
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ timeRange: undefined }),
+    )
+  })
+
+  it('editing the custom "from" date emits the updated range', async () => {
+    const onChange = vi.fn<(next: AccessLogFilter) => void>()
+    render(
+      <AccessLogFilterBar
+        identities={IDENTITIES}
+        value={{ timeRange: { kind: 'custom', from: '2026-05-10', to: '2026-05-17' } }}
+        onChange={onChange}
+      />,
+    )
+    fireEvent.change(screen.getByTestId('access-log-filter-custom-from'), {
+      target: { value: '2026-05-12' },
+    })
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeRange: { kind: 'custom', from: '2026-05-12', to: '2026-05-17' },
+      }),
+    )
+  })
+
+  it('editing the custom "to" date emits the updated range', async () => {
+    const onChange = vi.fn<(next: AccessLogFilter) => void>()
+    render(
+      <AccessLogFilterBar
+        identities={IDENTITIES}
+        value={{ timeRange: { kind: 'custom', from: '2026-05-10', to: '2026-05-17' } }}
+        onChange={onChange}
+      />,
+    )
+    fireEvent.change(screen.getByTestId('access-log-filter-custom-to'), {
+      target: { value: '2026-05-20' },
+    })
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeRange: { kind: 'custom', from: '2026-05-10', to: '2026-05-20' },
+      }),
+    )
+  })
+})
+
+describe('AccessLogFilterBar — disabled (AAASM-5111)', () => {
+  it('defaults to enabled, so existing call sites are unaffected', () => {
+    render(<AccessLogFilterBar identities={IDENTITIES} value={{}} onChange={vi.fn()} />)
+    expect(screen.getByTestId('access-log-filter-bar')).toHaveAttribute('data-disabled', 'false')
+    expect(screen.getByTestId('access-log-filter-identity')).not.toBeDisabled()
+  })
+
+  it('disables every control when there is no dataset to narrow', () => {
+    render(
+      <AccessLogFilterBar identities={IDENTITIES} value={{}} onChange={vi.fn()} disabled />,
+    )
+    expect(screen.getByTestId('access-log-filter-bar')).toHaveAttribute('data-disabled', 'true')
+    expect(screen.getByTestId('access-log-filter-identity')).toBeDisabled()
+    expect(screen.getByTestId('access-log-filter-event-type')).toBeDisabled()
+    expect(screen.getByTestId('access-log-filter-time-range')).toBeDisabled()
+  })
+
+  it('disables the custom date inputs too', () => {
+    render(
+      <AccessLogFilterBar
+        identities={IDENTITIES}
+        value={{ timeRange: { kind: 'custom', from: '2026-05-10', to: '2026-05-17' } }}
+        onChange={vi.fn()}
+        disabled
+      />,
+    )
+    expect(screen.getByTestId('access-log-filter-custom-from')).toBeDisabled()
+    expect(screen.getByTestId('access-log-filter-custom-to')).toBeDisabled()
+  })
+
+  it('emits nothing when a disabled control is interacted with', async () => {
+    const onChange = vi.fn<(next: AccessLogFilter) => void>()
+    render(
+      <AccessLogFilterBar identities={IDENTITIES} value={{}} onChange={onChange} disabled />,
+    )
+    await userEvent.selectOptions(
+      screen.getByTestId('access-log-filter-identity'),
+      'gateway-ci',
+    )
+    expect(onChange).not.toHaveBeenCalled()
   })
 })

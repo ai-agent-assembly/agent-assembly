@@ -216,6 +216,42 @@ impl AuditWriter {
         }
         Ok(last_hash)
     }
+
+    /// Read the `seq` of the last entry in a JSONL file.
+    ///
+    /// AAASM-3356 — on restart the service recovers the hash chain head via
+    /// [`read_last_hash`](Self::read_last_hash) but previously re-seeded the
+    /// `seq` counter at `0`, producing duplicate sequence numbers after a
+    /// restart. Pairing this with `read_last_hash` lets the service seed the
+    /// `seq` atomic from `last_seq + 1` so sequence numbers stay monotonic and
+    /// unique across process restarts.
+    ///
+    /// Returns `None` if the file does not exist or is empty.
+    /// Skips blank or incomplete trailing lines (standard JSONL recovery).
+    pub async fn read_last_seq(path: &Path) -> io::Result<Option<u64>> {
+        let file = match tokio::fs::File::open(path).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let reader = tokio::io::BufReader::new(file);
+        let mut lines = reader.lines();
+        let mut last_seq: Option<u64> = None;
+
+        while let Some(line) = lines.next_line().await? {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<AuditEntry>(&line) {
+                Ok(entry) => last_seq = Some(entry.seq()),
+                Err(_) => {
+                    // Incomplete trailing line from a crash — skip it.
+                    continue;
+                }
+            }
+        }
+        Ok(last_seq)
+    }
 }
 
 /// Result of a hash-chain verification.

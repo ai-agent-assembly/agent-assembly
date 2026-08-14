@@ -18,7 +18,7 @@ function variantClass(id: ActionKind, active: boolean): string {
  * approval / scrub→allow / deny. The hint text is exposed as the button's
  * `title` so it appears as a native tooltip on hover.
  */
-export function ActionPicker({ value, onChange }: ActionPickerProps) {
+export function ActionPicker({ value, onChange }: Readonly<ActionPickerProps>) {
   return (
     <div
       className="editor__action-picker"

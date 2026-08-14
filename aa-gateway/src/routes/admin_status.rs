@@ -7,8 +7,12 @@
 //! storage section delivered by AAASM-1591 / Epic 18 S-J.
 //!
 //! Unlike `/healthz`, this handler performs a backend round-trip per call
-//! and is **not** intended for high-frequency load-balancer probes; mount
-//! it behind admin-only access (Epic 17 S-G IAM gating, to land).
+//! and is **not** intended for high-frequency load-balancer probes; it is
+//! gated behind admin-only access via the [`aa_auth::scope::RequireAdmin`]
+//! extractor (AAASM-3895). The gateway routers layer the four `aa-auth`
+//! extensions that back the extractor with BYPASS-DEFAULT, so a zero-config
+//! gateway resolves the guard to the synthetic admin caller and keeps serving
+//! `aasm status` with no credential (AAASM-1591).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -89,7 +93,16 @@ impl AdminStatusState {
 /// Returning a 5xx instead would force the CLI to distinguish transport
 /// failures from logical health failures — splitting one signal into two
 /// for no operator benefit.
-pub async fn admin_status(Extension(state): Extension<AdminStatusState>) -> Json<AdminStatusBody> {
+///
+/// AAASM-3895: the [`aa_auth::scope::RequireAdmin`] extractor runs before the
+/// body is computed. In an auth-enabled gateway an unauthenticated caller gets
+/// `401`, a non-admin caller gets `403`, and only admin callers reach the
+/// storage probe. In a bypass-default gateway the extractor resolves to the
+/// synthetic admin caller, so the endpoint stays reachable with no credential.
+pub async fn admin_status(
+    _admin: aa_auth::scope::RequireAdmin,
+    Extension(state): Extension<AdminStatusState>,
+) -> Json<AdminStatusBody> {
     let storage_block = match state.storage.healthcheck().await {
         Ok(health) => {
             StorageHealthBlock::from_health(&health, state.sqlite_path.as_deref(), state.database_url.as_deref())
@@ -300,6 +313,18 @@ mod tests {
     use super::*;
     use crate::storage::{HealthStatus, RowCounts, StorageHealth, TimescaleStats};
 
+    /// A synthetic admin `RequireAdmin` for exercising the handler directly,
+    /// bypassing the extractor's request-parts path (AAASM-3895). The
+    /// extension-driven 401/403/bypass behaviour is covered by the
+    /// router-level tests in `auth_guard_tests`.
+    fn admin_guard() -> aa_auth::scope::RequireAdmin {
+        aa_auth::scope::RequireAdmin(aa_auth::AuthenticatedCaller {
+            key_id: "test-admin".to_string(),
+            scopes: vec![aa_auth::scope::Scope::Admin],
+            tenant: aa_auth::Tenant::default(),
+        })
+    }
+
     fn sample_health(backend: &'static str, timescale: Option<TimescaleStats>) -> StorageHealth {
         StorageHealth {
             status: HealthStatus::Ok,
@@ -480,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn handler_returns_documented_body_against_sqlite_backend() {
         let (_tmp, state) = sqlite_state().await;
-        let Json(body) = admin_status(Extension(state.clone())).await;
+        let Json(body) = admin_status(admin_guard(), Extension(state.clone())).await;
         assert_eq!(body.mode, "local");
         assert_eq!(body.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(body.storage.backend, "sqlite");
@@ -495,7 +520,7 @@ mod tests {
         let (_tmp, mut state) = sqlite_state().await;
         // Back-date started_at so uptime_secs is non-zero without sleeping.
         state.started_at = Instant::now() - std::time::Duration::from_secs(5);
-        let Json(body) = admin_status(Extension(state)).await;
+        let Json(body) = admin_status(admin_guard(), Extension(state)).await;
         assert!(body.uptime_secs >= 5, "expected uptime ≥ 5s, got {}", body.uptime_secs);
     }
 
@@ -522,5 +547,114 @@ mod tests {
             json["storage"]["database_url"],
             "postgresql://aasm:***@db.internal:5432/aasm"
         );
+    }
+}
+
+/// AAASM-3895: end-to-end auth behaviour of `/api/v1/admin/status` driven
+/// through a real router with the four `aa-auth` extensions layered. Proves the
+/// `RequireAdmin` guard's bypass / 401 / 403 / 200 matrix at the wire level.
+#[cfg(test)]
+mod auth_guard_tests {
+    use super::*;
+    use crate::auth::AuthExtensions;
+    use crate::storage::{SqliteBackend, SqliteConfig};
+    use aa_auth::config::{AuthConfig, AuthMode};
+    use aa_auth::jwt::JwtSigner;
+    use aa_auth::scope::Scope;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    /// HMAC secret shared between the test `JwtSigner` and the On-mode
+    /// `AuthExtensions` so minted tokens verify.
+    const TEST_SECRET: &[u8] = b"gateway-admin-guard-test-secret-32bytes!";
+
+    /// Open a real SQLite-backed `StorageBackend` under a per-test tempdir.
+    async fn sqlite_backend() -> (tempfile::TempDir, Arc<dyn StorageBackend>) {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let path = tmp.path().join("local.db");
+        let backend = SqliteBackend::open(&SqliteConfig { path })
+            .await
+            .expect("open sqlite backend");
+        backend.migrate().await.expect("migrate");
+        (tmp, Arc::new(backend))
+    }
+
+    /// Mount `/api/v1/admin/status` with its state and layer the supplied auth
+    /// extensions — mirrors what the gateway routers do in production.
+    fn admin_router(storage: Arc<dyn StorageBackend>, auth: AuthExtensions) -> Router {
+        let admin_state = AdminStatusState::new("remote", storage, None, None);
+        let app = Router::new()
+            .route("/api/v1/admin/status", get(admin_status))
+            .layer(Extension(admin_state));
+        auth.apply(app)
+    }
+
+    /// An `AuthMode::On` posture whose verifier accepts tokens signed with
+    /// [`TEST_SECRET`].
+    fn on_mode_auth() -> AuthExtensions {
+        AuthExtensions::from_config(AuthConfig {
+            mode: AuthMode::On,
+            jwt_secret: Some(TEST_SECRET.to_vec()),
+            api_keys_path: std::path::PathBuf::from("/nonexistent-aa-test-keys"),
+            rate_limit_rpm: 1000,
+        })
+    }
+
+    fn request_with_token(token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().uri("/api/v1/admin/status");
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).expect("build request")
+    }
+
+    /// Zero-config smoke: in bypass mode the guard resolves to the synthetic
+    /// admin caller, so an unauthenticated request returns 200 (AAASM-1591).
+    #[tokio::test]
+    async fn bypass_mode_serves_unauthenticated_request() {
+        let (_tmp, storage) = sqlite_backend().await;
+        let app = admin_router(storage, AuthExtensions::bypass());
+        let resp = app.oneshot(request_with_token(None)).await.expect("oneshot");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "bypass-default must keep /admin/status reachable with no credential"
+        );
+    }
+
+    /// In On mode an unauthenticated request is rejected with 401.
+    #[tokio::test]
+    async fn on_mode_rejects_unauthenticated_request() {
+        let (_tmp, storage) = sqlite_backend().await;
+        let app = admin_router(storage, on_mode_auth());
+        let resp = app.oneshot(request_with_token(None)).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// In On mode a valid non-admin (read-only) credential is rejected with 403.
+    #[tokio::test]
+    async fn on_mode_rejects_non_admin_credential() {
+        let (_tmp, storage) = sqlite_backend().await;
+        let app = admin_router(storage, on_mode_auth());
+        let token = JwtSigner::new(TEST_SECRET)
+            .sign("reader-1", &[Scope::Read])
+            .expect("sign read token");
+        let resp = app.oneshot(request_with_token(Some(&token))).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// In On mode an admin credential reaches the handler and returns 200.
+    #[tokio::test]
+    async fn on_mode_accepts_admin_credential() {
+        let (_tmp, storage) = sqlite_backend().await;
+        let app = admin_router(storage, on_mode_auth());
+        let token = JwtSigner::new(TEST_SECRET)
+            .sign("admin-1", &[Scope::Admin])
+            .expect("sign admin token");
+        let resp = app.oneshot(request_with_token(Some(&token))).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

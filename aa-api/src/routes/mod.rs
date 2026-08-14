@@ -3,9 +3,11 @@
 //! All endpoints are nested under `/api/v1/`.
 
 pub mod admin;
+pub mod agent_violations;
 pub mod agents;
 pub mod alert_rules;
 pub mod alerts;
+pub mod analytics;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
@@ -15,11 +17,25 @@ pub mod destinations;
 pub mod devtools;
 pub mod dispatch;
 pub mod edges;
+/// Shared read-only mirrors of the gateway's enforcement stages. Crate-internal:
+/// it is a projection helper, not an HTTP surface.
+pub(crate) mod enforcement_mirror;
 pub mod health;
 pub mod iam;
 pub mod logs;
+/// Native email/password auth endpoints (AAASM-5305, ADR 0031). Distinct from
+/// [`auth`], which owns the unchanged API-key → JWT `/auth/token` route.
+pub mod native_auth;
 pub mod ops;
+/// Over-permission derivation for the capability matrix (ADR 0029). Crate-internal:
+/// it is a projection helper, not an HTTP surface.
+pub(crate) mod over_permission;
 pub mod policies;
+pub mod policy_hits;
+pub mod scrub;
+/// Sensitive-data analytics, drill-down and compliance export over the durable
+/// projection (AAASM-5359, ADR 0032 §8/§9).
+pub mod sensitive_data;
 pub mod tools;
 pub mod topology;
 pub mod traces;
@@ -30,7 +46,29 @@ use axum::Router;
 use crate::error::ProblemDetail;
 
 /// Build the v1 API router with all registered routes.
+///
+/// The router is split into two layers (AAASM-3125):
+///
+/// * [`public_router`] — endpoints that are reachable without a bearer
+///   credential: liveness, the token-issue endpoint (it authenticates the
+///   caller itself), the WebSocket upgrade handlers, and the SaaS webhook
+///   (HMAC-authenticated in-handler).
+/// * [`protected_router`] — everything else, gated by the deny-by-default
+///   [`require_authentication`] middleware. A newly-added route is
+///   authenticated unless it is deliberately mounted on the public router.
+///
+/// [`require_authentication`]: crate::auth::gate::require_authentication
 pub fn v1_router() -> Router {
+    public_router().merge(protected_router())
+}
+
+/// Build the router of endpoints reachable without a bearer credential.
+///
+/// These either need to be reachable to obtain a credential (`/auth/token`),
+/// are unauthenticated liveness probes (`/health`), authenticate themselves
+/// out of band (`/devtools/saas/{provider}/events` via HMAC), or perform
+/// their auth handshake during the WebSocket upgrade.
+fn public_router() -> Router {
     Router::new()
         // Health
         .route("/health", get(health::health))
@@ -38,6 +76,51 @@ pub fn v1_router() -> Router {
         .route("/ws/events", get(crate::ws::handler::ws_events_handler))
         // Auth
         .route("/auth/token", post(auth::issue_token))
+        // Native email/password auth (AAASM-5305, ADR 0031). These are mounted on
+        // the PUBLIC router for the same reason as /auth/token: they are how a
+        // human obtains a credential, so they must be reachable without one. The
+        // login/refresh handlers authenticate themselves (password / refresh
+        // cookie); invite-accept authenticates via the single-use token; methods
+        // is a public capability probe. The credential-requiring halves —
+        // /auth/invite (admin) and /auth/logout — are on the protected router.
+        .route("/auth/login", post(native_auth::login))
+        .route("/auth/register", post(native_auth::register))
+        .route("/auth/invite/accept", post(native_auth::invite_accept))
+        .route("/auth/refresh", post(native_auth::refresh))
+        .route("/auth/methods", get(native_auth::auth_methods))
+        // Password reset (AAASM-5306, ADR 0031 §Q4). Public for the same reason
+        // as login/refresh: a user who has lost their password has no credential.
+        // reset always 202 (enumeration-safe); confirm consumes the emailed token.
+        .route("/auth/password/reset", post(native_auth::password_reset))
+        .route(
+            "/auth/password/reset/confirm",
+            post(native_auth::password_reset_confirm),
+        )
+        // AAASM-1389: real-time alert event stream.
+        .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
+        // Dev tool webhooks — HMAC-authenticated in-handler.
+        .route("/devtools/saas/{provider}/events", post(devtools::saas_webhook))
+}
+
+/// Build the router of endpoints that require an authenticated caller.
+///
+/// The whole router is wrapped in the [`require_authentication`] gate via
+/// `route_layer`, so every handler runs only after a valid API key / JWT has
+/// been verified (or `AuthMode::Off` bypasses it). Per-handler scope and
+/// tenant checks remain the handler's responsibility.
+///
+/// [`require_authentication`]: crate::auth::gate::require_authentication
+fn protected_router() -> Router {
+    Router::new()
+        // WebSocket ticket mint (AAASM-4861) — authenticated REST call the
+        // dashboard makes before each WS connect so it never puts a long-lived
+        // credential in the WS URL. Gated like every other protected route.
+        .route("/auth/ws-ticket", post(auth::issue_ws_ticket))
+        // Native auth — credential-requiring halves (AAASM-5305, ADR 0031).
+        // invite is admin-scope-gated in-handler; logout revokes the caller's
+        // refresh session. Both sit behind the deny-by-default gate below.
+        .route("/auth/invite", post(native_auth::invite))
+        .route("/auth/logout", post(native_auth::logout))
         // Secret Injection — tool dispatch (AAASM-1920)
         .route("/dispatch_tool", post(dispatch::dispatch_tool))
         // Agents
@@ -45,9 +128,30 @@ pub fn v1_router() -> Router {
         .route("/agents/{id}", get(agents::get_agent).delete(agents::delete_agent))
         .route("/agents/{id}/suspend", post(agents::suspend_agent))
         .route("/agents/{id}/resume", post(agents::resume_agent))
+        // Direction-asymmetric enforcement-mode toggle (AAASM-5097, ADR 0021):
+        // Write to strengthen (→ enforce), Admin + reason + bounded expiry to
+        // weaken (→ observe / shadow).
+        .route(
+            "/agents/{id}/enforcement-mode",
+            post(agents::set_enforcement_mode),
+        )
+        // Cascade dry-run: the affected subtree (root + descendants) for a
+        // subtree-wide enforcement-mode change, computed without mutating
+        // anything (AAASM-5340). The apply path echoes this set back.
+        .route(
+            "/agents/{id}/enforcement-mode/preview",
+            post(agents::preview_enforcement_mode_cascade),
+        )
         .route("/agents/{id}/capabilities", get(agents::get_agent_capabilities))
+        // Per-agent config projection for the agent-detail Config-YAML tab (AAASM-5098)
+        .route("/agents/{id}/config", get(agents::get_agent_config))
+        // Recent per-agent decision stream for the agent-detail Traffic tab (AAASM-5058)
+        .route("/agents/{id}/decisions", get(agents::get_agent_decisions))
         .route("/agents/{id}/budget", get(agents::get_agent_budget))
         .route("/agents/{id}/subtree-burn", get(agents::get_agent_subtree_burn))
+        // Fleet — read-only cross-agent aggregations for the dashboard Fleet page.
+        // Currently-open agent sessions across the whole fleet (AAASM-5038).
+        .route("/fleet/active-sessions", get(agents::list_active_sessions))
         // Logs
         .route("/logs", get(logs::list_logs))
         // Traces
@@ -55,11 +159,18 @@ pub fn v1_router() -> Router {
         // Policies
         .route("/policies", get(policies::list_policies).post(policies::create_policy))
         .route("/policies/active", get(policies::get_active_policy))
+        .route("/policies/simulate", post(policies::simulate_policy))
+        // Replay recorded traffic against a proposed policy for aggregate impact (AAASM-5094)
+        .route("/policies/replay", post(policies::replay_policy))
+        // Policies in force for one team, for the Teams Active-policies card (AAASM-5096)
+        .route("/policies/team/{team_id}", get(policies::list_team_policies))
         // Approvals
         .route("/approvals", get(approvals::list_approvals))
         .route("/approvals/{id}", get(approvals::get_approval))
         .route("/approvals/{id}/approve", post(approvals::approve_action))
         .route("/approvals/{id}/reject", post(approvals::reject_action))
+        // AAASM-5095 — reassign a pending approval to a different approver.
+        .route("/approvals/{id}/forward", post(approvals::forward_action))
         // Costs
         .route("/costs", get(costs::get_cost_summary))
         // Capability matrix (dashboard) — AAASM-1366
@@ -67,15 +178,12 @@ pub fn v1_router() -> Router {
         .route("/capability/override", get(capability::list_overrides).post(capability::apply_override))
         .route("/capability/override/{id}", delete(capability::revoke_override))
         // Identity & Access — API key management (dashboard) — AAASM-1397
-        .route("/iam/api-keys", get(iam::list_api_keys).post(iam::generate_api_key))
+        .route("/iam/roles", get(iam::list_roles))
+.route("/iam/api-keys", get(iam::list_api_keys).post(iam::generate_api_key))
         .route("/iam/api-keys/{id}/revoke", post(iam::revoke_api_key))
         .route("/iam/api-keys/{id}/rotate", post(iam::rotate_api_key))
         // Alerts
         .route("/alerts", get(alerts::list_alerts))
-        // AAASM-1389: real-time alert event stream (placed BEFORE the
-        // /alerts/{id} catch-all so the literal "ws" path segment is
-        // matched first).
-        .route("/alerts/ws", get(crate::ws::alerts_handler::ws_alerts_handler))
         // AAASM-1648: silence-an-alert endpoint. Literal "silence" path
         // segment must come BEFORE /alerts/{id} so it isn't captured
         // as an id.
@@ -106,14 +214,11 @@ pub fn v1_router() -> Router {
                 .delete(destinations::delete_destination),
         )
         .route("/alerts/destinations/{id}/test", post(destinations::test_destination))
-        // Dev tool webhooks
-        .route(
-            "/devtools/saas/{provider}/events",
-            post(devtools::saas_webhook),
-        )
         // Tools
         .route("/tools", get(tools::list_tools))
         // Topology
+        // Whole-fleet node+edge graph for the dashboard Topology page (AAASM-5040).
+        .route("/topology", get(topology::get_topology_graph))
         .route("/topology/overview", get(topology::get_overview))
         .route("/topology/tree/{root_id}", get(topology::get_tree))
         .route("/topology/team/{team_id}", get(topology::get_team))
@@ -128,6 +233,9 @@ pub fn v1_router() -> Router {
         .route("/ops/{id}/pause", post(ops::pause_op))
         .route("/ops/{id}/resume", post(ops::resume_op))
         .route("/ops/{id}/terminate", post(ops::terminate_op))
+        // Operator kill-switch under reserved op-ids (AAASM-3881 / AAASM-3873)
+        .route("/ops/{id}/halt-agent", post(ops::halt_agent_for_op))
+        .route("/ops/global/halt", post(ops::halt_global))
         // Audit aggregations
         .route("/audit/violations-by-lineage", get(audit::get_violations_by_lineage))
         // Sandbox / observe-mode aggregate for SandboxSummaryCard — AAASM-1911
@@ -138,6 +246,53 @@ pub fn v1_router() -> Router {
             get(admin::get_retention_policy).put(admin::update_retention_policy),
         )
         .route("/admin/retention-policy/run", post(admin::run_retention_policy))
+        // Dashboard analytics aggregations (AAASM-4141)
+        .route("/analytics/kpis", get(analytics::get_kpis))
+        .route("/analytics/cost-breakdown", get(analytics::get_cost_breakdown))
+        .route("/analytics/action-volume", get(analytics::get_action_volume))
+        .route("/analytics/tool-usage", get(analytics::get_tool_usage))
+        .route("/analytics/approvals", get(analytics::get_approvals))
+        .route(
+            "/analytics/policy-effectiveness",
+            get(analytics::get_policy_effectiveness),
+        )
+        .route("/analytics/fleet-health", get(analytics::get_fleet_health))
+        // Per-agent blocked + scrubbed 24h counts for the Fleet columns (AAASM-5084)
+        .route("/analytics/agent-enforcement", get(analytics::get_agent_enforcement))
+        // Per-agent decision distribution for the Agent-Detail traffic-mix bar (AAASM-5085)
+        .route("/analytics/agent-decision-mix", get(analytics::get_agent_decision_mix))
+        // Per-agent behavioural trust score + tenant weight config (AAASM-5083, ADR 0019 Option D)
+        .route("/analytics/trust", get(analytics::get_trust))
+        .route(
+            "/analytics/trust/config",
+            get(analytics::get_trust_config).put(analytics::put_trust_config),
+        )
+        // Overview enforcement timeline: windowed decision counts (AAASM-5031)
+        .route(
+            "/overview/enforcement-timeline",
+            get(analytics::get_enforcement_timeline),
+        )
+        // Cost observability: 7-day spend history + budget-inheritance tree (AAASM-5032)
+        .route("/costs/history", get(analytics::get_cost_history))
+        .route("/costs/budget-tree", get(analytics::get_budget_tree))
+        // DLP / secret-scrub read surface (AAASM-5174): effective pattern
+        // catalogue, per-pattern-kind detection counts, and leak posture.
+        .route("/scrub/patterns", get(scrub::get_patterns))
+        .route("/scrub/pattern-counts", get(scrub::get_pattern_counts))
+        .route("/scrub/posture", get(scrub::get_posture))
+        // Sensitive-data analytics over the durable ADR 0032 §8 projection
+        // (AAASM-5359). Read-scoped and tenant-confined; the compliance export
+        // additionally requires Admin plus an explicit acknowledgement and is
+        // access-logged before it releases anything.
+        .route("/sensitive-data/summary", get(sensitive_data::get_summary))
+        .route("/sensitive-data/timeseries", get(sensitive_data::get_timeseries))
+        .route("/sensitive-data/breakdown", get(sensitive_data::get_breakdown))
+        .route("/sensitive-data/top-offenders", get(sensitive_data::get_top_offenders))
+        .route("/sensitive-data/events", get(sensitive_data::list_events))
+        .route("/sensitive-data/events/{event_id}", get(sensitive_data::get_event))
+        .route("/sensitive-data/export", get(sensitive_data::export_compliance_records))
+        // Deny-by-default auth gate over every protected route (AAASM-3125).
+        .route_layer(axum::middleware::from_fn(crate::auth::gate::require_authentication))
 }
 
 /// Fallback handler returning a 404 RFC 7807 response.

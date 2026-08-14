@@ -5,7 +5,7 @@
 # Usage: bash scripts/release-readiness.sh <version>
 #   e.g. bash scripts/release-readiness.sh 0.0.1-alpha.5
 #
-# Runs 10 local checks that must all pass before pushing a release tag.
+# Runs 12 local checks that must all pass before pushing a release tag.
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
@@ -28,22 +28,22 @@ else
   fail "Working tree has uncommitted changes" "commit or stash before tagging"
 fi
 
-# 2. On master
+# 2. On main
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$BRANCH" = "master" ]; then
-  pass "On master branch"
+if [ "$BRANCH" = "main" ]; then
+  pass "On main branch"
 else
-  fail "Not on master (current: $BRANCH)" "git checkout master"
+  fail "Not on main (current: $BRANCH)" "git checkout main"
 fi
 
-# 3. Local master up-to-date with remote/master
-git fetch remote master --quiet 2>/dev/null || true
-LOCAL="$(git rev-parse master 2>/dev/null || echo missing)"
-REMOTE="$(git rev-parse remote/master 2>/dev/null || echo missing)"
+# 3. Local main up-to-date with remote/main
+git fetch remote main --quiet 2>/dev/null || true
+LOCAL="$(git rev-parse main 2>/dev/null || echo missing)"
+REMOTE="$(git rev-parse remote/main 2>/dev/null || echo missing)"
 if [ "$LOCAL" = "$REMOTE" ] && [ "$LOCAL" != "missing" ]; then
-  pass "Local master matches remote/master"
+  pass "Local main matches remote/main"
 else
-  fail "Local master diverges from remote/master" "git pull --ff-only remote master"
+  fail "Local main diverges from remote/main" "git pull --ff-only remote main"
 fi
 
 # 4. Cargo.toml [workspace.package].version
@@ -105,8 +105,8 @@ for SECRET in CRATES_IO_TOKEN CROSS_REPO_DISPATCH_PAT HOMEBREW_TAP_TOKEN \
   fi
 done
 
-# 9. No open bot PRs on homebrew-agent-assembly for OTHER versions
-STALE_TAP_PRS="$(gh pr list --repo ai-agent-assembly/homebrew-agent-assembly --state open \
+# 9. No open bot PRs on homebrew-tap for OTHER versions
+STALE_TAP_PRS="$(gh pr list --repo ai-agent-assembly/homebrew-tap --state open \
   --json number,headRefName,title \
   --jq ".[] | select(.headRefName | startswith(\"bot/aasm-\")) | select(.headRefName != \"bot/aasm-${VERSION}\") | \"#\(.number) \(.headRefName)\"" \
   2>/dev/null || true)"
@@ -131,6 +131,44 @@ if grep -nE "pip install[^|&]*['\"]?agent-assembly['\"]?([[:space:]]|$)" .github
 else
   rm -f /tmp/naked-pip-$$
   pass "smoke-test.yml pins agent-assembly pip install"
+fi
+
+# 11. Security-review sign-off artifact present AND verdict is PASS.
+# AAASM-3566 release gate: the /release-security-gate SKILL writes
+# docs/release/security-signoff/v<version>.md with a `Verdict: PASS` line.
+# A release must not be tagged with an unaddressed High/Critical finding, so a
+# missing artifact or a non-PASS verdict fails the readiness run. See
+# docs/release/RUNBOOK.md and .claude/skills/release-security-gate/SKILL.md.
+SIGNOFF="docs/release/security-signoff/v${VERSION}.md"
+if [ ! -f "$SIGNOFF" ]; then
+  fail "Security-review sign-off missing ($SIGNOFF)" "run /release-security-gate $VERSION and commit the sign-off"
+elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$SIGNOFF"; then
+  pass "Security-review sign-off present and Verdict: PASS ($SIGNOFF)"
+else
+  fail "Security-review sign-off verdict is not PASS ($SIGNOFF)" "resolve High/Critical findings and re-run /release-security-gate $VERSION"
+fi
+
+# 12. Every published workspace crate has a README.md (AAASM-3778, Epic AAASM-3774).
+# crates.io renders the crate page from its README; a missing one ships a blank
+# package page. Enumerate members from [workspace].members (same source as the
+# version-literal check above) and skip crates marked `publish = false` — those are
+# never uploaded, so their READMEs are not release-gated.
+MEMBERS="$(awk '/^\[workspace\]/{w=1} w && /members[[:space:]]*=[[:space:]]*\[/{m=1; next} m && /\]/{m=0} m{gsub(/[",]/,""); gsub(/[[:space:]]/,""); if ($0 != "") print}' Cargo.toml)"
+MISSING_READMES=""
+for CRATE in $MEMBERS; do
+  if grep -qE '^[[:space:]]*publish[[:space:]]*=[[:space:]]*false' "$CRATE/Cargo.toml" 2>/dev/null; then
+    continue
+  fi
+  if [ ! -f "$CRATE/README.md" ]; then
+    MISSING_READMES="$MISSING_READMES $CRATE"
+  fi
+done
+if [ -z "$MISSING_READMES" ]; then
+  pass "All published crates have a README"
+else
+  for CRATE in $MISSING_READMES; do
+    fail "$CRATE has no README.md" "add $CRATE/README.md"
+  done
 fi
 
 echo

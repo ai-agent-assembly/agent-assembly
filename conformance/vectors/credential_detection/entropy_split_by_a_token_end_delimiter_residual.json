@@ -1,0 +1,8 @@
+{
+  "description": "AAASM-5368 negative, and the measured cost of excluding ASCII punctuation from the split rule. A secret cut by a comma is deliberately NOT rejoined, and this vector records what that costs rather than asserting it away. The whitespace-token pass does score this token, but it clamps the span at the first token_end delimiter, which here lands before the secret — the single finding covers the leading character 'a' and both 18-character halves survive in the clear. The same holds for the other six delimiters that are base64-adjacent in real text: semicolon, close paren, double quote, single quote, close bracket and close brace. Punctuation that is not a delimiter (period, colon, hyphen, slash) is covered whole by the whitespace-token pass and costs nothing. Admitting punctuation into the split rule would close this, and was measured to produce 10 genuine false positives across 28 MB of this repository's code and configuration - 3 in a workflow file, 6 in dashboard end-to-end specs and 1 fabricated JWT - which is why it is declined. This is byte-identical to the merge base; the underlying cause is the clamp, not the split rule. If the clamp is ever tightened, add a vector rather than editing this one.",
+  "input_text": "a,aB3dEf7hJk9mNp2qRs,5tUv8wXy4zC6gLhQ1V,3",
+  "expected_findings": [
+    { "kind": "GenericHighEntropy", "offset": 0 }
+  ],
+  "expected_redacted": "[REDACTED:GenericHighEntropy],aB3dEf7hJk9mNp2qRs,5tUv8wXy4zC6gLhQ1V,3"
+}

@@ -22,6 +22,22 @@ describe('RuleCard', () => {
     expect(screen.getByText('R3')).toBeInTheDocument()
   })
 
+  it('renders an unknown rule read-only, with no editable controls (AAASM-5059)', () => {
+    render(
+      <RuleCard
+        index={0}
+        rule={ruleWith({ unknown: true, verb: [] })}
+        onChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    )
+    expect(screen.getByTestId('editor-rule-0-unknown')).toBeInTheDocument()
+    // The editable resource select / verb toggles / action picker are absent.
+    expect(screen.queryByTestId('editor-rule-0-resource')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('editor-rule-0-verb-read')).not.toBeInTheDocument()
+  })
+
   it('changing the resource select fires onChange with { resource }', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
@@ -106,6 +122,49 @@ describe('RuleCard', () => {
     expect(onDuplicate).toHaveBeenCalledTimes(1)
     await user.click(screen.getByTestId('editor-rule-0-remove'))
     expect(onRemove).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the dirty-dot when the rule matches its original snapshot', () => {
+    const rule = ruleWith()
+    render(
+      <RuleCard
+        index={0}
+        rule={rule}
+        original={{ ...rule }}
+        onChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    )
+    expect(screen.queryByTestId('editor-rule-0-dirty-dot')).not.toBeInTheDocument()
+  })
+
+  it('shows the dirty-dot when the rule differs from its original snapshot', () => {
+    const rule = ruleWith({ verb: ['read', 'write'] })
+    render(
+      <RuleCard
+        index={0}
+        rule={rule}
+        original={{ ...rule, verb: ['read'] }}
+        onChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    )
+    expect(screen.getByTestId('editor-rule-0-dirty-dot')).toBeInTheDocument()
+  })
+
+  it('treats a rule with no original snapshot (newly added) as dirty', () => {
+    render(
+      <RuleCard
+        index={0}
+        rule={ruleWith()}
+        onChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    )
+    expect(screen.getByTestId('editor-rule-0-dirty-dot')).toBeInTheDocument()
   })
 
   it('composes ConditionList, ActionPicker, SubClauses, and WindowSeverityRow', () => {

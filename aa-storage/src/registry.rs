@@ -1,5 +1,12 @@
 //! [`Registry`] — maps driver names to backend factories and resolves a
 //! [`StorageConfig`] into concrete stores.
+//!
+//! Tenant-isolation guardrail (AAASM-3919): the `Arc<dyn …>` stores built here
+//! expose only the org-less trait surface, which funnels to the reserved
+//! `SYSTEM_ORG` in the Postgres driver. Multi-tenant Postgres deployments MUST
+//! reach the concrete `*_for_tenant` inherent methods on the `Pg*` types (or
+//! thread `org_id` through the traits) to get RLS isolation — see the
+//! `aa_core::storage` module docs.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -38,8 +38,6 @@ const FIRING_ALERT = {
   destinationIds: ['dst-slack-ops'],
 }
 
-const SUPPRESSED_ALERT = { ...FIRING_ALERT, status: 'SUPPRESSED' }
-
 const RULE = {
   id: 'rule-001',
   name: 'Budget guardrail',
@@ -82,7 +80,7 @@ interface BackendState {
 
 async function injectToken(page: Page) {
   await page.addInitScript(() => {
-    localStorage.setItem('aa_token', 'e2e-test-token')
+    sessionStorage.setItem('aa_token', 'e2e-test-token')
   })
 }
 

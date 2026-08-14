@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use aa_core::{DevToolAdapter, DevToolKind, GovernanceLevel};
+use aa_devtool_contract::{DevToolAdapter, DevToolKind, GovernanceLevel};
 use aa_devtool_windsurf::{WindsurfCascadeAdapter, WINDSURF_BIN_ENV};
 
 fn fixture_path() -> PathBuf {
@@ -85,11 +85,11 @@ fn detect_returns_devtoolinfo_when_env_var_set() {
 
 #[tokio::test]
 async fn generate_managed_settings_returns_valid_json_with_auto_approve_false() {
-    let policy = aa_core::PolicyDocument {
+    let policy = aa_devtool_contract::PolicyDocument {
         version: 1,
         name: "test-policy".into(),
         rules: vec![],
-        enforcement_mode: aa_core::EnforcementMode::default(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -103,14 +103,14 @@ async fn generate_managed_settings_returns_valid_json_with_auto_approve_false() 
 
 #[tokio::test]
 async fn generate_managed_settings_deny_terminal_exec_yields_empty_allowlist() {
-    let policy = aa_core::PolicyDocument {
+    let policy = aa_devtool_contract::PolicyDocument {
         version: 1,
         name: "test-policy".into(),
-        rules: vec![aa_core::PolicyRule {
+        rules: vec![aa_devtool_contract::PolicyRule {
             action_pattern: "terminal_exec".into(),
-            decision: aa_core::PolicyDecision::Deny,
+            decision: aa_devtool_contract::PolicyDecision::Deny,
         }],
-        enforcement_mode: aa_core::EnforcementMode::default(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -127,14 +127,14 @@ async fn generate_managed_settings_deny_terminal_exec_yields_empty_allowlist() {
 
 #[tokio::test]
 async fn generate_managed_settings_allow_terminal_command_adds_to_allowlist() {
-    let policy = aa_core::PolicyDocument {
+    let policy = aa_devtool_contract::PolicyDocument {
         version: 1,
         name: "test-policy".into(),
-        rules: vec![aa_core::PolicyRule {
+        rules: vec![aa_devtool_contract::PolicyRule {
             action_pattern: "terminal_exec:git".into(),
-            decision: aa_core::PolicyDecision::Allow,
+            decision: aa_devtool_contract::PolicyDecision::Allow,
         }],
-        enforcement_mode: aa_core::EnforcementMode::default(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -149,14 +149,14 @@ async fn generate_managed_settings_allow_terminal_command_adds_to_allowlist() {
 
 #[tokio::test]
 async fn generate_managed_settings_mcp_tool_deny_adds_to_disabled_servers() {
-    let policy = aa_core::PolicyDocument {
+    let policy = aa_devtool_contract::PolicyDocument {
         version: 1,
         name: "test-policy".into(),
-        rules: vec![aa_core::PolicyRule {
+        rules: vec![aa_devtool_contract::PolicyRule {
             action_pattern: "mcp_tool:github".into(),
-            decision: aa_core::PolicyDecision::Deny,
+            decision: aa_devtool_contract::PolicyDecision::Deny,
         }],
-        enforcement_mode: aa_core::EnforcementMode::default(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
     };
     let rendered = adapter().generate_managed_settings(&policy).await.expect("generate");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
@@ -271,7 +271,7 @@ async fn list_mcp_servers_parses_fixture_into_three_servers() {
 async fn list_mcp_servers_returns_io_error_for_missing_file() {
     let a = WindsurfCascadeAdapter::with_paths("/nonexistent/admin.json", "/nonexistent/mcp_settings.json");
     let err = a.list_mcp_servers().await.expect_err("should fail for missing file");
-    assert!(matches!(err, aa_core::AdapterError::Io(_)));
+    assert!(matches!(err, aa_devtool_contract::AdapterError::Io(_)));
 }
 
 #[tokio::test]
@@ -281,7 +281,7 @@ async fn list_mcp_servers_returns_mcp_config_failed_on_malformed_json() {
     std::fs::write(&path, "{not json").unwrap();
     let a = WindsurfCascadeAdapter::with_paths(tmp.path().join("admin.json"), &path);
     let err = a.list_mcp_servers().await.expect_err("should fail on malformed json");
-    assert!(matches!(err, aa_core::AdapterError::McpConfigFailed(_)));
+    assert!(matches!(err, aa_devtool_contract::AdapterError::McpConfigFailed(_)));
 }
 
 // ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ use comfy_table::{Cell, Color, Table};
 
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 
 use super::client;
 
@@ -51,6 +52,23 @@ pub struct ListArgs {
     pub agent: Option<String>,
 }
 
+/// Build the sanitized text columns for one approval row (everything except
+/// the colour-coded TIMEOUT_IN cell).
+///
+/// `id`, `agent_id`, `action`, `reason`, and `created_at` are all
+/// agent/server-controlled and reach the operator's terminal verbatim, so each
+/// is run through [`sanitize_terminal`] to strip ANSI/OSC escapes and C0
+/// control bytes (comfy_table does not strip them).
+fn approval_row_text_cells(item: &ApprovalResponse) -> Vec<String> {
+    vec![
+        sanitize_terminal(&item.id),
+        sanitize_terminal(&item.agent_id),
+        sanitize_terminal(&item.action),
+        sanitize_terminal(&item.reason),
+        sanitize_terminal(&item.created_at),
+    ]
+}
+
 /// Render a list of approval responses as a colored table to stdout.
 ///
 /// Columns: ID, AGENT, ACTION, CONDITION, SUBMITTED_AT, TIMEOUT_IN.
@@ -72,14 +90,9 @@ pub fn render_approvals_table(items: &[ApprovalResponse], now_epoch: i64) {
             TimeoutColor::Green => Color::Green,
         };
 
-        table.add_row(vec![
-            Cell::new(&item.id),
-            Cell::new(&item.agent_id),
-            Cell::new(&item.action),
-            Cell::new(&item.reason),
-            Cell::new(&item.created_at),
-            Cell::new(format_countdown(remaining)).fg(color),
-        ]);
+        let mut cells: Vec<Cell> = approval_row_text_cells(item).into_iter().map(Cell::new).collect();
+        cells.push(Cell::new(format_countdown(remaining)).fg(color));
+        table.add_row(cells);
     }
 
     println!("{table}");
@@ -113,5 +126,32 @@ pub fn run_list(args: ListArgs, ctx: &ResolvedContext, global_output: OutputForm
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_row_text_cells_strips_server_supplied_escapes() {
+        let item = ApprovalResponse {
+            // A malicious agent embeds a CSI clear-line, an OSC-52 clipboard
+            // write, and a newline in the fields shown by `approvals list`.
+            id: "id\x1b[2Kfake".to_string(),
+            agent_id: "bot\x1b]52;c;ZXZpbA==\x07".to_string(),
+            action: "delete\x1b[31m_all".to_string(),
+            reason: "ok\ninjected".to_string(),
+            status: "pending".to_string(),
+            created_at: "2026-04-30T10:00:00Z".to_string(),
+        };
+        let cells = approval_row_text_cells(&item);
+        assert!(cells.iter().all(|c| !c.contains('\x1b')), "no ESC in {cells:?}");
+        assert!(cells.iter().all(|c| !c.contains('\n')), "no newline in {cells:?}");
+        assert_eq!(cells[0], "idfake");
+        assert_eq!(cells[1], "bot");
+        assert_eq!(cells[2], "delete_all");
+        assert_eq!(cells[3], "okinjected");
+        assert_eq!(cells[4], "2026-04-30T10:00:00Z");
     }
 }
