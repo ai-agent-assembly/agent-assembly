@@ -66,11 +66,20 @@ $ export AA_SENSITIVE_DATA_PROJECTION_DB=/var/lib/agent-assembly/sensitive-data.
 $ aa-gateway --policy /etc/agent-assembly/policy.yaml --listen 127.0.0.1:50051
 ```
 
-The tables are created at boot if absent — `CREATE TABLE IF NOT EXISTS`, applied
-by `migrate_sensitive_data_projection`. An existing database at that path keeps
-its rows because nothing rewrites them, not because a migration runs: there is
-no schema-migration machinery here yet, and a future change to the table key
-will need one written.
+The tables are created if absent — `CREATE TABLE IF NOT EXISTS`, applied at boot
+by `migrate_sensitive_data_projection`. That is the whole of it: **there is no
+in-place schema evolution.** Against a database whose tables already exist the
+statements are a no-op, so a table left over from an earlier build is left as it
+stands — its columns and its uniqueness key are not altered to match the build
+now writing to it.
+
+Rows already at that path therefore survive because nothing rewrites them, not
+because a migration ran. The code records the same position beside the
+statements (`aa-gateway/src/storage/sensitive_data/sqlite.rs`, *Migration
+position*), where it was excused on the grounds that the tier had no producer
+and so no deployed data to migrate. That excuse expired when the producer was
+wired: changing the key now needs a migration that recreates the tables, and
+none is written.
 
 ## Reverting it
 

@@ -137,9 +137,13 @@ async fn setup_audit(
 ///   `enabled: false`, so the conservative state is not something an operator
 ///   has to opt into (ADR 0032 §8).
 /// * **Set to a path** — the tables are created if absent
-///   (`CREATE TABLE IF NOT EXISTS`). An existing database keeps its rows
-///   because nothing rewrites them; there is no schema-migration machinery
-///   here, and a future change to a table key will need one written.
+///   (`CREATE TABLE IF NOT EXISTS`), and that is all: there is no in-place
+///   schema evolution. Against tables that already exist the statements are a
+///   no-op, so one left over from an earlier build is left as it stands, key
+///   included. Rows survive because nothing rewrites them; changing the key
+///   needs a migration that recreates the tables, and none is written — see
+///   the *Migration position* note on `PROJECTION_SCHEMA` in
+///   `storage/sensitive_data/sqlite.rs`.
 /// * **Failure is fail-closed, in the paths that read this.** A database that
 ///   cannot be opened or migrated fails the boot of [`serve_tcp`] /
 ///   [`serve_uds`]; see the `# Errors` section on
