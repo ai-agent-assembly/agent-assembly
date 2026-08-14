@@ -43,6 +43,20 @@ default = []
 [dev-dependencies]
 aa-isolation-sandlock = { path = "." }
 
+# AAASM-5712, and only for `tests/adversarial/`: the in-memory reference backend.
+#
+# The adversarial harness has to drive a *second* implementation of
+# `IsolationBackend` through the same canonical interface, or "the harness is
+# backend-agnostic" is a claim about the shape of its code rather than a fact
+# about what it has been run against. The mock is the only other implementation
+# that exists, and it is behind a non-default feature so that a release build of
+# a consumer cannot select a backend that enforces nothing.
+#
+# Turning it on *here* keeps that property: `dev-dependencies` feature unification
+# under resolver 2 applies to this crate's test build alone, so nothing shipped
+# gains the feature by this line.
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6", features = ["mock-backend"] }
+
 # AAASM-5709, and only for the descriptor scenario in
 # `tests/linux_confinement.rs`: `dup`, to obtain a descriptor that is inheritable
 # across `exec` by construction. The scenario's control depends on that being
