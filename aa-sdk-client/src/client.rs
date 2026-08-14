@@ -566,6 +566,91 @@ mod tests {
         }
     }
 
+    /// AAASM-5783: a denied hook-layer record leaves the producer with the proto's
+    /// typed fields populated, so the readers downstream (which key off
+    /// `action_type` / `decision` / `detail`, not `labels`) can tell it from an
+    /// allowed one. The retrieval-side proof lives in
+    /// `aa-integration-tests/tests/hook_layer_deny_vs_allow.rs`.
+    #[test]
+    fn report_event_types_a_deny_as_a_violation() {
+        use aa_proto::assembly::audit::v1::audit_event::Detail;
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let (client, mut rx) = test_client(vec![]);
+        client
+            .report_event("PolicyViolation".into(), "blocked: shell_exec".into())
+            .unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.action_type, i32::from(ActionType::ToolCall));
+                assert_eq!(event.decision, i32::from(Decision::Deny));
+                match event.detail {
+                    Some(Detail::Violation(ref v)) => {
+                        assert_eq!(v.blocked_action, "PolicyViolation");
+                        assert_eq!(v.reason, "blocked: shell_exec");
+                    }
+                    other => panic!("expected a Violation detail, got {other:?}"),
+                }
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn report_event_types_an_allow_as_an_allowed_tool_call() {
+        use aa_proto::assembly::common::v1::{ActionType, Decision};
+
+        let (client, mut rx) = test_client(vec![]);
+        client
+            .report_event("ToolCallIntercepted".into(), "ran: web_search".into())
+            .unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.action_type, i32::from(ActionType::ToolCall));
+                assert_eq!(event.decision, i32::from(Decision::Allow));
+                assert!(event.detail.is_none(), "an allowed record carries no violation detail");
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
+    /// An outcome the classifier cannot read is left unspecified rather than
+    /// recorded as permitted.
+    #[test]
+    fn report_event_leaves_an_unreadable_tag_undecided() {
+        use aa_proto::assembly::common::v1::Decision;
+
+        let (client, mut rx) = test_client(vec![]);
+        client.report_event("SomethingNewer".into(), "…".into()).unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.decision, i32::from(Decision::Unspecified));
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
+    /// The tag and the details text stay in `labels` as well, so the query-filter
+    /// index the field is declared for keeps working alongside the typed fields.
+    #[test]
+    fn report_event_keeps_the_label_index() {
+        let (client, mut rx) = test_client(vec![]);
+        client
+            .report_event("PolicyViolation".into(), "blocked: shell_exec".into())
+            .unwrap();
+
+        match rx.try_recv().expect("should receive command") {
+            IpcCommand::SendEvent(event) => {
+                assert_eq!(event.labels.get("event_type").unwrap(), "PolicyViolation");
+                assert_eq!(event.labels.get("details").unwrap(), "blocked: shell_exec");
+            }
+            other => panic!("expected SendEvent, got {other:?}"),
+        }
+    }
+
     /// Test-only seam: set the stored credential token without a live gateway.
     /// The end-to-end registered path is covered by the with-core gateway test.
     impl AssemblyClient {
