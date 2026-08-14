@@ -193,7 +193,9 @@ fn reaching_child(spec: &ExecutionSpec) -> Vec<&str> {
 /// Empty means the nested launch is same-or-narrower **on the axes this crate
 /// can compare**, which is the whole of the requirement vocabulary except
 /// [`RequirementScope`](crate::spec::RequirementScope). Selector scope is opaque
-/// here by design (see [`strength`]), so a descendant that keeps every
+/// here by design — comparing path globs or destination selectors would be the
+/// matching semantics that type's documentation forbids putting in this crate —
+/// so a descendant that keeps every
 /// requirement at full strength while permitting a wider set of paths or
 /// destinations passes this check and must still be compared by the backend
 /// that understands those selectors. A caller reporting "not widened" on the

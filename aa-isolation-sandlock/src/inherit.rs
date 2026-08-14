@@ -36,7 +36,7 @@
 //! # On a host that is not Linux
 //!
 //! The enumeration has no portable form, so the inventory is
-//! [`InventoryCompleteness::NotEnumerable`] and
+//! [`aa_isolation::InventoryCompleteness::NotEnumerable`] and
 //! [`DescriptorInventory::asserts_clean_boundary`] is false. That is the
 //! intended outcome: the backend itself is unavailable off Linux, and an
 //! inventory that reported "nothing found" would be the one shape that reads as
