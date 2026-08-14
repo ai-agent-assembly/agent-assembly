@@ -979,6 +979,71 @@ jobs:
       - name: Run backend license and provenance gate
         run: bash scripts/check-backend-license-compliance.sh
 
+  detection-egress-closure:
+    needs: [changes]
+    # AAASM-5738, for AAASM-5270 exit criterion 6 ("Local-only runtime behavior
+    # is verified under egress-denied testing") and product constraint 1 ("raw
+    # sensitive content must not be sent to third-party SaaS DLP or
+    # classification services").
+    #
+    # Gated on `changes.rust`, which is the right filter here rather than a new
+    # one: its globs already include `Cargo.toml`, `Cargo.lock`,
+    # `aa-*/**/*.toml` and this workflow — every path through which a new
+    # dependency can enter the detector's closure. A narrower filter would be a
+    # dead trigger for the exact change class this job exists to catch.
+    if: needs.changes.outputs.rust == 'true'
+    name: Detection fast path has no outbound capability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Selftest first, same reasoning as the backend-license gate above: a
+      # checker proven only against input it accepts may be passing vacuously.
+      - name: Self-test the closure control
+        run: python3 scripts/check_detection_egress_closure.py --selftest
+
+      - name: Detector dependency closure is unchanged
+        run: python3 scripts/check_detection_egress_closure.py
+
+      # ─── The second axis: behaviour, not just capability ──────────────────
+      #
+      # The closure check is an argument about what is *linked*. This runs the
+      # detector's own tests with no network at all, which is what criterion 6
+      # literally asks for. `unshare -rn` creates a user + network namespace, so
+      # it needs no privilege: inside it there is one interface, a down `lo`,
+      # and no route anywhere.
+      #
+      # NOT an isolation backend. This is a test harness for the sensitive-data
+      # fast path; OS-level execution confinement is AAASM-5702's subsystem
+      # (`aa-isolation`) and must not be re-implemented here. The distinction
+      # this job preserves is that the detector *needs* no egress — which is a
+      # different claim from *being prevented* from egress.
+      - name: Build the detector's tests (network still available)
+        run: cargo test -p aa-security --locked --no-run
+
+      # The control that makes the next step mean anything. If the namespace
+      # were not actually isolating, the test run inside it would pass for the
+      # wrong reason and this job would certify egress-denied behaviour it never
+      # exercised — the "green for the wrong reason" shape this programme keeps
+      # finding. So prove egress is denied BEFORE trusting a pass inside it.
+      - name: Prove the namespace denies egress (positive control)
+        run: |
+          set -uo pipefail
+          if unshare -rn -- curl -sS --max-time 8 https://example.com >/dev/null 2>&1; then
+            echo "::error::unshare -rn reached the network — the namespace is not"
+            echo "::error::isolating, so a pass inside it would prove nothing."
+            exit 1
+          fi
+          echo "egress denied inside the namespace, as required"
+
+      - name: Detector tests pass with egress denied
+        # `--offline` because the point is to run with no network: without it a
+        # cargo registry touch would fail and be indistinguishable from the
+        # detector needing egress, which is the very thing under test.
+        run: unshare -rn -- cargo test -p aa-security --locked --offline
+
   no-std:
     needs: [changes]
     if: needs.changes.outputs.rust == 'true'
@@ -2306,6 +2371,11 @@ jobs:
       # property (no unreviewed license reaches a channel), not a metric, so an
       # advisory version of it would be a report nobody acts on.
       - backend-license
+      # AAASM-5738: blocks. AAASM-5270 exit criterion 6 asks for behaviour
+      # *verified* under egress-denied testing, and an advisory version of this
+      # would be a dependency-tree argument again — which is what the criterion
+      # already had and rejected as insufficient.
+      - detection-egress-closure
       - no-std
       - buf-lint
       - schema-lint
