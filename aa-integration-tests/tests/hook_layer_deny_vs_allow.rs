@@ -4,7 +4,7 @@
 //!
 //! ## Why this test exists
 //!
-//! `aa-sdk-client::report_event` is the primitive under every SDK hook-layer
+//! `aa-sdk-client::report_event` is the primitive under the SDK hook-layer
 //! audit record. It used to put the outcome tag and the JSON body into proto
 //! `labels` and leave `action_type`, `decision` and `detail` at their proto3
 //! zero. Nothing downstream reads `labels`, so a deny and an allow reached the
