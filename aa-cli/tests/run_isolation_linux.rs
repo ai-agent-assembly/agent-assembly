@@ -443,6 +443,12 @@ fn a_confined_launch_propagates_the_programs_exit_code() {
 
     let seven = launch(&confined_exec_args(&artifact, "exit 7"), no_adapters()).expect("a confined launch runs");
     assert_eq!(seven, 7, "the program's exit code was replaced by the supervisor's");
+
+    measured(
+        SCENARIO,
+        "a confined launch propagated both a zero and a non-zero exit code from the program through the \
+         mechanism and the supervisor unchanged",
+    );
 }
 
 /// The governance identity and the adapter's own variables reach the program

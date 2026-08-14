@@ -341,6 +341,12 @@ jobs:
               - 'aa-isolation/**/Cargo.toml'
               - 'aa-isolation-sandlock/**/*.rs'
               - 'aa-isolation-sandlock/**/Cargo.toml'
+              # AAASM-5711: the end-to-end confined-launch scenarios and the
+              # launch path they measure. Without these, editing either selects
+              # no lane that can measure them, and `ci-success` counts a skipped
+              # lane as a pass.
+              - 'aa-cli/tests/run_isolation_linux.rs'
+              - 'aa-cli/src/commands/run.rs'
               - 'aa-integration-tests/tests/evidence/mod.rs'
               - '.ci/test-evidence-summary.sh'
               - '.config/nextest.toml'
@@ -2207,13 +2213,35 @@ jobs:
           key: isolation-backend-linux
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Install protobuf compiler
+        # `aa-cli` transitively compiles `aa-proto`, whose build.rs invokes
+        # `protoc`, and the runner does not ship it. Needed since this lane
+        # started building `aa-cli` for the `run_isolation_linux` binary below.
+        run: sudo apt-get install -y protobuf-compiler
       - name: Run the confinement suite
         # `--no-capture` so a `SKIP [...]` line is visible in the log; without
         # it a declining scenario reads exactly like a measuring one.
         # `--profile evidence` writes the JUnit report the summary step needs
         # for its denominator: the ledger says which cases declined, and only
         # the runner knows how many there were.
-        run: cargo nextest run --profile evidence -p aa-isolation-sandlock --no-capture
+        #
+        # AAASM-5711: `run_isolation_linux` lives in `aa-cli` and measures the
+        # end-to-end confined launch. It was running in the `Test` lane, which
+        # does NOT install the mechanism — so all four scenarios took the
+        # `ToolAbsent` branch and reported PASS in 8-14 ms, a green that covered
+        # nothing. That lane also never sets `AA_CONFORMANCE_OUTCOME_DIR`, so the
+        # decline did not reach the ledger either, and it captures stdout, so the
+        # `SKIP` line was invisible too. Three independent reasons the absence
+        # could not be seen.
+        #
+        # `-p` bounds what is compiled; `-E` selects what runs. One invocation,
+        # because the summary step reads a single JUnit report and a second
+        # `nextest run` would overwrite the first — halving the denominator it
+        # nets declines against.
+        run: |
+          cargo nextest run --profile evidence --no-capture \
+            -p aa-isolation-sandlock -p aa-cli \
+            -E 'package(aa-isolation-sandlock) + binary(run_isolation_linux)'
       - name: Report what this lane measured
         # `always()`: a lane that failed still has an outcome worth reading, and
         # the ledger is most useful exactly when something went wrong.
