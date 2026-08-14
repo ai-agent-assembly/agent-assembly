@@ -392,7 +392,7 @@ fn classify_hook_event(event_type: &str, safe_details: &str) -> ClassifiedHookEv
     // The hook layer is the governed-tool-call path, so a tag that does not name
     // another action class is recorded as a tool call.
     let action_type = match event_type {
-        "llm_call" | "LlmCall" => ActionType::LlmCall,
+        "llm_call" => ActionType::LlmCall,
         "tool_result" => ActionType::ToolResult,
         _ => ActionType::ToolCall,
     };
