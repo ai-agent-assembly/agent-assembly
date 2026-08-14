@@ -5,7 +5,11 @@ const { useState: useAuditSt } = React;
    Audit Log page  —  GET /api/v1/logs
    Tamper-evident governance trail across the agents and sessions routed
    through the runtime. Tamper-evident is not immutable: the hash chain is
-   checkable for alteration, and retention pruning deletes rows.
+   checkable for alteration, and says nothing about deletion. This endpoint is
+   served from the gateway JSONL sink (aa-gateway/src/audit_reader.rs), which
+   has no rotation, size cap or retention pass — so do not design an empty
+   state, a range picker or a footer that implies entries age out of this view.
+   The retention policy in the admin UI prunes the SQL copy, not this record.
    ============================================================ */
 
 const EVENT_META = {
