@@ -76,6 +76,7 @@
   - [Infrastructure overview](architecture/infra-overview.md)
   - [System architecture](architecture/system-architecture.md)
   - [Component deep-dives](architecture/components.md)
+  - [Platform-specific host adapters](architecture/host-enforcement-adapters.md)
   - [Key workflows](architecture/workflows.md)
   - [Data flows](architecture/data-flows.md)
   - [Building & contributing](architecture/building.md)
