@@ -146,6 +146,81 @@ distinction that rotated evidence windows (AAASM-5660) and unmeasured
 transmission (AAASM-5359) had to make explicit; here it is carried by the
 filesystem, not by the schema.
 
+An enabled projection also produces an empty table when nothing was found.
+`PolicyEngine::project_sensitive_data` returns before minting an event whenever
+`result.canonical_findings` is empty, which is deliberate — a zero-finding row
+for each governed call would bury the rows the dashboards read. So "the file
+exists and the table has no rows" carries one meaning less than it looks like it
+does: the tier ran and found nothing to record. The next section covers the case
+where it did find something and the row still did not arrive.
+
+## The third state: recording, but this decision was dropped
+
+The two states above — switched off, and switched on with nothing found — are
+not the whole set. A projection that is enabled, healthy and writing can still
+be **incomplete**, and a reader who knows only the first two will read a gap as
+"nothing was found here".
+
+Recording is best-effort by construction. `SensitiveDataProjectionSink::record`
+offers each decision to the drain with a non-blocking `try_send` over a channel
+of `DEFAULT_PROJECTION_CAPACITY` = 4096 slots — the audit channel's size, so the
+two tiers shed load at comparable points instead of one masking the other's
+backlog. The alternative was rejected for a stated reason: blocking the
+enforcement path on a slow database would turn a reporting tier into unbounded
+memory growth inside the process that makes decisions.
+
+Three ways a decision fails to reach the table, each counted and logged:
+
+| Path | Counter | Log |
+| --- | --- | --- |
+| Channel full | `dropped` | `WARN` — *sensitive-data projection queue full — decision dropped, the projection is incomplete* |
+| Channel closed (the drain is gone) | `dropped` | `ERROR` — *sensitive-data projection channel closed — the drain task is gone and every further decision will be lost* |
+| Refused as undescribable | `refused` | `WARN` — *sensitive-data decision not projected — the projection is incomplete for this action* |
+
+A **refusal** is the one that is not about load. `project_decision` returns
+`Err(ProjectionRefusal)` when it cannot describe the evaluation truthfully, and
+declines to write rather than write something false: an agent with no
+authoritative `org_id` (no tenant-scoped query could return the row, and
+inventing a tenant would surface it under someone else's), an action whose
+`OperationKind` ADR 0032's vocabulary cannot name, a guarded field the shape
+check or credential scan rejected, an agent id that will not render as
+`<tenant>/<agent>`, and tallies that do not add up. A fourth counter,
+`write_failures`, covers a row the store itself rejected.
+
+### What that means for a reader of this table
+
+In ADR 0033 §6's terms, a dropped or refused decision was **Evaluated**, and its
+findings were **Detected** — the control ran and reached a verdict. It was not
+**Observed** by this projection, because *Observed* needs a durable event
+attributed to the action and that is exactly what was lost. The action is not
+*Unmeasured*: something did inspect it. The measurement simply was not recorded
+here.
+
+So the absence of a row means one of three things, and the table cannot tell you
+which: the tier was off, the tier ran and found nothing, or the tier ran, found
+something, and shed it.
+
+### Where to look
+
+The counters are **not exported as metrics and are not queryable over the API**.
+They surface in one place: the gateway reports them when it drains the
+projection at shutdown, and only the shape of the line distinguishes a clean run
+from a lossy one.
+
+```
+INFO  sensitive-data projection drained written=<n>
+WARN  the sensitive-data projection is incomplete for this run
+      written=<n> write_failures=<n> dropped=<n> refused=<n> drain_panicked=<bool>
+```
+
+The `WARN` is emitted whenever any of `write_failures`, `dropped`, `refused` or
+`drain_panicked` is non-zero. Treat it as the authority on whether a run's table
+is complete, and keep the gateway's logs for as long as you intend to draw
+conclusions from the rows — a table read without them is a table whose gaps
+cannot be interpreted. Sustained `dropped` counts mean the drain is not keeping
+up with the database behind it, and the number lost is the number in the line,
+not an estimate.
+
 ## Failure behaviour: the gateway refuses to start — in the modes that read it
 
 In `serve_tcp` and `serve_uds` — the legacy-gRPC paths, and the only ones that
