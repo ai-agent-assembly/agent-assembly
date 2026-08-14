@@ -2,6 +2,14 @@
 
 Thank you for your interest in contributing! This guide explains how to set up your environment and submit changes.
 
+By participating in this project you agree to abide by our
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+For the fastest path from a fresh clone to a verified local environment, follow
+the [Quickstart in the README](README.md#quickstart) (`make dev-setup` +
+`make dev-verify`). The sections below cover the manual setup and the
+day-to-day contribution workflow in more detail.
+
 ## Prerequisites
 
 - **Rust stable** (≥ 1.75) — install via [rustup](https://rustup.rs/)
@@ -85,15 +93,34 @@ Example: `v0.0.1/AAASM-42/feat/add_agent_registry`
 
 ## Commit Style
 
-Use [Gitmoji](https://gitmoji.dev/) prefixed messages:
+Commit messages follow [Gitmoji](https://gitmoji.dev/)-prefixed
+[Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 <emoji> (<scope>): <imperative summary>
 ```
 
-**One commit per logical unit** — one new file, one property change, one function. Keep commits small and bisectable.
+- `<emoji>` — a [Gitmoji](https://gitmoji.dev/) marking the change category
+  (see the table below)
+- `<scope>` — the affected crate or area (e.g. `aa-core`, `ci`, `docs`)
+- `<imperative summary>` — imperative mood, under 72 characters
+
+| Emoji | Category | Conventional type |
+|---|---|---|
+| ✨ | New feature | `feat` |
+| 🐛 | Bug fix | `fix` |
+| ♻️ | Refactor (no behaviour change) | `refactor` |
+| ✅ | Tests | `test` |
+| 📝 | Documentation | `docs` |
+| 🔧 | Configuration / CI | `config` / `ci` |
+| ⬆️ | Dependency upgrade | `deps` |
+| 🗑️ | Deletion / removal | `remove` |
+| 🚨 | Lint / type-error fix | `style` |
+
+**One commit per logical unit** — one new file, one property change, one function. Keep commits small and bisectable so a reviewer can follow each step.
 
 Examples:
+
 - `✨ (aa-core): Add AgentId newtype wrapper`
 - `🐛 (aa-gateway): Fix policy evaluation order for overlapping rules`
 - `🔧 (ci): Add matrix build for MSRV check`
@@ -387,8 +414,13 @@ Per [ADR 0013](docs/src/adr/0013-version-metadata-source-of-truth-and-drift-gate
 
 ## Reporting Issues
 
-Use the GitHub issue templates:
-- **Bug report** — reproducible steps, expected vs actual behaviour, environment.
-- **Feature request** — motivation, proposed solution, alternatives considered.
+File issues through the GitHub issue templates so they capture the detail
+maintainers need to act:
 
-For security issues, see [SECURITY.md](SECURITY.md).
+- [**Bug report**](.github/ISSUE_TEMPLATE/bug_report.md) — reproducible steps, expected vs actual behaviour, environment.
+- [**Feature request**](.github/ISSUE_TEMPLATE/feature_request.md) — motivation, proposed solution, alternatives considered.
+
+Search [existing issues](https://github.com/ai-agent-assembly/agent-assembly/issues) before opening a new one to avoid duplicates.
+
+**Do not** open a public issue for a security vulnerability — see
+[SECURITY.md](SECURITY.md) for the private disclosure process.
