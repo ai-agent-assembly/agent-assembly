@@ -31,7 +31,7 @@
 //! `Decision` record from "the program exited non-zero" would be exactly the
 //! promotion the contract is built to prevent.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -47,8 +47,8 @@ use crate::capability;
 use crate::host::{BackendLookupError, HostFacts};
 use crate::inherit::seal_inherited_descriptors;
 use crate::lower::{
-    build_argv, credential_flags, lower_requirement, reachable_metadata_endpoints, unremoved_ambient, Argv,
-    FLAG_ALLOW_DEGRADED,
+    build_argv, credential_flags, explicit_environment_flags, lower_requirement, reachable_metadata_endpoints,
+    unremoved_ambient, Argv, FLAG_ALLOW_DEGRADED,
 };
 use crate::probe::{self, ConfinementProbe};
 
@@ -109,6 +109,10 @@ pub struct SandlockBackend {
     degraded: Vec<String>,
     degraded_flags: Vec<String>,
     capture_output: bool,
+    /// The exact environment the confined program is to receive, when the caller
+    /// computed one. `None` means the mechanism's own default applies: the
+    /// confined program inherits whatever the confinement executable inherited.
+    child_environment: Option<BTreeMap<String, String>>,
     prepared: Mutex<HashMap<String, Prepared>>,
     running: Mutex<HashMap<String, Child>>,
     completed: Mutex<HashMap<String, CompletedRun>>,
@@ -216,6 +220,33 @@ impl SandlockBackend {
         self
     }
 
+    /// Install `env` as the confined program's **entire** environment.
+    ///
+    /// # Why a governed launch has to say this explicitly (AAASM-5711)
+    ///
+    /// The supervisor and the confined program are different processes with
+    /// different environments, and only the second one matters to the launched
+    /// tool. `aasm run` resolves a child environment — the governance identity,
+    /// the proxy address, the adapter's `NODE_EXTRA_CA_CERTS`, the policy
+    /// annotations, with the adapter's own values layered last — and every one
+    /// of those lives in a map the supervisor holds, not in its own environment.
+    /// A launch that said nothing here would confine the program with whatever
+    /// the *launcher's* shell happened to carry, and the two variables whose
+    /// absence makes a session ungoverned would be among the ones missing.
+    ///
+    /// Passing the environment as data rather than inheriting it also removes the
+    /// silent-widening case in the other direction: with an explicit environment
+    /// the child receives exactly these names, so a variable nobody listed cannot
+    /// arrive because it happened to be exported.
+    ///
+    /// The map is applied verbatim. Precedence was already decided by whoever
+    /// built it; re-deciding it here would be a second implementation of the
+    /// merge, which is the defect AAASM-5329 was.
+    pub fn with_child_environment(mut self, env: BTreeMap<String, String>) -> Self {
+        self.child_environment = Some(env);
+        self
+    }
+
     fn assemble(
         identity: BackendIdentity,
         capabilities: BackendCapabilities,
@@ -230,6 +261,7 @@ impl SandlockBackend {
             degraded: Vec::new(),
             degraded_flags: Vec::new(),
             capture_output: false,
+            child_environment: None,
             prepared: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
             completed: Mutex::new(HashMap::new()),
@@ -386,13 +418,30 @@ impl IsolationBackend for SandlockBackend {
             })?;
             confinement.extend(lowered.flags);
         }
-        confinement.extend(credential_flags(plan.spec()));
+        // An explicit child environment supersedes the posture-derived flags
+        // rather than joining them: both start with `--clean-env`, and emitting
+        // it twice would be the mechanism's own duplicate-flag case. It is also
+        // strictly the stronger of the two — the posture adds back only the
+        // names it knows about, while this adds back exactly the environment the
+        // caller resolved and nothing else.
+        let environment_replaced = match &self.child_environment {
+            Some(env) => {
+                confinement.extend(explicit_environment_flags(env));
+                true
+            }
+            None => {
+                let flags = credential_flags(plan.spec());
+                let replaced = !flags.is_empty();
+                confinement.extend(flags);
+                replaced
+            }
+        };
         // Last, so a waiver is visible at the end of the command line rather
         // than buried among the grants, and so it is impossible for a grant to
         // be silently dropped in favour of one.
         confinement.extend(self.degraded_flags.iter().cloned());
 
-        let residual_authority = residual_authority(plan.spec());
+        let residual_authority = residual_authority(plan.spec(), environment_replaced);
         // Before the argument vector is built and long before anything is
         // launched: a descriptor marked here cannot cross the `exec` that
         // starts the mechanism, and therefore cannot reach the program the
@@ -629,9 +678,8 @@ fn emits_flags(outcome: &RequirementOutcome) -> bool {
 /// Rendering both as one sentence was the previous behaviour and was wrong in
 /// the first case: it told an operator that "nothing was replaced" on a launch
 /// where the environment *had* been replaced.
-fn residual_authority(spec: &ExecutionSpec) -> Vec<String> {
-    let replaced = !credential_flags(spec).is_empty();
-    let mut residual: Vec<String> = unremoved_ambient(spec)
+fn residual_authority(spec: &ExecutionSpec, replaced: bool) -> Vec<String> {
+    let mut residual: Vec<String> = unremoved_ambient(spec, replaced)
         .into_iter()
         .map(|name| {
             if replaced {
@@ -984,25 +1032,27 @@ mod tests {
     /// compatibility exception was recorded.
     #[test]
     fn the_residual_sentence_says_which_of_the_two_situations_it_is() {
-        let replaced = residual_authority(&writing_spec("/tmp/never").with_credentials(
-            aa_isolation::CredentialPosture {
+        let replaced = residual_authority(
+            &writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
                 removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
                 delegated: Vec::new(),
                 ambient_unremoved: vec!["PATH".to_string()],
-            },
-        ));
+            }),
+            true,
+        );
         assert!(
             replaced[0].contains("replaced the environment and passed it through anyway"),
             "{replaced:?}"
         );
 
-        let inherited = residual_authority(&writing_spec("/tmp/never").with_credentials(
-            aa_isolation::CredentialPosture {
+        let inherited = residual_authority(
+            &writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
                 removed: Vec::new(),
                 delegated: Vec::new(),
                 ambient_unremoved: vec!["PATH".to_string()],
-            },
-        ));
+            }),
+            false,
+        );
         assert!(inherited[0].contains("replaced no environment"), "{inherited:?}");
         assert!(
             inherited.iter().any(|r| r.contains("the whole launching environment")),
