@@ -39,8 +39,8 @@ use std::sync::Mutex;
 use aa_core::attestation::ClaimTerm;
 use aa_isolation::{
     negotiate, BackendCapabilities, BackendIdentity, CapabilityDomain, DescriptorInventory, EnforcementEvidence,
-    EnforcementPlan, EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, IsolationBackend, Lowering,
-    PlanRefusal, PreparedExecution, Provenance, RequirementOutcome, SpawnError,
+    EnforcementPlan, EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, ExitDisposition, IsolationBackend,
+    Lowering, PlanRefusal, PreparedExecution, Provenance, RequirementOutcome, SpawnError, TerminationRequest,
 };
 
 use crate::capability;
@@ -115,6 +115,12 @@ pub struct SandlockBackend {
     child_environment: Option<BTreeMap<String, String>>,
     prepared: Mutex<HashMap<String, Prepared>>,
     running: Mutex<HashMap<String, Child>>,
+    /// The confinement executable's process id per token, kept separately from
+    /// [`Self::running`] because [`Self::wait`] has to take the `Child` by value
+    /// to reap it. Without this, a termination request arriving while a
+    /// supervisor was already waiting would find nothing to signal — which is
+    /// exactly the interleaving a `Ctrl-C` produces.
+    pids: Mutex<HashMap<String, u32>>,
     completed: Mutex<HashMap<String, CompletedRun>>,
     next_token: AtomicU64,
 }
@@ -264,6 +270,7 @@ impl SandlockBackend {
             child_environment: None,
             prepared: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            pids: Mutex::new(HashMap::new()),
             completed: Mutex::new(HashMap::new()),
             next_token: AtomicU64::new(0),
         }
@@ -295,8 +302,10 @@ impl SandlockBackend {
     ///
     /// # Errors
     ///
-    /// [`SpawnError::Spawn`] when the handle names no running execution, or the
-    /// wait itself fails.
+    /// [`SpawnError::Supervision`] when the handle names no running execution,
+    /// or the wait itself fails. Not [`SpawnError::Spawn`]: by the time this is
+    /// called something was started, and reporting a lost wait as a failed
+    /// launch would tell an operator no process exists at the moment one does.
     pub fn wait(&self, handle: &ExecutionHandle) -> Result<CompletedRun, SpawnError> {
         let child = self
             .running
@@ -312,11 +321,11 @@ impl SandlockBackend {
                 .expect("backend state poisoned")
                 .get(handle.token())
                 .cloned()
-                .ok_or_else(|| SpawnError::Spawn {
+                .ok_or_else(|| SpawnError::Supervision {
                     detail: format!("no running execution for handle `{}`", handle.token()),
                 });
         };
-        let output = child.wait_with_output().map_err(|e| SpawnError::Spawn {
+        let output = child.wait_with_output().map_err(|e| SpawnError::Supervision {
             detail: format!("waiting for the confined run failed: {e}"),
         })?;
         let completed = CompletedRun {
@@ -505,11 +514,77 @@ impl IsolationBackend for SandlockBackend {
         })?;
 
         let handle = ExecutionHandle::new(self.identity.clone(), prepared.token(), prepared.plan().posture());
+        self.pids
+            .lock()
+            .expect("backend state poisoned")
+            .insert(prepared.token().to_string(), child.id());
         self.running
             .lock()
             .expect("backend state poisoned")
             .insert(prepared.token().to_string(), child);
         Ok(handle)
+    }
+
+    /// Block until the confinement executable exits, and report its code.
+    ///
+    /// The code is the mechanism's, passed through unaltered. This backend does
+    /// not know — and must not guess — whether a non-zero code came from the
+    /// confined program or from the mechanism refusing to confine: those are
+    /// different facts, and the mechanism offers no channel that separates them.
+    /// Substituting a code of its own would erase whichever one it was.
+    fn wait_for_exit(&self, handle: &ExecutionHandle) -> Result<ExitDisposition, SpawnError> {
+        let completed = self.wait(handle)?;
+        Ok(match completed.status.code() {
+            Some(code) => ExitDisposition::Code(code),
+            None => ExitDisposition::NoCode {
+                detail: format!(
+                    "the confinement executable reported `{}`, which carries no exit code; on this \
+                     platform that is what a process ended by a signal produces",
+                    completed.status
+                ),
+            },
+        })
+    }
+
+    /// Deliver a termination request to the confinement executable.
+    ///
+    /// It is sent to the mechanism's process, not to the confined program, and
+    /// that is the only correct target available: the supervisor holds no
+    /// identifier inside the boundary, by design (ADR 0035 §5). Whether the
+    /// mechanism passes it on, and whether the confined program honours it, are
+    /// facts about processes this backend does not control — which is why `Ok`
+    /// here promises delivery and nothing more.
+    ///
+    /// # Errors
+    ///
+    /// [`SpawnError::Supervision`] when the handle names no launch of this
+    /// backend, when the run has already ended, or — off Linux — when the
+    /// backend has no way to deliver one at all.
+    fn terminate(&self, handle: &ExecutionHandle, request: TerminationRequest) -> Result<(), SpawnError> {
+        if self
+            .completed
+            .lock()
+            .expect("backend state poisoned")
+            .contains_key(handle.token())
+        {
+            return Err(SpawnError::Supervision {
+                detail: format!(
+                    "the run behind handle `{}` has already ended; a termination request now would name \
+                     a process id this backend no longer owns",
+                    handle.token()
+                ),
+            });
+        }
+        let pid = self
+            .pids
+            .lock()
+            .expect("backend state poisoned")
+            .get(handle.token())
+            .copied()
+            .ok_or_else(|| SpawnError::Supervision {
+                detail: format!("no launch of this backend is recorded for handle `{}`", handle.token()),
+            })?;
+        deliver_termination(pid, request)
     }
 
     fn evidence(&self, handle: &ExecutionHandle) -> EnforcementEvidence {
@@ -647,6 +722,56 @@ impl IsolationBackend for SandlockBackend {
 
         evidence
     }
+}
+
+/// Send a termination request to the confinement executable's process.
+///
+/// Linux only, and the non-Linux arm returns an error rather than doing nothing
+/// quietly: a supervisor that forwarded `Ctrl-C` and got `Ok` from a build that
+/// cannot deliver one would report a stop request that never left the process.
+/// The backend is unavailable off Linux anyway, so nothing there can have
+/// reached this with a running execution.
+#[cfg(target_os = "linux")]
+fn deliver_termination(pid: u32, request: TerminationRequest) -> Result<(), SpawnError> {
+    let signal = match request {
+        TerminationRequest::Graceful => libc::SIGTERM,
+        TerminationRequest::Immediate => libc::SIGKILL,
+        // `TerminationRequest` is `#[non_exhaustive]`; a request this backend has
+        // not been taught is refused rather than approximated by the nearest one,
+        // because the two arms above differ in whether the target may decline.
+        other => {
+            return Err(SpawnError::Supervision {
+                detail: format!("this backend does not know how to deliver `{other:?}`"),
+            })
+        }
+    };
+    // Safety: `pid` is the id of a child this backend spawned. The window in
+    // which it could name a different process is between the mechanism's exit
+    // and the reap in `wait`, and is the same window the unconfined launch path
+    // has always had; `terminate` narrows it by refusing once a completion has
+    // been recorded.
+    let sent = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if sent == 0 {
+        return Ok(());
+    }
+    Err(SpawnError::Supervision {
+        detail: format!(
+            "the termination request could not be delivered to the confinement executable: {}",
+            std::io::Error::last_os_error()
+        ),
+    })
+}
+
+/// The non-Linux arm. See the Linux one for why this is an error.
+#[cfg(not(target_os = "linux"))]
+fn deliver_termination(pid: u32, _request: TerminationRequest) -> Result<(), SpawnError> {
+    Err(SpawnError::Supervision {
+        detail: format!(
+            "this backend confines Linux processes and cannot deliver a termination request on {}; \
+             process {pid} was not signalled",
+            std::env::consts::OS
+        ),
+    })
 }
 
 /// Whether an outcome means the backend should emit this requirement's flags.

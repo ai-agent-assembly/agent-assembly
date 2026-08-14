@@ -189,7 +189,9 @@ pub use ambient::{
     classify_env_name, is_supervisor_credential, AmbientAuthorityKind, ClassifiedName, CompatibilityException,
     EnvironmentPlan, EnvironmentPlanner, CLOUD_METADATA_ENDPOINTS,
 };
-pub use backend::{ExecutionHandle, IsolationBackend, PreparedExecution, SpawnError};
+pub use backend::{
+    ExecutionHandle, ExitDisposition, IsolationBackend, PreparedExecution, SpawnError, TerminationRequest,
+};
 pub use capability::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
