@@ -36,12 +36,22 @@ on:
       # sdk-sha-drift.yml, and have no business triggering the Rust matrix.
       - ".ci/verify-range-builds.sh"
       - ".ci/check-compatibility-matrix.sh"
+      # AAASM-5738: same rule, for the detection-closure gate. Paired with the
+      # `rust` router filter below; on `main` this is what makes a script-only
+      # merge produce a check run at all, rather than none — and an absent check
+      # reads as "not applicable", not as "failing".
+      - "scripts/check_detection_egress_closure.py"
       # AAASM-5708: the evidence-ledger summary and the nextest profile that
       # produces its denominator. Paired with the `isolation_backend` router
       # filter below — a router filter without a matching `on.*.paths` entry is
       # a dead trigger (ADR 0028), and this lane's whole purpose is to fail when
       # it measures nothing, which it cannot do if it never runs.
       - ".ci/test-evidence-summary.sh"
+      # AAASM-5712: the scenario set that lane diffs its ledger against. Editing
+      # it alone is how a deletion gets declared, so it has to select the job
+      # that checks it — otherwise the declaration merges without the lane it
+      # describes ever running.
+      - ".ci/isolation-lane-scenarios.txt"
       - ".config/nextest.toml"
       - "openapi/v1.yaml"
       - "schemas/**/*.json"
@@ -219,6 +229,14 @@ jobs:
               - 'deny.toml'
               - '.ci/verify-range-builds.sh'
               - '.ci/check-compatibility-matrix.sh'
+              # AAASM-5738: the closure gate's own script. Its VERDICT is the
+              # `EXPECTED` table inside this file, not the Cargo manifests — so
+              # without this entry a pull request that only edits the script
+              # (adding a crate to EXPECTED to silence a drift, loosening the
+              # parser, deleting a selection) skips the job, and `ci-success`
+              # counts a skip as a pass. The gate would merge its own weakening
+              # having never run.
+              - 'scripts/check_detection_egress_closure.py'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
@@ -349,6 +367,7 @@ jobs:
               - 'aa-cli/src/commands/run.rs'
               - 'aa-integration-tests/tests/evidence/mod.rs'
               - '.ci/test-evidence-summary.sh'
+              - '.ci/isolation-lane-scenarios.txt'
               - '.config/nextest.toml'
               - '.github/workflows/ci.yml'
             # AAASM-5713: the isolation benchmark harness. Extension-qualified
@@ -1009,6 +1028,211 @@ jobs:
 
       - name: Run backend license and provenance gate
         run: bash scripts/check-backend-license-compliance.sh
+
+  detection-egress-closure:
+    needs: [changes]
+    # AAASM-5738, for AAASM-5270 exit criterion 6 ("Local-only runtime behavior
+    # is verified under egress-denied testing") and product constraint 1 ("raw
+    # sensitive content must not be sent to third-party SaaS DLP or
+    # classification services").
+    #
+    # Gated on `changes.rust`. Its globs cover `Cargo.toml`, `Cargo.lock`,
+    # `aa-*/**/*.toml` and this workflow — every path a new *dependency* enters
+    # through — plus, since review, the gate's own script.
+    #
+    # That last one was missing and mattered: the verdict is the `EXPECTED`
+    # table inside the script, not the manifests, so a pull request editing only
+    # the script skipped this job while `ci-success` counted the skip as a pass.
+    # An earlier version of this comment asserted the filter already covered
+    # "every path", which was true of dependencies and false of the gate itself.
+    if: needs.changes.outputs.rust == 'true'
+    # Named for what the job measures — `aa-security`, which is detection pass
+    # 1 (`BuiltinScannerPass`) — not for the whole detection fast path. The
+    # earlier name, "Detection fast path has no outbound capability", was wider
+    # than the job: by the script's own scope section the gateway cascade's
+    # passes 2 and 3 (`CompiledRegexPass` / `CascadeRegexPass` over `regex`, a
+    # direct aa-gateway dependency) are part of that fast path and are neither
+    # pinned nor run here. The script's docstring carried that caveat; the
+    # check name a reviewer reads in the checks list carried no qualifier, and
+    # the name is what most people see.
+    name: aa-security detection pass has no outbound capability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # Selftest first, same reasoning as the backend-license gate above: a
+      # checker proven only against input it accepts may be passing vacuously.
+      - name: Self-test the closure control
+        run: python3 scripts/check_detection_egress_closure.py --selftest
+
+      - name: Detector dependency closure is unchanged
+        run: python3 scripts/check_detection_egress_closure.py
+
+      # ─── The second axis: behaviour, not just capability ──────────────────
+      #
+      # The closure check is an argument about what is *linked*. This runs the
+      # detector's own tests with no network at all, which is what criterion 6
+      # literally asks for.
+      #
+      # NOT an isolation backend. This is a test harness for the sensitive-data
+      # fast path; OS-level execution confinement is AAASM-5702's subsystem
+      # (`aa-isolation`) and must not be re-implemented here. The distinction
+      # this job preserves is that the detector *needs* no egress — which is a
+      # different claim from *being prevented* from egress.
+      #
+      # `sudo unshare -n`, not `unshare -rn`: the unprivileged form needs a USER
+      # namespace, and GitHub's Ubuntu images restrict those
+      # (kernel.apparmor_restrict_unprivileged_userns=1). The first version of
+      # this job used it and failed with
+      #   unshare: write failed /proc/self/uid_map: Operation not permitted
+      # A network namespace taken through passwordless sudo needs no user
+      # namespace, so it works and mutates no host sysctl.
+      - name: Build the detector's tests (network still available)
+        run: |
+          set -euo pipefail
+          cargo test -p aa-security --locked --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true) | .executable | select(. != null)' \
+            > /tmp/aa-security-tests.txt
+          echo "built $(wc -l < /tmp/aa-security-tests.txt) test binary/binaries"
+
+      # The control that makes the next step mean anything, and it has to check
+      # FOUR things rather than one.
+      #
+      # The first version checked only that curl failed inside the namespace,
+      # and it passed vacuously on this very job: `unshare -rn` could not create
+      # a namespace at all, so curl never ran, so "curl did not succeed" was
+      # true for entirely the wrong reason. It printed "egress denied, as
+      # required" having denied nothing. That is precisely the defect class this
+      # job exists to catch, reproduced inside the control meant to catch it.
+      #
+      # So: the namespace must be creatable; it must actually be a *different*
+      # network namespace (fewer interfaces than the host, which is a
+      # comparison rather than a pinned count); the host must have egress for
+      # the namespace to be denying something; and only then does a failing
+      # curl inside it mean egress was denied rather than absent to begin with.
+      - name: Prove the namespace exists and denies egress (positive control)
+        run: |
+          set -uo pipefail
+
+          if ! sudo unshare -n -- true; then
+            echo "::error::cannot create a network namespace on this runner;"
+            echo "::error::the egress-denied run below would prove nothing."
+            exit 1
+          fi
+
+          host_ifaces=$(ip -o link show | wc -l)
+          # Measured through the SAME wrapper the tests use — `runuser` — so the
+          # control exercises the shape under test rather than a simpler one.
+          ns_ifaces=$(sudo unshare -n -- runuser -u "$(id -un)" -- ip -o link show | wc -l)
+
+          # Assert the DIFFERENCE, not an absolute. A previous version computed
+          # host_ifaces, interpolated it into the error text, and then tested
+          # `ns_ifaces -ne 1` — so the host figure appeared in the message
+          # without appearing in the predicate, and the control's actual
+          # argument ("this is a different namespace") went unasserted. The
+          # host count has to move for the comparison to discriminate, hence
+          # the `-gt 1` guard first: on a host that itself had one interface,
+          # `ns_ifaces -lt host_ifaces` could not hold and the step would be
+          # reporting on a runner where it cannot tell the two apart.
+          if [ "$host_ifaces" -le 1 ]; then
+            echo "::error::the host has $host_ifaces interface(s), so an interface"
+            echo "::error::count cannot distinguish the namespace from the host."
+            exit 1
+          fi
+          if [ "$ns_ifaces" -ge "$host_ifaces" ]; then
+            echo "::error::found $ns_ifaces interface(s) inside the namespace"
+            echo "::error::against $host_ifaces on the host — not fewer, so this"
+            echo "::error::is not an isolated network namespace."
+            exit 1
+          fi
+
+          # curl must EXIST before its failure can mean anything: a missing
+          # binary exits 127, which a bare `if` reads as "egress denied". That
+          # is the same defect this control was rewritten to remove, one level
+          # further down.
+          command -v curl >/dev/null || { echo "::error::curl absent; the egress probe cannot run"; exit 1; }
+
+          # The host leg is the control for the namespace leg, and it is the
+          # step that moves. A failing curl INSIDE the namespace is on its own
+          # equally consistent with a runner that has no egress anywhere: both
+          # give exit 6, and the step would then attribute to the namespace a
+          # denial the namespace had no part in. So require the host to reach
+          # the network first; only against a reachable host does an
+          # in-namespace 6/7/28 identify the namespace as the cause.
+          set +e
+          curl -sS --max-time 8 https://example.com >/dev/null 2>&1
+          host_curl=$?
+          set -e
+          if [ "$host_curl" -ne 0 ]; then
+            echo "::error::curl exited $host_curl on the HOST, outside the"
+            echo "::error::namespace. This runner has no egress to deny, so a"
+            echo "::error::failure inside the namespace would demonstrate"
+            echo "::error::nothing about the namespace."
+            exit 1
+          fi
+
+          set +e
+          sudo unshare -n -- curl -sS --max-time 8 https://example.com >/dev/null 2>&1
+          curl_status=$?
+          set -e
+          case "$curl_status" in
+            0)  echo "::error::reached the network from inside the namespace."; exit 1 ;;
+            6|7|28) : ;;  # resolve / connect / timeout — a real network failure
+            *)  echo "::error::curl exited $curl_status, which is not a network"
+                echo "::error::failure (expected 6, 7 or 28). The probe did not"
+                echo "::error::demonstrate egress denial."
+                exit 1 ;;
+          esac
+
+          echo "namespace created; $ns_ifaces interface(s) inside vs $host_ifaces on the host;"
+          echo "host reaches the network (curl 0), namespace does not (curl $curl_status)"
+
+      # Runs the prebuilt binaries rather than `cargo test`, so nothing inside
+      # the namespace wants a registry, a lockfile check or CARGO_HOME — a cargo
+      # network touch would fail and be indistinguishable from the detector
+      # needing egress, which is the very thing under test.
+      - name: Detector tests pass with egress denied
+        run: |
+          set -euo pipefail
+
+          # Pinned population, not a `!= 0` floor. The previous version's own
+          # comment said "assert the population, not just the exit codes" and
+          # then tested `count -eq 0`, so a change that built 1 of the 8
+          # binaries passed it — the "passes by running nothing" shape it meant
+          # to close, one binary short of empty.
+          #
+          # 8 is the measured count for `aa-security` and is expected to move:
+          # adding or removing a test target changes it, and the remedy is to
+          # update this number in the same commit, the same one-line review the
+          # closure gate's EXPECTED table asks for.
+          #
+          # The number pinned is BINARIES, not tests. The test total moves on
+          # every added `#[test]` (326 locally at the time of writing, against
+          # 305 when this job was first measured), which would make a pinned
+          # test count a weekly red for no signal. The binary count moves only
+          # when a test target is added or dropped, which is the structural
+          # change worth a look.
+          expected_bins=8
+
+          count=0
+          while read -r bin; do
+            [ -n "$bin" ] || continue
+            echo "--- $bin"
+            sudo unshare -n -- runuser -u "$(id -un)" -- "$bin"
+            count=$((count + 1))
+          done < /tmp/aa-security-tests.txt
+
+          if [ "$count" -ne "$expected_bins" ]; then
+            echo "::error::ran $count test binary/binaries under egress denial,"
+            echo "::error::expected $expected_bins. If a test target was added or"
+            echo "::error::removed, update expected_bins in this step; if not,"
+            echo "::error::the build step above produced a different population"
+            echo "::error::than this job was pinned against."
+            exit 1
+          fi
+          echo "ran $count test binary/binaries with egress denied (pinned at $expected_bins)"
 
   no-std:
     needs: [changes]
@@ -2292,8 +2516,42 @@ jobs:
             declined_records | while IFS= read -r record; do cat "$record" >&2; done
             exit 1
           fi
-          if [ "${measured}" -lt 9 ]; then
-            echo "::error title=Isolation lane measured too little::only ${measured} scenario(s) recorded a measurement; the suite has 10 and expects at least 9 to measure here."
+      - name: Assert the lane measured the scenario set it declares
+        # AAASM-5712. This replaces a hand-written floor — `measured -lt 9`, and
+        # a message saying "the suite has 10" — that was written against a
+        # ten-scenario crate. The crate records 33 scenarios now, so the floor
+        # stayed green with two thirds of the suite deleted: the exact vacuity
+        # this lane exists to refuse.
+        #
+        # A raised floor would not fix it, and neither would a count. The ledger
+        # writes one file per scenario NAME, so a duplicated name collapses into
+        # one record and "33" is equally consistent with 33 distinct scenarios
+        # and with 32 plus a duplicate. This diffs the SET of names instead,
+        # against `.ci/isolation-lane-scenarios.txt` — a second artifact, so a
+        # deleted or renamed scenario reddens here until someone records the
+        # change there. The expected count is read off that file rather than
+        # typed into this step, which is how the previous number went stale.
+        #
+        # `always()` for the same reason as the two steps above: what the lane
+        # measured is most worth reading when something else has gone wrong.
+        if: always()
+        run: |
+          set -euo pipefail
+          measured_records=$(mktemp)
+          declared_records=$(mktemp)
+          # `|| true`: an empty ledger is a reading this step reports through the
+          # diff below, and `pipefail` would turn grep's exit 1 into an abort
+          # before it gets there.
+          { grep -l '"outcome": "measured"' \
+            "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true; } \
+            | while IFS= read -r record; do
+                sed -n 's/^  "scenario": "\(.*\)",$/\1/p' "${record}"
+              done | LC_ALL=C sort -u > "${measured_records}"
+          grep -v -e '^#' -e '^[[:space:]]*$' .ci/isolation-lane-scenarios.txt \
+            | LC_ALL=C sort -u > "${declared_records}"
+          echo "declared=$(wc -l < "${declared_records}") measured=$(wc -l < "${measured_records}")"
+          if ! diff -u --label declared --label measured "${declared_records}" "${measured_records}"; then
+            echo "::error title=Isolation lane did not measure the scenario set it declares::the scenario names carrying \"outcome\": \"measured\" differ from .ci/isolation-lane-scenarios.txt. In the diff above, a '-' line is declared and unmeasured (deleted, renamed, or it declined) and a '+' line is measured and undeclared (added without updating the file)."
             exit 1
           fi
 
@@ -2391,6 +2649,11 @@ jobs:
       # property (no unreviewed license reaches a channel), not a metric, so an
       # advisory version of it would be a report nobody acts on.
       - backend-license
+      # AAASM-5738: blocks. AAASM-5270 exit criterion 6 asks for behaviour
+      # *verified* under egress-denied testing, and an advisory version of this
+      # would be a dependency-tree argument again — which is what the criterion
+      # already had and rejected as insufficient.
+      - detection-egress-closure
       - no-std
       - buf-lint
       - schema-lint

@@ -1,0 +1,59 @@
+# Scenario names the `isolation-backend-linux` lane is expected to record with
+# `"outcome": "measured"` — AAASM-5712.
+#
+# Why a list rather than a floor. The step reading this file used to assert
+# `[ "${measured}" -lt 9 ]`, a threshold written when the crate held ten
+# scenarios. The crate records 33 now, so that floor stayed green with two
+# thirds of the suite deleted — the vacuity the lane exists to refuse.
+#
+# Why a list rather than a count. The ledger writes one file per scenario name,
+# so a duplicated name collapses into a single record: "33 records" is equally
+# consistent with 33 distinct scenarios and with 32 plus a duplicate. The lane
+# diffs the SET of names, and takes its count from this file rather than from a
+# number typed into the workflow.
+#
+# Why a separate file. Deriving the expected list from the test sources would
+# delete both sides of the comparison at once and assert nothing. This file is a
+# second artifact: removing or renaming a scenario reddens the lane until
+# someone records here that the change was intended.
+#
+# `#` comments and blank lines are stripped, and order does not matter — the
+# lane sorts both sides with `LC_ALL=C sort -u` before diffing.
+#
+# As written: 14 from aa-isolation-sandlock/tests/linux_confinement.rs (AAASM-5708
+# / AAASM-5709), 11 from tests/adversarial_boundary_linux.rs, 8 from
+# tests/adversarial_negotiation.rs.
+
+absent backend refuses before launch
+adversarial: a detached descendant and an alternate executable path are confined alike
+adversarial: a direct connection bypassing the configured route never arrives
+adversarial: a permitted destination does not permit another address on its port
+adversarial: a symlinked write outside the grant never takes effect
+adversarial: a waived protection removes its domain rather than weakening it
+adversarial: abstract unix sockets are scoped and the pathname gap is declared
+adversarial: an inherited socket carries no egress authority across the boundary
+adversarial: blocked, unsupported and unmeasured are distinct report states
+adversarial: cloud metadata endpoints refused and stated
+adversarial: environment enumeration finds only what the launch delegated
+adversarial: every declared attack family has a scenario
+adversarial: missing, disabled and partially configured backends are distinct
+adversarial: observation is never promoted to prevention
+adversarial: only a decision record promotes a claim
+adversarial: process inspection only where the launch granted it
+adversarial: required prevention refused by every backend that cannot enforce it
+adversarial: secret directories unreadable through every path representation
+adversarial: unenforceable resource ceilings are refused, not approximated
+adversarial: unsupported and unmeasured domains refuse for different reasons
+argv passed as argv
+credential environment plan is explicit
+descendant confinement at three depths
+descendants cannot widen authority
+filesystem read denied
+filesystem write denied before the effect
+inherited descriptors do not cross the boundary
+network egress denied
+process ceiling enforced
+reported capabilities match the probe
+supervisor credentials do not reach the child
+trivial child streams and exit status
+unsupported capability refuses before launch
