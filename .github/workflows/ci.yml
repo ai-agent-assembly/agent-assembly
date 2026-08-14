@@ -2606,6 +2606,148 @@ jobs:
       - name: The harness can still detect a slowdown
         run: python3 benchmarks/isolation/harness/selftest.py
 
+  # AAASM-5713: the one-time confined-arm measurement METHODOLOGY.md's
+  # decision matrix has been waiting on. Manual-only — `workflow_dispatch`
+  # only, deliberately NOT `needs.changes.outputs.benchmarks == 'true'` like
+  # `isolation-benchmark-harness` above. This is a spike measurement (three
+  # full arms, ~10 workload families each, on a shared runner), not a
+  # regression gate; wiring it to the router would spend a Linux build and a
+  # ~30+ minute run on every future PR that so much as edits a workload
+  # script's comment. It is also deliberately absent from `ci-success`'s
+  # `needs:` for the same reason — it must never gate a merge.
+  #
+  # Reuses `isolation-backend-linux`'s sandlock install pattern exactly
+  # (AAASM-5712's pinned digest) rather than diverging from it — that job's
+  # own steps are untouched.
+  isolation-benchmark-confined-arm:
+    needs: [changes]
+    if: github.event_name == 'workflow_dispatch'
+    name: "Isolation benchmark: confined-arm measurement (Linux)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SANDLOCK_VERSION: "0.8.6"
+      SANDLOCK_SHA256: "86e89e5bdb2da748e683cda6908a95504ae6751f73d9dadf79cf0fc6843873fb"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Record the host this run measures
+        # First, and unconditionally — same reason as isolation-backend-linux.
+        run: |
+          echo "kernel: $(uname -r)"
+          echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo '<securityfs not readable>')"
+      - name: Install the confinement mechanism
+        env:
+          SANDLOCK_URL: https://github.com/multikernel/sandlock/releases/download/v${{ env.SANDLOCK_VERSION }}/sandlock-x86_64-unknown-linux-gnu.tar.gz
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o sandlock.tar.gz "$SANDLOCK_URL"
+          echo "${SANDLOCK_SHA256}  sandlock.tar.gz" | sha256sum -c -
+          mkdir -p sandlock-dist
+          tar -xzf sandlock.tar.gz -C sandlock-dist
+          sudo install -m 0755 sandlock-dist/sandlock /usr/local/bin/sandlock
+          sandlock --version
+          sandlock check || true
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: isolation-benchmark-confined-arm
+      # `aa-cli` transitively compiles `aa-proto`, whose build.rs invokes
+      # `protoc`. `ripgrep` is the `repo_traversal` family's `rg` requirement —
+      # absent it, that family degrades to `skipped` rather than measuring
+      # anything, and the CI-hosted `ubuntu-latest` image does not ship it.
+      - name: Install protobuf compiler and ripgrep
+        run: sudo apt-get install -y protobuf-compiler ripgrep
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.9.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Build the aasm binary the confined arm launches through
+        run: cargo build --release -p aa-cli --bin aasm
+      - name: Record every toolchain version the harness's environment block needs
+        run: |
+          rustc --version
+          cargo --version
+          python3 --version
+          node --version
+          pnpm --version
+          rg --version
+          git --version
+          openssl version
+      - name: Render the confined-arm policy against this run's scratch root
+        # A fixed, pre-created scratch root — not the harness's own
+        # `tempfile.mkdtemp` default — because the policy's write grant has to
+        # name a path that exists before `aasm run` negotiates against it.
+        # `--keep-scratch` on the confined-arm run below so this directory
+        # survives for inspection if a family fails; `.gitignore`-equivalent
+        # cleanup happens implicitly when the runner is torn down.
+        run: |
+          scratch="${{ github.workspace }}/.aabench-scratch"
+          mkdir -p "$scratch"
+          policy="${{ github.workspace }}/.aabench-confined-policy.yaml"
+          benchmarks/isolation/policy/render.sh "$scratch" "$policy"
+          cat "$policy"
+          {
+            echo "AABENCH_SCRATCH=$scratch"
+            echo "AABENCH_SANDLOCK_POLICY=$policy"
+            echo "AABENCH_AASM_BIN=${{ github.workspace }}/target/release/aasm"
+          } >> "$GITHUB_ENV"
+      - name: Confirm the rendered policy actually lowers (not not_stated)
+        # Cheap, fast guard before spending the full multi-family run below on
+        # a policy that would silently confine nothing — see
+        # benchmarks/isolation/policy/README.md for what this checks and why.
+        run: |
+          "$AABENCH_AASM_BIN" run exec --isolation process --no-proxy \
+            --policy "$AABENCH_SANDLOCK_POLICY" --dry-run -- true \
+            | tee dry-run-report.txt
+          for domain in filesystem_read filesystem_write network_egress; do
+            if ! grep -qE "^  ${domain}[[:space:]]+stated" dry-run-report.txt; then
+              echo "::error::${domain} did not lower to a stated requirement; the confined arm would not confine it. Check policy/confined-arm.yaml.tmpl against aa-isolation/src/lowering.rs."
+              exit 1
+            fi
+          done
+      - name: Unconfined baseline — re-captured on this host, this session
+        # METHODOLOGY.md, "Cross-platform comparison is invalid": the darwin
+        # baseline committed in results/ is not an admissible control for this
+        # run. This one is.
+        working-directory: benchmarks/isolation/harness
+        run: |
+          python3 aabench.py run --label unconfined-linux-ci \
+            --out ../results/ci-unconfined-linux.json
+      - name: Throttled negative control — re-captured on this host, this session
+        working-directory: benchmarks/isolation/harness
+        run: python3 aabench.py self-test --out-dir ../results
+      - name: Confined arm — sandlock
+        working-directory: benchmarks/isolation/harness
+        run: |
+          python3 aabench.py run --label sandlock-confined \
+            --launcher "sh ../launchers/sandlock.sh" \
+            --scratch-root "$AABENCH_SCRATCH" \
+            --keep-scratch \
+            --out ../results/ci-confined-linux.json
+      - name: Score confined against the fresh Linux baseline
+        working-directory: benchmarks/isolation/harness
+        run: |
+          python3 aabench.py compare \
+            --baseline ../results/ci-unconfined-linux.json \
+            --candidate ../results/ci-confined-linux.json \
+            --out ../results/ci-comparison-linux.json
+      - name: Upload results
+        # `always()`: a run that failed partway (one family's admissibility
+        # gate, say) still has whatever it produced worth downloading — this
+        # is a spike, not a gate, and a partial result is real evidence, not
+        # nothing.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: isolation-benchmark-confined-arm-results
+          path: |
+            benchmarks/isolation/results/ci-*.json
+            benchmarks/isolation/results/selftest-*.json
+          retention-days: 30
+          if-no-files-found: warn
+
   governance-coverage:
     needs: [changes]
     if: needs.changes.outputs.governance == 'true'
