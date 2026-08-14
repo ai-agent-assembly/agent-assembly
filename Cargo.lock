@@ -467,6 +467,7 @@ dependencies = [
  "aa-core",
  "aa-isolation",
  "aa-isolation-sandlock",
+ "libc",
 ]
 
 [[package]]
