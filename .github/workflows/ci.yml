@@ -2758,6 +2758,13 @@ jobs:
             benchmarks/isolation/results/selftest-*.json
             .aabench-scratch/**/*.log
           retention-days: 30
+          # `.aabench-scratch` starts with a dot, and upload-artifact excludes
+          # hidden paths by default — the second confined-arm run (31816602980)
+          # uploaded exactly the 7 JSON files and silently zero `.log` files,
+          # discovered only after downloading the artifact and finding the
+          # per-repetition stderr that should have explained a uniform exit-1
+          # failure simply wasn't there.
+          include-hidden-files: true
           if-no-files-found: warn
 
   governance-coverage:
