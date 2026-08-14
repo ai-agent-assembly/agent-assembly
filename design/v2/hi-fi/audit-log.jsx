@@ -3,7 +3,13 @@ const { useState: useAuditSt } = React;
 
 /* ============================================================
    Audit Log page  —  GET /api/v1/logs
-   Immutable governance trail across all agents and sessions.
+   Tamper-evident governance trail across the agents and sessions routed
+   through the runtime. Tamper-evident is not immutable: the hash chain is
+   checkable for alteration, and says nothing about deletion. This endpoint is
+   served from the gateway JSONL sink (aa-gateway/src/audit_reader.rs), which
+   has no rotation, size cap or retention pass — so do not design an empty
+   state, a range picker or a footer that implies entries age out of this view.
+   The retention policy in the admin UI prunes the SQL copy, not this record.
    ============================================================ */
 
 const EVENT_META = {
@@ -70,7 +76,7 @@ function AuditLogPage({ goAgent, toast }) {
         <div>
           <div className="page-title">Audit Log</div>
           <div className="page-sub">
-            Immutable governance trail — LLM calls, tool invocations, file ops, network requests, policy verdicts, and approval decisions across all agents.
+            Tamper-evident governance trail — LLM calls, tool invocations, file ops, network requests, policy verdicts, and approval decisions, for the agents routed through the runtime.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

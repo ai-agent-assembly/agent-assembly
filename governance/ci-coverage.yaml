@@ -140,6 +140,21 @@ coverage:
       # check_absolutes_unwaivable.py's DEFAULT_GLOBS, which is what decides
       # the scan set once the job runs.
       - verification-reports/**/*.md
+      # AAASM-5679: the claim-vocabulary gate, the second scanner the
+      # `metadata-drift` job carries. Declared for the same reason as the two
+      # scripts above — without it C5 does not watch this one, so the gate
+      # could be dropped from docs.yml's router and no check would notice.
+      #
+      # It has NO `scan_parity` below, and the omission is measured rather than
+      # forgotten. C9a compares a router glob's tracked selection against what
+      # the scanner resolves, which assumes the scanner's globs are its whole
+      # predicate. This one filters by extension as well, so C9a would report
+      # 137 correctly-skipped files as coverage gaps — 134 under `design/**`
+      # (PNGs), 2 shell scripts under `.claude/**`, and
+      # `verification-reports/README.md`, which §6.5 excludes on purpose.
+      # Making C9a extension-aware is a change to AAASM-5677's gate and is left
+      # to it; this entry buys the C5 protection without it.
+      - scripts/check_claim_vocabulary.py
     # AAASM-5677 review R1. The router decides whether the job RUNS; this decides
     # what it READS once it does. They were out of step by one directory level:
     # the router matched verification-reports/<dir>/x.md, the scanner's globs did

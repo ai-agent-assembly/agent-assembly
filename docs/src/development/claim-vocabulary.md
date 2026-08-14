@@ -437,9 +437,33 @@ unilaterally.
 | `sees everything` | `catch everything` | `blocking` |
 | `every request` | `every action` / `every tool call` | `finding` |
 | `tamper-proof` | `immutable audit` | `blocking` |
+| `permanent record` | `immutable audit` | `blocking` |
+| `immutable <GOV-NOUN>` (e.g. *immutable governance trail*) | `immutable audit` | `blocking` |
 
 Owner: an amendment to ADR 0033, tracked with the banned-absolutes CI gate
 ([AAASM-5536](https://lightning-dust-mite.atlassian.net/browse/AAASM-5536)).
+
+**These are not hypothetical, and the gap they leave is now measured.**
+[AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679) corrected
+three shipped claims — *"the proxy captures **every intercepted request**"*
+(`claude-code.md:28`), *"keeps a **permanent record** of what was decided"*
+(`overview.md:7`) and *"**Immutable governance trail**"* (`design/v2/hi-fi/audit-log.jsx`,
+authoritative under ADR 0025). Run through the implementation of this rule set,
+all three together produce **0 blocking, 0 finding, 0 info**:
+
+```
+$ python3 scripts/check_claim_vocabulary.py <the three original lines>
+check_claim_vocabulary: 1 file(s) scanned; 0 blocking, 0 finding, 0 info.
+exit=0
+```
+
+So the regression those corrections address is **not machine-enforced today**. The
+checker is not defective — it enforces the list ADR 0033 actually bans, and
+[§5.2](#52-what-counts-as-the-same-list-member) puts a different lemma outside that
+list on purpose. Recording it here rather than quietly widening the patterns is the
+whole point of [§5.4](#54-proposed-extensions-that-require-an-adr-0033-amendment):
+a checker whose configuration may grow by itself is a second, undocumented ban list.
+Until the amendment lands, these three phrasings are prevented by review only.
 
 ### 5.5 Undifferentiated verbs, and the noun-collision trap
 
@@ -1152,11 +1176,22 @@ Two things had to be true before this page could be published, and both were
 measured rather than assumed.
 
 **This page does not violate its own rules.** Running the rule set over this file
-produces **0 blocking, 0 finding, 6 info**. Every prohibited phrase it *names*
-sits in an inline code span (E3) and is silent; the six `info` diagnostics are
-the six real violations quoted verbatim in
+produces **0 blocking, 1 finding, 7 info** (re-measured 2026-08 by the
+implementation — the figure was `0 / 0 / 6` when this section was written).
+Every prohibited phrase it *names* sits in an inline code span (E3) and is
+silent. Six of the seven `info` diagnostics are the real violations quoted
+verbatim in
 [§8.1](#81-two-corpora-and-why-the-baseline-must-cover-the-larger-one)'s table,
-each attributed to a file and line. That is `CLAIM-QUOTE-01` behaving exactly as
+each attributed to a file and line; the seventh is the `cannot be bypass`
+quotation inside §8.1's own re-measurement note, which reports a false positive
+of `CLAIM-ABS-03` rather than a violation. The one `finding` is
+`CLAIM-ABS-06` (`every action`) at §5.5.1, and it pre-dates this
+implementation — it is present on `main` under the same rule set.
+
+**The first number is the one that must stay zero**, and it has. `finding` and
+`info` do not gate; a page whose job is to enumerate banned phrases will
+accumulate both as it grows, which is why the count is re-measured here rather
+than asserted once. That is `CLAIM-QUOTE-01` behaving exactly as
 designed — a `negative-example`, visible in the checker's output and
 gating nothing. The convention that keeps the first number at zero is simple: *a
 banned phrase named in a specification is a literal, so it goes in backticks; a
@@ -1198,6 +1233,47 @@ mixing a head count with a base count is how the two rows stop adding up.
 | --- | --- | --- | --- |
 | `docs/src/**` only | 143 | 3 | 10 |
 | **Full [§6.5](#65-file-scope) scope** | **198** | **6** | **13** |
+
+> **Re-measured 2026-08 by the implementation
+> ([AAASM-5679](https://lightning-dust-mite.atlassian.net/browse/AAASM-5679)).**
+> The figures above are the authoring-time measurement and are retained for the
+> record; they no longer describe the tree. Over §6.5's scope plus that ticket's
+> `design/**` extension, **at `48b3ebac2`: 283 files, 4 blocking, 13 finding,
+> 32 info.**
+>
+> The commit is named because this is a *point-in-time* measurement of a moving
+> tree, and a bare count with no commit behind it silently becomes false the
+> next time `main` advances — which is the failure this whole page exists to
+> stop. It drifted from `281 / 4 / 12 / 32` to the figure above in the days
+> between the two runs, on two new files and one new `finding`. Re-run
+> `python3 scripts/check_claim_vocabulary.py --report-only` rather than trusting
+> this number; the **blocking** count is the one the §6.6 adoption path turns
+> on, and it is unchanged.
+>
+> The pin has to be a commit that **contains the checker**, which is why it is
+> `48b3ebac2` — this branch's merge of `f2d38e204` — and not `f2d38e204`
+> itself. `scripts/check_claim_vocabulary.py` does not exist on `main` until
+> this ticket lands, so `git checkout f2d38e204 && …` cannot run the command
+> this note tells a reader to re-run. A citation that names a commit where the
+> stated command does not exist is unreproducible in the same way a bare count
+> is, one step further along.
+>
+> Three of the six blocking rows below have since been fixed on `main` —
+> `README.md:129`, `README.md:135` and `aa-proxy/README.md:11-12` all measure
+> zero now, and `README.md:129` is the row [AAASM-5528](https://lightning-dust-mite.atlassian.net/browse/AAASM-5528)
+> closed. One new row appeared that this table never listed,
+> `governance/README.md:844`, and it is a **false positive**: the sentence reads
+> *"a capability cannot be bypass-resistant for something it does not provide"*,
+> and `CLAIM-ABS-03`'s pattern has no trailing boundary after `bypass(?:ed)?`.
+> The implementation is faithful to the pattern, so that is a defect in this
+> page's rule, not in the checker — and it is the tree's only novel blocking hit.
+>
+> Two of the four remaining are `docs/src/protocol/CHANGELOG.md:25,75`, which
+> `verification-reports/AAASM-5528-public-claim-inventory.md` records as a
+> deliberate decision (*"a changelog records what was said at the time"*). §7.4
+> makes them unwaivable and §6.6 forbids a suppression list, so **the adoption
+> sequence's "baseline reaches zero" condition cannot currently be met** without
+> reopening that decision. Recorded rather than worked around.
 
 The wider corpus is the narrower one plus 55 files: 43 `README.md` at any depth,
 15 under `.claude/`, and `CONTRIBUTING.md`, less the READMEs already inside
