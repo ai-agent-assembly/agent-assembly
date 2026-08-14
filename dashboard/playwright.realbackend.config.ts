@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
 import base from './playwright.config'
+import REAL_BACKEND_SPECS from './playwright.realbackend.specs'
 
 /**
  * The real-backend e2e lane (AAASM-5694).
@@ -27,15 +28,9 @@ import base from './playwright.config'
 export default defineConfig({
   ...base,
 
-  testMatch: [
-    // Asserts the paginated envelope against the live server — the AAASM-4892
-    // drift class the mocked gate structurally cannot see.
-    '**/real-backend-contract.spec.ts',
-    // AAASM-5360's acceptance evidence: proxies /api/v1/** to the live server.
-    '**/verify-aaasm-5360.spec.ts',
-    // The one pre-existing spec that asserts a genuine round trip.
-    '**/hitl-approval.spec.ts',
-  ],
+  // Derived from the same list `playwright.ci.config.ts` subtracts, so a spec
+  // taken out of the mocked gate is by construction run here (AAASM-5694).
+  testMatch: REAL_BACKEND_SPECS.map((spec) => `**/${spec}`),
 
   // Retries hide a flaky backend boot, which is the one failure this lane must
   // report rather than paper over.
