@@ -17,8 +17,8 @@
 |---|---|---|
 | network deny | Yes | Proxy (`aa-proxy`) intercepts and enforces network egress deny rules for the managed launch; Claude Code's managed settings carry no network-restriction keys, only `permissions.*` tool patterns and MCP allow/deny lists (`aa-devtool-claude-code/src/apply.rs`) |
 | network allowlist | Yes | Same as network deny — proxy-only; managed settings have no native network-allowlist config |
-| file read | Partial — eBPF | Proxy cannot inspect local filesystem operations; eBPF uprobes are the only enforcement path |
-| file write | Partial — eBPF | Same as file read — eBPF only |
+| file read | Partial — eBPF | Proxy cannot inspect local filesystem operations, so eBPF is the only path — and it is a **detection** path, not an enforcement one. The probes are kprobes/kretprobes on the `openat`/`read` syscalls (`aa-ebpf-probes/src/main.rs`); uprobes in this tree attach to OpenSSL only. They are observe-only: a `PATH_BLOCKLIST` hit sets an alert flag on the emitted event and the syscall proceeds. Linux-only, and these file-I/O kprobes are x86_64-only (hardcoded `__x64_sys_*`) |
+| file write | Partial — eBPF | Same as file read — kprobes on `write` / `unlink` / `rename`, observe-only, same platform bounds. Nothing here blocks a write |
 | process spawn | Partial — eBPF | eBPF tracepoint on `sched_process_exec` is the detection path; no SDK is embedded in Claude Code to govern spawns directly |
 | MCP allowlist | Yes | The adapter writes `enabledMcpjsonServers` / `disabledMcpjsonServers` into the managed `settings.json` (`aa-devtool-claude-code/src/apply.rs`) — not a separate `mcp_servers.json` |
 | sub-agent lineage | **No (L0)** | Claude Code sub-agents are not registered, get no topology entry and no per-child policy scope — see the [L0-L3 Capability Matrix](../../governance/capability-matrix.md). No SDK is embedded in Claude Code |
