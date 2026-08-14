@@ -13,7 +13,6 @@
 #                       of a pinned action is available
 #
 # Common settings applied to every entry:
-#   target-branch   — always `master` (the repo's default integration branch)
 #   commit-message  — Gitmoji ⬆ prefix to match the project commit convention
 #   schedule        — daily to catch CVEs and patch releases quickly;
 #                     adjust to "weekly" if PR noise becomes too high
@@ -22,6 +21,17 @@
 #   https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
 version: 2
+
+# AAASM-5675: `target-branch` is deliberately absent from EVERY entry below, and
+# adding it back disables Dependabot security updates for that entry's manifest
+# files. GitHub's security-update docs are explicit — "you should not specify a
+# `target-branch`" — and the options reference states that setting it means the
+# manifest files of that package manager no longer receive security updates.
+#
+# It was previously set to "main" on all three entries, which is the repository's
+# default branch anyway, so it bought nothing and silently cost security updates
+# repo-wide. Removing it changes no targeting behaviour: Dependabot targets the
+# default branch when the field is absent, and that default is `main`.
 updates:
 
   # ── Rust workspace ────────────────────────────────────────────────────────
@@ -30,7 +40,6 @@ updates:
   # The workspace resolver means a single Cargo.lock at "/" tracks them all.
   - package-ecosystem: "cargo"
     directory: "/"
-    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "rust"]
@@ -58,7 +67,6 @@ updates:
   # Covers: react, react-dom, vite, typescript, @vitejs/plugin-react, @types/*.
   - package-ecosystem: "npm"
     directory: "/dashboard"
-    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "dashboard", "pnpm"]
@@ -67,26 +75,29 @@ updates:
     open-pull-requests-limit: 10
 
   # ── Developer-integration reference client (pnpm) ────────────────────────
-  # AAASM-5675. This directory had a pnpm-lock.yaml and no entry here, which is
-  # a worse state than being uncovered: security updates are advisory-driven and
-  # run against any manifest regardless of this file, so the directory got a
-  # Dependabot *security* job with no configuration able to satisfy it. The job
-  # ran with `"allowed-updates":[{"dependency-type":"direct"}]` and
-  # `"update-subdependencies":false`, and the advisory was for a **transitive**
-  # `js-yaml` — the updater was asked to patch a package it was simultaneously
-  # forbidden to touch, and errored out on every attempt.
+  # AAASM-5675. This directory had a pnpm-lock.yaml and no entry here, so it
+  # received no scheduled version updates at all — the reason its dependencies
+  # drifted unattended.
   #
-  # `dependency-type: "all"` is the fix and is load-bearing: for npm, Dependabot
-  # defaults to direct dependencies only, which is precisely the setting that
-  # made the failing job unsatisfiable. The vulnerable package was never in this
-  # directory's package.json and never will be.
+  # No `allow:` block, deliberately. An earlier draft of this entry carried
+  # `allow: - dependency-type: "all"` and a comment calling it load-bearing.
+  # Both were wrong twice over: the options reference scopes `all`'s
+  # dependencies-of-direct-dependencies behaviour to bundler / pip / composer /
+  # cargo / gomod / uv, and **npm is in neither that list nor the `indirect`
+  # one**, so for npm `all` is exactly `direct`; and `allow` is not honoured for
+  # security updates at all (dependabot-core#2521, open since 2020). Dependabot
+  # already updates vulnerable transitive npm dependencies during security
+  # updates without any config lever.
+  #
+  # The same draft asserted that js-yaml "was never in this directory's
+  # package.json and never will be". It is there, at `pnpm.overrides` — and that
+  # override is what actually resolved the advisory, which makes it the opposite
+  # of the claim. Left recorded here because a wrong root-cause in a comment
+  # outlives the pull request that introduced it.
   - package-ecosystem: "npm"
     directory: "/examples/aa-devint-reference-client"
-    target-branch: "main"
     schedule:
       interval: "daily"
-    allow:
-      - dependency-type: "all"
     labels: ["dependencies", "examples", "pnpm"]
     commit-message:
       prefix: "⬆"
@@ -99,13 +110,16 @@ updates:
   # reason it was uncovered, and an unsatisfiable security job here would fail
   # exactly as the reference client's did. Covered deliberately rather than left
   # to be rediscovered.
+  #
+  # This directory has a live advisory right now: its pnpm-lock.yaml resolves
+  # js-yaml@4.1.1 at two sites, inside the >= 4.0.0 < 4.3.1 affected range, and
+  # unlike the reference client its package.json carries no `pnpm.overrides`
+  # pinning it. Covering it here is what lets Dependabot raise that PR; the pin
+  # itself is tracked separately (AAASM-5775).
   - package-ecosystem: "npm"
     directory: "/aa-integration-tests/tests/fixtures/agents/typescript"
-    target-branch: "main"
     schedule:
       interval: "weekly"
-    allow:
-      - dependency-type: "all"
     labels: ["dependencies", "test-fixtures", "pnpm"]
     commit-message:
       prefix: "⬆"
@@ -121,7 +135,6 @@ updates:
   #         EmbarkStudios/cargo-deny-action, SonarSource/sonarqube-scan-action.
   - package-ecosystem: "github-actions"
     directory: "/"
-    target-branch: "main"
     schedule:
       interval: "daily"
     labels: ["dependencies", "github-actions"]
