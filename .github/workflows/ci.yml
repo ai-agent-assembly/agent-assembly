@@ -2719,10 +2719,17 @@ jobs:
         working-directory: benchmarks/isolation/harness
         run: python3 aabench.py self-test --out-dir ../results
       - name: Confined arm — sandlock
+        # The launcher path must be absolute: runner.py's run_once() chdirs the
+        # child to REPO_ROOT (the monorepo root) before exec, so a launcher
+        # spec written relative to harness/ (as the README's earlier example
+        # and this job's first attempt both did) resolves against the wrong
+        # directory and every family fails identically and immediately — which
+        # is exactly what happened here before this fix, discovered from the
+        # uniform sub-3ms failures across every family including startup_nop.
         working-directory: benchmarks/isolation/harness
         run: |
           python3 aabench.py run --label sandlock-confined \
-            --launcher "sh ../launchers/sandlock.sh" \
+            --launcher "sh ${{ github.workspace }}/benchmarks/isolation/launchers/sandlock.sh" \
             --scratch-root "$AABENCH_SCRATCH" \
             --keep-scratch \
             --out ../results/ci-confined-linux.json
@@ -2737,7 +2744,11 @@ jobs:
         # `always()`: a run that failed partway (one family's admissibility
         # gate, say) still has whatever it produced worth downloading — this
         # is a spike, not a gate, and a partial result is real evidence, not
-        # nothing.
+        # nothing. Includes the per-repetition `*.log` files runner.py writes
+        # under the scratch root (stdout+stderr of the launcher invocation,
+        # not captured in the result JSON) — without these a failed family's
+        # exit code has no accompanying diagnostic, which is how the first
+        # attempt at this job took an extra round-trip to root-cause.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -2745,6 +2756,7 @@ jobs:
           path: |
             benchmarks/isolation/results/ci-*.json
             benchmarks/isolation/results/selftest-*.json
+            .aabench-scratch/**/*.log
           retention-days: 30
           if-no-files-found: warn
 

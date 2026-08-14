@@ -3,9 +3,15 @@
 Parameterised by a *launcher* so the same harness produces the unconfined
 baseline today and the AAASM-5708 confined arm later with no code change:
 
-    python3 aabench.py run --launcher 'sh ../launchers/unconfined.sh' --out base.json
+    python3 aabench.py run --launcher 'sh /abs/path/to/launchers/unconfined.sh' --out base.json
     python3 aabench.py run --launcher '/usr/bin/aasm-sandlock-run' --out confined.json
     python3 aabench.py compare --baseline base.json --candidate confined.json
+
+Launcher paths must be absolute: runner.py chdirs the child to REPO_ROOT (the
+monorepo root, not this directory) before exec, so a launcher spec written
+relative to here resolves against the wrong directory (AAASM-5713 — every
+family failed identically on the first confined-arm CI run for exactly this
+reason before it was caught).
 
 Read METHODOLOGY.md first. The thresholds this applies were pre-registered
 before any backend existed, and nothing here issues a verdict from timing data

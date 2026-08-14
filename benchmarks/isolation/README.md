@@ -47,13 +47,19 @@ python3 aabench.py run \
 
 # Confined arm — Linux + the sandlock backend only. A fixed --scratch-root is
 # required so the policy's write grant can name it; render the policy against
-# that same path before running.
+# that same path before running. Every path handed to --launcher or to
+# AABENCH_SANDLOCK_POLICY must be absolute: runner.py chdirs the launched
+# child to the monorepo root before exec, so a path written relative to this
+# directory resolves against the wrong one and the launch fails immediately
+# for every family, including startup_nop (AAASM-5713 learned this the hard
+# way on the first confined-arm CI run).
+here="$(pwd)"
 scratch=/tmp/aabench-confined-scratch
 mkdir -p "$scratch"
-sh ../policy/render.sh "$scratch" ../policy/confined-arm.yaml
-AABENCH_SANDLOCK_POLICY=../policy/confined-arm.yaml \
+sh "$here/../policy/render.sh" "$scratch" "$here/../policy/confined-arm.yaml"
+AABENCH_SANDLOCK_POLICY="$here/../policy/confined-arm.yaml" \
 python3 aabench.py run \
-    --launcher 'sh ../launchers/sandlock.sh' \
+    --launcher "sh $here/../launchers/sandlock.sh" \
     --label sandlock \
     --scratch-root "$scratch" \
     --keep-scratch \
