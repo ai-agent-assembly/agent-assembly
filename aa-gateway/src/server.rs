@@ -115,20 +115,12 @@ async fn setup_audit(
 }
 
 /// Path of the SQLite file the durable sensitive-data projection is written to
-/// (AAASM-5440).
-///
-/// Unset means the tier is off, which is the default ADR 0032 §8 requires: the
-/// projection must be switchable without touching existing audit behaviour, and
-/// defaulting it on would make the safe state the one an operator opts into.
+/// (AAASM-5440); unset or empty disables the tier.
 ///
 /// A path rather than a boolean over the gateway's own database. The projection
-/// is a second writer with a different retention story and a documented rollback
-/// of "drop the tables"; giving it its own file keeps that rollback to deleting
-/// one file, and keeps its write traffic off the pool the audit path shares.
-///
-/// # Not a stable configuration surface
-///
-/// Path to the sensitive-data projection database; unset disables the tier.
+/// is a second writer with its own retention story, so giving it its own file
+/// keeps its write traffic off the pool the audit path shares and makes
+/// discarding it a matter of deleting one file.
 ///
 /// **This is a supported operator setting** as of
 /// [AAASM-5739](https://lightning-dust-mite.atlassian.net/browse/AAASM-5739),
@@ -144,12 +136,17 @@ async fn setup_audit(
 ///   and `SensitiveDataProjectionConfig` derives `Default` with
 ///   `enabled: false`, so the conservative state is not something an operator
 ///   has to opt into (ADR 0032 §8).
-/// * **Set to a path** — the schema is applied at boot and an existing database
-///   is migrated in place, retaining its rows.
-/// * **Failure is fail-closed.** A database that cannot be opened or migrated
-///   fails the boot; see the `# Errors` section on
+/// * **Set to a path** — the tables are created if absent
+///   (`CREATE TABLE IF NOT EXISTS`). An existing database keeps its rows
+///   because nothing rewrites them; there is no schema-migration machinery
+///   here, and a future change to a table key will need one written.
+/// * **Failure is fail-closed, in the paths that read this.** A database that
+///   cannot be opened or migrated fails the boot of [`serve_tcp`] /
+///   [`serve_uds`]; see the `# Errors` section on
 ///   [`attach_sensitive_data_projection`] for why warning-and-continue is the
-///   wrong behaviour for a governance surface.
+///   wrong behaviour for a governance surface. `--mode local` and
+///   `--mode remote` never read this variable, so under those modes a bad path
+///   is neither opened nor reported.
 /// * **Reverting is unsetting it.** Writes stop; rows already written stay and
 ///   stay readable, because every row carries `SENSITIVE_DATA_SCHEMA_VERSION`
 ///   under a major-only compatibility rule.
