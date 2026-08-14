@@ -104,14 +104,21 @@ Stating this precisely matters more than stating it flatteringly — an
 overclaiming gate is how "green CI" quietly stops meaning anything.
 
 - **It is not an API-contract check, and its real-backend coverage is exactly
-  zero.** **All 44** gated specs stub every network call — 43 via `page.route`
+  zero.** Every gated spec stubs its network calls — most via `page.route`
   directly, `violations-heatmap-design-fidelity` via the shared `mockApi()`
-  helper in `_fixtures/aaasm-1432`. The gate compares the frontend against *its
+  helper in `_fixtures/aaasm-1432`.
+
+  *(The counts in this section were written when the suite was smaller and are
+  re-measured here: **58 gated spec files, 330 gated tests, out of 101 spec files
+  in the tree** — `playwright test --config=playwright.ci.config.ts --list`,
+  2026-08. The earlier "44" and "86" no longer describe the suite. The claim they
+  supported is unaffected: the figure that matters is the **zero**, not the
+  denominator.)* The gate compares the frontend against *its
   own hand-written mocks*, so it cannot observe the real API and cannot detect
   backend contract drift. The pagination-envelope breakage (AAASM-4892) is the
   proof: the app had already been updated and the **mocks** were what went stale.
 
-  Of all 86 specs in the suite, exactly one asserts a genuine round-trip against
+  Of every spec in the suite, exactly one asserted a genuine round-trip against
   a live gateway: `hitl-approval` is the only spec that uses `route.fetch` to
   proxy `/api/v1/**` to a real server, and the only one that spawns a child
   process — `hitl-fixture.ts:43` runs `cargo test --test e2e_hitl_approval` to
@@ -123,6 +130,33 @@ overclaiming gate is how "green CI" quietly stops meaning anything.
   otherwise watches; excluding `hitl-approval` takes an entire *category* of
   verification to zero, and no amount of working AAASM-5195 down will restore
   it. Recovering it needs a Rust-side e2e lane, not a shorter quarantine list.
+
+  **That lane now exists (AAASM-5694), and the figure above is scoped to this
+  job rather than to the suite.** `dashboard-e2e`'s own real-backend coverage is
+  still exactly zero, and deliberately so — it provisions no backend. The new
+  `dashboard-e2e-real-backend` job builds and boots a real `aa-api-server` and
+  runs the three specs that need one: `hitl-approval`, `verify-aaasm-5360` and
+  `real-backend-contract`. Read the two jobs together, not either alone:
+
+  | | `dashboard-e2e` | `dashboard-e2e-real-backend` |
+  | --- | --- | --- |
+  | Network surface | hand-written mocks, every gated spec | live `aa-api-server` |
+  | Can see backend contract drift | no | yes — `real-backend-contract.spec.ts` asserts the AAASM-4892 envelope |
+  | Quarantine list applied | yes | **no** — absence is the failure being fixed |
+  | Passes if its specs skip | n/a | **no** — `scripts/assert-e2e-actually-ran.mjs` fails the job |
+
+  The last row is the one that took a defect to learn. `verify-aaasm-5360` skips
+  when nothing is listening, which is correct for a spec that also runs on a
+  laptop — but Playwright then exits **0** with "4 skipped", so an
+  exit-code-only lane records real-backend verification as having happened while
+  running nothing. The guard reads the JSON report and asserts the *population*,
+  and it was proven by watching it go red on a skipped run before it was
+  trusted.
+
+  What is still not covered: the **populated** sensitive-data state. Producing
+  one means driving real policy evaluations through a gateway configured with
+  `AA_SENSITIVE_DATA_PROJECTION_DB` so the projection has rows. That is a
+  Rust-side fixture, and no lane builds one today.
 - **It does not enforce the `design/v2` visual spec.** Ten gated specs pin values
   sourced from `design/v1/`. Exactly one — `review-aaasm-5149` — cites
   `design/v2/`, and even that asserts three literal RGB constants committed in
