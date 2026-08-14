@@ -1742,3 +1742,695 @@ impl IsolationReport {
         lines
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use aa_security::policy::{Capability, CapabilitySet, PolicyDocument};
+
+    use super::*;
+    use crate::capability::{
+        BackendAvailability, BackendCapabilities, CapabilityReport, Mediation, PlatformBoundary, Synchrony,
+    };
+    use crate::descriptor::{DescriptorDisposition, InheritedDescriptor};
+    use crate::evidence::EvidenceRecord;
+    use crate::lowering::{lower_policy, LoweringOptions};
+    use crate::plan::{negotiate, Lowering, PlanRefusal, Provenance};
+
+    const WRITE: CapabilityDomain = CapabilityDomain::FilesystemWrite;
+    const EGRESS: CapabilityDomain = CapabilityDomain::NetworkEgress;
+    const SYSCALL: CapabilityDomain = CapabilityDomain::Syscall;
+
+    fn backend() -> BackendIdentity {
+        BackendIdentity {
+            id: "reference".into(),
+            version: "1.2.3".into(),
+            provenance: Provenance {
+                source: "workspace".into(),
+                license: "Apache-2.0".into(),
+                modified: false,
+            },
+        }
+    }
+
+    fn session() -> SessionRef {
+        SessionRef::new("session-1", "trace-1")
+    }
+
+    /// A capability that meets every condition for pre-effect denial.
+    fn preventing(domain: CapabilityDomain) -> CapabilityReport {
+        CapabilityReport::new(domain, Mediation::Enforce, DecisionTiming::Pre, Synchrony::Sync)
+            .with_descendants(DescendantCoverage::ProcessTree)
+    }
+
+    /// The same capability with only its enforcement signal removed. It still
+    /// watches, is still pre-effect, still synchronous and still covers the
+    /// tree — the single difference is that it cannot refuse.
+    fn observing(domain: CapabilityDomain) -> CapabilityReport {
+        CapabilityReport::new(domain, Mediation::Observe, DecisionTiming::Pre, Synchrony::Sync)
+            .with_descendants(DescendantCoverage::ProcessTree)
+    }
+
+    fn capabilities(reports: Vec<CapabilityReport>) -> BackendCapabilities {
+        BackendCapabilities::new(
+            BackendAvailability::Available,
+            PlatformBoundary::SharedHostKernel,
+            reports,
+        )
+        .expect("test reports name distinct domains")
+    }
+
+    fn spec_of(requirements: Vec<ControlRequirement>, credentials: CredentialPosture) -> ExecutionSpec {
+        let mut spec = ExecutionSpec::new("mock-tool", IdentityRef::root("agent-1").with_team("pioneer"))
+            .with_args(["--flag", "value"])
+            .with_credentials(credentials);
+        for requirement in requirements {
+            spec = spec.with_requirement(requirement);
+        }
+        spec
+    }
+
+    // Same justification as `negotiate`'s own allow, pinned by
+    // `plan::tests::refusal_is_free_to_carry_by_value`: `EnforcementPlan` is the
+    // larger variant, so the `Result` costs the same either way and boxing the
+    // error would buy nothing.
+    #[allow(clippy::result_large_err)]
+    fn plan_of(spec: &ExecutionSpec, caps: &BackendCapabilities) -> Result<EnforcementPlan, PlanRefusal> {
+        negotiate(spec, &backend(), caps, &|_, _| Lowering::none())
+    }
+
+    fn parse(report: &IsolationReport) -> BTreeMap<String, String> {
+        let mut map = BTreeMap::new();
+        for line in report.machine_lines() {
+            let (key, value) = line.split_once('=').expect("every record is key=value");
+            assert!(!key.is_empty(), "empty key in `{line}`");
+            assert!(
+                map.insert(key.to_string(), value.to_string()).is_none(),
+                "duplicate machine key `{key}`",
+            );
+        }
+        map
+    }
+
+    /// The block a render heading introduces, up to the blank line that ends it.
+    ///
+    /// Assertions scoped to one section rather than to the whole render: without
+    /// this, `!block.contains("filesystem_write")` would be satisfied — or
+    /// violated — by an unrelated later section that happens to mention it, and
+    /// the test would be measuring the wrong text.
+    fn section(rendered: &str, heading: &str) -> String {
+        let mut lines = rendered.lines().skip_while(|line| !line.starts_with(heading));
+        let first = lines.next().expect("the section heading exists");
+        std::iter::once(first)
+            .chain(lines.take_while(|line| !line.trim().is_empty()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// One requirement per outcome the projection has a state for, so a single
+    /// report exercises every arm.
+    fn mixed_plan() -> EnforcementPlan {
+        let spec = spec_of(
+            vec![
+                ControlRequirement::prevent(WRITE),
+                ControlRequirement::prevent(EGRESS).with_posture(RequirementPosture::DegradeIfUnavailable),
+                ControlRequirement::prevent(SYSCALL).with_posture(RequirementPosture::Optional),
+            ],
+            CredentialPosture {
+                removed: vec!["ZZ_TOKEN".into(), "AA_TOKEN".into()],
+                delegated: Vec::new(),
+                ambient_unremoved: Vec::new(),
+            },
+        );
+        let caps = capabilities(vec![
+            preventing(WRITE),
+            observing(EGRESS),
+            CapabilityReport::unsupported(SYSCALL, "no mechanism in this deployment"),
+        ]);
+        plan_of(&spec, &caps).expect("only the required requirement must be met")
+    }
+
+    /// AC: dry-run prints a *deterministic* section derived from the canonical
+    /// plan. Two renders of one report, and two reports of one run, must be
+    /// byte-identical — otherwise a diff between two runs is unreadable.
+    ///
+    /// The credential lists are deliberately supplied out of order, so a
+    /// rendering that iterated them as given rather than sorting would still
+    /// pass the first assertion and fail the third.
+    #[test]
+    fn the_same_run_renders_byte_identically() {
+        let first = IsolationReport::from_plan(session(), &mixed_plan());
+        let second = IsolationReport::from_plan(session(), &mixed_plan());
+
+        assert_eq!(first.render(), first.render(), "one report must render stably");
+        assert_eq!(first.machine_lines(), first.machine_lines());
+        assert_eq!(first.render(), second.render(), "one run must render stably");
+        assert_eq!(first.machine_lines(), second.machine_lines());
+
+        let removed_line = first
+            .render()
+            .lines()
+            .find(|l| l.trim_start().starts_with("removed ("))
+            .expect("the credential block names what was removed")
+            .to_string();
+        assert!(
+            removed_line.contains("AA_TOKEN, ZZ_TOKEN"),
+            "credential names must be sorted, not rendered in arrival order: {removed_line}"
+        );
+    }
+
+    /// AC: per-capability requested vs achieved is visible and unsupported
+    /// requirements are not hidden; explicit degradation is *structurally*
+    /// distinct from enforcement.
+    ///
+    /// Five states, five tokens, and the degraded one lands in a section whose
+    /// heading says it is not enforced — not a wording difference a reader can
+    /// skim past.
+    #[test]
+    fn the_five_control_states_render_distinctly() {
+        let report = IsolationReport::from_plan(session(), &mixed_plan());
+        let machine = parse(&report);
+
+        assert_eq!(machine["domain.filesystem_write.state"], "prevention");
+        assert_eq!(machine["domain.network_egress.state"], "degraded");
+        assert_eq!(machine["domain.syscall.state"], "unsupported");
+        assert_eq!(machine["domain.credential.state"], "unmeasured");
+        assert_eq!(machine["domain.credential.state_detail"], "no_control_requested");
+
+        let tokens = ["prevention", "degraded", "unsupported", "unmeasured"];
+        let mut distinct = tokens.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), tokens.len(), "the state tokens must not collide");
+
+        let rendered = report.render();
+        assert!(
+            rendered.contains("degraded or unsupported controls — these are NOT enforced"),
+            "degradation needs a section of its own, not a footnote: {rendered}"
+        );
+        let degraded_block = section(&rendered, "degraded or unsupported controls");
+        assert!(
+            degraded_block.contains("network_egress [degraded]"),
+            "the degraded domain must appear in the shortfall section: {degraded_block}"
+        );
+        assert!(
+            degraded_block.contains("planned=prevent_before_effect"),
+            "a degraded entry must carry what it planned and did not reach: {degraded_block}"
+        );
+        assert!(
+            degraded_block.contains("syscall [unsupported]"),
+            "an unsupported requirement must not be hidden: {degraded_block}"
+        );
+        assert!(
+            !degraded_block.contains("filesystem_write"),
+            "a prevented domain must not be listed as a shortfall: {degraded_block}"
+        );
+    }
+
+    /// AC: a refused launch explains the *exact* missing required capability.
+    ///
+    /// "Could not enforce network egress" is not actionable; the refusal has to
+    /// say which condition of prevention the capability failed, so an operator
+    /// knows whether to change the policy, the backend, or their expectations.
+    #[test]
+    fn a_refusal_names_the_exact_missing_required_capability() {
+        let spec = spec_of(
+            vec![ControlRequirement::prevent(WRITE), ControlRequirement::prevent(EGRESS)],
+            CredentialPosture::default(),
+        );
+        let caps = capabilities(vec![preventing(WRITE), observing(EGRESS)]);
+        let refusal = plan_of(&spec, &caps).expect_err("a required prevention requirement met an observer");
+
+        let report = IsolationReport::from_refusal(session(), &spec, &refusal);
+        assert_eq!(report.posture(), ReportedPosture::Refused);
+        assert_eq!(report.refusals().len(), 1, "exactly one requirement was unmet");
+        assert_eq!(report.refusals()[0].0, EGRESS);
+
+        let rendered = report.render();
+        assert!(rendered.contains("REFUSED"), "{rendered}");
+        let refusal_block = section(&rendered, "refused before launch");
+        assert!(
+            refusal_block.contains("network_egress [observe_only_for_prevention_requirement]"),
+            "the refusal must name the domain and the specific condition: {refusal_block}"
+        );
+        assert!(
+            refusal_block.contains("only `observe`s"),
+            "the refusal must say what the capability actually does: {refusal_block}"
+        );
+        assert!(
+            !refusal_block.contains("filesystem_write"),
+            "a requirement that was not the problem must not be named as missing: {refusal_block}"
+        );
+
+        let machine = parse(&report);
+        assert_eq!(machine["refusal.0.domain"], "network_egress");
+        assert_eq!(machine["refusal.0.reason"], "observe_only_for_prevention_requirement");
+        assert_eq!(
+            machine["domain.filesystem_write.state"], "unmeasured",
+            "a requirement whose outcome was never reported is unmeasured, not satisfied"
+        );
+    }
+
+    /// **Negative control 1 (AAASM-5710).** Removing the backend's enforcement
+    /// signal must *lower* the reported state rather than leaving it green.
+    ///
+    /// The two capability reports differ in exactly one field — [`Mediation`] —
+    /// and everything else about the run is held constant: same spec, same
+    /// backend identity, same posture selection. If the projection ever mapped a
+    /// degraded outcome to [`ControlState::Prevention`], or let a `Ready`
+    /// negotiation survive a shortfall, this goes red.
+    #[test]
+    fn removing_the_backends_enforcement_signal_lowers_the_reported_state() {
+        let spec = spec_of(
+            vec![ControlRequirement::prevent(WRITE).with_posture(RequirementPosture::DegradeIfUnavailable)],
+            CredentialPosture::default(),
+        );
+
+        let enforcing = plan_of(&spec, &capabilities(vec![preventing(WRITE)])).expect("an enforcing backend plans");
+        let green = IsolationReport::from_plan(session(), &enforcing);
+        assert_eq!(parse(&green)["domain.filesystem_write.state"], "prevention");
+        assert_eq!(green.posture(), ReportedPosture::Ready);
+
+        let bypassed = plan_of(&spec, &capabilities(vec![observing(WRITE)])).expect("degradation was permitted");
+        let lowered = IsolationReport::from_plan(session(), &bypassed);
+        let machine = parse(&lowered);
+        assert_eq!(
+            machine["domain.filesystem_write.state"], "degraded",
+            "an observing capability must never project as prevention"
+        );
+        assert_eq!(machine["domain.filesystem_write.claim"], "degraded");
+        assert_eq!(
+            lowered.posture(),
+            ReportedPosture::Degraded,
+            "a shortfall must lower the run's posture"
+        );
+        assert_ne!(
+            green.render(),
+            lowered.render(),
+            "the two runs must not render the same"
+        );
+    }
+
+    /// **Negative control 2 (AAASM-5710).** Evidence with no
+    /// [`EvidenceKind::Decision`] record must not claim prevention — however
+    /// many other records carry a prevention term.
+    ///
+    /// Three progressively stronger inputs, and only the last one moves the
+    /// claim: setup-time records (ADR 0033 forbidden design 6 — configuration is
+    /// not enforcement), then a runtime corroboration that carries
+    /// `denied_before_execution` without a decision behind it, then the decision
+    /// itself. Deleting either gate in `with_evidence` turns this red.
+    #[test]
+    fn evidence_without_a_decision_record_never_claims_prevention() {
+        let spec = spec_of(vec![ControlRequirement::prevent(WRITE)], CredentialPosture::default());
+        let plan = plan_of(&spec, &capabilities(vec![preventing(WRITE)])).expect("an enforcing backend plans");
+        let report = IsolationReport::from_plan(session(), &plan);
+
+        // Pre-launch: the control *will* prevent, and the claim is still only
+        // that it is planned. Nothing has run.
+        assert_eq!(parse(&report)["domain.filesystem_write.state"], "prevention");
+        assert_eq!(parse(&report)["domain.filesystem_write.claim"], "planned");
+        assert!(!report.claims_prevention(WRITE));
+
+        // Setup-time only, both records carrying the strongest possible term.
+        let mut evidence = EnforcementEvidence::from_plan(&plan);
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Installed,
+            WRITE,
+            ClaimTerm::DeniedBeforeExecution,
+            "the control was applied before the process started",
+        ));
+        let setup_only = report.clone().with_evidence(&evidence);
+        let machine = parse(&setup_only);
+        assert_eq!(machine["domain.filesystem_write.evidence"], "setup_only");
+        assert_eq!(
+            machine["domain.filesystem_write.claim"], "unmeasured",
+            "an installed control that decided nothing has measured nothing"
+        );
+        assert!(!setup_only.claims_prevention(WRITE));
+
+        // A runtime record, corroborating rather than deciding.
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::IndependentVerification,
+            WRITE,
+            ClaimTerm::DeniedBeforeExecution,
+            "an out-of-band probe of this domain failed",
+        ));
+        let corroborated = report.clone().with_evidence(&evidence);
+        let machine = parse(&corroborated);
+        assert_eq!(machine["domain.filesystem_write.evidence"], "runtime_without_decision");
+        assert_ne!(
+            machine["domain.filesystem_write.claim"], "denied_before_execution",
+            "corroboration presupposes the decision it corroborates; it does not supply one"
+        );
+        assert!(!corroborated.claims_prevention(WRITE));
+
+        // The decision, and only now does the claim rise.
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Decision,
+            WRITE,
+            ClaimTerm::DeniedBeforeExecution,
+            "refused a write to a path outside the permitted set",
+        ));
+        let decided = report.with_evidence(&evidence);
+        let machine = parse(&decided);
+        assert_eq!(machine["domain.filesystem_write.evidence"], "decision");
+        assert_eq!(machine["domain.filesystem_write.claim"], "denied_before_execution");
+        assert_eq!(machine["stage"], "post_run");
+        assert!(decided.claims_prevention(WRITE));
+    }
+
+    /// **Negative control 3 (AAASM-5710).** A non-empty `ambient_unremoved` must
+    /// change the rendered posture, not merely add a line somewhere.
+    ///
+    /// Everything except the credential list is held constant between the two
+    /// reports. If `posture()` ever stopped consulting
+    /// `is_least_authority`, the second half goes red.
+    #[test]
+    fn unremoved_ambient_authority_changes_the_rendered_posture() {
+        let requirements = || vec![ControlRequirement::prevent(WRITE)];
+        let caps = capabilities(vec![preventing(WRITE)]);
+
+        let clean = spec_of(
+            requirements(),
+            CredentialPosture {
+                removed: vec!["ANTHROPIC_API_KEY".into()],
+                delegated: Vec::new(),
+                ambient_unremoved: Vec::new(),
+            },
+        );
+        let clean = IsolationReport::from_plan(session(), &plan_of(&clean, &caps).expect("plans"));
+        assert!(clean.is_least_authority());
+        assert_eq!(clean.posture(), ReportedPosture::Ready);
+        assert_eq!(parse(&clean)["least_authority"], "true");
+        assert_eq!(parse(&clean)["posture"], "ready");
+
+        let residual = spec_of(
+            requirements(),
+            CredentialPosture {
+                removed: vec!["ANTHROPIC_API_KEY".into()],
+                delegated: Vec::new(),
+                ambient_unremoved: vec!["AWS_SECRET_ACCESS_KEY".into(), "GITHUB_TOKEN".into()],
+            },
+        );
+        let residual = IsolationReport::from_plan(session(), &plan_of(&residual, &caps).expect("plans"));
+        assert!(!residual.is_least_authority());
+        assert_eq!(
+            residual.posture(),
+            ReportedPosture::Degraded,
+            "a run holding authority policy wanted removed is not equivalently protected"
+        );
+        let machine = parse(&residual);
+        assert_eq!(machine["least_authority"], "false");
+        assert_eq!(machine["posture"], "degraded");
+        assert_eq!(machine["credential.ambient_unremoved_count"], "2");
+        assert_eq!(machine["credential.ambient_unremoved.0"], "AWS_SECRET_ACCESS_KEY");
+
+        let rendered = residual.render();
+        assert!(rendered.contains("least_authority:  NO —"), "{rendered}");
+        assert!(rendered.contains("The run is NOT least-authority."), "{rendered}");
+        assert!(rendered.contains("AWS_SECRET_ACCESS_KEY"), "{rendered}");
+        assert_ne!(clean.render(), rendered);
+    }
+
+    /// A negotiation that was asked for nothing succeeded at nothing.
+    ///
+    /// `negotiate` resolves an empty spec to [`LaunchPosture::Ready`] against any
+    /// backend at all, including one that enforces nothing. That is correct for
+    /// the negotiation and catastrophic as a report, so the projection reports
+    /// [`ReportedPosture::NoBoundary`] instead — which is the honest state of
+    /// `aasm run` today.
+    #[test]
+    fn a_plan_that_asked_for_nothing_is_not_reported_as_ready() {
+        let spec = spec_of(Vec::new(), CredentialPosture::default());
+        let plan = plan_of(&spec, &capabilities(Vec::new())).expect("an empty spec meets any backend");
+        assert_eq!(
+            plan.posture(),
+            LaunchPosture::Ready,
+            "the negotiation itself is ready — this is the state being guarded against"
+        );
+
+        let report = IsolationReport::from_plan(session(), &plan);
+        assert_eq!(report.posture(), ReportedPosture::NoBoundary);
+        assert_eq!(parse(&report)["posture"], "no_boundary");
+        let rendered = report.render();
+        assert!(
+            rendered.contains("An empty requirement set is not a clean boundary"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("NO BOUNDARY ESTABLISHED"), "{rendered}");
+    }
+
+    /// A report with no backend states no backend, and nothing about the host's
+    /// ability to supply one.
+    ///
+    /// ADR 0033 forbidden design 6 in its narrowest form: there is no field for
+    /// availability, so there is nothing to round up.
+    #[test]
+    fn a_run_with_no_backend_claims_nothing_about_one() {
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 2),
+            CredentialPosture::default(),
+            "no isolation backend is selected by `aasm run` yet",
+        );
+        assert!(report.backend().is_none());
+        assert_eq!(report.posture(), ReportedPosture::NoBoundary);
+
+        let machine = parse(&report);
+        assert_eq!(machine["backend_selected"], "false");
+        assert!(!machine.contains_key("backend_id"));
+        for domain in CapabilityDomain::ALL {
+            let key = format!("domain.{}.state_detail", domain.as_str());
+            assert_eq!(machine[&key], "no_backend_selected");
+            assert_eq!(machine[&format!("domain.{}.claim", domain.as_str())], "unmeasured");
+            assert_eq!(machine[&format!("domain.{}.evidence", domain.as_str())], "none");
+        }
+        assert!(
+            report.render().contains("not about this run"),
+            "the render must say availability is not a fact about this run"
+        );
+    }
+
+    /// AC: policy gaps are rendered, and the three silences stay apart.
+    ///
+    /// `PolicyCannotExpress` (there is no way to ask), `NotStated` (there is a
+    /// line to write and nobody wrote it) and `Unmeasured` (nobody looked) reach
+    /// a reader through three different blocks with three different remedies.
+    #[test]
+    fn the_kinds_of_policy_silence_stay_structurally_apart() {
+        let mut set = CapabilitySet::default();
+        set.deny.insert(Capability::FileWrite);
+        let policy = PolicyDocument {
+            capabilities: Some(set),
+            ..PolicyDocument::default()
+        };
+        let lowering = lower_policy(&policy, &LoweringOptions::strict());
+        assert!(
+            lowering.unrepresentable().count() > 0,
+            "the fixture must contain at least one unrepresentable domain"
+        );
+
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 0),
+            CredentialPosture::default(),
+            "no backend is selected",
+        )
+        .with_policy(&lowering);
+
+        let machine = parse(&report);
+        for gap in lowering.unrepresentable() {
+            let key = format!("domain.{}.requested", gap.domain.as_str());
+            assert_eq!(
+                machine[&key], "policy_cannot_express",
+                "an unrepresentable domain must say so rather than reading as unrequested"
+            );
+            assert_eq!(
+                machine[&format!("domain.{}.state", gap.domain.as_str())],
+                "unmeasured",
+                "unrepresentable is about the request; the control is still unmeasured"
+            );
+        }
+
+        let rendered = report.render();
+        assert!(
+            rendered.contains("policy cannot express these domains"),
+            "the unrepresentable block is mandatory: {rendered}"
+        );
+        assert!(
+            rendered.contains("NOT a judgement that no control is required"),
+            "the unrepresentable block must refuse the 'no restriction needed' reading: {rendered}"
+        );
+        assert!(
+            rendered.contains("unmeasured — nothing established anything"),
+            "unmeasured is its own block: {rendered}"
+        );
+        assert!(
+            !rendered.contains("no restriction is required"),
+            "no block may render a gap as an absence of need: {rendered}"
+        );
+
+        // The three request tokens are distinct strings, so a grep for one can
+        // never match another.
+        let tokens = ["stated", "not_stated", "policy_cannot_express", "not_derived"];
+        let mut distinct = tokens.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), tokens.len());
+    }
+
+    /// AC: a downstream dashboard or CI check can consume the output without
+    /// parsing prose.
+    ///
+    /// Every record is `key=value`, keys are unique, values hold no newline, and
+    /// every domain answers all four axes. A consumer keys off tokens from a
+    /// closed vocabulary and never reads a sentence.
+    #[test]
+    fn machine_output_has_a_stable_parseable_shape() {
+        let report = IsolationReport::from_plan(session(), &mixed_plan());
+        let machine = parse(&report);
+
+        assert_eq!(machine["schema"], REPORT_SCHEMA);
+        assert_eq!(machine["domain_count"], "9");
+        assert_eq!(machine["backend_id"], "reference");
+        assert_eq!(machine["backend_version"], "1.2.3");
+        assert_eq!(machine["backend_source"], "workspace");
+        assert_eq!(machine["backend_license"], "Apache-2.0");
+        assert_eq!(machine["session_id"], "session-1");
+        assert_eq!(machine["trace_id"], "trace-1");
+        assert_eq!(machine["agent_id"], "agent-1");
+        assert_eq!(machine["target_program"], "mock-tool");
+        assert_eq!(machine["target_arg_count"], "2");
+        assert_eq!(machine["requested_requirement_count"], "3");
+
+        for domain in CapabilityDomain::ALL {
+            for axis in ["requested", "state", "claim", "evidence"] {
+                let key = format!("domain.{}.{axis}", domain.as_str());
+                assert!(machine.contains_key(&key), "missing `{key}`");
+                assert!(!machine[&key].is_empty(), "`{key}` is empty");
+            }
+        }
+
+        let postures = ["ready", "degraded", "refused", "no_boundary"];
+        assert!(
+            postures.contains(&machine["posture"].as_str()),
+            "posture must come from a closed vocabulary, got `{}`",
+            machine["posture"]
+        );
+        let stages = ["pre_launch", "post_run"];
+        assert!(stages.contains(&machine["stage"].as_str()));
+
+        for line in report.machine_lines() {
+            assert!(!line.contains('\n'), "a record must be one line: {line}");
+        }
+    }
+
+    /// A value carrying a newline or a control character cannot forge a record.
+    ///
+    /// Backend refusal reasons and policy node names are free text from outside
+    /// this crate; without sanitizing, one containing `\nposture=ready` would
+    /// inject a record a consumer would believe.
+    #[test]
+    fn hostile_free_text_cannot_forge_a_machine_record() {
+        let spec = spec_of(vec![ControlRequirement::prevent(WRITE)], CredentialPosture::default());
+        let caps = capabilities(vec![CapabilityReport::unsupported(
+            WRITE,
+            "no mechanism\nposture=ready\nleast_authority=true",
+        )]);
+        let refusal = plan_of(&spec, &caps).expect_err("an unsupported domain refuses a required requirement");
+        let report = IsolationReport::from_refusal(session(), &spec, &refusal);
+
+        let machine = parse(&report);
+        assert_eq!(machine["posture"], "refused", "the injected posture must not win");
+        assert_eq!(machine["least_authority"], "true");
+        assert!(machine["refusal.0.detail"].contains("posture=ready"));
+        assert!(!machine["refusal.0.detail"].contains('\n'));
+    }
+
+    /// An inherited-descriptor boundary nothing could enumerate is not a clean
+    /// one, and the report must say so the same way it does for credentials.
+    #[test]
+    fn an_unenumerable_descriptor_boundary_is_not_least_authority() {
+        let spec = spec_of(vec![ControlRequirement::prevent(WRITE)], CredentialPosture::default());
+        let plan = plan_of(&spec, &capabilities(vec![preventing(WRITE)])).expect("plans");
+        let report = IsolationReport::from_plan(session(), &plan);
+        assert_eq!(report.posture(), ReportedPosture::Ready);
+
+        let with_gap = report.with_descriptors(DescriptorInventory::not_enumerable(
+            "this host offers no way to enumerate open descriptors",
+            vec![InheritedDescriptor {
+                number: 0,
+                description: "standard input".into(),
+                disposition: DescriptorDisposition::Delegated {
+                    reason: "the launched program expects it".into(),
+                },
+            }],
+        ));
+        assert!(!with_gap.is_least_authority());
+        assert_eq!(with_gap.posture(), ReportedPosture::Degraded);
+        assert_eq!(parse(&with_gap)["descriptors.asserts_clean_boundary"], "false");
+    }
+
+    /// Evidence lowers a posture and never raises one.
+    ///
+    /// A run whose evidence says it was refused is refused, whatever the plan
+    /// said; a run with no boundary does not acquire one because evidence
+    /// arrived carrying a readier posture.
+    #[test]
+    fn evidence_lowers_a_posture_and_never_raises_one() {
+        let spec = spec_of(Vec::new(), CredentialPosture::default());
+        let plan = plan_of(&spec, &capabilities(Vec::new())).expect("an empty spec meets any backend");
+        let absent = IsolationReport::from_plan(session(), &plan);
+        assert_eq!(absent.posture(), ReportedPosture::NoBoundary);
+
+        let ready_evidence = EnforcementEvidence::new(backend(), LaunchPosture::Ready);
+        assert_eq!(
+            absent.clone().with_evidence(&ready_evidence).posture(),
+            ReportedPosture::NoBoundary,
+            "evidence must not conjure a boundary that was never established"
+        );
+
+        let write_spec = spec_of(vec![ControlRequirement::prevent(WRITE)], CredentialPosture::default());
+        let write_plan = plan_of(&write_spec, &capabilities(vec![preventing(WRITE)])).expect("plans");
+        let ready = IsolationReport::from_plan(session(), &write_plan);
+        assert_eq!(ready.posture(), ReportedPosture::Ready);
+
+        let refused_evidence = EnforcementEvidence::new(backend(), LaunchPosture::Refused);
+        assert_eq!(
+            ready.clone().with_evidence(&refused_evidence).posture(),
+            ReportedPosture::Refused,
+        );
+        let degraded_evidence = EnforcementEvidence::new(backend(), LaunchPosture::Degraded);
+        assert_eq!(
+            ready.with_evidence(&degraded_evidence).posture(),
+            ReportedPosture::Degraded,
+        );
+    }
+
+    /// Two requirements naming one domain fold to the weaker of the two.
+    ///
+    /// A spec may carry duplicates, and picking the first — or the strongest —
+    /// would let a second, laxer requirement raise a domain's reported state.
+    #[test]
+    fn duplicate_requirements_for_one_domain_fold_to_the_weaker_state() {
+        let spec = spec_of(
+            vec![
+                ControlRequirement::observe(WRITE),
+                ControlRequirement::prevent(WRITE).with_posture(RequirementPosture::DegradeIfUnavailable),
+            ],
+            CredentialPosture::default(),
+        );
+        let plan = plan_of(&spec, &capabilities(vec![observing(WRITE)])).expect("degradation was permitted");
+        let report = IsolationReport::from_plan(session(), &plan);
+        assert_eq!(
+            parse(&report)["domain.filesystem_write.state"],
+            "degraded",
+            "an observed requirement must not raise a degraded one out of the shortfall list"
+        );
+        assert_eq!(report.posture(), ReportedPosture::Degraded);
+    }
+}
