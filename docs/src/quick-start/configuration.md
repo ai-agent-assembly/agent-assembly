@@ -229,6 +229,23 @@ per tenant at runtime via `GET` / `PUT /api/v1/analytics/trust/config`; there is
 no environment variable for it. An agent with fewer than the minimum number of
 governed actions shows `—` (not enough data) rather than a misleading number.
 
+### `aa-gateway` server environment variables
+
+The gateway process reads its own variables at boot, separately from the CLI and
+from `aa-api`. The one an operator turns on deliberately:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AA_SENSITIVE_DATA_PROJECTION_DB` | _(unset)_ | Path to the SQLite file the durable sensitive-data projection is written to. Unset or empty leaves the tier off, so classification decisions are still evaluated but are not recorded to it. |
+
+Two conditions on it are worth reading before you set it, because neither is
+visible from the table: it is read only under the gateway's default
+`legacy-grpc` mode — `--mode local` and `--mode remote` ignore it without
+complaint — and a path that cannot be opened or migrated fails the boot rather
+than warning. [Sensitive-data
+projection](../operations/sensitive-data-projection.md) is the operator contract
+for both, and for reverting.
+
 ## Output format
 
 Most list/get commands accept `--output table|json|yaml` (default `table`). Use
