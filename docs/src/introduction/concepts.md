@@ -55,7 +55,7 @@ constraint, since retention pruning deletes rows; and emission is best-effort, s
 a dropped entry is indistinguishable from tampering. Within those bounds it
 answers the accountability question for a governed agent: *what did it do, when,
 and was it permitted?* Audit
-records use a single wire format regardless of which interception layer observed
+records use a single wire format regardless of which enforcement mechanism observed
 the action, so the gateway presents one unified history. Audit data underpins
 debugging, incident response, and [compliance
 export](../operations/compliance-export.md).

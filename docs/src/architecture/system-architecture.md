@@ -1,26 +1,28 @@
 # System architecture
 
 This page is the big-picture map of `agent-assembly`: the workspace crates, how
-the three interception layers feed one central **gateway**, and which transport
+the three enforcement mechanisms feed one central **gateway**, and which transport
 each component speaks. Read it first; the [component deep-dives](components.md),
 [key workflows](workflows.md), and [data flows](data-flows.md) pages zoom into
 each piece.
 
-For the trust-boundary view of the same system — what each layer is trusted to
-do and where the authoritative checks live — see the
+For the trust-boundary view of the same system — what each mechanism is trusted
+to do and where the authoritative checks live — see the
 [Security Model](../security/overview.md).
 
 ## The one-sentence model
 
-> Agents act; the three interception layers observe those actions and forward
-> them to the gateway; the gateway evaluates **policy**, tracks **budgets**, and
-> writes an **audit** record before returning *allow* or *deny*.
+> Agents act; whichever of the three enforcement mechanisms a deployment installs
+> observes those actions and forwards them to the gateway; the gateway evaluates
+> **policy**, tracks **budgets**, and writes an **audit** record before returning
+> *allow* or *deny*.
 
-The gateway is the single decision-maker. The interception layers differ only in
-*where* they sit and *how much* they can bypass — they all converge on the same
-protobuf wire format defined in `aa-proto` and the same `PolicyService` RPC.
+The gateway is the single decision-maker. The mechanisms differ in *where* they
+sit, *how much* they can miss, and *what claim level* they reach (ADR 0033 §6) —
+they all converge on the same protobuf wire format defined in `aa-proto` and the
+same `PolicyService` RPC.
 
-> **Execution isolation is not a fourth interception layer.** `aasm run
+> **Execution isolation is not a fourth enforcement mechanism.** `aasm run
 > --isolation` (`aa-isolation` + the `aa-isolation-sandlock` backend) confines
 > an agent's whole native process tree at the OS level — it is a set of
 > [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md)
@@ -77,13 +79,13 @@ graph TD
     aa_cache[aa-cache<br/><i>L1 cache</i>]:::storage
     storage_drivers["aa-storage-{memory,postgres,<br/>redis,sqlite-buffer}"]:::storage
 
-    %% Interception / runtime
+    %% Enforcement mechanisms / runtime
     aa_runtime[aa-runtime<br/><i>per-agent chokepoint</i>]:::ffi
     aa_sdk_client[aa-sdk-client<br/><i>FFI-agnostic client</i>]:::ffi
     aa_wasm[aa-wasm]:::ffi
     aa_sandbox[aa-sandbox<br/><i>WASI tool sandbox</i>]:::ffi
-    aa_proxy[aa-proxy<br/><i>L2 sidecar</i>]:::ebpf
-    aa_ebpf[aa-ebpf<br/><i>L3 kernel</i>]:::ebpf
+    aa_proxy[aa-proxy<br/><i>sidecar proxy</i>]:::ebpf
+    aa_ebpf[aa-ebpf<br/><i>kernel eBPF</i>]:::ebpf
     aa_ebpf_common[aa-ebpf-common]:::ebpf
     aa_probes["aa-ebpf-probes /<br/>aa-ebpf-programs<br/><i>out-of-workspace BPF</i>"]:::outOfWorkspace
 
@@ -135,10 +137,10 @@ the protobuf schema that crosses every process boundary.
 flowchart TB
     subgraph agent_host["Agent host"]
         Agent[AI agent process]
-        subgraph layers["Three interception layers"]
-            L1["L1 — In-process SDK<br/>(aa-sdk-client shims, aa-wasm)"]
-            L2["L2 — Sidecar proxy<br/>(aa-proxy)"]
-            L3["L3 — eBPF<br/>(aa-ebpf, kernel)"]
+        subgraph mechs["Three independently-deployable mechanisms"]
+            L1["In-process SDK<br/>(aa-sdk-client shims, aa-wasm)"]
+            L2["Sidecar proxy<br/>(aa-proxy)"]
+            L3["eBPF<br/>(aa-ebpf, kernel)"]
         end
         RT["aa-runtime<br/>per-agent chokepoint"]
     end
@@ -166,9 +168,10 @@ flowchart TB
     CLI -->|gRPC| GW
 ```
 
-- The **interception layers** are deployment-independent: a deployment can run
-  any subset (SDK only, SDK + proxy, all three). Each layer turns an agent
-  action into an event in the `aa-proto` schema.
+- The **enforcement mechanisms** are independently-deployable: a deployment
+  runs whichever subset it installs (SDK only, SDK + proxy, all three), and an
+  absent mechanism is reported as absent rather than covered by another. Each
+  mechanism turns an agent action into an event in the `aa-proto` schema.
 - **`aa-runtime`** is the per-agent chokepoint. Because the SDK is untrusted, the
   runtime re-scans every event (the enforcement stage in
   `aa-runtime/src/pipeline/enforcement.rs`) before forwarding it.
@@ -218,4 +221,4 @@ overridable via `AA_API_ADDR`).
 - **[Data flows](data-flows.md)** — how an intercepted event travels from a layer
   through the gateway to the audit log and storage.
 - **[Security Model](../security/overview.md)** — the same system viewed through
-  trust boundaries and defense-in-depth.
+  trust boundaries and each mechanism's own claim level.

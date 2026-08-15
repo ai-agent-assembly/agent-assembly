@@ -7,11 +7,11 @@ then enforce it at the proxy layer.
 
 ## How egress enforcement works
 
-Network egress is the job of the **sidecar proxy** (`aa-proxy`), the second of
-the three interception layers. It terminates outbound HTTPS with a per-host CA
+Network egress is the job of the **sidecar proxy** (`aa-proxy`), one of the
+three enforcement mechanisms. It terminates outbound HTTPS with a per-host CA
 (MitM) and, for every CONNECT, asks: *is this host on the policy's allowlist?*
-Hosts that fail the check are refused before any bytes leave the machine — no
-code change in the agent required.
+Hosts that fail the check are refused before any bytes leave the machine —
+without requiring a change to the agent's own code.
 
 The allowlist lives in the `network` section of a policy:
 

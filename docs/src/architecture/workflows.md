@@ -146,28 +146,28 @@ flowchart LR
 
 ## Interception & enforcement
 
-An agent action is observed by one of the three layers, normalised into the
-`aa-proto` wire format, re-scanned by `aa-runtime`, then sent to the gateway for
-a decision. The runtime is the **mandatory chokepoint**: it never trusts the
-SDK's assertions.
+An agent action is observed by whichever of the three enforcement mechanisms
+is deployed, normalised into the `aa-proto` wire format, re-scanned by
+`aa-runtime`, then sent to the gateway for a decision. The runtime is the
+**mandatory chokepoint**: it never trusts the SDK's assertions.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Agent
-    participant SDK as L1 SDK shim<br/>(aa-sdk-client)
-    participant Proxy as L2 proxy<br/>(aa-proxy)
-    participant eBPF as L3 eBPF<br/>(aa-ebpf)
+    participant SDK as SDK shim<br/>(aa-sdk-client)
+    participant Proxy as proxy<br/>(aa-proxy)
+    participant eBPF as eBPF<br/>(aa-ebpf)
     participant RT as aa-runtime<br/>pipeline + enforcement
     participant GW as aa-gateway<br/>PolicyService
 
-    alt L1 — in-process
+    alt in-process SDK
         Agent->>SDK: tool / LLM / network call
         SDK->>RT: UDS IpcFrame (event)
-    else L2 — sidecar
+    else sidecar proxy
         Agent->>Proxy: outbound HTTPS (MitM)
         Proxy->>RT: forwarded event
-    else L3 — kernel
+    else kernel eBPF
         Agent-->>eBPF: SSL_write / exec / file syscall
         eBPF->>RT: ring-buffer event
     end
@@ -199,9 +199,9 @@ Key invariants from `aa-runtime/src/pipeline/enforcement.rs`:
 - The credential scanner / redaction primitives come from the `aa-security`
   leaf crate.
 
-The eBPF layer is observe-and-forward for bypass-detection: it cannot block
-in-kernel, so it streams audit events while the SDK and proxy layers carry the
-synchronous allow/deny. For the trust rationale, see
+eBPF is observe-and-forward for bypass-detection: it cannot block in-kernel,
+so it streams audit events while the SDK and proxy carry the synchronous
+allow/deny. For the trust rationale, see
 [enforcement paths and their limitations](../security/enforcement-paths-and-limitations.md).
 
 ---

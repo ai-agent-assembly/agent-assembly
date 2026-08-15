@@ -758,15 +758,33 @@ Pages whose *structure* encodes the superseded model — these need rewriting, n
       Done: node relabeled to "3 independently-deployable mechanisms ... no
       combined guarantee"; intro prose and page-list bullets re-termed from
       "layers"/"interception crates" to "mechanisms"/"enforcement-mechanism crates".
-- [ ] `docs/src/architecture/system-architecture.md` — the system mermaid diagram and
+- [x] `docs/src/architecture/system-architecture.md` — the system mermaid diagram and
       the "three interception layers" narration.
+      Done: both mermaid diagrams and all prose re-termed to "enforcement
+      mechanisms"/"independently-deployable"; "L1/L2/L3" ordering labels dropped
+      from the crate/component and layer diagrams; closing "defense-in-depth"
+      cross-reference re-termed to "each mechanism's own claim level".
 
 Pages that reference the model and need their claims re-termed:
 
-- [ ] `docs/src/README.md`, `docs/src/introduction/README.md`,
+- [x] `docs/src/README.md`, `docs/src/introduction/README.md`,
       `docs/src/introduction/overview.md`, `docs/src/introduction/concepts.md`
-- [ ] `docs/src/architecture/components.md`, `docs/src/architecture/workflows.md`,
+      Done: "three-layer interception model"/"interception layer(s)" re-termed to
+      "three enforcement mechanisms"/"enforcement mechanism(s)" in `README.md`
+      (also fixed its `architecture/index.md` broken link → `README.md`),
+      `overview.md`, `concepts.md`; `introduction/README.md` already clean
+      (checked in slice 2).
+- [x] `docs/src/architecture/components.md`, `docs/src/architecture/workflows.md`,
       `docs/src/architecture/infra-overview.md`
+      Done: "interception layers"/L1·L2·L3 ordering labels dropped from
+      section headings, mermaid node/participant labels, and prose in all
+      three; code identifiers (`LayerSet`, `layer.rs`, `AA_LAYERS`) kept
+      verbatim. `components.md`'s eBPF entry's unqualified "lowest bypass
+      risk" reworded to "observe-only" (matches its own claim level).
+      `infra-overview.md`'s "proxy... enforces network-egress policy"
+      re-termed to "denies... traffic that fails policy"; also fixed a
+      CLAIM-ABS-06 finding ("persists every action") introduced by this
+      pass's own edit, caught by `check_claim_vocabulary.py`.
 - [x] `docs/src/security/overview.md`, `docs/src/security/protection-model.md`
       (its opening sentence routes readers to `three-layer-defense.md`),
       `docs/src/security/threat-model.md`,
@@ -777,20 +795,50 @@ Pages that reference the model and need their claims re-termed:
       caught by the next", "a higher layer evaded simply surfaces at a lower one",
       "eBPF catches what the SDK and proxy miss") re-termed to name the mechanism,
       its precondition, and its actual claim level (observed/detected, not caught).
-- [ ] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
-- [ ] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
-- [ ] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`
-- [ ] `docs/src/devtools/product-brief.md`
-- [ ] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
+- [x] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
+      Done: re-termed to "enforcement mechanism(s)"; examples.md's "Choosing
+      interception layers" link label updated to the retitled page. Fixed a
+      pre-existing CLAIM-ABS-08 finding ("no code change") in
+      enforce-egress-policy.md, caught by `check_claim_vocabulary.py` on
+      this pass.
+- [x] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
+      Done: re-termed throughout, including requirements.md's table headers
+      and per-mechanism requirements table; first-run.md's "defense-in-depth"
+      cross-reference re-termed to "claim levels combine".
+- [x] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`
+      Done: proxy.md re-termed and its "enforced without code changes"
+      claim-vocab'd to "denies traffic that fails policy, without agent code
+      changes"; compatibility.md had no model references (checked, cleared).
+- [x] `docs/src/devtools/product-brief.md` — done in slice 1 (commit `ac5048f66`),
+      checklist box was missed at the time; remaining "layer" occurrences
+      (`product layer`, `detection layer`) are descriptive nouns, not the
+      superseded composition model.
+- [x] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
       tier definition asserts "The tool cannot bypass enforcement"**, a banned absolute
       (the forbidden-designs list, item 7) that the verified bypass surface in §4 contradicts.
-- [ ] `docs/src/architecture/data-flows.md:14-17` — a structural `L1 SDK / L2 proxy /
+      Done: the banned-absolute claim was already corrected by a prior ticket
+      (self-documented in-page as a fixed past bug — left untouched, it is the
+      historical record); re-termed the remaining "three interception layers"
+      heading/table/prose to "enforcement mechanisms" (adapter-tier `L0`-`L3`
+      numbers are a separate, unrelated system — left as-is).
+- [x] `docs/src/architecture/data-flows.md:14-17` — a structural `L1 SDK / L2 proxy /
       L3 eBPF` mermaid subgraph. Same class as the pages marked "rewrite" above; it was
       missed on the first pass because the file never uses the words "three-layer".
-- [ ] `docs/src/usage-guide/overview.md` — routes readers to "Choosing interception
+      Done: subgraph title and node labels re-termed to "Enforcement
+      mechanisms"/SDK·proxy·eBPF without L1/L2/L3 ordering; summary-table row
+      re-termed similarly.
+- [x] `docs/src/usage-guide/overview.md` — routes readers to "Choosing interception
       layers" as the architecture-in-practice entry point.
-- [ ] `docs/src/SUMMARY.md` — TOC entries for the two retired pages and the
+      Done: re-termed to "enforcement mechanisms" throughout; link label
+      updated to "Choosing a managed deployment". Incidental: fixed the same
+      stale link label in `usage-guide/container-base-images.md` (×2, found
+      while auditing this checklist item's inbound-links note).
+- [x] `docs/src/SUMMARY.md` — TOC entries for the two retired pages and the
       "Choosing interception layers" entry.
+      Done: retired-page entries already repointed by slices 1/2 (`Enforcement
+      paths and their limitations`, `Enforcement mechanisms at a glance`);
+      "Choosing interception layers" → "Choosing a managed deployment" to match
+      the retitled page.
 
 **Not affected — checked and cleared** (recorded so the next pass does not re-open them):
 `dashboard/src/features/capability/api.ts` (its only hit is `:51`, *"Three independent
@@ -817,15 +865,25 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
 
 ### B. Repository and crate documentation (owner: AAASM-5605)
 
-- [ ] `README.md` — the repo's front door carries the model.
-- [ ] `SECURITY.md:71-72` — *"The sidecar proxy and eBPF layers remain the authoritative
+- [x] `README.md` — the repo's front door carries the model.
+      Done: "the runtime, proxy, and eBPF layers" -> "...mechanisms"; both
+      "three-layer interception model" cross-references re-termed to "three
+      enforcement mechanisms". The `## Overview` section was already
+      independently-deployable-mechanisms language (checked, no change needed).
+- [x] `SECURITY.md:71-72` — *"The sidecar proxy and eBPF layers remain the authoritative
       backstop for bypass attempts."* The superseded model **and** a banned absolute, in
       the security front door. Highest-priority item in this section.
-- [ ] `.claude/CLAUDE.md` — carries the "three-layer interception model" section,
+      Done: re-termed to name each mechanism's own claim level and state
+      explicitly that neither backstops the other, an absent mechanism is
+      reported absent.
+- [x] `.claude/CLAUDE.md` — carries the "three-layer interception model" section,
       labels `aa-runtime` the "Authoritative enforcement pipeline (`RuntimeScanner`)"
       (which §6 and the ADR 0018 amendment withdraw), and describes eBPF as catching
       *"everything, including bypass attempts"*. Note there is **no tracked root
       `CLAUDE.md`** in this repository — `.claude/CLAUDE.md` is the only file to change.
+      Done: already re-termed by an earlier ticket (independently-deployable
+      mechanisms section, per-mechanism claim levels, explicit truth-exempt
+      negative-example block); checked, no further change needed.
 - [ ] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
       `aa-sandbox`, `aa-sdk-client`.
 - [ ] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three

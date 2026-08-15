@@ -2,10 +2,10 @@
 
 This guide walks through the real, day-to-day tasks an operator performs with
 Agent Assembly, using the `aasm` CLI, the governance gateway, the three
-interception layers, and the dashboard. Every command and every screenshot on
-these pages was produced against the actual `0.0.1-beta.4` build — where a
+enforcement mechanisms, and the dashboard. Every command and every screenshot
+on these pages was produced against the actual `0.0.1-beta.4` build — where a
 scenario needs a platform Agent Assembly does not target locally (for example
-the Linux-only eBPF layer, or the SaaS control-plane API the web dashboard
+the Linux-only eBPF mechanism, or the SaaS control-plane API the web dashboard
 talks to), the page says so explicitly rather than showing a mock-up.
 
 ## What you can do
@@ -16,7 +16,7 @@ talks to), the page says so explicitly rather than showing a mock-up.
 | Egress control | Restrict which hosts an agent may reach, and dry-run it before applying | [Enforce an egress policy](enforce-egress-policy.md) |
 | Cost control | Set per-team spend caps and watch spend accumulate | [Team budgets and cost](team-budgets.md) |
 | Observe | Watch the fleet in the web dashboard and the terminal TUI | [Observe in the dashboard](observe-in-dashboard.md) |
-| Architecture in practice | Choose and combine the SDK, proxy, and eBPF layers | [Choosing interception layers](interception-layers.md) |
+| Architecture in practice | Choose and combine the SDK, proxy, and eBPF mechanisms | [Choosing a managed deployment](interception-layers.md) |
 | When things break | Diagnose the most common local failures | [Troubleshooting](troubleshooting.md) |
 
 ## The shape of every scenario
@@ -25,9 +25,9 @@ Agent Assembly governance always has the same three moving parts:
 
 1. **A gateway** — the brain. It holds the agent registry, evaluates policy,
    tracks budgets, and writes the audit log. You start it once.
-2. **At least one interception layer** — the SDK shim, the `aa-proxy` sidecar,
-   or the eBPF kernel hooks — that observes what an agent does and asks the
-   gateway for an allow/deny decision.
+2. **At least one enforcement mechanism** — the SDK shim, the `aa-proxy`
+   sidecar, or the eBPF kernel hooks — that observes what an agent does and
+   asks the gateway for an allow/deny decision.
 3. **A policy** — a YAML document describing what is allowed: capabilities,
    network egress, per-tool rules, budgets, and approval gates.
 

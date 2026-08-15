@@ -69,7 +69,7 @@ A request that would breach a budget downgrades from *allow* to *deny*. See
 
 ## `aa-runtime` — the per-agent chokepoint
 
-`aa-runtime` sits between an agent's interception layers and the gateway. It is
+`aa-runtime` sits between an agent's enforcement mechanisms and the gateway. It is
 the **mandatory chokepoint** on the SDK fast-path (`SDK → UDS → runtime → gateway`).
 Because the SDK is untrusted, the runtime re-scans every event before forwarding.
 
@@ -91,9 +91,9 @@ Because the SDK is untrusted, the runtime re-scans every event before forwarding
 
 ---
 
-## The three interception layers
+## The three enforcement mechanisms
 
-### L1 — In-process SDK: `aa-sdk-client` (+ `aa-wasm`)
+### In-process SDK: `aa-sdk-client` (+ `aa-wasm`)
 
 `aa-sdk-client` is the **FFI-agnostic** SDK runtime client. The per-language
 shims (Python / Node / Go, in their own repos) are thin wrappers over it.
@@ -114,10 +114,10 @@ sidecar.
 > **Trust note:** the SDK is *not* a security boundary — anything it asserts is
 > re-verified by `aa-runtime`. See [trust boundaries](../security/trust-boundaries.md).
 
-### L2 — Sidecar proxy: `aa-proxy`
+### Sidecar proxy: `aa-proxy`
 
-Intercepts outbound HTTPS via MitM with a per-host CA, enforcing network-egress
-policy without code changes.
+Intercepts outbound HTTPS via MitM with a per-host CA, denying network-egress
+traffic that fails policy, without agent code changes.
 
 | Module | Role |
 |---|---|
@@ -129,10 +129,10 @@ policy without code changes.
 
 **Depends on:** `aa-core`, `aa-proto`, `aa-runtime`, `aa-sandbox`.
 
-### L3 — eBPF: `aa-ebpf` (+ `aa-ebpf-common`, out-of-workspace probes)
+### eBPF: `aa-ebpf` (+ `aa-ebpf-common`, out-of-workspace probes)
 
-Kernel hooks watching SSL libraries (uprobes) and process exec / file syscalls.
-Linux-only, lowest bypass risk.
+Kernel hooks watching SSL libraries (uprobes) and process exec / file syscalls,
+observe-only. Linux-only.
 
 | Module | Role |
 |---|---|
