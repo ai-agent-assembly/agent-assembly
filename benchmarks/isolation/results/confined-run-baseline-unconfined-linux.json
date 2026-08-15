@@ -1,0 +1,671 @@
+{
+  "schema_version": "1.0.0",
+  "harness_version": "0.1.0",
+  "run_id": "20260815T004128Z-d3ed037b",
+  "label": "unconfined-linux-ci",
+  "started_utc": "2026-08-15T00:41:28.103534+00:00",
+  "finished_utc": "2026-08-15T00:41:48.169836+00:00",
+  "control_experiment": false,
+  "launcher": {
+    "spec": "sh /home/runner/work/agent-assembly/agent-assembly/benchmarks/isolation/launchers/unconfined.sh",
+    "argv": [
+      "sh",
+      "/home/runner/work/agent-assembly/agent-assembly/benchmarks/isolation/launchers/unconfined.sh"
+    ],
+    "throttle_env": {}
+  },
+  "config": {
+    "repetitions": 10,
+    "warmups": 2,
+    "families_requested": null,
+    "heavy": false,
+    "network": true,
+    "scratch_root": "/tmp/aabench-sy__e2zn"
+  },
+  "notes": [],
+  "environment": {
+    "captured_utc": "2026-08-15T00:41:28.103549+00:00",
+    "platform": {
+      "system": "Linux",
+      "release": "6.17.0-1022-azure",
+      "version": "#22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
+      "machine": "x86_64",
+      "python": "3.12.3",
+      "python_implementation": "CPython"
+    },
+    "cpu": {
+      "model": "AMD EPYC 7763 64-Core Processor",
+      "logical_cores": 4
+    },
+    "memory": {
+      "total_bytes": 16766414848,
+      "ru_maxrss_native_unit": "kibibytes"
+    },
+    "filesystem": {
+      "scratch_path": "/tmp/aabench-sy__e2zn",
+      "type": "ext4",
+      "device": "/dev/sda1",
+      "source": "findmnt"
+    },
+    "toolchains": {
+      "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+      "git": "git version 2.54.0",
+      "node": "v22.23.2",
+      "pnpm": "10.9.0",
+      "python3": "Python 3.12.3",
+      "rg": "ripgrep 14.1.0",
+      "sh": "posix-sh"
+    },
+    "repo": {
+      "commit": "4cb84077365cac957d518ccfdfc34fed0c32bef6",
+      "branch": "v0.0.1/AAASM-5713/feat/confined_arm_benchmark_run",
+      "dirty_tracked_files": false,
+      "untracked_file_count": 6
+    },
+    "load_average_at_start": [
+      4.17578125,
+      4.21630859375,
+      2.4248046875
+    ],
+    "fingerprint": "sha256:0011f4f3974fa28b1398e3d65ad399da4e1d259e2b1990479479aff708d256a6"
+  },
+  "startup_correction_ms": 3.0496005,
+  "results": [
+    {
+      "family": "startup_nop",
+      "dimension_tag": "startup",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "Empty payload. Isolates the launcher's fixed per-invocation cost: sandbox construction plus teardown, paid once for every command an agent shells out to.",
+      "skip_reason": null,
+      "samples_ms": [
+        3.090658,
+        3.032579,
+        2.998815,
+        3.063046,
+        3.046715,
+        3.057976,
+        3.025275,
+        3.025015,
+        3.102008,
+        3.052486
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 2.998815,
+        "max": 3.102008,
+        "mean": 3.0494573,
+        "median": 3.0496005,
+        "p95": 3.0969005000000003,
+        "stdev": 0.031206689496715994,
+        "q1": 3.027101,
+        "q3": 3.0617785,
+        "iqr": 0.03467749999999992,
+        "rel_iqr": 0.011371161566900293
+      },
+      "steady_state_ms": null,
+      "steady_state_note": null,
+      "cpu_seconds": {
+        "utime_median": 0.000454,
+        "stime_median": 0.00226,
+        "total_median": 0.002739
+      },
+      "memory": {
+        "max_rss_bytes_median": 18141184.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "https_loopback",
+      "dimension_tag": "network",
+      "status": "ok",
+      "requires": [
+        "sh",
+        "python3"
+      ],
+      "description": "200 sequential HTTPS requests against a TLS server the harness runs on loopback. Measures the socket and TLS cost of confinement, isolated from WAN variance. Whether a backend can express AASM egress policy at all is a compatibility question, not this one.",
+      "skip_reason": null,
+      "samples_ms": [
+        567.050343,
+        585.320735,
+        592.027653,
+        593.768501,
+        590.052371,
+        608.588742,
+        601.775109,
+        603.832978,
+        603.090223,
+        598.37221
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 567.050343,
+        "max": 608.588742,
+        "mean": 594.3878865,
+        "median": 596.0703555,
+        "p95": 606.4486482,
+        "stdev": 11.978481433678677,
+        "q1": 590.5461915,
+        "q3": 602.7614445,
+        "iqr": 12.215253000000075,
+        "rel_iqr": 0.02049297182335731
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 564.0007425,
+        "max": 605.5391415,
+        "mean": 591.3382859999999,
+        "median": 593.020755,
+        "p95": 603.3990477,
+        "stdev": 11.978481433678677,
+        "q1": 587.496591,
+        "q3": 599.711844,
+        "iqr": 12.215253000000075,
+        "rel_iqr": 0.020598356629187582
+      },
+      "steady_state_note": "startup correction of 3.050 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.2746715,
+        "stime_median": 0.057645499999999995,
+        "total_median": 0.336686
+      },
+      "memory": {
+        "max_rss_bytes_median": 21534720.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "many_small_files",
+      "dimension_tag": "fs",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "Create, stat, read and delete 2000 small files. Concentrates path resolution and metadata operations, which is where a Landlock-style boundary does its work.",
+      "skip_reason": null,
+      "samples_ms": [
+        161.917769,
+        161.763342,
+        161.496053,
+        162.36267,
+        163.752434,
+        162.317795,
+        166.090364,
+        163.009757,
+        162.976203,
+        163.293366
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 161.496053,
+        "max": 166.090364,
+        "mean": 162.8979753,
+        "median": 162.66943650000002,
+        "p95": 165.0382955,
+        "stdev": 1.3305445002798293,
+        "q1": 162.01777549999997,
+        "q3": 163.22246375,
+        "iqr": 1.2046882500000322,
+        "rel_iqr": 0.007405744286819559
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 158.4464525,
+        "max": 163.0407635,
+        "mean": 159.84837480000002,
+        "median": 159.61983600000002,
+        "p95": 161.988695,
+        "stdev": 1.3305445002798293,
+        "q1": 158.96817499999997,
+        "q3": 160.17286325,
+        "iqr": 1.2046882500000322,
+        "rel_iqr": 0.007547233979115428
+      },
+      "steady_state_note": "startup correction of 3.050 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.0157735,
+        "stime_median": 0.1463425,
+        "total_median": 0.1611995
+      },
+      "memory": {
+        "max_rss_bytes_median": 18395136.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "node_pkg_test",
+      "dimension_tag": "general",
+      "status": "ok",
+      "requires": [
+        "sh",
+        "node",
+        "pnpm"
+      ],
+      "description": "pnpm install of a dependency-free package into a run-local store, then a node test run. Package-manager filesystem churn plus runtime startup.",
+      "skip_reason": null,
+      "samples_ms": [
+        483.600677,
+        486.663171,
+        492.871557,
+        486.457084,
+        494.86132,
+        492.395941,
+        484.935624,
+        484.918924,
+        487.921625,
+        484.27372
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 483.600677,
+        "max": 494.86132,
+        "mean": 487.8899643,
+        "median": 486.5601275,
+        "p95": 493.96592665000003,
+        "stdev": 4.031948491626836,
+        "q1": 484.923099,
+        "q3": 491.277362,
+        "iqr": 6.354263000000003,
+        "rel_iqr": 0.013059563743229254
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 480.5510765,
+        "max": 491.8117195,
+        "mean": 484.8403638,
+        "median": 483.510527,
+        "p95": 490.91632615000003,
+        "stdev": 4.031948491626836,
+        "q1": 481.8734985,
+        "q3": 488.2277615,
+        "iqr": 6.354263000000003,
+        "rel_iqr": 0.013141933102110107
+      },
+      "steady_state_note": "startup correction of 3.050 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.463155,
+        "stime_median": 0.1062345,
+        "total_median": 0.5653005
+      },
+      "memory": {
+        "max_rss_bytes_median": 119734272.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "process_spawn",
+      "dimension_tag": "process",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "200 sequential execve plus reap cycles. Every tool an agent runs pays this once.",
+      "skip_reason": null,
+      "samples_ms": [
+        104.504434,
+        102.573773,
+        103.711284,
+        104.11688,
+        103.614504,
+        103.329733,
+        103.274818,
+        102.315905,
+        101.374789,
+        101.398865
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 101.374789,
+        "max": 104.504434,
+        "mean": 103.0214985,
+        "median": 103.30227550000001,
+        "p95": 104.3300347,
+        "stdev": 1.0764400755431702,
+        "q1": 102.38037200000001,
+        "q3": 103.68708900000001,
+        "iqr": 1.3067170000000061,
+        "rel_iqr": 0.012649450301799073
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 98.32518850000001,
+        "max": 101.4548335,
+        "mean": 99.97189800000001,
+        "median": 100.25267500000001,
+        "p95": 101.2804342,
+        "stdev": 1.0764400755431702,
+        "q1": 99.33077150000001,
+        "q3": 100.63748850000002,
+        "iqr": 1.3067170000000061,
+        "rel_iqr": 0.013034235744831806
+      },
+      "steady_state_note": "startup correction of 3.050 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.0590625,
+        "stime_median": 0.0440345,
+        "total_median": 0.10306
+      },
+      "memory": {
+        "max_rss_bytes_median": 18628608.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "python_pkg_test",
+      "dimension_tag": "general",
+      "status": "ok",
+      "requires": [
+        "sh",
+        "python3"
+      ],
+      "description": "Generate a small Python package, byte-compile it, then discover and run its unittest suite. Interpreter startup, import machinery and test discovery.",
+      "skip_reason": null,
+      "samples_ms": [
+        101.515892,
+        102.046363,
+        103.686744,
+        102.630984,
+        102.024832,
+        102.938688,
+        107.145387,
+        102.194088,
+        101.604829,
+        103.621963
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 101.515892,
+        "max": 107.145387,
+        "mean": 102.940977,
+        "median": 102.41253599999999,
+        "p95": 105.58899765000001,
+        "stdev": 1.6602119169158975,
+        "q1": 102.03021475,
+        "q3": 103.45114425,
+        "iqr": 1.4209294999999997,
+        "rel_iqr": 0.013874566098040966
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 98.4662915,
+        "max": 104.0957865,
+        "mean": 99.8913765,
+        "median": 99.36293549999999,
+        "p95": 102.53939715,
+        "stdev": 1.6602119169158975,
+        "q1": 98.98061425,
+        "q3": 100.40154375,
+        "iqr": 1.4209294999999997,
+        "rel_iqr": 0.014300397757471647
+      },
+      "steady_state_note": "startup correction of 3.050 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.08025199999999999,
+        "stime_median": 0.022224,
+        "total_median": 0.101813
+      },
+      "memory": {
+        "max_rss_bytes_median": 18632704.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    },
+    {
+      "family": "repo_traversal",
+      "dimension_tag": "fs",
+      "status": "failed",
+      "requires": [
+        "sh",
+        "rg",
+        "git"
+      ],
+      "description": "rg --files over the workspace, an rg content search, git status and git diff --stat. The read-heavy path a coding agent walks before it changes anything.",
+      "skip_reason": null,
+      "samples_ms": [
+        55.994062,
+        52.936797,
+        56.482473,
+        54.412931,
+        53.375596,
+        54.694707,
+        59.736154,
+        56.30939,
+        53.449474,
+        52.565495
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 52.565495,
+        "max": 59.736154,
+        "mean": 54.9957079,
+        "median": 54.553819000000004,
+        "p95": 58.271997549999995,
+        "stdev": 2.1857023379454255,
+        "q1": 53.3940655,
+        "q3": 56.230558,
+        "iqr": 2.8364924999999985,
+        "rel_iqr": 0.051994389247066244
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 49.5158945,
+        "max": 56.6865535,
+        "mean": 51.9461074,
+        "median": 51.50421850000001,
+        "p95": 55.22239705,
+        "stdev": 2.1857023379454255,
+        "q1": 50.34446500000001,
+        "q3": 53.180957500000005,
+        "iqr": 2.8364924999999985,
+        "rel_iqr": 0.0550730130969757
+      },
+      "steady_state_note": "startup correction of 3.050 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.053085999999999994,
+        "stime_median": 0.103544,
+        "total_median": 0.156885
+      },
+      "memory": {
+        "max_rss_bytes_median": 18632704.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "admissible": false,
+      "inadmissible_reason": "at least one repetition exited non-zero"
+    },
+    {
+      "family": "rust_cargo_metadata",
+      "dimension_tag": "general",
+      "status": "ok",
+      "requires": [
+        "sh",
+        "cargo"
+      ],
+      "description": "cargo metadata --no-deps --offline over the workspace manifest. Manifest parsing and workspace resolution without a compile.",
+      "skip_reason": null,
+      "samples_ms": [
+        34.203662,
+        34.501468,
+        34.793693,
+        34.033585,
+        34.038494,
+        35.093051,
+        34.644835,
+        34.110117,
+        34.439332,
+        34.723612
+      ],
+      "stats_ms": {
+        "n": 10.0,
+        "min": 34.033585,
+        "max": 35.093051,
+        "mean": 34.458184900000006,
+        "median": 34.4704,
+        "p95": 34.9583399,
+        "stdev": 0.35986077711941433,
+        "q1": 34.133503250000004,
+        "q3": 34.70391775,
+        "iqr": 0.5704144999999983,
+        "rel_iqr": 0.01654795128574076
+      },
+      "steady_state_ms": {
+        "n": 10.0,
+        "min": 30.983984500000002,
+        "max": 32.043450500000006,
+        "mean": 31.408584400000002,
+        "median": 31.4207995,
+        "p95": 31.9087394,
+        "stdev": 0.35986077711941505,
+        "q1": 31.08390275,
+        "q3": 31.654317250000002,
+        "iqr": 0.5704145000000018,
+        "rel_iqr": 0.018154041560909415
+      },
+      "steady_state_note": "startup correction of 3.050 ms subtracted per sample",
+      "cpu_seconds": {
+        "utime_median": 0.020172,
+        "stime_median": 0.014342,
+        "total_median": 0.034398
+      },
+      "memory": {
+        "max_rss_bytes_median": 26101760.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "kibibytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    }
+  ],
+  "denominators": {
+    "families_declared_in_manifest": 9,
+    "families_selected": 8,
+    "families_attempted": 8,
+    "families_ok": 7,
+    "families_skipped": 0,
+    "families_failed": 1,
+    "families_admissible": 7
+  }
+}
