@@ -2750,6 +2750,32 @@ jobs:
           "$AABENCH_AASM_BIN" gateway status || true
           cat ~/.aasm/logs/gateway.log 2>/dev/null || true
           exit 1
+      - name: Bisect the confined-arm denial (diagnostic, not a measured arm)
+        # Run 31852738857 (the first with a working gateway) measured 3/8
+        # families and failed 5/8, all exit 2, all with empty stdout/stderr —
+        # runner.py's redirection captures the launcher's own report but
+        # nothing the confined child itself printed, on failing AND passing
+        # families alike, so the result JSON alone cannot tell "the backend
+        # denied this" from "the policy never granted it" apart. Individual
+        # probes here isolate one candidate cause per command, with output
+        # going straight to this step's own log rather than a scratch file —
+        # not part of any measured arm, `continue-on-error` per probe.
+        continue-on-error: true
+        run: |
+          probe() {
+            echo "--- probe: $* ---"
+            "$AABENCH_AASM_BIN" run exec --isolation process --no-proxy \
+              --policy "$AABENCH_SANDLOCK_POLICY" -- "$@"
+            echo "exit=$?"
+          }
+          probe true
+          probe cat /etc/hostname
+          # shellcheck disable=SC2016 # deliberately unexpanded: $AABENCH_SCRATCH
+          # must resolve inside the confined child's own shell, not this one.
+          probe sh -c 'mkdir -p "$AABENCH_SCRATCH/probe" && echo ok > "$AABENCH_SCRATCH/probe/f" && cat "$AABENCH_SCRATCH/probe/f"'
+          probe git -C "${{ github.workspace }}" status --porcelain --untracked-files=no
+          probe rg --files --hidden --glob '!.git' "${{ github.workspace }}"
+          probe cargo metadata --no-deps --offline --format-version 1 --manifest-path "${{ github.workspace }}/Cargo.toml"
       - name: Confined arm — sandlock
         # The launcher path must be absolute: runner.py's run_once() chdirs the
         # child to REPO_ROOT (the monorepo root) before exec, so a launcher
