@@ -1,13 +1,13 @@
 {
   "schema_version": "1.0.0",
-  "generated_utc": "2026-08-15T00:42:48.695335+00:00",
+  "generated_utc": "2026-08-15T07:28:38.125700+00:00",
   "thresholds": {
     "max_rel_iqr": 0.15,
     "min_repetitions": 10
   },
   "baseline": {
     "path": "../results/ci-unconfined-linux.json",
-    "run_id": "20260815T004128Z-d3ed037b",
+    "run_id": "20260815T072654Z-993ba7be",
     "launcher": {
       "spec": "sh /home/runner/work/agent-assembly/agent-assembly/benchmarks/isolation/launchers/unconfined.sh",
       "argv": [
@@ -20,7 +20,7 @@
   },
   "candidate": {
     "path": "../results/ci-confined-linux.json",
-    "run_id": "20260815T004205Z-446d4e75",
+    "run_id": "20260815T072736Z-0b628c85",
     "launcher": {
       "spec": "sh /home/runner/work/agent-assembly/agent-assembly/benchmarks/isolation/launchers/sandlock.sh",
       "argv": [
@@ -39,27 +39,72 @@
       "blocked": false,
       "label": "Startup overhead",
       "unit": "ms",
-      "value": 241.126469,
+      "value": 236.569677,
       "grade": "AMBER",
-      "baseline_ms": 3.0496005,
-      "candidate_ms": 244.17606949999998
+      "baseline_ms": 2.920565,
+      "candidate_ms": 239.49024200000002
     },
     "P2": {
       "key": "P2",
-      "blocked": true,
-      "reason": "no comparable admissible general family"
+      "blocked": false,
+      "label": "Steady state, general",
+      "unit": "x",
+      "value": 1.8045612741177253,
+      "grade": "RED",
+      "aggregation": "worst family in tag",
+      "worst_family": "rust_cargo_metadata",
+      "families_over_amber": [
+        "python_pkg_test",
+        "rust_cargo_metadata"
+      ],
+      "contributions": [
+        {
+          "family": "node_pkg_test",
+          "baseline_ms": 467.3103505,
+          "candidate_ms": 508.52926349999996,
+          "ratio": 1.088204579581637
+        },
+        {
+          "family": "python_pkg_test",
+          "baseline_ms": 95.1776815,
+          "candidate_ms": 144.95310799999996,
+          "ratio": 1.5229737236244818
+        },
+        {
+          "family": "rust_cargo_metadata",
+          "baseline_ms": 30.862517,
+          "candidate_ms": 55.69330299999996,
+          "ratio": 1.8045612741177253
+        }
+      ]
     },
     "P3": {
       "key": "P3",
-      "blocked": true,
-      "reason": "no comparable admissible fs family"
+      "blocked": false,
+      "label": "Steady state, filesystem",
+      "unit": "x",
+      "value": 6.447624982961216,
+      "grade": "RED",
+      "aggregation": "worst family in tag",
+      "worst_family": "many_small_files",
+      "families_over_amber": [
+        "many_small_files"
+      ],
+      "contributions": [
+        {
+          "family": "many_small_files",
+          "baseline_ms": 159.70916999999997,
+          "candidate_ms": 1029.7448344999998,
+          "ratio": 6.447624982961216
+        }
+      ]
     },
     "P4": {
       "key": "P4",
       "blocked": false,
       "label": "Steady state, process spawn",
       "unit": "x",
-      "value": 1.8186773669630263,
+      "value": 1.7820808574622573,
       "grade": "RED",
       "aggregation": "worst family in tag",
       "worst_family": "process_spawn",
@@ -69,9 +114,9 @@
       "contributions": [
         {
           "family": "process_spawn",
-          "baseline_ms": 100.25267500000001,
-          "candidate_ms": 182.32727100000002,
-          "ratio": 1.8186773669630263
+          "baseline_ms": 99.142043,
+          "candidate_ms": 176.679137,
+          "ratio": 1.7820808574622573
         }
       ]
     },
@@ -80,7 +125,7 @@
       "blocked": false,
       "label": "Steady state, network",
       "unit": "x",
-      "value": 1.0823576621698512,
+      "value": 1.0814179724899553,
       "grade": "GREEN",
       "aggregation": "worst family in tag",
       "worst_family": "https_loopback",
@@ -88,9 +133,9 @@
       "contributions": [
         {
           "family": "https_loopback",
-          "baseline_ms": 593.020755,
-          "candidate_ms": 641.8605580000001,
-          "ratio": 1.0823576621698512
+          "baseline_ms": 574.4736275,
+          "candidate_ms": 621.2461054999999,
+          "ratio": 1.0814179724899553
         }
       ]
     },
@@ -99,28 +144,52 @@
       "blocked": false,
       "label": "Peak memory",
       "unit": "bytes",
-      "value": 13606912.0,
+      "value": 13500416.0,
       "grade": "GREEN",
       "aggregation": "worst family overall",
       "worst_family": "startup_nop",
       "contributions": [
         {
           "family": "startup_nop",
-          "baseline": 18141184.0,
-          "candidate": 31748096.0,
-          "value": 13606912.0
+          "baseline": 18313216.0,
+          "candidate": 31813632.0,
+          "value": 13500416.0
+        },
+        {
+          "family": "node_pkg_test",
+          "baseline": 119724032.0,
+          "candidate": 119736320.0,
+          "value": 12288.0
+        },
+        {
+          "family": "python_pkg_test",
+          "baseline": 18784256.0,
+          "candidate": 31739904.0,
+          "value": 12955648.0
+        },
+        {
+          "family": "rust_cargo_metadata",
+          "baseline": 26109952.0,
+          "candidate": 31772672.0,
+          "value": 5662720.0
+        },
+        {
+          "family": "many_small_files",
+          "baseline": 18550784.0,
+          "candidate": 31780864.0,
+          "value": 13230080.0
         },
         {
           "family": "process_spawn",
-          "baseline": 18628608.0,
-          "candidate": 31860736.0,
-          "value": 13232128.0
+          "baseline": 18784256.0,
+          "candidate": 31819776.0,
+          "value": 13035520.0
         },
         {
           "family": "https_loopback",
-          "baseline": 21534720.0,
-          "candidate": 31756288.0,
-          "value": 10221568.0
+          "baseline": 21475328.0,
+          "candidate": 31782912.0,
+          "value": 10307584.0
         }
       ]
     },
@@ -129,41 +198,57 @@
       "blocked": false,
       "label": "CPU time",
       "unit": "x",
-      "value": 89.90051113545088,
+      "value": 92.30277511961722,
       "grade": "RED",
       "aggregation": "worst family overall",
       "worst_family": "startup_nop",
       "contributions": [
         {
           "family": "startup_nop",
-          "baseline": 0.002739,
-          "candidate": 0.2462375,
-          "value": 89.90051113545088
+          "baseline": 0.0026125,
+          "candidate": 0.241141,
+          "value": 92.30277511961722
+        },
+        {
+          "family": "node_pkg_test",
+          "baseline": 0.54464,
+          "candidate": 0.82657,
+          "value": 1.5176446827262045
+        },
+        {
+          "family": "python_pkg_test",
+          "baseline": 0.09762199999999999,
+          "candidate": 0.38569349999999997,
+          "value": 3.950887095122001
+        },
+        {
+          "family": "rust_cargo_metadata",
+          "baseline": 0.033644999999999994,
+          "candidate": 0.296339,
+          "value": 8.80781691187398
+        },
+        {
+          "family": "many_small_files",
+          "baseline": 0.16140749999999998,
+          "candidate": 1.238668,
+          "value": 7.674166318169851
         },
         {
           "family": "process_spawn",
-          "baseline": 0.10306,
-          "candidate": 0.44071499999999997,
-          "value": 4.276295361925092
+          "baseline": 0.10198249999999999,
+          "candidate": 0.43053549999999996,
+          "value": 4.22166057902091
         },
         {
           "family": "https_loopback",
-          "baseline": 0.336686,
-          "candidate": 0.6309944999999999,
-          "value": 1.8741334656029651
+          "baseline": 0.3254105,
+          "candidate": 0.610492,
+          "value": 1.8760673057568826
         }
       ]
     }
   },
   "blocked": [
-    {
-      "key": "P2",
-      "reason": "no comparable admissible general family"
-    },
-    {
-      "key": "P3",
-      "reason": "no comparable admissible fs family"
-    },
     {
       "key": "C1",
       "reason": "functional compatibility requires a backend to run the families under (AAASM-5708)"
@@ -178,5 +263,5 @@
     }
   ],
   "verdict": null,
-  "verdict_reason": "Rule 0: blocked, no verdict. Inadmissible or missing dimensions: C1, P2, P3, S1, S2"
+  "verdict_reason": "Rule 0: blocked, no verdict. Inadmissible or missing dimensions: C1, S1, S2"
 }
