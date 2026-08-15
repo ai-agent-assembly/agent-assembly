@@ -68,8 +68,11 @@ topology, and secrets RPCs. Its security model has two layers:
    believes is encrypted.
 
 Honest boundary: per-endpoint authentication is endpoint hygiene, not an
-absolute control. The sidecar proxy and eBPF layers remain the authoritative
-backstop for bypass attempts.
+absolute control. The sidecar proxy can independently deny egress traffic
+that fails policy, and eBPF can independently detect what neither the SDK nor
+the proxy observed — but neither is a backstop that catches what the other
+misses; each reaches its own claim level (ADR 0033 §6), and an absent
+mechanism is reported as absent, not covered by another.
 
 ## Deployment posture — `aa-api` HTTP surface & operator dashboard
 

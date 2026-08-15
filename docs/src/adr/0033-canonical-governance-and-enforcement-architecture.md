@@ -865,15 +865,25 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
 
 ### B. Repository and crate documentation (owner: AAASM-5605)
 
-- [ ] `README.md` — the repo's front door carries the model.
-- [ ] `SECURITY.md:71-72` — *"The sidecar proxy and eBPF layers remain the authoritative
+- [x] `README.md` — the repo's front door carries the model.
+      Done: "the runtime, proxy, and eBPF layers" -> "...mechanisms"; both
+      "three-layer interception model" cross-references re-termed to "three
+      enforcement mechanisms". The `## Overview` section was already
+      independently-deployable-mechanisms language (checked, no change needed).
+- [x] `SECURITY.md:71-72` — *"The sidecar proxy and eBPF layers remain the authoritative
       backstop for bypass attempts."* The superseded model **and** a banned absolute, in
       the security front door. Highest-priority item in this section.
-- [ ] `.claude/CLAUDE.md` — carries the "three-layer interception model" section,
+      Done: re-termed to name each mechanism's own claim level and state
+      explicitly that neither backstops the other, an absent mechanism is
+      reported absent.
+- [x] `.claude/CLAUDE.md` — carries the "three-layer interception model" section,
       labels `aa-runtime` the "Authoritative enforcement pipeline (`RuntimeScanner`)"
       (which §6 and the ADR 0018 amendment withdraw), and describes eBPF as catching
       *"everything, including bypass attempts"*. Note there is **no tracked root
       `CLAUDE.md`** in this repository — `.claude/CLAUDE.md` is the only file to change.
+      Done: already re-termed by an earlier ticket (independently-deployable
+      mechanisms section, per-mechanism claim levels, explicit truth-exempt
+      negative-example block); checked, no further change needed.
 - [ ] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
       `aa-sandbox`, `aa-sdk-client`.
 - [ ] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three

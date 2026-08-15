@@ -41,8 +41,9 @@ starts a background service.
 
 ### Install additional components
 
-`aasm` is the CLI. The runtime, proxy, and eBPF layers are separate components.
-Select them by passing options **to the script** via `sh -s --` (not to `curl`):
+`aasm` is the CLI. The runtime, proxy, and eBPF mechanisms are separate
+components. Select them by passing options **to the script** via `sh -s --`
+(not to `curl`):
 
 ```sh
 # CLI + local runtime
@@ -351,7 +352,7 @@ dev-verify passed (22s total)
 ### Next steps
 
 - [SDK repositories](#ecosystem) — Python, Node.js, and Go SDK guides
-- [Architecture Overview](docs/src/architecture/README.md) — three-layer interception model
+- [Architecture Overview](docs/src/architecture/README.md) — three enforcement mechanisms
 - [Policy examples](policy-examples/) — reference governance policies
 - [Runnable examples](https://github.com/ai-agent-assembly/examples) — learn the runtime, CLI, and policy behavior by running small, framework-specific examples for Python, Node.js/TypeScript, Go, policy enforcement, approvals, audit, trace, and runtime workflows
 
@@ -430,7 +431,7 @@ mdbook serve docs --open
 | Chapter | Description |
 |---|---|
 | [Introduction](docs/src/README.md) | Book overview and audience |
-| [Architecture Overview](docs/src/architecture/README.md) | Crate dependency graph, three-layer interception, IPC, sidecar lifecycle, policy evaluation |
+| [Architecture Overview](docs/src/architecture/README.md) | Crate dependency graph, three enforcement mechanisms, IPC, sidecar lifecycle, policy evaluation |
 | [API Reference](docs/src/api-reference.md) | rustdoc generation flow and per-crate API surface map |
 | [Command-Line Interface](docs/src/cli/overview.md) | `aasm` global flags, command groups, and examples |
 | [Policy YAML Reference](docs/src/policy-reference.md) | Per-section policy field reference, `requires_approval_if` expression syntax, and example policies |
