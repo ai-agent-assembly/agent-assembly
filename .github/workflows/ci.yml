@@ -2663,8 +2663,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-      - name: Build the aasm binary the confined arm launches through
-        run: cargo build --release -p aa-cli --bin aasm
+      - name: Build the aasm and aa-gateway binaries
+        # aa-gateway too: `aasm run` refuses a live (non-dry-run) launch unless
+        # it can register the session against a reachable governance gateway
+        # (AAASM-5349) — `aasm gateway start` resolves that binary alongside
+        # `aasm` (aa-cli/src/commands/gateway/start.rs), so both need building.
+        run: cargo build --release -p aa-cli --bin aasm -p aa-gateway --bin aa-gateway
       - name: Record every toolchain version the harness's environment block needs
         run: |
           rustc --version
@@ -2718,6 +2722,34 @@ jobs:
       - name: Throttled negative control — re-captured on this host, this session
         working-directory: benchmarks/isolation/harness
         run: python3 aabench.py self-test --out-dir ../results
+      - name: Start the governance gateway
+        # A live (non-dry-run) `aasm run` refuses to launch unless it can
+        # register the session against a reachable gateway — the --dry-run
+        # guard step above never exercises this because a preview reports an
+        # unmet precondition rather than refusing on it. Discovered from the
+        # second confined-arm run (31816602980): sandlock was selected
+        # correctly and every domain lowered as expected, but every family
+        # still failed uniformly at ~230ms/exit 1, and the per-repetition log
+        # (only visible once the hidden-file artifact bug above was also
+        # fixed) named the real cause: "refusing to launch unregistered: the
+        # governance gateway at http://127.0.0.1:50051 is unreachable".
+        #
+        # Detached (no --no-detach): the gateway outlives this step and keeps
+        # serving for the confined-arm run below. The runner is destroyed at
+        # job end, so nothing stops it explicitly.
+        run: |
+          "$AABENCH_AASM_BIN" gateway start --policy "$AABENCH_SANDLOCK_POLICY"
+          for _ in $(seq 1 30); do
+            if "$AABENCH_AASM_BIN" gateway status --json | grep -q '"running":[[:space:]]*true'; then
+              echo "gateway is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::gateway did not report running within 30s"
+          "$AABENCH_AASM_BIN" gateway status || true
+          cat ~/.aasm/logs/gateway.log 2>/dev/null || true
+          exit 1
       - name: Confined arm — sandlock
         # The launcher path must be absolute: runner.py's run_once() chdirs the
         # child to REPO_ROOT (the monorepo root) before exec, so a launcher
@@ -2733,6 +2765,9 @@ jobs:
             --scratch-root "$AABENCH_SCRATCH" \
             --keep-scratch \
             --out ../results/ci-confined-linux.json
+      - name: Stop the governance gateway
+        if: always()
+        run: $AABENCH_AASM_BIN gateway stop || true
       - name: Score confined against the fresh Linux baseline
         working-directory: benchmarks/isolation/harness
         run: |
