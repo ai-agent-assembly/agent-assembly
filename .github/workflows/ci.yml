@@ -2794,6 +2794,25 @@ jobs:
           probe node -e 'console.log(1)'
           probe rg --version
           probe cargo --version
+          # Every probe above passed (rg full traversal, cargo metadata, a
+          # nested-directory write, python3, node — all exit 0), yet the real
+          # families still fail, uniformly, at exit 2 — not git's exit 128.
+          # Every probe above ran the target directly; every real family runs
+          # `sh <script_file> <scratch> <repo_root>` — the difference this
+          # traces. `-x` prints each command before running it, so the exact
+          # failing line and its own exit status land in this log directly.
+          probe_trace() {
+            echo "--- probe (traced): $* ---"
+            "$AABENCH_AASM_BIN" run exec --isolation process --no-proxy \
+              --policy "$AABENCH_SANDLOCK_POLICY" -- sh -x "$@"
+            echo "exit=$?"
+          }
+          scratch_probe="$AABENCH_SCRATCH/trace-probe"
+          mkdir -p "$scratch_probe"
+          probe_trace "${{ github.workspace }}/benchmarks/isolation/workloads/rust_cargo_metadata.sh" \
+            "$scratch_probe" "${{ github.workspace }}"
+          probe_trace "${{ github.workspace }}/benchmarks/isolation/workloads/many_small_files.sh" \
+            "$scratch_probe" "${{ github.workspace }}"
       - name: Confined arm — sandlock
         # The launcher path must be absolute: runner.py's run_once() chdirs the
         # child to REPO_ROOT (the monorepo root) before exec, so a launcher
