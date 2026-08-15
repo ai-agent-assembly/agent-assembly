@@ -1,26 +1,30 @@
-# Choosing interception layers
+# Choosing a managed deployment
 
-**Goal.** Decide which of the three interception layers to deploy, and how to
-combine them, for a given governance requirement. Agent Assembly enforces policy
-through three independently-deployable layers; this page is about the practical
-trade-offs, with the real commands for each.
+**Goal.** Decide which of the three enforcement mechanisms to deploy, and how
+to combine them, for a given governance requirement. Agent Assembly can enforce
+policy through three independently-deployable mechanisms; this page is about
+the practical trade-offs, with the real commands for each. See [Enforcement
+paths and their limitations](../security/enforcement-paths-and-limitations.md)
+for the full technical account each summary row below draws from.
 
-## The three layers at a glance
+## The three mechanisms at a glance
 
 Listed lowest-latency-cost first, highest-detection-authority first:
 
-| Layer | What it is | Catches | Cost / requirement |
+| Mechanism | What it is | Catches | Cost / requirement |
 |---|---|---|---|
-| **1. SDK (in-process)** | A thin Rust shim (`aa-ffi-*` over `aa-sdk-client`) the language SDKs call. Emits events to the gateway and applies pre-execution allow/deny via wrapper functions. | Framework tool calls that are wrapped, after the SDK's initializer is called. Raw HTTP, subprocess spawns and file access are not intercepted. | Lowest latency, but requires the agent to adopt the SDK. |
-| **2. Proxy sidecar (`aa-proxy`)** | Intercepts routed outbound HTTP/1.1 via MitM, using per-host certificates minted from a local root CA. Enforces network-egress policy with no *agent code* change. | Network traffic the SDK misses **that is routed to it** on a host under MitM. | No agent code change, but the process must honour the proxy environment and trust the CA; HTTP/2, gRPC and WebSocket are out of scope. |
-| **3. eBPF (`aa-ebpf*`)** | Kernel hooks: uprobes on OpenSSL, kprobes/tracepoints on `exec`/file syscalls. | OpenSSL TLS plaintext and process/file activity the layers above never saw — **observed, not blocked**. | Highest *detection* authority; **Linux only** (file-I/O kprobes x86_64-only), needs the privileged loader daemon, and fails open if it cannot attach. |
+| **SDK (in-process)** | A thin Rust shim (`aa-ffi-*` over `aa-sdk-client`) the language SDKs call. Emits events to the gateway and applies pre-execution allow/deny via wrapper functions. | Framework tool calls that are wrapped, after the SDK's initializer is called. Raw HTTP, subprocess spawns and file access are not intercepted. | Lowest latency, but requires the agent to adopt the SDK. |
+| **Proxy sidecar (`aa-proxy`)** | Intercepts routed outbound HTTP/1.1 via MitM, using per-host certificates minted from a local root CA. Denies network-egress traffic that fails policy, with no *agent code* change. | Network traffic the SDK misses **that is routed to it** on a host under MitM. | No agent code change, but the process must honour the proxy environment and trust the CA; HTTP/2, gRPC and WebSocket are out of scope. |
+| **eBPF (`aa-ebpf*`)** | Kernel hooks: uprobes on OpenSSL, kprobes/tracepoints on `exec`/file syscalls. | OpenSSL TLS plaintext and process/file activity the other mechanisms never saw — **observed, not blocked**. | Highest *detection* authority; **Linux only** (file-I/O kprobes x86_64-only), needs the privileged loader daemon, and fails open if it cannot attach. |
 
-The gateway is the common brain for all three — every layer asks the same policy
-engine for its decision and writes to the same audit log.
+The gateway is the common brain for all three — every mechanism asks the same
+policy engine for its decision and writes to the same audit log. They are not
+a fixed pipeline: a deployment installs whichever subset it needs, and an
+absent mechanism is a reportable state, not a gap another one silently fills.
 
-## When to use each
+## When to deploy each
 
-- **Reach for the SDK layer** when you control the agent's code and want the
+- **Reach for the SDK** when you control the agent's code and want the
   lowest-overhead, most precise instrumentation — it sees tool-call arguments
   and results directly, in process.
 - **Add the proxy** when you cannot or do not want to modify the agent, and the
@@ -28,18 +32,20 @@ engine for its decision and writes to the same audit log.
   practical way to govern a third-party or closed-source tool. See
   [Enforce an egress policy](enforce-egress-policy.md).
 - **Add eBPF** when you need visibility into what an agent does outside the paths
-  the other layers cover — e.g. it shells out, writes files, or makes raw
+  the other mechanisms cover — e.g. it shells out, writes files, or makes raw
   connections that skip both the SDK and the proxy. It raises the chance of
   *detecting* such a bypass; it is a detection backstop, not a catch-all, and it
   does not block.
 
-## Combining layers
+## Combining mechanisms
 
-The layers are additive, not exclusive. A typical governed deployment runs the
-SDK *and* the proxy: the SDK gives rich, in-process tool-call governance, while
-the proxy backstops the network path for anything the SDK does not see and that
-is routed through it. On Linux, eBPF sits underneath both as an
-observation floor — it widens what you can detect, not what you can prevent.
+Deploying more than one mechanism is additive, not composed into a guarantee. A
+typical governed deployment runs the SDK *and* the proxy: the SDK gives rich,
+in-process tool-call governance, while the proxy can deny network traffic the
+SDK does not see and that is routed through it. On Linux, eBPF sits underneath
+both as an observation point — it widens what you can detect, not what you can
+prevent, and only its narrow opt-in syscall guard can act on what it sees, and
+even then asynchronously.
 
 For what remains uncovered even with all three deployed, see [Limitations and
 known bypasses](../devtools/limitations.md).
@@ -57,7 +63,7 @@ reports the derived [protection ladder](../devtools/protection-levels.md).
 only — a source build, the GitHub Release tarballs, the `curl` installer and
 the Homebrew formula all carry them.)
 
-## Layer 2 in practice — the proxy
+## The proxy in practice
 
 ```console
 $ sudo aasm proxy install-ca # trust the local root CA so TLS interception works
@@ -70,9 +76,9 @@ $ aasm proxy uninstall-ca    # remove the CA when you are done
 `aasm proxy start` takes `--listen <addr>` (default `127.0.0.1:8899`),
 `--gateway <url>`, and `--ca-dir <dir>`.
 
-## Layer 3 in practice — eBPF
+## eBPF in practice
 
-The eBPF layer is **Linux-only**: its uprobes/kprobes/tracepoints attach to a
+eBPF is **Linux-only**: its uprobes/kprobes/tracepoints attach to a
 running kernel.
 
 ```console
@@ -94,12 +100,13 @@ kprobes, and the `sched_process_exec` tracepoint — run on Linux.
 
 ## Result
 
-You can match the interception layer (or stack of layers) to the requirement:
-SDK for precision where you own the code, proxy for egress control without
-touching agent code, eBPF for kernel-level *detection* of what escaped both on
-Linux — all feeding one gateway and one audit log.
+You can match the mechanism (or combination) to the requirement: SDK for
+precision where you own the code, proxy for egress control without touching
+agent code, eBPF for kernel-level *detection* of what escaped both on Linux —
+all feeding one gateway and one audit log.
 
-Match the requirement to what the layer can promise, too: the proxy denies an
-action before it leaves the machine; the SDK evaluates in-process but is
-advisory, since a non-cooperating agent never calls it; eBPF tells you an action
-happened.
+Match the requirement to what each mechanism can promise, too: the proxy
+denies an action before it leaves the machine; the SDK evaluates in-process
+but is advisory, since a non-cooperating agent never calls it; eBPF tells you
+an action happened, and cannot stop it except through its narrow opt-in
+syscall guard.
