@@ -749,8 +749,11 @@ Pages whose *structure* encodes the superseded model — these need rewriting, n
       four eBPF constraints) preserved verbatim.
 - [ ] `docs/src/usage-guide/interception-layers.md` — "Choosing interception layers"
       presumes the pipeline; reframe as choosing a *managed path* and a deployment.
-- [ ] `docs/src/architecture/README.md:32-40` — the `3 interception layers (SDK · proxy
+- [x] `docs/src/architecture/README.md:32-40` — the `3 interception layers (SDK · proxy
       · eBPF)` mermaid diagram.
+      Done: node relabeled to "3 independently-deployable mechanisms ... no
+      combined guarantee"; intro prose and page-list bullets re-termed from
+      "layers"/"interception crates" to "mechanisms"/"enforcement-mechanism crates".
 - [ ] `docs/src/architecture/system-architecture.md` — the system mermaid diagram and
       the "three interception layers" narration.
 
