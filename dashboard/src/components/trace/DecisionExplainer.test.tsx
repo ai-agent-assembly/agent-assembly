@@ -76,8 +76,8 @@ const NO_VERDICT: TraceEvent = {
 describe('DecisionExplainer', () => {
   it('renders the L0–L3 layer steps, outcome band, and redaction preview', () => {
     render(<DecisionExplainer event={SCRUBBED} />)
-    expect(screen.getByTestId('layer-steps')).toBeInTheDocument()
-    expect(screen.getAllByTestId('layer-step')).toHaveLength(4)
+    expect(screen.getByTestId('decision-steps')).toBeInTheDocument()
+    expect(screen.getAllByTestId('decision-step')).toHaveLength(4)
     expect(screen.getByTestId('decision-outcome-band')).toBeInTheDocument()
     expect(screen.getByTestId('redaction-preview')).toBeInTheDocument()
   })

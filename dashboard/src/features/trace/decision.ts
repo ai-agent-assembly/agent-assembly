@@ -6,7 +6,7 @@
  * explainer*: a verdict (ALLOWED / NARROWED / SCRUBBED / PENDING / DENIED), a
  * per-layer step visual, and a redaction-block payload preview. ADR-0017 items
  * 11–13 ratify the shipped generic `RedactionPreview`, the single `TraceDrawer`
- * container, and this seven-state `LayerSteps` renderer as authoritative over
+ * container, and this seven-state `DecisionSteps` renderer as authoritative over
  * the mock, so none of those are reshaped here.
  *
  * What changed under AAASM-5109 is where a verdict may come from. The previous
@@ -18,6 +18,16 @@
  * a policy violation. Asserting "allowed" because no field said otherwise is
  * the exact failure the truthfulness vocabulary exists to prevent, so the
  * deriver now returns `Certain<Verdict>` and has no default at all.
+ *
+ * **Not the enforcement mechanisms.** This file's `L0`–`L3` are the
+ * decision-explainer's four *stages* (request / identity / capability /
+ * scrub) — a ratified UI vocabulary (ADR-0017 items 11–13, `design/v2/hi-fi/
+ * trace.jsx`), unrelated to and not renamed alongside ADR 0033's retired
+ * `L1`/`L2`/`L3` labels for the SDK/proxy/eBPF enforcement mechanisms. The
+ * shipped `L0 · REQUEST` / `L1 · IDENTITY` / `L2 · CAPABILITY` / `L3 · SCRUB`
+ * labels are unchanged; only this module's internal type/const/function
+ * names were re-termed (AAASM-5605 §C) so a codebase-wide search for
+ * `Layer*` does not conflate the two vocabularies.
  */
 
 import { absent, isKnown, known, type Certain } from '../../lib/truthfulness'
@@ -31,7 +41,7 @@ export type Verdict = 'allowed' | 'narrowed' | 'scrubbed' | 'pending' | 'denied'
  * backend decision field) but are part of the visual vocabulary so the step
  * renderer is complete when those fields land.
  */
-export type LayerStatus =
+export type DecisionStepStatus =
   | 'pass'
   | 'fail'
   | 'pending'
@@ -69,11 +79,11 @@ export interface StatusMeta {
   readonly bgVar: string
 }
 
-// LayerStatus is a closed 7-member app union computed client-side per
+// DecisionStepStatus is a closed 7-member app union computed client-side per
 // ADR-0017 item 13 — not a raw wire string — narrow-union Record gap
 // (AAASM-5245 gap 2).
 // eslint-disable-next-line no-restricted-syntax
-export const STATUS_META: Record<LayerStatus, StatusMeta> = {
+export const STATUS_META: Record<DecisionStepStatus, StatusMeta> = {
   pass: { icon: '✓', colorVar: 'var(--ok)', bgVar: 'var(--ok-bg)' },
   fail: { icon: '✕', colorVar: 'var(--danger)', bgVar: 'var(--danger-bg)' },
   pending: { icon: '⏸', colorVar: 'var(--info)', bgVar: 'var(--info-bg)' },
@@ -164,7 +174,7 @@ export function deriveVerdict(event: TraceEvent): Certain<Verdict> {
   )
 }
 
-export interface LayerStep {
+export interface DecisionStep {
   /** Stable id, `l0`–`l3`. */
   readonly id: string
   /** Uppercase layer label, e.g. `L2 · CAPABILITY`. */
@@ -172,11 +182,12 @@ export interface LayerStep {
   /**
    * The step's outcome, or an absence when the wire cannot establish one.
    *
-   * Kept as a `Certain<LayerStatus>` rather than widening `LayerStatus` with an
-   * eighth "unknown" member, because ADR-0017 item 13 ratifies the seven-state
-   * renderer and an unevaluated layer is an absence, not a new kind of outcome.
+   * Kept as a `Certain<DecisionStepStatus>` rather than widening
+   * `DecisionStepStatus` with an eighth "unknown" member, because ADR-0017
+   * item 13 ratifies the seven-state renderer and an unevaluated layer is an
+   * absence, not a new kind of outcome.
    */
-  readonly status: Certain<LayerStatus>
+  readonly status: Certain<DecisionStepStatus>
   /** One-line human detail, or an absence when no field supplies one. */
   readonly detail: Certain<string>
   /**
@@ -188,7 +199,7 @@ export interface LayerStep {
 }
 
 /** How a known verdict colours the L2 capability step. */
-const L2_STATUS_BY_VERDICT: Readonly<Record<Verdict, LayerStatus>> = {
+const CAPABILITY_STATUS_BY_VERDICT: Readonly<Record<Verdict, DecisionStepStatus>> = {
   denied: 'fail',
   pending: 'pending',
   narrowed: 'narrow',
@@ -209,11 +220,11 @@ const REDACTION_NOT_ON_SPAN =
  * `skip` the old deriver reported. `skip` asserts "redaction ran and found
  * nothing", which is a claim about the scrubber this response cannot support.
  */
-function l3Status(verdict: Certain<Verdict>): Certain<LayerStatus> {
+function scrubStatus(verdict: Certain<Verdict>): Certain<DecisionStepStatus> {
   if (isKnown(verdict) && (verdict.value === 'denied' || verdict.value === 'pending')) {
-    return known<LayerStatus>('unreached')
+    return known<DecisionStepStatus>('unreached')
   }
-  return absent<LayerStatus>('not-supported', REDACTION_NOT_ON_SPAN)
+  return absent<DecisionStepStatus>('not-supported', REDACTION_NOT_ON_SPAN)
 }
 
 /**
@@ -224,14 +235,14 @@ function l3Status(verdict: Certain<Verdict>): Certain<LayerStatus> {
  * identity resolved. L2 follows the verdict — including its absence. L3 is
  * absent for anything the response cannot establish.
  */
-export function buildLayerSteps(event: TraceEvent): LayerStep[] {
+export function buildDecisionSteps(event: TraceEvent): DecisionStep[] {
   const verdict = deriveVerdict(event)
 
   return [
     {
       id: 'l0',
       label: 'L0 · REQUEST',
-      status: known<LayerStatus>('pass'),
+      status: known<DecisionStepStatus>('pass'),
       // The operation name is real; the request preview that used to be
       // appended here has no wire source, so it is left to its own absence
       // rather than concatenated into this line as the string "undefined".
@@ -241,7 +252,7 @@ export function buildLayerSteps(event: TraceEvent): LayerStep[] {
     {
       id: 'l1',
       label: 'L1 · IDENTITY',
-      status: known<LayerStatus>('pass'),
+      status: known<DecisionStepStatus>('pass'),
       detail: known(`agent ${event.agent}`),
       // trust score / DID / framework / owner are not in the trace payload.
       backendGated: true,
@@ -250,8 +261,8 @@ export function buildLayerSteps(event: TraceEvent): LayerStep[] {
       id: 'l2',
       label: 'L2 · CAPABILITY',
       status: isKnown(verdict)
-        ? known(L2_STATUS_BY_VERDICT[verdict.value])
-        : absent<LayerStatus>(verdict.state, verdict.detail),
+        ? known(CAPABILITY_STATUS_BY_VERDICT[verdict.value])
+        : absent<DecisionStepStatus>(verdict.state, verdict.detail),
       // "no policy violation recorded" used to stand in for a missing reason,
       // which reads as an affirmative all-clear. The reason field does not
       // exist on the span, so the absence is reported as such.
@@ -262,7 +273,7 @@ export function buildLayerSteps(event: TraceEvent): LayerStep[] {
     {
       id: 'l3',
       label: 'L3 · SCRUB',
-      status: l3Status(verdict),
+      status: scrubStatus(verdict),
       detail: isKnown(event.redactedFields)
         ? known(`redacted: ${event.redactedFields.value.join(', ')}`)
         : absent<string>('not-supported', REDACTION_NOT_ON_SPAN),

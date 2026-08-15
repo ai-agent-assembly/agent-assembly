@@ -70,7 +70,7 @@ describe('PayloadModal', () => {
 
     expect(screen.getByTestId('payload-modal')).toBeInTheDocument()
     expect(screen.getByTestId('decision-explainer')).toBeInTheDocument()
-    expect(screen.getByTestId('layer-steps')).toBeInTheDocument()
+    expect(screen.getByTestId('decision-steps')).toBeInTheDocument()
     expect(screen.getByTestId('decision-outcome-band')).toBeInTheDocument()
     // decision "scrub" → scrubbed verdict on the header chip.
     expect(screen.getByTestId('verdict-chip')).toHaveAttribute('data-verdict', 'scrubbed')
