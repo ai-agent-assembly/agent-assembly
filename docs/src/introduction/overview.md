@@ -38,7 +38,7 @@ A governing gateway, pointed at a reference policy, is one command away:
 cargo run -p aa-gateway -- --policy policy-examples/low-risk.yaml
 ```
 
-That daemon listens on `127.0.0.1:50051` and is ready for any interception layer
+That daemon listens on `127.0.0.1:50051` and is ready for any enforcement mechanism
 to connect. The rest of this book explains how to put it to work.
 
 ## The problem: ungoverned agent tool-use is risky
@@ -107,7 +107,7 @@ unmeasured or unsupported today.
 
 This book is the reference for **contributors and operators of the
 `agent-assembly` core** — people running the gateway, writing policy, and
-deploying the interception layers. If you are instead building an application
+deploying the enforcement mechanisms. If you are instead building an application
 *with* a language SDK, start from the per-SDK guides: [Python
 SDK](https://docs.agent-assembly.com/python-sdk/stable/), [Node
 SDK](https://docs.agent-assembly.com/node-sdk/stable/), [Go

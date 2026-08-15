@@ -767,8 +767,13 @@ Pages whose *structure* encodes the superseded model — these need rewriting, n
 
 Pages that reference the model and need their claims re-termed:
 
-- [ ] `docs/src/README.md`, `docs/src/introduction/README.md`,
+- [x] `docs/src/README.md`, `docs/src/introduction/README.md`,
       `docs/src/introduction/overview.md`, `docs/src/introduction/concepts.md`
+      Done: "three-layer interception model"/"interception layer(s)" re-termed to
+      "three enforcement mechanisms"/"enforcement mechanism(s)" in `README.md`
+      (also fixed its `architecture/index.md` broken link → `README.md`),
+      `overview.md`, `concepts.md`; `introduction/README.md` already clean
+      (checked in slice 2).
 - [ ] `docs/src/architecture/components.md`, `docs/src/architecture/workflows.md`,
       `docs/src/architecture/infra-overview.md`
 - [x] `docs/src/security/overview.md`, `docs/src/security/protection-model.md`
@@ -784,7 +789,10 @@ Pages that reference the model and need their claims re-termed:
 - [ ] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
 - [ ] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
 - [ ] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`
-- [ ] `docs/src/devtools/product-brief.md`
+- [x] `docs/src/devtools/product-brief.md` — done in slice 1 (commit `ac5048f66`),
+      checklist box was missed at the time; remaining "layer" occurrences
+      (`product layer`, `detection layer`) are descriptive nouns, not the
+      superseded composition model.
 - [ ] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
       tier definition asserts "The tool cannot bypass enforcement"**, a banned absolute
       (the forbidden-designs list, item 7) that the verified bypass surface in §4 contradicts.
@@ -793,8 +801,12 @@ Pages that reference the model and need their claims re-termed:
       missed on the first pass because the file never uses the words "three-layer".
 - [ ] `docs/src/usage-guide/overview.md` — routes readers to "Choosing interception
       layers" as the architecture-in-practice entry point.
-- [ ] `docs/src/SUMMARY.md` — TOC entries for the two retired pages and the
+- [x] `docs/src/SUMMARY.md` — TOC entries for the two retired pages and the
       "Choosing interception layers" entry.
+      Done: retired-page entries already repointed by slices 1/2 (`Enforcement
+      paths and their limitations`, `Enforcement mechanisms at a glance`);
+      "Choosing interception layers" → "Choosing a managed deployment" to match
+      the retitled page.
 
 **Not affected — checked and cleared** (recorded so the next pass does not re-open them):
 `dashboard/src/features/capability/api.ts` (its only hit is `:51`, *"Three independent
