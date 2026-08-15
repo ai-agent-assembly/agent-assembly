@@ -24,8 +24,12 @@
 //! - **Node.js** — statically-linked BoringSSL with non-`SSL_*` symbol names.
 //! - **GnuTLS / NSS / BoringSSL / LibreSSL / s2n** — different export surfaces.
 //!
-//! Plaintext egress from those stacks bypasses these uprobes; the proxy
-//! (`aa-proxy`) MitM layer and the syscall/socket layer remain the catch-all.
+//! Plaintext egress from those stacks bypasses these uprobes. The proxy
+//! (`aa-proxy`) can independently see and mediate traffic routed through its
+//! MitM, and the syscall/socket hooks can independently observe the
+//! underlying I/O — neither is a catch-all for what this layer misses; each
+//! reaches its own claim level (ADR 0033 §6), and none of the three covers
+//! for another that is absent or bypassed.
 //! Broadening TLS-library coverage (GnuTLS `gnutls_record_send/recv`, NSS
 //! `PR_Write/PR_Read`, BoringSSL, Go runtime offsets) is tracked as a
 //! follow-up under AAASM-3872 — it requires per-library symbol/offset

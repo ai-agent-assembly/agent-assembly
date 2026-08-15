@@ -58,7 +58,7 @@ pub struct RunArgs {
 
     /// Launch WITHOUT routing the tool through the governed proxy.
     ///
-    /// This is an explicit opt-out of Layer 2 interception: the tool's traffic
+    /// This is an explicit opt-out of the sidecar proxy mechanism: the tool's traffic
     /// is not inspected and no egress policy applies to it. Without this flag
     /// `aasm run` refuses to launch unless it can establish a trusted local
     /// proxy endpoint (AAASM-5323) — it never launches unproxied by accident.

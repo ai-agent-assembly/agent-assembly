@@ -37,7 +37,7 @@ use aa_core::attestation::{AttestationBasis, LayerAttestation, ProtectionAttesta
 const AA_LAYERS_ENV: &str = "AA_LAYERS";
 
 bitflags::bitflags! {
-    /// Bitflag set of active interception layers.
+    /// Bitflag set of active enforcement mechanisms.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct LayerSet: u8 {
         /// Kernel-level eBPF instrumentation (Linux ≥ 5.8 with BTF and CAP_BPF).
