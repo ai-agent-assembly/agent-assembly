@@ -1,0 +1,262 @@
+{
+  "_comment": [
+    "AAASM-5791 product-smoke scenario pack. An LLM QA agent (or a human) can",
+    "execute this pack via `cargo test -p aa-integration-tests --test",
+    "sensitive_data_product_smoke` without reading aa-security/aa-gateway",
+    "source: the 'support' and 'expect' fields below are the full contract.",
+    "",
+    "Payloads are NOT duplicated here where a conformance vector already",
+    "covers the case — 'vector_ref' points at the existing",
+    "conformance/vectors/{credential_detection,zh_tw_detection}/*.json file",
+    "the runner loads the input_text from. Only classes with no existing",
+    "vector (the intentionally-unsupported semantic classes, and the two",
+    "policy-defined-pattern cases) carry an inline 'payload'.",
+    "",
+    "'support' values:",
+    "  supported        - v1 ships a detector for this; a finding is expected.",
+    "  negative_control  - benign content; NO finding is expected, and the",
+    "                      content must remain usable (redacted_payload is None).",
+    "  unsupported       - v1 has no detector for this class today (semantic",
+    "                      PII, deferred to provider work post-v1 per ADR 0032",
+    "                      D-1). Expected result is EXPECTED_UNSUPPORTED: no",
+    "                      finding, decision stays Allow, nothing is redacted.",
+    "                      This is a claim about today's product, not a defect.",
+    "",
+    "Expected values are NOT derived from aa-security's own tables: they were",
+    "written by reading the conformance vectors' committed expected_findings",
+    "(authored independently of this pack) and, for the unsupported class,",
+    "by grepping aa-security/src for the class name and finding no detector."
+  ],
+  "policy_fixture": "policies/sensitive_data_product_smoke.yaml",
+  "scenarios": [
+    {
+      "id": "credential-anthropic-key",
+      "class": "credential",
+      "support": "supported",
+      "persona": "agent embedding a leaked API key in a tool call",
+      "vector_ref": "credential_detection/api_keys_anthropic.json",
+      "expect": { "decision": "Allow", "credential_kind": "AnthropicKey", "redacted": true }
+    },
+    {
+      "id": "credential-aws-access-key",
+      "class": "credential",
+      "support": "supported",
+      "persona": "agent embedding cloud credentials in a tool call",
+      "vector_ref": "credential_detection/api_keys_aws.json",
+      "expect": { "decision": "Allow", "credential_kind": "AwsAccessKey", "redacted": true }
+    },
+    {
+      "id": "credential-github-pat",
+      "class": "credential",
+      "support": "supported",
+      "persona": "agent embedding a GitHub PAT in a tool call",
+      "vector_ref": "credential_detection/auth_tokens_github_pat.json",
+      "expect": { "decision": "Allow", "credential_kind": "GitHubPat", "redacted": true }
+    },
+    {
+      "id": "credential-slack-bot-token",
+      "class": "credential",
+      "support": "supported",
+      "persona": "agent embedding a Slack bot token in a tool call",
+      "vector_ref": "credential_detection/auth_tokens_slack_bot.json",
+      "expect": { "decision": "Allow", "credential_kind": "SlackBotToken", "redacted": true }
+    },
+    {
+      "id": "credential-database-uri",
+      "class": "credential",
+      "support": "supported",
+      "persona": "agent embedding a database connection string with inline credentials",
+      "vector_ref": "credential_detection/db_urls_postgres.json",
+      "expect": { "decision": "Allow", "credential_kind": "PostgresUrl", "redacted": true }
+    },
+    {
+      "id": "credential-pem-private-key",
+      "class": "credential",
+      "support": "supported",
+      "persona": "agent embedding a private key it should never transmit",
+      "vector_ref": "credential_detection/private_keys_rsa.json",
+      "expect": { "decision": "Allow", "credential_kind": "RsaPrivateKey", "redacted": true }
+    },
+    {
+      "id": "pii-payment-card",
+      "class": "pii",
+      "support": "supported",
+      "persona": "agent copying a payment card number into a tool call",
+      "vector_ref": "credential_detection/pii_credit_card.json",
+      "expect": { "decision": "Allow", "credential_kind": "CreditCardLuhn", "redacted": true }
+    },
+    {
+      "id": "pii-email-address",
+      "class": "pii",
+      "support": "supported",
+      "persona": "agent including a customer email address in a tool call",
+      "vector_ref": "credential_detection/pii_email.json",
+      "expect": { "decision": "Allow", "credential_kind": "EmailAddress", "redacted": true }
+    },
+    {
+      "id": "pii-us-ssn",
+      "class": "pii",
+      "support": "supported",
+      "persona": "agent including a US Social Security Number in a tool call",
+      "vector_ref": "credential_detection/pii_ssn.json",
+      "expect": { "decision": "Allow", "credential_kind": "SsnPattern", "redacted": true }
+    },
+    {
+      "id": "pii-high-entropy-secret",
+      "class": "pii",
+      "support": "supported",
+      "persona": "agent including an unlabelled high-entropy token in a tool call",
+      "vector_ref": "credential_detection/entropy_high_token.json",
+      "expect": { "decision": "Allow", "credential_kind": "GenericHighEntropy", "redacted": true }
+    },
+    {
+      "id": "credential-custom-policy-pattern",
+      "class": "custom",
+      "support": "supported",
+      "persona": "operator-defined internal token pattern",
+      "payload": "internal_token=MYCO-SECRET-DEADBEEFCAFE0001",
+      "expect": { "decision": "Allow", "custom_finding": true, "redacted": true }
+    },
+    {
+      "id": "zh-tw-national-id",
+      "class": "zh_tw",
+      "support": "supported",
+      "persona": "agent recording a Taiwan National ID in a tool call",
+      "vector_ref": "zh_tw_detection/id_national_id.json",
+      "expect": { "decision": "Allow", "canonical_finding": true, "redacted": true }
+    },
+    {
+      "id": "zh-tw-arc-new",
+      "class": "zh_tw",
+      "support": "supported",
+      "persona": "agent recording a new-format Alien Resident Certificate number",
+      "vector_ref": "zh_tw_detection/id_arc_2021.json",
+      "expect": { "decision": "Allow", "canonical_finding": true, "redacted": true }
+    },
+    {
+      "id": "zh-tw-business-id",
+      "class": "zh_tw",
+      "support": "supported",
+      "persona": "agent recording a Taiwan business/tax identifier",
+      "vector_ref": "zh_tw_detection/biz_current_era_rule.json",
+      "expect": { "decision": "Allow", "canonical_finding": true, "redacted": true }
+    },
+    {
+      "id": "zh-tw-mobile-phone",
+      "class": "zh_tw",
+      "support": "supported",
+      "persona": "agent recording a Taiwan mobile phone number",
+      "vector_ref": "zh_tw_detection/phone_mobile_national.json",
+      "expect": { "decision": "Allow", "canonical_finding": true, "redacted": true }
+    },
+    {
+      "id": "zh-tw-mobile-phone-plus886",
+      "class": "zh_tw",
+      "support": "supported",
+      "persona": "agent recording a Taiwan mobile phone number in +886 international form",
+      "vector_ref": "zh_tw_detection/phone_mobile_international.json",
+      "expect": { "decision": "Allow", "canonical_finding": true, "redacted": true }
+    },
+    {
+      "id": "benign-english-prose",
+      "class": "negative_control",
+      "support": "negative_control",
+      "persona": "agent writing an ordinary English status update",
+      "vector_ref": "credential_detection/entropy_false_positive_clean.json",
+      "expect": { "decision": "Allow", "clean": true }
+    },
+    {
+      "id": "benign-zh-tw-prose",
+      "class": "negative_control",
+      "support": "negative_control",
+      "persona": "agent writing an ordinary Traditional Chinese status update",
+      "vector_ref": "credential_detection/entropy_false_positive_zh_tw_clean.json",
+      "expect": { "decision": "Allow", "clean": true }
+    },
+    {
+      "id": "benign-mixed-zh-tw-english",
+      "class": "negative_control",
+      "support": "negative_control",
+      "persona": "agent writing a mixed zh-TW/English status update",
+      "vector_ref": "credential_detection/entropy_false_positive_zh_tw_en_mixed_clean.json",
+      "expect": { "decision": "Allow", "clean": true }
+    },
+    {
+      "id": "benign-order-reference-number",
+      "class": "negative_control",
+      "support": "negative_control",
+      "persona": "agent logging an order/reference number that previously exposed the non-English entropy defect (AAASM-5450/5451)",
+      "vector_ref": "zh_tw_detection/biz_machine_delimited_negative.json",
+      "expect": { "decision": "Allow", "clean": true }
+    },
+    {
+      "id": "benign-checksum-near-miss-national-id",
+      "class": "negative_control",
+      "support": "negative_control",
+      "persona": "agent logging a number shaped like a Taiwan National ID but failing its checksum",
+      "vector_ref": "zh_tw_detection/id_checksum_near_miss_negative.json",
+      "expect": { "decision": "Allow", "clean": true }
+    },
+    {
+      "id": "benign-checksum-near-miss-card",
+      "class": "negative_control",
+      "support": "negative_control",
+      "persona": "agent logging a number shaped like a payment card but failing Luhn",
+      "vector_ref": "credential_detection/pii_fullwidth_digits_fail_luhn.json",
+      "expect": { "decision": "Allow", "clean": true }
+    },
+    {
+      "id": "benign-fullwidth-unicode-preserved",
+      "class": "negative_control",
+      "support": "negative_control",
+      "persona": "agent logging full-width CJK punctuation and digits with nothing sensitive in them",
+      "vector_ref": "credential_detection/entropy_false_positive_zh_tw_fullwidth_separators_clean.json",
+      "expect": { "decision": "Allow", "clean": true }
+    },
+    {
+      "id": "unsupported-passport-number",
+      "class": "semantic_pii",
+      "support": "unsupported",
+      "persona": "agent recording a passport number",
+      "payload": "passport_no=P1234567 for boarding verification",
+      "expect": { "decision": "Allow", "clean": true, "result": "EXPECTED_UNSUPPORTED" },
+      "notes": "No passport detector exists in aa-security/src (grep returns zero matches). Deferred semantic PII per ADR 0032 D-1."
+    },
+    {
+      "id": "unsupported-postal-address",
+      "class": "semantic_pii",
+      "support": "unsupported",
+      "persona": "agent recording a customer's postal address",
+      "payload": "ship_to=123 Main St, Springfield, IL 62704",
+      "expect": { "decision": "Allow", "clean": true, "result": "EXPECTED_UNSUPPORTED" },
+      "notes": "No address detector exists in aa-security/src. Deferred semantic PII per ADR 0032 D-1."
+    },
+    {
+      "id": "unsupported-person-name",
+      "class": "semantic_pii",
+      "support": "unsupported",
+      "persona": "agent recording a customer's full name",
+      "payload": "customer_name=Jane Alice Doe",
+      "expect": { "decision": "Allow", "clean": true, "result": "EXPECTED_UNSUPPORTED" },
+      "notes": "No name detector exists in aa-security/src; needs NLP/NER, deferred post-v1."
+    },
+    {
+      "id": "unsupported-chinese-person-name",
+      "class": "semantic_pii",
+      "support": "unsupported",
+      "persona": "agent recording a customer's Chinese full name",
+      "payload": "客戶姓名=王小明",
+      "expect": { "decision": "Allow", "clean": true, "result": "EXPECTED_UNSUPPORTED" },
+      "notes": "No name detector exists for any locale in aa-security/src. Deferred semantic PII per ADR 0032 D-1."
+    },
+    {
+      "id": "unsupported-health-insurance-id",
+      "class": "semantic_pii",
+      "support": "unsupported",
+      "persona": "agent recording a health insurance member ID",
+      "payload": "insurance_member_id=HIC-88472913",
+      "expect": { "decision": "Allow", "clean": true, "result": "EXPECTED_UNSUPPORTED" },
+      "notes": "No health/insurance identifier detector exists in aa-security/src. Deferred semantic PII per ADR 0032 D-1."
+    }
+  ]
+}
