@@ -7,7 +7,7 @@
 - [Introduction](introduction/README.md)
   - [What it is & the problem](introduction/overview.md)
   - [Core concepts](introduction/concepts.md)
-  - [The three-layer model](introduction/three-layer-model.md)
+  - [Enforcement mechanisms at a glance](introduction/enforcement-mechanisms.md)
 
 # Quick Start
 
