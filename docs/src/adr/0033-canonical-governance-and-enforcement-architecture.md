@@ -774,8 +774,17 @@ Pages that reference the model and need their claims re-termed:
       (also fixed its `architecture/index.md` broken link → `README.md`),
       `overview.md`, `concepts.md`; `introduction/README.md` already clean
       (checked in slice 2).
-- [ ] `docs/src/architecture/components.md`, `docs/src/architecture/workflows.md`,
+- [x] `docs/src/architecture/components.md`, `docs/src/architecture/workflows.md`,
       `docs/src/architecture/infra-overview.md`
+      Done: "interception layers"/L1·L2·L3 ordering labels dropped from
+      section headings, mermaid node/participant labels, and prose in all
+      three; code identifiers (`LayerSet`, `layer.rs`, `AA_LAYERS`) kept
+      verbatim. `components.md`'s eBPF entry's unqualified "lowest bypass
+      risk" reworded to "observe-only" (matches its own claim level).
+      `infra-overview.md`'s "proxy... enforces network-egress policy"
+      re-termed to "denies... traffic that fails policy"; also fixed a
+      CLAIM-ABS-06 finding ("persists every action") introduced by this
+      pass's own edit, caught by `check_claim_vocabulary.py`.
 - [x] `docs/src/security/overview.md`, `docs/src/security/protection-model.md`
       (its opening sentence routes readers to `three-layer-defense.md`),
       `docs/src/security/threat-model.md`,
