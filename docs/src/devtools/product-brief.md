@@ -855,7 +855,7 @@ corresponding section of this document changes rather than being quietly worked 
   split and the other honest limits.
 - [Protection and enforcement](../security/protection-model.md) — the policy pipeline, redaction
   semantics and fail-closed behaviour this brief's guarantees rest on.
-- [Three-layer defense in depth](../security/three-layer-defense.md) — SDK / proxy / eBPF.
+- [Enforcement paths and their limitations](../security/enforcement-paths-and-limitations.md) — SDK / proxy / eBPF.
 - `aa-core/src/dev_tool.rs` — `GovernanceLevel` (`L0Discover` … `L3Native`).
 - `aa-core/src/policy.rs` — `EnforcementMode` (`Enforce` / `Observe` / `Disabled`).
 - `AAASM-5275` — plugin, adapter, lifecycle API and core-runtime boundaries.

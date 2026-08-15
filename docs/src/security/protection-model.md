@@ -1,12 +1,12 @@
 # Protection and enforcement
 
 Once an action is observed (see
-[Three-layer defense in depth](three-layer-defense.md)), it must be *decided
-on* and, where necessary, *blocked or scrubbed*. This page covers the
+[Enforcement paths and their limitations](enforcement-paths-and-limitations.md)),
+it must be *decided on* and, where necessary, *blocked or scrubbed*. This page covers the
 enforcement machinery: policy evaluation, fail-closed behavior, network-egress
 control, credential scanning & redaction, and budgets as a control. Every claim
 below is grounded in the gateway, runtime, and security crates; for the broader
-component picture see [Architecture](../architecture/index.md).
+component picture see [Architecture](../architecture/README.md).
 
 ## Policy evaluation
 
@@ -80,9 +80,11 @@ Egress is enforced at two tiers. In the gateway, `check_network_egress(host,
 policy)` returns an `EgressDecision` against the policy's allowlist
 (`aa-gateway/src/policy/network.rs`); a `NetworkRequest` to a host outside a
 non-empty allowlist is denied at Stage 2. At the wire, the proxy independently
-enforces egress on decrypted traffic with no agent code change (see
-[Three-layer defense](three-layer-defense.md)), and the eBPF SSL uprobes observe
-egress plaintext even when the proxy is bypassed.
+returns a `Block` verdict on decrypted egress traffic that fails its own policy
+check, with no agent code change (see [Enforcement paths and their
+limitations](enforcement-paths-and-limitations.md)), and the eBPF SSL uprobes
+observe egress plaintext even when the proxy is bypassed — observation only,
+not a second enforcement point.
 
 ## Credential scanning & redaction (`aa-security`)
 

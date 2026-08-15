@@ -6,7 +6,7 @@ secrets**, **tamper-evident**, and supports **non-repudiation** — even when an
 upstream sender (an SDK, a proxy, an eBPF probe) emits something it should not.
 This page covers the write-boundary sanitizer, redaction, and the publish path.
 For where audit sits in the wider system, see
-[Architecture](../architecture/index.md).
+[Architecture](../architecture/README.md).
 
 ## The write-boundary sanitizer
 

@@ -202,7 +202,7 @@ Key invariants from `aa-runtime/src/pipeline/enforcement.rs`:
 The eBPF layer is observe-and-forward for bypass-detection: it cannot block
 in-kernel, so it streams audit events while the SDK and proxy layers carry the
 synchronous allow/deny. For the trust rationale, see
-[three-layer defense](../security/three-layer-defense.md).
+[enforcement paths and their limitations](../security/enforcement-paths-and-limitations.md).
 
 ---
 

@@ -735,8 +735,12 @@ Pages whose *structure* encodes the superseded model — these need rewriting, n
       "three independent layers" table, the latency-vs-authority framing, "Everything
       else, including bypass attempts"). Replace with the six-element model; retire the
       filename.
-- [ ] `docs/src/security/three-layer-defense.md` — highest density of superseded claims
+- [x] `docs/src/security/three-layer-defense.md` — highest density of superseded claims
       in the book. Replace with §5.3's platform matrix and §6's claim vocabulary.
+      Done: renamed `security/enforcement-paths-and-limitations.md`, reframed from
+      "three layers that compose" to independently-deployable mechanisms with their
+      own claim levels; all technical detail (preconditions, code citations, the
+      four eBPF constraints) preserved verbatim.
 - [ ] `docs/src/usage-guide/interception-layers.md` — "Choosing interception layers"
       presumes the pipeline; reframe as choosing a *managed path* and a deployment.
 - [ ] `docs/src/architecture/README.md:32-40` — the `3 interception layers (SDK · proxy
@@ -750,11 +754,16 @@ Pages that reference the model and need their claims re-termed:
       `docs/src/introduction/overview.md`, `docs/src/introduction/concepts.md`
 - [ ] `docs/src/architecture/components.md`, `docs/src/architecture/workflows.md`,
       `docs/src/architecture/infra-overview.md`
-- [ ] `docs/src/security/overview.md`, `docs/src/security/protection-model.md`
+- [x] `docs/src/security/overview.md`, `docs/src/security/protection-model.md`
       (its opening sentence routes readers to `three-layer-defense.md`),
       `docs/src/security/threat-model.md`,
       `docs/src/security/release-threat-model.md`,
-      `docs/src/security/trust-boundaries.md`
+      `docs/src/security/trust-boundaries.md` —
+      done: links repointed to `enforcement-paths-and-limitations.md`, and every
+      sentence asserting composition ("stack, so an action that slips past one is
+      caught by the next", "a higher layer evaded simply surfaces at a lower one",
+      "eBPF catches what the SDK and proxy miss") re-termed to name the mechanism,
+      its precondition, and its actual claim level (observed/detected, not caught).
 - [ ] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
 - [ ] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
 - [ ] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`

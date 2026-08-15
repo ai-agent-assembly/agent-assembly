@@ -6,7 +6,7 @@ system protects, against whom, and how** — and, just as importantly, **where i
 refuses to place its trust**.
 
 This section is the *why*. For the *how* — concrete crates, types, and data
-paths — follow the cross-links into [Architecture](../architecture/index.md).
+paths — follow the cross-links into [Architecture](../architecture/README.md).
 
 ## What the Security Model protects
 
@@ -35,15 +35,16 @@ that component inside a governed boundary. Concretely it protects:
 
 The Security Model rests on three principles, each developed in its own page.
 
-### 1. Layered interception — see the action before you can govern it
+### 1. Independent enforcement mechanisms — see the action before you can govern it
 
-To govern an action the system must first *observe* it. Agent Assembly
-intercepts at [three independent layers](three-layer-defense.md) — the
-in-process SDK shim (`aa-sdk-client`), the sidecar proxy (`aa-proxy`), and
+To govern an action the system must first *observe* it. Agent Assembly can
+observe through three [independently-deployable mechanisms](enforcement-paths-and-limitations.md) —
+the in-process SDK shim (`aa-sdk-client`), the sidecar proxy (`aa-proxy`), and
 kernel-level eBPF (`aa-ebpf`) — ordered lowest-latency-first and
-highest-detection-authority-first. The layers are not alternatives; they
-**stack**, so an action that slips past one is caught by the next. Coverage is
-the union of the layers you deploy.
+highest-detection-authority-first. They are not a fixed pipeline: each has its
+own precondition, an absent one is a reportable state rather than a gap the
+others silently fill, and deploying more of them narrows the chance of an
+action going unmeasured without closing it into a guarantee.
 
 ### 2. The SDK is not a trust boundary — the runtime is authoritative
 
@@ -75,7 +76,7 @@ forwarded raw (`aa-runtime/src/pipeline/enforcement.rs`,
 |---|---|
 | [Threat model](threat-model.md) | What assets, adversaries, and threats are in scope? |
 | [Release threat model](release-threat-model.md) | What does **this** release change about our exposure, and is each change covered? (versioned, refreshed every major) |
-| [Three-layer defense in depth](three-layer-defense.md) | How do SDK, proxy, and eBPF compose so nothing slips through? |
+| [Enforcement paths and their limitations](enforcement-paths-and-limitations.md) | What does each of SDK, proxy, and eBPF actually catch, and what does deploying more than one of them buy you? |
 | [Protection and enforcement](protection-model.md) | How are policy, fail-closed, egress, scanning, and budgets enforced? |
 | [Trust boundaries](trust-boundaries.md) | Why is the SDK untrusted and the runtime/gateway authoritative? |
 | [Audit and assurance](audit-assurance.md) | How is the audit trail kept tamper-evident and free of secrets? |
