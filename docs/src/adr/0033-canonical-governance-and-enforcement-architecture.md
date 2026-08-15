@@ -758,8 +758,12 @@ Pages whose *structure* encodes the superseded model — these need rewriting, n
       Done: node relabeled to "3 independently-deployable mechanisms ... no
       combined guarantee"; intro prose and page-list bullets re-termed from
       "layers"/"interception crates" to "mechanisms"/"enforcement-mechanism crates".
-- [ ] `docs/src/architecture/system-architecture.md` — the system mermaid diagram and
+- [x] `docs/src/architecture/system-architecture.md` — the system mermaid diagram and
       the "three interception layers" narration.
+      Done: both mermaid diagrams and all prose re-termed to "enforcement
+      mechanisms"/"independently-deployable"; "L1/L2/L3" ordering labels dropped
+      from the crate/component and layer diagrams; closing "defense-in-depth"
+      cross-reference re-termed to "each mechanism's own claim level".
 
 Pages that reference the model and need their claims re-termed:
 
