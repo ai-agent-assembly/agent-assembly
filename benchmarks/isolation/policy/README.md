@@ -62,14 +62,39 @@ Linux CI job (`../../../.github/workflows/ci.yml`) exists to close.
 ## What this run does not measure
 
 - **Filesystem-read confinement.** Read access is granted everywhere, so no
-  P3 figure or compatibility finding from this run says anything about the
-  cost or coverage of restricting reads.
-- **Process-creation confinement (P4's real cost).** Leaving `capabilities:`
-  unset means `process_spawn` and every family's own internal forking (pnpm
-  spawning node, cargo spawning rustc) run exactly as unconfined. P4's
-  confined-arm figure from this run will read as ~no cost by construction —
-  that must not be read as "process confinement is free." A production AASM
-  policy that restricts `agent_spawn` / `terminal_exec` would need its own
-  run to measure that cost, which is out of scope here.
+  compatibility finding from this run says anything about the cost or
+  coverage of restricting reads.
+- **A real process-creation *security* control.** Leaving `capabilities:`
+  unset means the `process_creation` domain is never asked to restrict
+  anything (confirmed `not_stated` above), so P4's measured 1.82x is **not**
+  the cost of a "prevent further spawning" control — no such control was ever
+  requested. It is real measured overhead nonetheless: `process_spawn`
+  succeeded and its 200 `execve`+reap cycles were genuinely 1.82x slower
+  under confinement, which is the incidental cost of the filesystem-write
+  Landlock ruleset's own per-`execve` path-resolution checks, paid on every
+  process creation regardless of whether process creation itself is
+  restricted. A production AASM policy that also restricts `agent_spawn` /
+  `terminal_exec` would need its own run to measure that additional cost,
+  which stays out of scope here.
 - **Security dimensions S1/S2** (advertised-control coverage, kernel floor) —
   METHODOLOGY.md already scopes these as deferred; nothing here changes that.
+
+## What the confined run found this artifact was missing
+
+**`filesystem.write.allow` needed `/dev/null`.** Five of eight default
+families failed under confinement — `rust_cargo_metadata`, `many_small_files`,
+`python_pkg_test`, `node_pkg_test`, `repo_traversal` — every one of them at
+the exact line that redirects a noisy command's output to `/dev/null`
+(`sh -x` traces: `cannot create /dev/null: Permission denied`, exit 2). The
+write grant above scopes to the scratch root only, and Sandlock denies
+opening `/dev/null` for writing exactly like any other ungranted path. This
+is a `policy-change`-classified finding (see METHODOLOGY.md's compatibility
+catalogue) with an obvious fix — add `/dev/null` to the write grant — that
+was identified but not applied or re-measured in this pass; see
+METHODOLOGY.md's Follow-up section.
+
+A second, narrower finding: a bare `git status` (not redirected to
+`/dev/null`) also fails, exit 128, most likely from `.git/index`'s refresh
+write landing outside the scratch-only grant — recorded as a latent finding,
+not a sixth catalogue entry, since it was never the proximate cause of
+`repo_traversal`'s actual failure.

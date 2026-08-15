@@ -10,19 +10,22 @@ rules and the reason a cross-platform comparison is invalid.
 
 ## Status
 
-The backend this exists to measure — Sandlock, AAASM-5708 — is merged, and
-`aasm run --isolation process` (AAASM-5711) is activated on `main`. What is
-**not** yet committed is a confined-arm measurement: producing one requires a
-Linux host with the sandlock mechanism actually installed, and no session
-that has worked on this directory so far has had one. `launchers/sandlock.sh` and `policy/confined-arm.yaml.tmpl` are built and
-confirmed against a real local build of `aa-cli` — both the CLI grammar (see
-the launcher's own header comment) and, separately, that the policy's
-`filesystem`/`network` grants actually lower to real requirements rather than
-`not_stated` (see `policy/README.md`'s dry-run evidence). Running the
-confined arm on a Linux host should not require further plumbing work.
-**No verdict is drawn and none can be**: `compare` always reports the
-compatibility and security dimensions as blocked, so the decision rule can only
-return "no verdict" from timing data alone until that run exists.
+The backend this exists to measure — Sandlock, AAASM-5708 — is merged,
+`aasm run --isolation process` (AAASM-5711) is activated on `main`, and a
+real confined-arm measurement now exists: captured on a Linux GitHub Actions
+runner with sandlock 0.8.6 installed, same host and session as its
+unconfined control. See METHODOLOGY.md's
+[Confined-arm measurement](METHODOLOGY.md#confined-arm-measurement-aaasm-5713)
+section for the full environment, the measured P1/P4/P5/P6/P7 values, and the
+compatibility catalogue.
+
+**The decision matrix is still blocked**, but for a specific, diagnosed
+reason rather than an absent measurement: 5 of 8 default families fail under
+confinement, all traced to the same root cause (the confined-arm policy's
+write grant doesn't cover `/dev/null`, which every one of them redirects
+noisy tool output to), which knocks P2 and P3 out of admissibility. The fix
+is identified in METHODOLOGY.md's Follow-up section but not applied or
+re-measured in this pass.
 
 ## Requirements
 
@@ -117,6 +120,9 @@ and a re-run, never a softer threshold.
 | File | What it is |
 | --- | --- |
 | `results/baseline-unconfined-darwin.json` | Unconfined baseline, macOS. **Not a control for any Linux run** — see METHODOLOGY.md |
+| `results/confined-run-baseline-unconfined-linux.json` | Unconfined baseline, Linux — the real control for the confined run below |
+| `results/confined-run-sandlock-linux.json` | The confined arm: sandlock 0.8.6, same host and session as the baseline above |
+| `results/confined-run-comparison-linux.json` | `aabench.py compare`'s output for the two above |
 | `results/selftest-evidence.json` | Negative-control evidence, with both comparisons |
 | `results/selftest-arm-*.json` | The three synthetic control arms behind that evidence |
 
