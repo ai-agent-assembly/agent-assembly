@@ -223,6 +223,53 @@ cannot be interpreted. Sustained `dropped` counts mean the drain is not keeping
 up with the database behind it, and the number lost is the number in the line,
 not an estimate.
 
+## Per-event evidence: what a row can and cannot prove
+
+The state above is about whether a decision reached the table at all. This
+section is about what a **row that did arrive** is allowed to say about the
+action it describes — specifically, whether it proves the action's bytes were
+actually kept from their destination.
+
+There is no `prevented: bool` field anywhere in this evidence, by design. The
+runtime's own event is named `CredentialLeakBlocked`, and it does not mean
+blocked — it means *redact*, and redaction **forwards** the scrubbed bytes
+upstream. A boolean read from that event name alone would be wrong for the
+single most common outcome, silently.
+
+Instead each row carries two independent evidence fields, and a prevention
+claim requires a specific combination of both plus the decision:
+
+* **`EnforcementPoint`** — where in the request's life the decision was
+  applied: `pre_transmission` (before the payload could leave the process or
+  host), `post_transmission` (an observer that saw a completed write, e.g. an
+  eBPF uprobe or a post-hoc scan — too late to have stopped anything), or
+  `not_recorded` (the producing layer did not say).
+* **`TransmissionEvidence`** — what was actually observed about the bytes
+  that would have gone to the destination: `not_forwarded` (the request was
+  refused — the only value that can support a prevention claim),
+  `forwarded_clean` (sent, and re-inspection found nothing sensitive — a
+  successful *redaction*, not a prevented transmission), `forwarded_carrying_sensitive_value`
+  (sent, and still sensitive), `forwarded_not_inspected` (sent, nobody
+  re-checked what was in it), or `not_recorded` (no execution evidence
+  captured at all).
+
+A decision counts as **prevented transmission** only when all of: the
+enforcement point is `pre_transmission`, the disposition was a deny or a
+transforming action, the transmission evidence is `not_forwarded`, and the
+action was not running in observe mode. `not_recorded` on either field fails
+the test — an unwired producer cannot claim prevention by saying nothing, and
+absence of evidence is deliberately not evidence of either transmission or
+its absence.
+
+**Most rows do not yet carry this evidence.** The observable this is built on
+— `aa_proxy::probe_adjudication::ForwardedPayload` — exists but is produced on
+only one of the two upstream-dialing call sites today, and is not yet
+persisted end-to-end; generalizing that is separate, unstarted work. Until
+then, most rows report `TransmissionEvidence::NotRecorded`, and a dashboard or
+API reader must treat that as *no prevention evidence*, not as a zero
+incident count. A `0` in a prevention metric backed by unmeasured evidence
+means the denominator was not measured, not that nothing happened.
+
 ## Failure behaviour: the gateway refuses to start — in the modes that read it
 
 In `serve_tcp` and `serve_uds` — the legacy-gRPC paths, and the only ones that

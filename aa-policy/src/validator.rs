@@ -871,6 +871,39 @@ mod tests {
         assert_eq!(out.document.data.unwrap().locale_packs, vec!["ja-JP".to_string()]);
     }
 
+    /// The `locale_packs` example in `docs/src/policy-reference.md` is pinned
+    /// here rather than merely proofread: this test extracts the fenced YAML
+    /// block from the doc's own source text and parses it through the real
+    /// validator, so an editor who "fixes" the example into something that no
+    /// longer round-trips to `["zh-TW"]` — a typo'd key, a broken indent, a
+    /// stale tag — fails CI instead of shipping a doc an operator cannot copy.
+    #[test]
+    fn the_locale_packs_doc_example_round_trips_through_the_real_validator() {
+        const DOC: &str = include_str!("../../docs/src/policy-reference.md");
+        let anchor = "### `locale_packs` — locale-specific deterministic recognizers";
+        let after_anchor = DOC
+            .split_once(anchor)
+            .expect("policy-reference.md must still carry the locale_packs section this test pins")
+            .1;
+        let fence_open = "```yaml\n";
+        let after_open = after_anchor
+            .split_once(fence_open)
+            .expect("the locale_packs section must open a ```yaml fenced example")
+            .1;
+        let snippet = after_open
+            .split_once("```")
+            .expect("the locale_packs example's fence must close")
+            .0;
+
+        let out = PolicyValidator::from_yaml(snippet)
+            .expect("the documented locale_packs example must parse as a valid policy");
+        assert_eq!(
+            out.document.data.unwrap().locale_packs,
+            vec!["zh-TW".to_string()],
+            "docs/src/policy-reference.md's locale_packs example no longer parses to [\"zh-TW\"]"
+        );
+    }
+
     #[test]
     fn data_credential_action_block_parses() {
         let yaml = "data:\n  credential_action: block\n";

@@ -464,6 +464,7 @@ Sensitive-data / credential handling. Backed by `DataPolicy`.
 |---|---|---|---|
 | `sensitive_patterns` | list of regex strings | `[]` | `sensitive_patterns: ["sk-[A-Za-z0-9]{20,}"]` |
 | `credential_action` | enum | `redact_only` | `credential_action: block` |
+| `locale_packs` | list of BCP-47 tags | `[]` | `locale_packs: ["zh-TW"]` |
 
 ### `credential_action` values
 
@@ -494,10 +495,53 @@ covering common high-confidence secret prefixes, including:
 - Tokens: `ghp_` / `ghs_` (GitHub), `xoxb-` / `xoxp-` / `xoxa-` (Slack).
 - Database URLs: `postgres://`, `mysql://`, `mongodb://`.
 - Private keys: RSA, EC, OpenSSH, PKCS#8, PGP PEM blocks.
+- PII: payment card numbers (Luhn-validated), email addresses, US Social
+  Security numbers.
+- High-entropy secrets: strings that match no known literal prefix but score
+  above the entropy threshold — see `conformance/vectors/credential_detection/`
+  for the exact corpus this is tuned against.
 
 `sensitive_patterns` is the **custom** layer on top: your own regexes for
-organisation-specific identifiers (employee IDs, internal hostnames, PII shapes
-like SSNs or emails) that the built-in literal set does not cover.
+organisation-specific identifiers (employee IDs, internal hostnames, ticket
+references) that the built-in set does not cover. It is not where to add SSNs
+or emails — those are already built-in; a custom pattern for them would only
+run redundantly alongside the scanner that already catches them.
+
+### `locale_packs` — locale-specific deterministic recognizers
+
+`locale_packs` turns on additional deterministic recognizers for a named
+locale, on top of the always-on built-in scanner above. Currently one pack
+ships:
+
+| Tag | Adds |
+|---|---|
+| `zh-TW` | Taiwan National ID, new/old Alien Resident Certificate (ARC), business/tax identifier, mobile and landline phone numbers in local and `+886` form |
+
+```yaml
+data:
+  locale_packs:
+    - zh-TW
+```
+
+**Default is empty — opt in, not opt out.** The Taiwan business/tax-ID
+checksum carries a measured false-positive residual (~22%) on the synchronous
+enforcement path, so enabling it is a deliberate operator choice, not a
+default every deployment inherits silently. An empty list adds no locale
+recognizers and costs nothing extra per scan.
+
+**An unrecognized tag fails closed, it does not skip.** A misspelled or
+unsupported tag (e.g. `zh-tw` lowercase is accepted case-insensitively, but
+`zh-CN` is not a recognized pack) denies every action the policy governs,
+naming the unresolved tag in the reason, rather than silently scanning
+without that pack. This is deliberate: a typo in this field must not degrade
+into "detection ran, just not for what you configured" without anyone
+noticing.
+
+Semantic PII outside this table — person names, postal addresses, passport
+numbers, health/insurance identifiers, and other contextual PII that needs
+NLP/NER rather than a deterministic pattern — is **not supported** by any
+locale pack today. It remains post-v1 under ADR 0032 D-1; no locale pack adds
+it, and no built-in scanner class covers it.
 
 ### Performance notes
 
