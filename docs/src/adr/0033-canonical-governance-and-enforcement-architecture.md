@@ -884,18 +884,43 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       Done: already re-termed by an earlier ticket (independently-deployable
       mechanisms section, per-mechanism claim levels, explicit truth-exempt
       negative-example block); checked, no further change needed.
-- [ ] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
+- [x] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
       `aa-sandbox`, `aa-sdk-client`.
-- [ ] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three
+      Done: `aa-cli`/`aa-gateway`/`aa-proxy`/`aa-sandbox` had no model
+      references (checked, cleared). `aa-ebpf` re-termed "Layer 3 of the
+      three-layer defense-in-depth architecture" -> "one of the three
+      independently-deployable enforcement mechanisms" + made explicit it is
+      observe-only. `aa-runtime` re-termed "authoritative enforcement point in
+      the three-layer interception model" -> "...across the three
+      independently-deployable enforcement mechanisms". `aa-sdk-client`
+      re-termed "Layer 1 (the in-process SDK layer) of the three-layer
+      interception model" -> "the in-process SDK mechanism, one of the three
+      independently-deployable enforcement mechanisms".
+- [x] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three
       interception layers"; should describe an independently probed availability set.
-- [ ] `aa-proxy/src/lib.rs:3` — "implements the Layer 2 interception model".
-- [ ] `aa-sandbox/src/lib.rs:10-11` — claims it is "consumed by `aa-proxy` via the
+      Done: heading and intro re-termed; the rest of the module doc (the
+      "Presence is not protection" section) was already an honest, hedged
+      account and needed no change.
+- [x] `aa-proxy/src/lib.rs:3` — "implements the Layer 2 interception model".
+      Already fixed by an earlier ticket — now reads "implements E3, Protocol
+      / Transport Mediation (ADR 0033 §1)"; checked, no further change needed.
+- [x] `aa-sandbox/src/lib.rs:10-11` — claims it is "consumed by `aa-proxy` via the
       `ToolRegistry` dispatch surface"; `aa-proxy/Cargo.toml` has no `aa-sandbox`
       dependency. Stale, independent of this ADR.
-- [ ] `aa-ebpf-common/README.md:11` — describes `aa-ebpf-programs` as the live BPF
+      Done (piggybacked while touching nearby model wording): verified
+      `aa-proxy/Cargo.toml` has no `aa-sandbox` dependency and the
+      `ToolRegistry` dispatch surface does not exist yet (still tracked under
+      AAASM-2018/2019); re-termed to state today's actual consumers
+      (`aa-api`, `aa-cli`) and that the `aa-proxy` route is planned, not
+      delivered.
+- [x] `aa-ebpf-common/README.md:11` — describes `aa-ebpf-programs` as the live BPF
       producer; that crate is a dead stub (every program body returns `0` with a TODO,
       it is not a workspace member, and `aa-ebpf/build.rs:50,90` builds only
       `aa-ebpf-probes`). Stale, independent of this ADR.
+      Done (piggybacked): confirmed via `aa-ebpf/build.rs` that only
+      `aa-ebpf-probes` is built; corrected the producer crate name and
+      re-termed "Layer 3 (eBPF) of the interception model" -> "eBPF, one of
+      the three enforcement mechanisms".
 - [ ] **`aa-proxy/src/proxy/mod.rs:1325` — a code fix, not a wording fix.**
       `emit_policy_decision(host, false)` records an **allow** decision
       (`aa-proxy/src/intercept/mod.rs:303`) for a connection that is then tunnelled

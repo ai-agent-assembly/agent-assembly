@@ -7,9 +7,11 @@
 //! `Store::limiter`) — each surfaced as a deterministic `SandboxError`
 //! variant.
 //!
-//! The crate is workspace-internal and consumed by `aa-proxy` via the
-//! `ToolRegistry` dispatch surface introduced in F116 ST-W S5. See the
-//! parent Story AAASM-1965 for scope and acceptance criteria.
+//! The crate is workspace-internal; today it is consumed by `aa-api` and
+//! `aa-cli`, not `aa-proxy` (which has no dependency on this crate). The
+//! `ToolRegistry` dispatch surface routing WASM tool calls through `aa-proxy`
+//! is planned (AAASM-2018/2019) but not yet delivered. See the parent Story
+//! AAASM-1965 for scope and acceptance criteria.
 
 #![forbid(unsafe_code)]
 

@@ -18,8 +18,9 @@ the governance-native runtime for AI agents. It provides the Unix-domain-socket
 transport, the IPC wire codec, the `AssemblyClient` lifecycle, and event
 capture/shipping to the runtime.
 
-It is Layer 1 (the in-process SDK layer) of the three-layer interception model.
-The thin per-language FFI shims (`aa-ffi-python`, `aa-ffi-node`, `aa-ffi-go`) are
+It is the in-process SDK mechanism, one of the three independently-deployable
+enforcement mechanisms. The thin per-language FFI shims (`aa-ffi-python`,
+`aa-ffi-node`, `aa-ffi-go`) are
 wrappers over this crate, so the transport/codec/lifecycle logic lives in exactly
 one place and cannot drift between languages.
 

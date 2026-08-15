@@ -1,7 +1,7 @@
-//! Interception layer detection, and what may truthfully be claimed about it.
+//! Enforcement mechanism detection, and what may truthfully be claimed about it.
 //!
-//! The runtime supports three interception components — eBPF, proxy, and SDK —
-//! each probed at startup. [`LayerDetector::detect`] returns the historic
+//! The runtime supports three independently-deployable enforcement mechanisms —
+//! eBPF, proxy, and SDK — each probed at startup. [`LayerDetector::detect`] returns the historic
 //! [`LayerSet`] bitflag of which are *present*.
 //!
 //! # Presence is not protection
