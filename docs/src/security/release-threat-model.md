@@ -32,7 +32,7 @@ gap between *modeled* and *shipped*. Pinning a **version number** plus a
 ## The layered "assume previous layer breached" map
 
 The release threat model inherits the defense-in-depth layer chain from
-[Three-layer defense in depth](three-layer-defense.md) and
+[Enforcement paths and their limitations](enforcement-paths-and-limitations.md) and
 [Trust boundaries](trust-boundaries.md), and adds the explicit zero-trust
 assumption for each layer: **every layer assumes the layer before it has already
 been breached.** A release that changes a layer must answer "does the *next*

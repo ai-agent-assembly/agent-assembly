@@ -63,7 +63,7 @@
 - [Overview](security/overview.md)
 - [Threat model](security/threat-model.md)
 - [Release threat model](security/release-threat-model.md)
-- [Three-layer defense in depth](security/three-layer-defense.md)
+- [Enforcement paths and their limitations](security/enforcement-paths-and-limitations.md)
 - [Protection and enforcement](security/protection-model.md)
 - [Trust boundaries](security/trust-boundaries.md)
 - [Trust-boundary review checklist](security/trust-boundary-review-checklist.md)

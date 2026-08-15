@@ -49,16 +49,20 @@ The gateway, in turn, is the source of truth for **policy** (the agent cannot
 author its own policy) and applies a final write-boundary
 [sanitizer](audit-assurance.md) before anything is persisted.
 
-## Bypass resistance — eBPF catches what the SDK and proxy miss
+## Bypass resistance — what remains observable when the SDK and proxy are skipped
 
 Trust placement answers *"what if the SDK lies?"* Bypass resistance answers
-*"what if the agent skips the SDK entirely?"* The
-[three-layer model](three-layer-defense.md) is the structural answer: a higher
-layer evaded simply surfaces at a lower one. An agent that skips the SDK and the
-proxy and links TLS directly is still observed by the eBPF `SSL_write` /
-`SSL_read` uprobes and exec/file syscall hooks
-(`aa-ebpf-probes/src/ssl_probes.rs`, `aa-ebpf-probes/src/exec_probes.rs`),
-because the kernel sits below anything the agent can reach.
+*"what if the agent skips the SDK entirely?"* See [Enforcement paths and their
+limitations](enforcement-paths-and-limitations.md) for the full account of what
+each mechanism requires and does not guarantee. On Linux, with eBPF loaded and
+attached, an agent that skips the SDK and the proxy and links TLS directly
+against OpenSSL is still *observed* by the eBPF `SSL_write` / `SSL_read`
+uprobes and exec/file syscall hooks (`aa-ebpf-probes/src/ssl_probes.rs`,
+`aa-ebpf-probes/src/exec_probes.rs`), because the kernel sits below anything
+the agent can reach — but observed only: eBPF returns no verdict, so this is
+detection, not a second enforcement point, and the same eBPF preconditions
+(Linux, OpenSSL-linked, loader daemon reachable) apply here as everywhere else
+on this page's sibling.
 
 This is verified, not asserted. The bypass-resistance suite drives the public
 `aa_runtime::pipeline::run` loop end-to-end and proves every inbound event is
