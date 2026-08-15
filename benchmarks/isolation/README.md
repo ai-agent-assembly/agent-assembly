@@ -10,12 +10,22 @@ rules and the reason a cross-platform comparison is invalid.
 
 ## Status
 
-The backend this exists to measure is **AAASM-5708 and does not exist yet**.
-What is committed here is the methodology, the harness, an unconfined baseline,
-and the negative-control evidence that the harness can detect a regression.
-**No verdict is drawn and none can be**: `compare` always reports the
-compatibility and security dimensions as blocked, so the decision rule can only
-return "no verdict" from timing data alone.
+The backend this exists to measure — Sandlock, AAASM-5708 — is merged,
+`aasm run --isolation process` (AAASM-5711) is activated on `main`, and a
+real confined-arm measurement now exists: captured on a Linux GitHub Actions
+runner with sandlock 0.8.6 installed, same host and session as its
+unconfined control. See METHODOLOGY.md's
+[Confined-arm measurement](METHODOLOGY.md#confined-arm-measurement-aaasm-5713)
+section for the full environment, the measured P1/P4/P5/P6/P7 values, and the
+compatibility catalogue.
+
+**The decision matrix is still blocked**, but for a specific, diagnosed
+reason rather than an absent measurement: 5 of 8 default families fail under
+confinement, all traced to the same root cause (the confined-arm policy's
+write grant doesn't cover `/dev/null`, which every one of them redirects
+noisy tool output to), which knocks P2 and P3 out of admissibility. The fix
+is identified in METHODOLOGY.md's Follow-up section but not applied or
+re-measured in this pass.
 
 ## Requirements
 
@@ -38,11 +48,24 @@ python3 aabench.py run \
     --label unconfined-baseline \
     --out ../results/baseline.json
 
-# Confined arm, once AAASM-5708 exists. No harness change is needed —
-# a launcher is any command invoked as `<launcher> -- <argv...>`.
+# Confined arm — Linux + the sandlock backend only. A fixed --scratch-root is
+# required so the policy's write grant can name it; render the policy against
+# that same path before running. Every path handed to --launcher or to
+# AABENCH_SANDLOCK_POLICY must be absolute: runner.py chdirs the launched
+# child to the monorepo root before exec, so a path written relative to this
+# directory resolves against the wrong one and the launch fails immediately
+# for every family, including startup_nop (AAASM-5713 learned this the hard
+# way on the first confined-arm CI run).
+here="$(pwd)"
+scratch=/tmp/aabench-confined-scratch
+mkdir -p "$scratch"
+sh "$here/../policy/render.sh" "$scratch" "$here/../policy/confined-arm.yaml"
+AABENCH_SANDLOCK_POLICY="$here/../policy/confined-arm.yaml" \
 python3 aabench.py run \
-    --launcher '/usr/bin/aasm-sandlock-run --policy ci.yaml' \
+    --launcher "sh $here/../launchers/sandlock.sh" \
     --label sandlock \
+    --scratch-root "$scratch" \
+    --keep-scratch \
     --out ../results/confined.json
 
 # Score one against the other.
@@ -73,7 +96,8 @@ family, `--keep-scratch` to retain per-repetition logs for debugging.
 | `harness/selftest.py` | Negative control |
 | `harness/tlsserver.py` | Loopback TLS server for the network family |
 | `workloads/` | One shell script per family, plus `manifest.json` |
-| `launchers/` | `unconfined.sh` (baseline) and `throttled.sh` (control only) |
+| `launchers/` | `unconfined.sh` (baseline), `throttled.sh` (control only), `sandlock.sh` (confined arm, Linux only) |
+| `policy/` | `confined-arm.yaml.tmpl` + `render.sh` (the confined arm's real policy), `allow-all.yaml` (smoke-test only, not a data arm) |
 | `results/` | Committed baseline and self-test evidence |
 
 ## Two guards worth knowing about before you run this
@@ -96,6 +120,9 @@ and a re-run, never a softer threshold.
 | File | What it is |
 | --- | --- |
 | `results/baseline-unconfined-darwin.json` | Unconfined baseline, macOS. **Not a control for any Linux run** — see METHODOLOGY.md |
+| `results/confined-run-baseline-unconfined-linux.json` | Unconfined baseline, Linux — the real control for the confined run below |
+| `results/confined-run-sandlock-linux.json` | The confined arm: sandlock 0.8.6, same host and session as the baseline above |
+| `results/confined-run-comparison-linux.json` | `aabench.py compare`'s output for the two above |
 | `results/selftest-evidence.json` | Negative-control evidence, with both comparisons |
 | `results/selftest-arm-*.json` | The three synthetic control arms behind that evidence |
 
@@ -106,7 +133,7 @@ may be drawn from them.
 ## Gates
 
 ```sh
-shellcheck workloads/*.sh launchers/*.sh
+shellcheck workloads/*.sh launchers/*.sh policy/*.sh
 uvx ruff check harness/          # config in ./ruff.toml
 uvx mypy --strict harness/
 python3 harness/aabench.py self-test

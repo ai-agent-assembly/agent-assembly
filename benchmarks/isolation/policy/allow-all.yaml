@@ -1,0 +1,22 @@
+# NOT the confined-arm policy — see confined-arm.yaml.tmpl and README.md.
+#
+# Confirmed against a real `aasm run --dry-run`: a policy that states only
+# `tools:` (as this one does) produces zero `filesystem`/`network` requirements
+# — `aa_isolation::lower_policy` reports those domains `not_stated`, and
+# `aa-isolation/src/plan.rs`'s `negotiate` only ever confines a domain that
+# produced a requirement. Running the confined arm under this artifact would
+# not exercise any real confinement at all; it would only add the sandlock
+# wrapper's own overhead on top of an effectively unconfined child. Kept here
+# as a smoke-test artifact only (e.g. confirming `aasm run --isolation
+# process` parses and reaches backend selection at all) — never as a data arm.
+#
+# The shape below is otherwise exactly what `aasm run` itself prints as the
+# allow-all example when a launch refuses on an unconfigured policy.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: allow-all
+spec:
+  tools:
+    "*":
+      allow: true
