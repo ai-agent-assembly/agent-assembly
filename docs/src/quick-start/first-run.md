@@ -10,7 +10,7 @@ output below was captured from a real `v0.0.1-beta.4` build.
 flowchart LR
     A["aasm gateway start<br/>--policy low-risk.yaml"] --> B["gRPC gateway<br/>127.0.0.1:50051"]
     B --> C["aasm gateway status<br/>→ running"]
-    C --> D{"Connect an<br/>interception layer"}
+    C --> D{"Connect an<br/>enforcement mechanism"}
     D -->|SDK shim| E["Agent registers<br/>via gRPC"]
     D -->|Sidecar proxy| E
     D -->|eBPF on Linux| E
@@ -115,8 +115,8 @@ machine-readable header suitable for scripting and CI.
 
 ## 4. Observe an agent
 
-Agents register with the gateway through an **interception layer** — they are
-not created from the CLI. Wire one of the SDKs into your agent, or front it with
+Agents register with the gateway through an **enforcement mechanism** — they
+are not created from the CLI. Wire one of the SDKs into your agent, or front it with
 the sidecar proxy, and point it at the gateway:
 
 - **SDK shim (in-process):** install [python-sdk](https://github.com/ai-agent-assembly/python-sdk),
@@ -211,5 +211,5 @@ aasm gateway stop
 - [CLI Reference](../cli/overview.md) — every `aasm` command and flag.
 - [Usage Guide](../usage-guide/govern-an-agent.md) — govern an agent end-to-end, author
   policies, and set budgets.
-- [Security Model](../security/overview.md) — the threat model and the three-layer
-  defense-in-depth rationale.
+- [Security Model](../security/overview.md) — the threat model and how the three
+  enforcement mechanisms' claim levels combine.

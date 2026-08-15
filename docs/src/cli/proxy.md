@@ -1,8 +1,9 @@
 # aasm proxy
 
 Manage the `aa-proxy` sidecar — its lifecycle, the per-host CA trust, and log
-tailing. The proxy intercepts outbound HTTPS via MitM so network-egress policy
-can be enforced without code changes (layer 2 of the three-layer model).
+tailing. The proxy intercepts outbound HTTPS via MitM and denies traffic that
+fails policy, without agent code changes — one of the three enforcement
+mechanisms.
 
 ## Synopsis
 

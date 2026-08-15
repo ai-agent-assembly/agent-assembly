@@ -7,7 +7,7 @@ first run with no extra install step — you just build your agent `FROM` one of
 
 > These images are the **convenience on-ramp** for the in-process (SDK) interception
 > layer. They are optional: you can always install the SDK and `aasm` yourself. See
-> [Choosing interception layers](interception-layers.md) for the bigger picture.
+> [Choosing a managed deployment](interception-layers.md) for the bigger picture.
 
 ## The images
 
@@ -130,7 +130,7 @@ What the Agent Assembly team recommends:
 5. **Pair the image with the `aa-runtime` sidecar (and, where needed, the proxy or
    eBPF layers) for authoritative enforcement.** The in-process SDK layer is the
    fastest path but is not, by itself, a security boundary — see
-   [Choosing interception layers](interception-layers.md).
+   [Choosing a managed deployment](interception-layers.md).
 6. **Rebuild on each core release** to pick up SDK and CLI fixes; bump the pinned
    `-<core-version>` tag deliberately rather than tracking a moving tag silently.
 

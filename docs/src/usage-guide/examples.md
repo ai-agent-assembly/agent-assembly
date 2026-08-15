@@ -14,11 +14,11 @@ testable on its own, while these pages stay focused on the concepts.
 > real config knob at each one — see the
 > [Infrastructure overview](../architecture/infra-overview.md).
 
-Every example is governed by the same three-layer interception model described
-in [Choosing interception layers](interception-layers.md): a gateway as the
-brain, at least one interception layer (SDK shim, `aa-proxy` sidecar, or eBPF),
-and a policy. Pick the language you are integrating, or browse the cross-cutting
-scenarios:
+Every example is governed by the same enforcement mechanisms described in
+[Choosing a managed deployment](interception-layers.md): a gateway as the
+brain, at least one enforcement mechanism (SDK shim, `aa-proxy` sidecar, or
+eBPF), and a policy. Pick the language you are integrating, or browse the
+cross-cutting scenarios:
 
 > **Launching a generic agent under `aasm run`, with process-level execution
 > isolation?** That is a CLI-only walkthrough, not an SDK example — see

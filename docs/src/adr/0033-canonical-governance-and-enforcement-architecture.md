@@ -795,9 +795,20 @@ Pages that reference the model and need their claims re-termed:
       caught by the next", "a higher layer evaded simply surfaces at a lower one",
       "eBPF catches what the SDK and proxy miss") re-termed to name the mechanism,
       its precondition, and its actual claim level (observed/detected, not caught).
-- [ ] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
-- [ ] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
-- [ ] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`
+- [x] `docs/src/usage-guide/enforce-egress-policy.md`, `docs/src/usage-guide/examples.md`
+      Done: re-termed to "enforcement mechanism(s)"; examples.md's "Choosing
+      interception layers" link label updated to the retitled page. Fixed a
+      pre-existing CLAIM-ABS-08 finding ("no code change") in
+      enforce-egress-policy.md, caught by `check_claim_vocabulary.py` on
+      this pass.
+- [x] `docs/src/quick-start/first-run.md`, `docs/src/quick-start/requirements.md`
+      Done: re-termed throughout, including requirements.md's table headers
+      and per-mechanism requirements table; first-run.md's "defense-in-depth"
+      cross-reference re-termed to "claim levels combine".
+- [x] `docs/src/cli/proxy.md`, `docs/src/compatibility.md`
+      Done: proxy.md re-termed and its "enforced without code changes"
+      claim-vocab'd to "denies traffic that fails policy, without agent code
+      changes"; compatibility.md had no model references (checked, cleared).
 - [x] `docs/src/devtools/product-brief.md` — done in slice 1 (commit `ac5048f66`),
       checklist box was missed at the time; remaining "layer" occurrences
       (`product layer`, `detection layer`) are descriptive nouns, not the
@@ -808,8 +819,12 @@ Pages that reference the model and need their claims re-termed:
 - [ ] `docs/src/architecture/data-flows.md:14-17` — a structural `L1 SDK / L2 proxy /
       L3 eBPF` mermaid subgraph. Same class as the pages marked "rewrite" above; it was
       missed on the first pass because the file never uses the words "three-layer".
-- [ ] `docs/src/usage-guide/overview.md` — routes readers to "Choosing interception
+- [x] `docs/src/usage-guide/overview.md` — routes readers to "Choosing interception
       layers" as the architecture-in-practice entry point.
+      Done: re-termed to "enforcement mechanisms" throughout; link label
+      updated to "Choosing a managed deployment". Incidental: fixed the same
+      stale link label in `usage-guide/container-base-images.md` (×2, found
+      while auditing this checklist item's inbound-links note).
 - [x] `docs/src/SUMMARY.md` — TOC entries for the two retired pages and the
       "Choosing interception layers" entry.
       Done: retired-page entries already repointed by slices 1/2 (`Enforcement

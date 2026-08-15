@@ -2,7 +2,7 @@
 
 Before you install Agent Assembly, make sure your machine meets the
 prerequisites below. The CLI and the governing gateway run on macOS and Linux;
-only the kernel-level eBPF interception layer is Linux-only.
+only the kernel-level eBPF mechanism is Linux-only.
 
 ## At a glance
 
@@ -10,23 +10,23 @@ only the kernel-level eBPF interception layer is Linux-only.
 |---|---|
 | Install and run the `aasm` CLI from a release | A supported OS (macOS or Linux) — nothing else |
 | Build the workspace from source | Rust stable ≥ 1.75, `protoc`, and a C toolchain |
-| Run the SDK or sidecar-proxy interception layers | macOS **or** Linux |
-| Run the eBPF interception layer | **Linux only** — a recent kernel with BTF and a nightly Rust toolchain |
+| Run the SDK or sidecar-proxy mechanisms | macOS **or** Linux |
+| Run the eBPF mechanism | **Linux only** — a recent kernel with BTF and a nightly Rust toolchain |
 
 ## Supported platforms
 
-The three interception layers have different platform reach. The SDK shim and
-the sidecar proxy (`aa-proxy`) run anywhere the runtime builds; kernel-level
-eBPF interception is Linux-only.
+The three enforcement mechanisms have different platform reach. The SDK shim
+and the sidecar proxy (`aa-proxy`) run anywhere the runtime builds; the
+kernel-level eBPF mechanism is Linux-only.
 
-| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | eBPF interception |
+| Platform | Runtime / CLI | Sidecar proxy (`aa-proxy`) | eBPF |
 |---|---|---|---|
 | Linux (x86_64 / arm64) | ✅ | ✅ | ✅ — kernel with BTF + nightly toolchain |
 | macOS (Apple Silicon / Intel) | ✅ | ✅ | ❌ — Linux-only |
 | Windows | ⚠️ via WSL2 | ⚠️ via WSL2 | ⚠️ via WSL2 |
 
-On macOS, governance is enforced through the **SDK** and **proxy** layers; the
-eBPF layer is unavailable. See [`aa-ebpf/README.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-ebpf/README.md)
+On macOS, governance runs through the **SDK** and **proxy** mechanisms; eBPF
+is unavailable. See [`aa-ebpf/README.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-ebpf/README.md)
 for kernel requirements.
 
 ## Installing the CLI only
@@ -68,12 +68,12 @@ On Linux, the native-TLS path in `aa-proxy` additionally requires:
 - `pkg-config`
 - `libssl-dev` (Debian/Ubuntu) or `openssl-devel` (RHEL-family)
 
-## Requirements per interception layer
+## Requirements per enforcement mechanism
 
-Each interception layer can be deployed independently. Pick the layers you need
-and install only their requirements.
+Each mechanism can be deployed independently. Pick the mechanisms you need and
+install only their requirements.
 
-| Layer | What it does | Requirements |
+| Mechanism | What it does | Requirements |
 |---|---|---|
 | **SDK shim** (in-process) | Fastest path; the agent adopts a language SDK that reports to the gateway | The relevant SDK: [python-sdk](https://github.com/ai-agent-assembly/python-sdk), [node-sdk](https://github.com/ai-agent-assembly/node-sdk), or [go-sdk](https://github.com/ai-agent-assembly/go-sdk). Runs on macOS or Linux. |
 | **Sidecar proxy** (`aa-proxy`) | Intercepts routed outbound HTTP/1.1 via MitM, using per-host certificates minted from a local root CA. No *agent code* change, but the process must honour `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA | macOS or Linux; Windows unsupported. On Linux, `pkg-config` + `libssl-dev`/`openssl-devel`, and CA trust is an explicit `sudo aasm proxy install-ca`. On macOS the install is *attempted* at proxy start via `security add-trusted-cert`, which requires admin authorization — macOS prompts, and a refusal fails proxy startup. |
@@ -83,11 +83,11 @@ and install only their requirements.
 > for the `bpfel-unknown-none` target and are intentionally outside the host
 > Cargo workspace. They cannot be selected with `cargo -p` and do not build on
 > macOS. If you are on macOS, you can still run and govern agents through the SDK
-> and proxy layers — you simply do not get the kernel-level layer.
+> and proxy mechanisms — you simply do not get the kernel-level mechanism.
 
 ## Execution isolation (`aasm run --isolation`)
 
-This is a separate capability from the three interception layers above, and
+This is a separate capability from the three enforcement mechanisms above, and
 has its own, narrower platform reach: **Linux only**, and even there it
 requires a backend executable Agent Assembly does not bundle.
 
