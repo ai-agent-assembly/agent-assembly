@@ -8,7 +8,7 @@ Tokio async runtime wrapper and lifecycle management for Agent Assembly.
 
 Wraps `tokio` to give Agent Assembly components a consistent async execution
 environment — runtime initialization, shutdown coordination, and agent lifecycle
-hooks. The runtime is the authoritative enforcement point in the three-layer
-interception model.
+hooks. The runtime is the authoritative enforcement point across the three
+independently-deployable enforcement mechanisms.
 
 Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

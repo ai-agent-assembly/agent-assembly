@@ -1,7 +1,8 @@
 # aa-ebpf
 
-Kernel-level eBPF monitoring hooks for Agent Assembly — Layer 3 of the
-three-layer defense-in-depth architecture (AAASM-4).
+Kernel-level eBPF monitoring hooks for Agent Assembly — one of the three
+independently-deployable enforcement mechanisms (AAASM-4). Observe-only:
+it reports what it sees, it does not block.
 
 ## Architecture
 

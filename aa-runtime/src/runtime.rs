@@ -882,7 +882,7 @@ fn check_layer_availability(active_layers: crate::layer::LayerSet, degraded_laye
     }
 }
 
-/// Bring up the eBPF interception layer.
+/// Bring up the eBPF enforcement mechanism.
 ///
 /// The default path drives the privileged `aa-ebpf-loaderd` daemon; the legacy
 /// in-process spawns are retained ONLY for the privileged in-process
@@ -1015,9 +1015,9 @@ pub async fn run(config: RuntimeConfig) {
     // Load policy rules from the mounted volume (or use empty rules if disabled/absent).
     let policy = load_policy(&config.policy_path);
 
-    // Detect available interception layers (eBPF, proxy, SDK).
+    // Detect available enforcement mechanisms (eBPF, proxy, SDK).
     let active_layers = crate::layer::LayerDetector::detect();
-    tracing::info!(layers = %active_layers, "active interception layers");
+    tracing::info!(layers = %active_layers, "active enforcement mechanisms");
 
     let mut degraded_layers: Vec<String> = Vec::new();
     check_layer_availability(active_layers, &mut degraded_layers);

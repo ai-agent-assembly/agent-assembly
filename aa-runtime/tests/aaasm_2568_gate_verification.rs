@@ -1,4 +1,5 @@
-//! AAASM-2568 verification — the `aa-runtime` enforcement gate cannot be bypassed.
+//! AAASM-2568 verification — the `aa-runtime` enforcement gate scans and redacts
+//! unconditionally, regardless of what the SDK asserts about itself.
 //!
 //! Drives the public [`aa_runtime::pipeline::run`] loop end-to-end and proves the
 //! Story acceptance criteria: every inbound event is scanned + redacted before it

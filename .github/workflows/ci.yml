@@ -1525,9 +1525,9 @@ jobs:
     # current GitHub `ubuntu-latest` images ship a 6.x kernel with BTF
     # enabled. On older kernels the BPF verifier rejects the probe load and
     # the tests fail loudly at startup (which is the intended degradation
-    # mode — there is no value pretending to test Layer 3 on a kernel that
+    # mode — there is no value pretending to test eBPF on a kernel that
     # cannot host the probes).
-    name: e2e — Layer 3 eBPF (Linux)
+    name: e2e — eBPF (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

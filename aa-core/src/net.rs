@@ -1,8 +1,8 @@
 //! Shared SSRF IP blocklist (AAASM-4859).
 //!
-//! Every interception layer that dials an address on an agent's (or operator's)
+//! Every enforcement mechanism that dials an address on an agent's (or operator's)
 //! behalf must refuse the same set of non-globally-routable ranges — otherwise
-//! an attacker coaxes one layer into reaching loopback services, RFC-1918
+//! an attacker coaxes one mechanism into reaching loopback services, RFC-1918
 //! networks, or the cloud metadata endpoint (`169.254.169.254`) for a confused-
 //! deputy SSRF.
 //!

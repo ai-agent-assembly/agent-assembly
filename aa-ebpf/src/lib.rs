@@ -1,4 +1,5 @@
-//! eBPF-based kernel-level monitoring hooks for Agent Assembly — Layer 3.
+//! eBPF-based kernel-level monitoring hooks for Agent Assembly — one of the
+//! three independently-deployable enforcement mechanisms.
 //!
 //! This crate is the **userspace** half of the aa-ebpf subsystem.  It loads
 //! the compiled eBPF programs (from `aa-ebpf-probes`), attaches the probes

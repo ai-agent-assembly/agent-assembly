@@ -1,7 +1,7 @@
-//! Interception layer detection, and what may truthfully be claimed about it.
+//! Enforcement mechanism detection, and what may truthfully be claimed about it.
 //!
-//! The runtime supports three interception components — eBPF, proxy, and SDK —
-//! each probed at startup. [`LayerDetector::detect`] returns the historic
+//! The runtime supports three independently-deployable enforcement mechanisms —
+//! eBPF, proxy, and SDK — each probed at startup. [`LayerDetector::detect`] returns the historic
 //! [`LayerSet`] bitflag of which are *present*.
 //!
 //! # Presence is not protection
@@ -37,7 +37,7 @@ use aa_core::attestation::{AttestationBasis, LayerAttestation, ProtectionAttesta
 const AA_LAYERS_ENV: &str = "AA_LAYERS";
 
 bitflags::bitflags! {
-    /// Bitflag set of active interception layers.
+    /// Bitflag set of active enforcement mechanisms.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct LayerSet: u8 {
         /// Kernel-level eBPF instrumentation (Linux ≥ 5.8 with BTF and CAP_BPF).

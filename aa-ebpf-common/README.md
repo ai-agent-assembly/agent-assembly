@@ -6,9 +6,10 @@ Shared `no_std` types between eBPF kernel probes and userspace loader.
 [![docs.rs](https://img.shields.io/docsrs/aa-ebpf-common?logo=docsdotrs&label=docs.rs)](https://docs.rs/aa-ebpf-common)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?logo=apache)](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/LICENSE)
 
-The shared event types for Layer 3 (eBPF) of the interception model. This `no_std`
-crate is compiled twice — for the host target by `aa-ebpf` (userspace consumer)
-and for the bpf target by `aa-ebpf-programs` (kernel producer). All types are
+The shared event types for eBPF, one of the three enforcement mechanisms. This
+`no_std` crate is compiled twice — for the host target by `aa-ebpf` (userspace
+consumer) and for the bpf target by `aa-ebpf-probes` (kernel producer;
+`aa-ebpf-programs` is a stub, not built by `aa-ebpf/build.rs`). All types are
 `#[repr(C)]` and `Copy` so they cross the BPF ring buffer with no serialization.
 
 Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).

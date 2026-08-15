@@ -248,15 +248,17 @@ so is narrower than "the proxy":
 | **Any host not MitM'd** (the `llm_only` default sends every non-LLM host here) | **No** | Still evaluated at CONNECT by the same local egress policy as the row above — `connect_deny_reason` (`:934`) runs at `:1308`, *before* the `llm_only` branch at `:1333`. What is skipped is **payload** inspection: `handle_llm_mitm`/`handle_non_llm_mitm` are never entered and the bytes are relayed by `transparent_tunnel` (`:1397`). Per §6 the **connection is Observed** — `transmission_evidence::forwarded(…).persist(…)` (`:1402-1408`) — while the **payload is Unmeasured**. |
 | `aa-runtime` `handle_policy_query` (`fn handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) | Yes | A `Deny` is returned to the SDK — which must then honour it (§4). |
 
-> **A truthfulness defect this table exposes.** At `aa-proxy/src/proxy/mod.rs:1325` the
-> proxy calls `emit_policy_decision(host, false)` — an **allow** decision
-> (`aa-proxy/src/intercept/mod.rs:303`, where the parameter is `denied: bool`) — for a
-> connection it is about to tunnel without inspecting. That is precisely what §4's
-> semantic rule forbids: an uninspected path must not be reported as allowed. The
-> adjacent `transparent_tunnel` code gets this right, persisting *"forwarded, and
-> nothing looked at it — never clean"* (`:1398-1408`, AAASM-5358); the CONNECT-level
-> decision event does not. Logged in the migration checklist, section B, as a code fix
-> rather than a documentation one.
+> **A truthfulness defect this table exposed — fixed.** `aa-proxy/src/proxy/mod.rs`
+> used to call `emit_policy_decision(host, false)` — an **allow** decision
+> (`aa-proxy/src/intercept/mod.rs:303`, where the parameter is `denied: bool`) —
+> *before* deciding whether the connection would be tunnelled without inspection.
+> That was precisely what §4's semantic rule forbids: an uninspected path must not
+> be reported as allowed. The adjacent `transparent_tunnel` code always got this
+> right, persisting *"forwarded, and nothing looked at it — never clean"*
+> (AAASM-5358); the CONNECT-level decision event now matches it — the call moved to
+> fire only on the branch that is actually about to be MitM'd/inspected, so
+> `transparent_tunnel` emits no competing allow event. Fixed in the migration
+> checklist, section B.
 
 The distinction matters for anyone choosing an enforcement path: a gateway `Deny` stops
 bytes **only** for MCP tool-call envelopes on non-LLM MitM'd hosts with a gateway
@@ -884,26 +886,60 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       Done: already re-termed by an earlier ticket (independently-deployable
       mechanisms section, per-mechanism claim levels, explicit truth-exempt
       negative-example block); checked, no further change needed.
-- [ ] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
+- [x] Crate READMEs: `aa-cli`, `aa-ebpf`, `aa-gateway`, `aa-proxy`, `aa-runtime`,
       `aa-sandbox`, `aa-sdk-client`.
-- [ ] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three
+      Done: `aa-cli`/`aa-gateway`/`aa-proxy`/`aa-sandbox` had no model
+      references (checked, cleared). `aa-ebpf` re-termed "Layer 3 of the
+      three-layer defense-in-depth architecture" -> "one of the three
+      independently-deployable enforcement mechanisms" + made explicit it is
+      observe-only. `aa-runtime` re-termed "authoritative enforcement point in
+      the three-layer interception model" -> "...across the three
+      independently-deployable enforcement mechanisms". `aa-sdk-client`
+      re-termed "Layer 1 (the in-process SDK layer) of the three-layer
+      interception model" -> "the in-process SDK mechanism, one of the three
+      independently-deployable enforcement mechanisms".
+- [x] `aa-runtime/src/layer.rs:1-6` — module doc states "The runtime supports three
       interception layers"; should describe an independently probed availability set.
-- [ ] `aa-proxy/src/lib.rs:3` — "implements the Layer 2 interception model".
-- [ ] `aa-sandbox/src/lib.rs:10-11` — claims it is "consumed by `aa-proxy` via the
+      Done: heading and intro re-termed; the rest of the module doc (the
+      "Presence is not protection" section) was already an honest, hedged
+      account and needed no change.
+- [x] `aa-proxy/src/lib.rs:3` — "implements the Layer 2 interception model".
+      Already fixed by an earlier ticket — now reads "implements E3, Protocol
+      / Transport Mediation (ADR 0033 §1)"; checked, no further change needed.
+- [x] `aa-sandbox/src/lib.rs:10-11` — claims it is "consumed by `aa-proxy` via the
       `ToolRegistry` dispatch surface"; `aa-proxy/Cargo.toml` has no `aa-sandbox`
       dependency. Stale, independent of this ADR.
-- [ ] `aa-ebpf-common/README.md:11` — describes `aa-ebpf-programs` as the live BPF
+      Done (piggybacked while touching nearby model wording): verified
+      `aa-proxy/Cargo.toml` has no `aa-sandbox` dependency and the
+      `ToolRegistry` dispatch surface does not exist yet (still tracked under
+      AAASM-2018/2019); re-termed to state today's actual consumers
+      (`aa-api`, `aa-cli`) and that the `aa-proxy` route is planned, not
+      delivered.
+- [x] `aa-ebpf-common/README.md:11` — describes `aa-ebpf-programs` as the live BPF
       producer; that crate is a dead stub (every program body returns `0` with a TODO,
       it is not a workspace member, and `aa-ebpf/build.rs:50,90` builds only
       `aa-ebpf-probes`). Stale, independent of this ADR.
-- [ ] **`aa-proxy/src/proxy/mod.rs:1325` — a code fix, not a wording fix.**
+      Done (piggybacked): confirmed via `aa-ebpf/build.rs` that only
+      `aa-ebpf-probes` is built; corrected the producer crate name and
+      re-termed "Layer 3 (eBPF) of the interception model" -> "eBPF, one of
+      the three enforcement mechanisms".
+- [x] **`aa-proxy/src/proxy/mod.rs:1325` — a code fix, not a wording fix.**
       `emit_policy_decision(host, false)` records an **allow** decision
       (`aa-proxy/src/intercept/mod.rs:303`) for a connection that is then tunnelled
       uninspected. §4's rule is that an uninspected path is *Unmeasured*, never
       *allowed*; `transparent_tunnel` already models this correctly at `:1398-1408`.
       Either suppress the allow event on the not-MitM'd path or mark it as
       inspection-free so the audit trail cannot be read as "this traffic was cleared".
-- [ ] In-code absolutes and model references, each a banned phrase or the superseded
+      Done: moved the `emit_policy_decision(host, false)` call to after the
+      `llm_only && !should_mitm` branch, so it fires only on the path that is
+      about to be MitM'd/inspected; `transparent_tunnel` already writes its own
+      honest "forwarded, and nothing looked at it" evidence and now emits no
+      competing allow event. Verified no test depends on the old unconditional
+      timing (`the_transparent_tunnel_relays_and_records_no_decision_event`
+      asserts on the separate JSONL `audit_jsonl_tx` sink, not this
+      `event_tx`/`PipelineEvent` channel) — `cargo check -p aa-proxy --tests`
+      and both directly relevant tests pass.
+- [x] In-code absolutes and model references, each a banned phrase or the superseded
       framing in a doc comment: `aa-ebpf-probes/src/ssl_probes.rs:28` (*"the proxy …
       and the syscall/socket layer remain the catch-all"* — directly disproved by §4 and
       §5.1, and one line past the honest caveat at `:19-27`),
@@ -911,6 +947,15 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       `aa-runtime/tests/aaasm_2568_gate_verification.rs:1` (*"cannot be bypassed"*),
       `aa-ebpf/src/lib.rs:1`, `aa-proxy/src/main.rs:10`, `aa-cli/src/commands/run.rs:51`,
       `aa-core/src/net.rs:3`, `aa-runtime/src/runtime.rs:885,1018,1020`.
+      Done: all eight re-termed. `aa-proxy/src/main.rs:10` had no banned
+      phrase (already fixed by an earlier ticket alongside `lib.rs:3`;
+      checked, cleared). `aa-runtime/src/runtime.rs`'s doc comment (:885),
+      inline comment (:1018), and `tracing::info!` message (:1020) all
+      updated — the log field name (`layers`) and `LayerSet`/`AA_LAYERS`
+      identifiers kept verbatim; grepped for other callers of the exact log
+      text, none found, so no dashboard/alert dependency broken. Also fixed
+      `aa-runtime/src/layer.rs:40`'s `LayerSet` doc comment, found while
+      touching the same file.
 
 ### C. Dashboard and design assets (owner: AAASM-5605 — **requires re-opening ADR 0025**)
 
@@ -937,13 +982,25 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
 
 ### D. Tests and fixtures (owner: AAASM-5605 / [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532))
 
-- [ ] `aa-integration-tests/tests/e2e_three_layers_together.rs`,
+- [x] `aa-integration-tests/tests/e2e_three_layers_together.rs`,
       `aa-integration-tests/tests/e2e_ebpf.rs`,
       `aa-integration-tests/tests/fixtures/e2e/three_layers_driver.py` — the scenarios
       remain valid as *deployment* coverage; the naming and the narrative comments assert
       the superseded model.
-- [ ] `.github/workflows/ci.yml:1076` — job name `e2e — Layer 3 eBPF (Linux)`. A job
+      Done: rewrote each file's narrative doc comment(s) to independently-
+      deployable enforcement mechanisms / ADR 0033 §6 claim levels; the test
+      *scenarios* (4-phase sequence, fixture behavior, assertions) are
+      unchanged, only the framing. File/function/fixture names kept —
+      grepped for external references (CI config, capability manifest,
+      verification reports) and found none constrain them; renaming would
+      have added blast radius disproportionate to a wording fix. `cargo
+      check -p aa-integration-tests --tests` clean.
+- [x] `.github/workflows/ci.yml:1076` — job name `e2e — Layer 3 eBPF (Linux)`. A job
       name is a published artifact: it appears on every PR's check list.
+      Done: renamed to `e2e — eBPF (Linux)`. Verified via
+      `gh api repos/.../branches/main/protection` that this job is **not** a
+      required status check, so the rename cannot strand an open PR's merge
+      gate. `actionlint .github/workflows/ci.yml` clean.
 
 ### E. Product website and Docs Hub (owner: [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586), [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609))
 

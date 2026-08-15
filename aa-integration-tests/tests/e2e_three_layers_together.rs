@@ -3,14 +3,16 @@
 //!
 //! ## Why this exists
 //!
-//! The product's central claim is "three layers of defence in depth": the
-//! in-process SDK shim, the sidecar `aa-proxy`, and the kernel eBPF probes
-//! each catch outbound activity an agent could otherwise hide. Sibling
-//! sub-tasks ST-A..ST-J prove every layer works in isolation; this ST is
-//! the master integration test that proves the three streams unify into
-//! one audit log with consistent agent attribution. If this one is green,
-//! the three-layer model is proven; if it goes red, something fundamental
-//! is broken.
+//! The product runs three independently-deployable enforcement mechanisms:
+//! the in-process SDK shim, the sidecar `aa-proxy`, and the kernel eBPF
+//! probes — each observes a different slice of an agent's activity and
+//! reaches its own claim level (ADR 0033 §6); none is a catch-all for what
+//! another misses. Sibling sub-tasks ST-A..ST-J prove every mechanism works
+//! in isolation; this ST is the master integration test that proves the
+//! three streams unify into one audit log with consistent agent
+//! attribution when all three happen to be deployed together. If this one
+//! is green, that unification is proven; if it goes red, something
+//! fundamental about the shared audit pipeline is broken.
 //!
 //! ## Platform / feature gating
 //!

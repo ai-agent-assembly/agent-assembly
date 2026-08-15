@@ -435,8 +435,9 @@ async fn handle_policy_query(
     // longer bypasses an active agent-level or global halt. (Defeating a halt
     // scoped to a *specific* op by claiming a different op remains inherent to
     // the advisory SDK fast-path — an unlabelled request cannot be attributed to
-    // that op — but the operator's agent-wide and global kill switches are now
-    // unbypassable.)
+    // that op — but a forged or omitted trace_id can no longer evade the
+    // operator's agent-wide and global kill switches, which are keyed by
+    // server-side identity, not attacker-controlled fields.)
     let mut halt_op_ids = vec![
         crate::op_control::GLOBAL_HALT_OP_ID.to_string(),
         crate::op_control::agent_halt_op_id(agent_id),

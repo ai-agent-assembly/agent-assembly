@@ -1,12 +1,12 @@
-//! AAASM-1520 / F116 ST-H — E2E Layer 3 (eBPF) interception verification.
+//! AAASM-1520 / F116 ST-H — E2E eBPF enforcement-mechanism verification.
 //!
 //! Verifies that the kernel-level eBPF probes (`aa-tls-probes`,
-//! `aa-exec-probes`, `aa-file-io`) catch outbound HTTPS traffic and
-//! process exec events that bypass both the SDK shim (Layer 1) and the
-//! sidecar proxy (Layer 2). This is the "defence-in-depth" leg of the
-//! three-layer interception model — without these tests, AAASM-1232's
-//! claim of validating "all three interception layers" is unsubstantiated
-//! for Layer 3.
+//! `aa-exec-probes`, `aa-file-io`) observe outbound HTTPS traffic and
+//! process exec events that neither the SDK shim nor the sidecar proxy
+//! sees when traffic doesn't route through them. This is the
+//! independently-deployable-mechanisms leg of ADR 0033 — without these
+//! tests, AAASM-1232's claim of validating "all three enforcement
+//! mechanisms" is unsubstantiated for eBPF.
 //!
 //! ## Platform gating
 //!
@@ -367,10 +367,10 @@ async fn ebpf_exec_probe_captures_subprocess_spawn() {
 ///
 /// Drives the TLS uprobe with proxy env vars stripped. The driver's
 /// `bypass-proxy` mode unsets `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`
-/// before its `curl` call, so the request never traverses Layer 2 (the
-/// sidecar `aa-proxy`). The kernel uprobe must still observe the
-/// outbound plaintext — that is the "defence in depth" claim the parent
-/// Story makes about Layer 3.
+/// before its `curl` call, so the request never routes through the
+/// sidecar proxy (`aa-proxy`). The kernel uprobe must still observe the
+/// outbound plaintext — that is the independent-observation claim the
+/// parent Story makes about eBPF.
 #[tokio::test(flavor = "multi_thread")]
 async fn ebpf_catches_traffic_that_bypasses_proxy() {
     let (mut reader, _mgr) = start_tls_capture().await;
@@ -399,16 +399,16 @@ async fn ebpf_catches_traffic_that_bypasses_proxy() {
 }
 
 // =============================================================================
-// Test 4 — defence-in-depth without SDK initialisation
+// Test 4 — eBPF observation without SDK initialisation
 // =============================================================================
 
 /// AAASM-1520 test 4 — `ebpf_catches_traffic_without_sdk_init`.
 ///
 /// Drives the TLS uprobe from a Python process that never imports or
 /// initialises the `agent_assembly` SDK. The kernel uprobe must still
-/// fire — this is the other half of the defence-in-depth claim: even
-/// when Layer 1 is fully absent (no SDK loaded in the agent's process),
-/// the eBPF layer observes the traffic.
+/// fire — this is the other half of the independent-observation claim:
+/// even when the SDK mechanism is fully absent (no SDK loaded in the
+/// agent's process), eBPF observes the traffic.
 #[tokio::test(flavor = "multi_thread")]
 async fn ebpf_catches_traffic_without_sdk_init() {
     let (mut reader, _mgr) = start_tls_capture().await;
