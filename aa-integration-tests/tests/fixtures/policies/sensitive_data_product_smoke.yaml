@@ -1,0 +1,14 @@
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: it-sensitive-data-product-smoke
+  version: "0.1.0"
+spec:
+  tools:
+    test_tool:
+      allow: true
+  data:
+    sensitive_patterns:
+      - "MYCO-SECRET-[A-Za-z0-9]+"
+    locale_packs:
+      - zh-TW
