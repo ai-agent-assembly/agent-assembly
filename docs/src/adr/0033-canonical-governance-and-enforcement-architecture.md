@@ -966,8 +966,18 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
 > change. This is a real conflict, declared here rather than absorbed: **the executing
 > ticket must re-open ADR 0025**, not just "coordinate with" the design Epic.
 
-- [ ] `dashboard/src/pages/OverviewPage.tsx`
-- [ ] A **third rival triad** — `L1·IDENTITY / L2·CAPABILITY / L3·SCRUB` — which reuses
+- [x] `dashboard/src/pages/OverviewPage.tsx`
+      **Owner decision (2026-08-15):** the shipped, ratified `L0·REQUEST /
+      L1·IDENTITY / L2·CAPABILITY / L3·SCRUB` decision-explainer vocabulary and
+      this page's `L1`/`L2`/`L3` posture-card icons are a separate, ADR-0017-
+      ratified UI concept — not the enforcement mechanisms — and are **not**
+      renamed by this ticket; only internal (non-visible) identifiers are.
+      Done: `LayerStat` -> `PostureStat`, `LayerCard` -> `PostureCard`, and the
+      `overview-layer*` CSS classes / `overview-layer-${name}` testids ->
+      `overview-posture*`/`overview-posture-${name}`. All rendered text
+      (`icon="L1"`, `name="Identity"`, health-ring labels, "posture ·
+      three-layer defense") is byte-identical to before.
+- [x] A **third rival triad** — `L1·IDENTITY / L2·CAPABILITY / L3·SCRUB` — which reuses
       the `L1/L2/L3` labels for something that is not the interception model at all:
       `dashboard/src/features/trace/decision.ts`,
       `dashboard/src/features/liveOps/PipelineCanvas.tsx`,
@@ -975,10 +985,40 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       `dashboard/src/components/trace/LayerSteps.test.tsx`, and
       `design/v2/hi-fi/trace.jsx`. Renaming the interception layers without renaming
       these leaves two different `L1/L2/L3` vocabularies in one product surface.
+      **Owner decision (2026-08-15):** rename internal identifiers only; the
+      shipped `L0 · REQUEST` / `L1 · IDENTITY` / `L2 · CAPABILITY` / `L3 · SCRUB`
+      labels stay exactly as ratified. `design/v2/hi-fi/trace.jsx` is **not**
+      touched — no ADR 0025 reopening for this ticket.
+      Done: `decision.ts` — `LayerStatus` -> `DecisionStepStatus`, `LayerStep`
+      -> `DecisionStep`, `L2_STATUS_BY_VERDICT` -> `CAPABILITY_STATUS_BY_VERDICT`,
+      `l3Status` -> `scrubStatus`, `buildLayerSteps` -> `buildDecisionSteps`;
+      added a doc-comment note that these `L0`–`L3` are a distinct, ratified
+      vocabulary, not the retired enforcement-mechanism labels. Renamed and
+      moved `LayerSteps.{tsx,css,test.tsx}` -> `DecisionSteps.{tsx,css,test.tsx}`
+      (component `LayerSteps` -> `DecisionSteps`, CSS classes/testids
+      `layer-step*` -> `decision-step*`) — consistent with sibling
+      `DecisionExplainer.*`/`TraceDrawer.*` naming; updated the two importers
+      (`DecisionExplainer.tsx`, its test) and one stray testid string in
+      `PayloadModal.test.tsx`. `PipelineCanvas.tsx`/`CastleMoat.tsx`: checked —
+      neither has a `Layer`-named identifier (only short `l1`/`l2`/`l3` ids and
+      the same ratified labels), so no rename needed there; left untouched.
+      `LayerSteps.test.tsx` renamed along with its component (above).
+      Verified: `pnpm type-check` and `pnpm test` clean.
 - [ ] `design/v2/hi-fi/overview.jsx`, `design/v2/hi-fi/live-ops.jsx`,
       `design/v2/hi-fi/trace.jsx`, `design/v2/hi-fi/scrub.jsx`
+      **Owner decision (2026-08-15): deliberately deferred, not done.** ADR-0025
+      gates any non-theme change to `design/v2/hi-fi/` as a reconsideration
+      trigger; the owner chose to keep the ratified spec untouched rather than
+      reopen that ADR for this ticket. The corresponding dashboard-side
+      collision is resolved (internal identifiers only, above); the hi-fi
+      mock's own `L1/L2/L3` labels are unchanged and match the shipped UI.
+      Left unchecked on purpose — remains open for whoever next reopens
+      ADR 0025.
 - [ ] `design/v1/**` (`overview.jsx`, `live-ops.jsx`, `hi-fi/`, `wireframes/`) —
       superseded design generation; annotate rather than redraw.
+      **Owner decision (2026-08-15): deliberately deferred, not done** — same
+      rationale as above; v1 is superseded and out of scope for this ticket's
+      internals-only resolution. Left unchecked on purpose.
 
 ### D. Tests and fixtures (owner: AAASM-5605 / [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532))
 

@@ -256,24 +256,24 @@
 
 /* ── layer cards ──────────────────────────────────────────────────── */
 
-.overview-layer {
+.overview-posture {
   cursor: pointer;
 }
 
-.overview-layer__head {
+.overview-posture__head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
 }
 
-.overview-layer__sub {
+.overview-posture__sub {
   font-size: 14px;
   margin-top: 2px;
   color: var(--ink-2);
 }
 
-.overview-layer__stats {
+.overview-posture__stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
@@ -295,7 +295,7 @@
   font-family: 'JetBrains Mono', monospace;
 }
 
-.overview-layer__footer {
+.overview-posture__footer {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px dashed var(--line);
@@ -304,7 +304,7 @@
   line-height: 1.5;
 }
 
-.overview-layer__footer code {
+.overview-posture__footer code {
   color: var(--ink-2);
 }
 

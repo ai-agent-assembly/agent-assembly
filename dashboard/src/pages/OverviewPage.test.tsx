@@ -692,11 +692,11 @@ describe('OverviewPage', () => {
     fireEvent.click(approvals.getByRole('button', { name: /open Live Ops/ }))
     expect(probe).toHaveTextContent('/live')
 
-    fireEvent.click(screen.getByTestId('overview-layer-Identity'))
+    fireEvent.click(screen.getByTestId('overview-posture-Identity'))
     expect(probe).toHaveTextContent('/agents')
-    fireEvent.click(screen.getByTestId('overview-layer-Capability'))
+    fireEvent.click(screen.getByTestId('overview-posture-Capability'))
     expect(probe).toHaveTextContent('/capability')
-    fireEvent.click(screen.getByTestId('overview-layer-Scrub'))
+    fireEvent.click(screen.getByTestId('overview-posture-Scrub'))
     expect(probe).toHaveTextContent('/scrub')
 
     fireEvent.click(

@@ -134,18 +134,18 @@ function HealthRing({
   )
 }
 
-interface LayerStat {
+interface PostureStat {
   readonly label: string
   /** A `TruthfulValue` wherever the figure can be absent — never a bare `0`. */
   readonly value: ReactNode
   readonly tone?: 'ok' | 'warn' | 'danger' | 'info' | 'scrub'
 }
 
-// LayerStat['tone'] is a closed local union set only by this page's own
+// PostureStat['tone'] is a closed local union set only by this page's own
 // `countTone` helper, never from the wire — narrow-union Record gap
 // (AAASM-5245 gap 2).
 // eslint-disable-next-line no-restricted-syntax
-const TONE_CLASS: Record<NonNullable<LayerStat['tone']>, string> = {
+const TONE_CLASS: Record<NonNullable<PostureStat['tone']>, string> = {
   ok: 'is-ok',
   warn: 'is-warn',
   danger: 'is-danger',
@@ -162,14 +162,14 @@ const TONE_CLASS: Record<NonNullable<LayerStat['tone']>, string> = {
  */
 function countTone(
   count: Certain<number>,
-  whenPositive: LayerStat['tone'],
-  whenZero: LayerStat['tone'],
-): LayerStat['tone'] {
+  whenPositive: PostureStat['tone'],
+  whenZero: PostureStat['tone'],
+): PostureStat['tone'] {
   if (!isKnown(count)) return undefined
   return count.value > 0 ? whenPositive : whenZero
 }
 
-function LayerCard({
+function PostureCard({
   icon,
   name,
   sub,
@@ -182,28 +182,28 @@ function LayerCard({
   name: string
   sub: string
   accent: string
-  stats: readonly LayerStat[]
+  stats: readonly PostureStat[]
   footer: React.ReactNode
   onOpen: () => void
 }>) {
   return (
     <button
       type="button"
-      className="overview-card overview-card--accent overview-layer"
+      className="overview-card overview-card--accent overview-posture"
       style={{ ['--accent' as string]: accent }}
       onClick={onOpen}
-      data-testid={`overview-layer-${name}`}
+      data-testid={`overview-posture-${name}`}
     >
-      <div className="overview-layer__head">
+      <div className="overview-posture__head">
         <div>
           <div className="overview-card__label">
             {icon} · {name}
           </div>
-          <div className="overview-layer__sub">{sub}</div>
+          <div className="overview-posture__sub">{sub}</div>
         </div>
         <span className="overview-chip">open ↗</span>
       </div>
-      <div className="overview-layer__stats">
+      <div className="overview-posture__stats">
         {stats.map((s) => {
           const toneClass = s.tone ? ` ${TONE_CLASS[s.tone]}` : ''
           return (
@@ -214,7 +214,7 @@ function LayerCard({
           )
         })}
       </div>
-      <div className="overview-layer__footer">{footer}</div>
+      <div className="overview-posture__footer">{footer}</div>
     </button>
   )
 }
@@ -549,9 +549,9 @@ export function OverviewPage() {
           </section>
         </div>
 
-        {/* Three-layer detail cards */}
+        {/* Three-posture detail cards */}
         <div className="overview-row-3">
-          <LayerCard
+          <PostureCard
             icon="L1"
             name="Identity"
             sub="DID + trust scoring"
@@ -564,7 +564,7 @@ export function OverviewPage() {
             footer="Identity verification runs at the edge before any tool call."
             onOpen={() => navigate('/agents')}
           />
-          <LayerCard
+          <PostureCard
             icon="L2"
             name="Capability"
             sub="Policy enforcement"
@@ -584,7 +584,7 @@ export function OverviewPage() {
             footer="Effective allows are narrowed by the active policy set."
             onOpen={() => navigate('/capability')}
           />
-          <LayerCard
+          <PostureCard
             icon="L3"
             name="Scrub"
             sub="Secret sanitization"

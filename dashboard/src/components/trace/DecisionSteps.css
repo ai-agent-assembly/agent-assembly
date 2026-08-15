@@ -1,10 +1,10 @@
 /* ============================================================
-   LayerSteps — L0–L3 decision layer visual (AAASM-5027)
+   DecisionSteps — L0-L3 decision-explainer stage visual (AAASM-5027)
    Ports the hi-fi `.trc-step*` rules from design/v1/hi-fi/styles.css.
    Status colours come from inline design-token vars (STATUS_META).
    ============================================================ */
 
-.layer-steps {
+.decision-steps {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -12,13 +12,13 @@
   flex-direction: column;
 }
 
-.layer-step {
+.decision-step {
   display: flex;
   gap: 12px;
   padding: 8px 0;
 }
 
-.layer-step__rail {
+.decision-step__rail {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -26,7 +26,7 @@
   flex-shrink: 0;
 }
 
-.layer-step__icon {
+.decision-step__icon {
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -39,7 +39,7 @@
   border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.layer-step__line {
+.decision-step__line {
   flex: 1;
   width: 1px;
   background: var(--line);
@@ -47,20 +47,20 @@
   margin: 3px 0;
 }
 
-.layer-step__body {
+.decision-step__body {
   flex: 1;
   padding-bottom: 4px;
   min-width: 0;
 }
 
-.layer-step__head {
+.decision-step__head {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 3px;
 }
 
-.layer-step__label {
+.decision-step__label {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   font-weight: 700;
@@ -68,14 +68,14 @@
   color: var(--ink-2);
 }
 
-.layer-step__status {
+.decision-step__status {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   font-weight: 600;
   margin-left: auto;
 }
 
-.layer-step__detail {
+.decision-step__detail {
   font-size: 12px;
   color: var(--ink-2);
   line-height: 1.55;
@@ -83,7 +83,7 @@
   overflow-wrap: anywhere;
 }
 
-.layer-step__gated {
+.decision-step__gated {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
   color: var(--ink-4);

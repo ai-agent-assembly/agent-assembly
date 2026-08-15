@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
 import type { TraceEvent } from '../../features/trace/types'
-import { buildLayerSteps, deriveVerdict, VERDICT_META } from '../../features/trace/decision'
+import { buildDecisionSteps, deriveVerdict, VERDICT_META } from '../../features/trace/decision'
 import { isKnown } from '../../lib/truthfulness'
 import { AbsenceMarker, TruthfulValue } from '../truthfulness'
-import { LayerSteps } from './LayerSteps'
+import { DecisionSteps } from './DecisionSteps'
 import { RedactionPreview } from './RedactionPreview'
 import './DecisionExplainer.css'
 
@@ -18,7 +18,7 @@ function formatTotal(ms: number): string {
 
 /**
  * Decision explainer for one trace event (AAASM-5027) — the hi-fi `trace.jsx`
- * body: an L0–L3 layer-step visual, a decision **outcome band** keyed to the
+ * body: an L0–L3 decision-step visual, a decision **outcome band** keyed to the
  * verdict colour, and a redaction-block payload preview.
  *
  * The matched-policy link (`policy P-0xx →`) and the trace_id chain from the
@@ -32,7 +32,7 @@ function formatTotal(ms: number): string {
  */
 export function DecisionExplainer({ event }: DecisionExplainerProps) {
   const verdict = useMemo(() => deriveVerdict(event), [event])
-  const steps = useMemo(() => buildLayerSteps(event), [event])
+  const steps = useMemo(() => buildDecisionSteps(event), [event])
   const meta = isKnown(verdict) ? VERDICT_META[verdict.value] : null
 
   return (
@@ -43,7 +43,7 @@ export function DecisionExplainer({ event }: DecisionExplainerProps) {
     >
       <div className="decision-explainer__eyebrow">decision trace</div>
 
-      <LayerSteps steps={steps} />
+      <DecisionSteps steps={steps} />
 
       <div
         className="decision-explainer__band"

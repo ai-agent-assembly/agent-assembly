@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { absent, isAbsent, isKnown, known } from '../../lib/truthfulness'
-import { buildLayerSteps, deriveVerdict } from './decision'
+import { buildDecisionSteps, deriveVerdict } from './decision'
 import type { TraceEvent, TraceSeverity } from './types'
 
 const NO_FIELD = 'TraceSpan has no such field'
@@ -101,18 +101,18 @@ describe('deriveVerdict', () => {
   )
 })
 
-describe('buildLayerSteps', () => {
+describe('buildDecisionSteps', () => {
   it('always produces L0–L3 in order, with L0/L1 passing on evidence', () => {
     // L0 passes because a span exists at all; L1 because the envelope named the
     // agent. Neither is an assumption.
-    const steps = buildLayerSteps(BASE)
+    const steps = buildDecisionSteps(BASE)
     expect(steps.map(s => s.id)).toEqual(['l0', 'l1', 'l2', 'l3'])
     expect(steps[0].status).toEqual(known('pass'))
     expect(steps[1].status).toEqual(known('pass'))
   })
 
   it('marks L1 and L2 backend-gated (trust/DID/policy id not in the API)', () => {
-    const steps = buildLayerSteps(BASE)
+    const steps = buildDecisionSteps(BASE)
     expect(steps[1].backendGated).toBe(true)
     expect(steps[2].backendGated).toBe(true)
     expect(steps[0].backendGated).toBe(false)
@@ -122,29 +122,29 @@ describe('buildLayerSteps', () => {
   it('puts the operation, not a fabricated preview, in the L0 detail', () => {
     // The old L0 detail was `${type} — ${payloadPreview}`; with no preview on
     // the wire that interpolated the word "undefined" into the line.
-    const [l0] = buildLayerSteps(BASE)
+    const [l0] = buildDecisionSteps(BASE)
     expect(l0.detail).toEqual(known('ToolCallIntercepted'))
     expect(isKnown(l0.detail) && l0.detail.value).not.toContain('undefined')
   })
 
   it('names the agent in the L1 detail', () => {
-    expect(buildLayerSteps(BASE)[1].detail).toEqual(known('agent support-agent'))
+    expect(buildDecisionSteps(BASE)[1].detail).toEqual(known('agent support-agent'))
   })
 
   it('sets L2 fail + L3 unreached when denied', () => {
-    const steps = buildLayerSteps({ ...BASE, type: 'CredentialLeakBlocked' })
+    const steps = buildDecisionSteps({ ...BASE, type: 'CredentialLeakBlocked' })
     expect(steps[2].status).toEqual(known('fail'))
     expect(steps[3].status).toEqual(known('unreached'))
   })
 
   it('sets L2 pending + L3 unreached when awaiting approval', () => {
-    const steps = buildLayerSteps({ ...BASE, type: 'ApprovalRequested' })
+    const steps = buildDecisionSteps({ ...BASE, type: 'ApprovalRequested' })
     expect(steps[2].status).toEqual(known('pending'))
     expect(steps[3].status).toEqual(known('unreached'))
   })
 
   it('sets L3 scrub with the redacted list when redaction is reported', () => {
-    const steps = buildLayerSteps({
+    const steps = buildDecisionSteps({
       ...BASE,
       decision: known('scrub'),
       redactedFields: known<readonly string[]>(['user_id', 'email']),
@@ -155,14 +155,14 @@ describe('buildLayerSteps', () => {
   })
 
   it('leaves L2 absent when no verdict is derivable', () => {
-    const steps = buildLayerSteps(BASE)
+    const steps = buildDecisionSteps(BASE)
     expect(isAbsent(steps[2].status) && steps[2].status.state).toBe('not-evaluated')
   })
 
   it('leaves L3 not-supported rather than claiming a clean pass-through', () => {
     // The old deriver reported `skip` here, which asserts "redaction ran and
     // found nothing to remove". No field on the span supports that claim.
-    const steps = buildLayerSteps({ ...BASE, decision: known('allow') })
+    const steps = buildDecisionSteps({ ...BASE, decision: known('allow') })
     expect(isAbsent(steps[3].status) && steps[3].status.state).toBe('not-supported')
     expect(isAbsent(steps[3].detail) && steps[3].detail.state).toBe('not-supported')
   })
@@ -170,12 +170,12 @@ describe('buildLayerSteps', () => {
   it('leaves the L2 detail absent rather than asserting no violation', () => {
     // "no policy violation recorded" reads as an all-clear; the reason field
     // does not exist on the span, so the absence is reported as such.
-    const steps = buildLayerSteps(BASE)
+    const steps = buildDecisionSteps(BASE)
     expect(isAbsent(steps[2].detail) && steps[2].detail.state).toBe('not-supported')
   })
 
   it('carries a violation reason into the L2 detail when one exists', () => {
-    const steps = buildLayerSteps({
+    const steps = buildDecisionSteps({
       ...BASE,
       type: 'PolicyViolation',
       violationReason: known('egress blocked'),
