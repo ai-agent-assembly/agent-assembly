@@ -16,15 +16,32 @@
 #   and getting it wrong would fail every family for a policy-authoring
 #   reason having nothing to do with the sandlock backend. Read confinement is
 #   consequently NOT exercised by this policy; see the caveat in README.md.
-# - `filesystem.write.allow: ["__SCRATCH_ROOT__"]` — every default workload
-#   family was already written to confine its own writes to the scratch
-#   directory the harness hands it (`rust_cargo_check.sh` pins
+# - `filesystem.write.allow: ["__SCRATCH_ROOT__", "/dev/null"]` — every
+#   default workload family was already written to confine its own writes to
+#   the scratch directory the harness hands it (`rust_cargo_check.sh` pins
 #   `CARGO_TARGET_DIR` there for exactly this reason). This is therefore a
 #   real, intentionally narrow grant, not a "make everything pass" wildcard —
 #   a write outside it failing under confinement is either a genuine backend
 #   limitation or a workload family that turns out not to be as contained as
 #   its own comment claims, and either is worth recording as a compatibility
 #   finding.
+#
+#   `/dev/null` is granted for a different reason, not a widening of what this
+#   run measures: it is a discard sink with no confidentiality, integrity or
+#   availability property for a write boundary to protect — a denied write
+#   there can only ever produce a spurious `Permission denied` on an
+#   otherwise-ordinary `>/dev/null` redirect, never data exfiltration or
+#   persistence. The five families this initially blocked (`rust_cargo_metadata`,
+#   `many_small_files`, `python_pkg_test`, `node_pkg_test`, `repo_traversal`)
+#   each hit exactly that: a completely standard noise-suppression redirect,
+#   not a write this policy's scratch-confinement is meant to police. The
+#   product's real test suites (`aa-cli/tests/run_isolation.rs`,
+#   `aa-isolation-sandlock/tests/{linux_confinement,adversarial_boundary_linux}.rs`,
+#   `tests/adversarial/mod.rs`) separately avoid `2>/dev/null` in their own
+#   fixtures for a harness-observability reason (a denied write there would
+#   swallow the real assertion signal they need to read) — this benchmark's
+#   policy file is scoped to `benchmarks/isolation/` only and does not touch
+#   any of those files, their policies, or what they assert.
 # - `network.allowlist: ["127.0.0.1"]` — the only network the default
 #   families need is the harness's own loopback TLS server
 #   (`harness/tlsserver.py` binds `127.0.0.1`).
@@ -57,6 +74,7 @@ spec:
     write:
       allow:
         - "__SCRATCH_ROOT__"
+        - "/dev/null"
   network:
     allowlist:
       - "127.0.0.1"
