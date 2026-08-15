@@ -982,13 +982,25 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
 
 ### D. Tests and fixtures (owner: AAASM-5605 / [AAASM-5532](https://lightning-dust-mite.atlassian.net/browse/AAASM-5532))
 
-- [ ] `aa-integration-tests/tests/e2e_three_layers_together.rs`,
+- [x] `aa-integration-tests/tests/e2e_three_layers_together.rs`,
       `aa-integration-tests/tests/e2e_ebpf.rs`,
       `aa-integration-tests/tests/fixtures/e2e/three_layers_driver.py` — the scenarios
       remain valid as *deployment* coverage; the naming and the narrative comments assert
       the superseded model.
-- [ ] `.github/workflows/ci.yml:1076` — job name `e2e — Layer 3 eBPF (Linux)`. A job
+      Done: rewrote each file's narrative doc comment(s) to independently-
+      deployable enforcement mechanisms / ADR 0033 §6 claim levels; the test
+      *scenarios* (4-phase sequence, fixture behavior, assertions) are
+      unchanged, only the framing. File/function/fixture names kept —
+      grepped for external references (CI config, capability manifest,
+      verification reports) and found none constrain them; renaming would
+      have added blast radius disproportionate to a wording fix. `cargo
+      check -p aa-integration-tests --tests` clean.
+- [x] `.github/workflows/ci.yml:1076` — job name `e2e — Layer 3 eBPF (Linux)`. A job
       name is a published artifact: it appears on every PR's check list.
+      Done: renamed to `e2e — eBPF (Linux)`. Verified via
+      `gh api repos/.../branches/main/protection` that this job is **not** a
+      required status check, so the rename cannot strand an open PR's merge
+      gate. `actionlint .github/workflows/ci.yml` clean.
 
 ### E. Product website and Docs Hub (owner: [AAASM-5586](https://lightning-dust-mite.atlassian.net/browse/AAASM-5586), [AAASM-5609](https://lightning-dust-mite.atlassian.net/browse/AAASM-5609))
 

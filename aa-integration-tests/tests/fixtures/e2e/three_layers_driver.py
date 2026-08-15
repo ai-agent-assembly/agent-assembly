@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Three-layer E2E driver (AAASM-1523 / F116 ST-K).
+"""Three-mechanism E2E driver (AAASM-1523 / F116 ST-K).
 
 Spawned by ``aa-integration-tests/tests/e2e_three_layers_together.rs`` to
 generate the three kinds of outbound activity an agent process exhibits
-during a single session, one phase per interception layer:
+during a single session, one phase per enforcement mechanism:
 
-* **Phase 1 — Layer 1 / SDK in-process**: simulate the SDK-wrapped
+* **Phase 1 — SDK (in-process)**: simulate the SDK-wrapped
   tool-call codepath by emitting a structured marker line on stdout.
   The real Python SDK lives in a sibling polyrepo and is not pip-installed
   on the integration host; matching the divergence pattern used by
@@ -14,16 +14,16 @@ during a single session, one phase per interception layer:
   The marker carries the synthetic ``agent_id`` / ``session_id`` so the
   Rust side can attribute the entry correctly.
 
-* **Phase 2 — Layer 2 / aa-proxy MitM**: shell out to ``curl
+* **Phase 2 — proxy (`aa-proxy` MitM)**: shell out to ``curl
   https://<target>`` with the ``HTTPS_PROXY`` env var honoured. On a
   real deployment ``aa-proxy`` would intercept this transparently; in
   the in-process harness this driver simply records the subprocess'
   child PID + target URL on stdout so the Rust side can synthesise the
   proxy-source ``AuditEntry``. The curl invocation is real so that the
   exec / SSL_write side-effects exist on the host kernel — which the
-  Layer-3 probe ST already covers in ST-H.
+  eBPF probe ST already covers in ST-H.
 
-* **Phase 3 — Layer 3 / eBPF raw-TLS bypass**: open a raw
+* **Phase 3 — eBPF (raw-TLS bypass)**: open a raw
   ``socket`` + ``ssl`` connection to ``<target>``, write one HTTP/1.1
   request, then close. This bypasses both the SDK wrapping *and*
   ``HTTPS_PROXY`` (which only affects libraries that honour the env
