@@ -731,10 +731,16 @@ ticket; the checklist is the closure condition for the Epic.
 
 Pages whose *structure* encodes the superseded model — these need rewriting, not editing:
 
-- [ ] `docs/src/introduction/three-layer-model.md` — the page *is* the model (title, the
+- [x] `docs/src/introduction/three-layer-model.md` — the page *is* the model (title, the
       "three independent layers" table, the latency-vs-authority framing, "Everything
       else, including bypass attempts"). Replace with the six-element model; retire the
       filename.
+      Done: renamed `introduction/enforcement-mechanisms.md`, reframed as an intro
+      teaser to three independently-deployable mechanisms (not fixed/stacked layers),
+      with the "how it composes" section stating the gap narrows but does not close.
+      "Everything else, including bypass attempts" was already gone at this ADR's
+      authoring revision (see the note above this checklist); the remaining
+      structural/title work is what this item closes.
 - [x] `docs/src/security/three-layer-defense.md` — highest density of superseded claims
       in the book. Replace with §5.3's platform matrix and §6's claim vocabulary.
       Done: renamed `security/enforcement-paths-and-limitations.md`, reframed from

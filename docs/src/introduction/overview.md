@@ -9,10 +9,10 @@
 > to run. Think of it as a security checkpoint on
 > the paths you route through it — which means the paths you leave unrouted
 > still need their own controls. Which actions reach the checkpoint depends on
-> how the agent is wired up; the [three-layer
-> model](three-layer-model.md) explains what each layer does and does not see,
-> and [Limitations and known bypasses](../devtools/limitations.md) states the
-> gaps that remain today.
+> how the agent is wired up; [Enforcement mechanisms at a
+> glance](enforcement-mechanisms.md) explains what each mechanism does and does
+> not see, and [Limitations and known bypasses](../devtools/limitations.md)
+> states the gaps that remain today.
 >
 > It is for the people responsible for those agents — **developers** wiring them
 > up, **security and operations** teams keeping them safe, and the **planners**
@@ -75,7 +75,7 @@ Agent Assembly turns "trust the agent to behave" into "the runtime enforces what
 the agent may do." It provides:
 
 - **Policy enforcement at the action boundary.** Allow/deny decisions are made by
-  a central [gateway](../architecture/index.md) *before* an action executes,
+  a central [gateway](../architecture/README.md) *before* an action executes,
   driven by declarative policy rather than agent cooperation.
 - **Budget control.** Per-team spend is tracked and enforced; a request that
   would breach the budget is denied, so a runaway loop is stopped, not just
@@ -88,11 +88,11 @@ the agent may do." It provides:
   from the SQL copy, which carries no chain — so the chained record itself is
   bounded by nothing the product ships. See [Audit](concepts.md#audit) and
   [what is retained](../security/audit-assurance.md#what-is-retained-and-what-is-deleted).
-- **Defense that does not depend on the agent's cooperation.** Enforcement is
-  layered across three independent interception points (see [the three-layer
-  model](three-layer-model.md)), so governance can still hold when an agent skips
-  its SDK. Each layer has its own precondition, so the layers narrow the gap
-  rather than eliminating it.
+- **Defense that does not depend on the agent's cooperation.** Governance can
+  observe through three independently-deployable mechanisms (see [Enforcement
+  mechanisms at a glance](enforcement-mechanisms.md)), so it can still hold
+  when an agent skips its SDK. Each mechanism has its own precondition, so
+  deploying more of them narrows the gap rather than eliminating it.
 
 Crucially, the agent does not have to cooperate on the paths that are wired up:
 governance is enforced *around* the agent, by infrastructure the agent does not

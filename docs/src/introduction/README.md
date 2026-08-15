@@ -7,9 +7,9 @@ hash-chained audit trail. It is the open-source core of the AI Agent Assembly pl
 
 This section is the place to start. It explains *what* the runtime is and the
 problem it solves, defines the handful of [core concepts](concepts.md) the rest
-of the book assumes, and gives a teaser of the [three-layer interception
-model](three-layer-model.md) that widens what the runtime can see, depending on
-how the agent is built and launched.
+of the book assumes, and gives a teaser of the [enforcement
+mechanisms](enforcement-mechanisms.md) that widen what the runtime can see,
+depending on how the agent is built and launched.
 
 Read the pages in order:
 
@@ -17,9 +17,9 @@ Read the pages in order:
 |---|---|
 | [What it is & the problem](overview.md) | What Agent Assembly governs, why ungoverned agent tool-use is risky, and the value proposition. |
 | [Core concepts](concepts.md) | Agents, policies, budgets, audit — the vocabulary used throughout the book. |
-| [The three-layer model](three-layer-model.md) | How the SDK, sidecar proxy, and eBPF layers compose, what each one sees, and the gaps that remain. |
+| [Enforcement mechanisms at a glance](enforcement-mechanisms.md) | What the SDK, sidecar proxy, and eBPF each see, what deploying more than one buys you, and the gaps that remain. |
 
 When you are ready to run something, jump to the [Quick Start](../quick-start/requirements.md).
 For the security rationale behind the design, read the [Security
 Model](../security/overview.md); for the crate-level implementation, read
-[Architecture](../architecture/index.md).
+[Architecture](../architecture/README.md).
