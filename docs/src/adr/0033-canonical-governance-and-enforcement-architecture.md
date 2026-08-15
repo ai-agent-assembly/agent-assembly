@@ -747,8 +747,12 @@ Pages whose *structure* encodes the superseded model — these need rewriting, n
       "three layers that compose" to independently-deployable mechanisms with their
       own claim levels; all technical detail (preconditions, code citations, the
       four eBPF constraints) preserved verbatim.
-- [ ] `docs/src/usage-guide/interception-layers.md` — "Choosing interception layers"
+- [x] `docs/src/usage-guide/interception-layers.md` — "Choosing interception layers"
       presumes the pipeline; reframe as choosing a *managed path* and a deployment.
+      Done: retitled "Choosing a managed deployment", "layer" wording replaced with
+      "mechanism" throughout, combining-section reframed from composed layers to
+      additive-but-not-guaranteed mechanisms. Filename kept (not model-defining by
+      title, unlike the two retired pages).
 - [x] `docs/src/architecture/README.md:32-40` — the `3 interception layers (SDK · proxy
       · eBPF)` mermaid diagram.
       Done: node relabeled to "3 independently-deployable mechanisms ... no
