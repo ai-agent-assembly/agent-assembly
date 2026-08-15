@@ -7,14 +7,14 @@ for the trust view, see the [Security Model](../security/audit-assurance.md).
 
 ---
 
-## End-to-end: layer → gateway → policy → audit → storage
+## End-to-end: mechanism → gateway → policy → audit → storage
 
 ```mermaid
 flowchart TD
-    subgraph layers["Interception layers"]
-        L1["L1 SDK<br/>(aa-sdk-client)"]
-        L2["L2 proxy<br/>(aa-proxy)"]
-        L3["L3 eBPF<br/>(aa-ebpf)"]
+    subgraph layers["Enforcement mechanisms"]
+        L1["SDK<br/>(aa-sdk-client)"]
+        L2["proxy<br/>(aa-proxy)"]
+        L3["eBPF<br/>(aa-ebpf)"]
     end
 
     subgraph runtime["aa-runtime"]
@@ -175,7 +175,7 @@ flowchart TD
 
 | Stage | Component | Form of the data |
 |---|---|---|
-| Observe | L1/L2/L3 layer | agent action → `aa-proto` event |
+| Observe | SDK/proxy/eBPF mechanism | agent action → `aa-proto` event |
 | Normalise | `aa-runtime` pipeline | `EnrichedEvent` |
 | Redact | `aa-runtime` enforcement | secrets scanned, oversized redacted whole |
 | Decide | `aa-gateway` policy engine | `Allow` / `Deny` / `RequireApproval` |

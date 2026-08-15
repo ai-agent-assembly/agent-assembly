@@ -813,12 +813,20 @@ Pages that reference the model and need their claims re-termed:
       checklist box was missed at the time; remaining "layer" occurrences
       (`product layer`, `detection layer`) are descriptive nouns, not the
       superseded composition model.
-- [ ] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
+- [x] `docs/src/governance/capability-matrix.md` — beyond the model references, its **L2
       tier definition asserts "The tool cannot bypass enforcement"**, a banned absolute
       (the forbidden-designs list, item 7) that the verified bypass surface in §4 contradicts.
-- [ ] `docs/src/architecture/data-flows.md:14-17` — a structural `L1 SDK / L2 proxy /
+      Done: the banned-absolute claim was already corrected by a prior ticket
+      (self-documented in-page as a fixed past bug — left untouched, it is the
+      historical record); re-termed the remaining "three interception layers"
+      heading/table/prose to "enforcement mechanisms" (adapter-tier `L0`-`L3`
+      numbers are a separate, unrelated system — left as-is).
+- [x] `docs/src/architecture/data-flows.md:14-17` — a structural `L1 SDK / L2 proxy /
       L3 eBPF` mermaid subgraph. Same class as the pages marked "rewrite" above; it was
       missed on the first pass because the file never uses the words "three-layer".
+      Done: subgraph title and node labels re-termed to "Enforcement
+      mechanisms"/SDK·proxy·eBPF without L1/L2/L3 ordering; summary-table row
+      re-termed similarly.
 - [x] `docs/src/usage-guide/overview.md` — routes readers to "Choosing interception
       layers" as the architecture-in-practice entry point.
       Done: re-termed to "enforcement mechanisms" throughout; link label

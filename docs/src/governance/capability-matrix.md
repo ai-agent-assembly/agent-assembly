@@ -279,17 +279,18 @@ its adapter declares.
 
 ---
 
-## Relationship to the three interception layers
+## Relationship to the three enforcement mechanisms
 
-The dev-tool adapter tier system is separate from but complementary to AAASM's three interception
-layers (SDK / proxy / eBPF). The layers provide runtime enforcement regardless of which tool is
-active; the adapter tiers describe what each specific tool's native API exposes:
+The dev-tool adapter tier system is separate from but complementary to AAASM's three
+independently-deployable enforcement mechanisms (SDK / proxy / eBPF). Each mechanism provides
+runtime enforcement regardless of which tool is active; the adapter tiers describe what each
+specific tool's native API exposes:
 
-| Layer | What it governs | Interaction with adapter tiers |
+| Mechanism | What it governs | Interaction with adapter tiers |
 |---|---|---|
-| **Layer 1 — SDK shim** (`aa-ffi-*`) | Agents that use the AAASM SDK explicitly | Provides L2 enforcement for SDK-aware tools independent of adapter tier |
-| **Layer 2 — `aa-proxy`** | Outbound HTTPS **routed through it**; under the default `llm_only` only the built-in LLM hosts are decrypted, and HTTP/2 / gRPC / WebSocket are out of scope | Provides L2 network/exec enforcement for any tool; fills gaps where adapter tier is L0 for exec/file/net |
-| **Layer 3 — `aa-ebpf`** (Linux only) | SSL uprobes + exec/file syscalls at kernel level | Provides L1 detection + alerting for any tool; cannot modify traffic in flight (no redaction at this layer) |
+| **SDK shim** (`aa-ffi-*`) | Agents that use the AAASM SDK explicitly | Provides L2 enforcement for SDK-aware tools independent of adapter tier |
+| **`aa-proxy`** | Outbound HTTPS **routed through it**; under the default `llm_only` only the built-in LLM hosts are decrypted, and HTTP/2 / gRPC / WebSocket are out of scope | Provides L2 network/exec enforcement for any tool; fills gaps where adapter tier is L0 for exec/file/net |
+| **`aa-ebpf`** (Linux only) | SSL uprobes + exec/file syscalls at kernel level | Provides L1 detection + alerting for any tool; cannot modify traffic in flight (no redaction at this mechanism) |
 
 In practice, for tools where the adapter tier is L0 or L1 for exec/file/network enforcement, deploying
 `aa-proxy` alongside the tool upgrades effective enforcement to L2 for those dimensions without
@@ -313,5 +314,5 @@ requiring a new adapter.
 - `AAASM-204` — Windsurf Cascade adapter
 - `AAASM-206` — Governance level (L0–L3) classification in policy schema (`governance_level` field in `AgentRecord` and policy conditions)
 - `AAASM-918` — SaaS coding-agent adapter (pending; will finalize SaaS row above)
-- `docs/src/architecture/system-architecture.md` — Three-layer interception model
+- `docs/src/architecture/system-architecture.md` — the three enforcement mechanisms
 - `docs/src/policy-rbac.md` — RBAC role matrix for policy mutations
