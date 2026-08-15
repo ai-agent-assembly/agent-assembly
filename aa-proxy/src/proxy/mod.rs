@@ -1460,19 +1460,26 @@ impl ProxyServer {
 
         tracing::debug!(host = target, "CONNECT tunnel established");
 
-        // Emit allow audit event for the accepted connection.
-        self.interceptor.emit_policy_decision(host, false).await;
-
         // When llm_only is enabled, skip TLS MitM for hosts we don't intercept
         // and just tunnel the raw TCP bytes transparently. AAASM-4126: the set
         // of intercepted hosts is no longer just the three built-in LLM
         // providers — an operator-configured `mitm_hosts` entry is MitM'd (and
         // therefore DLP-scanned) too, so a secret to another provider isn't
         // silently tunnelled past the scanner.
+        //
+        // ADR 0033 §2: the allow audit event below asserts that this
+        // connection was inspected and cleared. `transparent_tunnel` never
+        // inspects anything — it writes its own honest "forwarded, and
+        // nothing looked at it" evidence — so the allow event must not fire
+        // on this branch, or the audit trail would read as "this traffic was
+        // cleared" when nothing looked at it.
         if self.config.llm_only && !self.should_mitm(host) {
             tracing::debug!(%host, "llm_only mode — transparent tunnel (no MitM)");
             return self.transparent_tunnel(stream, target).await;
         }
+
+        // Emit allow audit event for the accepted, about-to-be-inspected connection.
+        self.interceptor.emit_policy_decision(host, false).await;
 
         // --- TLS MitM: act as TLS server to the client ---
         let ck = self.certs.get_or_insert(host, &self.ca)?;

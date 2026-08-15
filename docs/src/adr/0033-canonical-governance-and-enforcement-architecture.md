@@ -248,15 +248,17 @@ so is narrower than "the proxy":
 | **Any host not MitM'd** (the `llm_only` default sends every non-LLM host here) | **No** | Still evaluated at CONNECT by the same local egress policy as the row above — `connect_deny_reason` (`:934`) runs at `:1308`, *before* the `llm_only` branch at `:1333`. What is skipped is **payload** inspection: `handle_llm_mitm`/`handle_non_llm_mitm` are never entered and the bytes are relayed by `transparent_tunnel` (`:1397`). Per §6 the **connection is Observed** — `transmission_evidence::forwarded(…).persist(…)` (`:1402-1408`) — while the **payload is Unmeasured**. |
 | `aa-runtime` `handle_policy_query` (`fn handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) | Yes | A `Deny` is returned to the SDK — which must then honour it (§4). |
 
-> **A truthfulness defect this table exposes.** At `aa-proxy/src/proxy/mod.rs:1325` the
-> proxy calls `emit_policy_decision(host, false)` — an **allow** decision
-> (`aa-proxy/src/intercept/mod.rs:303`, where the parameter is `denied: bool`) — for a
-> connection it is about to tunnel without inspecting. That is precisely what §4's
-> semantic rule forbids: an uninspected path must not be reported as allowed. The
-> adjacent `transparent_tunnel` code gets this right, persisting *"forwarded, and
-> nothing looked at it — never clean"* (`:1398-1408`, AAASM-5358); the CONNECT-level
-> decision event does not. Logged in the migration checklist, section B, as a code fix
-> rather than a documentation one.
+> **A truthfulness defect this table exposed — fixed.** `aa-proxy/src/proxy/mod.rs`
+> used to call `emit_policy_decision(host, false)` — an **allow** decision
+> (`aa-proxy/src/intercept/mod.rs:303`, where the parameter is `denied: bool`) —
+> *before* deciding whether the connection would be tunnelled without inspection.
+> That was precisely what §4's semantic rule forbids: an uninspected path must not
+> be reported as allowed. The adjacent `transparent_tunnel` code always got this
+> right, persisting *"forwarded, and nothing looked at it — never clean"*
+> (AAASM-5358); the CONNECT-level decision event now matches it — the call moved to
+> fire only on the branch that is actually about to be MitM'd/inspected, so
+> `transparent_tunnel` emits no competing allow event. Fixed in the migration
+> checklist, section B.
 
 The distinction matters for anyone choosing an enforcement path: a gateway `Deny` stops
 bytes **only** for MCP tool-call envelopes on non-LLM MitM'd hosts with a gateway
@@ -921,14 +923,23 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       `aa-ebpf-probes` is built; corrected the producer crate name and
       re-termed "Layer 3 (eBPF) of the interception model" -> "eBPF, one of
       the three enforcement mechanisms".
-- [ ] **`aa-proxy/src/proxy/mod.rs:1325` — a code fix, not a wording fix.**
+- [x] **`aa-proxy/src/proxy/mod.rs:1325` — a code fix, not a wording fix.**
       `emit_policy_decision(host, false)` records an **allow** decision
       (`aa-proxy/src/intercept/mod.rs:303`) for a connection that is then tunnelled
       uninspected. §4's rule is that an uninspected path is *Unmeasured*, never
       *allowed*; `transparent_tunnel` already models this correctly at `:1398-1408`.
       Either suppress the allow event on the not-MitM'd path or mark it as
       inspection-free so the audit trail cannot be read as "this traffic was cleared".
-- [ ] In-code absolutes and model references, each a banned phrase or the superseded
+      Done: moved the `emit_policy_decision(host, false)` call to after the
+      `llm_only && !should_mitm` branch, so it fires only on the path that is
+      about to be MitM'd/inspected; `transparent_tunnel` already writes its own
+      honest "forwarded, and nothing looked at it" evidence and now emits no
+      competing allow event. Verified no test depends on the old unconditional
+      timing (`the_transparent_tunnel_relays_and_records_no_decision_event`
+      asserts on the separate JSONL `audit_jsonl_tx` sink, not this
+      `event_tx`/`PipelineEvent` channel) — `cargo check -p aa-proxy --tests`
+      and both directly relevant tests pass.
+- [x] In-code absolutes and model references, each a banned phrase or the superseded
       framing in a doc comment: `aa-ebpf-probes/src/ssl_probes.rs:28` (*"the proxy …
       and the syscall/socket layer remain the catch-all"* — directly disproved by §4 and
       §5.1, and one line past the honest caveat at `:19-27`),
@@ -936,6 +947,15 @@ falsifies the record. Annotate with a pointer to this ADR if anything at all.
       `aa-runtime/tests/aaasm_2568_gate_verification.rs:1` (*"cannot be bypassed"*),
       `aa-ebpf/src/lib.rs:1`, `aa-proxy/src/main.rs:10`, `aa-cli/src/commands/run.rs:51`,
       `aa-core/src/net.rs:3`, `aa-runtime/src/runtime.rs:885,1018,1020`.
+      Done: all eight re-termed. `aa-proxy/src/main.rs:10` had no banned
+      phrase (already fixed by an earlier ticket alongside `lib.rs:3`;
+      checked, cleared). `aa-runtime/src/runtime.rs`'s doc comment (:885),
+      inline comment (:1018), and `tracing::info!` message (:1020) all
+      updated — the log field name (`layers`) and `LayerSet`/`AA_LAYERS`
+      identifiers kept verbatim; grepped for other callers of the exact log
+      text, none found, so no dashboard/alert dependency broken. Also fixed
+      `aa-runtime/src/layer.rs:40`'s `LayerSet` doc comment, found while
+      touching the same file.
 
 ### C. Dashboard and design assets (owner: AAASM-5605 — **requires re-opening ADR 0025**)
 
