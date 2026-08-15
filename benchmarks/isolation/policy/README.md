@@ -22,14 +22,17 @@ dimension) and `aa-isolation/src/lowering.rs` (`lower_policy`,
   policy-authoring reason that has nothing to do with the sandlock backend.
   Filesystem-**read** confinement is consequently not exercised by this
   policy or this run.
-- **`filesystem.write.allow: ["<scratch root>"]`** — every default workload
-  family (`../workloads/*.sh`) was already written to confine its own writes
-  to the scratch directory the harness hands it (`rust_cargo_check.sh` pins
-  `CARGO_TARGET_DIR` there for exactly this reason). This is a real, narrow
-  grant, not a wildcard: a write outside it failing under confinement is
-  either a genuine backend limitation or a workload family that turns out
-  not to be as contained as its own comment claims, and either is a real
-  compatibility finding.
+- **`filesystem.write.allow: ["<scratch root>", "/dev/null"]`** — every
+  default workload family (`../workloads/*.sh`) was already written to
+  confine its own writes to the scratch directory the harness hands it
+  (`rust_cargo_check.sh` pins `CARGO_TARGET_DIR` there for exactly this
+  reason). This is a real, narrow grant, not a wildcard: a write outside it
+  failing under confinement is either a genuine backend limitation or a
+  workload family that turns out not to be as contained as its own comment
+  claims, and either is a real compatibility finding. `/dev/null` is the one
+  addition beyond the scratch root — see [What the first confined run found
+  this artifact was missing](#what-the-first-confined-run-found-this-artifact-was-missing)
+  for why it belongs here and does not weaken this measurement.
 - **`network.allowlist: ["127.0.0.1"]`** — the only network the default
   families need is the harness's own loopback TLS server
   (`harness/tlsserver.py` binds `127.0.0.1`).
@@ -79,19 +82,24 @@ Linux CI job (`../../../.github/workflows/ci.yml`) exists to close.
 - **Security dimensions S1/S2** (advertised-control coverage, kernel floor) —
   METHODOLOGY.md already scopes these as deferred; nothing here changes that.
 
-## What the confined run found this artifact was missing
+## What the first confined run found this artifact was missing
 
 **`filesystem.write.allow` needed `/dev/null`.** Five of eight default
-families failed under confinement — `rust_cargo_metadata`, `many_small_files`,
-`python_pkg_test`, `node_pkg_test`, `repo_traversal` — every one of them at
-the exact line that redirects a noisy command's output to `/dev/null`
-(`sh -x` traces: `cannot create /dev/null: Permission denied`, exit 2). The
-write grant above scopes to the scratch root only, and Sandlock denies
-opening `/dev/null` for writing exactly like any other ungranted path. This
-is a `policy-change`-classified finding (see METHODOLOGY.md's compatibility
-catalogue) with an obvious fix — add `/dev/null` to the write grant — that
-was identified but not applied or re-measured in this pass; see
-METHODOLOGY.md's Follow-up section.
+families failed under confinement in the first confined-arm measurement —
+`rust_cargo_metadata`, `many_small_files`, `python_pkg_test`,
+`node_pkg_test`, `repo_traversal` — every one of them at the exact line that
+redirects a noisy command's output to `/dev/null` (`sh -x` traces: `cannot
+create /dev/null: Permission denied`, exit 2). The write grant scoped to the
+scratch root only, and Sandlock denies opening `/dev/null` for writing
+exactly like any other ungranted path. This is a `policy-change`-classified
+finding (see METHODOLOGY.md's compatibility catalogue), not a backend
+limitation: `/dev/null` is a discard sink with no confidentiality, integrity
+or availability property for a write boundary to protect, and every one of
+these five families is doing nothing more than standard noise-suppression —
+denying it produces a spurious `Permission denied` on an otherwise-ordinary
+redirect, not a meaningful security control. **Fixed by adding `/dev/null`
+to the write grant above**, re-measured, and folded into the decision matrix
+in METHODOLOGY.md.
 
 A second, narrower finding: a bare `git status` (not redirected to
 `/dev/null`) also fails, exit 128, most likely from `.git/index`'s refresh
