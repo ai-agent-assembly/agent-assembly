@@ -2762,6 +2762,12 @@ jobs:
         # not part of any measured arm, `continue-on-error` per probe.
         continue-on-error: true
         run: |
+          # `set +e`: the first attempt at this step lost every probe after the
+          # first failing one — bash's default `-e` for `run:` steps aborted the
+          # whole script the instant one `aasm run` call returned nonzero, before
+          # reaching that probe's own `echo "exit=$?"`, so rg/cargo never ran at
+          # all and the visible signal was only a step-level "exit code 128".
+          set +e
           probe() {
             echo "--- probe: $* ---"
             "$AABENCH_AASM_BIN" run exec --isolation process --no-proxy \
@@ -2776,6 +2782,18 @@ jobs:
           probe git -C "${{ github.workspace }}" status --porcelain --untracked-files=no
           probe rg --files --hidden --glob '!.git' "${{ github.workspace }}"
           probe cargo metadata --no-deps --offline --format-version 1 --manifest-path "${{ github.workspace }}/Cargo.toml"
+          # The scratch-contained families (many_small_files, python_pkg_test,
+          # node_pkg_test) still failed even though the simple scratch
+          # write+readback probe above succeeded — these narrow the gap between
+          # "any scratch write" and "what those specific families actually do".
+          # shellcheck disable=SC2016
+          probe sh -c 'tree="$AABENCH_SCRATCH/nested/rep0/tree"; mkdir -p "$tree" && printf x > "$tree/f0.txt" && find "$tree" -type f && cat "$tree"/*.txt && rm -rf "$tree"'
+          probe python3 -c 'print(1)'
+          # shellcheck disable=SC2016
+          probe sh -c 'd="$AABENCH_SCRATCH/pycompile"; mkdir -p "$d" && printf "x = 1\n" > "$d/m.py" && python3 -m compileall -q "$d"'
+          probe node -e 'console.log(1)'
+          probe rg --version
+          probe cargo --version
       - name: Confined arm — sandlock
         # The launcher path must be absolute: runner.py's run_once() chdirs the
         # child to REPO_ROOT (the monorepo root) before exec, so a launcher
