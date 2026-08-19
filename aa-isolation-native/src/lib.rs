@@ -38,8 +38,12 @@
 
 #![warn(missing_docs)]
 
+pub mod host;
+pub mod inherit;
 pub mod launch;
 pub mod rules;
 
+pub use host::{AbiFloor, HostFacts, HostUnusable, LAUNCHER_PATH_ENV, LAUNCHER_PROGRAM};
+pub use inherit::seal_inherited_descriptors;
 pub use launch::{Grants, LauncherArgv, EXIT_LAUNCH_REFUSED, FAILURE_MARKER};
 pub use rules::{RulePlan, REQUIRED_ABI_VERSION, REQUIRED_KERNEL_RELEASE};
