@@ -74,5 +74,13 @@ default = []
 [dev-dependencies]
 aa-isolation-native = { path = "." }
 
+# AAASM-5802, and only for the descriptor scenario in
+# `tests/linux_confinement_native.rs`: `dup`, to obtain a descriptor that is
+# inheritable across `exec` by construction. The scenario's control depends on
+# that being true, and assuming what `File::open` did with the close-on-exec flag
+# would make the control's premise an assumption rather than a fact.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = { workspace = true }
+
 [lints]
 workspace = true
