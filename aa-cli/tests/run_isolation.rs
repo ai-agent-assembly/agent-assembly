@@ -407,3 +407,116 @@ fn the_preview_and_the_live_path_agree_about_a_boundary_that_cannot_be_built() {
         "preview:\n{previewed}\nlive:\n{live}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Backend selection, with two backends compiled in (AAASM-5802).
+// ---------------------------------------------------------------------------
+
+/// The refusal for an unknown id must name **every** backend this build has.
+///
+/// An operator who mistyped an id needs the list to fix it, and a build that
+/// gained a third backend without updating the message would send them to a
+/// shorter list than the one selection actually accepts. Asserted against the
+/// backends' own id constants rather than against literals, so a renamed backend
+/// reddens here instead of leaving a stale name in the operator-facing text.
+#[test]
+fn the_refusal_for_an_unknown_id_names_every_backend_this_build_has() {
+    let scratch = Scratch::new("id-list");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_ONLY);
+    let target = scratch.target("must-not-exist");
+
+    let mut args = exec_args(&artifact, &["/bin/sh", "-c", &creates(&target)]);
+    args.isolation = IsolationIntent::Process;
+    args.isolation_backend = Some("no-such-backend".into());
+
+    let error = run(&args)
+        .expect_err("an id no backend answers to must refuse")
+        .to_string();
+    for id in [aa_isolation_sandlock::BACKEND_ID, aa_isolation_native::BACKEND_ID] {
+        assert!(
+            error.contains(id),
+            "the refusal does not name the `{id}` backend this build has: {error}"
+        );
+    }
+    assert!(!target.exists(), "the program ran: {}", target.display());
+}
+
+/// The AASM-native backend is reachable by id.
+///
+/// Host-independent, and deliberately weak about what happens *after* selection:
+/// on a runner whose kernel meets the backend's floor the launch proceeds to the
+/// next precondition, and on one that does not it refuses for a host reason. Both
+/// are correct. What must never happen is the *selection* refusal — that would
+/// mean the id is not wired at all.
+///
+/// The control is the assertion's own negative: `an_unknown_backend_id_refuses`
+/// above shows this message does appear for an id that is genuinely absent, so
+/// the absence here is about this id being present rather than about the message
+/// never being produced.
+#[test]
+fn the_aasm_native_backend_id_is_selectable() {
+    let scratch = Scratch::new("native-id");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_ONLY);
+    let target = scratch.target("must-not-exist");
+
+    let mut args = exec_args(&artifact, &["/bin/sh", "-c", &creates(&target)]);
+    args.isolation = IsolationIntent::Process;
+    args.isolation_backend = Some(aa_isolation_native::BACKEND_ID.into());
+
+    if let Err(error) = run(&args) {
+        let error = error.to_string();
+        assert!(
+            !error.contains("names no backend this build has"),
+            "the native backend id was refused as unknown: {error}"
+        );
+    }
+}
+
+/// Naming the AASM-native backend for a launch that asked for no boundary is
+/// refused exactly as naming the other one is — the contradiction is about the
+/// pair of flags, not about which backend was named.
+#[test]
+fn the_native_backend_id_without_an_isolation_intent_refuses_and_starts_nothing() {
+    let scratch = Scratch::new("native-without-intent");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_ONLY);
+    let target = scratch.target("must-not-exist");
+
+    let mut args = exec_args(&artifact, &["/bin/sh", "-c", &creates(&target)]);
+    args.isolation_backend = Some(aa_isolation_native::BACKEND_ID.into());
+
+    let error = run(&args).expect_err("a backend id with --isolation none must refuse");
+    assert!(
+        error.to_string().contains("--isolation-backend"),
+        "the refusal must name the flag that contradicts the intent: {error}"
+    );
+    assert!(!target.exists(), "the program ran: {} exists", target.display());
+}
+
+/// No user-facing `--isolation` intent value names a kernel mechanism.
+///
+/// ADR 0035 decision 3, reaffirmed by the AAASM-5801 amendment: "Landlock" and
+/// "seccomp" name mechanisms, not `--isolation` CLI intent. This sweeps the
+/// intent vocabulary and both backend ids, because `--isolation-backend` is a
+/// value an operator types too.
+#[test]
+fn no_cli_isolation_value_names_a_kernel_mechanism() {
+    let values = [
+        "none",
+        "auto",
+        "process",
+        aa_isolation_sandlock::BACKEND_ID,
+        aa_isolation_native::BACKEND_ID,
+    ];
+    for value in values {
+        for mechanism in ["landlock", "seccomp", "bpf", "namespace", "cgroup"] {
+            assert!(
+                !value.to_ascii_lowercase().contains(mechanism),
+                "the CLI value `{value}` names the kernel mechanism `{mechanism}`"
+            );
+        }
+    }
+    // The control: the sweep is over a non-empty list and the predicate does
+    // fire on a value that would violate the rule.
+    assert_eq!(values.len(), 5);
+    assert!("landlock-process".contains("landlock"));
+}
