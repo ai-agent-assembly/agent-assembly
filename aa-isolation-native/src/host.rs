@@ -167,12 +167,47 @@ impl HostFacts {
     /// [`HostUnusable`] when the host is not Linux, the launcher cannot be
     /// found, or the kernel is below the measured floor.
     pub fn discover() -> Result<Self, HostUnusable> {
+        Self::discover_inner(None)
+    }
+
+    /// Measure this host against a launcher the caller already has.
+    ///
+    /// Everything except the search is identical to [`discover`](Self::discover):
+    /// the kernel is still asked for its ABI, the floor is still checked, and the
+    /// probe that follows still has to observe a real denial before any claim is
+    /// made. Only *which* launcher is used differs.
+    ///
+    /// # Why this is public rather than a test hook
+    ///
+    /// Two callers need it and neither is a test fixture. The confinement suite
+    /// must measure the launcher `cargo` just built rather than whichever one the
+    /// search happens to find, or a green lane would prove nothing about the code
+    /// under review. And a packaged `aasm` that ships the launcher in a known
+    /// location can name it directly instead of relying on the executable's
+    /// directory layout surviving installation.
+    ///
+    /// It is not a way to fake a measurement: the path is only *where the boundary
+    /// comes from*, and every verdict still comes from [`crate::probe`].
+    ///
+    /// # Errors
+    ///
+    /// [`HostUnusable`] when the host is not Linux, `launcher` does not exist, or
+    /// the kernel is below the measured floor.
+    pub fn discover_with_launcher(launcher: impl Into<PathBuf>) -> Result<Self, HostUnusable> {
+        Self::discover_inner(Some(launcher.into()))
+    }
+
+    fn discover_inner(explicit: Option<PathBuf>) -> Result<Self, HostUnusable> {
         if !cfg!(target_os = "linux") {
             return Err(HostUnusable::WrongPlatform {
                 os: std::env::consts::OS.to_string(),
             });
         }
-        let launcher = locate_launcher()?;
+        let launcher = match explicit {
+            Some(path) if path.is_file() => path,
+            Some(path) => return Err(HostUnusable::OverrideMissing { path }),
+            None => locate_launcher()?,
+        };
         let abi = measure_abi();
         match abi {
             AbiFloor::NoLandlock => {

@@ -160,7 +160,20 @@ impl NativeBackend {
     /// Costs one version query plus the controlled pairs in [`crate::probe`],
     /// once.
     pub fn discover() -> Self {
-        match HostFacts::discover() {
+        Self::from_host(HostFacts::discover())
+    }
+
+    /// Discover against a launcher the caller already has.
+    ///
+    /// Identical to [`discover`](Self::discover) except for where the launcher
+    /// comes from — every capability verdict still comes from the live probe. See
+    /// [`HostFacts::discover_with_launcher`] for why this is public.
+    pub fn discover_with_launcher(launcher: impl Into<std::path::PathBuf>) -> Self {
+        Self::from_host(HostFacts::discover_with_launcher(launcher))
+    }
+
+    fn from_host(host: Result<HostFacts, HostUnusable>) -> Self {
+        match host {
             Ok(facts) => {
                 let probe = probe::measure(&facts);
                 let capabilities = capability::discover(&facts, &probe);
