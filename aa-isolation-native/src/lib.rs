@@ -19,25 +19,70 @@
 //! to stay outside the confined tree — and it never installs one in a
 //! post-`fork` callback, where allocation, locks and ordinary library behaviour
 //! are unsafe to audit. The launcher is the "deliberately small and auditable
-//! launcher/helper boundary" the ADR asks for.
+//! launcher/helper boundary" the ADR asks for, and it is the *only* thing this
+//! crate can start: there is no code path that spawns the agent's program
+//! directly.
+//!
+//! # The one claim this crate is careful not to make
+//!
+//! *A backend being available is not a control being enforced.* Everything here
+//! is arranged around keeping those apart:
+//!
+//! * [`capability`] reports a domain as able to prevent **only when a denial was
+//!   observed on this host**, through a [`Prerequisite`](aa_isolation::Prerequisite)
+//!   whose status comes from [`probe`]. A domain nobody measured cannot satisfy a
+//!   prevention requirement, so `aa_isolation::negotiate` refuses the launch
+//!   before the program starts.
+//! * [`probe`] measures with a **control**: the same confined command runs twice,
+//!   differing by one grant, and a denial counts only when the control run
+//!   produced the effect and the test run did not.
+//! * [`backend`] emits `Configured`, `Installed` and `Exercised` evidence and
+//!   **never** `Decision`. The kernel delivers a denial to the confined process,
+//!   not to the supervisor, so this backend has no per-decision record to report.
+//!   `EnforcementEvidence::supports_prevention_claim` is therefore false after
+//!   every run, which is what ADR 0035's AAASM-5801 amendment decided and is
+//!   asserted by test.
+//!
+//! # What this version does and does not cover
+//!
+//! Filesystem read and write only. Every other [`CapabilityDomain`](aa_isolation::CapabilityDomain)
+//! is reported [`Unsupported`](aa_isolation::SupportLevel::Unsupported) with a
+//! reason, so a required requirement for one **refuses the launch** rather than
+//! planning successfully against a control that is not installed. In particular
+//! there is no system-call filter: that is AAASM-5803, which extends this same
+//! launcher, and [`rules`] is deliberately a module the launcher calls once
+//! rather than setup inlined into it.
 //!
 //! # The kernel floor is measured, not assumed
 //!
-//! [`rules::REQUIRED_ABI_VERSION`] states what this backend's *claim* needs. See
-//! [`rules`] for why the number is what it is — the short version is that below
-//! it a path-scoped write restriction does not stop `truncate(2)`, so the claim
-//! would be false rather than merely weaker.
+//! [`rules::REQUIRED_ABI_VERSION`] states what this backend's *claim* needs;
+//! [`host::HostFacts::abi_floor`] measures what the *host* provides, by asking
+//! the kernel rather than by comparing a release string. A host below the floor
+//! makes the backend unavailable with a reason, so the launch is refused before
+//! anything starts. See [`rules::REQUIRED_ABI`] for why the number is what it is
+//! — the short version is that below it a path-scoped write restriction does not
+//! stop `truncate(2)`, so the claim would be false rather than merely weaker.
+//!
+//! # No unconfined fallback
+//!
+//! Exactly one function starts the caller's program, and it starts it as an
+//! argument of the launcher. There is no error arm that retries without
+//! confinement, and the launcher itself refuses without executing anything if it
+//! cannot install the boundary. A preparation or launch failure yields a
+//! [`SpawnError`](aa_isolation::SpawnError) and no process.
 //!
 //! # Packaging
 //!
 //! `publish = false`, and this backend redistributes no third-party binary. Its
-//! third-party surface is the kernel binding crate, which is in the cargo
-//! dependency graph and is therefore covered by `cargo deny check` — unlike a
-//! prebuilt backend executable, which is what `metadata/isolation-backends.json`
-//! and `scripts/check-backend-license-compliance.sh` exist for.
+//! third-party surface is the kernel binding crate named in
+//! [`backend::BINDING_CRATE`], which is in the cargo dependency graph and is
+//! therefore covered by `cargo deny check` — unlike a prebuilt backend
+//! executable, which is what `metadata/isolation-backends.json` and
+//! `scripts/check-backend-license-compliance.sh` exist for.
 
 #![warn(missing_docs)]
 
+pub mod backend;
 pub mod capability;
 pub mod host;
 pub mod inherit;
@@ -46,6 +91,7 @@ pub mod lower;
 pub mod probe;
 pub mod rules;
 
+pub use backend::{CompletedRun, NativeBackend, BACKEND_ID, BINDING_CRATE, SOURCE_URL, SPDX_LICENSE};
 pub use host::{AbiFloor, HostFacts, HostUnusable, LAUNCHER_PATH_ENV, LAUNCHER_PROGRAM};
 pub use inherit::seal_inherited_descriptors;
 pub use launch::{Grants, LauncherArgv, EXIT_LAUNCH_REFUSED, FAILURE_MARKER};
