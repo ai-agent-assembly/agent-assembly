@@ -647,10 +647,16 @@ fn a_syscall_the_launch_did_not_permit_kills_the_confined_process() {
         ))
     };
 
+    // `openat(O_CREAT)` is in the baseline either way, so the target file's mere
+    // *existence* is a false positive: it exists whether or not `write` ran.
+    // What `write` decides is whether the empty file `openat` created gets any
+    // bytes in it, so the observable is the file's content.
+    let has_content = |p: &std::path::Path| p.exists() && std::fs::read(p).map(|b| !b.is_empty()).unwrap_or(false);
+
     let (killed, _) = run(&backend, &spec_without_write());
     assert_the_program_ran(SCENARIO, &killed);
     assert!(
-        !target.exists(),
+        !has_content(&target),
         "the write happened even though `write` was not in the syscall allowlist"
     );
 
@@ -661,7 +667,7 @@ fn a_syscall_the_launch_did_not_permit_kills_the_confined_process() {
     let (control, _) = run(&backend, &with_write);
     assert_the_program_ran(SCENARIO, &control);
     assert!(
-        target.exists(),
+        has_content(&target),
         "the control run, with `write` allowlisted, did not produce the effect, so the kill above proves \
          nothing. stderr: {:?}",
         control.stderr
