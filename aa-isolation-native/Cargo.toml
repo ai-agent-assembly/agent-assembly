@@ -26,6 +26,17 @@ publish = false
 name = "aa_isolation_native"
 path = "src/lib.rs"
 
+# The launcher. Deliberately its own binary rather than a `pre_exec` closure in
+# the supervisor: ADR 0035's AAASM-5801 amendment, "Launcher shape", requires
+# the boundary to be installed by "a deliberately small and auditable
+# launcher/helper boundary" because post-fork restrictions make ordinary
+# allocation, locks and library behaviour unsafe to audit inside an async
+# runtime's `pre_exec` callback — and `aasm run`'s supervisor is a Tokio
+# runtime.
+[[bin]]
+name = "aa-isolation-launch"
+path = "src/bin/aa-isolation-launch.rs"
+
 [dependencies]
 # The backend-neutral contract this crate implements. `aa-isolation` is
 # `publish = false` too, so this edge is packaging-safe in the same direction.
