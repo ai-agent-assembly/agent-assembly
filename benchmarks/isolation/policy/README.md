@@ -4,6 +4,14 @@
 `launchers/sandlock.sh` runs the confined arm under, via
 `aasm run exec --isolation process --no-proxy --policy ...`.
 
+`three-arm.yaml.tmpl` (AAASM-5805) is the same policy minus the
+`network:` node, rendered via `render.sh <scratch> <out> three-arm.yaml.tmpl`.
+Both `sandlock.sh` and `native.sh` run under it in the three-arm comparison —
+see that template's own comment for why the native backend cannot plan
+against a policy that states a network grant at all, and see
+`../launchers/native.sh` for the one flag (`--isolation-backend aasm-native`)
+that otherwise distinguishes the two confined arms.
+
 ## What this states, and why
 
 Read against `aa-policy/src/canonical.rs` (`PolicyDocument::to_canonical`,
