@@ -204,6 +204,14 @@ pub fn measure(facts: &HostFacts) -> ConfinementProbe {
 /// filesystem measurements, which hold the same property for their grant sets
 /// ([`tests::the_only_difference_between_the_runs_is_the_grant_under_test`]).
 ///
+/// Both runs also carry the same filesystem write grant on `dir`
+/// ([`write_grant`]): the syscall allowlist is the variable under test here,
+/// not the Landlock policy, so both runs need the Landlock permission that
+/// lets `printf`'s `openat`+`write` land in `dir` at all — otherwise a bare
+/// [`system_grants`] (no write grant anywhere) makes the control fail on a
+/// Landlock `EACCES` before the syscall filter is ever exercised, and the
+/// pair reads as inconclusive regardless of what the syscall filter did.
+///
 /// The observable is the target file's **content**, not its existence:
 /// `openat(O_CREAT)` is permitted either way (`openat` is in the baseline, not
 /// under test), so a mere existence check would compare two `true`s and prove
@@ -216,13 +224,13 @@ fn measure_syscall(facts: &HostFacts, dir: &Path) -> Observation {
     let test_target = dir.join("syscall-test");
     let control = run_confined_with_syscalls(
         facts,
-        system_grants(),
+        write_grant(dir),
         syscall_baseline_with_write(),
         &nested(&format!("printf x > {}", shell_word(&control_target.to_string_lossy()))),
     );
     let test = run_confined_with_syscalls(
         facts,
-        system_grants(),
+        write_grant(dir),
         syscall_baseline(),
         &nested(&format!("printf x > {}", shell_word(&test_target.to_string_lossy()))),
     );
