@@ -463,6 +463,7 @@ jobs:
               - 'README.md'
               - 'CONTRIBUTING.md'
               - '.github/workflows/docs.yml'
+              - '.github/workflows/docs-governance.yml'
               - 'metadata/**'
               - 'scripts/generate_docs_metadata.py'
               - 'Cargo.toml'
@@ -2991,10 +2992,20 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.release_completeness_gate == 'true'
     uses: ./.github/workflows/release-completeness.yml
+  # AAASM-5677: calls docs-governance.yml, not docs.yml directly. docs.yml
+  # also owns `deploy`, which requests pages:write + id-token:write
+  # (AAASM-3877, least privilege); GitHub statically validates every job's
+  # declared permissions in a called reusable workflow against what THIS
+  # calling job is granted, before any `if:` is evaluated — a skipped
+  # `deploy` still fails that check and takes the whole ci.yml run down
+  # with a startup_failure, not a skipped job (found live on this PR: run
+  # 32336100503). Granting the elevated scopes here instead would hand
+  # every PR's CI run Pages-deploy capability. See docs-governance.yml's own
+  # header comment for the full reasoning.
   docs-governance-gate:
     needs: [changes]
     if: needs.changes.outputs.docs_governance_gate == 'true'
-    uses: ./.github/workflows/docs.yml
+    uses: ./.github/workflows/docs-governance.yml
 
   ci-success:
     name: CI Success
