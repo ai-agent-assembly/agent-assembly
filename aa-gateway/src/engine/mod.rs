@@ -759,6 +759,7 @@ impl PolicyEngine {
             tools: std::collections::HashMap::new(),
             capabilities: None,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 
@@ -877,6 +878,7 @@ impl PolicyEngine {
             tools: std::collections::HashMap::new(),
             capabilities: None,
             filesystem: None,
+            syscall_allowlist: None,
         };
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(doc)));
         PolicyEngine {
@@ -2656,6 +2658,7 @@ mod tests {
             tools: HashMap::new(),
             capabilities: None,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 
@@ -4980,6 +4983,7 @@ mod tests {
             tools: HashMap::new(),
             capabilities: caps,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 

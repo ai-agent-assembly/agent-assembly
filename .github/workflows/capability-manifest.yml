@@ -143,6 +143,44 @@ jobs:
       - name: Validator rules still fail closed
         run: bash governance/testdata/run-validator-tests.sh
 
+  # AAASM-5602, shadow mode. Reports which capability rows changed on this PR
+  # and how they'd be classified (blocking/finding) by the release gate
+  # (`.github/workflows/release.yml`'s `governance-gate` job, same script), but
+  # never fails the PR itself -- deliberately NOT in capability-manifest-
+  # success's `needs:` below, and `continue-on-error: true` besides. This is
+  # Phase A of AAASM-5602's rollout: prove the detector's classification
+  # against real PRs before anything downstream of it can block a release.
+  capability-change-report:
+    name: Capability change report (shadow mode, non-blocking)
+    needs: [changes]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'pull_request' &&
+      needs.changes.outputs.manifest == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml
+
+      - name: Report capability changes on this PR (does not fail the check)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/detect_capability_changes.py \
+            --from "$BASE_SHA" \
+            --to "$HEAD_SHA"
+
   # AAASM-5677: the stable required context for this workflow. It exists so the
   # branch-protection contract does not name an internal job: renaming
   # `capability manifest schema & evidence` would otherwise silently remove the

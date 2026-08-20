@@ -26,7 +26,7 @@ This preserves path + query, so `https://www.agent-assembly.com/install.sh?x=1`
 
 ## 2. The `.dev` ↔ `.com` stance — BOTH serve, no redirect
 
-Per ADR 0007, **`.com` is canonical and `.dev` is KEPT working** — the installer
+Per Core ADR 0007, **`.com` is canonical and `.dev` is KEPT working** — the installer
 host `tool.agent-assembly.dev` continues to **serve** the install script, it is
 **not** redirected to `.com`. Both hosts serve the same `scripts/install-cli.sh`
 (via the same Worker). Do **not** add a `.dev → .com` redirect for
@@ -79,7 +79,7 @@ indexed or treated as canonical:
   inherently non-canonical; do not alias them onto `agent-assembly.com`. Link to
   previews by their `.pages.dev` URL only.
 - No staging/preview host is canonical for the installer: `/install.sh` is served
-  only from `agent-assembly.com` and `tool.agent-assembly.dev` (ADR 0007).
+  only from `agent-assembly.com` and `tool.agent-assembly.dev` (Core ADR 0007).
 
 ## How to apply (owner)
 

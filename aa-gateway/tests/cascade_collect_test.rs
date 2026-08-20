@@ -39,6 +39,7 @@ fn doc_for_scope(scope: PolicyScope) -> PolicyDocument {
         tools: HashMap::new(),
         capabilities: None,
         filesystem: None,
+        syscall_allowlist: None,
     }
 }
 

@@ -25,6 +25,7 @@ fn allow_doc(scope: PolicyScope) -> Arc<PolicyDocument> {
         tools: HashMap::new(),
         capabilities: None,
         filesystem: None,
+        syscall_allowlist: None,
     })
 }
 
@@ -53,6 +54,7 @@ fn deny_tool_doc(scope: PolicyScope, tool_name: &str) -> Arc<PolicyDocument> {
         tools,
         capabilities: None,
         filesystem: None,
+        syscall_allowlist: None,
     })
 }
 
@@ -81,6 +83,7 @@ fn approval_tool_doc(scope: PolicyScope, tool_name: &str, timeout: u32) -> Arc<P
         tools,
         capabilities: None,
         filesystem: None,
+        syscall_allowlist: None,
     })
 }
 

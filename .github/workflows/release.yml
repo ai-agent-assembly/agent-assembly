@@ -286,10 +286,62 @@ jobs:
           path: aasm-*.tar.gz
           retention-days: 1
 
+  governance-gate:
+    # AAASM-5602. A prerequisite INSIDE this workflow, not a separate required
+    # status check — a required check that never attaches to a PR/tag strands
+    # it forever (AAASM-5677's own finding), and the failure mode for a
+    # release gate is worse: it would strand every future release rather than
+    # one PR. `needs: [build, governance-gate]` on `publish` below means a
+    # failing gate mechanically skips publish in the SAME workflow run; there
+    # is no separate context that can go missing.
+    name: Capability release gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # needs full tag history to resolve the previous release
+          fetch-tags: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml
+
+      - name: Resolve the previous release tag
+        id: prev
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # The nearest ancestor tag of this tag's own parent commit — history
+          # order, i.e. "what was actually released before this one" — not a
+          # version-sort pick, which could name a tag that isn't this tag's
+          # own lineage (a backport branch, a re-tag). Falls back to the
+          # repository's first commit when this is the first tag ever, which
+          # `detect_capability_changes.py --from <first commit>` degrades
+          # gracefully on: the manifest did not exist then either, so every
+          # row reports ADDED (finding-severity, never blocking) — the same
+          # bootstrap path exercised the first time this gate ever runs.
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          if [ -z "$PREV" ]; then
+            PREV=$(git rev-list --max-parents=0 HEAD)
+          fi
+          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Detect capability changes and check for an unwaived blocker
+        env:
+          PREV_REF: ${{ steps.prev.outputs.prev }}
+        run: |
+          python3 scripts/detect_capability_changes.py \
+            --from "$PREV_REF" \
+            --to "${GITHUB_REF_NAME}" \
+            --check
+
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, governance-gate]
     permissions:
       contents: write
       id-token: write  # keyless cosign signing via GitHub OIDC

@@ -32,7 +32,7 @@ slug per line, `#` comments and blanks ignored). A slug is **rejected** if, afte
 lowercasing, it appears in that list. The list covers:
 
 - **First-party hosts** (`www`, `app`, `api`, `docs`, `status`) — a tenant must never
-  be able to claim a name that collides with a first-party host (ADR 0007). Explicit
+  be able to claim a name that collides with a first-party host (Core ADR 0007). Explicit
   DNS records for these win over the `*` wildcard, but the reserved list blocks them
   at the **application layer** too, defense-in-depth.
 - **Common infra/service names** (`admin`, `cdn`, `mail`, `auth`, `login`,

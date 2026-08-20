@@ -152,6 +152,7 @@ mod tests {
             tools: HashMap::new(),
             capabilities: None,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 

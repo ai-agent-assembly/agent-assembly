@@ -273,6 +273,29 @@ fn hash_filesystem(hasher: &mut Sha256, filesystem: Option<&aa_security::policy:
     hash_scope(hasher, fs.write.as_ref());
 }
 
+/// Hash the AAASM-5753 syscall allowlist.
+///
+/// Same reasoning as [`hash_filesystem`], reached through a different node: two
+/// documents that permit different syscalls are two different policies, and
+/// omitting the node would hand them one identity — so a policy edit that only
+/// narrows the allowlist would leave the audit trail attributing decisions to
+/// what looks like the same document.
+///
+/// **Emitted only when the node is stated**, so a document with no `syscalls:`
+/// section hashes to exactly the bytes it hashed to before this field existed;
+/// `legacy_documents_keep_their_pre_syscall_digest` pins that. The tag byte is
+/// what makes a stated-but-empty allowlist a different document from an absent
+/// one, which the node's own semantics require.
+fn hash_syscalls(hasher: &mut Sha256, syscalls: Option<&aa_security::policy::SyscallAllowlist>) {
+    let Some(allow) = syscalls else { return };
+    hasher.update(b"sys\x01");
+    // `syscalls` is a BTreeSet, already in a total, deterministic order.
+    hasher.update((allow.syscalls.len() as u64).to_be_bytes());
+    for call in allow.iter() {
+        hash_str(hasher, call.name());
+    }
+}
+
 impl PolicyDocument {
     /// A stable, content-derived identity for this document: `"sha256:<hex>"`
     /// where the hex is the SHA-256 of a canonical encoding of every validated
@@ -303,6 +326,7 @@ impl PolicyDocument {
         hash_tools(&mut hasher, &self.tools);
         hash_capabilities(&mut hasher, self.capabilities.as_ref());
         hash_filesystem(&mut hasher, self.filesystem.as_ref());
+        hash_syscalls(&mut hasher, self.syscall_allowlist.as_ref());
         let digest: [u8; 32] = hasher.finalize().into();
         format!("sha256:{}", hex::encode(digest))
     }
@@ -382,6 +406,7 @@ mod tests {
             tools: HashMap::new(),
             capabilities: None,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 
@@ -465,6 +490,67 @@ mod tests {
             write: None,
         });
         assert_eq!(same.content_digest(), workspace_reads.content_digest());
+    }
+
+    /// AAASM-5753 — the same migration question as `filesystem`, reached
+    /// through the syscall node. The pinned value is the one
+    /// `legacy_documents_keep_their_pre_filesystem_digest` already pins from
+    /// the same fixture, so the two agree by construction.
+    ///
+    /// If this fails, `hash_syscalls` started emitting bytes for an unstated
+    /// node. That is a migration event, not a refactor.
+    #[test]
+    fn legacy_documents_keep_their_pre_syscall_digest() {
+        let mut doc = base_doc();
+        doc.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        assert!(doc.syscall_allowlist.is_none());
+        assert_eq!(
+            doc.content_digest(),
+            "sha256:c4664a0acb0bd210dc52b02942ec99c70b23919c57ff04edd47d07556e0582da",
+            "adding syscall_allowlist re-keyed a document that does not use it"
+        );
+    }
+
+    /// Documents that differ only in which syscalls they permit are different
+    /// policies. Three fixtures chosen so the collapsing encodings fail:
+    /// unstated vs. stated-permitting-nothing is the pair a digest keyed on
+    /// membership alone would merge, and two disjoint allowlists is the pair a
+    /// digest keyed on cardinality alone would merge.
+    #[test]
+    fn the_syscall_allowlist_is_part_of_the_documents_identity() {
+        use aa_security::policy::SyscallAllowlist;
+
+        let unstated = base_doc();
+
+        let mut deny_all = base_doc();
+        deny_all.syscall_allowlist = Some(SyscallAllowlist::default());
+
+        let mut io = base_doc();
+        io.syscall_allowlist = Some(SyscallAllowlist::from_names(["read", "write"]).unwrap());
+
+        let mut mem = base_doc();
+        mem.syscall_allowlist = Some(SyscallAllowlist::from_names(["mmap", "munmap"]).unwrap());
+
+        let digests: Vec<String> = [&unstated, &deny_all, &io, &mem]
+            .iter()
+            .map(|d| d.content_digest())
+            .collect();
+        let distinct: std::collections::BTreeSet<&String> = digests.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            4,
+            "four different policies collapsed onto fewer digests"
+        );
+
+        // The control: the same allowlist written two ways is one policy, so
+        // de-duplication and ordering must not manufacture a difference.
+        let mut same = base_doc();
+        same.syscall_allowlist = Some(SyscallAllowlist::from_names(["write", "read", "write"]).unwrap());
+        assert_eq!(same.content_digest(), io.content_digest());
     }
 
     #[test]

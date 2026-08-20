@@ -198,6 +198,7 @@ form).
 | `tools` | map | _(empty)_ | see [tools](#tools) |
 | `capabilities` | section | _(omitted)_ | see [capabilities](#capabilities) |
 | `filesystem` | section | _(omitted → no path scope stated)_ | see [filesystem](#filesystem) |
+| `syscalls` | section | _(omitted → no allowlist stated)_ | see [syscalls](#syscalls) |
 | `approval` | section | _(omitted)_ | see [approval](#approval) |
 
 `scope` accepts one of: `global`, `org:<id>`, `team:<id>`, `agent:<uuid>`, or
@@ -792,6 +793,72 @@ Reported per domain by `aasm run --dry-run` rather than assumed:
 - The sensitive-path defaults in the eBPF layer (`/etc`, `/root/.ssh`,
   `/var/run/secrets`) are that layer's own floor, **not** policy content, and
   are deliberately not re-derived as policy.
+
+## `syscalls`
+
+Names the kernel calls a workload may issue. Backed by `SyscallAllowlist`, the
+canonical node added by
+[AAASM-3624](https://lightning-dust-mite.atlassian.net/browse/AAASM-3624).
+Reachable through a gateway-loaded document since
+[AAASM-5753](https://lightning-dust-mite.atlassian.net/browse/AAASM-5753) —
+before that the section was accepted by the standalone canonical parser and
+rejected by the gateway validator as an unknown key, and the projection between
+them discarded the node.
+
+| Field | Type | Default | Example |
+|---|---|---|---|
+| `allow` | list of syscall names | _(omitted → not stated)_ | `allow: ["read", "write"]` |
+
+```yaml
+syscalls:
+  allow:
+    - read
+    - write
+    - close
+    - exit_group
+```
+
+### The vocabulary is closed
+
+Fifteen names, lowercase, matching the kernel's own: `read`, `write`, `close`,
+`openat`, `fstat`, `lseek`, `mmap`, `munmap`, `brk`, `rt_sigaction`,
+`rt_sigprocmask`, `exit`, `exit_group`, `clock_gettime`, `getrandom`.
+
+A name outside that set **fails the load** and reports its index
+(`syscalls.allow[1]`), rather than being dropped. Dropping it would shrink the
+allowlist to a posture the operator did not write, and the set is small enough
+that a rejected name has no plausible admissible reading. Duplicates are
+collapsed, and ordering is normalized, so two spellings of one allowlist are one
+policy.
+
+Widening the vocabulary is a reviewable code change, not a policy edit. The
+consequence is worth stating plainly: a call the list cannot name — `ptrace`,
+`execve` — cannot be written into a policy in either direction, so this section
+scopes what a workload may do without letting an author enumerate the calls that
+most warrant attention. `aasm run --dry-run` reports that as a residual gap for
+the domain rather than leaving it implied.
+
+### Two states, and they are not the same
+
+| Authored form | Meaning |
+|---|---|
+| The section is **absent** | The operator stated nothing about syscalls. **This is not a grant.** |
+| `allow:` is present and **non-empty** | Only those calls are permitted; the rest must be prevented. |
+| `allow:` is present and **empty** (`allow: []`, or `syscalls: {}`) | A restriction is in force and permits nothing — the *most* restrictive posture available here. |
+
+An empty `allow:` is deny-all, not "no restriction" — the same reading an empty
+[`filesystem.read.allow`](#filesystem) gets. The execution boundary reports the
+two differently: an absent section lowers to no requirement and the coverage
+token `not_stated`, while an empty one lowers to a whole-domain requirement.
+
+### Where it is consumed
+
+- The eBPF `SYSCALL_ALLOWLIST` map, compiled by the kernel lowering. That guard
+  is **opt-in and asynchronous** — it terminates the process after the offending
+  call rather than refusing it beforehand, so its claim level is *Detected* plus
+  termination, not *Denied before execution*. ADR 0033 §5.1 records the limit.
+- The `aa-isolation` execution boundary, which lowers a stated allowlist to
+  enumerated `permit-only:` selectors for a launch backend to realize.
 
 ## `approval`
 
