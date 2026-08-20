@@ -249,6 +249,15 @@ pub const STARTUP_BASELINE: &[(&str, u32)] = &[
     ("geteuid", 107),
     ("getgid", 104),
     ("getegid", 108),
+    // A shell's job-control and signal-disposition bookkeeping at startup —
+    // measured live, the third round of gaps this ticket's own CI lane found.
+    ("getppid", 110),
+    ("getpgrp", 111),
+    ("setpgid", 109),
+    ("umask", 95),
+    ("sigaltstack", 131),
+    ("rt_sigreturn", 15),
+    ("getsid", 124),
 ];
 
 /// Build the cBPF program a [`SyscallFilter`] compiles to.
