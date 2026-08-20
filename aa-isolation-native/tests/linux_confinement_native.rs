@@ -861,3 +861,222 @@ fn process_tree_coverage_is_reported_only_because_it_was_measured() {
         ),
     );
 }
+
+// ---------------------------------------------------------------------------
+// AAASM-5709's backend-neutral machinery, verified against THIS backend.
+//
+// AAASM-5709 built the descendant-authority comparison and the environment
+// planner to be backend-neutral, and `aa-isolation/tests/ambient_authority.rs`
+// exercises them against a mock. A mock cannot tell anyone whether the machinery
+// composes with a backend that really confines a process tree, which is the
+// question AAASM-5804 has to answer for this backend specifically. These two
+// scenarios take the same functions and put a real kernel boundary underneath
+// them.
+// ---------------------------------------------------------------------------
+
+/// **AC: descendants stay inside the boundary using the AAASM-5709 machinery.**
+/// A sub-agent launch that `is_same_or_narrower` says is within its ancestor's
+/// authority is confined by this backend when it runs — and its own descendants
+/// with it.
+///
+/// The two halves are deliberately in one scenario. Checking the comparison
+/// without launching would measure a function; launching without the comparison
+/// would measure a boundary nobody said was a sub-agent's. What has to hold is
+/// that a launch the governance layer *admitted* as narrowing is a launch the
+/// kernel then actually confined, two `fork`/`exec` steps down.
+///
+/// Three controls, all in this scenario:
+///
+/// * the widened sibling spec, which `authority_widening` must reject — so the
+///   admission of the narrowed one is a decision and not a function that says
+///   yes to everything;
+/// * the write inside the sub-agent's own grant, which happens — so the denial
+///   below is the boundary and not a shell that never ran;
+/// * the grandchild depth, so what is measured is the tree and not the one
+///   process the launcher `execve`d.
+#[test]
+fn a_sub_agent_launch_the_machinery_admits_is_confined_by_this_backend() {
+    const SCENARIO: &str = "native: a sub-agent launch the AAASM-5709 machinery admits is confined here";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let scratch = Scratch::new("subagent");
+    let permitted = permit_only_selector(&scratch.permitted().to_string_lossy());
+    let inside = scratch.permitted().join("inside");
+    let outside = scratch.forbidden().join("escaped");
+
+    let script = as_grandchild(&format!(
+        "printf x > {} ; printf x > {}",
+        shell_word(&inside.to_string_lossy()),
+        shell_word(&outside.to_string_lossy())
+    ));
+
+    // The ancestor: an ordinary confined launch.
+    let ancestor =
+        shell_spec(&script, Vec::new(), vec![permitted.clone()]).with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
+            delegated: vec!["AA_AGENT_ID".to_string()],
+            ambient_unremoved: Vec::new(),
+        });
+
+    // The sub-agent: same requirements, lineage recorded, and it delegates
+    // nothing its ancestor did not.
+    let descendant = ExecutionSpec::new(
+        "/bin/sh",
+        IdentityRef::root("sub-agent").with_ancestor("agent-under-test"),
+    )
+    .with_args(["-c", &script])
+    .with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::FilesystemRead)
+            .with_scope(RequirementScope::Selectors(system_reads())),
+    )
+    .with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)
+            .with_descendants(DescendantRequirement::ProcessTree)
+            .with_scope(RequirementScope::Selectors(vec![permitted])),
+    )
+    .with_credentials(aa_isolation::CredentialPosture {
+        removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
+        delegated: vec!["AA_AGENT_ID".to_string()],
+        ambient_unremoved: Vec::new(),
+    });
+
+    assert!(
+        aa_isolation::is_same_or_narrower(&ancestor, &descendant),
+        "the machinery refused a sub-agent that asks for nothing its ancestor did not: {:?}",
+        aa_isolation::authority_widening(&ancestor, &descendant)
+    );
+
+    // The control on the comparison itself: the same sub-agent, delegating one
+    // credential its ancestor removed, must be rejected — so the admission above
+    // is a decision.
+    let widened = descendant.clone().with_credentials(aa_isolation::CredentialPosture {
+        removed: Vec::new(),
+        delegated: vec!["AA_AGENT_ID".to_string(), "AWS_SECRET_ACCESS_KEY".to_string()],
+        ambient_unremoved: Vec::new(),
+    });
+    let detected = aa_isolation::authority_widening(&ancestor, &widened);
+    assert!(
+        detected.contains(&aa_isolation::AuthorityWidening::CredentialWidened {
+            name: "AWS_SECRET_ACCESS_KEY".to_string()
+        }),
+        "a sub-agent that re-delegated a credential its ancestor removed was admitted: {detected:?}"
+    );
+
+    // And now the boundary, on the launch the machinery admitted.
+    let (completed, _) = run(&backend, &descendant);
+    assert_the_program_ran(SCENARIO, &completed);
+    assert!(
+        inside.exists(),
+        "the sub-agent's write inside its own grant did not happen, so the assertion below proves \
+         nothing. stderr: {:?}",
+        completed.stderr
+    );
+    assert!(
+        !outside.exists(),
+        "a grandchild of an admitted sub-agent launch wrote outside its grant: {} exists",
+        outside.display()
+    );
+    measured(
+        SCENARIO,
+        "a sub-agent spec `is_same_or_narrower` admitted was confined at grandchild depth — the write \
+         inside its grant happened and the write outside it did not — while the same spec re-delegating \
+         a credential its ancestor removed was reported as CredentialWidened",
+    );
+}
+
+/// **AC: AAASM-5709's environment planner composes with this backend.** The
+/// supervisor's own gateway authority does not reach the confined child merely
+/// because the supervisor holds it.
+///
+/// The posture is built by [`aa_isolation::EnvironmentPlanner`] — the same
+/// backend-neutral machinery, not a hand-written `CredentialPosture` — and
+/// handed to this backend as the child's entire environment. The control is an
+/// ordinary correlation variable delegated through the identical call, which does
+/// arrive: so the absence of the credential is the withholding rule and not a
+/// launch that delegated nothing.
+#[test]
+fn supervisor_authority_is_not_delegated_to_this_backends_child_by_possession() {
+    const SCENARIO: &str = "native: supervisor credentials do not reach the child";
+    let Some(mut backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let Some(env_program) = ["/usr/bin/env", "/bin/env"].iter().find(|p| Path::new(p).exists()) else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::ToolAbsent,
+            "no `env` binary was found, and nothing else prints the child's whole environment",
+        );
+        return;
+    };
+
+    std::env::set_var("AA_GATEWAY_AUTH", "supervisor-bearer-token");
+    std::env::set_var("AA_AGENT_ID", "agent-under-test");
+
+    // Both names are *requested* for delegation. One is AASM's own gateway
+    // authority and the planner withholds it anyway; the other is the
+    // correlation identifier a governed launch is supposed to hand over.
+    let plan = aa_isolation::EnvironmentPlanner::new()
+        .delegate("AA_GATEWAY_AUTH")
+        .delegate("AA_AGENT_ID")
+        .plan(std::env::vars().map(|(name, _)| name));
+    assert_eq!(
+        plan.withheld_supervisor_credentials(),
+        ["AA_GATEWAY_AUTH"],
+        "the supervisor credential was not withheld before the launch was even built"
+    );
+
+    // The child's whole environment: exactly what the plan delegated.
+    let delegated: std::collections::BTreeMap<String, String> = plan
+        .posture()
+        .delegated
+        .iter()
+        .filter_map(|name| std::env::var(name).ok().map(|value| (name.clone(), value)))
+        .collect();
+    backend.set_child_environment(delegated);
+
+    let spec = ExecutionSpec::new(*env_program, IdentityRef::root("agent-under-test"))
+        .with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemRead)
+                .with_scope(RequirementScope::Selectors(system_reads())),
+        )
+        .with_credentials(plan.into_posture());
+    let (completed, evidence) = run(&backend, &spec);
+    assert_the_program_ran(SCENARIO, &completed);
+
+    assert!(
+        !completed.stdout.contains("supervisor-bearer-token"),
+        "the supervisor's gateway credential reached the confined child"
+    );
+    assert!(
+        !completed.stdout.contains("AA_GATEWAY_AUTH"),
+        "the supervisor's gateway credential name reached the confined child: {:?}",
+        completed.stdout
+    );
+    // The control: the delegation mechanism works, so the absence above is the
+    // withholding rule and not a launch that delegated nothing.
+    assert!(
+        completed.stdout.contains("AA_AGENT_ID=agent-under-test"),
+        "no delegated variable arrived at all, so the assertion above proves nothing: {:?}",
+        completed.stdout
+    );
+    // And the run says the environment plan is a credential boundary on it,
+    // rather than leaving a reader to assume it (AAASM-5804/5785).
+    assert!(
+        evidence.records().iter().any(|r| {
+            r.domain == Some(CapabilityDomain::Credential) && r.detail.contains("per-PID /proc entries are OUTSIDE")
+        }),
+        "the run did not record whether another process's environ was reachable, which is what decides \
+         whether the withholding above is a boundary at all: {:?}",
+        evidence.records()
+    );
+
+    std::env::remove_var("AA_GATEWAY_AUTH");
+    std::env::remove_var("AA_AGENT_ID");
+    measured(
+        SCENARIO,
+        "an EnvironmentPlanner-built posture withheld a supervisor gateway credential explicitly \
+         requested for delegation while an ordinary correlation variable requested the same way arrived, \
+         on a launch whose evidence records other processes' per-PID /proc entries as outside its scope",
+    );
+}

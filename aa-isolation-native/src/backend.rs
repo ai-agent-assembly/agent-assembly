@@ -53,6 +53,7 @@ use crate::inherit::seal_inherited_descriptors;
 use crate::launch::{self, Grants};
 use crate::lower::{lower_requirement, unremoved_ambient};
 use crate::probe::{self, ConfinementProbe};
+use crate::proc_scope::{self, ScopedGrants};
 use crate::rules::{self, RulePlan};
 
 /// The stable machine identifier this backend answers to.
@@ -90,6 +91,9 @@ struct Prepared {
     plan: EnforcementPlan,
     argv: Vec<String>,
     rules: RulePlan,
+    /// What the `/proc` scope did to the grant set, and whether other processes'
+    /// per-PID entries ended up outside the installed boundary (AAASM-5804).
+    proc_scope: ScopedGrants,
     residual_authority: Vec<String>,
     /// Taken in `prepare`, not in `evidence`: the descriptors that matter are the
     /// ones open at the moment the boundary was built, and an inventory taken
@@ -438,7 +442,14 @@ impl IsolationBackend for NativeBackend {
             });
         }
 
-        let grants = grants_for(&plan)?;
+        // AAASM-5804. Applied here rather than in `lower`, and to the whole
+        // launch rather than to one requirement, because it is a fact about the
+        // grant set as a whole: whether `/proc` can be scoped at all depends on
+        // what *else* the launch granted. It can only remove paths, so it runs
+        // after lowering's "no requirement grants a path policy did not name"
+        // invariant has already been established rather than in the middle of it.
+        let scoped = proc_scope::scope(&grants_for(&plan)?, &proc_scope::read_listing());
+        let grants = scoped.grants.clone();
         let rules = rules::plan(&grants);
         // Before the argument vector is built and long before anything is
         // launched: a descriptor marked here cannot cross the `exec` that starts
@@ -454,6 +465,7 @@ impl IsolationBackend for NativeBackend {
                 plan: plan.clone(),
                 argv,
                 rules,
+                proc_scope: scoped,
                 residual_authority,
                 descriptors,
             },
@@ -664,6 +676,32 @@ impl IsolationBackend for NativeBackend {
             } else {
                 format!("permitted path scope: {}", entry.rules.describe().join("; "))
             },
+        ));
+
+        // The `/proc` scope, always, and under `Credential` rather than under a
+        // filesystem domain (AAASM-5804). It is installed as a filesystem rule,
+        // but what it decides is whether the delegated child environment is a
+        // credential boundary at all: while another process's
+        // `/proc/<pid>/environ` is readable, withholding a name from the child's
+        // own environment withholds nothing (AAASM-5785/5786). `Degraded` is the
+        // field an E6 consumer reads for that, without parsing the sentence.
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Installed,
+            CapabilityDomain::Credential,
+            if entry.proc_scope.per_pid_entries_withheld {
+                ClaimTerm::Planned
+            } else {
+                ClaimTerm::Degraded
+            },
+            format!(
+                "other processes' per-PID /proc entries are {} this launch's permitted path scope: {}",
+                if entry.proc_scope.per_pid_entries_withheld {
+                    "OUTSIDE"
+                } else {
+                    "INSIDE"
+                },
+                entry.proc_scope.steps.join("; ")
+            ),
         ));
 
         // The residue, always, including when it is empty — a run whose evidence

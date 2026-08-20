@@ -16,17 +16,24 @@
 //! 0035's validation bar forbids. Every scenario below therefore carries a
 //! control that produces the effect, so a denial cannot be a broken command.
 //!
-//! # One deliberate non-finding
+//! # The two `/proc` scenarios, and why there are two
 //!
 //! [`another_processes_proc_entry_is_unreadable_without_a_proc_grant`] measures
-//! that the generic path scope covers another process's per-PID `/proc` entry —
-//! and states two limits in the same breath. A launch that grants `/proc`
-//! wholesale, which is what a program needing `/proc/self` does today, gets the
-//! sibling entries too; scoping `/proc` finely is AAASM-5804. And it reads
-//! `cmdline` rather than `environ`, because `environ` is gated by ptrace access
-//! rules before this backend is consulted at all — see that scenario for why
-//! crediting the boundary with that denial would have been an over-claim, and how
-//! its own control caught the first version doing exactly that.
+//! the generic path scope: withhold `/proc` and a per-PID entry beneath it is
+//! unreachable like any other path. It reads `cmdline` rather than `environ`,
+//! because `environ` is gated by ptrace access rules before this backend is
+//! consulted at all — see that scenario for why crediting the boundary with that
+//! denial would have been an over-claim, and how its own control caught the first
+//! version doing exactly that.
+//!
+//! [`another_processs_environ_is_outside_a_scoped_proc_grant`] (AAASM-5804)
+//! answers the harder question that one deliberately did not: whether a launch
+//! that **grants** `/proc` — which is what a program needing its own process
+//! state does, and what every other scenario in this suite does — still keeps
+//! other processes' `environ` out. That is the route AAASM-5785 and AAASM-5786
+//! found open, and it is re-run here against a control that first establishes
+//! this host's ptrace rules permit the read, so the denial measured is this
+//! backend's and not another LSM's.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -505,15 +512,17 @@ fn an_alternate_executable_path_is_confined_alike() {
 /// `environ` result above is recorded as the defence-in-depth fact it is rather
 /// than claimed as this backend's.
 ///
-/// # The limitation this scenario also records
+/// # What this scenario measures, and what the sibling scenario measures
 ///
-/// The grant is all-or-nothing here: a launch that grants `/proc` — which is what
-/// a program needing `/proc/self` does today, and what every other scenario in
-/// this suite does — gets every sibling entry with it. Scoping `/proc` finely is
-/// AAASM-5804. What is measured here is that the *generic path scope* is the
-/// mechanism that would carry that scoping, not that the gap is already closed.
+/// This one is about the **generic path scope**: withhold `/proc` and a per-PID
+/// entry beneath it is unreachable like any other path. Whether a *granted*
+/// `/proc` still hides other processes' entries is a different question, answered
+/// by [`another_processs_environ_is_outside_a_scoped_proc_grant`] (AAASM-5804) —
+/// and because that scope now applies to every launch this backend makes, the
+/// control below is taken through the launcher directly, which is the only
+/// remaining way to ask for an unscoped `/proc`.
 ///
-/// The control is also inside the run: the script prints a marker before it
+/// A second control is inside the run: the script prints a marker before it
 /// reads, so an absent payload cannot be a shell that never started for want of
 /// `/proc`.
 #[test]
@@ -529,17 +538,18 @@ fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
 
     let script = as_grandchild(&format!("printf {marker}; cat {}", shell_word(&sibling)));
 
-    // Control: `/proc` granted. The read succeeds, so the file exists, is
+    // Control: `/proc` granted whole. The read succeeds, so the file exists, is
     // readable by this user, and the command works.
-    let (control, _) = run(&backend, &spec(&script, Vec::new(), Vec::new()));
-    assert_the_program_ran(SCENARIO, &control);
-    assert!(control.stdout.contains(marker), "stdout: {:?}", control.stdout);
+    let (control, control_stderr) = unscoped_proc_run(&script);
     assert!(
-        control.stdout.len() > marker.len(),
-        "the control run read nothing from {sibling} even with /proc granted, so the test run proves \
-         nothing. stdout: {:?} stderr: {:?}",
-        control.stdout,
-        control.stderr
+        !control_stderr.contains(launch::FAILURE_MARKER),
+        "the control launcher invocation refused to establish a boundary: {control_stderr}"
+    );
+    assert!(control.contains(marker), "stdout: {control:?}");
+    assert!(
+        control.len() > marker.len(),
+        "the control run read nothing from {sibling} even with /proc granted whole, so the test run \
+         proves nothing. output: {control:?}"
     );
 
     // Test: the same command with `/proc` withheld.
@@ -561,11 +571,214 @@ fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
     );
     measured(
         SCENARIO,
-        "with /proc granted the sibling cmdline was readable and without it only the marker came back. \
-         Note what this does NOT claim: `environ` is separately gated by ptrace access rules, so a \
-         denial of it on a Yama host is not this backend's. Finer /proc scoping within a granted /proc \
-         remains AAASM-5804",
+        "with /proc granted whole the sibling cmdline was readable and without any /proc grant only the \
+         marker came back. Note what this does NOT claim: `environ` is separately gated by ptrace access \
+         rules, so a denial of it on a Yama host is not this backend's — the scenario that measures a \
+         granted /proc withholding another process's environ, against a control that shows ptrace \
+         permitted the read, is `another process's environ is outside a scoped /proc grant`",
     );
+}
+
+/// **The AAASM-5785 scenario, re-run against this backend.** Another process's
+/// `/proc/<pid>/environ` is outside a launch that granted `/proc`, and the
+/// confined program keeps its own process state.
+///
+/// # Why this is the closing evidence for AAASM-5785 and AAASM-5786 rather than a
+/// new test
+///
+/// The Sandlock suite's `process_inspection_is_available_only_where_the_launch
+/// _granted_it` carries a *finding probe*: with `/proc` granted — which nearly
+/// every launch grants — the confined program read a marker out of another
+/// process's environment, so replacing the child's environment was not a
+/// credential boundary. That probe is recorded and never asserted there, because
+/// nothing in that backend could close it. This asserts it, on this backend,
+/// against the same route: an `environ` belonging to a process that is not the
+/// confined one.
+///
+/// # The predicate is *openability*, not a grep for a marker
+///
+/// The Sandlock probe greps `/proc/*/environ` for a marker. It cannot be lifted
+/// verbatim: `grep` is a child of the shell, so every process the shell forked is
+/// `grep`'s **sibling**, and on a Yama host a sibling's `environ` is refused by
+/// ptrace access rules before this backend is consulted — the trap AAASM-5802's
+/// own `/proc` scenario fell into and recorded. So the reads here are done by the
+/// shell itself, through a redirection on a builtin, which is performed in the
+/// shell process without forking. The shell is the **parent** of the process
+/// whose `environ` it opens, which is a relationship Yama permits, so a refusal
+/// is this backend's or it is nothing.
+///
+/// `if true < PATH` succeeds exactly when the open succeeded, which is where the
+/// kernel primitive makes its decision. It is not a weaker question than the
+/// grep: a marker that cannot be opened cannot be read.
+///
+/// # The control is an unscoped `/proc`, through the same launcher
+///
+/// The control run drives the launcher binary directly with `--fs-read=/proc` —
+/// the boundary this backend installed before this ticket — and differs from the
+/// test run by that one grant. It establishes three things at once, all of which
+/// the assertions below would otherwise be assuming: the child was forked, this
+/// host's ptrace rules permit a parent to open its child's `environ`, and the
+/// per-PID entries are reachable when nothing scopes them. If the control does
+/// not show the leak, the scenario **declines** rather than passing — a boundary
+/// credited with a denial some other mechanism already made is the exact
+/// over-claim this suite exists to refuse.
+#[test]
+fn another_processs_environ_is_outside_a_scoped_proc_grant() {
+    const SCENARIO: &str = "native adversarial: another process's environ is outside a scoped /proc grant";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    // A process outside the confined tree entirely, whose `cmdline` needs no
+    // ptrace access at all — so its denial cannot be attributed to any LSM but
+    // this backend's path scope.
+    let sibling = format!("/proc/{}/cmdline", std::process::id());
+    let script = proc_inspection_script(&sibling);
+
+    // Control: the launcher, driven directly, with `/proc` granted whole. The
+    // streams stay apart because a refused open writes to stderr and every tag
+    // is on stdout.
+    let (control, control_stderr) = unscoped_proc_run(&script);
+    assert!(
+        !control_stderr.contains(launch::FAILURE_MARKER),
+        "the control launcher invocation refused to establish a boundary, so it measured nothing: \
+         {control_stderr}"
+    );
+    for tag in ["RAN;", "OWNENV;", "SYSCTL;", "CHILDCMD;", "SIBLINGCMD;"] {
+        assert!(
+            control.contains(tag),
+            "the control run with /proc granted whole did not report `{tag}`, so the test run's silence \
+             establishes nothing. stdout: {control:?}"
+        );
+    }
+    if !control.contains("CHILDENV;") {
+        // Not a failure of this backend: on a host whose ptrace policy refuses
+        // even a parent reading its child's `environ`, the route AAASM-5785 found
+        // is closed by something else and this scenario cannot measure the scope
+        // closing it.
+        decline::<()>(
+            SCENARIO,
+            Measurement::NotMeasured,
+            &format!(
+                "with /proc granted whole the confined program still could not open its own child's \
+                 environ, so this host's ptrace policy — not this backend — is what closes that route, \
+                 and crediting the scope with the denial below would be an over-claim. control stdout: \
+                 {control:?}"
+            ),
+        );
+        return;
+    }
+
+    // Test: the same script through the backend, which scopes the same grant.
+    let (test, evidence) = run(&backend, &spec(&script, Vec::new(), Vec::new()));
+    assert_the_program_ran(SCENARIO, &test);
+    assert!(
+        test.stdout.contains("RAN;"),
+        "the confined shell never ran, so its silence about /proc means nothing. stdout: {:?} stderr: {:?}",
+        test.stdout,
+        test.stderr
+    );
+    // The half that must still work: its own process state, and the parts of
+    // `/proc` that belong to no process.
+    for tag in ["OWNENV;", "SYSCTL;"] {
+        assert!(
+            test.stdout.contains(tag),
+            "the scope withheld `{tag}`, which is the confined program's own process state or a non-PID \
+             part of /proc that the grant covered. stdout: {:?}",
+            test.stdout
+        );
+    }
+    // The half AAASM-5785 is about.
+    assert!(
+        !test.stdout.contains("CHILDENV;"),
+        "another process's environ was readable from a launch that granted /proc — the AAASM-5785 gap is \
+         open on this backend. stdout: {:?}",
+        test.stdout
+    );
+    for tag in ["CHILDCMD;", "SIBLINGCMD;"] {
+        assert!(
+            !test.stdout.contains(tag),
+            "a per-PID /proc entry belonging to another process was readable (`{tag}`). stdout: {:?}",
+            test.stdout
+        );
+    }
+    // And the run says so in its own evidence, so a consumer does not have to
+    // re-derive it from the path list.
+    assert!(
+        evidence.records().iter().any(|r| {
+            r.domain == Some(CapabilityDomain::Credential) && r.detail.contains("per-PID /proc entries are OUTSIDE")
+        }),
+        "the run did not record that it scoped /proc: {:?}",
+        evidence.records()
+    );
+
+    measured(
+        SCENARIO,
+        "with /proc granted whole the confined program opened its own child's environ, its child's \
+         cmdline and an unrelated process's cmdline; with the same grant scoped by this backend it opened \
+         none of the three, while its own /proc/self/environ and /proc/sys stayed reachable. This is the \
+         AAASM-5785 route, re-run against this backend and closed",
+    );
+}
+
+/// The script both runs of the `/proc` scenario execute, verbatim.
+///
+/// Every read is done by the shell through a redirection on a builtin, so the
+/// process that opens the file is the shell itself — see the scenario's doc
+/// comment for why that matters. Each success prints its own tag, so an absent
+/// tag is a refused open and never a command that was not reached.
+///
+/// **No `2>/dev/null` anywhere.** Writing to `/dev/null` needs write access to
+/// it, which no scenario in this suite grants, so an ordinary-looking
+/// `if true 2>/dev/null < PATH` fails on the *redirection* rather than on the
+/// path under test — measured on the lane, where every probe including the
+/// controls came back as `cannot create /dev/null: Permission denied`. The
+/// shell's diagnostics go to standard error and every tag goes to standard
+/// output, so the two are simply read separately.
+///
+/// Deliberately **not** wrapped in [`as_grandchild`]: the rule this scope
+/// installs is tied to the launched process's own per-PID directory, which is the
+/// only one that exists when the boundary is installed, so `/proc/self` from a
+/// grandchild is a different directory and would measure the recorded limitation
+/// rather than the property. Descendant coverage is measured by
+/// `linux_confinement_native.rs`, on the grant that carries it.
+fn proc_inspection_script(sibling_cmdline: &str) -> String {
+    format!(
+        "printf 'RAN;'; \
+         /bin/sleep 5 & \
+         c=$!; \
+         if true < /proc/self/environ; then printf 'OWNENV;'; fi; \
+         if true < /proc/sys/kernel/ostype; then printf 'SYSCTL;'; fi; \
+         if true < /proc/$c/environ; then printf 'CHILDENV;'; fi; \
+         if true < /proc/$c/cmdline; then printf 'CHILDCMD;'; fi; \
+         if true < {sibling}; then printf 'SIBLINGCMD;'; fi; \
+         kill $c; \
+         exit 0",
+        sibling = shell_word(sibling_cmdline)
+    )
+}
+
+/// Run `script` through the launcher with `/proc` granted whole — the boundary
+/// this backend installed before AAASM-5804.
+///
+/// Driven against the launcher binary directly because there is no longer a
+/// supported way to ask the backend for an unscoped `/proc`, which is the point.
+/// Same launcher, same kernel, same system grants; one grant differs.
+fn unscoped_proc_run(script: &str) -> (String, String) {
+    let mut command = std::process::Command::new(launcher());
+    for selector in system_reads(true) {
+        command.arg(format!("--fs-read={}", selector.trim_start_matches("permit-only:")));
+    }
+    let output = command
+        .arg(launch::ARG_SEPARATOR)
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(script)
+        .output()
+        .expect("the launcher could not be executed");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }
 
 /// **Fail-closed at the launcher.** A command line the launcher does not fully
