@@ -236,6 +236,17 @@ pub fn install(plan: &RulePlan) -> Result<Installed, String> {
                 rule.path
             )
         })?;
+        let is_directory = std::fs::metadata(&rule.path)
+            .map(|meta| meta.is_dir())
+            .map_err(|e| format!("the permitted path `{}` could not be inspected: {e}", rule.path))?;
+        let access = file_safe(access, is_directory);
+        if access.is_empty() {
+            return Err(format!(
+                "the rule for `{}` would carry no right at all once the directory-only rights were \
+                 removed, and an empty rule grants nothing; refusing rather than installing it",
+                rule.path
+            ));
+        }
         ruleset = ruleset
             .add_rule(PathBeneath::new(fd, access))
             .map_err(|e| format!("the rule for `{}` was rejected by the kernel: {e}", rule.path))?;
@@ -277,9 +288,72 @@ pub fn install(plan: &RulePlan) -> Result<Installed, String> {
     })
 }
 
+/// The rights a rule may carry, given whether its path is a directory.
+///
+/// # Why this is not "belt and braces"
+///
+/// The kernel **rejects** — it does not ignore — a rule that ties a
+/// directory-only right to a regular file: `landlock_add_rule` returns `EINVAL`,
+/// and because [`install`] refuses rather than degrades, one such rule turns
+/// every launch on that host into a refusal. `AccessFs::from_read` carries
+/// `ReadDir` alongside `ReadFile`, so *any* permitted path that names a file
+/// rather than a directory hits it. Policy has been able to name one since the
+/// path scope existed; AAASM-5804's `/proc` scope made it certain, because
+/// `/proc/bootconfig` and its neighbours are files.
+///
+/// Removing the directory-only bits is not a widening: they are meaningless on a
+/// file, and the file rights that remain are the ones the requirement asked for.
+#[cfg(target_os = "linux")]
+fn file_safe(
+    access: landlock::BitFlags<landlock::AccessFs>,
+    is_directory: bool,
+) -> landlock::BitFlags<landlock::AccessFs> {
+    use landlock::AccessFs;
+    if is_directory {
+        access
+    } else {
+        access & AccessFs::from_file(REQUIRED_ABI)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The arithmetic behind the fix, checkable without a kernel: a directory
+    /// keeps every right, a file keeps the file rights and loses `ReadDir`, and
+    /// neither gains anything.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_rule_on_a_file_loses_the_directory_only_rights_and_gains_nothing() {
+        use landlock::{Access, AccessFs};
+
+        for requested in [
+            AccessFs::from_read(REQUIRED_ABI),
+            AccessFs::from_write(REQUIRED_ABI),
+            AccessFs::from_all(REQUIRED_ABI),
+        ] {
+            let on_directory = file_safe(requested, true);
+            assert_eq!(on_directory, requested, "a directory rule was narrowed");
+
+            let on_file = file_safe(requested, false);
+            assert!(on_file.contains(requested & AccessFs::from_file(REQUIRED_ABI)));
+            assert!(
+                requested.contains(on_file),
+                "a file rule gained a right the requirement did not ask for"
+            );
+            assert!(
+                !on_file.contains(AccessFs::ReadDir),
+                "a rule tied to a regular file kept a directory-only right, which the kernel rejects"
+            );
+            assert!(!on_file.is_empty(), "a file rule lost every right");
+        }
+
+        // The control: `ReadDir` really is among the rights a read requirement
+        // asks for, so the assertion above is removing something rather than
+        // observing an absence that was always there.
+        assert!(AccessFs::from_read(REQUIRED_ABI).contains(AccessFs::ReadDir));
+    }
 
     fn grants(read: &[&str], write: &[&str]) -> Grants {
         Grants {
