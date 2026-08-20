@@ -189,6 +189,26 @@ fn shared_limitations() -> Vec<String> {
          hierarchy from the one the rule was tied to; this domain says nothing about a host where an \
          unprivileged process can mount"
             .to_string(),
+        // AAASM-5804. Stated as a limitation of the filesystem domains because
+        // that is where the scope is installed, and it is the strictness — not a
+        // weakness — that an operator whose tool broke needs to find here.
+        format!(
+            "a launch that grants `{proc}` gets its non-PID entries and `{own}` instead of `{proc}` \
+             itself, so no other process's `{proc}/<pid>` is reachable. The rule is tied to the launched \
+             process's own directory, which is the only per-PID directory that exists when the boundary \
+             is installed: a process the confined program forks afterwards cannot read ITS own \
+             `{proc}/<pid>` either. That is stricter than an unscoped `{proc}`, never wider, and a \
+             program that needs its own process state in a descendant will not find it",
+            proc = crate::proc_scope::PROC,
+            own = crate::proc_scope::OWN_PROC,
+        ),
+        format!(
+            "the `{proc}` scope above is unexpressible on a launch that grants `/`: a kernel rule adds a \
+             permission and cannot subtract one, so such a launch keeps every per-PID entry and the \
+             delegated child environment is not a credential boundary on it (AAASM-5785). Which of the \
+             two happened is on every run's evidence under the credential domain, never inferred",
+            proc = crate::proc_scope::PROC,
+        ),
     ]
 }
 
