@@ -145,6 +145,48 @@ impl AbiFloor {
     }
 }
 
+/// Whether this host's kernel can install the syscall filter [`crate::seccomp`]
+/// builds.
+///
+/// A measured fact, not folded into [`HostUnusable`]: seccomp absence must not
+/// take the filesystem domains down with it. A host below Linux 3.17 (no
+/// seccomp at all) or missing `CONFIG_SECCOMP_FILTER` still confines
+/// filesystem access perfectly well, and reporting the whole backend
+/// unavailable for that would be a false statement about a control this host
+/// genuinely offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyscallFilterSupport {
+    /// The kernel answered the availability query for `SECCOMP_RET_KILL_PROCESS`
+    /// affirmatively.
+    Available,
+    /// The kernel understands `SECCOMP_GET_ACTION_AVAIL` but reported this
+    /// action as unavailable.
+    ActionUnavailable {
+        /// What the kernel reported.
+        detail: String,
+    },
+    /// The kernel does not implement seccomp's action-availability query at
+    /// all (below Linux 4.14, or seccomp itself absent below Linux 3.17).
+    Absent {
+        /// What was found instead.
+        detail: String,
+    },
+    /// This host is not Linux on x86_64, so the filter this crate builds
+    /// (Finding 3) cannot be installed regardless of what the kernel supports.
+    WrongArchitecture {
+        /// The measured `(os, arch)` pair, as an operator-legible string.
+        arch: String,
+    },
+}
+
+impl SyscallFilterSupport {
+    /// Whether a filter built by [`crate::seccomp::program`] can be installed
+    /// here.
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
 /// The measured state of one host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostFacts {
@@ -152,6 +194,7 @@ pub struct HostFacts {
     kernel_release: Option<String>,
     security_modules: Vec<String>,
     abi: AbiFloor,
+    syscall_filter: SyscallFilterSupport,
 }
 
 impl HostFacts {
@@ -235,6 +278,7 @@ impl HostFacts {
                 })
                 .unwrap_or_default(),
             abi,
+            syscall_filter: measure_syscall_filter(),
         })
     }
 
@@ -244,11 +288,22 @@ impl HostFacts {
     /// reaches [`crate::capability`]'s prevention path, which requires the live
     /// probe in [`crate::probe`] regardless of what these fields say.
     pub fn for_test(launcher: impl Into<PathBuf>, abi: AbiFloor) -> Self {
+        Self::for_test_with_syscall_support(launcher, abi, SyscallFilterSupport::Available)
+    }
+
+    /// [`Self::for_test`] with an explicit [`SyscallFilterSupport`], for tests
+    /// that need to exercise the unsupported-host arm of the syscall report.
+    pub fn for_test_with_syscall_support(
+        launcher: impl Into<PathBuf>,
+        abi: AbiFloor,
+        syscall_filter: SyscallFilterSupport,
+    ) -> Self {
         Self {
             launcher: launcher.into(),
             kernel_release: None,
             security_modules: Vec::new(),
             abi,
+            syscall_filter,
         }
     }
 
@@ -279,10 +334,16 @@ impl HostFacts {
         self.abi
     }
 
+    /// Whether this host's kernel can install [`crate::seccomp`]'s filter.
+    pub fn syscall_filter(&self) -> &SyscallFilterSupport {
+        &self.syscall_filter
+    }
+
     /// One sentence describing what was measured here, for evidence.
     pub fn describe(&self) -> String {
         format!(
-            "kernel {} | Landlock ABI {} (this backend's filesystem claim requires v{}) | active LSMs: {}",
+            "kernel {} | Landlock ABI {} (this backend's filesystem claim requires v{}) | active LSMs: {} \
+             | syscall filter: {}",
             self.kernel_release.as_deref().unwrap_or("<unreadable>"),
             self.abi
                 .measured()
@@ -293,8 +354,76 @@ impl HostFacts {
                 "<unreadable>".to_string()
             } else {
                 self.security_modules.join(", ")
+            },
+            match &self.syscall_filter {
+                SyscallFilterSupport::Available => "available".to_string(),
+                SyscallFilterSupport::ActionUnavailable { detail } => format!("action unavailable ({detail})"),
+                SyscallFilterSupport::Absent { detail } => format!("absent ({detail})"),
+                SyscallFilterSupport::WrongArchitecture { arch } => format!("wrong architecture ({arch})"),
             }
         )
+    }
+}
+
+/// Ask the kernel whether it can honour `SECCOMP_RET_KILL_PROCESS`, the action
+/// [`crate::seccomp::install`] asks for on every mismatch.
+///
+/// Mirrors [`measure_abi`]'s own "ask the kernel" pattern: `SECCOMP_GET_ACTION_AVAIL`
+/// is itself the query form of the `seccomp` syscall, side-effect-free, and
+/// answers the same question `crate::seccomp::install` will actually depend on
+/// rather than a version-string proxy for it.
+#[cfg(target_os = "linux")]
+fn measure_syscall_filter() -> SyscallFilterSupport {
+    if !cfg!(target_arch = "x86_64") {
+        return SyscallFilterSupport::WrongArchitecture {
+            arch: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
+        };
+    }
+    const SECCOMP_GET_ACTION_AVAIL: u32 = 2;
+    // `SECCOMP_RET_KILL_PROCESS`, from `linux/seccomp.h`. Duplicated from
+    // `crate::seccomp` rather than imported: this module must not depend on
+    // that one compiling on a non-Linux host, and the value is fixed kernel
+    // ABI either way.
+    let kill_process: u32 = 0x8000_0000;
+    // Safety: `SECCOMP_GET_ACTION_AVAIL` reads `available_action` (a valid
+    // `&u32` alive for the duration of this call) and writes nothing through
+    // it; it either returns 0 (the action is available) or a negative error
+    // and creates no kernel object. Sound on a kernel that does not implement
+    // it (`-EINVAL`) as well as one that does.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            SECCOMP_GET_ACTION_AVAIL,
+            0u32,
+            &kill_process as *const u32,
+        )
+    };
+    if rc == 0 {
+        SyscallFilterSupport::Available
+    } else {
+        let error = std::io::Error::last_os_error();
+        // `ENOSYS` — the query itself is not implemented — is `Absent`, not
+        // `ActionUnavailable`: the two need different fixes (a kernel too old
+        // for the query at all, versus one that understands the query and
+        // says no), the same distinction `HostUnusable::LandlockAbsent` and
+        // `HostUnusable::AbiBelowFloor` keep apart for Landlock.
+        match error.raw_os_error() {
+            Some(libc::ENOSYS) => SyscallFilterSupport::Absent {
+                detail: format!("the kernel does not implement SECCOMP_GET_ACTION_AVAIL: {error}"),
+            },
+            _ => SyscallFilterSupport::ActionUnavailable {
+                detail: format!("the kernel reported SECCOMP_RET_KILL_PROCESS as unavailable: {error}"),
+            },
+        }
+    }
+}
+
+/// The non-Linux arm. Never reached through [`HostFacts::discover`], which
+/// checks the platform first; present so the module compiles everywhere.
+#[cfg(not(target_os = "linux"))]
+fn measure_syscall_filter() -> SyscallFilterSupport {
+    SyscallFilterSupport::WrongArchitecture {
+        arch: format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH),
     }
 }
 

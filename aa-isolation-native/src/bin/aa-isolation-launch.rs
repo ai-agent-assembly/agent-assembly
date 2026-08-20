@@ -18,13 +18,17 @@
 //!
 //! 1. Parse its own argument vector through `aa_isolation_native::launch` —
 //!    the same code the supervisor built it with.
-//! 2. Compute the kernel rules through `aa_isolation_native::rules::plan` — a
-//!    pure function, unit-tested on every platform.
-//! 3. Install them on itself.
-//! 4. `execve` the program.
+//! 2. Compute the kernel rules through `aa_isolation_native::rules::plan` and
+//!    the cBPF program through `aa_isolation_native::seccomp::program` — both
+//!    pure functions, unit-tested on every platform.
+//! 3. Install the Landlock rules on itself.
+//! 4. Install the syscall filter on itself, when one was requested
+//!    (`aa_isolation_native::launch::SyscallFilter::Allow` —
+//!    see `confine_and_exec`'s own documentation for why ordering here matters).
+//! 5. `execve` the program.
 //!
-//! There is no branch that skips step 3, no error arm that falls through to step
-//! 4, and no flag that turns the boundary off. Any failure writes a
+//! There is no branch that skips step 3 or 4, no error arm that falls through to
+//! step 5, and no flag that turns the boundary off. Any failure writes a
 //! `FAILURE_MARKER` line and exits `EXIT_LAUNCH_REFUSED` **without
 //! executing anything**, which is the property
 //! `tests/linux_confinement_native.rs` measures by asserting the program's
@@ -37,10 +41,6 @@
 //! the confined program receives are set by the supervisor on this process and
 //! inherited across `execve`, so credential values never travel on a command
 //! line that `/proc/<pid>/cmdline` publishes to every other process on the host.
-//!
-//! It also installs no system-call filter. That is AAASM-5803, and the
-//! separation is why step 3 above is a single call into a module that a
-//! follow-on ticket extends rather than a block of setup inlined here.
 
 fn main() -> std::process::ExitCode {
     let argv: Vec<String> = match std::env::args_os().skip(1).map(|a| a.into_string()).collect() {
@@ -57,30 +57,96 @@ fn main() -> std::process::ExitCode {
         Err(error) => return refuse(&error.to_string()),
     };
     let plan = aa_isolation_native::rules::plan(&parsed.grants);
+    let filter = match aa_isolation_native::seccomp::program(&parsed.syscalls) {
+        Ok(filter) => filter,
+        Err(reason) => return refuse(&reason),
+    };
 
-    confine_and_exec(&plan, &parsed.program, &parsed.args)
+    confine_and_exec(&plan, &parsed.syscalls, &filter, &parsed.program, &parsed.args)
 }
 
 /// Install the boundary and become the program. Never returns on success.
+///
+/// # Ordering is load-bearing
+///
+/// 1. [`aa_isolation_native::rules::install`] first — it opens paths and calls
+///    `landlock_*`, which are outside the syscall filter's vocabulary and must
+///    run before that filter is installed, or installing the filter first
+///    would kill the Landlock setup itself.
+/// 2. The `CString` program name and the argv pointer array are built next —
+///    the only allocation in this function — **before** the syscall filter,
+///    because allocating after it would depend on `mmap`/`brk` being in the
+///    filter's permitted set on every path, not just the loader's.
+/// 3. `SIGPIPE` is reset to `SIG_DFL`, preserving what `Command::exec` used to
+///    do before this function replaced it.
+/// 4. The syscall filter is installed, only when one was requested
+///    ([`aa_isolation_native::launch::SyscallFilter::Allow`]) — see that
+///    type's own documentation for why `NotRequested` installs nothing at all.
+/// 5. `execve` immediately, with **no allocation** between steps 4 and 5.
+///
+/// After step 4, [`refuse`]'s `eprintln!` depends on `write`, which the filter
+/// denies unless policy named it. A failed `execve` past that point surfaces to
+/// the supervisor as `SIGSYS` with no [`aa_isolation_native::launch::FAILURE_MARKER`]
+/// line — fail-closed, which is correct, but it means no test in this crate may
+/// assert on that marker for a failure past this point; only on the effect
+/// (`tests/linux_confinement_native.rs`'s discipline throughout).
 #[cfg(target_os = "linux")]
 fn confine_and_exec(
     plan: &aa_isolation_native::rules::RulePlan,
+    syscalls: &aa_isolation_native::launch::SyscallFilter,
+    filter: &aa_isolation_native::seccomp::FilterProgram,
     program: &str,
     args: &[String],
 ) -> std::process::ExitCode {
-    use std::os::unix::process::CommandExt;
+    use std::ffi::CString;
 
     if let Err(reason) = aa_isolation_native::rules::install(plan) {
         return refuse(&reason);
     }
 
-    // `exec` replaces this process. Everything above has already happened, so
-    // the program cannot run without the boundary: there is no path from here
-    // that reaches `Command::spawn`, and the only way this line returns is if
-    // the exec itself failed.
-    let error = std::process::Command::new(program).args(args).exec();
+    let Ok(program_c) = CString::new(program) else {
+        return refuse("the program name contains a NUL byte and cannot be passed to execve");
+    };
+    let mut argv_c: Vec<CString> = Vec::with_capacity(args.len() + 2);
+    argv_c.push(program_c.clone());
+    for arg in args {
+        match CString::new(arg.as_str()) {
+            Ok(c) => argv_c.push(c),
+            Err(_) => return refuse("an argument contains a NUL byte and cannot be passed to execve"),
+        }
+    }
+    let mut argv_ptrs: Vec<*const libc::c_char> = argv_c.iter().map(|c| c.as_ptr()).collect();
+    argv_ptrs.push(std::ptr::null());
+
+    // SAFETY: resets the disposition of a signal on this process, which
+    // affects only this process and takes no pointer that must remain valid
+    // afterward. Preserves what `Command::exec` (the launcher's earlier shape)
+    // installed by default.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+
+    if let aa_isolation_native::launch::SyscallFilter::Allow(_) = syscalls {
+        if let Err(reason) = aa_isolation_native::seccomp::install(filter) {
+            return refuse(&reason);
+        }
+    }
+
+    // SAFETY: `program_c` and every element of `argv_c` are NUL-terminated and
+    // alive until this call returns (or this process becomes `program`, in
+    // which case they are never freed because nothing after this line runs in
+    // this process's old image); `argv_ptrs` is NUL-terminated per `execvp`'s
+    // contract. `execvp` replaces this process image and, on success, never
+    // returns to the code below. `execvp` rather than `execve` preserves the
+    // PATH-search semantics `Command::exec` had before this function replaced
+    // it, and the environment is inherited unchanged (this process's own,
+    // already set by the supervisor before this binary was started) exactly as
+    // `Command::exec` would have passed it through with no explicit `env`.
+    unsafe {
+        libc::execvp(program_c.as_ptr(), argv_ptrs.as_ptr());
+    }
+    // Only reached if `execvp` itself failed.
     refuse(&format!(
-        "the boundary was installed and `{program}` could not be executed: {error}"
+        "the boundary was installed and `{program}` could not be executed: {}",
+        std::io::Error::last_os_error()
     ))
 }
 
@@ -94,6 +160,8 @@ fn confine_and_exec(
 #[cfg(not(target_os = "linux"))]
 fn confine_and_exec(
     _plan: &aa_isolation_native::rules::RulePlan,
+    _syscalls: &aa_isolation_native::launch::SyscallFilter,
+    _filter: &aa_isolation_native::seccomp::FilterProgram,
     program: &str,
     _args: &[String],
 ) -> std::process::ExitCode {

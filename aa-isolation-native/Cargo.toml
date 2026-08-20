@@ -44,6 +44,12 @@ aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6" }
 # Only for the `ClaimTerm` evidence vocabulary, which `aa-isolation` re-uses
 # verbatim and this crate must name when it records a decision.
 aa-core = { path = "../aa-core", version = "0.0.1-rc.6" }
+# AAASM-5803. Only for `aa_security::policy::syscall::Syscall`, the closed
+# 15-name syscall vocabulary policy authors write against — the same type
+# `aa_isolation::lowering` already parses selectors from. `aa-isolation`
+# already carries this edge non-optionally, so this is not a new dependency on
+# the workspace graph, only a new direct edge to a crate already reachable.
+aa-security = { path = "../aa-security", version = "0.0.1-rc.6" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The kernel binding for the filesystem primitive, and the ONLY third-party

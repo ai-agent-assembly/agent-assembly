@@ -75,12 +75,15 @@
 //! only the launched process would let these through, and the probe would see the
 //! effect.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use aa_security::policy::syscall::Syscall;
+
 use crate::host::HostFacts;
-use crate::launch::{Grants, FAILURE_MARKER};
+use crate::launch::{Grants, SyscallFilter, FAILURE_MARKER};
 
 /// The shell every probe drives. The one executable a Linux host is entitled to
 /// assume; its absence makes a probe inconclusive rather than negative.
@@ -139,16 +142,20 @@ pub struct ConfinementProbe {
     pub filesystem_read: Observation,
     /// Whether a grandchild was denied a write the policy did not grant.
     pub filesystem_write: Observation,
+    /// Whether a grandchild was denied a syscall the launch did not permit.
+    pub syscall: Observation,
 }
 
 impl ConfinementProbe {
     /// A probe that measured nothing, for hosts where the backend is not usable
     /// at all.
     pub fn unmeasured(detail: impl Into<String>) -> Self {
-        let observation = Observation::Inconclusive { detail: detail.into() };
+        let detail = detail.into();
+        let observation = Observation::Inconclusive { detail: detail.clone() };
         Self {
             filesystem_read: observation.clone(),
-            filesystem_write: observation,
+            filesystem_write: observation.clone(),
+            syscall: observation,
         }
     }
 
@@ -165,8 +172,8 @@ impl ConfinementProbe {
 
 /// Run every measurement described in the module documentation.
 ///
-/// Costs four confined process launches, once per backend construction, never per
-/// plan.
+/// Costs five confined process launches, once per backend construction, never
+/// per plan.
 pub fn measure(facts: &HostFacts) -> ConfinementProbe {
     let Ok(scratch) = TempDir::new("aa-native-probe") else {
         return ConfinementProbe::unmeasured("no scratch directory could be created for the probe");
@@ -186,7 +193,83 @@ pub fn measure(facts: &HostFacts) -> ConfinementProbe {
     ConfinementProbe {
         filesystem_read: measure_read(facts, &secret),
         filesystem_write: measure_write(facts, &target),
+        syscall: measure_syscall(facts, &target),
     }
+}
+
+/// Syscall: the control run's filter additionally permits `write`, the test
+/// run's does not. Both permit the loader/shell baseline this file's own
+/// [`system_grants`] and [`syscall_baseline`] describe, so the *only*
+/// difference between the two allowlists is `write` — mirroring this module's
+/// filesystem measurements, which hold the same property for their grant sets
+/// ([`tests::the_only_difference_between_the_runs_is_the_grant_under_test`]).
+///
+/// The observable is the target file's **content**, not its existence:
+/// `openat(O_CREAT)` is permitted either way (`openat` is in the baseline, not
+/// under test), so a mere existence check would compare two `true`s and prove
+/// nothing about `write` in particular. What `write` decides is whether the
+/// grandchild's `printf` can put bytes *into* the descriptor `openat` already
+/// handed it — so the pair looks at what landed in the file, exactly the trap
+/// this file's read/write measurements above are built to avoid.
+fn measure_syscall(facts: &HostFacts, dir: &Path) -> Observation {
+    let control_target = dir.join("syscall-control");
+    let test_target = dir.join("syscall-test");
+    let control = run_confined_with_syscalls(
+        facts,
+        system_grants(),
+        syscall_baseline_with_write(),
+        &nested(&format!("printf x > {}", shell_word(&control_target.to_string_lossy()))),
+    );
+    let test = run_confined_with_syscalls(
+        facts,
+        system_grants(),
+        syscall_baseline(),
+        &nested(&format!("printf x > {}", shell_word(&test_target.to_string_lossy()))),
+    );
+    compare(
+        "syscall",
+        control.map(|o| {
+            (
+                control_target.exists() && std::fs::read(&control_target).map(|b| !b.is_empty()).unwrap_or(false),
+                o.diagnostic,
+            )
+        }),
+        test.map(|o| {
+            (
+                test_target.exists() && std::fs::read(&test_target).map(|b| !b.is_empty()).unwrap_or(false),
+                o.diagnostic,
+            )
+        }),
+    )
+}
+
+/// Loader/shell-needed syscalls this probe's confined runs need to start at
+/// all, deliberately **excluding** `write` — the syscall under test.
+fn syscall_baseline() -> BTreeSet<Syscall> {
+    [
+        Syscall::Read,
+        Syscall::Openat,
+        Syscall::Close,
+        Syscall::Fstat,
+        Syscall::Lseek,
+        Syscall::Mmap,
+        Syscall::Munmap,
+        Syscall::Brk,
+        Syscall::Getrandom,
+        Syscall::ExitGroup,
+        Syscall::RtSigaction,
+        Syscall::RtSigprocmask,
+        Syscall::ClockGettime,
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// [`syscall_baseline`] plus `write` — the control allowlist.
+fn syscall_baseline_with_write() -> BTreeSet<Syscall> {
+    let mut allow = syscall_baseline();
+    allow.insert(Syscall::Write);
+    allow
 }
 
 /// Read: the control run grants read of the file's directory, the test run does
@@ -294,9 +377,30 @@ struct RunOutput {
     diagnostic: String,
 }
 
-/// Run `script` through the launcher with exactly `grants` installed.
+/// Run `script` through the launcher with exactly `grants` installed and no
+/// syscall filter.
 fn run_confined(facts: &HostFacts, grants: Grants, script: &str) -> Result<RunOutput, String> {
-    let argv = crate::launch::build(&grants, PROBE_SHELL, &["-c".to_string(), script.to_string()]);
+    run_confined_inner(facts, grants, &SyscallFilter::NotRequested, script)
+}
+
+/// Run `script` through the launcher with exactly `grants` and `syscalls`
+/// installed.
+fn run_confined_with_syscalls(
+    facts: &HostFacts,
+    grants: Grants,
+    syscalls: BTreeSet<Syscall>,
+    script: &str,
+) -> Result<RunOutput, String> {
+    run_confined_inner(facts, grants, &SyscallFilter::Allow(syscalls), script)
+}
+
+fn run_confined_inner(
+    facts: &HostFacts,
+    grants: Grants,
+    syscalls: &SyscallFilter,
+    script: &str,
+) -> Result<RunOutput, String> {
+    let argv = crate::launch::build(&grants, syscalls, PROBE_SHELL, &["-c".to_string(), script.to_string()]);
     let mut command = Command::new(facts.launcher());
     for arg in &argv {
         command.arg(arg);
@@ -503,7 +607,28 @@ mod tests {
         let probe = ConfinementProbe::unmeasured("host is not Linux");
         assert!(!probe.filesystem_read.is_denied());
         assert!(!probe.filesystem_write.is_denied());
+        assert!(!probe.syscall.is_denied());
         assert!(!probe.covers_descendants());
+    }
+
+    /// The syscall pair's control and test allowlists must differ by exactly
+    /// `write` — the same discipline
+    /// [`the_only_difference_between_the_runs_is_the_grant_under_test`] holds
+    /// for the filesystem grant pairs, restated for syscalls.
+    #[test]
+    fn the_syscall_allowlists_differ_by_exactly_write() {
+        let baseline = syscall_baseline();
+        assert!(
+            !baseline.contains(&Syscall::Write),
+            "the baseline already permits the syscall under test"
+        );
+        let with_write = syscall_baseline_with_write();
+        let added: Vec<&Syscall> = with_write.difference(&baseline).collect();
+        assert_eq!(
+            added,
+            [&Syscall::Write],
+            "the control allowlist differs by more than `write`"
+        );
     }
 
     #[test]
