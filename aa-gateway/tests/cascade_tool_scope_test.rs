@@ -60,6 +60,7 @@ fn empty_doc(scope: PolicyScope) -> PolicyDocument {
         tools: HashMap::new(),
         capabilities: None,
         filesystem: None,
+        syscall_allowlist: None,
     }
 }
 

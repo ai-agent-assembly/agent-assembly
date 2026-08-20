@@ -138,6 +138,31 @@ pub struct RawFilesystemPolicy {
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
 
+/// Raw (unvalidated) deserialization target for the `syscalls` policy section
+/// (AAASM-5753).
+///
+/// The shape mirrors `aa_security::policy::parse`'s own `syscalls:` target
+/// key-for-key, because the two are parsers of the same on-disk contract. They
+/// diverged once already — this section was reachable through one of them and
+/// rejected as an unknown key by the other — and the projection that was
+/// supposed to join them dropped the node instead.
+#[derive(Debug, Deserialize)]
+pub struct RawSyscallAllowlist {
+    /// Syscall names the agent may issue.
+    ///
+    /// `None` means the `syscalls:` key was written with no `allow:` under it,
+    /// which the validator reads as an in-force allowlist permitting
+    /// **nothing** — not as the absence of a restriction. The distinction
+    /// between that and an absent `syscalls:` key is carried by the
+    /// surrounding `Option<RawSyscallAllowlist>`, exactly as
+    /// [`RawPathScope::allow`] carries it for a path verb.
+    pub allow: Option<Vec<String>>,
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
 /// Raw (unvalidated) deserialization target for the `metadata` section
 /// of the governance policy YAML envelope.
 #[derive(Debug, Deserialize)]
@@ -205,6 +230,8 @@ pub struct RawPolicyDocument {
     pub capabilities: Option<RawCapabilitySet>,
     /// Filesystem path scope (AAASM-5751).
     pub filesystem: Option<RawFilesystemPolicy>,
+    /// Kernel syscall allowlist (AAASM-5753).
+    pub syscalls: Option<RawSyscallAllowlist>,
     /// Seconds before an approval request times out.
     /// Defaults to 300 when absent.
     pub approval_timeout_secs: Option<u32>,
@@ -480,5 +507,39 @@ mod tests {
             .unwrap()
             .unknown
             .contains_key("alow"));
+    }
+
+    // ── RawSyscallAllowlist (AAASM-5753) ────────────────────────────────────
+
+    #[test]
+    fn raw_syscalls_deserializes_the_allow_list() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("syscalls:\n  allow:\n    - read\n    - write\n").unwrap();
+        assert_eq!(
+            raw.syscalls.as_ref().unwrap().allow.as_deref(),
+            Some(["read".to_string(), "write".to_string()].as_slice())
+        );
+    }
+
+    /// Two authored forms the raw layer has to keep apart, because the
+    /// validator reads them as "nobody said" and "nothing is permitted" — and
+    /// a raw layer that collapsed them would leave the validator nothing to
+    /// read the difference from.
+    #[test]
+    fn raw_syscalls_distinguishes_an_absent_section_from_an_absent_list() {
+        let no_section: RawPolicyDocument = serde_yaml::from_str("{}\n").unwrap();
+        assert!(no_section.syscalls.is_none());
+
+        let no_list: RawPolicyDocument = serde_yaml::from_str("syscalls: {}\n").unwrap();
+        assert_eq!(no_list.syscalls.as_ref().unwrap().allow, None);
+    }
+
+    #[test]
+    fn raw_syscalls_captures_unknown_keys() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("syscalls:\n  alow:\n    - read\n").unwrap();
+        assert!(raw.syscalls.as_ref().unwrap().unknown.contains_key("alow"));
+        // The control: the correctly-spelled key lands in `allow` rather than
+        // in `unknown`, so the capture above is attributable to the typo.
+        let ok: RawPolicyDocument = serde_yaml::from_str("syscalls:\n  allow:\n    - read\n").unwrap();
+        assert!(ok.syscalls.as_ref().unwrap().unknown.is_empty());
     }
 }

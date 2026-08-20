@@ -449,6 +449,7 @@ mod tests {
             tools: HashMap::new(),
             capabilities: caps,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 

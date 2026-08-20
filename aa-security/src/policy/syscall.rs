@@ -170,6 +170,19 @@ impl SyscallAllowlist {
         self.syscalls.contains(&syscall)
     }
 
+    /// Whether this allowlist is in force and permits no syscall.
+    ///
+    /// The strictest posture an author can write here, not the absence of one —
+    /// the absence is `None` on the document's
+    /// [`syscall_allowlist`](super::document::PolicyDocument::syscall_allowlist)
+    /// field. Named to match
+    /// [`PathScope::permits_nothing`](super::filesystem::PathScope::permits_nothing)
+    /// so the two nodes are asked the same question in the same words wherever
+    /// a consumer has to tell an in-force deny-all from silence (AAASM-5753).
+    pub fn permits_nothing(&self) -> bool {
+        self.syscalls.is_empty()
+    }
+
     /// The permitted syscalls, ordered, as an iterator.
     pub fn iter(&self) -> impl Iterator<Item = Syscall> + '_ {
         self.syscalls.iter().copied()
@@ -219,6 +232,18 @@ mod tests {
         assert!(allow.permits(Syscall::Write));
         assert!(allow.permits(Syscall::Close));
         assert!(!allow.permits(Syscall::Openat));
+    }
+
+    /// AAASM-5753 — a stated allowlist permitting nothing is in force, and the
+    /// predicate that says so must move with membership rather than reporting
+    /// the same answer for a populated one.
+    #[test]
+    fn permits_nothing_separates_an_in_force_deny_all_from_a_populated_list() {
+        assert!(SyscallAllowlist::default().permits_nothing());
+        assert!(SyscallAllowlist::from_names(Vec::<&str>::new())
+            .unwrap()
+            .permits_nothing());
+        assert!(!SyscallAllowlist::from_names(["read"]).unwrap().permits_nothing());
     }
 
     #[test]

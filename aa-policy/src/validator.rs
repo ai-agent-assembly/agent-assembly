@@ -72,7 +72,7 @@ impl PolicyValidator {
                     key,
                     format!(
                         "unknown top-level key '{}'; valid keys are: version, scope, network, \
-                         schedule, budget, data, tools, capabilities, filesystem, \
+                         schedule, budget, data, tools, capabilities, filesystem, syscalls, \
                          approval_timeout_secs, approval",
                         key
                     ),
@@ -88,6 +88,7 @@ impl PolicyValidator {
         let tools = Self::validate_tools(raw.tools, &mut errors);
         let capabilities = Self::validate_capabilities(raw.capabilities, &mut errors, &mut warnings);
         let filesystem = Self::validate_filesystem(raw.filesystem, &mut errors);
+        let syscall_allowlist = Self::validate_syscalls(raw.syscalls, &mut errors);
         let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
@@ -123,6 +124,7 @@ impl PolicyValidator {
                 tools,
                 capabilities,
                 filesystem,
+                syscall_allowlist,
             },
             warnings,
         })
@@ -497,6 +499,49 @@ impl PolicyValidator {
             write: Self::validate_path_scope(raw.write, "filesystem.write", errors),
         };
         node.is_stated().then_some(node)
+    }
+
+    /// Validate the `syscalls:` allowlist section (AAASM-5753).
+    ///
+    /// Returns `None` only when the section is absent — the operator said
+    /// nothing about syscalls, and the `aa-isolation` lowering reports that
+    /// distinctly from an allowlist permitting nothing. A `syscalls:` key
+    /// written with no `allow:` under it is **not** that case: it yields
+    /// `Some` with an empty set, an in-force restriction permitting no call.
+    ///
+    /// Unlike [`validate_filesystem`](Self::validate_filesystem), there is no
+    /// "stated neither verb" normalization to apply, because this section has
+    /// a single list rather than a pair of independently-authored verbs.
+    ///
+    /// An unrecognised name is a hard error rather than a dropped entry. The
+    /// vocabulary is a closed 15-name set, so a typo has no reading under
+    /// which the author meant something admissible — and dropping it would
+    /// silently shrink the allowlist toward a posture the operator did not
+    /// write. This is the AAASM-4330 fail-closed rule applied per entry, and
+    /// it matches what `aa_security::policy::PolicyDocument::from_yaml` does
+    /// with the same input.
+    fn validate_syscalls(
+        raw: Option<crate::raw::RawSyscallAllowlist>,
+        errors: &mut Vec<ValidationError>,
+    ) -> Option<aa_security::policy::SyscallAllowlist> {
+        let raw = raw?;
+
+        reject_unknown_keys("syscalls", &raw.unknown, errors);
+
+        let entries = raw.allow.unwrap_or_default();
+        let mut accepted: Vec<String> = Vec::with_capacity(entries.len());
+        for (i, entry) in entries.iter().enumerate() {
+            match aa_security::policy::SyscallAllowlist::from_names([entry]) {
+                Ok(_) => accepted.push(entry.clone()),
+                Err(reason) => errors.push(ValidationError::new(format!("syscalls.allow[{i}]"), reason)),
+            }
+        }
+        // Each accepted entry was already validated individually above, so
+        // this cannot fail. The fallback is the *empty* allowlist rather than a
+        // panic or a permissive default: empty permits nothing, so a
+        // hypothetical future divergence between the per-entry and whole-list
+        // checks narrows this allowlist rather than widening it.
+        Some(aa_security::policy::SyscallAllowlist::from_names(&accepted).unwrap_or_default())
     }
 
     /// Validate one `filesystem.<verb>` node into a canonical
@@ -1833,5 +1878,65 @@ approval:
             errs.iter().any(|e| e.field == "budget.team_daily_limit_usd"),
             "expected a team_daily_limit_usd error, got: {errs:?}"
         );
+    }
+
+    // ── syscalls (AAASM-5753) ──────────────────────────────────────────────
+
+    /// The gateway validator used to reject `syscalls:` as an unknown
+    /// top-level key while `aa_security::policy::PolicyDocument::from_yaml`
+    /// accepted it — two parsers of one on-disk contract disagreeing about
+    /// whether an operator could author the node.
+    #[test]
+    fn a_syscalls_section_validates_into_the_canonical_allowlist() {
+        use aa_security::policy::Syscall;
+
+        let yaml = "syscalls:\n  allow:\n    - read\n    - write\n    - read\n";
+        let out = PolicyValidator::from_yaml(yaml).expect("the gateway validator accepts `syscalls:`");
+        let allow = out.document.syscall_allowlist.as_ref().expect("stated");
+        // De-duplicated by the BTreeSet, order-stable by enum order.
+        assert_eq!(allow.iter().collect::<Vec<_>>(), vec![Syscall::Read, Syscall::Write]);
+        assert!(!allow.permits(Syscall::Openat));
+    }
+
+    /// The AAASM-4330 fail-closed rule, per entry: a name outside the closed
+    /// 15-name vocabulary is an error rather than a dropped entry, so a typo
+    /// cannot silently shrink the allowlist toward a posture nobody wrote.
+    #[test]
+    fn an_unknown_syscall_name_is_an_error_and_names_its_index() {
+        let errs = PolicyValidator::from_yaml("syscalls:\n  allow:\n    - read\n    - ptrace\n")
+            .expect_err("an unknown syscall name must be rejected");
+        assert!(
+            errs.iter().any(|e| e.field == "syscalls.allow[1]"),
+            "expected the offending index to be named, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_misspelled_syscalls_key_is_rejected_rather_than_dropped() {
+        let errs =
+            PolicyValidator::from_yaml("syscalls:\n  alow:\n    - read\n").expect_err("a nested typo must fail closed");
+        assert!(
+            errs.iter().any(|e| e.field.starts_with("syscalls")),
+            "expected a syscalls error, got: {errs:?}"
+        );
+    }
+
+    /// Absent and empty are two authored facts, decided here and preserved by
+    /// `to_canonical`. Absent is the operator having said nothing; a
+    /// `syscalls:` key with no `allow:` under it is a restriction in force
+    /// that permits no call.
+    #[test]
+    fn an_absent_syscalls_section_is_not_an_empty_allowlist() {
+        let absent = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        assert!(absent.document.syscall_allowlist.is_none());
+
+        let empty = PolicyValidator::from_yaml("syscalls: {}\n").expect("valid");
+        let node = empty
+            .document
+            .syscall_allowlist
+            .as_ref()
+            .expect("a stated empty allowlist is in force, not silence");
+        assert!(node.permits_nothing());
+        assert_ne!(absent.document.syscall_allowlist, empty.document.syscall_allowlist);
     }
 }

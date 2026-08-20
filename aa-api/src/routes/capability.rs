@@ -1033,6 +1033,7 @@ mod tests {
                 .collect(),
             capabilities,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 
@@ -1508,6 +1509,7 @@ mod tests {
             )]),
             capabilities: Some(caps),
             filesystem: None,
+            syscall_allowlist: None,
         };
 
         let rules = project_rules(&doc);

@@ -622,6 +622,18 @@ fn network_egress(policy: &PolicyDocument) -> DomainResult {
     )
 }
 
+/// Three outcomes, in strictness order, mirroring [`filesystem`] because the
+/// two nodes pose the same question (AAASM-5753).
+///
+/// 1. **The node is absent** — [`DomainCoverage::NotStated`]. No requirement,
+///    and no statement that the domain is safe.
+/// 2. **The node is stated and permits nothing** — an in-force restriction with
+///    an empty permitted set, which is whole-domain prevention. Reported as
+///    [`RequirementScope::Whole`] rather than as zero selectors, because an
+///    empty selector list renders as `selectors[0]:` and reads as a scope that
+///    forgot to name its members rather than as the strictest posture the
+///    schema can express.
+/// 3. **The node is stated and names calls** — enumerated selectors.
 fn syscall(policy: &PolicyDocument) -> DomainResult {
     let gaps = vec![
         SYSCALL_VOCABULARY_GAP.to_string(),
@@ -630,6 +642,16 @@ fn syscall(policy: &PolicyDocument) -> DomainResult {
     let Some(allowlist) = policy.syscall_allowlist.as_ref() else {
         return (not_stated(SYSCALL_NODE, SYSCALL_ABSENT_MEANING), None, gaps);
     };
+    if allowlist.permits_nothing() {
+        return (
+            DomainCoverage::Lowered {
+                granularity: ScopeGranularity::WholeDomainOnly,
+                sourced_from: vec![format!("{SYSCALL_NODE} is in force and permits no syscall")],
+            },
+            Some(RequirementScope::Whole),
+            gaps,
+        );
+    }
     (
         DomainCoverage::Lowered {
             granularity: ScopeGranularity::Enumerated,
@@ -719,9 +741,9 @@ const NETWORK_ABSENT_MEANING: &str = "an absent or empty allowlist is documented
      (aa_security::policy::document::NetworkPolicy)";
 
 const SYSCALL_NODE: &str = "syscalls.allow";
-const SYSCALL_ABSENT_MEANING: &str = "an absent allowlist leaves syscalls unconstrained. Note that \
-     aa_policy::PolicyDocument::to_canonical always sets this node to None, so a document that reached \
-     this AST through the gateway projection can never carry it however it was authored";
+const SYSCALL_ABSENT_MEANING: &str = "an absent allowlist leaves syscalls unconstrained by this node. It \
+     is the operator having said nothing, which is a different fact from a stated allowlist that permits \
+     no call — that one is in force, and is reported here as whole-domain prevention (AAASM-5753)";
 
 const FILESYSTEM_PATH_SCOPE_GAP: &str = "path scope: this requirement applies to every path. The schema \
      can express one (filesystem.read.allow / filesystem.write.allow, AAASM-5751) and this document either \
