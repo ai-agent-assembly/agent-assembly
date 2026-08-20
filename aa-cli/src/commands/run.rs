@@ -617,6 +617,71 @@ mod plan {
         Refused(String),
     }
 
+    /// One of the concrete backends this build was compiled with, before it
+    /// becomes `Arc<dyn IsolationBackend>`.
+    ///
+    /// # Why an enum and not `Box<dyn IsolationBackend>` here
+    ///
+    /// Selection is the one place that must name a backend — Rust has no plugin
+    /// loader — and two of the three things selection does are *not* on the
+    /// trait. `set_child_environment` takes the exact environment the confined
+    /// program is to receive, and it cannot be on `IsolationBackend` without
+    /// putting a process-environment model into a contract ADR 0035 keeps
+    /// platform-free. Adding it there to save this enum would be a contract
+    /// change made for a caller's convenience, which the AAASM-5801 amendment
+    /// explicitly verified was not needed.
+    ///
+    /// So the enum lives here, in the module that already names both backends,
+    /// and it ends at [`Self::into_arc`]: everything downstream of selection
+    /// holds the trait object and cannot tell the two apart.
+    pub(super) enum SelectedBackend {
+        /// The backend built on the external `sandlock` supervisor (AAASM-5708).
+        Sandlock(aa_isolation_sandlock::SandlockBackend),
+        /// The AASM-native backend, whose boundary is installed by a launcher
+        /// binary this workspace builds (AAASM-5802).
+        Native(aa_isolation_native::NativeBackend),
+    }
+
+    impl SelectedBackend {
+        /// What the selected backend can do on this host, right now.
+        fn capabilities(&self) -> aa_isolation::BackendCapabilities {
+            match self {
+                Self::Sandlock(backend) => backend.capabilities(),
+                Self::Native(backend) => backend.capabilities(),
+            }
+        }
+
+        /// Install the exact environment the confined program is to receive.
+        fn set_child_environment(&mut self, env: std::collections::BTreeMap<String, String>) {
+            match self {
+                Self::Sandlock(backend) => backend.set_child_environment(env),
+                Self::Native(backend) => backend.set_child_environment(env),
+            }
+        }
+
+        /// Resolve a spec against this backend's capabilities, before anything
+        /// starts.
+        #[allow(clippy::result_large_err)]
+        fn plan(&self, spec: &ExecutionSpec) -> Result<aa_isolation::EnforcementPlan, aa_isolation::PlanRefusal> {
+            match self {
+                Self::Sandlock(backend) => backend.plan(spec),
+                Self::Native(backend) => backend.plan(spec),
+            }
+        }
+
+        /// Hand the launch path the trait object it holds for the whole run.
+        ///
+        /// The last point at which the concrete backend is visible. After this
+        /// the supervisor holds `Arc<dyn IsolationBackend>` and has no way to
+        /// ask which of the two it got, which is ADR 0035 §3 held structurally.
+        pub(super) fn into_arc(self) -> std::sync::Arc<dyn aa_isolation::IsolationBackend> {
+            match self {
+                Self::Sandlock(backend) => std::sync::Arc::new(backend),
+                Self::Native(backend) => std::sync::Arc::new(backend),
+            }
+        }
+    }
+
     /// What the execution boundary is required to provide, and who is going to
     /// provide it.
     ///
@@ -640,7 +705,7 @@ mod plan {
         lowering: Option<aa_isolation::PolicyLowering>,
         /// The selected backend. `None` whenever no boundary is in play, and
         /// [`Self::absent`] then says which of the reasons applies.
-        backend: Option<aa_isolation_sandlock::SandlockBackend>,
+        backend: Option<SelectedBackend>,
         /// Why this launch has no boundary, in words an operator can act on.
         absent: Option<String>,
     }
@@ -651,7 +716,7 @@ mod plan {
         /// Consuming rather than borrowing because the launch path needs it as
         /// `Arc<dyn IsolationBackend>` and holds it for the whole run, which
         /// outlives the plan.
-        pub(super) fn take_backend(&mut self) -> Option<aa_isolation_sandlock::SandlockBackend> {
+        pub(super) fn take_backend(&mut self) -> Option<SelectedBackend> {
             self.backend.take()
         }
 
@@ -1082,7 +1147,7 @@ mod plan {
         }
 
         /// Take the selected isolation backend, leaving none behind.
-        pub(super) fn take_backend(&mut self) -> Option<aa_isolation_sandlock::SandlockBackend> {
+        pub(super) fn take_backend(&mut self) -> Option<SelectedBackend> {
             self.isolation.take_backend()
         }
 
@@ -1355,44 +1420,59 @@ mod plan {
                 });
             }
 
+            // The default is unchanged by AAASM-5802. ADR 0035's AAASM-5801
+            // amendment is explicit that which backend a deployment uses by
+            // default "is an evidence-based decision to be made later, under
+            // AAASM-5805, once both backends have comparable measured evidence —
+            // it is not pre-decided by naming the native backend here". So the
+            // second backend is reachable only by naming it.
             let requested = args
                 .isolation_backend
                 .as_deref()
                 .unwrap_or(aa_isolation_sandlock::BACKEND_ID);
-            if requested != aa_isolation_sandlock::BACKEND_ID {
-                posture.refuse(anyhow::anyhow!(
-                    "--isolation-backend {requested} names no backend this build has. The only backend \
-                     compiled in is `{}`. Backend ids are a diagnostic control and are not portable — \
-                     `--isolation {}` asks for the isolation class instead, and survives a backend change.",
-                    aa_isolation_sandlock::BACKEND_ID,
-                    match args.isolation {
-                        super::IsolationIntent::Auto => "auto",
-                        _ => "process",
-                    },
-                ))?;
-                return Ok(IsolationPlan {
-                    lowering,
-                    backend: None,
-                    absent: Some(format!("no backend answers to the id `{requested}` in this build")),
-                });
-            }
+            let backend = match requested {
+                id if id == aa_isolation_sandlock::BACKEND_ID => {
+                    // Discovery measures the host; it starts nothing and confines
+                    // nothing, so a preview may call it too — and must, or the
+                    // preview would describe a boundary the live launch could not
+                    // build.
+                    SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover())
+                }
+                id if id == aa_isolation_native::BACKEND_ID => {
+                    SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
+                }
+                other => {
+                    posture.refuse(anyhow::anyhow!(
+                        "--isolation-backend {other} names no backend this build has. The backends \
+                         compiled in are `{}` and `{}`. Backend ids are a diagnostic control and are not \
+                         portable — `--isolation {}` asks for the isolation class instead, and survives a \
+                         backend change.",
+                        aa_isolation_sandlock::BACKEND_ID,
+                        aa_isolation_native::BACKEND_ID,
+                        match args.isolation {
+                            super::IsolationIntent::Auto => "auto",
+                            _ => "process",
+                        },
+                    ))?;
+                    return Ok(IsolationPlan {
+                        lowering,
+                        backend: None,
+                        absent: Some(format!("no backend answers to the id `{other}` in this build")),
+                    });
+                }
+            };
 
-            // Discovery measures the host; it starts nothing and confines
-            // nothing, so a preview may call it too — and must, or the preview
-            // would describe a boundary the live launch could not build.
-            let backend = aa_isolation_sandlock::SandlockBackend::discover();
             if let aa_isolation::BackendAvailability::Unavailable { reason } =
                 backend.capabilities().availability().clone()
             {
                 posture.refuse(anyhow::anyhow!(
-                    "refusing to launch: an execution-isolation boundary was requested and the `{}` backend \
-                     cannot be selected on this host — {reason}.\n\
+                    "refusing to launch: an execution-isolation boundary was requested and the `{requested}` \
+                     backend cannot be selected on this host — {reason}.\n\
                      \n\
                      There is no fallback. A launch that asked for a boundary and quietly ran without one \
                      would report as governed while being unconfined, which is the failure this mode \
                      exists to prevent. Install the backend, or re-run with `--isolation none` to launch \
                      unconfined deliberately.",
-                    aa_isolation_sandlock::BACKEND_ID,
                 ))?;
                 return Ok(IsolationPlan {
                     lowering,
@@ -2561,7 +2641,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         // established and then failed.
         plan::Boundary::Negotiated(plan) => {
             let backend = backend.expect("a negotiated plan is only produced by a selected backend");
-            run_confined(std::sync::Arc::new(backend), *plan, isolation).await?
+            run_confined(backend.into_arc(), *plan, isolation).await?
         }
         // Unchanged from every `aasm run` before `--isolation` existed.
         plan::Boundary::Absent => spawn_and_wait(cmd, &child_env).await?,

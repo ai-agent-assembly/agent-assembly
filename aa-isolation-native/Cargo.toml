@@ -1,0 +1,86 @@
+[package]
+name = "aa-isolation-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AASM-native Linux process-isolation backend for Agent Assembly: kernel filesystem confinement applied by a dedicated launcher binary (AAASM-5802)"
+# AAASM-5802. Held back from crates.io for the same reasons as `aa-isolation`
+# (see that crate's `src/lib.rs` "Packaging" section) and `aa-isolation-sandlock`:
+# the only intended consumer is `aa-cli`'s `aasm run`, which
+# `.ci/strip-for-publish.sh` deletes from the published tarball, so a published
+# copy would advertise a surface nothing published can serve.
+#
+# One reason of its own, in the opposite direction from the sandlock crate's:
+# this crate needs no external executable, but it does ship one — the
+# `aa-isolation-launch` binary below. A published copy would install that
+# launcher onto a user's `PATH` under a name AASM has not reserved, from a
+# crate whose contract is still being reshaped by the rest of Epic AAASM-5800.
+#
+# `cargo workspaces publish` (release.yml `publish-crates`) ships every workspace
+# member that does NOT carry this key, so omitting it would publish this crate by
+# default rather than by decision.
+publish = false
+
+[lib]
+name = "aa_isolation_native"
+path = "src/lib.rs"
+
+# The launcher. Deliberately its own binary rather than a `pre_exec` closure in
+# the supervisor: ADR 0035's AAASM-5801 amendment, "Launcher shape", requires
+# the boundary to be installed by "a deliberately small and auditable
+# launcher/helper boundary" because post-fork restrictions make ordinary
+# allocation, locks and library behaviour unsafe to audit inside an async
+# runtime's `pre_exec` callback — and `aasm run`'s supervisor is a Tokio
+# runtime.
+[[bin]]
+name = "aa-isolation-launch"
+path = "src/bin/aa-isolation-launch.rs"
+
+[dependencies]
+# The backend-neutral contract this crate implements. `aa-isolation` is
+# `publish = false` too, so this edge is packaging-safe in the same direction.
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6" }
+# Only for the `ClaimTerm` evidence vocabulary, which `aa-isolation` re-uses
+# verbatim and this crate must name when it records a decision.
+aa-core = { path = "../aa-core", version = "0.0.1-rc.6" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The kernel binding for the filesystem primitive, and the ONLY third-party
+# crate this backend adds. Pinned to a minor range rather than a caret on 0.4.7
+# because the crate is pre-1.0 and `cargo` treats `0.4.x` as compatible within
+# the minor — which is the granularity upstream actually uses for its ABI
+# additions (0.4.5 added ABI v7, 0.4.6 v8, 0.4.7 v9), none of which change the
+# access rights this backend asks for.
+#
+# Licence: `MIT OR Apache-2.0`, verified against the published crate's own
+# `LICENSE-MIT` / `LICENSE-APACHE` at 0.4.7 before this pin, as ADR 0035
+# decision 11 requires. Source: https://github.com/landlock-lsm/rust-landlock,
+# the upstream project maintained alongside the kernel feature itself. It is in
+# the cargo dependency graph, so `cargo deny check` (deny.toml) evaluates it and
+# its own dependencies on every run — unlike a prebuilt backend binary, which is
+# why this backend adds no `metadata/isolation-backends.json` record.
+landlock = "0.4.7"
+# `fcntl(F_GETFD/F_SETFD)` for `src/inherit.rs`, and `kill(2)` for delivering a
+# termination request. The standard library exposes no way to set the
+# close-on-exec flag on a descriptor it did not create, and the alternative —
+# taking ownership of the descriptor and dropping it — closes something this
+# process does not own and races a concurrent open that reuses the number.
+libc = { workspace = true }
+
+[features]
+default = []
+
+[dev-dependencies]
+aa-isolation-native = { path = "." }
+
+# AAASM-5802, and only for the descriptor scenario in
+# `tests/linux_confinement_native.rs`: `dup`, to obtain a descriptor that is
+# inheritable across `exec` by construction. The scenario's control depends on
+# that being true, and assuming what `File::open` did with the close-on-exec flag
+# would make the control's premise an assumption rather than a fact.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = { workspace = true }
+
+[lints]
+workspace = true

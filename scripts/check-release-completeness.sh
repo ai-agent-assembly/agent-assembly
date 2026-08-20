@@ -55,7 +55,24 @@ pkg_of() {
 # Postgres happy-path that the SQLite `aa-api-server` intentionally degrades."
 # It needs a live `AAASM_DATABASE_URL`, so shipping it would hand users a binary
 # that cannot start.
-UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd aa-devint-harness aa-api-server-pg-qa"
+#
+# `aa-isolation-launch` (AAASM-5802) is the AASM-native isolation backend's
+# launcher: it installs the kernel filesystem boundary on itself and `execve`s
+# the agent's program. Held back **provisionally**, and the distinction matters —
+# this is not a binary that must never ship, like the five above. It is one whose
+# release wiring has not been decided yet, and deciding it is AAASM-5806's whole
+# job: the launcher has to sit somewhere `aa_isolation_native::host` can find it
+# (the `AA_ISOLATION_LAUNCHER` override, then the sibling of the running
+# executable, then `PATH`), which is a packaging question rather than a build one.
+#
+# Until then nothing published can reach it: `aa-isolation-native` is
+# `publish = false`, `aa-cli`'s dependency on it sits inside a
+# `strip-for-publish` region, and the backend is selectable only by naming
+# `--isolation-backend aasm-native` on a build that has it. An entry here is the
+# explicit classification this gate exists to force — AAASM-5806 moves it to
+# RELEASE_BINARIES, and this comment is what tells that ticket the line is
+# waiting for it.
+UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd aa-devint-harness aa-api-server-pg-qa aa-isolation-launch"
 
 fail=0
 err() { echo "::error::$*" >&2; fail=1; }
