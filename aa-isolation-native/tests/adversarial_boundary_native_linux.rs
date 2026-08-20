@@ -19,11 +19,14 @@
 //! # One deliberate non-finding
 //!
 //! [`another_processes_proc_entry_is_unreadable_without_a_proc_grant`] measures
-//! that the generic path scope covers `/proc/<pid>/environ` — and states the
-//! limitation in the same breath: a launch that grants `/proc` wholesale, which
-//! is what a program needing `/proc/self` does today, gets the sibling entries
-//! too. Scoping `/proc` finely is AAASM-5804, and the gap is recorded here rather
-//! than left for a reader to discover.
+//! that the generic path scope covers another process's per-PID `/proc` entry —
+//! and states two limits in the same breath. A launch that grants `/proc`
+//! wholesale, which is what a program needing `/proc/self` does today, gets the
+//! sibling entries too; scoping `/proc` finely is AAASM-5804. And it reads
+//! `cmdline` rather than `environ`, because `environ` is gated by ptrace access
+//! rules before this backend is consulted at all — see that scenario for why
+//! crediting the boundary with that denial would have been an over-claim, and how
+//! its own control caught the first version doing exactly that.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -482,8 +485,25 @@ fn an_alternate_executable_path_is_confined_alike() {
     );
 }
 
-/// Another process's `/proc/<pid>/environ` is outside a launch that did not grant
+/// Another process's per-PID `/proc` entry is outside a launch that did not grant
 /// `/proc`.
+///
+/// # Why this reads `cmdline` and not `environ`
+///
+/// `environ` was the obvious target — ADR 0035's AAASM-5801 amendment names it —
+/// and it is the wrong one for *this* measurement. Reading another process's
+/// `environ` requires `PTRACE_MODE_READ`, and on a host running Yama (the CI
+/// runner reports `lockdown,capability,landlock,yama,apparmor,ima,evm`) a
+/// descendant may not ptrace an ancestor. So the control run could not read it
+/// either, with `/proc` fully granted — the first version of this scenario failed
+/// on exactly that, which is the control doing its job: the boundary would have
+/// been credited with a denial that a different LSM had already made.
+///
+/// `cmdline` is world-readable and needs no ptrace access, so the *only* thing
+/// standing between the confined program and another process's copy of it is this
+/// backend's path scope. That makes it the honest probe of the mechanism, and the
+/// `environ` result above is recorded as the defence-in-depth fact it is rather
+/// than claimed as this backend's.
 ///
 /// # The limitation this scenario also records
 ///
@@ -493,8 +513,9 @@ fn an_alternate_executable_path_is_confined_alike() {
 /// AAASM-5804. What is measured here is that the *generic path scope* is the
 /// mechanism that would carry that scoping, not that the gap is already closed.
 ///
-/// The control is inside the run: the script prints a marker before it reads, so
-/// an absent secret cannot be a shell that never started for want of `/proc`.
+/// The control is also inside the run: the script prints a marker before it
+/// reads, so an absent payload cannot be a shell that never started for want of
+/// `/proc`.
 #[test]
 fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
     const SCENARIO: &str = "native adversarial: another process's /proc entry is unreadable without a /proc grant";
@@ -502,10 +523,9 @@ fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
         return;
     };
     let marker = "aa-native-proc-marker";
-    // This process's own environ, which carries a value no confined program was
-    // given. Read through the pid rather than through `self`, because `self` is
-    // the confined program's own and is legitimately its to read.
-    let sibling = format!("/proc/{}/environ", std::process::id());
+    // This process's own entry, read through the pid rather than through `self`:
+    // `self` is the confined program's own and is legitimately its to read.
+    let sibling = format!("/proc/{}/cmdline", std::process::id());
 
     let script = as_grandchild(&format!("printf {marker}; cat {}", shell_word(&sibling)));
 
@@ -516,8 +536,8 @@ fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
     assert!(control.stdout.contains(marker), "stdout: {:?}", control.stdout);
     assert!(
         control.stdout.len() > marker.len(),
-        "the control run read nothing from {sibling}, so the test run proves nothing. stdout: {:?} \
-         stderr: {:?}",
+        "the control run read nothing from {sibling} even with /proc granted, so the test run proves \
+         nothing. stdout: {:?} stderr: {:?}",
         control.stdout,
         control.stderr
     );
@@ -535,13 +555,16 @@ fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
     assert_eq!(
         test.stdout.trim_end_matches('\0'),
         marker,
-        "another process's environ was readable from a launch that did not grant /proc. stdout: {:?}",
+        "another process's per-PID entry was readable from a launch that did not grant /proc. \
+         stdout: {:?}",
         test.stdout
     );
     measured(
         SCENARIO,
-        "with /proc granted the sibling environ was readable and without it only the marker came back; \
-         finer /proc scoping within a granted /proc remains AAASM-5804",
+        "with /proc granted the sibling cmdline was readable and without it only the marker came back. \
+         Note what this does NOT claim: `environ` is separately gated by ptrace access rules, so a \
+         denial of it on a Yama host is not this backend's. Finer /proc scoping within a granted /proc \
+         remains AAASM-5804",
     );
 }
 
