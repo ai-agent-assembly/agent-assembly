@@ -857,7 +857,6 @@ mod tests {
         ConfinementProbe {
             filesystem_read: Observation::Denied,
             filesystem_write: Observation::Denied,
-            filesystem_truncate: Observation::Denied,
         }
     }
 

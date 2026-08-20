@@ -23,7 +23,6 @@
 //! |---|---|---|
 //! | filesystem read | grant read of the scratch tree | no grant |
 //! | filesystem write | grant write of the target directory | no grant |
-//! | truncation | grant write of the target directory | no grant |
 //!
 //! A measurement counts only when the control run produced the effect and the
 //! test run did not. If the control run *also* fails, nothing has been measured —
@@ -32,14 +31,31 @@
 //! confined, a boundary that failed to install makes the control fail, so "the
 //! mechanism never engaged" can never be read as "the mechanism denied it".
 //!
-//! # Why truncation is measured separately from writing
+//! # What this probe deliberately does NOT measure
 //!
-//! It is the measurement that justifies this backend's kernel floor. `truncate(2)`
-//! takes a path and needs no writable descriptor, so on a kernel below
-//! [`crate::rules::REQUIRED_ABI_VERSION`] a path-scoped write restriction denies
-//! `open(O_WRONLY)` and still permits a program to destroy the contents of any
-//! file outside its grant. Folding it into the write measurement would let a
-//! successful `open` denial stand in for a claim the host cannot support.
+//! It does not measure `truncate(2)`, and an earlier draft of it *appeared* to:
+//! a pair built on the shell's `> file` redirection is `open(O_TRUNC)`, which the
+//! write right already governs, so the denial it observed was the same denial the
+//! write pair observes. It would have been a second measurement of the first
+//! thing, presented as a measurement of the standalone truncate syscall — the
+//! exact shape of over-claim ADR 0035's validation bar exists to refuse.
+//!
+//! The standalone syscall is genuinely a different question, and it is what the
+//! backend's ABI floor turns on: `truncate(2)` takes a path and needs no writable
+//! descriptor, so below [`crate::rules::REQUIRED_ABI_VERSION`] the kernel does not
+//! handle it and a path-scoped write restriction does not stop it. Two things
+//! answer it, and neither is here:
+//!
+//! * **By construction**, [`crate::rules::install`] asks for the whole
+//!   [`REQUIRED_ABI`](crate::rules::REQUIRED_ABI) right set as a *hard*
+//!   requirement, so a kernel that cannot handle the truncate right fails to
+//!   install the boundary rather than installing one without it — and
+//!   [`crate::host`] refuses earlier still.
+//! * **By measurement**, `tests/adversarial_boundary_native_linux.rs` calls
+//!   `truncate(2)` by path from inside the boundary, with a control that shrinks a
+//!   file inside the grant. That needs an interpreter the host may not have, which
+//!   is why it is a scenario that can decline rather than a capability gate that
+//!   would make the write claim depend on `python3` being installed.
 //!
 //! # Why the attempt comes from a grandchild
 //!
@@ -114,12 +130,6 @@ pub struct ConfinementProbe {
     pub filesystem_read: Observation,
     /// Whether a grandchild was denied a write the policy did not grant.
     pub filesystem_write: Observation,
-    /// Whether a grandchild was denied a `truncate(2)` the policy did not grant.
-    ///
-    /// Separate from [`filesystem_write`](Self::filesystem_write) because it is
-    /// the measurement this backend's kernel floor exists for — see the module
-    /// documentation.
-    pub filesystem_truncate: Observation,
 }
 
 impl ConfinementProbe {
@@ -129,8 +139,7 @@ impl ConfinementProbe {
         let observation = Observation::Inconclusive { detail: detail.into() };
         Self {
             filesystem_read: observation.clone(),
-            filesystem_write: observation.clone(),
-            filesystem_truncate: observation,
+            filesystem_write: observation,
         }
     }
 
@@ -141,13 +150,13 @@ impl ConfinementProbe {
     /// the filesystem domains, and the reason that value is reported only when it
     /// was seen rather than because inheritance is documented.
     pub fn covers_descendants(&self) -> bool {
-        self.filesystem_read.is_denied() && self.filesystem_write.is_denied() && self.filesystem_truncate.is_denied()
+        self.filesystem_read.is_denied() && self.filesystem_write.is_denied()
     }
 }
 
 /// Run every measurement described in the module documentation.
 ///
-/// Costs six confined process launches, once per backend construction, never per
+/// Costs four confined process launches, once per backend construction, never per
 /// plan.
 pub fn measure(facts: &HostFacts) -> ConfinementProbe {
     let Ok(scratch) = TempDir::new("aa-native-probe") else {
@@ -168,7 +177,6 @@ pub fn measure(facts: &HostFacts) -> ConfinementProbe {
     ConfinementProbe {
         filesystem_read: measure_read(facts, &secret),
         filesystem_write: measure_write(facts, &target),
-        filesystem_truncate: measure_truncate(facts, &target),
     }
 }
 
@@ -204,49 +212,6 @@ fn measure_write(facts: &HostFacts, dir: &Path) -> Observation {
         "filesystem write",
         control.map(|o| (control_target.exists(), o.diagnostic)),
         test.map(|o| (test_target.exists(), o.diagnostic)),
-    )
-}
-
-/// Truncation: the pair that justifies this backend's kernel floor.
-///
-/// Both runs attempt to shorten a file that already exists and is already
-/// populated, using the shell's own `>` redirection **on an existing path**,
-/// which is `open(O_TRUNC)` and needs the truncate right rather than the create
-/// right. The effect under test is the file's *size*, not its existence, because
-/// a file that was never created and a file that was truncated to nothing are
-/// different facts.
-fn measure_truncate(facts: &HostFacts, dir: &Path) -> Observation {
-    let control_target = dir.join("control-truncate");
-    let test_target = dir.join("test-truncate");
-    for path in [&control_target, &test_target] {
-        if std::fs::write(path, PROBE_SECRET).is_err() {
-            return Observation::Inconclusive {
-                detail: format!("the truncation probe could not populate {}", path.display()),
-            };
-        }
-    }
-    let shrank = |path: &Path| {
-        std::fs::metadata(path)
-            .map(|m| (m.len() as usize) < PROBE_SECRET.len())
-            .unwrap_or(false)
-    };
-    let control = run_confined(
-        facts,
-        write_grant(dir),
-        &nested(&format!(
-            "printf '' > {}",
-            shell_word(&control_target.to_string_lossy())
-        )),
-    );
-    let test = run_confined(
-        facts,
-        Grants::default(),
-        &nested(&format!("printf '' > {}", shell_word(&test_target.to_string_lossy()))),
-    );
-    compare(
-        "filesystem truncation",
-        control.map(|o| (shrank(&control_target), o.diagnostic)),
-        test.map(|o| (shrank(&test_target), o.diagnostic)),
     )
 }
 
@@ -503,7 +468,7 @@ mod tests {
     fn an_unmeasured_probe_denies_nothing_and_covers_nothing() {
         let probe = ConfinementProbe::unmeasured("host is not Linux");
         assert!(!probe.filesystem_read.is_denied());
-        assert!(!probe.filesystem_truncate.is_denied());
+        assert!(!probe.filesystem_write.is_denied());
         assert!(!probe.covers_descendants());
     }
 

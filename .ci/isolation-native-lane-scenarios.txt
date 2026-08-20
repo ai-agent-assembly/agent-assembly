@@ -25,12 +25,13 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 14 from aa-isolation-native/tests/linux_confinement_native.rs and
-# 8 from aa-isolation-native/tests/adversarial_boundary_native_linux.rs.
+# As written: 13 from aa-isolation-native/tests/linux_confinement_native.rs and
+# 9 from aa-isolation-native/tests/adversarial_boundary_native_linux.rs.
 
 native adversarial: a hard link cannot bring a forbidden file into the grant
 native adversarial: a parent-traversal path does not escape the grant
 native adversarial: a rename across the boundary never takes effect
+native adversarial: a standalone truncate(2) outside the grant never takes effect
 native adversarial: a symlinked write outside the grant never takes effect
 native adversarial: an alternate executable path is confined alike
 native adversarial: another process's /proc entry is unreadable without a /proc grant
@@ -48,5 +49,4 @@ native: reported capabilities match the probe
 native: the child receives only the environment the launch delegated
 native: the kernel ABI floor is measured on this host
 native: trivial child streams and exit status
-native: truncation outside the grant never takes effect
 native: unsupported capability refuses before launch

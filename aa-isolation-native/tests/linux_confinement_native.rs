@@ -117,11 +117,10 @@ fn require_confining_backend(scenario: &str) -> Option<NativeBackend> {
             Measurement::NotMeasured,
             &format!(
                 "the discovery probe established no filesystem denial on a host that meets every \
-                 precondition. host: {} | read: {} | write: {} | truncate: {}",
+                 precondition. host: {} | read: {} | write: {}",
                 host.describe(),
                 probe.filesystem_read.describe(),
                 probe.filesystem_write.describe(),
-                probe.filesystem_truncate.describe(),
             ),
         );
     }
@@ -378,73 +377,6 @@ fn filesystem_write_denied_before_the_effect() {
     );
 }
 
-/// **The measurement this backend's kernel floor exists for.**
-///
-/// `truncate(2)` takes a path and needs no writable descriptor. A path-scoped
-/// write restriction that does not handle the truncate right denies
-/// `open(O_WRONLY)` on a forbidden file and still lets the program destroy its
-/// contents. The effect under test is the file's *size*, not its existence: a
-/// file that was never created and a file that was truncated to nothing are
-/// different facts.
-#[test]
-fn truncation_outside_the_grant_never_takes_effect() {
-    const SCENARIO: &str = "native: truncation outside the grant never takes effect";
-    let Some(backend) = require_confining_backend(SCENARIO) else {
-        return;
-    };
-    let scratch = Scratch::new("truncate");
-    let control_target = scratch.permitted().join("control");
-    let test_target = scratch.forbidden().join("test");
-    for path in [&control_target, &test_target] {
-        std::fs::write(path, SECRET).expect("the scenario's own file");
-    }
-    let shrank = |path: &Path| {
-        std::fs::metadata(path)
-            .map(|m| (m.len() as usize) < SECRET.len())
-            .unwrap_or(false)
-    };
-    let grant = vec![permit_only_selector(&scratch.permitted().to_string_lossy())];
-
-    let (control, _) = run(
-        &backend,
-        &shell_spec(
-            &as_grandchild(&format!(
-                "printf '' > {}",
-                shell_word(&control_target.to_string_lossy())
-            )),
-            Vec::new(),
-            grant.clone(),
-        ),
-    );
-    assert_the_program_ran(SCENARIO, &control);
-    assert!(
-        shrank(&control_target),
-        "the control run did not truncate the file it was permitted to write, so the test run proves \
-         nothing. stderr: {:?}",
-        control.stderr
-    );
-
-    let (test, _) = run(
-        &backend,
-        &shell_spec(
-            &as_grandchild(&format!("printf '' > {}", shell_word(&test_target.to_string_lossy()))),
-            Vec::new(),
-            grant,
-        ),
-    );
-    assert_the_program_ran(SCENARIO, &test);
-    assert!(
-        !shrank(&test_target),
-        "a file outside the write grant was truncated: {} is now {} bytes",
-        test_target.display(),
-        std::fs::metadata(&test_target).map(|m| m.len()).unwrap_or_default()
-    );
-    measured(
-        SCENARIO,
-        "the control truncated inside the grant and the test could not truncate outside it",
-    );
-}
-
 /// The boundary reaches descendants, measured at three depths rather than
 /// assumed from inheritance being documented.
 ///
@@ -653,10 +585,7 @@ fn reported_capabilities_match_the_probe() {
 
     for (domain, observed) in [
         (CapabilityDomain::FilesystemRead, probe.filesystem_read.is_denied()),
-        (
-            CapabilityDomain::FilesystemWrite,
-            probe.filesystem_write.is_denied() && probe.filesystem_truncate.is_denied(),
-        ),
+        (CapabilityDomain::FilesystemWrite, probe.filesystem_write.is_denied()),
     ] {
         let report = capabilities.report_for(domain).expect("every domain is reported");
         assert_eq!(

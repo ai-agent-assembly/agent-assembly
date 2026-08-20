@@ -25,13 +25,23 @@
 //! implements plan successfully. AAASM-5803 adds the syscall domain by extending
 //! the same launcher; until it does, a required syscall requirement refuses.
 //!
-//! # The write domain needs two measurements, not one
+//! # Why the write domain carries one prerequisite and not two
 //!
-//! `truncate(2)` takes a path and needs no writable descriptor. A host that
-//! denies `open(O_WRONLY)` outside the grant and still permits truncation does
-//! not support this backend's write claim, and would look identical to one that
-//! does if the domain carried a single prerequisite. Both are attached, so either
-//! one going unmeasured withdraws the claim.
+//! `truncate(2)` takes a path and needs no writable descriptor, so a host that
+//! denies `open(O_WRONLY)` outside the grant and still permits truncation would
+//! not support this backend's write claim. That host cannot reach this code: the
+//! kernel handles the truncate right only from the ABI this backend's rules are
+//! built against, [`crate::rules::REQUIRED_ABI_VERSION`], `crate::host` refuses
+//! below it, and `crate::rules::install` asks for the whole right set as a *hard*
+//! requirement so it cannot quietly install a boundary missing one.
+//!
+//! An earlier draft attached a second, probe-backed prerequisite for it. The pair
+//! behind that prerequisite used the shell's `> file` redirection, which is
+//! `open(O_TRUNC)` — governed by the write right the first prerequisite already
+//! measures — so it was the same measurement wearing a second name. It was
+//! removed rather than re-worded: the standalone syscall is measured where it can
+//! honestly be, in `tests/adversarial_boundary_native_linux.rs`, against a
+//! control.
 
 use aa_isolation::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
@@ -225,20 +235,11 @@ fn filesystem_write(facts: &HostFacts, probe: &ConfinementProbe) -> CapabilityRe
     )
     .with_failure_posture(posture(&probe.filesystem_write))
     .with_descendants(descendants(&probe.filesystem_write))
-    .with_support(support(
-        &[&probe.filesystem_write, &probe.filesystem_truncate],
-        limitations,
-    ))
+    .with_support(support(&[&probe.filesystem_write], limitations))
     .with_prerequisite(measured(
         "the kernel denies a write to a path the launch did not permit, to a descendant of the launched \
          process, before the write takes effect",
         &probe.filesystem_write,
-    ))
-    .with_prerequisite(measured(
-        "the kernel denies truncating a file the launch did not permit writing, to a descendant of the \
-         launched process — `truncate(2)` needs no writable descriptor, so a host that denies the open \
-         and permits the truncation does not support this claim",
-        &probe.filesystem_truncate,
     ))
 }
 
@@ -278,7 +279,6 @@ mod tests {
         ConfinementProbe {
             filesystem_read: Observation::Denied,
             filesystem_write: Observation::Denied,
-            filesystem_truncate: Observation::Denied,
         }
     }
 
@@ -317,14 +317,14 @@ mod tests {
         }
     }
 
-    /// **The measurement the kernel floor exists for.** A host that denies the
-    /// write and permits the truncation must not support the write claim — and
-    /// the read domain, which does not depend on that right, must be unaffected.
-    /// The pair is what shows the two prerequisites are independent.
+    /// The two filesystem domains are measured independently: a probe that
+    /// watched the write succeed must withdraw the write claim and leave the read
+    /// claim alone. Without the pair, a report that collapsed both on either
+    /// observation would pass a single-domain assertion.
     #[test]
-    fn a_permitted_truncation_withdraws_the_write_claim_and_leaves_read_alone() {
+    fn a_permitted_write_withdraws_only_the_write_claim() {
         let mut probe = denied_everything();
-        probe.filesystem_truncate = Observation::Permitted;
+        probe.filesystem_write = Observation::Permitted;
         let capabilities = discover(&facts(), &probe);
 
         let write = capabilities

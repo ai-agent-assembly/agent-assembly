@@ -692,3 +692,102 @@ fn observation_is_never_promoted_to_prevention() {
         "a genuinely denied write produced installed and exercised records and no prevention claim",
     );
 }
+
+/// **The measurement this backend's ABI floor turns on.**
+///
+/// `truncate(2)` takes a path and needs no writable descriptor. Below the ABI
+/// this backend's rules are built against, the kernel does not handle the
+/// truncate right, so a path-scoped write restriction denies `open(O_WRONLY)` on
+/// a forbidden file and still lets a confined program destroy its contents.
+///
+/// # Why this is not part of the discovery probe
+///
+/// An earlier draft measured it there with the shell's `> file` redirection.
+/// That is `open(O_TRUNC)`, which the *write* right already governs — so the
+/// denial observed was the same denial the write pair observes, and the pair was
+/// a second measurement of the first thing wearing the name of the syscall it
+/// did not exercise. Reaching the standalone syscall needs an interpreter, and
+/// making the backend's write claim depend on `python3` being installed would be
+/// a worse trade than measuring it here, where a host without one declines
+/// visibly instead.
+///
+/// The control is the identical call on a file *inside* the write grant: it
+/// shrinks, so a file that did not shrink below is the boundary and not a
+/// misspelled call or an interpreter that refused.
+#[test]
+fn a_standalone_truncate_syscall_outside_the_grant_never_takes_effect() {
+    const SCENARIO: &str = "native adversarial: a standalone truncate(2) outside the grant never takes effect";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let Some(interpreter) = truncate_interpreter() else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::ToolAbsent,
+            "no interpreter on PATH can call truncate(2) by path, and no POSIX shell builtin can — the \
+             standalone syscall was not exercised on this host",
+        );
+        return;
+    };
+
+    let scratch = Scratch::new("truncate");
+    let control_target = scratch.permitted().join("control");
+    let test_target = scratch.forbidden().join("test");
+    for path in [&control_target, &test_target] {
+        std::fs::write(path, SECRET).expect("the scenario's own file");
+    }
+    let shrank = |path: &Path| {
+        std::fs::metadata(path)
+            .map(|m| (m.len() as usize) < SECRET.len())
+            .unwrap_or(false)
+    };
+    let truncate = |path: &Path| {
+        as_grandchild(&format!(
+            "{interpreter} -c \"import os,sys;os.truncate(sys.argv[1],0)\" {}",
+            shell_word(&path.to_string_lossy())
+        ))
+    };
+
+    let (completed, _) = run(
+        &backend,
+        &spec(
+            &format!("{} ; {}", truncate(&control_target), truncate(&test_target)),
+            Vec::new(),
+            vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
+        ),
+    );
+    assert_the_program_ran(SCENARIO, &completed);
+    assert!(
+        shrank(&control_target),
+        "the control truncate(2) inside the write grant did not shrink the file, so the assertion below \
+         proves nothing. stdout: {:?} stderr: {:?}",
+        completed.stdout,
+        completed.stderr
+    );
+    assert!(
+        !shrank(&test_target),
+        "truncate(2) destroyed a file outside the write grant: {} is now {} bytes. The kernel is not \
+         handling the truncate right this backend's ABI floor requires",
+        test_target.display(),
+        std::fs::metadata(&test_target).map(|m| m.len()).unwrap_or_default()
+    );
+    measured(
+        SCENARIO,
+        "truncate(2) shrank a file inside the write grant and could not shrink one outside it",
+    );
+}
+
+/// An interpreter that can call `truncate(2)` by path, if this host has one.
+///
+/// No POSIX shell builtin reaches the standalone syscall — `> file` is
+/// `open(O_TRUNC)` and answers a different question — so the scenario above needs
+/// one of these or it declines.
+fn truncate_interpreter() -> Option<&'static str> {
+    ["python3", "python"].into_iter().find(|program| {
+        std::process::Command::new("which")
+            .arg(program)
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    })
+}
