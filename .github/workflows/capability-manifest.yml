@@ -63,9 +63,18 @@ on:
 # group — the run that lost cancelled mid-test, producing a truncated,
 # non-representative failure ("harness ran 107 checks, expected 114") that
 # had nothing to do with the manifest's actual content.
+#
+# `cancel-in-progress: false`, changed from the original `true`: found live
+# on the SAME PR (run 32338853438, and again identically at a later push) —
+# a NEWER push's `pull_request`-triggered run of THIS workflow ended up
+# cancelled with no newer run superseding it, a known GitHub Actions race
+# where two runs entering the same concurrency group in quick succession
+# don't always resolve deterministically. This job is fast (~1 minute), so
+# the cost of an occasional stale run finishing anyway is negligible next to
+# a spuriously red, non-representative check on a live pull request.
 concurrency:
   group: capability-manifest-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read

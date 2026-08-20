@@ -37,9 +37,16 @@ on:
 # the same PR at the same time, and without this the two would ALSO collide
 # under this group — see capability-manifest.yml's identical comment for the
 # live failure (PR #2087) this pattern produced there.
+#
+# `cancel-in-progress: false`, changed from the original `true` for the same
+# reason as capability-manifest.yml's identical change: a known GitHub
+# Actions race where two runs entering the same concurrency group in quick
+# succession don't always cancel deterministically, observed live on the same
+# PR. This job is fast, so the cost of an occasional stale run finishing
+# anyway is negligible next to a spuriously red check.
 concurrency:
   group: contact-metadata-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
