@@ -3,7 +3,7 @@
 > **Every step in this runbook is performed by the OWNER.** Nothing here is applied
 > by CI or by this repo — they require Cloudflare account access, DNS control, and
 > `wrangler deploy`, none of which are available to automation. Status of the
-> underlying design: **Proposed** (ADR 0007 / ADR 0008).
+> underlying design: **Proposed** (Core ADR 0007 / Core ADR 0008).
 
 Brings up the public domain surface from
 [ADR 0007 — Public Domain & URL Contract](../docs/src/adr/0007-public-domain-and-url-contract.md):
@@ -170,6 +170,6 @@ curl -fsSI https://status.agent-assembly.com/ | head -1     # 200 (provider page
 
 ## Sign-off
 
-All green ⇒ the public domain surface matches ADR 0007. Record the completion (and
+All green ⇒ the public domain surface matches Core ADR 0007. Record the completion (and
 any deviations) on AAASM-3658. Cookie/auth boundary verification for `app.`/`api.`
 (ADR 0008) is done when those hosts are actually built, not at DNS bring-up.

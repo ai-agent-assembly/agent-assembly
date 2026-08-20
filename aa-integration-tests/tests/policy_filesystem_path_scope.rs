@@ -13,10 +13,11 @@
 //! ```
 //!
 //! A per-crate test cannot fail when the *join* between two crates breaks, and
-//! a broken join is exactly the defect AAASM-5753 records for the syscall node:
-//! `to_canonical` compiles, validates and ships while silently dropping a node
-//! an operator authored. Only a test that starts at the YAML and ends at the
-//! requirement can catch that.
+//! a broken join was exactly the defect AAASM-5753 recorded for the syscall
+//! node: `to_canonical` compiled, validated and shipped while silently dropping
+//! a node an operator authored. Only a test that starts at the YAML and ends at
+//! the requirement can catch that. The syscall chain has its own such test in
+//! `policy_syscall_allowlist.rs` since that node was joined up.
 //!
 //! Every positive assertion here carries the control that makes it move.
 
@@ -299,10 +300,17 @@ fn the_cascade_merges_most_restrictive_wins_and_an_empty_one_refuses() {
 ///
 /// `aa_security::policy::PolicyDocument::from_yaml` and
 /// `aa_policy::PolicyValidator` + `to_canonical` are two independent parsers of
-/// the same on-disk contract, and they already disagree about the syscall node
-/// (AAASM-5753). This pins that the path node does not join it — and the
-/// syscall assertion beside it is the control that proves the test can see a
-/// disagreement when there is one.
+/// the same on-disk contract. This pins that they read the path node the same
+/// way, with a control beside it that proves the test can see a disagreement
+/// when there is one.
+///
+/// **The control was replaced by AAASM-5753.** It used to be `syscalls:`,
+/// which the canonical parser accepted and the gateway validator rejected as an
+/// unknown key — the divergence that ticket closed, and its own comment said
+/// the control would need replacing once the two converged. The replacement is
+/// a divergence that remains: a document whose sole section is L7-only
+/// validates through the gateway and is refused by the canonical parser, which
+/// requires an enforcement section (AAASM-4020).
 #[test]
 fn both_ingest_paths_agree_about_the_path_node() {
     let via_gateway = PolicyValidator::from_yaml(SCOPED)
@@ -317,24 +325,35 @@ fn both_ingest_paths_agree_about_the_path_node() {
     );
     assert!(via_gateway.filesystem.is_some(), "both dropped the node entirely");
 
-    // The control: a node the two paths genuinely disagree about, so this test
-    // is not passing because both sides are trivially `None`. `syscalls:` is
-    // accepted and populated by the canonical parser and **rejected outright**
-    // by the gateway validator, which has no field for it — the AAASM-5753
-    // divergence, demonstrated rather than assumed. If this half ever starts
-    // failing, the two paths have converged and this control needs replacing.
+    // AAASM-5753 — the syscall node now crosses too, through the same call, so
+    // it is a second agreement rather than the divergence it used to be.
     let with_syscalls = "spec:\n  syscalls:\n    allow: [read]\n";
-    assert!(
-        aa_security::policy::PolicyDocument::from_yaml(with_syscalls)
-            .expect("the canonical parser accepts syscalls:")
-            .syscall_allowlist
-            .is_some(),
-        "the canonical parser stopped populating the syscall node"
+    let syscalls_via_gateway = PolicyValidator::from_yaml(with_syscalls)
+        .expect("the gateway validator accepts `syscalls:`")
+        .document
+        .to_canonical();
+    let syscalls_via_canonical = aa_security::policy::PolicyDocument::from_yaml(with_syscalls).expect("valid");
+    assert_eq!(
+        syscalls_via_gateway.syscall_allowlist, syscalls_via_canonical.syscall_allowlist,
+        "the two ingest paths produced different syscall allowlists"
     );
-    let rejected = PolicyValidator::from_yaml(with_syscalls)
-        .expect_err("the gateway validator has no syscalls field and must reject it");
     assert!(
-        rejected.iter().any(|e| e.field == "syscalls"),
-        "expected the gateway validator to reject `syscalls:` as an unknown key, got {rejected:?}"
+        syscalls_via_gateway.syscall_allowlist.is_some(),
+        "both dropped the node entirely"
+    );
+
+    // The control: a document the two paths genuinely disagree about, so the
+    // agreements above are not passing because both sides trivially match. A
+    // budget-only document is valid to the gateway (budget is an L7 concern it
+    // owns) and refused by the canonical parser, which declines a document
+    // stating no enforcement dimension.
+    let l7_only = "spec:\n  budget:\n    daily_limit_usd: 25.0\n";
+    assert!(
+        PolicyValidator::from_yaml(l7_only).is_ok(),
+        "the gateway validator stopped accepting an L7-only document"
+    );
+    assert!(
+        aa_security::policy::PolicyDocument::from_yaml(l7_only).is_err(),
+        "the canonical parser stopped refusing a document with no enforcement section"
     );
 }
