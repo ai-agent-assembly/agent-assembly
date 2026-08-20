@@ -1412,6 +1412,7 @@ mod graph_tests {
                 .collect(),
             capabilities,
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 

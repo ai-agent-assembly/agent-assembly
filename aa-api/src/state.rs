@@ -869,6 +869,7 @@ mod tests {
             tools: Default::default(),
             capabilities: Some(caps),
             filesystem: None,
+            syscall_allowlist: None,
         });
 
         state
