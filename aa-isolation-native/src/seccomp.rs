@@ -261,6 +261,10 @@ pub const STARTUP_BASELINE: &[(&str, u32)] = &[
     // A shell resolves its own working directory at startup (`$PWD`) —
     // measured live, round 4.
     ("getcwd", 79),
+    // A shell's `;`-separated compound command forks a subshell with
+    // `vfork`, not `clone`/`clone3` — measured live, round 5 (the grandchild
+    // shape `probe::nested` actually uses).
+    ("vfork", 58),
 ];
 
 /// Build the cBPF program a [`SyscallFilter`] compiles to.
