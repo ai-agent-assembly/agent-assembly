@@ -824,6 +824,36 @@ script's own module docstring for why GitHub Issues, not Jira: CI cannot be hand
 a Jira credential without an owner-provisioned secret, and this is recorded there
 as the one place to change if that changes.
 
+## Retraction rule for versioned documentation
+
+AAASM-5676/5689's owner-decided policy for a claim retracted after publication:
+frozen version snapshots stay historically immutable; the retraction is expressed
+as machine-readable metadata plus a visible errata notice layered over the frozen
+content, never a rewrite of it — see the [emergency correction](#emergency-correction-a-live-claim-is-actively-wrong)
+section above for the live-claim variant of the same "don't rewrite what shipped"
+principle.
+
+**Enumeration of versioned documentation surfaces, derived from each repo's own
+build configuration, not memory** (AAASM-5689 requires stating the source):
+
+| Surface | Real frozen snapshots committed in git? | Mechanism |
+|---|---|---|
+| `node-sdk` (`website/versioned_docs/`) | **Yes** | Docusaurus versioning; committed directly to `main` |
+| `python-sdk`, `arena` | No | `mike`-managed `gh-pages` branch only — frozen content lives on a different branch, not the source tree |
+| `go-sdk` | No | `website/scripts/build_all_versions.sh` rebuilds each version from its git tag via `git worktree` at deploy time |
+| Core (this repo, `docs/`) | No | `docs/ci/build_versions.py` does the same tag-rebuild-at-deploy-time as `go-sdk` |
+| `docs` (aggregation hub) | No | Orchestrates the above — clones `gh-pages` verbatim for `python-sdk`/`arena`, rebuilds tags for `core`/`go-sdk` — nothing frozen of its own |
+| `official-website` | N/A | `docs: false` in its Docusaurus config — no documentation-versioning surface exists |
+
+**Rollout status**: only `node-sdk` has content a build-time script can scan directly
+(AAASM-5676/5689, merged). The other four repos' "frozen" content is either on a
+separate branch (`gh-pages`) or reconstructed transiently from git tags at deploy
+time — reaching them needs a different mechanism per repo (reading the `gh-pages`
+branch directly, or hooking into each repo's existing tag-rebuild step), not a copy
+of `node-sdk`'s file-scan approach. Recorded as necessary follow-up rather than
+built here to the same shape that doesn't fit — see AAASM-5689's Jira ticket for
+the specific follow-up items per repo.
+
 ## What this page hands off
 
 This page defines ownership and duplication. It deliberately did **not** decide the
