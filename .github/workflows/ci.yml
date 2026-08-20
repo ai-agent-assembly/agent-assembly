@@ -198,6 +198,19 @@ jobs:
       isolation_backend: ${{ steps.filter.outputs.isolation_backend }}
       governance: ${{ steps.filter.outputs.governance }}
       benchmarks: ${{ steps.filter.outputs.benchmarks }}
+      # AAASM-5677: mirror, glob for glob, each governance satellite's own
+      # `changes` router (`capability-manifest.yml`, `contact-metadata-check.yml`,
+      # `doc-links.yml`, `release-completeness.yml`, `docs.yml`'s governance-gate
+      # subset). This is deliberately its own filter per satellite rather than
+      # reuse of `governance` above: `governance`'s glob set answers a different
+      # question (is `governance-coverage` in scope) and is neither a superset
+      # nor a subset of any one satellite's own filter, so reusing it would
+      # either under- or over-fire the new `uses:` jobs below.
+      cap_manifest_gate: ${{ steps.filter.outputs.cap_manifest_gate }}
+      contact_metadata_gate: ${{ steps.filter.outputs.contact_metadata_gate }}
+      doc_links_gate: ${{ steps.filter.outputs.doc_links_gate }}
+      release_completeness_gate: ${{ steps.filter.outputs.release_completeness_gate }}
+      docs_governance_gate: ${{ steps.filter.outputs.docs_governance_gate }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -395,6 +408,74 @@ jobs:
               - '.github/workflows/*.yml'
               - 'verification-reports/AAASM-5527-capability-coverage-matrix.yaml'
               - 'verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md'
+            # AAASM-5677: glob-for-glob copy of capability-manifest.yml's own
+            # `changes` router — see the comment on the `cap_manifest_gate`
+            # output above for why this cannot reuse `governance`.
+            cap_manifest_gate:
+              - 'governance/**'
+              - 'schemas/capability-manifest/**'
+              - 'scripts/validate_capability_manifest.py'
+              - '.github/workflows/capability-manifest.yml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix.yaml'
+              - 'verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md'
+              - 'verification-reports/aaasm-5527-scope-guard.py'
+            # AAASM-5677: glob-for-glob copy of contact-metadata-check.yml's
+            # own `changes` router.
+            contact_metadata_gate:
+              - 'SECURITY.md'
+              - 'README.md'
+              - 'scripts/check_contact_metadata.py'
+              - '.github/workflows/contact-metadata-check.yml'
+            # AAASM-5677: glob-for-glob copy of doc-links.yml's own `changes`
+            # router.
+            doc_links_gate:
+              - 'README.md'
+              - 'docs/**'
+              - 'scripts/check-doc-links.sh'
+              - 'scripts/check-doc-orphans.sh'
+              - '.github/workflows/doc-links.yml'
+            # AAASM-5677: glob-for-glob copy of release-completeness.yml's own
+            # `changes` router.
+            release_completeness_gate:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '*/Cargo.toml'
+              - '.github/workflows/release.yml'
+              - '.github/workflows/release-completeness.yml'
+              - 'scripts/check-release-completeness.sh'
+              - '.ci/strip-for-publish.sh'
+              - 'scripts/check-publish-surface.sh'
+              - 'aa-cli/src/commands/mod.rs'
+              - 'aa-runtime/src/runtime.rs'
+              - '**/Cargo.toml'
+              - '**/.gitignore'
+              - '.sqlx/**'
+              - '.ci/**'
+              - 'scripts/**'
+            # AAASM-5677: glob-for-glob copy of docs.yml's own `changes`
+            # router — the same selection that gates its governance-gate jobs
+            # (`build`, `verify-commands`, `version-drift`, `metadata-drift`).
+            # Does not include `workflow_run`'s trigger paths (the release
+            # snapshot cut has no diff for a paths filter to read, and this
+            # category only feeds the `pull_request` case below).
+            docs_governance_gate:
+              - 'docs/**'
+              - 'README.md'
+              - 'CONTRIBUTING.md'
+              - '.github/workflows/docs.yml'
+              - 'metadata/**'
+              - 'scripts/generate_docs_metadata.py'
+              - 'Cargo.toml'
+              - 'scripts/propagate_versions.py'
+              - '.ci/check-metadata-drift.sh'
+              - 'scripts/check_absolutes_unwaivable.py'
+              - 'TRUTH-ADOPTION.md'
+              - 'verification-reports/**/*.md'
+              - 'design/**'
+              - '.claude/**'
+              - '**/README.md'
+              - 'scripts/check_claim_vocabulary.py'
+              - 'scripts/check_adr_citations.py'
   # AAASM-2582: build the dashboard assets (embedded by aa-cli's build.rs)
   # exactly once and share them via an artifact, instead of running
   # `pnpm install && pnpm build` in each of build/clippy/test/coverage.
@@ -2884,6 +2965,37 @@ jobs:
       - name: Every governance-bearing path is inside a required check
         run: python3 scripts/check_governance_ci_coverage.py --verbose
 
+  # AAASM-5677: invoke each governance satellite as a reusable workflow so
+  # `ci-success` below can genuinely `needs:` its conclusion. Before this, the
+  # five satellites ran as entirely separate check suites: none of their
+  # results reached `ci-success`, so a required-check aggregate could report
+  # green while a governance gate was red — the exact gap this ticket exists
+  # to close, without requiring the five leaf contexts directly in branch
+  # protection (that reproduces the AAASM-5675 deadlock class: a leaf that is
+  # ever conditionally absent becomes a permanently-required context nothing
+  # can satisfy). `secrets: inherit` is omitted deliberately — none of these
+  # five gates read a secret.
+  capability-manifest-gate:
+    needs: [changes]
+    if: needs.changes.outputs.cap_manifest_gate == 'true'
+    uses: ./.github/workflows/capability-manifest.yml
+  contact-metadata-gate:
+    needs: [changes]
+    if: needs.changes.outputs.contact_metadata_gate == 'true'
+    uses: ./.github/workflows/contact-metadata-check.yml
+  doc-links-gate:
+    needs: [changes]
+    if: needs.changes.outputs.doc_links_gate == 'true'
+    uses: ./.github/workflows/doc-links.yml
+  release-completeness-gate:
+    needs: [changes]
+    if: needs.changes.outputs.release_completeness_gate == 'true'
+    uses: ./.github/workflows/release-completeness.yml
+  docs-governance-gate:
+    needs: [changes]
+    if: needs.changes.outputs.docs_governance_gate == 'true'
+    uses: ./.github/workflows/docs.yml
+
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
@@ -2964,6 +3076,14 @@ jobs:
       # that the merge gate itself ignores.
       - governance-coverage
       - isolation-benchmark-harness
+      # AAASM-5677: the five governance satellites, invoked above as reusable
+      # workflows so their conclusion is a real `needs:` dependency instead of
+      # an unrelated check suite running alongside this one.
+      - capability-manifest-gate
+      - contact-metadata-gate
+      - doc-links-gate
+      - release-completeness-gate
+      - docs-governance-gate
     steps:
       - name: Verify no required job failed or was cancelled
         run: |
