@@ -89,6 +89,7 @@ pub mod inherit;
 pub mod launch;
 pub mod lower;
 pub mod probe;
+pub mod proc_scope;
 pub mod rules;
 
 pub use backend::{CompletedRun, NativeBackend, BACKEND_ID, BINDING_CRATE, SOURCE_URL, SPDX_LICENSE};
@@ -97,4 +98,5 @@ pub use inherit::seal_inherited_descriptors;
 pub use launch::{Grants, LauncherArgv, EXIT_LAUNCH_REFUSED, FAILURE_MARKER};
 pub use lower::LoweringGap;
 pub use probe::{ConfinementProbe, Observation};
+pub use proc_scope::{ProcListing, ScopedGrants, OWN_PROC};
 pub use rules::{RulePlan, REQUIRED_ABI_VERSION, REQUIRED_KERNEL_RELEASE};
