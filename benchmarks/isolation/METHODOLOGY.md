@@ -577,7 +577,7 @@ plan around reporting the numbers and applying the rule mechanically, not
 around switching the default. If rule 2 or rule 3 does fire for native, the
 code change is `aa-cli/src/commands/run.rs`'s `isolation_backend` match
 (currently defaulting to `aa_isolation_sandlock::BACKEND_ID`) plus its
-adjacent refusal message, plus closing ADR 0035's AAASM-5801 deferral
+adjacent refusal message, plus closing Core ADR 035's AAASM-5801 deferral
 paragraph — small enough for the same PR, per the ticket's own scope note.
 
 ### Three-arm measurement (AAASM-5805)
