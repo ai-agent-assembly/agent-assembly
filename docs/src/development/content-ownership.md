@@ -766,6 +766,40 @@ five-step process completes).
    permanent fix — the same "carry what you cannot reach" discipline as step 5 of
    the routing table, applied to the timeline instead of the derivative sweep.
 
+## Citing an ADR unambiguously
+
+The organisation has **four separate ADR trees**, each numbering from `0001`, so an
+unqualified reference — the tree name omitted — does not identify a document: number
+seven alone could be Core's public-domain contract, `saas-infra`'s observability
+decision, or (in `internal-docs`) either of two trees that **collide with each
+other** inside that one repository:
+
+| Tree | Numbering | Repository |
+|---|---|---|
+| Core | `NNNN` (4-digit) | `agent-assembly/docs/src/adr/` |
+| SaaS infrastructure | `NNNN` (4-digit) | `saas-infra/docs/adr/` (private) |
+| Internal architecture | `ADR-NNN` (3-digit) | `internal-docs/docs/adr/` (private) |
+| Persistence decisions | `ADR-NNN` (3-digit) | `internal-docs/docs/architecture/adr/persistence/` (private) |
+
+**Convention (AAASM-5684)**: qualify an ADR reference with its tree whenever the
+citing text is not already inside that tree's own `adr/` directory (a relative
+Markdown link to a local `NNNN-*.md` file is self-qualifying; a bare mention in
+prose, a README outside `docs/`, or a cross-repository reference is not). Write the
+tree name immediately before or after the identifier — `agent-assembly ADR 0007`,
+`saas-infra ADR 0007`, `internal-docs ADR-001 (docs/adr)` — so the two colliding
+`internal-docs` trees are distinguishable from each other, not only from the public
+ones. Three of the four trees are private, so this has to work by naming the
+**tree**, not by linking or quoting the private document's contents — see
+[Cross-repository boundaries](https://github.com/ai-agent-assembly/.github/blob/HEAD/.claude/rules/05-context-boundary.md).
+
+Any statement of the form "no ADR covers X" is scoped to whichever tree was
+actually searched, explicitly — the same rule the [routing table](#routing-table)
+already applies to a canonical-source lookup, extended to cover the search itself.
+
+`scripts/check_adr_citations.py` enforces the qualifying rule in this repo's own
+tracked prose (CI-gated); it cannot see across repository boundaries, so a
+cross-repo citation still depends on the author applying this convention by hand.
+
 ## Reviewer classes and recurring audits
 
 ADR 0034 §9 defines the `truth-owner-*` reviewer classes referenced throughout this
