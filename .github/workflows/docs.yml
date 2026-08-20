@@ -57,6 +57,14 @@ on:
   workflow_run:
     workflows: ["Release"]
     types: [completed]
+  # AAASM-5677: lets `ci.yml` invoke this workflow's governance-gate jobs
+  # directly, so the `ci-success` aggregate can genuinely `needs:` their
+  # conclusion instead of merely running alongside them unobserved. The
+  # `deploy` job and the Pages-versioning steps inside `build` stay scoped to
+  # `push`/`workflow_run` (see their own `if:` below) — a `workflow_call`
+  # invocation from `ci.yml` must build and verify the book, never cut a
+  # Pages deploy.
+  workflow_call:
 
 jobs:
   # AAASM-5677: the selection that used to be `on.pull_request.paths`, glob for
@@ -230,7 +238,12 @@ jobs:
       # (workflow_run) we publish into <tag>/, archive it, and repoint the
       # stable or pre-release channel to it.
       - name: Resolve target version subpath
-        if: github.event_name != 'pull_request'
+        # AAASM-5677: an explicit allow-list, not `!= 'pull_request'` — under
+        # `workflow_call` (ci.yml invoking this workflow's governance-gate
+        # jobs), event_name is neither 'pull_request' NOR one of the two
+        # events this Pages-versioning machinery exists for, and the old
+        # negative form would have run it anyway.
+        if: github.event_name == 'push' || github.event_name == 'workflow_run'
         id: docver
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -260,7 +273,7 @@ jobs:
         # carries the moving channel targets (pre-release -> vX.Y.Z-pre).
         # archived[] is rebuilt from git tags in the next step so a missing
         # or truncated prior manifest is no longer a permanent loss.
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_run'
         id: restore
         continue-on-error: true
         run: |
@@ -282,7 +295,7 @@ jobs:
         # and self-healing: if a prior release never published docs (e.g.
         # because its Release workflow failed), it is recovered on the next
         # successful deploy.
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_run'
         env:
           VERSION: ${{ steps.docver.outputs.version }}
         run: |
@@ -354,7 +367,7 @@ jobs:
           cat extra-archived.txt
 
       - name: Assemble versioned Pages site
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_run'
         env:
           VERSION: ${{ steps.docver.outputs.version }}
           CHANNEL: ${{ steps.docver.outputs.channel }}
@@ -397,14 +410,18 @@ jobs:
           echo "Assembled _site:"; find _site -maxdepth 2 -type d | sort
 
       - name: Upload Pages artifact
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_run'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name != 'pull_request'
+    # AAASM-5677: an explicit allow-list, not `!= 'pull_request'` — under
+    # `workflow_call` (ci.yml invoking this workflow's governance-gate jobs),
+    # event_name is 'workflow_call', which the old negative form would also
+    # have let through, cutting a Pages deploy from a routine PR check.
+    if: github.event_name == 'push' || github.event_name == 'workflow_run'
     needs: build
     runs-on: ubuntu-latest
     # Pages deployment needs the elevated scopes; scoped here so the
