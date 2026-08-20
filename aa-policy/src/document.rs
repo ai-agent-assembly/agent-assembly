@@ -187,7 +187,7 @@ pub struct PolicyDocument {
     ///
     /// # Why this reuses the canonical type verbatim
     ///
-    /// Every other cross-layer dimension on this document has a gateway-side
+    /// Most other cross-layer dimensions on this document have a gateway-side
     /// twin that [`PolicyDocument::to_canonical`] converts into. That pattern
     /// is what let the syscall node fall out of the projection unnoticed
     /// (AAASM-5753): a second type makes "carried across the bridge" a thing
@@ -195,6 +195,33 @@ pub struct PolicyDocument {
     /// the projection a move rather than a translation, so this node cannot
     /// acquire a second, divergent definition.
     pub filesystem: Option<aa_security::policy::FilesystemPolicy>,
+    /// AAASM-5753 — kernel syscall allowlist for this policy scope.
+    ///
+    /// Holds [`aa_security::policy::SyscallAllowlist`] verbatim, for the reason
+    /// spelled out on [`filesystem`](Self::filesystem) above: this field exists
+    /// because the syscall node had no gateway-side representation, so
+    /// [`PolicyDocument::to_canonical`] hard-coded the canonical node to `None`
+    /// and discarded whatever an operator wrote. Reintroducing the omission as
+    /// a gateway-side twin would recreate the translation step that went
+    /// missing. The projection is a move.
+    ///
+    /// # Two authored states, and they are not the same fact
+    ///
+    /// | Authored form | Meaning |
+    /// | --- | --- |
+    /// | `None` — no `syscalls:` section | The operator stated nothing. **Not a grant** |
+    /// | `Some` with a non-empty set | Only these calls are permitted |
+    /// | `Some` with an empty set | A restriction is in force and permits nothing |
+    ///
+    /// The third row is the one that reads wrong if it collapses onto the
+    /// first: `syscalls:` written with no `allow:` under it is the most
+    /// restrictive posture available here, not the absence of a posture. This
+    /// is the same reading [`aa_security::policy::FilesystemPolicy`] documents
+    /// for an empty [`PathScope`](aa_security::policy::PathScope), and the same
+    /// one `aa_security::policy::PolicyDocument::from_yaml` already gives the
+    /// `syscalls:` section — so the two ingest paths for one on-disk contract
+    /// answer this question identically rather than each inventing an answer.
+    pub syscall_allowlist: Option<aa_security::policy::SyscallAllowlist>,
 }
 
 #[cfg(test)]
@@ -217,6 +244,7 @@ mod tests {
             tools: std::collections::HashMap::new(),
             capabilities: None,
             filesystem: None,
+            syscall_allowlist: None,
         };
         assert!(doc.tools.is_empty());
         // AAASM-5751 — an unstated path node. Read this as "nobody said",

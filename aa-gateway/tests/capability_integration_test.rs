@@ -60,6 +60,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
             allow_restricted: false,
         }),
         filesystem: None,
+        syscall_allowlist: None,
     }
 }
 
@@ -78,6 +79,7 @@ fn no_cap_doc(scope: PolicyScope) -> PolicyDocument {
         tools: HashMap::new(),
         capabilities: None,
         filesystem: None,
+        syscall_allowlist: None,
     }
 }
 

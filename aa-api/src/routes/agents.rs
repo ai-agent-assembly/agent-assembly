@@ -2690,6 +2690,7 @@ mod tests {
             tools: Default::default(),
             capabilities: Some(capabilities),
             filesystem: None,
+            syscall_allowlist: None,
         }
     }
 
