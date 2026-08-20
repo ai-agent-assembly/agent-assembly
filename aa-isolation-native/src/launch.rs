@@ -4,7 +4,7 @@
 //! # Why the contract is a module and not a convention
 //!
 //! The supervisor ([`crate::backend`]) builds the vector and the launcher
-//! ([`crate::bin`](../bin/index.html)) reads it. Those are different processes,
+//! binary (`src/bin/aa-isolation-launch.rs`) reads it. Those are different processes,
 //! so nothing but a test can hold them together — and a test can only hold them
 //! together if both sides go through the same code. [`build`] and [`parse`] are
 //! that code, and [`tests::every_built_command_line_parses_back_to_its_input`]
