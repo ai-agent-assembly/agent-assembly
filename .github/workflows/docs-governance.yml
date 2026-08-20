@@ -1,0 +1,244 @@
+name: Docs Governance
+
+# AAASM-5677: the governance-gate subset of docs.yml (build+verify the book,
+# version-drift, metadata-drift, verify-commands), extracted into its own
+# workflow_call-only file so ci.yml can invoke it and let ci-success genuinely
+# needs: its conclusion.
+#
+# It cannot invoke docs.yml itself: docs.yml also owns the `deploy` job,
+# which requests `pages: write` + `id-token: write` (AAASM-3877, least
+# privilege — those scopes are granted to `deploy` alone). GitHub validates
+# every job's declared `permissions:` in a called reusable workflow against
+# what the calling job is granted BEFORE evaluating any `if:` condition — a
+# skipped `deploy` still fails that check. Calling docs.yml from ci.yml with
+# only `contents: read` therefore produces a startup_failure for the whole
+# ci.yml run, not a skipped job; granting ci.yml's calling job the elevated
+# scopes instead would hand every PR's CI run Pages-deploy capability, which
+# is the least-privilege violation AAASM-3877 exists to prevent. This file
+# has no job that ever requests elevated permissions, so it can be called
+# safely; docs.yml keeps its own independent triggers, `build` (with the
+# Pages-versioning steps) and `deploy` untouched, and still posts its own
+# `Docs Success` check exactly as before. The cost is that a docs-touching
+# pull request now runs the mdBook build twice — once here (verification
+# only, no Pages artifact) and once in docs.yml's own `build` (which also
+# assembles and uploads the Pages artifact) — a bounded, deliberate trade
+# for keeping the elevated-permission boundary intact.
+
+permissions:
+  contents: read
+
+on:
+  workflow_call:
+
+jobs:
+  changes:
+    name: Detect changed areas (Docs Governance)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            docs:
+              - 'docs/**'
+              - 'README.md'
+              - 'CONTRIBUTING.md'
+              - '.github/workflows/docs.yml'
+              - '.github/workflows/docs-governance.yml'
+              - 'metadata/**'
+              - 'scripts/generate_docs_metadata.py'
+              - 'Cargo.toml'
+              - 'scripts/propagate_versions.py'
+              - '.ci/check-metadata-drift.sh'
+              - 'scripts/check_absolutes_unwaivable.py'
+              - 'TRUTH-ADOPTION.md'
+              - 'verification-reports/**/*.md'
+              - 'design/**'
+              - '.claude/**'
+              - '**/README.md'
+              - 'scripts/check_claim_vocabulary.py'
+              - 'scripts/check_adr_citations.py'
+
+  # Verification-only: builds the book and checks generated-metadata drift,
+  # same as docs.yml's `build`, but without the Pages-versioning steps
+  # (docver/restore/rebuild-archive/assemble/upload) — this workflow never
+  # deploys, so there is nothing for them to produce output for.
+  build:
+    name: Build mdBook (governance)
+    needs: [changes]
+    runs-on: ubuntu-latest
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch @ 2026-06-27
+
+      - name: Cache mdBook binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/mdbook
+            ~/.cargo/bin/mdbook-mermaid
+          key: ${{ runner.os }}-mdbook-0.5.2-mermaid-0.17.0
+
+      - name: Install mdBook
+        run: |
+          if ! command -v mdbook >/dev/null; then
+            cargo install --locked --version 0.5.2 mdbook
+          fi
+
+      - name: Install mdbook-mermaid
+        run: |
+          if ! command -v mdbook-mermaid >/dev/null; then
+            cargo install --locked --version 0.17.0 mdbook-mermaid
+          fi
+
+      - name: Run channel-gate unit tests
+        run: python3 docs/ci/test_channels.py
+
+      - name: Regenerate shared docs metadata
+        run: python3 scripts/generate_docs_metadata.py
+
+      - name: Fail if generated docs metadata is stale
+        run: |
+          if ! git diff --exit-code -- docs/src/generated/; then
+            echo "::error::docs/src/generated/ is out of date with Cargo.toml / metadata/docs.yaml." >&2
+            echo "Run 'python3 scripts/generate_docs_metadata.py' locally and commit the result." >&2
+            exit 1
+          fi
+
+      - name: Build book
+        run: mdbook build docs
+
+  verify-commands:
+    name: Verify documented commands (Linux)
+    needs: [changes]
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies (protoc, pkg-config, libssl-dev)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable branch @ 2026-06-27
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Verify README "Getting Started" build command
+        run: cargo build --workspace --exclude aa-ebpf
+
+      - name: Verify api-reference.md rustdoc command
+        run: cargo doc --workspace --no-deps --exclude aa-ebpf
+
+  version-drift:
+    name: Version-drift gate (propagate_versions --check)
+    needs: [changes]
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Fail if any version-bearing site drifts from the SoT
+        run: python3 scripts/propagate_versions.py --check
+
+  metadata-drift:
+    name: Metadata-drift gate (check-metadata-drift.sh)
+    needs: [changes]
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.docs == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Fail if a registry-owned canonical value drifts
+        run: bash .ci/check-metadata-drift.sh
+
+      - name: Fail if a governance page makes banned absolutes waiver-eligible
+        run: |
+          python3 scripts/check_absolutes_unwaivable.py --selftest
+          python3 scripts/check_absolutes_unwaivable.py
+
+      - name: Claim vocabulary — selftest, then enforce
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_claim_vocabulary.py --selftest
+
+          echo "::group::Full-tree report (non-gating while the baseline is non-empty)"
+          python3 scripts/check_claim_vocabulary.py --report-only
+          echo "::endgroup::"
+
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "not a pull request — the full-tree report above is the whole check"
+            exit 0
+          fi
+
+          python3 scripts/check_claim_vocabulary.py --diff-base "$BASE_SHA"
+
+      - name: ADR citations — selftest, then enforce
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/test_check_adr_citations.py
+
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "::group::Full-tree report (non-gating while the baseline is non-empty)"
+            python3 scripts/check_adr_citations.py || true
+            echo "::endgroup::"
+            echo "not a pull request — the full-tree report above is the whole check"
+            exit 0
+          fi
+
+          python3 scripts/check_adr_citations.py --diff-base "$BASE_SHA"
+
+  # AAASM-5677: the stable required-check-equivalent conclusion for this
+  # workflow_call. Not itself a branch-protection context (that's docs.yml's
+  # own `Docs Success`, unchanged) — this is what ci.yml's `ci-success`
+  # depends on instead.
+  docs-governance-success:
+    name: Docs Governance Success
+    needs: [changes, build, verify-commands, version-drift, metadata-drift]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify no required job failed or was cancelled
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A required Docs Governance job concluded with '$r'"
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required Docs Governance jobs passed or were intentionally skipped."

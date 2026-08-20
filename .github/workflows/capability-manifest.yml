@@ -44,10 +44,37 @@ on:
     # Monday 06:00 UTC.
     - cron: "0 6 * * 1"
   workflow_dispatch:
+  # AAASM-5677: lets `ci.yml` invoke this workflow's jobs directly, so the
+  # `ci-success` aggregate can genuinely `needs:` its conclusion instead of
+  # merely running alongside it unobserved.
+  workflow_call:
 
+# AAASM-5677: a literal group name, not `${{ github.workflow }}-${{ github.ref }}`.
+# Under `workflow_call`, `github.workflow` resolves to the CALLING workflow's
+# name ("CI"), which every other governance workflow this ticket adds
+# `workflow_call` to would also compute — five satellites racing for one
+# concurrency group inside the same `ci.yml` run, `cancel-in-progress: true`
+# would cancel siblings, not supersede stale runs of this workflow.
+#
+# `github.event_name` is appended for the same reason, found live on PR #2087
+# (run 32337772872, job 96330908855): this workflow's own `pull_request`
+# trigger and ci.yml's `workflow_call` invocation both run on the same PR at
+# the same time, and without this the two would ALSO collide under this
+# group — the run that lost cancelled mid-test, producing a truncated,
+# non-representative failure ("harness ran 107 checks, expected 114") that
+# had nothing to do with the manifest's actual content.
+#
+# `cancel-in-progress: false`, changed from the original `true`: found live
+# on the SAME PR (run 32338853438, and again identically at a later push) —
+# a NEWER push's `pull_request`-triggered run of THIS workflow ended up
+# cancelled with no newer run superseding it, a known GitHub Actions race
+# where two runs entering the same concurrency group in quick succession
+# don't always resolve deterministically. This job is fast (~1 minute), so
+# the cost of an occasional stale run finishing anyway is negligible next to
+# a spuriously red, non-representative check on a live pull request.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: capability-manifest-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

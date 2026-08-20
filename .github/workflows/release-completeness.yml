@@ -27,6 +27,10 @@ on:
     # broken release with a burned version number, so the pull request is the
     # only useful place to catch it.
   workflow_dispatch:
+  # AAASM-5677: lets `ci.yml` invoke this workflow's jobs directly, so the
+  # `ci-success` aggregate can genuinely `needs:` its conclusion instead of
+  # merely running alongside it unobserved.
+  workflow_call:
 
 jobs:
   # AAASM-5677: the selection that used to be `on.pull_request.paths`, glob for
