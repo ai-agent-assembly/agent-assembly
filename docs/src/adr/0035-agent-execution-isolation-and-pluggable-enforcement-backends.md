@@ -137,6 +137,198 @@ not re-derived as policy.
 
 ---
 
+## Amendment — AAASM-5801 (2026-08-20): the AASM-native backend becomes the second `IsolationBackend` implementor
+
+**Scope of this amendment: it names one concrete backend, records the Linux
+primitives and process shape it uses and why, and records what it deliberately
+does not attempt. It reverses no prior decision.**
+
+### Why an amendment rather than a new ADR
+
+[Decision 8](#8-linux-process-isolation-is-the-first-implementation-target-sandlock-is-the-first-candidate-backend)
+already named Sandlock a **candidate**, not the only implementor, and said AASM "may
+replace or supplement it with a native Linux backend after compatibility, performance,
+security surface, release cadence and feature requirements are measured."
+[Reconsideration trigger 2](#reconsideration-triggers) anticipates exactly this: "a
+production native-Linux backend replaces the initial third-party substrate and exposes a
+materially different trust or descendant model." This amendment is that trigger firing —
+it exercises a choice the ADR already reserved rather than making a new one, so it belongs
+here rather than in a competing record.
+
+It is not "no ADR action": until this amendment nothing recorded which Linux kernel
+primitives the second implementor uses, why its launcher is shaped the way it is, or how
+it resolves the one thing Sandlock's own mechanism could not express (below). Those are
+durable facts a later implementer needs and Jira comments do not preserve.
+
+### The backend: one `IsolationBackend`, composed, not several
+
+The native backend is **one** implementor of [`IsolationBackend`](#2-aasm-owns-the-execution-contract-backends-own-mechanism-specific-realization),
+composed from Landlock (filesystem), seccomp-bpf (syscalls) and the existing
+backend-neutral descendant/evidence machinery already built for Sandlock under
+AAASM-5709/AAASM-5710 (ambient-descriptor sealing, environment scoping, evidence
+kinds). It is not a family of narrower single-purpose backends, and it is not a
+reimplementation of Landlock or seccomp-bpf themselves — both remain kernel
+mechanisms this backend configures, not code this backend contains.
+
+`aa_isolation::backend::IsolationBackend` (`aa-isolation/src/backend.rs`) needs **no
+change** to accept it. The trait's five execution stages plus the AAASM-5711
+supervision pair (`identity`, `capabilities`, `plan`, `prepare`, `spawn`,
+`wait_for_exit`, `terminate`, `evidence`) are already backend-neutral by construction:
+`PreparedExecution` and `ExecutionHandle` are opaque tokens precisely so a backend
+whose unit of confinement is a Linux process, rather than an external supervisor
+binary, has nowhere it needs to leak that shape into the contract. This was verified
+against the trait as it stands in this branch, not assumed from the trait's stated
+design intent.
+
+### Linux primitives: Landlock + seccomp-bpf, and why this pair
+
+Landlock restricts filesystem access (open, execute, and — from the ABI version that
+supports it — network bind/connect) by attaching a ruleset the calling process cannot
+widen afterward. seccomp-bpf restricts which syscalls a process may issue at all. Together
+they cover the two domains [decision 6](#6-descendant-confinement-is-part-of-correctness)
+requires an implementor to answer for — filesystem and process/syscall behavior — using
+mechanisms that are already in the mainline kernel, require no new kernel module, and (per
+[the commercial constraint](#the-commercial-constraint)) are addressable through
+permissively-licensed Rust binding crates rather than a redistributed third-party binary.
+Network-destination restriction is explicitly not attempted by this pair; see "Kernel-level
+network enforcement" below.
+
+### Launcher shape: a small auditable binary, not a `pre_exec` closure
+
+The backend applies its Landlock ruleset and seccomp filter to itself, synchronously,
+inside a small, dedicated, auditable Linux launcher binary — the same CLI-invocation
+shape `aa-isolation-sandlock` already uses (`sandlock`-style: the supervisor execs a
+purpose-built binary that installs the boundary and then `execve`s the target program as
+its own final act, rather than the supervisor process installing the boundary on itself).
+
+This is a direct instance of [decision 5](#5-the-trusted-supervisor-stays-outside-the-confined-process-tree):
+"Where process-level sandbox initialization requires post-fork/pre-exec work,
+implementation should prefer a deliberately small and auditable launcher/helper boundary.
+Complex Landlock/seccomp/namespace setup must not be casually accumulated in an async
+runtime's `pre_exec` callback, where post-fork restrictions make ordinary allocation, locks
+and library behavior unsafe or difficult to audit." Landlock ruleset installation and
+seccomp filter loading are exactly that complex post-fork setup, and `aasm run`'s
+supervisor is a Tokio async runtime — the launcher binary is how this backend keeps that
+setup out of a `pre_exec` closure rather than an alternative to the ADR's existing rule.
+
+### Seccomp model: allowlist, and why it is not what Sandlock could express
+
+The seccomp filter is a **default-deny allowlist**: `SECCOMP_RET_KILL` or
+`SECCOMP_RET_ERRNO` for anything not named, `SECCOMP_RET_ALLOW` for each syscall the
+resolved `EnforcementPlan` permits. This matches AASM's own policy shape — a policy names
+what is **permitted**, per [decision 3](#3-isolation-class-is-not-backend-identity) — where
+Sandlock's own mechanism could not follow it: Sandlock's syscall-filtering surface takes a
+**denied**-syscall list, and the complement of an arbitrary permitted set is unbounded, so
+no finite denied list expresses "permit only these." That mismatch, not an implementation
+gap, is why AAASM-5753 (syscall-level enforcement in Sandlock) was **deferred** rather than
+shipped as a partial feature — deferring a requirement the mechanism structurally cannot
+satisfy is the correct call recorded here, not left implicit in a closed ticket.
+
+**Amendment — AAASM-5803 (2026-08-20):** the installed filter is not exactly the policy
+allowlist. It is `policy names ∪ STARTUP_BASELINE`, a fixed set of loader/exec-chain
+syscalls (`execve`, `clone`/`clone3`/`wait4`, and a handful of glibc dynamic-linker calls
+with no name in the policy vocabulary) permitted regardless of what policy stated. A seccomp
+filter is inherited across `execve`, not reset by it — the launcher installs the filter on
+itself before `execve`-ing the confined program, so the launcher's own `execve` and the
+dynamic loader that runs before the program's first instruction both execute *inside* the
+filter this backend just installed. `aa_security::policy::syscall::Syscall`'s 15-name
+vocabulary has no `execve` in it, so a filter built from policy alone would kill the launcher
+on every single launch. `STARTUP_BASELINE` is disjoint from the policy vocabulary by a
+tested invariant (`aa-isolation-native/src/seccomp.rs`), so a policy author's own allowlist
+selection is never silently widened by it — the practical edge is the reverse: a policy that
+omits a loader-critical call the vocabulary *can* name (`read`, `openat`, `mmap`, and ten
+others) gets its confined program killed during dynamic linking, before its own code runs.
+This is documented as a `SupportLevel::Partial` limitation on the syscall capability report,
+not folded into "the filter enforces the policy allowlist" language anywhere in code or docs.
+
+### `/proc` scoping: how AAASM-5709's environment grant becomes an enforced boundary
+
+Landlock's filesystem ruleset will scope `/proc` read access: another process's
+`/proc/<pid>/environ` (and equivalent per-PID files) is outside the confined process's
+allowed read set, while `/proc/self` and its own descendants remain reachable, because the
+confined process still needs to read its own process state. Before this, AAASM-5709's
+environment-based credential scoping controlled what a child's *own* environment contained
+but nothing stopped that child from reading a sibling or ancestor process's `/proc/<pid>/environ`
+on a shared host. Landlock's `/proc` scope closes that gap, which is how this Epic's
+filesystem work closes AAASM-5785 and AAASM-5786 — they are closed by this backend's
+filesystem primitive, not by separate work targeting those tickets directly.
+
+### Kernel/ABI floor: a measurement policy, not a number
+
+This amendment does not assume a minimum kernel version or Landlock ABI number. It records
+the **policy**: the floor will be measured against the actual Landlock ABI version the
+implementation requires for the path-scope granularity the backend claims (Landlock's ABI
+versions add capability incrementally — network restriction, for instance, arrives only at
+ABI v4), and reported truthfully once measured, including degraded or unsupported behavior
+on a host below that floor — via `CapabilitySet`/`EnforcementEvidence` exactly as
+[decision 4](#4-capability-negotiation-happens-before-the-untrusted-process-starts) and
+[ADR 0033 §6](0033-canonical-governance-and-enforcement-architecture.md#6-claim-vocabulary--decision-timing-and-failure-posture-are-part-of-every-claim)
+already require of every backend. This is the same discipline the existing "kernel floor"
+(S2) dimension of the AAASM-5713 benchmark methodology already applies elsewhere in this
+Epic — a measured floor per host, not a guessed one recorded now and corrected later.
+
+### Alternatives considered and rejected for this delivery
+
+- **Namespaces (mount/network/PID).** No accepted requirement under this Epic's
+  acceptance criteria demands namespace isolation, and adopting them is a materially
+  larger commitment — namespace setup, teardown and descendant lifecycle all change
+  shape — than the measured problem (filesystem and syscall scoping) requires. Deferred,
+  not ruled out for a later backend generation.
+- **cgroups v2 / resource ceilings.** Nothing in the AAASM-5713 benchmark data or this
+  Epic's acceptance criteria requires CPU/memory/PID ceilings yet. Deferred until a
+  measured requirement exists.
+- **Kernel-level network enforcement.** The existing AASM proxy layer (`aa-proxy`) remains
+  the network-mediation mechanism for this delivery. Landlock's own TCP bind/connect
+  restriction (available from ABI v4) is **port**-based; it cannot express AASM's
+  IP/host allowlist semantics, so it would not replace the proxy layer even where
+  available — it would only add a second, differently-shaped network control. Not
+  attempted here.
+- **A stronger per-action prevention evidence claim than Sandlock already makes.**
+  `EnforcementEvidence::supports_prevention_claim` stays `false` for this backend's first
+  version, matching Sandlock's own honest answer: the kernel delivers a seccomp/Landlock
+  denial to the confined process, and nothing in this delivery gives the supervisor a
+  per-decision record of it. A seccomp `SECCOMP_RET_USER_NOTIF` decision channel could
+  earn a stronger claim later — the supervisor would then receive a synchronous
+  notification per filtered syscall rather than only configuring a filter the kernel
+  enforces unobserved — but that is explicitly deferred, not committed to here.
+
+### Compatibility with Sandlock
+
+Sandlock is not deprecated, removed, or implied to be superseded by this amendment. It
+remains a supported, available `IsolationBackend`. Which of the two a deployment uses by
+default is an evidence-based decision to be made later, under AAASM-5805, once both
+backends have comparable measured evidence — it is not pre-decided by naming the native
+backend here.
+
+### Licensing
+
+Unlike Sandlock, this backend redistributes no third-party binary — there is no external
+`sandlock`-equivalent executable to carry provenance and SBOM data for. Its licensing
+surface is the Rust dependency crates providing the Landlock and seccomp-bpf bindings,
+each of which [decision 11](#11-backend-provenance-and-license-compatibility-are-release-inputs)
+already requires to be verified permissively licensed (Apache-2.0/MIT/BSD) and recorded
+with source/version provenance before it is pinned. This amendment does not pin a
+specific crate or version; it records that the same pre-pin verification decision 11
+already requires applies here, with no third-party-binary case added on top of it.
+
+### No new backend-specific vocabulary in user-facing intent
+
+This amendment introduces no exception to the rule [decision 3](#3-isolation-class-is-not-backend-identity)
+already applies to "sandlock": "Landlock" and "seccomp" name mechanisms, not `--isolation`
+CLI intent. They appear only where this ADR and future compatibility-matrix,
+troubleshooting and licensing documentation state implementation facts, never as a
+value a policy or CLI invocation authors directly.
+
+### Consequence for existing text
+
+Where [decision 8](#8-linux-process-isolation-is-the-first-implementation-target-sandlock-is-the-first-candidate-backend)
+described Sandlock as "the first candidate backend" for Linux process isolation, that
+remains true and is not superseded — this amendment adds a second implementor alongside
+it, per that same decision's own anticipation, and changes no other recorded text in this
+ADR.
+
+---
+
 ## Context
 
 Agent Assembly already owns the governance semantics above execution: agent identity and

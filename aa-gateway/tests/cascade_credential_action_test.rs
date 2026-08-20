@@ -42,6 +42,7 @@ fn data_doc(scope: PolicyScope, pattern: &str, action: CredentialAction) -> Poli
         tools: HashMap::new(),
         capabilities: None,
         filesystem: None,
+        syscall_allowlist: None,
     }
 }
 

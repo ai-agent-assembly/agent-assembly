@@ -943,6 +943,23 @@ is provided is the interface:
 - **AAASM-5609** (What Ships Today / Choose Your Enforcement Path) —
   `preconditions[]` is the enforcement-path input. M1's two optional
   preconditions are the worked example of a targeted route and a wide one.
+- **AAASM-5602** (release-time capability-to-documentation sync) —
+  `scripts/detect_capability_changes.py` diffs this manifest between two refs
+  and classifies each changed row blocking/finding using a documented,
+  deliberately coarse heuristic (see that script's own module docstring) —
+  not a transcription of ADR 0034 Decision 2's D1-D8 dimension tables, which
+  are more fine-grained than this reproduces. `.github/workflows/release.yml`'s
+  `governance-gate` job runs it with `--check` as an in-workflow prerequisite
+  to `publish` (not a separate required status check — AAASM-5677 already
+  found that shape's trap); `.github/workflows/capability-manifest.yml`'s
+  `capability-change-report` job runs it in shadow mode (report-only) on every
+  PR that touches the manifest, so the classification can be measured against
+  real changes before more repos' release workflows gate on it.
+  `governance/capability-waivers.json` is ADR 0034 Decision 10's field shape,
+  reused verbatim from `official-website/scripts/claim-waivers.json` (`rule`
+  here is a capability id). Piloted in this repo only; rolling the same
+  architecture out to the SDK/Docs Hub/website release workflows is deferred
+  follow-up, recorded on the ticket rather than done here.
 
 ## Versioning
 

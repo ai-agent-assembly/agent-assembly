@@ -740,6 +740,120 @@ Escalation follows the org's
 [agent-escalation guidance](https://github.com/ai-agent-assembly/.github/blob/HEAD/.claude/rules/04-agent-escalation.md):
 state what is blocking, what was already checked, and the concrete decision needed.
 
+## Emergency correction: a live claim is actively wrong
+
+The [routing table](#routing-table) above assumes there is time to classify the
+content type and fix the canonical source first. AAASM-5603 asks for a separate,
+faster path for the case where there is not — a published claim is actively
+misleading a reader right now (a security-guarantee overstatement, a stale SaaS
+availability claim, anything a reader could act on badly before the normal
+five-step process completes).
+
+1. **Revert or redact first, investigate after.** Pull the specific sentence, or
+   revert the merging PR, on whichever surface is live-published (product website,
+   Docs Hub, SaaS UI copy) — do not wait to find the canonical source first. A wrong
+   claim live for an extra review cycle costs more than a redaction that turns out
+   to have been unnecessary.
+2. **File the correction as a P0** using this page's own
+   [ticket block](#ticket-block-for-content-work), marked urgent, and only then work
+   the routing table's five steps to find and fix the canonical source and sweep
+   derivatives.
+3. **A reviewer-class approval is still required to re-publish**, once the fix is
+   ready — an emergency redaction is not a bypass of the [reviewer
+   classes](#reviewer-classes-and-recurring-audits) below, only of the time spent
+   finding the root cause before stopping the bleeding.
+4. **Say what was live and for how long** in the PR or ticket that carries the
+   permanent fix — the same "carry what you cannot reach" discipline as step 5 of
+   the routing table, applied to the timeline instead of the derivative sweep.
+
+## Citing an ADR unambiguously
+
+The organisation has **four separate ADR trees**, each numbering from `0001`, so an
+unqualified reference — the tree name omitted — does not identify a document: number
+seven alone could be Core's public-domain contract, `saas-infra`'s observability
+decision, or (in `internal-docs`) either of two trees that **collide with each
+other** inside that one repository:
+
+| Tree | Numbering | Repository |
+|---|---|---|
+| Core | `NNNN` (4-digit) | `agent-assembly/docs/src/adr/` |
+| SaaS infrastructure | `NNNN` (4-digit) | `saas-infra/docs/adr/` (private) |
+| Internal architecture | `ADR-NNN` (3-digit) | `internal-docs/docs/adr/` (private) |
+| Persistence decisions | `ADR-NNN` (3-digit) | `internal-docs/docs/architecture/adr/persistence/` (private) |
+
+**Convention (AAASM-5684)**: qualify an ADR reference with its tree whenever the
+citing text is not already inside that tree's own `adr/` directory (a relative
+Markdown link to a local `NNNN-*.md` file is self-qualifying; a bare mention in
+prose, a README outside `docs/`, or a cross-repository reference is not). Write the
+tree name immediately before or after the identifier — `agent-assembly ADR 0007`,
+`saas-infra ADR 0007`, `internal-docs ADR-001 (docs/adr)` — so the two colliding
+`internal-docs` trees are distinguishable from each other, not only from the public
+ones. Three of the four trees are private, so this has to work by naming the
+**tree**, not by linking or quoting the private document's contents — see
+[Cross-repository boundaries](https://github.com/ai-agent-assembly/.github/blob/HEAD/.claude/rules/05-context-boundary.md).
+
+Any statement of the form "no ADR covers X" is scoped to whichever tree was
+actually searched, explicitly — the same rule the [routing table](#routing-table)
+already applies to a canonical-source lookup, extended to cover the search itself.
+
+`scripts/check_adr_citations.py` enforces the qualifying rule in this repo's own
+tracked prose (CI-gated); it cannot see across repository boundaries, so a
+cross-repo citation still depends on the author applying this convention by hand.
+
+## Reviewer classes and recurring audits
+
+ADR 0034 §9 defines the `truth-owner-*` reviewer classes referenced throughout this
+page (`truth-owner-core`, `truth-owner-sdk-<lang>`, `truth-owner-docs-hub`,
+`truth-owner-website`, `truth-owner-portfolio`). As of AAASM-5603, this repo's
+`.github/CODEOWNERS` names `truth-owner-core` explicitly (the `*.md` rule) and the
+`docs` repo's own CODEOWNERS names `truth-owner-docs-hub` the same way — both
+currently resolve to the same single individual as every other path in either
+repo's CODEOWNERS, with the standing TODO to replace that individual with a real
+GitHub team once one exists. Naming the class now, ahead of the team existing,
+means a future narrower CODEOWNERS rule reads as "which class does this path
+belong to," not a fresh guess.
+
+A recurring full-hub audit (`docs` repo, `scripts/content_audit.py`, weekly) runs
+the existing claim-vocabulary, page-metadata, capability-id and compatibility-drift
+checkers in full-tree mode and adds two metrics nothing else computes: orphan pages
+and duplicate canonical claims. It is report-only (opens/updates one GitHub Issue
+on unresolved P0 findings) — it does not replace the PR-time gates
+(`hub-metadata-check.yml`) that already block a *new* violation; it exists for the
+pre-existing backlog and for drift that accrues with no PR at all. See that
+script's own module docstring for why GitHub Issues, not Jira: CI cannot be handed
+a Jira credential without an owner-provisioned secret, and this is recorded there
+as the one place to change if that changes.
+
+## Retraction rule for versioned documentation
+
+AAASM-5676/5689's owner-decided policy for a claim retracted after publication:
+frozen version snapshots stay historically immutable; the retraction is expressed
+as machine-readable metadata plus a visible errata notice layered over the frozen
+content, never a rewrite of it — see the [emergency correction](#emergency-correction-a-live-claim-is-actively-wrong)
+section above for the live-claim variant of the same "don't rewrite what shipped"
+principle.
+
+**Enumeration of versioned documentation surfaces, derived from each repo's own
+build configuration, not memory** (AAASM-5689 requires stating the source):
+
+| Surface | Real frozen snapshots committed in git? | Mechanism |
+|---|---|---|
+| `node-sdk` (`website/versioned_docs/`) | **Yes** | Docusaurus versioning; committed directly to `main` |
+| `python-sdk`, `arena` | No | `mike`-managed `gh-pages` branch only — frozen content lives on a different branch, not the source tree |
+| `go-sdk` | No | `website/scripts/build_all_versions.sh` rebuilds each version from its git tag via `git worktree` at deploy time |
+| Core (this repo, `docs/`) | No | `docs/ci/build_versions.py` does the same tag-rebuild-at-deploy-time as `go-sdk` |
+| `docs` (aggregation hub) | No | Orchestrates the above — clones `gh-pages` verbatim for `python-sdk`/`arena`, rebuilds tags for `core`/`go-sdk` — nothing frozen of its own |
+| `official-website` | N/A | `docs: false` in its Docusaurus config — no documentation-versioning surface exists |
+
+**Rollout status**: only `node-sdk` has content a build-time script can scan directly
+(AAASM-5676/5689, merged). The other four repos' "frozen" content is either on a
+separate branch (`gh-pages`) or reconstructed transiently from git tags at deploy
+time — reaching them needs a different mechanism per repo (reading the `gh-pages`
+branch directly, or hooking into each repo's existing tag-rebuild step), not a copy
+of `node-sdk`'s file-scan approach. Recorded as necessary follow-up rather than
+built here to the same shape that doesn't fit — see AAASM-5689's Jira ticket for
+the specific follow-up items per repo.
+
 ## What this page hands off
 
 This page defines ownership and duplication. It deliberately did **not** decide the

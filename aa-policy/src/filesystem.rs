@@ -160,6 +160,7 @@ mod tests {
             tools: HashMap::new(),
             capabilities: None,
             filesystem,
+            syscall_allowlist: None,
         }
     }
 
