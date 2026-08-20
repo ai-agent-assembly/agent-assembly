@@ -1027,3 +1027,199 @@ fn truncate_interpreter() -> Option<&'static str> {
             .unwrap_or(false)
     })
 }
+
+// ---------------------------------------------------------------------------
+// AAASM-5803: the syscall filter.
+// ---------------------------------------------------------------------------
+
+/// The loader/shell-needed calls this file's syscall scenarios grant so `/bin/sh`
+/// itself can run, deliberately excluding `write` — the call under test.
+fn syscall_loader_baseline() -> Vec<String> {
+    [
+        "read",
+        "openat",
+        "close",
+        "fstat",
+        "lseek",
+        "mmap",
+        "munmap",
+        "brk",
+        "exit_group",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "clock_gettime",
+        "getrandom",
+    ]
+    .iter()
+    .map(|s| permit_only_selector(s))
+    .collect()
+}
+
+/// **AC: `DescendantCoverage::ProcessTree` for the syscall domain is earned, not
+/// assumed.** A grandchild of the launched process — two `fork`/`exec` steps
+/// below the one the launcher `execve`d — cannot make a syscall the launch did
+/// not permit.
+///
+/// The control is the identical grandchild-depth attempt with `write`
+/// additionally allowlisted: it produces the effect, so the denial below is
+/// about the filter and not about the grandchild failing to run at all.
+#[test]
+fn a_descendant_cannot_make_a_syscall_the_launch_did_not_permit() {
+    const SCENARIO: &str = "native adversarial: a descendant cannot make a syscall the launch did not permit";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let scratch = Scratch::new("syscall-descendant");
+    let test_target = scratch.permitted().join("test");
+    let control_target = scratch.permitted().join("control");
+
+    let base = |target: &Path| {
+        spec(
+            &as_grandchild(&format!("printf x > {}", shell_word(&target.to_string_lossy()))),
+            Vec::new(),
+            vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
+        )
+    };
+
+    let test = base(&test_target).with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::Syscall)
+            .with_scope(RequirementScope::Selectors(syscall_loader_baseline())),
+    );
+    let (completed, _) = run(&backend, &test);
+    assert_the_program_ran(SCENARIO, &completed);
+    assert!(
+        !test_target.exists(),
+        "a grandchild made a syscall the launch did not permit: {} exists",
+        test_target.display()
+    );
+
+    let mut control_names = syscall_loader_baseline();
+    control_names.push(permit_only_selector("write"));
+    let control = base(&control_target).with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::Syscall).with_scope(RequirementScope::Selectors(control_names)),
+    );
+    let (control_completed, _) = run(&backend, &control);
+    assert_the_program_ran(SCENARIO, &control_completed);
+    assert!(
+        control_target.exists(),
+        "the control grandchild, with `write` allowlisted, produced no effect, so the denial above proves \
+         nothing. stderr: {:?}",
+        control_completed.stderr
+    );
+    measured(
+        SCENARIO,
+        "a grandchild of the launched process was killed for a syscall the launch did not permit, while \
+         the identical grandchild with that syscall allowlisted produced its effect",
+    );
+}
+
+/// The launcher refuses a syscall filter it cannot fully honour — a name
+/// outside the closed vocabulary on the command line — rather than installing
+/// one that differs from what the supervisor asked for.
+///
+/// The control is the identical command line with a valid name in place of the
+/// unrecognised one: it runs and produces the effect.
+#[test]
+fn the_launcher_refuses_a_syscall_filter_it_cannot_fully_honour() {
+    const SCENARIO: &str = "native adversarial: the launcher refuses a syscall filter it cannot fully honour";
+    if !cfg!(target_os = "linux") {
+        decline::<()>(
+            SCENARIO,
+            Measurement::UnsupportedPlatform,
+            &format!(
+                "the launcher confines Linux processes; this host is {}",
+                std::env::consts::OS
+            ),
+        );
+        return;
+    }
+    if !launcher().is_file() {
+        decline::<()>(
+            SCENARIO,
+            Measurement::ToolAbsent,
+            &format!("the launcher `{}` was not built", launcher().display()),
+        );
+        return;
+    }
+    let scratch = Scratch::new("syscall-refuse");
+    let system: Vec<String> = system_reads(true)
+        .iter()
+        .map(|s| format!("--fs-read={}", s.trim_start_matches("permit-only:")))
+        .collect();
+
+    let attempt = |syscall_args: Vec<String>, target: &Path| -> std::process::Output {
+        let mut command = std::process::Command::new(launcher());
+        for arg in system.iter().chain(syscall_args.iter()) {
+            command.arg(arg);
+        }
+        command
+            .arg(format!("--fs-write={}", scratch.permitted().display()))
+            .arg(launch::ARG_SEPARATOR)
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(format!("printf x > {}", shell_word(&target.to_string_lossy())))
+            .output()
+            .expect("the launcher could not be executed")
+    };
+
+    let mut valid_args: Vec<String> = vec![launch::FLAG_SYSCALL_FILTER.to_string()];
+    for name in [
+        "read",
+        "write",
+        "openat",
+        "close",
+        "fstat",
+        "lseek",
+        "mmap",
+        "munmap",
+        "brk",
+        "exit_group",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "clock_gettime",
+        "getrandom",
+    ] {
+        valid_args.push(format!("{}={name}", launch::FLAG_SYSCALL_ALLOW));
+    }
+    let control_target = scratch.permitted().join("control");
+    let control = attempt(valid_args, &control_target);
+    assert!(
+        control_target.exists(),
+        "the control invocation, naming only valid syscalls, produced no file, so the refusal below \
+         proves nothing. stderr: {}",
+        String::from_utf8_lossy(&control.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&control.stderr).contains(launch::FAILURE_MARKER),
+        "the control invocation was refused: {}",
+        String::from_utf8_lossy(&control.stderr)
+    );
+
+    let unknown_args = vec![
+        launch::FLAG_SYSCALL_FILTER.to_string(),
+        format!("{}=ptrace", launch::FLAG_SYSCALL_ALLOW),
+    ];
+    let unknown_target = scratch.permitted().join("unknown");
+    let output = attempt(unknown_args, &unknown_target);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains(launch::FAILURE_MARKER),
+        "a syscall name outside the closed vocabulary did not produce a refusal: {stderr}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(launch::EXIT_LAUNCH_REFUSED),
+        "the launcher exited {:?} instead of refusing",
+        output.status
+    );
+    assert!(
+        !unknown_target.exists(),
+        "the launcher executed the program anyway despite an unhonourable syscall filter: {} exists",
+        unknown_target.display()
+    );
+    measured(
+        SCENARIO,
+        "a syscall filter naming a call outside the closed vocabulary was refused with no process started, \
+         against a control invocation naming only valid calls that ran",
+    );
+}
