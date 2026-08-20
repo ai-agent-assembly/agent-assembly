@@ -140,7 +140,7 @@ cargo doc --workspace --no-deps        # checked on push by hooks, Rust-affectin
 - **JIRA:** project AAASM; set the native **Components** field to the repo
   (`ai-agent-assembly/agent-assembly`) — it is the native `components` field, not
   `customfield_10041` (which is null; per the `.github` registry `jira` section /
-  ADR 0014); Team (`customfield_10001`) = Pioneer.
+  Core ADR 0014); Team (`customfield_10001`) = Pioneer.
   For **feature work**: Epic → Story → Subtask (one Subtask ≈ one commit) + a `Verify …` subtask per Story.
   For a **dedicated QA / verification Epic** (e.g. AAASM-4522 *user-smoke*, AAASM-5020
   *design-QA*): **one verification item = one Story directly under the Epic**
