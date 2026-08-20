@@ -284,7 +284,7 @@ code is on the channel and nobody measured the capability against a container.
 The second is `unmeasured`, never `unsupported` — ADR 0034 forbidden design 8.
 
 ```
-count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 16 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
+count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 17 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
 count: [R17] ghcr: 80 rows = 24 carry it + 7 not_applicable + 49 recorded absent + 0 unaccounted
 ```
 
