@@ -25,20 +25,44 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs and
-# 12 from aa-isolation-native/tests/adversarial_boundary_native_linux.rs
-# (AAASM-5803 added 3 to the first file and 2 to the second).
+# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 16
+# from aa-isolation-native/tests/adversarial_boundary_native_linux.rs and 4 from
+# aa-isolation-native/tests/adversarial_negotiation_native.rs (AAASM-5803 added
+# 3 to the first file and 2 to the second; AAASM-5805 added 4 gap-measurement
+# scenarios to the second file and the third file itself, covering
+# DirectEgressBypass, CloudMetadata, AddressRepresentation and
+# UnixSocketsAndDescriptors — the four `AttackFamily` variants this backend has
+# no protection for, only a capability report that says so).
+#
+# AAASM-5805 also ported four of the Sandlock lane's eight negotiation
+# scenarios to `adversarial_negotiation_native.rs` — the four that generalize
+# over any backend rather than driving Sandlock's own capability-negotiation
+# internals. See that file's module documentation for which four, and why the
+# other four have no native counterpart.
+#
+# `abstract unix sockets and inherited descriptors are outside this backend's
+# domains` is `#[cfg(target_os = "linux")]` (the abstract-socket API is
+# Linux-only at the standard-library level) and so is absent from a non-Linux
+# `cargo nextest list`, matching its Sandlock-lane counterpart.
 
 native adversarial: a descendant cannot make a syscall the launch did not permit
+native adversarial: a direct connection outside any egress grant arrives, and the launch states the domain is uncovered
 native adversarial: a hard link cannot bring a forbidden file into the grant
 native adversarial: a parent-traversal path does not escape the grant
 native adversarial: a rename across the boundary never takes effect
 native adversarial: a standalone truncate(2) outside the grant never takes effect
 native adversarial: a symlinked write outside the grant never takes effect
+native adversarial: abstract unix sockets and inherited descriptors are outside this backend's domains
+native adversarial: an alternate address representation is not scoped by this backend
 native adversarial: an alternate executable path is confined alike
 native adversarial: another process's /proc entry is unreadable without a /proc grant
 native adversarial: another process's environ is outside a scoped /proc grant
+native adversarial: blocked, unsupported and unmeasured are distinct report states
+native adversarial: cloud metadata endpoints are reachable and the launch states the domain is uncovered
 native adversarial: observation is never promoted to prevention
+native adversarial: observation is never promoted to prevention on any backend
+native adversarial: only a decision record promotes a claim
+native adversarial: required prevention refused by every backend that cannot enforce it
 native adversarial: the launcher refuses a command line it cannot fully honour
 native adversarial: the launcher refuses a syscall filter it cannot fully honour
 native: a nested write grant keeps the read granted above it
