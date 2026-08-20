@@ -44,9 +44,19 @@ on:
     # Monday 06:00 UTC.
     - cron: "0 6 * * 1"
   workflow_dispatch:
+  # AAASM-5677: lets `ci.yml` invoke this workflow's jobs directly, so the
+  # `ci-success` aggregate can genuinely `needs:` its conclusion instead of
+  # merely running alongside it unobserved.
+  workflow_call:
 
+# AAASM-5677: a literal group name, not `${{ github.workflow }}-${{ github.ref }}`.
+# Under `workflow_call`, `github.workflow` resolves to the CALLING workflow's
+# name ("CI"), which every other governance workflow this ticket adds
+# `workflow_call` to would also compute — five satellites racing for one
+# concurrency group inside the same `ci.yml` run, `cancel-in-progress: true`
+# would cancel siblings, not supersede stale runs of this workflow.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: capability-manifest-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
