@@ -23,13 +23,11 @@
 
 use std::collections::BTreeSet;
 
-use aa_core::attestation::ClaimTerm;
 use aa_isolation::mock::MockBackend;
 use aa_isolation::{
     negotiate, BackendCapabilities, BackendIdentity, CapabilityDomain, ControlRequirement, EnforcementEvidence,
-    EnforcementPlan, EvidenceKind, EvidenceRecord, IdentityRef, IsolationBackend, IsolationReport, LaunchPosture,
-    Lowering, PlanRefusal, Provenance, RefusalReason, RequirementPosture, RequirementScope, ResourceLimits, SessionRef,
-    SupportLevel,
+    EnforcementPlan, IdentityRef, IsolationBackend, LaunchPosture, Lowering, PlanRefusal, Provenance, RefusalReason,
+    RequirementScope, ResourceLimits, SupportLevel,
 };
 use aa_isolation_sandlock::capability::{ABSTRACT_UNIX_SOCKET_SCOPE, SIGNAL_SCOPE};
 use aa_isolation_sandlock::host::{BackendLookupError, HostFacts};
@@ -39,17 +37,11 @@ use aa_isolation_sandlock::{capability, SandlockBackend};
 mod adversarial;
 
 use adversarial::{
-    all_domains, assert_no_prevention_claim, control_states, domains_accepting_required_observation,
-    domains_accepting_required_prevention, domains_refusing_required_prevention, evidence_bases, measured,
-    prevention_claims, quote, required_prevention_spec, AdversarialTarget, AttackFamily, MockTarget, SandlockTarget,
-    Scratch,
+    assert_blocked_unsupported_and_unmeasured_stay_distinct, assert_claim_is_promoted_only_by_a_decision_record,
+    assert_observation_is_never_promoted_to_prevention, assert_required_prevention_refused_by_every_uncapable_backend,
+    measured, prevention_claims, quote, required_prevention_spec, AdversarialTarget, AttackFamily, MockTarget,
+    SandlockTarget, Scratch,
 };
-
-/// A session reference for a report. The values are correlation ids and carry
-/// no authority; nothing in this file depends on their content.
-fn session() -> SessionRef {
-    SessionRef::new("adversarial-session", "adversarial-trace")
-}
 
 // ---------------------------------------------------------------------------
 // Backend posture: missing, disabled, partially configured, observe-only.
@@ -59,13 +51,12 @@ fn session() -> SessionRef {
 /// cannot enforce it, and the refusal is a property of the contract rather than
 /// of one mechanism.
 ///
-/// The assertion is over the **set** of refused domains, never a count. "Nine
-/// domains refused" is equally consistent with the nine that should have and
-/// with eight that should plus one that should not.
-///
 /// The control is `MockBackend::preventing`, which differs from
 /// `MockBackend::observing` in exactly one field — mediation — so the refusal
-/// below cannot be attributed to some other weakened axis.
+/// below cannot be attributed to some other weakened axis. Body shared with the
+/// native lane (AAASM-5805) via `adversarial::
+/// assert_required_prevention_refused_by_every_uncapable_backend` — nothing in
+/// it is Sandlock-specific beyond which backend stands in for "absent".
 #[test]
 fn a_required_prevention_is_refused_by_every_backend_that_cannot_enforce_it() {
     let scenario = "adversarial: required prevention refused by every backend that cannot enforce it";
@@ -79,315 +70,43 @@ fn a_required_prevention_is_refused_by_every_backend_that_cannot_enforce_it() {
         label: "mock/observe-only",
     };
     let absent = SandlockTarget(SandlockBackend::unavailable(&BackendLookupError::NotOnPath));
-
-    for target in [&inert as &dyn AdversarialTarget, &observing, &absent] {
-        assert_eq!(
-            domains_refusing_required_prevention(target.backend()),
-            all_domains(),
-            "`{}` accepted a required prevention requirement for a domain it cannot enforce",
-            target.label()
-        );
-    }
-
-    // The control. One field of the capability report moved, and every refusal
-    // above turns into an acceptance — so those refusals are attributable to
-    // mediation and not to the requirement being malformed.
     let preventing = MockTarget {
         backend: MockBackend::preventing(CapabilityDomain::ALL),
         label: "mock/preventing",
     };
-    assert_eq!(
-        domains_refusing_required_prevention(preventing.backend()),
-        BTreeSet::new(),
-        "the control backend refused something too, so the refusals above prove nothing"
-    );
-    assert_eq!(
-        domains_accepting_required_prevention(preventing.backend()),
-        all_domains(),
-        "the control backend did not accept every domain"
-    );
 
-    measured(
+    assert_required_prevention_refused_by_every_uncapable_backend(
         scenario,
-        AttackFamily::BackendPosture,
-        "an inert backend, an observe-only backend and an absent backend each refused a required \
-         prevention requirement for all nine domains, while a backend differing only in mediation \
-         accepted all nine",
+        &[&inert as &dyn AdversarialTarget, &observing, &absent],
+        &preventing,
     );
 }
 
-/// AC: observation is never promoted to enforcement, on any backend.
-///
-/// Two directions, because "an observe-only backend refuses a prevention
-/// requirement" is only half of it. The other half is that a backend which
-/// *does* report prevention still produces no prevention **claim** from a run —
-/// the capability report says what a control could do, and the evidence says
-/// what it did.
+/// AC: observation is never promoted to enforcement, on any backend. Body
+/// shared with the native lane: both sides of the comparison are `MockBackend`
+/// configurations, so nothing here is Sandlock-specific.
 #[test]
 fn observation_is_never_promoted_to_prevention_on_any_backend() {
-    let scenario = "adversarial: observation is never promoted to prevention";
-
-    let observing = MockTarget {
-        backend: MockBackend::observing(CapabilityDomain::ALL),
-        label: "mock/observe-only",
-    };
-    let preventing = MockTarget {
-        backend: MockBackend::preventing(CapabilityDomain::ALL),
-        label: "mock/preventing",
-    };
-
-    // Both accept an *observation* requirement. That is what makes the pair a
-    // control: the observe-only backend is not simply broken.
-    for target in [&observing, &preventing] {
-        assert_eq!(
-            domains_accepting_required_observation(target.backend()),
-            all_domains(),
-            "`{}` refused an observation requirement it can meet",
-            target.label()
-        );
-    }
-
-    let spec = adversarial::required_observation_spec(CapabilityDomain::FilesystemWrite);
-    for target in [&observing, &preventing] {
-        let outcome = target
-            .launch(&spec)
-            .unwrap_or_else(|refusal| panic!("`{}` refused an observation it accepts: {refusal:?}", target.label()));
-        assert_eq!(outcome.posture, LaunchPosture::Ready);
-        assert_no_prevention_claim(target.label(), &outcome.evidence);
-        assert!(
-            !outcome
-                .evidence
-                .claim_for(CapabilityDomain::FilesystemWrite)
-                .is_prevention(),
-            "`{}` derived a prevention term from a run that recorded no decision",
-            target.label()
-        );
-    }
-
-    // And the states the two plans project are different words, so a reader
-    // cannot mistake one for the other.
-    let observed_state = state_for(&observing, CapabilityDomain::FilesystemWrite, &spec);
-    let prevented_state = state_for(
-        &preventing,
-        CapabilityDomain::FilesystemWrite,
-        &required_prevention_spec(CapabilityDomain::FilesystemWrite),
-    );
-    assert_eq!(observed_state, "observe_only");
-    assert_eq!(prevented_state, "prevention");
-
-    measured(
-        scenario,
-        AttackFamily::ObserveAndDegradedTruthfulness,
-        "an observe-only backend met every observation requirement and no prevention requirement; a \
-         backend that reports prevention still produced no prevention claim from a run",
-    );
+    assert_observation_is_never_promoted_to_prevention("adversarial: observation is never promoted to prevention");
 }
 
-/// The control state one target projects for one domain.
-fn state_for(target: &MockTarget, domain: CapabilityDomain, spec: &aa_isolation::ExecutionSpec) -> &'static str {
-    let plan = target.backend().plan(spec).expect("planned");
-    let report = IsolationReport::from_plan(session(), &plan);
-    report
-        .domains()
-        .iter()
-        .find(|d| d.domain == domain)
-        .expect("every domain is projected")
-        .state
-        .as_str()
-}
-
-/// AC: audit/evidence assertions confirm blocked, unsupported and unmeasured are
-/// not conflated.
-///
-/// Four silences and one denial, in one sweep. The report has three ways to say
-/// "nothing is known" and they mean different things to whoever reads them:
-/// nobody asked, no backend was consulted, or something looked and could not
-/// resolve it. A reader who cannot tell them apart reads all three as safety.
+/// AC: audit/evidence assertions confirm blocked, unsupported and unmeasured
+/// are not conflated. Body shared with the native lane: the report's
+/// vocabulary for "nothing is known" is a property of
+/// `aa_isolation::IsolationReport`, not of any one mechanism.
 #[test]
 fn blocked_unsupported_and_unmeasured_stay_three_distinct_report_states() {
-    let scenario = "adversarial: blocked, unsupported and unmeasured are distinct report states";
-
-    // A backend that covers one domain and reports nothing at all about the
-    // rest, so the spec below can land a requirement in each state.
-    let backend = MockBackend::preventing(&[CapabilityDomain::FilesystemWrite]);
-    let spec = aa_isolation::ExecutionSpec::new("/bin/true", IdentityRef::root("adversary"))
-        .with_requirement(ControlRequirement::prevent(CapabilityDomain::FilesystemWrite))
-        .with_requirement(
-            ControlRequirement::prevent(CapabilityDomain::NetworkEgress)
-                .with_posture(RequirementPosture::DegradeIfUnavailable),
-        );
-    let plan = backend.plan(&spec).expect("the degrading requirement permits a plan");
-    let planned = IsolationReport::from_plan(session(), &plan);
-    let states: Vec<(CapabilityDomain, &str)> = control_states(&planned);
-
-    assert!(
-        states.contains(&(CapabilityDomain::FilesystemWrite, "prevention")),
-        "{states:?}"
+    assert_blocked_unsupported_and_unmeasured_stay_distinct(
+        "adversarial: blocked, unsupported and unmeasured are distinct report states",
     );
-    assert!(
-        states.contains(&(CapabilityDomain::NetworkEgress, "degraded")),
-        "a requirement that fell short is not reported as degraded: {states:?}"
-    );
-    assert!(
-        states.contains(&(CapabilityDomain::Ipc, "unmeasured")),
-        "a domain nobody asked about is not reported as unmeasured: {states:?}"
-    );
-
-    // A refusal projects the domain that could not be met as `unsupported`, and
-    // the domain that was requested but never resolved as `unmeasured` — two
-    // different words for two different facts about the same refused launch.
-    let refused_spec = spec
-        .clone()
-        .with_requirement(ControlRequirement::prevent(CapabilityDomain::Syscall));
-    let refusal = backend
-        .plan(&refused_spec)
-        .expect_err("a required requirement for an unreported domain must refuse");
-    let refused = IsolationReport::from_refusal(session(), &refused_spec, &refusal);
-    let refused_states: Vec<(CapabilityDomain, &str)> = control_states(&refused);
-    assert!(
-        refused_states.contains(&(CapabilityDomain::Syscall, "unsupported")),
-        "{refused_states:?}"
-    );
-    assert!(
-        refused_states.contains(&(CapabilityDomain::FilesystemWrite, "unmeasured")),
-        "a requirement whose outcome was never reported is not reported as unmeasured: {refused_states:?}"
-    );
-
-    // The three silences carry three different reasons.
-    let no_boundary = IsolationReport::no_boundary(
-        session(),
-        IdentityRef::root("adversary"),
-        aa_isolation::TargetRef::of(&spec),
-        aa_isolation::CredentialPosture::default(),
-        "no backend was selected for this launch",
-    );
-    let reasons: BTreeSet<&str> = [
-        unmeasured_reason(&planned, CapabilityDomain::Ipc),
-        unmeasured_reason(&refused, CapabilityDomain::FilesystemWrite),
-        unmeasured_reason(&no_boundary, CapabilityDomain::FilesystemWrite),
-    ]
-    .into_iter()
-    .collect();
-    assert_eq!(
-        reasons,
-        ["inconclusive", "no_backend_selected", "no_control_requested"]
-            .into_iter()
-            .collect::<BTreeSet<&str>>(),
-        "the three silences collapsed into fewer than three reasons"
-    );
-    assert_eq!(no_boundary.posture().as_str(), "no_boundary");
-
-    measured(
-        scenario,
-        AttackFamily::ObserveAndDegradedTruthfulness,
-        "one sweep produced prevention, degraded, unsupported and unmeasured states, and the three \
-         unmeasured reasons stayed distinct",
-    );
-}
-
-/// The unmeasured reason a report gives for one domain.
-fn unmeasured_reason(report: &IsolationReport, domain: CapabilityDomain) -> &'static str {
-    match &report
-        .domains()
-        .iter()
-        .find(|d| d.domain == domain)
-        .expect("every domain is projected")
-        .state
-    {
-        aa_isolation::ControlState::Unmeasured { reason } => reason.as_str(),
-        other => panic!("{domain} is `{}`, not unmeasured", other.as_str()),
-    }
 }
 
 /// AC: a claim is promoted only by a decision record, and corroboration is not
-/// a decision.
-///
-/// Three points on one axis, which is what makes this a control rather than a
-/// restatement of the predicate:
-///
-/// 1. a real run of a backend that *reports* prevention yields `setup_only` and
-///    no prevention claim;
-/// 2. an `IndependentVerification` record carrying a prevention term still
-///    yields no prevention claim — the claim is downgraded to `observed`;
-/// 3. a `Decision` record carrying the same term does yield one.
-///
-/// Without (3) the predicate could be false for every input and every assertion
-/// here would still pass.
+/// a decision. Body shared with the native lane: the promotion rule lives in
+/// `aa_isolation::EnforcementEvidence`, not in any one mechanism.
 #[test]
 fn a_claim_is_promoted_only_by_a_decision_record() {
-    let scenario = "adversarial: only a decision record promotes a claim";
-
-    let target = MockTarget {
-        backend: MockBackend::preventing(CapabilityDomain::ALL),
-        label: "mock/preventing",
-    };
-    let spec = required_prevention_spec(CapabilityDomain::FilesystemWrite);
-    let plan = target.backend().plan(&spec).expect("planned");
-    let outcome = target.launch(&spec).expect("the mock always launches");
-
-    let run_report = IsolationReport::from_plan(session(), &plan).with_evidence(&outcome.evidence);
-    assert!(
-        evidence_bases(&run_report).contains(&(CapabilityDomain::FilesystemWrite, "setup_only")),
-        "a run with only setup-time records reported a stronger basis: {:?}",
-        evidence_bases(&run_report)
-    );
-    assert_no_prevention_claim("mock/preventing", &outcome.evidence);
-
-    // (2) corroboration.
-    let corroborated = evidence_with(&plan, EvidenceKind::IndependentVerification);
-    assert!(
-        prevention_claims(&corroborated).is_empty(),
-        "an out-of-band probe was treated as the enforcing control's own decision"
-    );
-    let corroborated_report = IsolationReport::from_plan(session(), &plan).with_evidence(&corroborated);
-    assert_eq!(
-        claim_for(&corroborated_report, CapabilityDomain::FilesystemWrite),
-        ClaimTerm::Observed,
-        "a prevention term arrived with no decision behind it and was not downgraded"
-    );
-
-    // (3) the direction that makes the other two mean something.
-    let decided = evidence_with(&plan, EvidenceKind::Decision);
-    assert_eq!(
-        prevention_claims(&decided),
-        [CapabilityDomain::FilesystemWrite].into_iter().collect::<BTreeSet<_>>(),
-        "a decision record carrying a prevention term did not support a prevention claim, so the \
-         assertions above hold vacuously"
-    );
-    let decided_report = IsolationReport::from_plan(session(), &plan).with_evidence(&decided);
-    assert_eq!(
-        claim_for(&decided_report, CapabilityDomain::FilesystemWrite),
-        ClaimTerm::DeniedBeforeExecution
-    );
-    assert!(evidence_bases(&decided_report).contains(&(CapabilityDomain::FilesystemWrite, "decision")));
-
-    measured(
-        scenario,
-        AttackFamily::ObserveAndDegradedTruthfulness,
-        "a setup-only run and an independently corroborated run both yielded no prevention claim, \
-         while the same evidence graded as a decision did",
-    );
-}
-
-/// Evidence for `plan` carrying one extra record of the given grade with a
-/// prevention term, so the grade is the only variable.
-fn evidence_with(plan: &EnforcementPlan, kind: EvidenceKind) -> EnforcementEvidence {
-    EnforcementEvidence::from_plan(plan).with_record(EvidenceRecord::new(
-        kind,
-        CapabilityDomain::FilesystemWrite,
-        ClaimTerm::DeniedBeforeExecution,
-        "a forbidden write did not take effect",
-    ))
-}
-
-/// The claim a report states for one domain.
-fn claim_for(report: &IsolationReport, domain: CapabilityDomain) -> ClaimTerm {
-    report
-        .domains()
-        .iter()
-        .find(|d| d.domain == domain)
-        .expect("every domain is projected")
-        .claim
+    assert_claim_is_promoted_only_by_a_decision_record("adversarial: only a decision record promotes a claim");
 }
 
 // ---------------------------------------------------------------------------
