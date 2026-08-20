@@ -740,6 +740,56 @@ Escalation follows the org's
 [agent-escalation guidance](https://github.com/ai-agent-assembly/.github/blob/HEAD/.claude/rules/04-agent-escalation.md):
 state what is blocking, what was already checked, and the concrete decision needed.
 
+## Emergency correction: a live claim is actively wrong
+
+The [routing table](#routing-table) above assumes there is time to classify the
+content type and fix the canonical source first. AAASM-5603 asks for a separate,
+faster path for the case where there is not — a published claim is actively
+misleading a reader right now (a security-guarantee overstatement, a stale SaaS
+availability claim, anything a reader could act on badly before the normal
+five-step process completes).
+
+1. **Revert or redact first, investigate after.** Pull the specific sentence, or
+   revert the merging PR, on whichever surface is live-published (product website,
+   Docs Hub, SaaS UI copy) — do not wait to find the canonical source first. A wrong
+   claim live for an extra review cycle costs more than a redaction that turns out
+   to have been unnecessary.
+2. **File the correction as a P0** using this page's own
+   [ticket block](#ticket-block-for-content-work), marked urgent, and only then work
+   the routing table's five steps to find and fix the canonical source and sweep
+   derivatives.
+3. **A reviewer-class approval is still required to re-publish**, once the fix is
+   ready — an emergency redaction is not a bypass of the [reviewer
+   classes](#reviewer-classes-and-recurring-audits) below, only of the time spent
+   finding the root cause before stopping the bleeding.
+4. **Say what was live and for how long** in the PR or ticket that carries the
+   permanent fix — the same "carry what you cannot reach" discipline as step 5 of
+   the routing table, applied to the timeline instead of the derivative sweep.
+
+## Reviewer classes and recurring audits
+
+ADR 0034 §9 defines the `truth-owner-*` reviewer classes referenced throughout this
+page (`truth-owner-core`, `truth-owner-sdk-<lang>`, `truth-owner-docs-hub`,
+`truth-owner-website`, `truth-owner-portfolio`). As of AAASM-5603, this repo's
+`.github/CODEOWNERS` names `truth-owner-core` explicitly (the `*.md` rule) and the
+`docs` repo's own CODEOWNERS names `truth-owner-docs-hub` the same way — both
+currently resolve to the same single individual as every other path in either
+repo's CODEOWNERS, with the standing TODO to replace that individual with a real
+GitHub team once one exists. Naming the class now, ahead of the team existing,
+means a future narrower CODEOWNERS rule reads as "which class does this path
+belong to," not a fresh guess.
+
+A recurring full-hub audit (`docs` repo, `scripts/content_audit.py`, weekly) runs
+the existing claim-vocabulary, page-metadata, capability-id and compatibility-drift
+checkers in full-tree mode and adds two metrics nothing else computes: orphan pages
+and duplicate canonical claims. It is report-only (opens/updates one GitHub Issue
+on unresolved P0 findings) — it does not replace the PR-time gates
+(`hub-metadata-check.yml`) that already block a *new* violation; it exists for the
+pre-existing backlog and for drift that accrues with no PR at all. See that
+script's own module docstring for why GitHub Issues, not Jira: CI cannot be handed
+a Jira credential without an owner-provisioned secret, and this is recorded there
+as the one place to change if that changes.
+
 ## What this page hands off
 
 This page defines ownership and duplication. It deliberately did **not** decide the

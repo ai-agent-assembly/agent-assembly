@@ -81,6 +81,12 @@ lefthook.toml @Chisanan232
 
 # ──────────────────────────────────────────────────────────────────────
 # Documentation — README, CONTRIBUTING, SECURITY, etc.
+#
+# AAASM-5603: this is ADR 0034's `truth-owner-core` reviewer class (T1/T2/T4
+# changes — architecture, ADRs, policy/protocol semantics, the capability
+# manifest; see docs/src/development/content-ownership.md). Currently the
+# same individual as the catch-all above — see that rule's own note — named
+# here so the class is legible from this file alone, not only from the ADR.
 # ──────────────────────────────────────────────────────────────────────
 *.md @Chisanan232
 
