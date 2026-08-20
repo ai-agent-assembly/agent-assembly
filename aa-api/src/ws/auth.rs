@@ -45,6 +45,7 @@ where
 /// must have been minted for `purpose`. With no ticket, the header-derived
 /// caller (CLI / non-browser) is used. Either way a failure is a `401` response,
 /// never a silent downgrade to an unauthenticated stream.
+#[allow(clippy::result_large_err)] // Response is the standard axum error-response type, used the same way throughout this module
 pub async fn resolve_ws_caller(
     store: &WsTicketStore,
     ticket: Option<&str>,
