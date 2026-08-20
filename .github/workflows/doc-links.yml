@@ -36,6 +36,10 @@ on:
       - 'scripts/check-doc-links.sh'
       - 'scripts/check-doc-orphans.sh'
       - '.github/workflows/doc-links.yml'
+  # AAASM-5677: lets `ci.yml` invoke this workflow's jobs directly, so the
+  # `ci-success` aggregate can genuinely `needs:` its conclusion instead of
+  # merely running alongside it unobserved.
+  workflow_call:
 
 jobs:
   # AAASM-5677: consulted for `pull_request` only. Every glob here has a
