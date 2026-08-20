@@ -2656,8 +2656,17 @@ jobs:
         # `-p aa-isolation-native` alone: this backend needs no gateway, no
         # database and no `protoc`, so nothing else has to compile for the lane
         # to measure what it is here to measure.
+        #
+        # `--no-fail-fast` because of how this lane's two later gates read the
+        # ledger. Without it the first failing scenario cancels the rest, and the
+        # "declared vs measured" diff then reports every cancelled scenario as
+        # declared-but-unmeasured — on the lane's first run that turned one real
+        # failure into sixteen lines of noise, fifteen of which were scenarios
+        # that had never been given the chance to run. The job still fails on the
+        # test failure; this only stops the diff from describing the cancellation
+        # instead of the defect.
         run: |
-          cargo nextest run --profile evidence --no-capture -p aa-isolation-native
+          cargo nextest run --profile evidence --no-capture --no-fail-fast -p aa-isolation-native
       - name: Report what this lane measured
         # `always()`: a lane that failed still has an outcome worth reading, and
         # the ledger is most useful exactly when something went wrong.
