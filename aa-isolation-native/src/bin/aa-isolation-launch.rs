@@ -16,16 +16,16 @@
 //!
 //! # Everything this binary does, in order
 //!
-//! 1. Parse its own argument vector through [`aa_isolation_native::launch`] —
+//! 1. Parse its own argument vector through `aa_isolation_native::launch` —
 //!    the same code the supervisor built it with.
-//! 2. Compute the kernel rules through [`aa_isolation_native::rules::plan`] — a
+//! 2. Compute the kernel rules through `aa_isolation_native::rules::plan` — a
 //!    pure function, unit-tested on every platform.
 //! 3. Install them on itself.
 //! 4. `execve` the program.
 //!
 //! There is no branch that skips step 3, no error arm that falls through to step
 //! 4, and no flag that turns the boundary off. Any failure writes a
-//! [`FAILURE_MARKER`] line and exits [`EXIT_LAUNCH_REFUSED`] **without
+//! `FAILURE_MARKER` line and exits `EXIT_LAUNCH_REFUSED` **without
 //! executing anything**, which is the property
 //! `tests/linux_confinement_native.rs` measures by asserting the program's
 //! *effect* did not happen rather than by reading the exit code.
