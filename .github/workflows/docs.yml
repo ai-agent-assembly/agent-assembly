@@ -46,6 +46,9 @@ on:
       - '.claude/**'
       - '**/README.md'
       - 'scripts/check_claim_vocabulary.py'
+      # AAASM-5684: same "editing the checker must retrigger" reasoning as
+      # check_claim_vocabulary.py above.
+      - 'scripts/check_adr_citations.py'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -126,6 +129,7 @@ jobs:
               - '.claude/**'
               - '**/README.md'
               - 'scripts/check_claim_vocabulary.py'
+              - 'scripts/check_adr_citations.py'
 
   build:
     name: Build mdBook
@@ -562,6 +566,28 @@ jobs:
           # is raised as an error instead of being silently read as "nothing
           # changed".
           python3 scripts/check_claim_vocabulary.py --diff-base "$BASE_SHA"
+
+      # AAASM-5684: four ADR trees number from 0001, two of which collide inside
+      # `internal-docs`. A full-tree run found 388 pre-existing bare citations,
+      # almost all in verification-reports/ (point-in-time audit records, not
+      # this ticket's to rewrite) -- so this gates the PR's own added/modified
+      # lines only, same shape and same reasoning as claim-vocabulary above.
+      - name: ADR citations — selftest, then enforce
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/test_check_adr_citations.py
+
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "::group::Full-tree report (non-gating while the baseline is non-empty)"
+            python3 scripts/check_adr_citations.py || true
+            echo "::endgroup::"
+            echo "not a pull request — the full-tree report above is the whole check"
+            exit 0
+          fi
+
+          python3 scripts/check_adr_citations.py --diff-base "$BASE_SHA"
 
   # AAASM-5677: the stable required context for this workflow. `deploy` is
   # deliberately NOT a need — it only runs off a pull request, and a Pages
