@@ -470,6 +470,7 @@ dependencies = [
  "aa-core",
  "aa-isolation",
  "aa-isolation-native",
+ "aa-security",
  "landlock",
  "libc",
 ]

@@ -25,9 +25,11 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 15 from aa-isolation-native/tests/linux_confinement_native.rs and
-# 10 from aa-isolation-native/tests/adversarial_boundary_native_linux.rs.
+# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs and
+# 12 from aa-isolation-native/tests/adversarial_boundary_native_linux.rs
+# (AAASM-5803 added 3 to the first file and 2 to the second).
 
+native adversarial: a descendant cannot make a syscall the launch did not permit
 native adversarial: a hard link cannot bring a forbidden file into the grant
 native adversarial: a parent-traversal path does not escape the grant
 native adversarial: a rename across the boundary never takes effect
@@ -38,8 +40,12 @@ native adversarial: another process's /proc entry is unreadable without a /proc 
 native adversarial: another process's environ is outside a scoped /proc grant
 native adversarial: observation is never promoted to prevention
 native adversarial: the launcher refuses a command line it cannot fully honour
+native adversarial: the launcher refuses a syscall filter it cannot fully honour
 native: a nested write grant keeps the read granted above it
+native: a permitted syscall still succeeds under an installed filter
 native: a sub-agent launch the AAASM-5709 machinery admits is confined here
+native: a syscall name outside the policy vocabulary refuses before launch
+native: a syscall the launch did not permit kills the confined process
 native: an absent launcher refuses before launch
 native: descendant confinement at three depths
 native: filesystem read denied

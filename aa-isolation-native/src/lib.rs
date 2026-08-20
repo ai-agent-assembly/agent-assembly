@@ -45,13 +45,19 @@
 //!
 //! # What this version does and does not cover
 //!
-//! Filesystem read and write only. Every other [`CapabilityDomain`](aa_isolation::CapabilityDomain)
-//! is reported [`Unsupported`](aa_isolation::SupportLevel::Unsupported) with a
-//! reason, so a required requirement for one **refuses the launch** rather than
-//! planning successfully against a control that is not installed. In particular
-//! there is no system-call filter: that is AAASM-5803, which extends this same
-//! launcher, and [`rules`] is deliberately a module the launcher calls once
-//! rather than setup inlined into it.
+//! Filesystem read and write, and a syscall filter (AAASM-5803, [`seccomp`]).
+//! Every other [`CapabilityDomain`](aa_isolation::CapabilityDomain) is reported
+//! [`Unsupported`](aa_isolation::SupportLevel::Unsupported) with a reason, so a
+//! required requirement for one **refuses the launch** rather than planning
+//! successfully against a control that is not installed.
+//!
+//! The syscall filter is a [`SupportLevel::Partial`](aa_isolation::SupportLevel::Partial)
+//! domain, not a `Full` one: it permits a startup baseline beyond what policy
+//! named, so that its own `execve` of the confined program is not killed by
+//! the filter it just installed on itself — see [`seccomp`]'s module
+//! documentation for the deviation from ADR 0035's literal text this
+//! entails, and why the baseline is disjoint from the policy vocabulary by
+//! construction rather than by convention.
 //!
 //! # The kernel floor is measured, not assumed
 //!
@@ -91,12 +97,14 @@ pub mod lower;
 pub mod probe;
 pub mod proc_scope;
 pub mod rules;
+pub mod seccomp;
 
 pub use backend::{CompletedRun, NativeBackend, BACKEND_ID, BINDING_CRATE, SOURCE_URL, SPDX_LICENSE};
-pub use host::{AbiFloor, HostFacts, HostUnusable, LAUNCHER_PATH_ENV, LAUNCHER_PROGRAM};
+pub use host::{AbiFloor, HostFacts, HostUnusable, SyscallFilterSupport, LAUNCHER_PATH_ENV, LAUNCHER_PROGRAM};
 pub use inherit::seal_inherited_descriptors;
-pub use launch::{Grants, LauncherArgv, EXIT_LAUNCH_REFUSED, FAILURE_MARKER};
+pub use launch::{Grants, LauncherArgv, SyscallFilter, EXIT_LAUNCH_REFUSED, FAILURE_MARKER};
 pub use lower::LoweringGap;
 pub use probe::{ConfinementProbe, Observation};
 pub use proc_scope::{ProcListing, ScopedGrants, OWN_PROC};
 pub use rules::{RulePlan, REQUIRED_ABI_VERSION, REQUIRED_KERNEL_RELEASE};
+pub use seccomp::{FilterProgram, STARTUP_BASELINE};

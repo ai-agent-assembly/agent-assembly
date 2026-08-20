@@ -15,15 +15,14 @@
 //! satisfy a prevention requirement, and `aa_isolation::negotiate` refuses the
 //! launch before the child starts.
 //!
-//! # Seven domains are unsupported on purpose
+//! # Six domains are unsupported on purpose
 //!
-//! This version installs a filesystem boundary and nothing else. Every other
-//! domain is [`SupportLevel::Unsupported`] with the reason
-//! [`crate::lower::lower_requirement`] gives for the same domain, and that is a
-//! deliberate choice rather than a gap in the measurement: reporting one of them
-//! as `Partial` would leave `can_prevent` true and let a requirement nothing here
-//! implements plan successfully. AAASM-5803 adds the syscall domain by extending
-//! the same launcher; until it does, a required syscall requirement refuses.
+//! This version installs a filesystem boundary and a syscall filter, and
+//! nothing else. Every other domain is [`SupportLevel::Unsupported`] with the
+//! reason [`crate::lower::lower_requirement`] gives for the same domain, and
+//! that is a deliberate choice rather than a gap in the measurement: reporting
+//! one of them as `Partial` would leave `can_prevent` true and let a
+//! requirement nothing here implements plan successfully.
 //!
 //! # Why the write domain carries one prerequisite and not two
 //!
@@ -49,7 +48,7 @@ use aa_isolation::{
     Synchrony,
 };
 
-use crate::host::HostFacts;
+use crate::host::{HostFacts, SyscallFilterSupport};
 use crate::lower::lower_requirement;
 use crate::probe::{ConfinementProbe, Observation};
 
@@ -72,11 +71,15 @@ pub fn unavailable(reason: impl Into<String>) -> BackendCapabilities {
 ///
 /// `facts` supplies the words an operator reads; `probe` supplies every verdict.
 pub fn discover(facts: &HostFacts, probe: &ConfinementProbe) -> BackendCapabilities {
-    let mut reports = vec![filesystem_read(probe), filesystem_write(facts, probe)];
+    let mut reports = vec![
+        filesystem_read(probe),
+        filesystem_write(facts, probe),
+        syscall(facts, probe),
+    ];
     for domain in CapabilityDomain::ALL {
         if matches!(
             domain,
-            CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite
+            CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite | CapabilityDomain::Syscall
         ) {
             continue;
         }
@@ -263,6 +266,84 @@ fn filesystem_write(facts: &HostFacts, probe: &ConfinementProbe) -> CapabilityRe
     ))
 }
 
+/// Limitations the syscall filter carries on every host, whether or not it is
+/// measured available here.
+fn syscall_limitations() -> Vec<String> {
+    vec![
+        // Finding 1 / ADR 0035 deviation, restated on the report an operator
+        // actually reads rather than only in `crate::seccomp`'s module
+        // documentation.
+        format!(
+            "the filter permits a startup baseline beyond what policy named ({} syscall(s): {}), so that \
+             the launcher's own `execve` of the confined program is not killed by the filter it just \
+             installed on itself. This is a deliberate deviation from ADR 0035's literal text; see \
+             `crate::seccomp`'s module documentation for the disjointness invariant that keeps it from \
+             widening any name a policy author could write",
+            crate::seccomp::STARTUP_BASELINE.len(),
+            crate::seccomp::STARTUP_BASELINE
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        "the startup baseline permits `clone`, `clone3` and `wait4` so a grandchild can exist to be \
+         measured at all; the syscall control does not double as a process-creation control, and \
+         `CapabilityDomain::ProcessCreation` remains its own unsupported domain, unaffected by this one"
+            .to_string(),
+        "the policy vocabulary is a closed 15-name set (aa_security::policy::syscall::Syscall); a call \
+         outside it cannot be named by an author, in either direction"
+            .to_string(),
+        "the default action on anything not permitted is to kill the whole process \
+         (SECCOMP_RET_KILL_PROCESS); a policy cannot ask for an errno return, a trap, or an observe-only \
+         posture instead"
+            .to_string(),
+        "matching is on syscall number only, with no argument inspection: a permitted `openat` is \
+         permitted for every path it is given and a permitted `write` for every file descriptor, the same \
+         way this backend's filesystem domains attach rights to a path rather than to a call"
+            .to_string(),
+        "the filter is built for x86_64 numbers only; a host reporting a different architecture measures \
+         as unsupported rather than partially covered (Finding 3)"
+            .to_string(),
+        "the kernel delivers the kill to the confined process, not to this supervisor, so — like the \
+         filesystem domains — this backend has no per-decision record for a syscall denial; only \
+         Configured/Installed/Exercised evidence is produced, never Decision"
+            .to_string(),
+    ]
+}
+
+fn syscall(facts: &HostFacts, probe: &ConfinementProbe) -> CapabilityReport {
+    let report = CapabilityReport::new(
+        CapabilityDomain::Syscall,
+        Mediation::Enforce,
+        DecisionTiming::Pre,
+        Synchrony::Sync,
+    )
+    .with_failure_posture(posture(&probe.syscall))
+    .with_descendants(descendants(&probe.syscall))
+    .with_prerequisite(measured(
+        "the kernel kills a descendant of the launched process that makes a syscall the launch did not \
+         permit, before the call takes effect",
+        &probe.syscall,
+    ));
+
+    if !facts.syscall_filter().is_available() {
+        let reason = match facts.syscall_filter() {
+            SyscallFilterSupport::Available => unreachable!("handled by the guard above"),
+            SyscallFilterSupport::ActionUnavailable { detail } => format!(
+                "this kernel understands the seccomp action-availability query and reported \
+                 SECCOMP_RET_KILL_PROCESS unavailable: {detail}"
+            ),
+            SyscallFilterSupport::Absent { detail } => format!("this kernel has no seccomp filter support: {detail}"),
+            SyscallFilterSupport::WrongArchitecture { arch } => {
+                format!("this backend's syscall filter is built for Linux on x86_64; this host measured {arch}")
+            }
+        };
+        return report.with_support(SupportLevel::Unsupported { reason });
+    }
+
+    report.with_support(support(&[&probe.syscall], syscall_limitations()))
+}
+
 /// Replace a domain's report with an unsupported one when *this* requirement
 /// cannot be lowered.
 ///
@@ -299,6 +380,7 @@ mod tests {
         ConfinementProbe {
             filesystem_read: Observation::Denied,
             filesystem_write: Observation::Denied,
+            syscall: Observation::Denied,
         }
     }
 
@@ -385,9 +467,9 @@ mod tests {
         );
     }
 
-    /// Everything but the two filesystem domains is unsupported by construction
-    /// in this version, and must be, or a requirement nothing implements would
-    /// plan successfully.
+    /// Everything but the two filesystem domains and the syscall domain is
+    /// unsupported by construction in this version, and must be, or a
+    /// requirement nothing implements would plan successfully.
     #[test]
     fn every_domain_this_version_does_not_implement_is_unsupported() {
         let capabilities = discover(&facts(), &denied_everything());
@@ -395,7 +477,7 @@ mod tests {
             let report = capabilities.report_for(*domain).expect("reported");
             let implemented = matches!(
                 domain,
-                CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite
+                CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite | CapabilityDomain::Syscall
             );
             assert_eq!(
                 report.support().is_available(),
@@ -408,17 +490,70 @@ mod tests {
         }
     }
 
-    /// The syscall domain in particular: it is the next ticket's work, and until
-    /// then it must refuse rather than read as partially covered.
+    /// A host whose kernel cannot support the filter at all is unsupported and
+    /// says why, naming the measured architecture or reason rather than a
+    /// canned sentence.
     #[test]
-    fn the_syscall_domain_is_unsupported_and_says_why() {
-        let capabilities = discover(&facts(), &denied_everything());
+    fn a_host_without_syscall_filter_support_is_unsupported_and_says_why() {
+        let unsupported_facts = HostFacts::for_test_with_syscall_support(
+            "/nonexistent/aa-isolation-launch",
+            AbiFloor::Met { measured: 5 },
+            SyscallFilterSupport::WrongArchitecture {
+                arch: "linux/aarch64".to_string(),
+            },
+        );
+        let capabilities = discover(&unsupported_facts, &denied_everything());
         let report = capabilities.report_for(CapabilityDomain::Syscall).expect("reported");
         let SupportLevel::Unsupported { reason } = report.support() else {
             panic!("{report:?}");
         };
-        assert!(reason.contains("no system-call filter"), "{reason}");
+        assert!(reason.contains("linux/aarch64"), "{reason}");
         assert!(!report.can_prevent());
+    }
+
+    /// The control for the test above: with the *same* code and a host that
+    /// measured syscall-filter support plus a probe that observed a denial,
+    /// the syscall domain does claim prevention.
+    #[test]
+    fn a_measured_syscall_filter_can_prevent() {
+        let capabilities = discover(&facts(), &denied_everything());
+        let report = capabilities.report_for(CapabilityDomain::Syscall).expect("reported");
+        assert!(report.can_prevent(), "a measured syscall filter cannot prevent");
+        assert_eq!(report.descendants(), DescendantCoverage::ProcessTree);
+    }
+
+    /// The report must key on the probe's own observation, not on host support
+    /// alone — a host that supports the filter but never observed a denial
+    /// must not claim prevention.
+    #[test]
+    fn a_supported_but_unmeasured_syscall_filter_cannot_prevent() {
+        let mut probe = denied_everything();
+        probe.syscall = Observation::Inconclusive {
+            detail: "not measured".to_string(),
+        };
+        let capabilities = discover(&facts(), &probe);
+        let report = capabilities.report_for(CapabilityDomain::Syscall).expect("reported");
+        assert!(!report.can_prevent(), "an unmeasured syscall filter claimed prevention");
+    }
+
+    /// The startup-baseline widening must be a stated `Partial` limitation on
+    /// the report an operator reads, not only in `crate::seccomp`'s module
+    /// documentation.
+    #[test]
+    fn the_startup_baseline_widening_is_a_stated_limitation() {
+        let capabilities = discover(&facts(), &denied_everything());
+        let report = capabilities.report_for(CapabilityDomain::Syscall).expect("reported");
+        let SupportLevel::Partial { limitations } = report.support() else {
+            panic!("{report:?}");
+        };
+        assert!(
+            limitations.iter().any(|l| l.contains("startup baseline")),
+            "{limitations:?}"
+        );
+        assert!(
+            limitations.iter().any(|l| l.contains("process-creation control")),
+            "{limitations:?}"
+        );
     }
 
     #[test]

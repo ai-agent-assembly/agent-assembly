@@ -35,7 +35,7 @@
 //! program exited non-zero" would be exactly the promotion the contract is built
 //! to prevent.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -46,15 +46,17 @@ use aa_isolation::{
     EnforcementPlan, EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, ExitDisposition, IsolationBackend,
     Lowering, PlanRefusal, PreparedExecution, Provenance, RequirementOutcome, SpawnError, TerminationRequest,
 };
+use aa_security::policy::syscall::Syscall;
 
 use crate::capability;
 use crate::host::{HostFacts, HostUnusable};
 use crate::inherit::seal_inherited_descriptors;
-use crate::launch::{self, Grants};
+use crate::launch::{self, Grants, SyscallFilter};
 use crate::lower::{lower_requirement, unremoved_ambient};
 use crate::probe::{self, ConfinementProbe};
 use crate::proc_scope::{self, ScopedGrants};
 use crate::rules::{self, RulePlan};
+use crate::seccomp::{self, FilterProgram};
 
 /// The stable machine identifier this backend answers to.
 ///
@@ -91,6 +93,13 @@ struct Prepared {
     plan: EnforcementPlan,
     argv: Vec<String>,
     rules: RulePlan,
+    /// The syscall filter this launch will install, or `None` when no syscall
+    /// requirement named this launch and the launcher installs no seccomp
+    /// filter at all ([`SyscallFilter::NotRequested`]) — "no filter in force"
+    /// is a real, distinct state from "a filter is in force", and this field
+    /// keeps the two apart rather than defaulting to an installed-but-empty
+    /// program.
+    syscall_filter: Option<FilterProgram>,
     /// What the `/proc` scope did to the grant set, and whether other processes'
     /// per-PID entries ended up outside the installed boundary (AAASM-5804).
     proc_scope: ScopedGrants,
@@ -290,6 +299,16 @@ impl NativeBackend {
         held.get(prepared.token()).map(|p| p.rules.clone())
     }
 
+    /// The syscall filter a prepared execution will install.
+    ///
+    /// Exposed for the same reason [`rule_plan`](Self::rule_plan) is: a test can
+    /// assert on the *filter* rather than on the argument vector that encodes
+    /// it.
+    pub fn syscall_filter(&self, prepared: &PreparedExecution) -> Option<FilterProgram> {
+        let held = self.prepared.lock().expect("backend state poisoned");
+        held.get(prepared.token()).and_then(|p| p.syscall_filter.clone())
+    }
+
     /// Wait for a launched run to finish.
     ///
     /// Separate from [`IsolationBackend::spawn`] because the contract's five
@@ -358,15 +377,35 @@ fn identity() -> BackendIdentity {
     }
 }
 
-/// Collect the permitted path scope every enforced requirement contributes.
+/// Everything every enforced or observed requirement contributes: filesystem
+/// grants and the syscall allowlist alike.
+struct PermittedScope {
+    grants: Grants,
+    syscalls: SyscallFilter,
+}
+
+/// Collect the permitted scope every enforced requirement contributes.
 ///
-/// Shortfalls contribute nothing. Because the mechanism is default-deny, an
-/// absent grant is the *strictest* posture available, so omitting a degraded
-/// requirement's paths can only narrow the boundary. The reverse convention —
-/// granting for a requirement that fell short — would widen it on exactly the
-/// launches that already failed to get what policy asked for.
-fn grants_for(plan: &EnforcementPlan) -> Result<Grants, SpawnError> {
+/// Shortfalls contribute nothing to either half.
+///
+/// # Why skipping a shortfall means different things for the two halves
+///
+/// This crate's long-standing filesystem justification is "an absent grant is
+/// the strictest posture available" — the mechanism is default-deny, so
+/// omitting a degraded requirement's paths can only narrow the boundary.
+/// **That reasoning is false for syscalls, and this function does not repeat
+/// it for them.** Contributing nothing to the syscall half does not mean
+/// "deny more" the way an absent filesystem grant does: it means
+/// [`SyscallFilter::NotRequested`], and the launcher installs **no** seccomp
+/// filter at all for that — every syscall reaches the confined program
+/// unrestricted by this control, because nothing was withheld. Skipping a
+/// shortfall's syscalls is still correct behavior — this backend must never
+/// report a control as installed when it was not — but "narrower" does not
+/// mean "stricter" here the way it does for filesystem grants.
+fn permitted_scope(plan: &EnforcementPlan) -> Result<PermittedScope, SpawnError> {
     let mut grants = Grants::default();
+    let mut syscalls: BTreeSet<Syscall> = BTreeSet::new();
+    let mut syscall_requirement_seen = false;
     for planned in plan.planned() {
         if !emits_grants(&planned.outcome) {
             continue;
@@ -380,8 +419,19 @@ fn grants_for(plan: &EnforcementPlan) -> Result<Grants, SpawnError> {
         })?;
         grants.read.extend(lowered.grants.read);
         grants.write.extend(lowered.grants.write);
+        if let SyscallFilter::Allow(names) = lowered.syscalls {
+            syscall_requirement_seen = true;
+            syscalls.extend(names);
+        }
     }
-    Ok(grants)
+    Ok(PermittedScope {
+        grants,
+        syscalls: if syscall_requirement_seen {
+            SyscallFilter::Allow(syscalls)
+        } else {
+            SyscallFilter::NotRequested
+        },
+    })
 }
 
 /// Whether an outcome means the backend should grant this requirement's paths.
@@ -448,16 +498,28 @@ impl IsolationBackend for NativeBackend {
         // what *else* the launch granted. It can only remove paths, so it runs
         // after lowering's "no requirement grants a path policy did not name"
         // invariant has already been established rather than in the middle of it.
-        let scoped = proc_scope::scope(&grants_for(&plan)?, &proc_scope::read_listing());
+        let permitted = permitted_scope(&plan)?;
+        let scoped = proc_scope::scope(&permitted.grants, &proc_scope::read_listing());
         let grants = scoped.grants.clone();
         let rules = rules::plan(&grants);
+        // `None` when no syscall requirement named this launch — see
+        // `SyscallFilter::NotRequested` for why that means no filter is built
+        // at all rather than a filter permitting only the startup baseline.
+        let syscall_filter = match &permitted.syscalls {
+            SyscallFilter::NotRequested => None,
+            SyscallFilter::Allow(_) => {
+                Some(seccomp::program(&permitted.syscalls).map_err(|e| SpawnError::Prepare {
+                    detail: format!("the syscall filter could not be built: {e}"),
+                })?)
+            }
+        };
         // Before the argument vector is built and long before anything is
         // launched: a descriptor marked here cannot cross the `exec` that starts
         // the launcher, and therefore cannot reach the program the launcher
         // becomes.
         let descriptors = seal_inherited_descriptors();
         let residual_authority = residual_authority(plan.spec(), self.child_environment.is_some());
-        let argv = launch::build(&grants, plan.spec().program(), plan.spec().args());
+        let argv = launch::build(&grants, &permitted.syscalls, plan.spec().program(), plan.spec().args());
         let token = self.issue_token();
         self.prepared.lock().expect("backend state poisoned").insert(
             token.clone(),
@@ -465,6 +527,7 @@ impl IsolationBackend for NativeBackend {
                 plan: plan.clone(),
                 argv,
                 rules,
+                syscall_filter,
                 proc_scope: scoped,
                 residual_authority,
                 descriptors,
@@ -675,6 +738,30 @@ impl IsolationBackend for NativeBackend {
                     .to_string()
             } else {
                 format!("permitted path scope: {}", entry.rules.describe().join("; "))
+            },
+        ));
+
+        // The syscall filter, always, in both directions (mirrors the
+        // "permitted path scope: none" record above, for the same reason:
+        // silence about the boundary must not read as a permissive one). Under
+        // `EvidenceKind::Installed`, not `Decision` — the kernel delivers a
+        // kill to the confined process, never to this supervisor, so this
+        // backend has no per-decision record here either.
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Installed,
+            CapabilityDomain::Syscall,
+            ClaimTerm::Planned,
+            match &entry.syscall_filter {
+                Some(program) => format!(
+                    "syscall filter in force: {} permitted (policy plus startup baseline), default action \
+                     kill-the-process. {}",
+                    program.permitted_numbers().len(),
+                    program.describe().join("; ")
+                ),
+                None => "syscall filter: none in force. No syscall requirement named this launch, so the \
+                         launcher installed no seccomp filter at all and every syscall reaches the \
+                         confined program unrestricted by this control"
+                    .to_string(),
             },
         ));
 
@@ -895,6 +982,7 @@ mod tests {
         ConfinementProbe {
             filesystem_read: Observation::Denied,
             filesystem_write: Observation::Denied,
+            syscall: Observation::Denied,
         }
     }
 
@@ -960,18 +1048,32 @@ mod tests {
         assert!(!evidence.supports_prevention_claim(CapabilityDomain::FilesystemWrite));
     }
 
-    /// A required requirement in a domain this version does not implement must
-    /// refuse on every host, because the domain is unsupported by construction
-    /// rather than by measurement.
+    /// A required syscall requirement naming valid vocabulary now plans
+    /// successfully — the property AAASM-5803 adds.
     #[test]
-    fn a_required_syscall_requirement_refuses_everywhere() {
+    fn a_required_syscall_requirement_with_valid_names_plans() {
         let spec = writing_spec("/tmp/never").with_requirement(
             ControlRequirement::prevent(CapabilityDomain::Syscall)
                 .with_scope(RequirementScope::Selectors(vec![permit_only_selector("read")])),
         );
+        let plan = backend()
+            .plan(&spec)
+            .expect("a syscall requirement naming valid vocabulary must plan");
+        assert!(plan.prevented_domains().contains(&CapabilityDomain::Syscall));
+    }
+
+    /// A syscall name outside the closed vocabulary still refuses on every
+    /// host, because it is not expressible by construction rather than by
+    /// measurement.
+    #[test]
+    fn a_syscall_requirement_naming_an_unknown_call_refuses_everywhere() {
+        let spec = writing_spec("/tmp/never").with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::Syscall)
+                .with_scope(RequirementScope::Selectors(vec![permit_only_selector("ptrace")])),
+        );
         let refusal = backend()
             .plan(&spec)
-            .expect_err("this version installs no system-call filter");
+            .expect_err("a name outside the closed vocabulary must refuse");
         assert!(
             refusal
                 .reasons()
@@ -981,15 +1083,35 @@ mod tests {
         );
     }
 
-    /// The control for the test above: an *optional* requirement for the same
-    /// domain must not refuse the launch. Without it, the refusal could be coming
-    /// from something other than the requirement's posture.
+    /// A whole-domain syscall requirement also refuses: permitting only the
+    /// startup baseline is not the strictest expressible posture the way an
+    /// empty filesystem grant is, so this backend refuses rather than
+    /// installing a filter the confined program cannot do anything behind.
+    #[test]
+    fn a_whole_domain_syscall_requirement_refuses() {
+        let spec = writing_spec("/tmp/never").with_requirement(ControlRequirement::prevent(CapabilityDomain::Syscall));
+        let refusal = backend()
+            .plan(&spec)
+            .expect_err("a whole-domain syscall requirement must refuse");
+        assert!(
+            refusal
+                .reasons()
+                .iter()
+                .any(|r| r.domain() == Some(CapabilityDomain::Syscall)),
+            "{refusal:?}"
+        );
+    }
+
+    /// The control for the tests above: an *optional* requirement naming an
+    /// unexpressible syscall must not refuse the launch. Without it, the
+    /// refusal could be coming from something other than the requirement's
+    /// posture.
     #[test]
     fn an_optional_syscall_requirement_does_not_refuse_the_launch() {
         let spec = writing_spec("/tmp/never").with_requirement(
             ControlRequirement::prevent(CapabilityDomain::Syscall)
                 .with_posture(RequirementPosture::Optional)
-                .with_scope(RequirementScope::Selectors(vec![permit_only_selector("read")])),
+                .with_scope(RequirementScope::Selectors(vec![permit_only_selector("ptrace")])),
         );
         let plan = backend().plan(&spec).expect("an optional requirement never refuses");
         assert_eq!(plan.posture(), aa_isolation::LaunchPosture::Degraded);
@@ -1119,16 +1241,38 @@ mod tests {
     fn a_shortfall_grants_nothing_and_the_control_shows_the_grant_exists() {
         let backend = backend();
         let met = backend.plan(&writing_spec("/tmp/never")).expect("planned");
-        assert_eq!(grants_for(&met).expect("expressible").write.len(), 1);
+        assert_eq!(permitted_scope(&met).expect("expressible").grants.write.len(), 1);
 
         let short = writing_spec("/tmp/never").with_requirement(
             ControlRequirement::prevent(CapabilityDomain::Resource)
                 .with_posture(RequirementPosture::DegradeIfUnavailable),
         );
         let planned = backend.plan(&short).expect("a degradable requirement never refuses");
-        let grants = grants_for(&planned).expect("expressible");
-        assert_eq!(grants.write.len(), 1, "the met requirement lost its grant");
-        assert!(grants.read.is_empty(), "a shortfall contributed a grant");
+        let scope = permitted_scope(&planned).expect("expressible");
+        assert_eq!(scope.grants.write.len(), 1, "the met requirement lost its grant");
+        assert!(scope.grants.read.is_empty(), "a shortfall contributed a grant");
+    }
+
+    /// **Union across multiple syscall requirements**, matching the filesystem
+    /// domains' behavior even though `lower_policy` currently emits at most
+    /// one syscall requirement per spec.
+    #[test]
+    fn multiple_syscall_requirements_union_their_permitted_names() {
+        let spec = writing_spec("/tmp/never")
+            .with_requirement(
+                ControlRequirement::prevent(CapabilityDomain::Syscall)
+                    .with_scope(RequirementScope::Selectors(vec![permit_only_selector("read")])),
+            )
+            .with_requirement(
+                ControlRequirement::prevent(CapabilityDomain::Syscall)
+                    .with_scope(RequirementScope::Selectors(vec![permit_only_selector("write")])),
+            );
+        let plan = backend().plan(&spec).expect("planned");
+        let scope = permitted_scope(&plan).expect("expressible");
+        let SyscallFilter::Allow(names) = scope.syscalls else {
+            panic!("expected a syscall filter to be requested");
+        };
+        assert!(names.contains(&Syscall::Read) && names.contains(&Syscall::Write));
     }
 
     /// Residual authority is recorded on every run, including when there is none

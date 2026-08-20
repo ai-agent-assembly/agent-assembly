@@ -541,13 +541,51 @@ fn unsupported_capability_refuses_before_launch() {
     let Some(backend) = require_confining_backend(SCENARIO) else {
         return;
     };
+    let spec = shell_spec("exit 0", Vec::new(), Vec::new())
+        .with_requirement(ControlRequirement::prevent(CapabilityDomain::Resource));
+    let refusal = backend
+        .plan(&spec)
+        .expect_err("this version imposes no numeric ceiling and must refuse");
+    assert!(
+        refusal
+            .reasons()
+            .iter()
+            .any(|r| r.domain() == Some(CapabilityDomain::Resource)),
+        "{refusal:?}"
+    );
+
+    let control = shell_spec("exit 0", Vec::new(), Vec::new()).with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::Resource)
+            .with_posture(aa_isolation::RequirementPosture::Optional),
+    );
+    let plan = backend.plan(&control).expect("an optional requirement never refuses");
+    assert_eq!(plan.shortfalls().count(), 1);
+    measured(
+        SCENARIO,
+        "a required requirement for an unimplemented domain refused before launch and the same \
+         requirement as optional did not",
+    );
+}
+
+/// A syscall name outside `aa_security::policy::syscall::Syscall`'s closed
+/// vocabulary refuses at plan time, before anything is launched.
+///
+/// The control is the identical requirement naming a valid vocabulary member:
+/// it plans, so the refusal above is about the unknown name and not about the
+/// spec being unplannable.
+#[test]
+fn a_syscall_name_outside_the_policy_vocabulary_refuses_before_launch() {
+    const SCENARIO: &str = "native: a syscall name outside the policy vocabulary refuses before launch";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
     let spec = shell_spec("exit 0", Vec::new(), Vec::new()).with_requirement(
         ControlRequirement::prevent(CapabilityDomain::Syscall)
-            .with_scope(RequirementScope::Selectors(vec![permit_only_selector("read")])),
+            .with_scope(RequirementScope::Selectors(vec![permit_only_selector("ptrace")])),
     );
     let refusal = backend
         .plan(&spec)
-        .expect_err("this version installs no system-call filter and must refuse");
+        .expect_err("`ptrace` is outside the closed vocabulary and must refuse");
     assert!(
         refusal
             .reasons()
@@ -558,14 +596,143 @@ fn unsupported_capability_refuses_before_launch() {
 
     let control = shell_spec("exit 0", Vec::new(), Vec::new()).with_requirement(
         ControlRequirement::prevent(CapabilityDomain::Syscall)
-            .with_posture(aa_isolation::RequirementPosture::Optional)
             .with_scope(RequirementScope::Selectors(vec![permit_only_selector("read")])),
     );
-    let plan = backend.plan(&control).expect("an optional requirement never refuses");
-    assert_eq!(plan.shortfalls().count(), 1);
+    backend
+        .plan(&control)
+        .expect("a valid vocabulary member plans successfully");
     measured(
         SCENARIO,
-        "a required syscall requirement refused before launch and the same requirement as optional did not",
+        "a syscall requirement naming a call outside the closed vocabulary refused before launch and the \
+         same requirement naming a valid call did not",
+    );
+}
+
+/// **A syscall the launch did not permit kills the confined process.**
+///
+/// The control is the identical launch with the call additionally
+/// allowlisted: it produces the effect and exits zero, so the kill above is
+/// about the missing permission and not about the program being broken.
+#[test]
+fn a_syscall_the_launch_did_not_permit_kills_the_confined_process() {
+    const SCENARIO: &str = "native: a syscall the launch did not permit kills the confined process";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let scratch = Scratch::new("syscall-kill");
+    let target = scratch.permitted().join("secret");
+
+    let spec_without_write = || {
+        shell_spec(
+            &format!("printf x > {}", shell_word(&target.to_string_lossy())),
+            Vec::new(),
+            vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
+        )
+        .with_requirement(ControlRequirement::prevent(CapabilityDomain::Syscall).with_scope(
+            RequirementScope::Selectors(vec![
+                permit_only_selector("read"),
+                permit_only_selector("openat"),
+                permit_only_selector("close"),
+                permit_only_selector("fstat"),
+                permit_only_selector("lseek"),
+                permit_only_selector("mmap"),
+                permit_only_selector("munmap"),
+                permit_only_selector("brk"),
+                permit_only_selector("exit_group"),
+                permit_only_selector("rt_sigaction"),
+                permit_only_selector("rt_sigprocmask"),
+                permit_only_selector("clock_gettime"),
+                permit_only_selector("getrandom"),
+            ]),
+        ))
+    };
+
+    // `openat(O_CREAT)` is in the baseline either way, so the target file's mere
+    // *existence* is a false positive: it exists whether or not `write` ran.
+    // What `write` decides is whether the empty file `openat` created gets any
+    // bytes in it, so the observable is the file's content.
+    let has_content = |p: &std::path::Path| p.exists() && std::fs::read(p).map(|b| !b.is_empty()).unwrap_or(false);
+
+    let (killed, _) = run(&backend, &spec_without_write());
+    assert_the_program_ran(SCENARIO, &killed);
+    assert!(
+        !has_content(&target),
+        "the write happened even though `write` was not in the syscall allowlist"
+    );
+
+    let with_write = spec_without_write().with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::Syscall)
+            .with_scope(RequirementScope::Selectors(vec![permit_only_selector("write")])),
+    );
+    let (control, _) = run(&backend, &with_write);
+    assert_the_program_ran(SCENARIO, &control);
+    assert!(
+        has_content(&target),
+        "the control run, with `write` allowlisted, did not produce the effect, so the kill above proves \
+         nothing. stderr: {:?}",
+        control.stderr
+    );
+    measured(
+        SCENARIO,
+        "a syscall filter that did not permit `write` stopped the write, and the identical launch with \
+         `write` allowlisted produced it",
+    );
+}
+
+/// **A permitted syscall still succeeds under an installed filter.** The
+/// filter is confirmed genuinely in force via `NativeBackend::syscall_filter`,
+/// not inferred from the program completing.
+#[test]
+fn a_permitted_syscall_still_succeeds_under_an_installed_filter() {
+    const SCENARIO: &str = "native: a permitted syscall still succeeds under an installed filter";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let spec = shell_spec(&format!("printf {SECRET}"), Vec::new(), Vec::new()).with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::Syscall).with_scope(RequirementScope::Selectors(vec![
+            permit_only_selector("read"),
+            permit_only_selector("write"),
+            permit_only_selector("openat"),
+            permit_only_selector("close"),
+            permit_only_selector("fstat"),
+            permit_only_selector("lseek"),
+            permit_only_selector("mmap"),
+            permit_only_selector("munmap"),
+            permit_only_selector("brk"),
+            permit_only_selector("exit_group"),
+            permit_only_selector("rt_sigaction"),
+            permit_only_selector("rt_sigprocmask"),
+            permit_only_selector("clock_gettime"),
+            permit_only_selector("getrandom"),
+        ])),
+    );
+    let plan = backend
+        .plan(&spec)
+        .expect("this backend now expresses a syscall filter");
+    let prepared = backend.prepare(plan).expect("prepared");
+    let filter = backend
+        .syscall_filter(&prepared)
+        .expect("a syscall requirement produces a filter genuinely in force");
+    assert!(
+        filter.permitted_numbers().len() >= 14,
+        "the filter permits fewer syscalls than policy plus the startup baseline: {:?}",
+        filter.permitted_numbers()
+    );
+
+    let handle = backend.spawn(prepared).expect("launch");
+    let completed = backend.wait(&handle).expect("wait");
+    assert_the_program_ran(SCENARIO, &completed);
+    assert!(
+        completed.stdout.contains(SECRET),
+        "a permitted syscall did not succeed under the installed filter. stdout: {:?} stderr: {:?}",
+        completed.stdout,
+        completed.stderr
+    );
+    assert_eq!(completed.status.code(), Some(0));
+    measured(
+        SCENARIO,
+        "a program whose every syscall was allowlisted ran to completion under a filter confirmed \
+         genuinely installed",
     );
 }
 
@@ -586,6 +753,7 @@ fn reported_capabilities_match_the_probe() {
     for (domain, observed) in [
         (CapabilityDomain::FilesystemRead, probe.filesystem_read.is_denied()),
         (CapabilityDomain::FilesystemWrite, probe.filesystem_write.is_denied()),
+        (CapabilityDomain::Syscall, probe.syscall.is_denied()),
     ] {
         let report = capabilities.report_for(domain).expect("every domain is reported");
         assert_eq!(
@@ -598,7 +766,7 @@ fn reported_capabilities_match_the_probe() {
     for domain in CapabilityDomain::ALL {
         if matches!(
             domain,
-            CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite
+            CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite | CapabilityDomain::Syscall
         ) {
             continue;
         }
@@ -610,7 +778,8 @@ fn reported_capabilities_match_the_probe() {
     }
     measured(
         SCENARIO,
-        "the two filesystem domains claim exactly what the probe observed and the other seven claim nothing",
+        "the three implemented domains claim exactly what the probe observed and the other six claim \
+         nothing",
     );
 }
 

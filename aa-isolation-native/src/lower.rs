@@ -28,9 +28,12 @@
 //! [`RequirementScope::Whole`] therefore emits no path and says so, rather than
 //! being treated as unexpressible.
 
-use aa_isolation::{permitted_selector, CapabilityDomain, ControlRequirement, ExecutionSpec, RequirementScope};
+use std::str::FromStr;
 
-use crate::launch::Grants;
+use aa_isolation::{permitted_selector, CapabilityDomain, ControlRequirement, ExecutionSpec, RequirementScope};
+use aa_security::policy::syscall::Syscall;
+
+use crate::launch::{Grants, SyscallFilter};
 
 /// A requirement this backend cannot express, and why.
 ///
@@ -50,6 +53,8 @@ pub struct LoweringGap {
 pub struct DomainLowering {
     /// The paths this requirement permits, by verb.
     pub grants: Grants,
+    /// The syscall filter this requirement contributes.
+    pub syscalls: SyscallFilter,
     /// A description of what was done, in this backend's own words, for
     /// [`aa_isolation::Lowering`].
     pub steps: Vec<String>,
@@ -65,15 +70,7 @@ pub fn lower_requirement(requirement: &ControlRequirement) -> Result<DomainLower
     match requirement.domain() {
         CapabilityDomain::FilesystemRead => Ok(filesystem(requirement, Verb::Read)),
         CapabilityDomain::FilesystemWrite => Ok(filesystem(requirement, Verb::Write)),
-        CapabilityDomain::Syscall => Err(LoweringGap {
-            domain: CapabilityDomain::Syscall,
-            reason: "this backend installs no system-call filter in this version; the launcher applies a \
-                     filesystem boundary only. Syscall enforcement is a separate, sequenced piece of work \
-                     (AAASM-5803) that extends the same launcher, and until it lands the domain is \
-                     unsupported rather than partially supported, so that a permitted-set requirement is \
-                     refused instead of being met by a control that does not exist"
-                .to_string(),
-        }),
+        CapabilityDomain::Syscall => syscall(requirement),
         CapabilityDomain::NetworkEgress => Err(LoweringGap {
             domain: CapabilityDomain::NetworkEgress,
             reason: "the kernel primitive this backend configures restricts network access by TCP PORT \
@@ -177,10 +174,15 @@ fn filesystem(requirement: &ControlRequirement, verb: Verb) -> DomainLowering {
                      they remain denied by the default-deny posture"
                 ));
             }
-            DomainLowering { grants, steps }
+            DomainLowering {
+                grants,
+                syscalls: SyscallFilter::NotRequested,
+                steps,
+            }
         }
         RequirementScope::Whole => DomainLowering {
             grants,
+            syscalls: SyscallFilter::NotRequested,
             steps: vec![format!(
                 "{domain}: whole-domain requirement; no path is made {}, so the kernel's default-deny \
                  posture covers the domain entirely",
@@ -189,11 +191,81 @@ fn filesystem(requirement: &ControlRequirement, verb: Verb) -> DomainLowering {
         },
         RequirementScope::Limits(_) => DomainLowering {
             grants,
+            syscalls: SyscallFilter::NotRequested,
             steps: vec![format!(
                 "{domain}: numeric ceilings do not apply to a filesystem domain; no grant emitted, so the \
                  default-deny posture stands"
             )],
         },
+    }
+}
+
+/// Syscall domain: a permitted syscall set, or an explicit refusal.
+///
+/// # Why `Whole` and `Limits` refuse rather than expressing "permit nothing"
+///
+/// A filesystem `Whole` requirement grants no path, which the kernel's own
+/// default-deny posture already realizes — nothing further is needed to make
+/// that true. A syscall filter has no such free default: the launcher's own
+/// `execve` of the confined program needs `crate::seccomp::STARTUP_BASELINE`
+/// permitted regardless, and a filter that permitted only the baseline would
+/// let the confined program execute nothing else at all, including its own
+/// first instruction beyond the loader. That is not "the strictest posture
+/// available" the way an empty filesystem grant is — it is a launch that
+/// cannot do anything, and refusing names that honestly rather than silently
+/// producing an unusable filter.
+fn syscall(requirement: &ControlRequirement) -> Result<DomainLowering, LoweringGap> {
+    let domain = requirement.domain();
+    match requirement.scope() {
+        RequirementScope::Selectors(selectors) => {
+            let mut permitted = std::collections::BTreeSet::new();
+            for selector in selectors {
+                let Some(name) = permitted_selector(selector) else {
+                    continue;
+                };
+                let syscall = Syscall::from_str(name).map_err(|_| LoweringGap {
+                    domain,
+                    reason: format!(
+                        "`{name}` is not in `aa_security::policy::syscall::Syscall`'s closed 15-name \
+                         vocabulary; a syscall filter can only permit a name the vocabulary recognises"
+                    ),
+                })?;
+                permitted.insert(syscall);
+            }
+            if permitted.is_empty() {
+                return Err(LoweringGap {
+                    domain,
+                    reason: "every selector this requirement named carried no permitted-set prefix, or \
+                             none were named at all; a syscall filter that permits nothing beyond the \
+                             startup baseline cannot run the confined program's own code, so this backend \
+                             refuses rather than installing one"
+                        .to_string(),
+                });
+            }
+            let names: Vec<&str> = permitted.iter().map(|s| s.name()).collect();
+            Ok(DomainLowering {
+                grants: Grants::default(),
+                syscalls: SyscallFilter::Allow(permitted),
+                steps: vec![format!(
+                    "{domain}: default-deny beyond the startup baseline; {} syscall(s) permitted by policy: {}",
+                    names.len(),
+                    names.join(", ")
+                )],
+            })
+        }
+        RequirementScope::Whole => Err(LoweringGap {
+            domain,
+            reason: "a whole-domain syscall requirement names no permitted syscall, and this backend's \
+                     launcher needs its own startup baseline permitted to reach the confined program at \
+                     all; permitting only the baseline is not the strictest expressible posture the way \
+                     an empty filesystem grant is, it is a launch that cannot execute anything, so this is \
+                     refused rather than silently installed"
+                .to_string(),
+        }),
+        RequirementScope::Limits(_) => Err(LoweringGap {
+            domain,
+            reason: "numeric ceilings do not name a syscall; a syscall filter is enumerated or nothing".to_string(),
+        }),
     }
 }
 

@@ -224,6 +224,23 @@ gap, is why AAASM-5753 (syscall-level enforcement in Sandlock) was **deferred** 
 shipped as a partial feature — deferring a requirement the mechanism structurally cannot
 satisfy is the correct call recorded here, not left implicit in a closed ticket.
 
+**Amendment — AAASM-5803 (2026-08-20):** the installed filter is not exactly the policy
+allowlist. It is `policy names ∪ STARTUP_BASELINE`, a fixed set of loader/exec-chain
+syscalls (`execve`, `clone`/`clone3`/`wait4`, and a handful of glibc dynamic-linker calls
+with no name in the policy vocabulary) permitted regardless of what policy stated. A seccomp
+filter is inherited across `execve`, not reset by it — the launcher installs the filter on
+itself before `execve`-ing the confined program, so the launcher's own `execve` and the
+dynamic loader that runs before the program's first instruction both execute *inside* the
+filter this backend just installed. `aa_security::policy::syscall::Syscall`'s 15-name
+vocabulary has no `execve` in it, so a filter built from policy alone would kill the launcher
+on every single launch. `STARTUP_BASELINE` is disjoint from the policy vocabulary by a
+tested invariant (`aa-isolation-native/src/seccomp.rs`), so a policy author's own allowlist
+selection is never silently widened by it — the practical edge is the reverse: a policy that
+omits a loader-critical call the vocabulary *can* name (`read`, `openat`, `mmap`, and ten
+others) gets its confined program killed during dynamic linking, before its own code runs.
+This is documented as a `SupportLevel::Partial` limitation on the syscall capability report,
+not folded into "the filter enforces the policy allowlist" language anywhere in code or docs.
+
 ### `/proc` scoping: how AAASM-5709's environment grant becomes an enforced boundary
 
 Landlock's filesystem ruleset will scope `/proc` read access: another process's

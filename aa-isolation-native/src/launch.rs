@@ -38,6 +38,9 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::str::FromStr;
+
+use aa_security::policy::syscall::Syscall;
 
 /// Separates the launcher's own flags from the program it is to execute.
 pub const ARG_SEPARATOR: &str = "--";
@@ -48,6 +51,19 @@ pub const FLAG_FS_READ: &str = "--fs-read";
 /// Grants write, create, rename and delete access to a path and everything
 /// beneath it.
 pub const FLAG_FS_WRITE: &str = "--fs-write";
+
+/// Marks that a syscall filter is to be installed, even one that permits
+/// nothing beyond `crate::seccomp::STARTUP_BASELINE`. A bare marker rather than
+/// implied by the presence of [`FLAG_SYSCALL_ALLOW`]: a filter with an empty
+/// policy allowlist is a real, in-force posture (deny every syscall the
+/// baseline does not already carry) and must be distinguishable on the command
+/// line from "no filter requested at all", the same distinction
+/// `SyscallAllowlist::permits_nothing` draws in policy (AAASM-5753).
+pub const FLAG_SYSCALL_FILTER: &str = "--syscall-filter";
+
+/// Permits one syscall by its closed-vocabulary name
+/// (`aa_security::policy::syscall::Syscall`). Repeatable.
+pub const FLAG_SYSCALL_ALLOW: &str = "--syscall-allow";
 
 /// The exit status the launcher uses when it could not establish the boundary
 /// and therefore did **not** execute the program.
@@ -97,6 +113,26 @@ pub enum ArgvError {
         /// The path as it arrived.
         path: String,
     },
+    /// A [`FLAG_SYSCALL_ALLOW`] value named something outside
+    /// `aa_security::policy::syscall::Syscall`'s closed vocabulary.
+    UnknownSyscall {
+        /// The name as it arrived.
+        name: String,
+    },
+    /// [`FLAG_SYSCALL_FILTER`] appeared with no [`FLAG_SYSCALL_ALLOW`] to go
+    /// with it.
+    ///
+    /// A stated filter that names nothing is not the same as no filter at all
+    /// — see [`FLAG_SYSCALL_FILTER`]'s own documentation — so this refuses
+    /// rather than silently installing a filter that permits only
+    /// `crate::seccomp::STARTUP_BASELINE`.
+    EmptySyscallFilter,
+    /// A [`FLAG_SYSCALL_ALLOW`] appeared without [`FLAG_SYSCALL_FILTER`].
+    ///
+    /// A supervisor that built one without the other has a bug in the code
+    /// that built the argv, and this launcher refuses rather than guessing
+    /// whether the marker was meant to be there.
+    SyscallNameWithoutFilter,
 }
 
 impl core::fmt::Display for ArgvError {
@@ -118,6 +154,22 @@ impl core::fmt::Display for ArgvError {
                 f,
                 "`{flag}={path}` is not absolute; a relative grant has no meaning without a working \
                  directory, which is not a boundary input"
+            ),
+            Self::UnknownSyscall { name } => write!(
+                f,
+                "`{FLAG_SYSCALL_ALLOW}={name}` names a syscall outside this launcher's closed vocabulary; \
+                 refusing rather than installing a filter that differs from the one the supervisor asked for"
+            ),
+            Self::EmptySyscallFilter => write!(
+                f,
+                "`{FLAG_SYSCALL_FILTER}` appeared with no `{FLAG_SYSCALL_ALLOW}` to go with it; a stated \
+                 filter that names nothing is not the same as no filter, and this launcher refuses rather \
+                 than guessing which one was meant"
+            ),
+            Self::SyscallNameWithoutFilter => write!(
+                f,
+                "`{FLAG_SYSCALL_ALLOW}` appeared without `{FLAG_SYSCALL_FILTER}`; refusing rather than \
+                 guessing whether a filter was meant to be installed"
             ),
         }
     }
@@ -175,11 +227,38 @@ pub struct PathVerbs {
     pub write: bool,
 }
 
+/// The syscall filter one launch is to install, alongside the filesystem
+/// [`Grants`].
+///
+/// Distinct from an empty `Allow` set on purpose: [`NotRequested`](Self::NotRequested)
+/// is "no requirement named this domain", and an empty allowlist is a
+/// contradiction lowering already refuses before this type is ever built (see
+/// `crate::lower`'s `LoweringGap` for an empty resulting set). Mirrors
+/// `aa_security::policy::syscall::SyscallAllowlist::permits_nothing`'s
+/// "in force and empty is not the same as absent" distinction one layer down.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SyscallFilter {
+    /// No syscall requirement named this launch. The launcher installs **no**
+    /// seccomp filter at all — not even one permitting only
+    /// `crate::seccomp::STARTUP_BASELINE` — so a launch with no syscall
+    /// requirement runs exactly as it did before AAASM-5803: unrestricted by
+    /// this control. Reported on evidence as "no filter in force" rather than
+    /// promoted to an installed-but-empty filter, which is why this is its
+    /// own variant rather than `Allow` with an empty set.
+    #[default]
+    NotRequested,
+    /// Install a filter permitting exactly these syscalls, plus
+    /// `crate::seccomp::STARTUP_BASELINE`.
+    Allow(BTreeSet<Syscall>),
+}
+
 /// A launcher command line, parsed or ready to build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LauncherArgv {
     /// The filesystem scope to install before executing anything.
     pub grants: Grants,
+    /// The syscall filter to install before executing anything.
+    pub syscalls: SyscallFilter,
     /// The program to execute once the boundary is installed.
     pub program: String,
     /// Its arguments, excluding the program name.
@@ -191,13 +270,19 @@ pub struct LauncherArgv {
 /// The returned vector excludes `argv[0]`: the caller supplies the launcher's
 /// own path from measured host facts, so a spec can never name the binary that
 /// confines it.
-pub fn build(grants: &Grants, program: &str, args: &[String]) -> Vec<String> {
-    let mut argv = Vec::with_capacity(grants.read.len() + grants.write.len() + args.len() + 2);
+pub fn build(grants: &Grants, syscalls: &SyscallFilter, program: &str, args: &[String]) -> Vec<String> {
+    let mut argv = Vec::with_capacity(grants.read.len() + grants.write.len() + args.len() + 3);
     for path in &grants.read {
         argv.push(format!("{FLAG_FS_READ}={path}"));
     }
     for path in &grants.write {
         argv.push(format!("{FLAG_FS_WRITE}={path}"));
+    }
+    if let SyscallFilter::Allow(names) = syscalls {
+        argv.push(FLAG_SYSCALL_FILTER.to_string());
+        for syscall in names {
+            argv.push(format!("{FLAG_SYSCALL_ALLOW}={}", syscall.name()));
+        }
     }
     argv.push(ARG_SEPARATOR.to_string());
     // From here down every element is caller-supplied and is pushed whole. No
@@ -220,6 +305,8 @@ where
     S: Into<String>,
 {
     let mut grants = Grants::default();
+    let mut saw_filter_marker = false;
+    let mut allow: BTreeSet<Syscall> = BTreeSet::new();
     let mut iter = argv.into_iter().map(Into::into);
     let mut saw_separator = false;
     let mut tail: Vec<String> = Vec::new();
@@ -237,16 +324,37 @@ where
             grants.write.insert(absolute(FLAG_FS_WRITE, path)?);
             continue;
         }
+        if arg == FLAG_SYSCALL_FILTER {
+            saw_filter_marker = true;
+            continue;
+        }
+        if let Some(name) = arg.strip_prefix(&format!("{FLAG_SYSCALL_ALLOW}=")) {
+            let syscall = Syscall::from_str(name).map_err(|_| ArgvError::UnknownSyscall { name: name.to_string() })?;
+            allow.insert(syscall);
+            continue;
+        }
         return Err(ArgvError::UnknownArgument(arg));
     }
     if !saw_separator {
         return Err(ArgvError::MissingSeparator);
     }
+    if !allow.is_empty() && !saw_filter_marker {
+        return Err(ArgvError::SyscallNameWithoutFilter);
+    }
+    let syscalls = if saw_filter_marker {
+        if allow.is_empty() {
+            return Err(ArgvError::EmptySyscallFilter);
+        }
+        SyscallFilter::Allow(allow)
+    } else {
+        SyscallFilter::NotRequested
+    };
     tail.extend(iter);
     let mut tail = tail.into_iter();
     let program = tail.next().ok_or(ArgvError::MissingProgram)?;
     Ok(LauncherArgv {
         grants,
+        syscalls,
         program,
         args: tail.collect(),
     })
@@ -279,10 +387,24 @@ mod tests {
     fn every_built_command_line_parses_back_to_its_input() {
         let built = LauncherArgv {
             grants: grants(&["/usr", "/etc"], &["/workspace/build"]),
+            syscalls: SyscallFilter::NotRequested,
             program: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "printf x".to_string()],
         };
-        let argv = build(&built.grants, &built.program, &built.args);
+        let argv = build(&built.grants, &built.syscalls, &built.program, &built.args);
+        assert_eq!(parse(argv).expect("a built command line parses"), built);
+    }
+
+    /// The same round trip, with a syscall filter in force.
+    #[test]
+    fn a_syscall_filter_round_trips_through_the_command_line() {
+        let built = LauncherArgv {
+            grants: grants(&["/usr"], &[]),
+            syscalls: SyscallFilter::Allow([Syscall::Read, Syscall::Write].into_iter().collect()),
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "printf x".to_string()],
+        };
+        let argv = build(&built.grants, &built.syscalls, &built.program, &built.args);
         assert_eq!(parse(argv).expect("a built command line parses"), built);
     }
 
@@ -307,7 +429,12 @@ mod tests {
         .iter()
         .map(|s| (*s).to_string())
         .collect();
-        let argv = build(&grants(&["/usr"], &[]), "--fs-write=/etc", &hostile);
+        let argv = build(
+            &grants(&["/usr"], &[]),
+            &SyscallFilter::NotRequested,
+            "--fs-write=/etc",
+            &hostile,
+        );
         let parsed = parse(argv).expect("parses");
         assert_eq!(parsed.program, "--fs-write=/etc");
         assert_eq!(parsed.args, hostile);
@@ -321,7 +448,12 @@ mod tests {
     /// where the parser looks for the next flag.
     #[test]
     fn a_grant_value_that_looks_like_a_flag_stays_a_value() {
-        let argv = build(&grants(&["/--fs-write=/etc"], &[]), "/bin/true", &[]);
+        let argv = build(
+            &grants(&["/--fs-write=/etc"], &[]),
+            &SyscallFilter::NotRequested,
+            "/bin/true",
+            &[],
+        );
         assert_eq!(argv[0], "--fs-read=/--fs-write=/etc");
         let parsed = parse(argv).expect("parses");
         assert_eq!(parsed.grants, grants(&["/--fs-write=/etc"], &[]));
@@ -360,10 +492,46 @@ mod tests {
     /// round trip as one.
     #[test]
     fn an_empty_grant_set_round_trips_as_deny_everything() {
-        let argv = build(&Grants::default(), "/bin/true", &[]);
+        let argv = build(&Grants::default(), &SyscallFilter::NotRequested, "/bin/true", &[]);
         assert_eq!(argv, [ARG_SEPARATOR, "/bin/true"]);
         let parsed = parse(argv).expect("parses");
         assert!(parsed.grants.is_empty());
+        assert_eq!(parsed.syscalls, SyscallFilter::NotRequested);
+    }
+
+    /// A [`FLAG_SYSCALL_ALLOW`] name outside the closed vocabulary is refused,
+    /// not silently dropped.
+    #[test]
+    fn an_unknown_syscall_name_is_refused() {
+        let error = parse([
+            FLAG_SYSCALL_FILTER,
+            "--syscall-allow=ptrace",
+            ARG_SEPARATOR,
+            "/bin/true",
+        ])
+        .expect_err("must refuse");
+        assert_eq!(
+            error,
+            ArgvError::UnknownSyscall {
+                name: "ptrace".to_string()
+            }
+        );
+    }
+
+    /// A stated filter that names nothing is refused rather than installed as
+    /// a filter permitting only the startup baseline.
+    #[test]
+    fn a_syscall_filter_marker_with_no_names_is_refused() {
+        let error = parse([FLAG_SYSCALL_FILTER, ARG_SEPARATOR, "/bin/true"]).expect_err("must refuse");
+        assert_eq!(error, ArgvError::EmptySyscallFilter);
+    }
+
+    /// A syscall name without the filter marker is refused rather than
+    /// silently installing (or silently skipping) a filter.
+    #[test]
+    fn a_syscall_name_without_the_filter_marker_is_refused() {
+        let error = parse(["--syscall-allow=read", ARG_SEPARATOR, "/bin/true"]).expect_err("must refuse");
+        assert_eq!(error, ArgvError::SyscallNameWithoutFilter);
     }
 
     /// A path named by both verbs is one rule with both rights, not two rules
