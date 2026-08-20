@@ -222,6 +222,45 @@ pub const STARTUP_BASELINE: &[(&str, u32)] = &[
     ("clone", 56),
     ("clone3", 435),
     ("wait4", 61),
+    // glibc's dynamic loader checks for a preload list before anything else it
+    // does with a file descriptor — measured live on a real x86_64 Ubuntu
+    // kernel (AAASM-5803's own CI lane): the very first thing a filter this
+    // launcher installed killed was this call.
+    ("access", 21),
+    // A POSIX shell's own `>` redirection: open the target, then move it onto
+    // the descriptor the redirected command expects.
+    ("dup2", 33),
+    ("dup3", 292),
+    // A shell checks whether its stdio descriptors are a terminal
+    // (`TCGETS`) before deciding whether to behave interactively.
+    ("ioctl", 16),
+    // Descriptor-flag bookkeeping (`FD_CLOEXEC` and similar) that both the
+    // loader and a shell perform on descriptors they open.
+    ("fcntl", 72),
+    ("getpid", 39),
+    ("gettid", 186),
+    ("readlink", 89),
+    ("lstat", 6),
+    ("stat", 4),
+    // A shell's own privilege checks (e.g. deciding whether `$0` starting with
+    // `-` means a login shell may drop privileges) — measured live, the second
+    // gap this ticket's own CI lane found past the loader.
+    ("getuid", 102),
+    ("geteuid", 107),
+    ("getgid", 104),
+    ("getegid", 108),
+    // A shell's job-control and signal-disposition bookkeeping at startup —
+    // measured live, the third round of gaps this ticket's own CI lane found.
+    ("getppid", 110),
+    ("getpgrp", 111),
+    ("setpgid", 109),
+    ("umask", 95),
+    ("sigaltstack", 131),
+    ("rt_sigreturn", 15),
+    ("getsid", 124),
+    // A shell resolves its own working directory at startup (`$PWD`) —
+    // measured live, round 4.
+    ("getcwd", 79),
 ];
 
 /// Build the cBPF program a [`SyscallFilter`] compiles to.
