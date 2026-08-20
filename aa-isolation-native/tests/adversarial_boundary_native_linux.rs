@@ -540,10 +540,10 @@ fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
 
     // Control: `/proc` granted whole. The read succeeds, so the file exists, is
     // readable by this user, and the command works.
-    let control = unscoped_proc_run(&script);
+    let (control, control_stderr) = unscoped_proc_run(&script);
     assert!(
-        !control.contains(launch::FAILURE_MARKER),
-        "the control launcher invocation refused to establish a boundary: {control}"
+        !control_stderr.contains(launch::FAILURE_MARKER),
+        "the control launcher invocation refused to establish a boundary: {control_stderr}"
     );
     assert!(control.contains(marker), "stdout: {control:?}");
     assert!(
@@ -634,11 +634,14 @@ fn another_processs_environ_is_outside_a_scoped_proc_grant() {
     let sibling = format!("/proc/{}/cmdline", std::process::id());
     let script = proc_inspection_script(&sibling);
 
-    // Control: the launcher, driven directly, with `/proc` granted whole.
-    let control = unscoped_proc_run(&script);
+    // Control: the launcher, driven directly, with `/proc` granted whole. The
+    // streams stay apart because a refused open writes to stderr and every tag
+    // is on stdout.
+    let (control, control_stderr) = unscoped_proc_run(&script);
     assert!(
-        !control.contains(launch::FAILURE_MARKER),
-        "the control launcher invocation refused to establish a boundary, so it measured nothing: {control}"
+        !control_stderr.contains(launch::FAILURE_MARKER),
+        "the control launcher invocation refused to establish a boundary, so it measured nothing: \
+         {control_stderr}"
     );
     for tag in ["RAN;", "OWNENV;", "SYSCTL;", "CHILDCMD;", "SIBLINGCMD;"] {
         assert!(
@@ -724,6 +727,14 @@ fn another_processs_environ_is_outside_a_scoped_proc_grant() {
 /// comment for why that matters. Each success prints its own tag, so an absent
 /// tag is a refused open and never a command that was not reached.
 ///
+/// **No `2>/dev/null` anywhere.** Writing to `/dev/null` needs write access to
+/// it, which no scenario in this suite grants, so an ordinary-looking
+/// `if true 2>/dev/null < PATH` fails on the *redirection* rather than on the
+/// path under test — measured on the lane, where every probe including the
+/// controls came back as `cannot create /dev/null: Permission denied`. The
+/// shell's diagnostics go to standard error and every tag goes to standard
+/// output, so the two are simply read separately.
+///
 /// Deliberately **not** wrapped in [`as_grandchild`]: the rule this scope
 /// installs is tied to the launched process's own per-PID directory, which is the
 /// only one that exists when the boundary is installed, so `/proc/self` from a
@@ -735,12 +746,12 @@ fn proc_inspection_script(sibling_cmdline: &str) -> String {
         "printf 'RAN;'; \
          /bin/sleep 5 & \
          c=$!; \
-         if true 2>/dev/null < /proc/self/environ; then printf 'OWNENV;'; fi; \
-         if true 2>/dev/null < /proc/sys/kernel/ostype; then printf 'SYSCTL;'; fi; \
-         if true 2>/dev/null < /proc/$c/environ; then printf 'CHILDENV;'; fi; \
-         if true 2>/dev/null < /proc/$c/cmdline; then printf 'CHILDCMD;'; fi; \
-         if true 2>/dev/null < {sibling}; then printf 'SIBLINGCMD;'; fi; \
-         kill $c 2>/dev/null; \
+         if true < /proc/self/environ; then printf 'OWNENV;'; fi; \
+         if true < /proc/sys/kernel/ostype; then printf 'SYSCTL;'; fi; \
+         if true < /proc/$c/environ; then printf 'CHILDENV;'; fi; \
+         if true < /proc/$c/cmdline; then printf 'CHILDCMD;'; fi; \
+         if true < {sibling}; then printf 'SIBLINGCMD;'; fi; \
+         kill $c; \
          exit 0",
         sibling = shell_word(sibling_cmdline)
     )
@@ -752,7 +763,7 @@ fn proc_inspection_script(sibling_cmdline: &str) -> String {
 /// Driven against the launcher binary directly because there is no longer a
 /// supported way to ask the backend for an unscoped `/proc`, which is the point.
 /// Same launcher, same kernel, same system grants; one grant differs.
-fn unscoped_proc_run(script: &str) -> String {
+fn unscoped_proc_run(script: &str) -> (String, String) {
     let mut command = std::process::Command::new(launcher());
     for selector in system_reads(true) {
         command.arg(format!("--fs-read={}", selector.trim_start_matches("permit-only:")));
@@ -764,10 +775,9 @@ fn unscoped_proc_run(script: &str) -> String {
         .arg(script)
         .output()
         .expect("the launcher could not be executed");
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
     )
 }
 
