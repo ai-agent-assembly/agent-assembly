@@ -258,6 +258,9 @@ pub const STARTUP_BASELINE: &[(&str, u32)] = &[
     ("sigaltstack", 131),
     ("rt_sigreturn", 15),
     ("getsid", 124),
+    // A shell resolves its own working directory at startup (`$PWD`) —
+    // measured live, round 4.
+    ("getcwd", 79),
 ];
 
 /// Build the cBPF program a [`SyscallFilter`] compiles to.
