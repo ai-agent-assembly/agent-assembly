@@ -690,9 +690,15 @@ fn the_child_receives_only_the_environment_the_launch_delegated() {
         "the delegated variable did not reach the confined program. stdout: {:?}",
         completed.stdout
     );
-    // The control in the other direction: the child's environment has exactly the
-    // two names the launch delegated, so a variable nobody listed cannot arrive
-    // because it happened to be exported.
+    // The control in the other direction: a name the *supervisor* holds and the
+    // launch did not delegate must NOT be in the child's environment, or the
+    // replacement did not happen and the delegated value above arrived by
+    // inheritance rather than by decision.
+    //
+    // Asserted against a name taken from this process rather than against "the
+    // child has exactly two names": a POSIX shell exports `PWD` on its own, so
+    // an exhaustive assertion would be measuring the shell's behaviour rather
+    // than the launch's.
     let names: Vec<&str> = completed
         .stdout
         .lines()
@@ -700,9 +706,22 @@ fn the_child_receives_only_the_environment_the_launch_delegated() {
         .map(|(name, _)| name)
         .filter(|name| !name.is_empty())
         .collect();
+    let Some(undelegated) = std::env::vars()
+        .map(|(name, _)| name)
+        .find(|name| name != "AA_NATIVE_DELEGATED" && name != "PATH" && name != "PWD")
+    else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::NotMeasured,
+            "this process holds no environment variable outside the delegated set, so the replacement \
+             has nothing to be measured against",
+        );
+        return;
+    };
     assert!(
-        names.iter().all(|n| *n == "AA_NATIVE_DELEGATED" || *n == "PATH"),
-        "the confined program received names the launch did not delegate: {names:?}"
+        !names.contains(&undelegated.as_str()),
+        "`{undelegated}` reached the confined program from the supervisor's environment even though the \
+         launch delegated only AA_NATIVE_DELEGATED and PATH: {names:?}"
     );
     // And the values are not on any command line.
     assert!(
