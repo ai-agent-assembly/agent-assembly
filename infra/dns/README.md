@@ -52,7 +52,7 @@ Cloudflare's edge; the Worker route decides what `/install.sh` returns.
 
 ## The kept `agent-assembly.dev` zone
 
-`agent-assembly.dev` **stays working** (ADR 0007). Its only required record is the
+`agent-assembly.dev` **stays working** (Core ADR 0007). Its only required record is the
 existing installer host:
 
 | Name (host) | Type | Value | Proxy | Notes |

@@ -1,6 +1,6 @@
 # AAASM-4080 — Dashboard domain TLD fix, Front-End validation
 
-**Bug**: [AAASM-4080](https://lightning-dust-mite.atlassian.net/browse/AAASM-4080) — dashboard hardcoded dead `agent-assembly.io` links; canonical is `.com` per ADR-0007.
+**Bug**: [AAASM-4080](https://lightning-dust-mite.atlassian.net/browse/AAASM-4080) — dashboard hardcoded dead `agent-assembly.io` links; canonical is `.com` per Core ADR-0007.
 **Epic**: [AAASM-4068](https://lightning-dust-mite.atlassian.net/browse/AAASM-4068) (2026-07-04 security + QA sweep fix wave)
 **PR**: ai-agent-assembly/agent-assembly#1401
 **Validated**: 2026-07-04, branch `v0.0.1/AAASM-4080/fix/dashboard_domain_tld`
