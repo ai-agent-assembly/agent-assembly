@@ -52,6 +52,10 @@ on:
       # that checks it — otherwise the declaration merges without the lane it
       # describes ever running.
       - ".ci/isolation-lane-scenarios.txt"
+      # AAASM-5802: the same, for the AASM-native backend's lane. A router
+      # filter without a matching entry here is a dead trigger (ADR 0028), and
+      # declaring a scenario change has to select the lane that checks it.
+      - ".ci/isolation-native-lane-scenarios.txt"
       - ".config/nextest.toml"
       - "openapi/v1.yaml"
       - "schemas/**/*.json"
@@ -196,6 +200,7 @@ jobs:
       devint_client: ${{ steps.filter.outputs.devint_client }}
       backend_license: ${{ steps.filter.outputs.backend_license }}
       isolation_backend: ${{ steps.filter.outputs.isolation_backend }}
+      isolation_native: ${{ steps.filter.outputs.isolation_native }}
       governance: ${{ steps.filter.outputs.governance }}
       benchmarks: ${{ steps.filter.outputs.benchmarks }}
       # AAASM-5677: mirror, glob for glob, each governance satellite's own
@@ -381,6 +386,25 @@ jobs:
               - 'aa-integration-tests/tests/evidence/mod.rs'
               - '.ci/test-evidence-summary.sh'
               - '.ci/isolation-lane-scenarios.txt'
+              - '.config/nextest.toml'
+              - '.github/workflows/ci.yml'
+            # AAASM-5802: the AASM-native backend. Its own filter and its own
+            # lane rather than an addition to `isolation_backend` above, for two
+            # reasons that are both about what a green check would mean. The two
+            # lanes have different provisioning — this one builds a launcher from
+            # source and installs no third-party binary — so a shared job would
+            # make one backend's install failure red the other's measurement.
+            # And each lane diffs its ledger against its own scenario manifest,
+            # so a shared job would make every scenario appear undeclared in the
+            # other lane's list.
+            isolation_native:
+              - 'aa-isolation/**/*.rs'
+              - 'aa-isolation/**/Cargo.toml'
+              - 'aa-isolation-native/**/*.rs'
+              - 'aa-isolation-native/**/Cargo.toml'
+              - 'aa-integration-tests/tests/evidence/mod.rs'
+              - '.ci/test-evidence-summary.sh'
+              - '.ci/isolation-native-lane-scenarios.txt'
               - '.config/nextest.toml'
               - '.github/workflows/ci.yml'
             # AAASM-5713: the isolation benchmark harness. Extension-qualified
@@ -2637,6 +2661,173 @@ jobs:
             exit 1
           fi
 
+  isolation-backend-native-linux:
+    needs: [changes]
+    # Path-gated like the sibling isolation lane, with the same two backstops: a
+    # weekly schedule and manual dispatch. Without them a lane that only fires on
+    # its own files would leave `main` claiming a measured boundary long after an
+    # unrelated change broke it.
+    if: needs.changes.outputs.isolation_native == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # AAASM-5802 — the only place any claim the AASM-native backend makes is
+    # measured.
+    #
+    # Nothing about this boundary can be established on macOS or in a unit test:
+    # the capability reports are gated on a live probe that watches a real kernel
+    # denial happen, and that probe needs a Linux kernel whose Landlock ABI meets
+    # the backend's floor. Every scenario that cannot run here declines *and
+    # records the decline*, and the final steps fail the job when anything
+    # declined — because `ci-success` treats a skipped job as a pass, so a lane
+    # that silently measured nothing would read as a green boundary. That is the
+    # defect AAASM-5711 caught for the Sandlock lane and this lane is written not
+    # to reintroduce.
+    #
+    # Note what this lane does NOT install: there is no third-party binary to
+    # download and digest-verify, because this backend ships no external
+    # mechanism. The launcher it measures is built from source by the same
+    # `cargo nextest run` invocation, and the suites reach it through
+    # `CARGO_BIN_EXE_aa-isolation-launch` — the binary from *this* build, not
+    # whichever one a `PATH` search would find.
+    name: Isolation backend confinement, AASM-native (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.isolation-native-outcomes
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Record the host this lane measured
+        # First, and unconditionally. When a scenario declines because the kernel
+        # is too old, these are the numbers that say so, and reconstructing them
+        # afterwards from a skip message is guesswork. The ABI is read the same
+        # way the backend reads it — by asking the kernel — rather than inferred
+        # from the release string, because a distribution kernel's release and
+        # its Landlock ABI are independent facts.
+        run: |
+          echo "kernel: $(uname -r)"
+          echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo '<securityfs not readable>')"
+          cat > /tmp/landlock-abi.c <<'EOF'
+          #include <linux/landlock.h>
+          #include <sys/syscall.h>
+          #include <unistd.h>
+          #include <stdio.h>
+          int main(void) {
+            long v = syscall(__NR_landlock_create_ruleset, NULL, 0,
+                             LANDLOCK_CREATE_RULESET_VERSION);
+            printf("landlock abi: %ld\n", v);
+            return 0;
+          }
+          EOF
+          cc -o /tmp/landlock-abi /tmp/landlock-abi.c && /tmp/landlock-abi || \
+            echo "landlock abi: <could not be queried>"
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: isolation-backend-native-linux
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Run the confinement suite
+        # `--no-capture` so a `SKIP [...]` line is visible in the log; without it
+        # a declining scenario reads exactly like a measuring one.
+        # `--profile evidence` writes the JUnit report the summary step needs for
+        # its denominator: the ledger says which cases declined, and only the
+        # runner knows how many there were.
+        #
+        # One invocation, because the summary step reads a single JUnit report
+        # and a second `nextest run` would overwrite the first — halving the
+        # denominator it nets declines against.
+        #
+        # `-p aa-isolation-native` alone: this backend needs no gateway, no
+        # database and no `protoc`, so nothing else has to compile for the lane
+        # to measure what it is here to measure.
+        #
+        # `--no-fail-fast` because of how this lane's two later gates read the
+        # ledger. Without it the first failing scenario cancels the rest, and the
+        # "declared vs measured" diff then reports every cancelled scenario as
+        # declared-but-unmeasured — on the lane's first run that turned one real
+        # failure into sixteen lines of noise, fifteen of which were scenarios
+        # that had never been given the chance to run. The job still fails on the
+        # test failure; this only stops the diff from describing the cancellation
+        # instead of the defect.
+        run: |
+          cargo nextest run --profile evidence --no-capture --no-fail-fast -p aa-isolation-native
+      - name: Report what this lane measured
+        # `always()`: a lane that failed still has an outcome worth reading, and
+        # the ledger is most useful exactly when something went wrong.
+        #
+        # `--require-evidence`: this lane exists to take a measurement. Every
+        # scenario declining means the runner could not confine anything, which
+        # is a broken lane rather than an honest opt-out — and the one failure
+        # mode `ci-success` cannot see on its own.
+        if: always()
+        run: |
+          .ci/test-evidence-summary.sh \
+            --lane "isolation backend, AASM-native (Linux)" \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${AA_CONFORMANCE_OUTCOME_DIR}" \
+            --require-evidence
+      - name: Fail on any decline, not merely on a lane that declined everything
+        # `--require-evidence` fails only when the substantive count reaches
+        # zero, and this suite contains scenarios that need no kernel (an absent
+        # launcher must refuse before launch). Those portable cases would hold
+        # the count above zero while every measurement scenario declined — a
+        # green lane over a suite that measured nothing about confinement, which
+        # is the exact reading this lane exists to prevent.
+        #
+        # On *this* runner both decline reasons are defects rather than honest
+        # opt-outs: the job builds the launcher itself, so `tool_absent` means
+        # the build is broken, and it selects the runner, so
+        # `unsupported_platform` means the image's kernel no longer meets the
+        # backend's measured ABI floor.
+        if: always()
+        run: |
+          set -euo pipefail
+          # `|| true` on every grep: zero matches is the expected, healthy answer
+          # here and grep reports it as exit 1, which `pipefail` would otherwise
+          # turn into a step failure — a check that fails precisely when it has
+          # nothing to report.
+          declined_records() {
+            grep -l '"outcome": "\(unsupported_platform\|tool_absent\|not_measured\)"' \
+              "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true
+          }
+          declines=$(declined_records | grep -c . || true)
+          measured=$({ grep -l '"outcome": "measured"' \
+            "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true; } | grep -c . || true)
+          echo "measured=${measured} declined=${declines}"
+          if [ "${declines}" -ne 0 ]; then
+            echo "::error title=AASM-native isolation lane declined a measurement::${declines} scenario(s) declined on a runner that builds the launcher and selects the kernel. Records:"
+            declined_records | while IFS= read -r record; do cat "$record" >&2; done
+            exit 1
+          fi
+      - name: Assert the lane measured the scenario set it declares
+        # AAASM-5712's "declared vs measured" pattern, applied to this lane's own
+        # manifest. A raised floor would not do: the ledger writes one file per
+        # scenario NAME, so a duplicated name collapses into one record and a
+        # count is equally consistent with N distinct scenarios and with N-1 plus
+        # a duplicate. This diffs the SET of names against
+        # `.ci/isolation-native-lane-scenarios.txt` — a second artifact, so a
+        # deleted or renamed scenario reddens here until someone records the
+        # change there. The expected count is read off that file rather than
+        # typed into this step, which is how the previous number went stale.
+        if: always()
+        run: |
+          set -euo pipefail
+          measured_records=$(mktemp)
+          declared_records=$(mktemp)
+          # `|| true`: an empty ledger is a reading this step reports through the
+          # diff below, and `pipefail` would turn grep's exit 1 into an abort
+          # before it gets there.
+          { grep -l '"outcome": "measured"' \
+            "${AA_CONFORMANCE_OUTCOME_DIR}"/*.json 2>/dev/null || true; } \
+            | while IFS= read -r record; do
+                sed -n 's/^  "scenario": "\(.*\)",$/\1/p' "${record}"
+              done | LC_ALL=C sort -u > "${measured_records}"
+          grep -v -e '^#' -e '^[[:space:]]*$' .ci/isolation-native-lane-scenarios.txt \
+            | LC_ALL=C sort -u > "${declared_records}"
+          echo "declared=$(wc -l < "${declared_records}") measured=$(wc -l < "${measured_records}")"
+          if ! diff -u --label declared --label measured "${declared_records}" "${measured_records}"; then
+            echo "::error title=AASM-native isolation lane did not measure the scenario set it declares::the scenario names carrying \"outcome\": \"measured\" differ from .ci/isolation-native-lane-scenarios.txt. In the diff above, a '-' line is declared and unmeasured (deleted, renamed, or it declined) and a '+' line is measured and undeclared (added without updating the file)."
+            exit 1
+          fi
+
   # AAASM-2599: single aggregate gate that succeeds only when every functional
   # CI job passed or was intentionally skipped (path-routed). This is the one
   # status to make a required check in branch protection — it stays green for
@@ -3051,6 +3242,11 @@ jobs:
       # carries `--require-evidence` and fails itself when it measured nothing,
       # rather than relying on a green here to mean anything.
       - isolation-backend-linux
+      # AAASM-5802: blocks, for the same reason and with the same caveat as the
+      # lane above — this aggregator counts a *skipped* need as a pass, so the
+      # lane fails itself when it measured nothing rather than relying on a
+      # green here to mean anything.
+      - isolation-backend-native-linux
       - benchmark
       - conformance
       - conformance-python
