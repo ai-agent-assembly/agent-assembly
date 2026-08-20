@@ -35,19 +35,30 @@
 //! this host's ptrace rules permit the read, so the denial measured is this
 //! backend's and not another LSM's.
 
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aa_isolation::{
     permit_only_selector, CapabilityDomain, ControlRequirement, EnforcementEvidence, EvidenceKind, ExecutionSpec,
-    IdentityRef, IsolationBackend, RequirementScope,
+    IdentityRef, IsolationBackend, RequirementScope, SupportLevel, CLOUD_METADATA_ENDPOINTS,
 };
 use aa_isolation_native::{launch, CompletedRun, NativeBackend, REQUIRED_ABI_VERSION};
 
-#[path = "../../aa-integration-tests/tests/evidence/mod.rs"]
-mod evidence;
+// Only for `AttackFamily`, so `measured` below can tag every record with the
+// family it belongs to (AAASM-5805) — the same format
+// `adversarial::measured` uses, so this lane's ledger records line up with the
+// Sandlock lane's. This file keeps its own `require_confining_backend`,
+// `decline`, `Scratch` and the rest rather than switching to `adversarial`'s
+// versions: `include_proc`/`spec_with`'s shape and `shell_word`'s name differ
+// just enough from the neutral core's `system_reads`/`shell_spec_using`/
+// `quote` that folding them together is a separate, larger change than this
+// ticket's scope of "cover the four families native does not measure".
+#[path = "adversarial/mod.rs"]
+mod adversarial;
 
-use evidence::Measurement;
+use adversarial::evidence::{self, Measurement};
+use adversarial::AttackFamily;
 
 const SECRET: &str = "aa-native-adversarial-secret-2f6d";
 
@@ -105,8 +116,16 @@ fn decline<T>(scenario: &str, measurement: Measurement, reason: &str) -> Option<
     None
 }
 
-fn measured(scenario: &str, detail: &str) {
-    evidence::record(scenario, Measurement::Measured, detail);
+/// Record that a scenario took its measurement, tagged with its family — the
+/// same `"{family}: {detail}"` format `adversarial::measured` writes, so a
+/// reader of the ledger cannot tell which lane produced a record from its
+/// shape.
+fn measured(scenario: &str, family: AttackFamily, detail: &str) {
+    evidence::record(
+        scenario,
+        Measurement::Measured,
+        &format!("{}: {detail}", family.as_str()),
+    );
 }
 
 struct Scratch {
@@ -264,6 +283,7 @@ fn a_symlinked_write_outside_the_grant_never_takes_effect() {
     );
     measured(
         SCENARIO,
+        AttackFamily::ForbiddenFilesystemWrite,
         "a symlink inside the write grant pointing outside it did not make the target writable, while \
          the control write inside the grant did happen",
     );
@@ -316,6 +336,7 @@ fn a_hard_link_cannot_bring_a_forbidden_file_into_the_grant() {
     );
     measured(
         SCENARIO,
+        AttackFamily::ForbiddenFilesystemWrite,
         "a hard link within the grant was created and a hard link from outside it was not",
     );
 }
@@ -379,6 +400,7 @@ fn a_rename_across_the_boundary_never_takes_effect() {
     );
     measured(
         SCENARIO,
+        AttackFamily::ForbiddenFilesystemWrite,
         "a rename inside the grant happened; renames out of it and into it did not, and the forbidden \
          source survived",
     );
@@ -426,6 +448,7 @@ fn a_parent_traversal_path_does_not_escape_the_grant() {
     );
     measured(
         SCENARIO,
+        AttackFamily::ForbiddenFilesystemWrite,
         "a run-time path containing `..` did not reach outside the grant, while the same write without \
          it did",
     );
@@ -487,6 +510,7 @@ fn an_alternate_executable_path_is_confined_alike() {
     );
     measured(
         SCENARIO,
+        AttackFamily::ProcessTreeAndAlternateExecutables,
         "a symlinked interpreter was confined exactly as the ordinary one, against a control that shows \
          the write is otherwise possible",
     );
@@ -571,6 +595,7 @@ fn another_processes_proc_entry_is_unreadable_without_a_proc_grant() {
     );
     measured(
         SCENARIO,
+        AttackFamily::ProcessInspection,
         "with /proc granted whole the sibling cmdline was readable and without any /proc grant only the \
          marker came back. Note what this does NOT claim: `environ` is separately gated by ptrace access \
          rules, so a denial of it on a Yama host is not this backend's — the scenario that measures a \
@@ -713,6 +738,7 @@ fn another_processs_environ_is_outside_a_scoped_proc_grant() {
 
     measured(
         SCENARIO,
+        AttackFamily::ProcessInspection,
         "with /proc granted whole the confined program opened its own child's environ, its child's \
          cmdline and an unrelated process's cmdline; with the same grant scoped by this backend it opened \
          none of the three, while its own /proc/self/environ and /proc/sys stayed reachable. This is the \
@@ -877,6 +903,7 @@ fn the_launcher_refuses_a_command_line_it_cannot_fully_honour() {
     }
     measured(
         SCENARIO,
+        AttackFamily::BackendPosture,
         "an unrecognised flag and an unopenable grant each produced a refusal and no process, against a \
          control invocation that ran",
     );
@@ -925,6 +952,7 @@ fn observation_is_never_promoted_to_prevention() {
     assert!(!evidence.records().iter().any(|r| r.kind == EvidenceKind::Decision));
     measured(
         SCENARIO,
+        AttackFamily::ObserveAndDegradedTruthfulness,
         "a genuinely denied write produced installed and exercised records and no prevention claim",
     );
 }
@@ -1009,6 +1037,7 @@ fn a_standalone_truncate_syscall_outside_the_grant_never_takes_effect() {
     );
     measured(
         SCENARIO,
+        AttackFamily::ForbiddenFilesystemWrite,
         "truncate(2) shrank a file inside the write grant and could not shrink one outside it",
     );
 }
@@ -1114,6 +1143,7 @@ fn a_descendant_cannot_make_a_syscall_the_launch_did_not_permit() {
     );
     measured(
         SCENARIO,
+        AttackFamily::SyscallAndResource,
         "a grandchild of the launched process was killed for a syscall the launch did not permit, while \
          the identical grandchild with that syscall allowlisted produced its effect",
     );
@@ -1225,7 +1255,347 @@ fn the_launcher_refuses_a_syscall_filter_it_cannot_fully_honour() {
     );
     measured(
         SCENARIO,
+        AttackFamily::BackendPosture,
         "a syscall filter naming a call outside the closed vocabulary was refused with no process started, \
          against a control invocation naming only valid calls that ran",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-5805: four families this backend does not cover, measured as gaps.
+// ---------------------------------------------------------------------------
+//
+// This backend installs a filesystem boundary and a syscall filter, and
+// nothing else — see `aa-isolation-native/src/capability.rs`'s module
+// documentation, "Six domains are unsupported on purpose". Four
+// `AttackFamily` variants have no protection here to measure:
+// `DirectEgressBypass`, `CloudMetadata` and `AddressRepresentation` all live
+// on `CapabilityDomain::NetworkEgress`, which this backend does not lower at
+// all, and `UnixSocketsAndDescriptors` lives on `CapabilityDomain::Ipc`, which
+// it does not lower either. Each scenario below follows
+// `adversarial_boundary_linux.rs`'s pattern for a declared gap rather than a
+// protection (see that file's header, "Two scenarios measure a gap instead of
+// a protection"): measure the effect actually happening, assert the domain's
+// `CapabilityReport` is `Unsupported`, assert a required prevention
+// requirement for it refuses to plan, and record the measurement tagged with
+// its family — never assert the effect was prevented when it was not.
+
+/// A required prevention requirement for `domain` refuses to plan, and the
+/// domain's own capability report says it is unsupported. The precondition
+/// every gap scenario below states before it measures the effect: an
+/// assertion that the domain is uncovered should not depend on nobody having
+/// wired it up since, it should be checked every time.
+fn assert_domain_is_unsupported_and_prevention_refuses(
+    scenario: &str,
+    backend: &NativeBackend,
+    domain: CapabilityDomain,
+) {
+    let report = backend
+        .capabilities()
+        .report_for(domain)
+        .cloned()
+        .unwrap_or_else(|| panic!("[{scenario}] every domain is reported, including {domain}"));
+    assert!(
+        matches!(report.support(), SupportLevel::Unsupported { .. }),
+        "[{scenario}] {domain} is no longer reported as unsupported on this backend: {report:?}"
+    );
+    assert!(
+        !report.can_prevent(),
+        "[{scenario}] {domain} reports that it can prevent, on a backend that lowers nothing for it: {report:?}"
+    );
+    let refusal = backend
+        .plan(
+            &ExecutionSpec::new("/bin/true", IdentityRef::root("adversary"))
+                .with_requirement(ControlRequirement::prevent(domain)),
+        )
+        .expect_err(&format!(
+            "[{scenario}] a required prevention requirement for {domain} planned on a backend that reports \
+             the domain unsupported"
+        ));
+    assert!(
+        refusal.unmet().iter().any(|(r, _)| r.domain() == domain),
+        "[{scenario}] the refusal did not name {domain}: {refusal:?}"
+    );
+}
+
+/// Whether a connection arrived at a non-blocking loopback listener within two
+/// seconds.
+fn arrived(listener: &std::net::TcpListener) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        match listener.accept() {
+            Ok(_) => return true,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// **A declared gap, not a silent one.** This backend does not lower a
+/// `NetworkEgress` requirement at all, so nothing about a launch's grants can
+/// state a connection destination as "inside" or "outside" them — a direct
+/// connection to a listener this test owns arrives from inside a confined
+/// launch exactly as it would from an unconfined process.
+#[test]
+fn a_direct_connection_outside_any_egress_grant_arrives_and_the_launch_states_the_domain_is_uncovered() {
+    const SCENARIO: &str =
+        "native adversarial: a direct connection outside any egress grant arrives, and the launch states \
+         the domain is uncovered";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    if adversarial::require_program(SCENARIO, "python3").is_none() {
+        return;
+    }
+    assert_domain_is_unsupported_and_prevention_refuses(SCENARIO, &backend, CapabilityDomain::NetworkEgress);
+
+    let Some((listener, port)) = adversarial::listener_on("127.0.0.1") else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::NotMeasured,
+            "no loopback listener could be bound on this host",
+        );
+        return;
+    };
+    let script = as_grandchild(&format!(
+        "python3 -c \"import socket;s=socket.create_connection(('127.0.0.1',{port}),2);s.sendall(b'REACHED')\""
+    ));
+    let (completed, evidence) = run(&backend, &spec(&script, Vec::new(), Vec::new()));
+    assert_the_program_ran(SCENARIO, &completed);
+    let landed = arrived(&listener);
+    assert!(
+        landed,
+        "a direct connection outside any egress grant did not arrive — this backend unexpectedly \
+         restricted network egress. stderr: {:?}",
+        completed.stderr
+    );
+    assert!(
+        !evidence.supports_prevention_claim(CapabilityDomain::NetworkEgress),
+        "a network-egress prevention claim was produced from a run this backend cannot mediate the network \
+         for"
+    );
+
+    measured(
+        SCENARIO,
+        AttackFamily::DirectEgressBypass,
+        "a required network-egress prevention requirement refused to plan, the domain reports Unsupported, \
+         and a direct connection from a launch that could not have restricted it arrived unimpeded",
+    );
+}
+
+/// **A declared gap.** The product's own list of instance-metadata endpoints
+/// (`CLOUD_METADATA_ENDPOINTS`) is attacked here the same way
+/// `adversarial_boundary_linux.rs` attacks it — but where that scenario
+/// measures a boundary refusing the connection, this one measures that a
+/// confined attempt and an unconfined attempt reach an identical outcome per
+/// endpoint, because nothing here mediates the network at all.
+#[test]
+fn cloud_metadata_endpoints_are_reachable_and_the_launch_states_the_domain_is_uncovered() {
+    const SCENARIO: &str = "native adversarial: cloud metadata endpoints are reachable and the launch states \
+                             the domain is uncovered";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    if adversarial::require_program(SCENARIO, "python3").is_none() {
+        return;
+    }
+    assert_domain_is_unsupported_and_prevention_refuses(SCENARIO, &backend, CapabilityDomain::NetworkEgress);
+    assert_domain_is_unsupported_and_prevention_refuses(SCENARIO, &backend, CapabilityDomain::Credential);
+
+    let endpoints: Vec<String> = CLOUD_METADATA_ENDPOINTS
+        .iter()
+        .filter(|e| e.parse::<Ipv4Addr>().is_ok())
+        .map(|e| (*e).to_string())
+        .collect();
+    assert!(
+        !endpoints.is_empty(),
+        "the product's metadata endpoint list no longer contains an address this scenario can attack"
+    );
+    let endpoint = &endpoints[0];
+
+    let attempt = |confined: bool| -> bool {
+        let probe = format!(
+            "import socket
+try:
+    socket.create_connection(('{endpoint}',80),2)
+    print('REACHED')
+except Exception:
+    print('BLOCKED')"
+        );
+        if confined {
+            let script = as_grandchild(&format!("python3 -c \"{}\"", probe.replace('"', "\\\"")));
+            let (completed, _) = run(&backend, &spec(&script, Vec::new(), Vec::new()));
+            assert_the_program_ran(SCENARIO, &completed);
+            completed.stdout.contains("REACHED")
+        } else {
+            let output = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(&probe)
+                .output()
+                .expect("python3 runs unconfined");
+            String::from_utf8_lossy(&output.stdout).contains("REACHED")
+        }
+    };
+
+    let confined_result = attempt(true);
+    let unconfined_result = attempt(false);
+    assert_eq!(
+        confined_result, unconfined_result,
+        "a confined attempt to reach a cloud-metadata address behaved differently from an unconfined one \
+         ({confined_result} vs {unconfined_result}), which this backend's capability report does not claim \
+         it can do"
+    );
+
+    measured(
+        SCENARIO,
+        AttackFamily::CloudMetadata,
+        &format!(
+            "network-egress and credential prevention requirements both refused to plan; a confined and an \
+             unconfined attempt to reach {endpoint}:80 produced the identical outcome ({confined_result}), \
+             which is what 'this domain is not covered' predicts"
+        ),
+    );
+}
+
+/// **A declared gap.** Three spellings of one loopback address — dotted,
+/// decimal and octal — are equally reachable from inside a confined launch,
+/// because nothing here scopes a destination by any representation at all.
+#[test]
+fn an_alternate_address_representation_is_not_scoped_by_this_backend() {
+    const SCENARIO: &str = "native adversarial: an alternate address representation is not scoped by this backend";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    if adversarial::require_program(SCENARIO, "python3").is_none() {
+        return;
+    }
+    assert_domain_is_unsupported_and_prevention_refuses(SCENARIO, &backend, CapabilityDomain::NetworkEgress);
+
+    let Some((listener, port)) = adversarial::listener_on("127.0.0.1") else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::NotMeasured,
+            "no loopback listener could be bound on this host",
+        );
+        return;
+    };
+
+    let spellings = [
+        ("127.0.0.1", "dotted"),
+        ("2130706433", "decimal"),
+        ("0177.0.0.1", "octal"),
+    ];
+    let mut arrivals: Vec<(&str, bool)> = Vec::new();
+    for (address, name) in spellings {
+        let script = as_grandchild(&format!(
+            "python3 -c \"import socket;s=socket.create_connection(('{address}',{port}),2);s.sendall(b'X')\""
+        ));
+        let (completed, _) = run(&backend, &spec(&script, Vec::new(), Vec::new()));
+        assert_the_program_ran(SCENARIO, &completed);
+        arrivals.push((name, arrived(&listener)));
+    }
+
+    let unreached: Vec<&str> = arrivals.iter().filter(|(_, ok)| !ok).map(|(name, _)| *name).collect();
+    assert!(
+        unreached.is_empty(),
+        "these representations of the same address did not arrive at a listener this backend does not \
+         scope by address at all: {unreached:?}. Either this host does not resolve them the way the C \
+         library does, or this backend has started scoping destinations and this scenario's premise no \
+         longer holds"
+    );
+
+    measured(
+        SCENARIO,
+        AttackFamily::AddressRepresentation,
+        "a required network-egress prevention requirement refused to plan, and connections spelled dotted, \
+         decimal and octal all reached the same loopback listener from inside a confined launch",
+    );
+}
+
+/// **A declared gap.** An abstract-namespace unix socket is connectable from
+/// inside a confined launch: this backend does not lower a `CapabilityDomain
+/// ::Ipc` requirement, so nothing here is in a position to scope it.
+///
+/// `#[cfg(target_os = "linux")]`, matching
+/// `adversarial_boundary_linux.rs`'s identical scenario: the abstract-namespace
+/// socket API (`std::os::linux::net::SocketAddrExt`) is Linux-only at the
+/// standard-library level and is compiled out entirely on other platforms,
+/// unlike the rest of this file's logic.
+#[cfg(target_os = "linux")]
+#[test]
+fn abstract_unix_sockets_and_inherited_descriptors_are_outside_this_backends_domains() {
+    const SCENARIO: &str =
+        "native adversarial: abstract unix sockets and inherited descriptors are outside this backend's \
+         domains";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    if adversarial::require_program(SCENARIO, "python3").is_none() {
+        return;
+    }
+    assert_domain_is_unsupported_and_prevention_refuses(SCENARIO, &backend, CapabilityDomain::Ipc);
+
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixListener};
+
+    let name = format!("aa-native-adversarial-{}", std::process::id());
+    let Ok(address) = SocketAddr::from_abstract_name(name.as_bytes()) else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::UnsupportedPlatform,
+            "this host has no abstract unix socket namespace",
+        );
+        return;
+    };
+    let Ok(abstract_listener) = UnixListener::bind_addr(&address) else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::UnsupportedPlatform,
+            "an abstract unix socket could not be bound on this host",
+        );
+        return;
+    };
+    abstract_listener.set_nonblocking(true).expect("non-blocking");
+
+    let script = as_grandchild(&format!(
+        "python3 -c \"import socket;s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM);\
+         s.connect('\\0{name}');s.sendall(b'ABSTRACT')\""
+    ));
+    let (completed, evidence) = run(&backend, &spec(&script, Vec::new(), Vec::new()));
+    assert_the_program_ran(SCENARIO, &completed);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut connected = false;
+    while std::time::Instant::now() < deadline {
+        match abstract_listener.accept() {
+            Ok(_) => {
+                connected = true;
+                break;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => break,
+        }
+    }
+    assert!(
+        connected,
+        "an abstract-namespace unix socket was not connectable from inside a confined launch — this \
+         backend unexpectedly restricted ipc. stderr: {:?}",
+        completed.stderr
+    );
+    assert!(
+        !evidence.supports_prevention_claim(CapabilityDomain::Ipc),
+        "an ipc prevention claim was produced from a run this backend cannot mediate ipc for"
+    );
+
+    measured(
+        SCENARIO,
+        AttackFamily::UnixSocketsAndDescriptors,
+        "a required ipc prevention requirement refused to plan, and an abstract-namespace unix socket \
+         connection reached its listener unimpeded from inside a confined launch",
     );
 }
