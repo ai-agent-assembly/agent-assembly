@@ -96,8 +96,8 @@ family, `--keep-scratch` to retain per-repetition logs for debugging.
 | `harness/selftest.py` | Negative control |
 | `harness/tlsserver.py` | Loopback TLS server for the network family |
 | `workloads/` | One shell script per family, plus `manifest.json` |
-| `launchers/` | `unconfined.sh` (baseline), `throttled.sh` (control only), `sandlock.sh` (confined arm, Linux only) |
-| `policy/` | `confined-arm.yaml.tmpl` + `render.sh` (the confined arm's real policy), `allow-all.yaml` (smoke-test only, not a data arm) |
+| `launchers/` | `unconfined.sh` (baseline), `throttled.sh` (control only), `sandlock.sh` (Sandlock confined arm, Linux only), `native.sh` (AASM-native confined arm, Linux only, AAASM-5805) |
+| `policy/` | `confined-arm.yaml.tmpl` (two-arm sandlock comparison), `three-arm.yaml.tmpl` (AAASM-5805, no `network:` node — see that template for why the native arm needs it), `render.sh` (renders either, defaults to `confined-arm.yaml.tmpl`), `allow-all.yaml` (smoke-test only, not a data arm) |
 | `results/` | Committed baseline and self-test evidence |
 
 ## Two guards worth knowing about before you run this
