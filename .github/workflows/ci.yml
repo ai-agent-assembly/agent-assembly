@@ -2797,35 +2797,62 @@ jobs:
       - name: The harness can still detect a slowdown
         run: python3 benchmarks/isolation/harness/selftest.py
 
-  # AAASM-5713: the one-time confined-arm measurement METHODOLOGY.md's
-  # decision matrix has been waiting on. Manual-only — `workflow_dispatch`
-  # only, deliberately NOT `needs.changes.outputs.benchmarks == 'true'` like
-  # `isolation-benchmark-harness` above. This is a spike measurement (three
-  # full arms, ~10 workload families each, on a shared runner), not a
-  # regression gate; wiring it to the router would spend a Linux build and a
-  # ~30+ minute run on every future PR that so much as edits a workload
-  # script's comment. It is also deliberately absent from `ci-success`'s
-  # `needs:` for the same reason — it must never gate a merge.
+  # AAASM-5713/AAASM-5805: the three-arm measurement METHODOLOGY.md's decision
+  # matrix and the default-backend selection rule (see that file's
+  # "Default-backend selection rule (AAASM-5805)" section) have been waiting
+  # on. Manual-only — `workflow_dispatch` only, deliberately NOT
+  # `needs.changes.outputs.benchmarks == 'true'` like `isolation-benchmark-harness`
+  # above. This is a spike measurement (three full arms, ~10 workload families
+  # each, on a shared runner), not a regression gate; wiring it to the router
+  # would spend a Linux build and a ~45+ minute run on every future PR that so
+  # much as edits a workload script's comment. It is also deliberately absent
+  # from `ci-success`'s `needs:` for the same reason — it must never gate a
+  # merge.
   #
-  # Reuses `isolation-backend-linux`'s sandlock install pattern exactly
-  # (AAASM-5712's pinned digest) rather than diverging from it — that job's
-  # own steps are untouched.
-  isolation-benchmark-confined-arm:
+  # One job for all three arms, not one per backend: `aabench.py compare`
+  # refuses to compare two result files whose environment fingerprints differ,
+  # so two runners would make the sandlock/native head-to-head inadmissible —
+  # and `ubuntu-latest`'s toolchain drifts release to release, so the sandlock
+  # numbers AAASM-5713 already committed are not reusable as this run's
+  # baseline either; all three arms are re-captured in this session.
+  #
+  # Reuses `isolation-backend-linux`'s sandlock install pattern and
+  # `isolation-backend-native-linux`'s Landlock-ABI probe exactly rather than
+  # diverging from either — those jobs' own steps are untouched.
+  isolation-benchmark-three-arm:
     needs: [changes]
     if: github.event_name == 'workflow_dispatch'
-    name: "Isolation benchmark: confined-arm measurement (Linux)"
+    name: "Isolation benchmark: three-arm measurement (Linux)"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       SANDLOCK_VERSION: "0.8.6"
       SANDLOCK_SHA256: "86e89e5bdb2da748e683cda6908a95504ae6751f73d9dadf79cf0fc6843873fb"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Record the host this run measures
-        # First, and unconditionally — same reason as isolation-backend-linux.
+        # First, and unconditionally — same reason as isolation-backend-linux
+        # and isolation-backend-native-linux. The Landlock ABI is read the same
+        # way the native backend reads it — by asking the kernel — rather than
+        # inferred from the release string, because a distribution kernel's
+        # release and its Landlock ABI are independent facts.
         run: |
           echo "kernel: $(uname -r)"
           echo "lsm: $(cat /sys/kernel/security/lsm 2>/dev/null || echo '<securityfs not readable>')"
+          cat > /tmp/landlock-abi.c <<'EOF'
+          #include <linux/landlock.h>
+          #include <sys/syscall.h>
+          #include <unistd.h>
+          #include <stdio.h>
+          int main(void) {
+            long v = syscall(__NR_landlock_create_ruleset, NULL, 0,
+                             LANDLOCK_CREATE_RULESET_VERSION);
+            printf("landlock abi: %ld\n", v);
+            return 0;
+          }
+          EOF
+          cc -o /tmp/landlock-abi /tmp/landlock-abi.c && /tmp/landlock-abi || \
+            echo "landlock abi: <could not be queried>"
       - name: Install the confinement mechanism
         env:
           SANDLOCK_URL: https://github.com/multikernel/sandlock/releases/download/v${{ env.SANDLOCK_VERSION }}/sandlock-x86_64-unknown-linux-gnu.tar.gz
@@ -2841,7 +2868,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: isolation-benchmark-confined-arm
+          key: isolation-benchmark-three-arm
       # `aa-cli` transitively compiles `aa-proto`, whose build.rs invokes
       # `protoc`. `ripgrep` is the `repo_traversal` family's `rg` requirement —
       # absent it, that family degrades to `skipped` rather than measuring
@@ -2854,12 +2881,19 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-      - name: Build the aasm and aa-gateway binaries
+      - name: Build the aasm, aa-gateway and aa-isolation-launch binaries
         # aa-gateway too: `aasm run` refuses a live (non-dry-run) launch unless
         # it can register the session against a reachable governance gateway
         # (AAASM-5349) — `aasm gateway start` resolves that binary alongside
         # `aasm` (aa-cli/src/commands/gateway/start.rs), so both need building.
-        run: cargo build --release -p aa-cli --bin aasm -p aa-gateway --bin aa-gateway
+        # aa-isolation-launch (AAASM-5805): the native backend's own launcher,
+        # so the native arm confines against the binary this build produced,
+        # not whichever one a PATH search would find — it lands beside `aasm`
+        # in target/release/, which is where the native backend's host
+        # discovery looks first (aa-isolation-native/src/host.rs).
+        run: |
+          cargo build --release -p aa-cli --bin aasm -p aa-gateway --bin aa-gateway \
+            -p aa-isolation-native --bin aa-isolation-launch
       - name: Record every toolchain version the harness's environment block needs
         run: |
           rustc --version
@@ -2870,42 +2904,70 @@ jobs:
           rg --version
           git --version
           openssl version
-      - name: Render the confined-arm policy against this run's scratch root
+      - name: Render the three-arm policy against this run's scratch root
         # A fixed, pre-created scratch root — not the harness's own
         # `tempfile.mkdtemp` default — because the policy's write grant has to
         # name a path that exists before `aasm run` negotiates against it.
-        # `--keep-scratch` on the confined-arm run below so this directory
+        # `--keep-scratch` on the confined runs below so this directory
         # survives for inspection if a family fails; `.gitignore`-equivalent
         # cleanup happens implicitly when the runner is torn down.
+        #
+        # Both AABENCH_SANDLOCK_POLICY and AABENCH_NATIVE_POLICY point at the
+        # SAME rendered file (AAASM-5805) — three-arm.yaml.tmpl states no
+        # `network:` node, so it is one policy both backends can run under; see
+        # that template for why a policy the sandlock arm could use is not one
+        # the native arm could plan against at all.
         run: |
           scratch="${{ github.workspace }}/.aabench-scratch"
           mkdir -p "$scratch"
-          policy="${{ github.workspace }}/.aabench-confined-policy.yaml"
-          benchmarks/isolation/policy/render.sh "$scratch" "$policy"
+          policy="${{ github.workspace }}/.aabench-three-arm-policy.yaml"
+          benchmarks/isolation/policy/render.sh "$scratch" "$policy" three-arm.yaml.tmpl
           cat "$policy"
           {
             echo "AABENCH_SCRATCH=$scratch"
             echo "AABENCH_SANDLOCK_POLICY=$policy"
+            echo "AABENCH_NATIVE_POLICY=$policy"
             echo "AABENCH_AASM_BIN=${{ github.workspace }}/target/release/aasm"
           } >> "$GITHUB_ENV"
-      - name: Confirm the rendered policy actually lowers (not not_stated)
+      - name: Confirm the rendered policy actually lowers for sandlock (not not_stated)
         # Cheap, fast guard before spending the full multi-family run below on
         # a policy that would silently confine nothing — see
         # benchmarks/isolation/policy/README.md for what this checks and why.
+        # `network_egress` is deliberately not asserted here — three-arm.yaml.tmpl
+        # states no `network:` node, on purpose (see that template).
         run: |
           "$AABENCH_AASM_BIN" run exec --isolation process --no-proxy \
             --policy "$AABENCH_SANDLOCK_POLICY" --dry-run -- true \
-            | tee dry-run-report.txt
-          for domain in filesystem_read filesystem_write network_egress; do
-            if ! grep -qE "^  ${domain}[[:space:]]+stated" dry-run-report.txt; then
-              echo "::error::${domain} did not lower to a stated requirement; the confined arm would not confine it. Check policy/confined-arm.yaml.tmpl against aa-isolation/src/lowering.rs."
+            | tee dry-run-report-sandlock.txt
+          for domain in filesystem_read filesystem_write; do
+            if ! grep -qE "^  ${domain}[[:space:]]+stated" dry-run-report-sandlock.txt; then
+              echo "::error::${domain} did not lower to a stated requirement; the sandlock arm would not confine it. Check policy/three-arm.yaml.tmpl against aa-isolation/src/lowering.rs."
+              exit 1
+            fi
+          done
+      - name: Confirm the native backend plans this policy at all (AAASM-5805)
+        # The cheapest possible guard against the entire "native refuses every
+        # family" failure class this ticket's design work identified: a policy
+        # that states a `network:` node makes every native family refuse at
+        # plan time before a process starts (see three-arm.yaml.tmpl's own
+        # comment) — this catches that in seconds instead of at the end of a
+        # 45-minute run. `--isolation-backend aasm-native` is the only way to
+        # reach the native backend today (ADR 0035's AAASM-5801 amendment).
+        run: |
+          "$AABENCH_AASM_BIN" run exec --isolation process --isolation-backend aasm-native --no-proxy \
+            --policy "$AABENCH_NATIVE_POLICY" --dry-run -- true \
+            | tee dry-run-report-native.txt
+          for domain in filesystem_read filesystem_write; do
+            if ! grep -qE "^  ${domain}[[:space:]]+stated" dry-run-report-native.txt; then
+              echo "::error::${domain} did not lower to a stated requirement; the native arm would not confine it. Check policy/three-arm.yaml.tmpl against aa-isolation-native/src/capability.rs."
               exit 1
             fi
           done
       - name: Unconfined baseline — re-captured on this host, this session
         # METHODOLOGY.md, "Cross-platform comparison is invalid": the darwin
         # baseline committed in results/ is not an admissible control for this
-        # run. This one is.
+        # run. This one is, and it is the same baseline both backends compare
+        # against.
         working-directory: benchmarks/isolation/harness
         run: |
           python3 aabench.py run --label unconfined-linux-ci \
@@ -2916,17 +2978,16 @@ jobs:
       - name: Start the governance gateway
         # A live (non-dry-run) `aasm run` refuses to launch unless it can
         # register the session against a reachable gateway — the --dry-run
-        # guard step above never exercises this because a preview reports an
+        # guard steps above never exercise this because a preview reports an
         # unmet precondition rather than refusing on it. Discovered from the
-        # second confined-arm run (31816602980): sandlock was selected
+        # AAASM-5713 confined-arm run (31816602980): sandlock was selected
         # correctly and every domain lowered as expected, but every family
         # still failed uniformly at ~230ms/exit 1, and the per-repetition log
-        # (only visible once the hidden-file artifact bug above was also
-        # fixed) named the real cause: "refusing to launch unregistered: the
+        # named the real cause: "refusing to launch unregistered: the
         # governance gateway at http://127.0.0.1:50051 is unreachable".
         #
         # Detached (no --no-detach): the gateway outlives this step and keeps
-        # serving for the confined-arm run below. The runner is destroyed at
+        # serving for both confined arms below. The runner is destroyed at
         # job end, so nothing stops it explicitly.
         run: |
           "$AABENCH_AASM_BIN" gateway start --policy "$AABENCH_SANDLOCK_POLICY"
@@ -2941,94 +3002,63 @@ jobs:
           "$AABENCH_AASM_BIN" gateway status || true
           cat ~/.aasm/logs/gateway.log 2>/dev/null || true
           exit 1
-      - name: Bisect the confined-arm denial (diagnostic, not a measured arm)
-        # Run 31852738857 (the first with a working gateway) measured 3/8
-        # families and failed 5/8, all exit 2, all with empty stdout/stderr —
-        # runner.py's redirection captures the launcher's own report but
-        # nothing the confined child itself printed, on failing AND passing
-        # families alike, so the result JSON alone cannot tell "the backend
-        # denied this" from "the policy never granted it" apart. Individual
-        # probes here isolate one candidate cause per command, with output
-        # going straight to this step's own log rather than a scratch file —
-        # not part of any measured arm, `continue-on-error` per probe.
-        continue-on-error: true
-        run: |
-          # `set +e`: the first attempt at this step lost every probe after the
-          # first failing one — bash's default `-e` for `run:` steps aborted the
-          # whole script the instant one `aasm run` call returned nonzero, before
-          # reaching that probe's own `echo "exit=$?"`, so rg/cargo never ran at
-          # all and the visible signal was only a step-level "exit code 128".
-          set +e
-          probe() {
-            echo "--- probe: $* ---"
-            "$AABENCH_AASM_BIN" run exec --isolation process --no-proxy \
-              --policy "$AABENCH_SANDLOCK_POLICY" -- "$@"
-            echo "exit=$?"
-          }
-          probe true
-          probe cat /etc/hostname
-          # shellcheck disable=SC2016 # deliberately unexpanded: $AABENCH_SCRATCH
-          # must resolve inside the confined child's own shell, not this one.
-          probe sh -c 'mkdir -p "$AABENCH_SCRATCH/probe" && echo ok > "$AABENCH_SCRATCH/probe/f" && cat "$AABENCH_SCRATCH/probe/f"'
-          probe git -C "${{ github.workspace }}" status --porcelain --untracked-files=no
-          probe rg --files --hidden --glob '!.git' "${{ github.workspace }}"
-          probe cargo metadata --no-deps --offline --format-version 1 --manifest-path "${{ github.workspace }}/Cargo.toml"
-          # The scratch-contained families (many_small_files, python_pkg_test,
-          # node_pkg_test) still failed even though the simple scratch
-          # write+readback probe above succeeded — these narrow the gap between
-          # "any scratch write" and "what those specific families actually do".
-          # shellcheck disable=SC2016
-          probe sh -c 'tree="$AABENCH_SCRATCH/nested/rep0/tree"; mkdir -p "$tree" && printf x > "$tree/f0.txt" && find "$tree" -type f && cat "$tree"/*.txt && rm -rf "$tree"'
-          probe python3 -c 'print(1)'
-          # shellcheck disable=SC2016
-          probe sh -c 'd="$AABENCH_SCRATCH/pycompile"; mkdir -p "$d" && printf "x = 1\n" > "$d/m.py" && python3 -m compileall -q "$d"'
-          probe node -e 'console.log(1)'
-          probe rg --version
-          probe cargo --version
-          # Every probe above passed (rg full traversal, cargo metadata, a
-          # nested-directory write, python3, node — all exit 0), yet the real
-          # families still fail, uniformly, at exit 2 — not git's exit 128.
-          # Every probe above ran the target directly; every real family runs
-          # `sh <script_file> <scratch> <repo_root>` — the difference this
-          # traces. `-x` prints each command before running it, so the exact
-          # failing line and its own exit status land in this log directly.
-          probe_trace() {
-            echo "--- probe (traced): $* ---"
-            "$AABENCH_AASM_BIN" run exec --isolation process --no-proxy \
-              --policy "$AABENCH_SANDLOCK_POLICY" -- sh -x "$@"
-            echo "exit=$?"
-          }
-          scratch_probe="$AABENCH_SCRATCH/trace-probe"
-          mkdir -p "$scratch_probe"
-          probe_trace "${{ github.workspace }}/benchmarks/isolation/workloads/rust_cargo_metadata.sh" \
-            "$scratch_probe" "${{ github.workspace }}"
-          probe_trace "${{ github.workspace }}/benchmarks/isolation/workloads/many_small_files.sh" \
-            "$scratch_probe" "${{ github.workspace }}"
       - name: Confined arm — sandlock
         # The launcher path must be absolute: runner.py's run_once() chdirs the
         # child to REPO_ROOT (the monorepo root) before exec, so a launcher
-        # spec written relative to harness/ (as the README's earlier example
-        # and this job's first attempt both did) resolves against the wrong
-        # directory and every family fails identically and immediately — which
-        # is exactly what happened here before this fix, discovered from the
-        # uniform sub-3ms failures across every family including startup_nop.
+        # spec written relative to harness/ resolves against the wrong
+        # directory and every family fails identically and immediately — the
+        # uniform sub-3ms failures across every family including startup_nop
+        # AAASM-5713's own first attempt hit before that fix.
         working-directory: benchmarks/isolation/harness
         run: |
           python3 aabench.py run --label sandlock-confined \
             --launcher "sh ${{ github.workspace }}/benchmarks/isolation/launchers/sandlock.sh" \
             --scratch-root "$AABENCH_SCRATCH" \
             --keep-scratch \
-            --out ../results/ci-confined-linux.json
+            --out ../results/ci-sandlock-linux.json
+      - name: Confined arm — native (AAASM-5805)
+        working-directory: benchmarks/isolation/harness
+        run: |
+          python3 aabench.py run --label native-confined \
+            --launcher "sh ${{ github.workspace }}/benchmarks/isolation/launchers/native.sh" \
+            --scratch-root "$AABENCH_SCRATCH" \
+            --keep-scratch \
+            --out ../results/ci-native-linux.json
       - name: Stop the governance gateway
         if: always()
         run: $AABENCH_AASM_BIN gateway stop || true
-      - name: Score confined against the fresh Linux baseline
+      - name: Score sandlock against the fresh Linux baseline
+        # This is METHODOLOGY.md's pre-registered quantity: confined ÷
+        # baseline, same host, same session.
         working-directory: benchmarks/isolation/harness
         run: |
           python3 aabench.py compare \
             --baseline ../results/ci-unconfined-linux.json \
-            --candidate ../results/ci-confined-linux.json \
-            --out ../results/ci-comparison-linux.json
+            --candidate ../results/ci-sandlock-linux.json \
+            --out ../results/ci-comparison-sandlock-linux.json
+      - name: Score native against the fresh Linux baseline
+        # Also the pre-registered quantity — the same ratio, computed the same
+        # way, for the other backend.
+        working-directory: benchmarks/isolation/harness
+        run: |
+          python3 aabench.py compare \
+            --baseline ../results/ci-unconfined-linux.json \
+            --candidate ../results/ci-native-linux.json \
+            --out ../results/ci-comparison-native-linux.json
+      - name: Score native against sandlock directly (informational only, AAASM-5805)
+        # NOT the pre-registered quantity. `compare`'s grades and verdict here
+        # are baseline-relative fields applied to a candidate/candidate pair —
+        # METHODOLOGY.md must state that explicitly and must not quote a grade
+        # or verdict from this file as a P-dimension result. The raw ratio
+        # this file reports is the head-to-head number worth reading; sandlock
+        # is passed as `--baseline` purely because `compare` requires one
+        # positional role, not because it is this comparison's control.
+        working-directory: benchmarks/isolation/harness
+        run: |
+          python3 aabench.py compare \
+            --baseline ../results/ci-sandlock-linux.json \
+            --candidate ../results/ci-native-linux.json \
+            --out ../results/ci-comparison-native-vs-sandlock-linux.json
       - name: Upload results
         # `always()`: a run that failed partway (one family's admissibility
         # gate, say) still has whatever it produced worth downloading — this
@@ -3036,23 +3066,22 @@ jobs:
         # nothing. Includes the per-repetition `*.log` files runner.py writes
         # under the scratch root (stdout+stderr of the launcher invocation,
         # not captured in the result JSON) — without these a failed family's
-        # exit code has no accompanying diagnostic, which is how the first
-        # attempt at this job took an extra round-trip to root-cause.
+        # exit code has no accompanying diagnostic.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: isolation-benchmark-confined-arm-results
+          name: isolation-benchmark-three-arm-results
           path: |
             benchmarks/isolation/results/ci-*.json
             benchmarks/isolation/results/selftest-*.json
             .aabench-scratch/**/*.log
           retention-days: 30
           # `.aabench-scratch` starts with a dot, and upload-artifact excludes
-          # hidden paths by default — the second confined-arm run (31816602980)
-          # uploaded exactly the 7 JSON files and silently zero `.log` files,
-          # discovered only after downloading the artifact and finding the
-          # per-repetition stderr that should have explained a uniform exit-1
-          # failure simply wasn't there.
+          # hidden paths by default — AAASM-5713's second confined-arm run
+          # (31816602980) uploaded exactly the 7 JSON files and silently zero
+          # `.log` files, discovered only after downloading the artifact and
+          # finding the per-repetition stderr that should have explained a
+          # uniform exit-1 failure simply wasn't there.
           include-hidden-files: true
           if-no-files-found: warn
 

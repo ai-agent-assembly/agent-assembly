@@ -1,0 +1,43 @@
+# Template for the three-arm comparison's real policy artifact (AAASM-5805).
+#
+# Identical to confined-arm.yaml.tmpl (AAASM-5713) with one deliberate
+# omission: no `network:` node.
+#
+# Why: `aa-isolation-native/src/capability.rs` reports NetworkEgress as
+# SupportLevel::Unsupported. Stating `network.allowlist` turns
+# `lower_policy`'s output into a `Required` NetworkEgress requirement
+# (`LoweringOptions::strict()`), and `aa-isolation/src/plan.rs`'s
+# `negotiate` turns an unsupported domain + a Required posture into a
+# PlanRefusal before any process starts — every family in the native arm
+# would refuse identically at plan time. A same-policy three-arm comparison
+# therefore cannot state a network grant at all; the native arm has to be
+# measured under a policy it can actually run.
+#
+# Consequence, stated plainly rather than left for a reader to notice:
+# `https_loopback` runs UNCONFINED IN THE EGRESS DOMAIN IN EVERY ARM under
+# this policy, so its P5 figure is ~1.0 by construction in all three arms
+# and must not be read as "egress confinement is free" — the same caveat
+# confined-arm.yaml.tmpl already states for P4/process-spawn, restated here
+# because this template drops the one thing that would have made it
+# otherwise true for the sandlock/unconfined pair. Symmetrically, no
+# `syscall_allowlist` is stated either, so native's seccomp cost is not in
+# these numbers.
+#
+# See ../policy/README.md and ./confined-arm.yaml.tmpl for the filesystem
+# grants below, which are unchanged from the two-arm comparison.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aabench-three-arm
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "/"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__"
+        - "/dev/null"

@@ -1,7 +1,12 @@
 #!/usr/bin/env sh
-# Render confined-arm.yaml.tmpl into a concrete policy for one run.
+# Render a policy template into a concrete policy for one run.
 #
-# Usage: render.sh <scratch_root> <out_path>
+# Usage: render.sh <scratch_root> <out_path> [template_name]
+#
+# template_name defaults to confined-arm.yaml.tmpl (AAASM-5713), so every
+# existing caller keeps rendering the same two-arm policy unchanged. Pass
+# three-arm.yaml.tmpl (AAASM-5805) to render the policy the native arm can
+# actually run under — see that template for why it differs.
 #
 # The scratch root must be an absolute, already-created directory — sandlock's
 # filesystem grant is a path, not a pattern with shell-style expansion, so a
@@ -9,8 +14,9 @@
 # nothing) rather than fail loudly.
 set -eu
 
-scratch_root="${1:?usage: render.sh <scratch_root> <out_path>}"
-out_path="${2:?usage: render.sh <scratch_root> <out_path>}"
+scratch_root="${1:?usage: render.sh <scratch_root> <out_path> [template_name]}"
+out_path="${2:?usage: render.sh <scratch_root> <out_path> [template_name]}"
+template_name="${3:-confined-arm.yaml.tmpl}"
 
 case "$scratch_root" in
     /*) ;;
@@ -25,4 +31,4 @@ if [ ! -d "$scratch_root" ]; then
 fi
 
 template_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-sed "s|__SCRATCH_ROOT__|${scratch_root}|g" "$template_dir/confined-arm.yaml.tmpl" > "$out_path"
+sed "s|__SCRATCH_ROOT__|${scratch_root}|g" "$template_dir/$template_name" > "$out_path"
