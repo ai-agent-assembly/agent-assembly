@@ -1081,6 +1081,12 @@ fn a_descendant_cannot_make_a_syscall_the_launch_did_not_permit() {
         )
     };
 
+    // `openat(O_CREAT)` is in the loader baseline either way, so the target
+    // file's mere *existence* is a false positive: it exists whether or not
+    // `write` ran. What `write` decides is whether the empty file `openat`
+    // created gets any bytes in it, so the observable is the file's content.
+    let has_content = |p: &Path| p.exists() && std::fs::read(p).map(|b| !b.is_empty()).unwrap_or(false);
+
     let test = base(&test_target).with_requirement(
         ControlRequirement::prevent(CapabilityDomain::Syscall)
             .with_scope(RequirementScope::Selectors(syscall_loader_baseline())),
@@ -1088,8 +1094,8 @@ fn a_descendant_cannot_make_a_syscall_the_launch_did_not_permit() {
     let (completed, _) = run(&backend, &test);
     assert_the_program_ran(SCENARIO, &completed);
     assert!(
-        !test_target.exists(),
-        "a grandchild made a syscall the launch did not permit: {} exists",
+        !has_content(&test_target),
+        "a grandchild made a syscall the launch did not permit: {} has content",
         test_target.display()
     );
 
@@ -1101,7 +1107,7 @@ fn a_descendant_cannot_make_a_syscall_the_launch_did_not_permit() {
     let (control_completed, _) = run(&backend, &control);
     assert_the_program_ran(SCENARIO, &control_completed);
     assert!(
-        control_target.exists(),
+        has_content(&control_target),
         "the control grandchild, with `write` allowlisted, produced no effect, so the denial above proves \
          nothing. stderr: {:?}",
         control_completed.stderr
