@@ -31,8 +31,14 @@ on:
 # `workflow_call` to would also compute — five satellites racing for one
 # concurrency group inside the same `ci.yml` run, `cancel-in-progress: true`
 # would cancel siblings, not supersede stale runs of this workflow.
+#
+# `github.event_name` is appended for the same reason: this workflow's own
+# `pull_request` trigger and ci.yml's `workflow_call` invocation both run on
+# the same PR at the same time, and without this the two would ALSO collide
+# under this group — see capability-manifest.yml's identical comment for the
+# live failure (PR #2087) this pattern produced there.
 concurrency:
-  group: contact-metadata-${{ github.ref }}
+  group: contact-metadata-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
