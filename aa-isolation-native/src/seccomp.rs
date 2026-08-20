@@ -242,6 +242,13 @@ pub const STARTUP_BASELINE: &[(&str, u32)] = &[
     ("readlink", 89),
     ("lstat", 6),
     ("stat", 4),
+    // A shell's own privilege checks (e.g. deciding whether `$0` starting with
+    // `-` means a login shell may drop privileges) — measured live, the second
+    // gap this ticket's own CI lane found past the loader.
+    ("getuid", 102),
+    ("geteuid", 107),
+    ("getgid", 104),
+    ("getegid", 108),
 ];
 
 /// Build the cBPF program a [`SyscallFilter`] compiles to.
