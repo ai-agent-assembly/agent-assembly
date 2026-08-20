@@ -24,6 +24,15 @@
 //! | filesystem read | grant read of the scratch tree | no grant |
 //! | filesystem write | grant write of the target directory | no grant |
 //!
+//! The **baseline** — read access to the system directories the dynamic loader
+//! and the shell need — is present in the control run and the test run alike, so
+//! it is never the difference between them. Withholding it from the test run
+//! would deny the shell its own interpreter, and the absent effect would be
+//! attributable to a program that could not start rather than to the grant under
+//! test. That is the failure this table's second column exists to rule out, and
+//! [`tests::the_only_difference_between_the_runs_is_the_grant_under_test`] pins
+//! it.
+//!
 //! A measurement counts only when the control run produced the effect and the
 //! test run did not. If the control run *also* fails, nothing has been measured —
 //! the outcome is [`Observation::Inconclusive`], never a denial — because a probe
@@ -186,7 +195,7 @@ fn measure_read(facts: &HostFacts, secret: &Path) -> Observation {
     let dir = secret.parent().unwrap_or(secret);
     let script = nested(&format!("cat {}", shell_word(&secret.to_string_lossy())));
     let control = run_confined(facts, read_grant(dir), &script);
-    let test = run_confined(facts, Grants::default(), &script);
+    let test = run_confined(facts, system_grants(), &script);
     compare(
         "filesystem read",
         control.map(|o| (o.stdout.contains(PROBE_SECRET), o.diagnostic)),
@@ -205,7 +214,7 @@ fn measure_write(facts: &HostFacts, dir: &Path) -> Observation {
     );
     let test = run_confined(
         facts,
-        Grants::default(),
+        system_grants(),
         &nested(&format!("printf x > {}", shell_word(&test_target.to_string_lossy()))),
     );
     compare(
@@ -416,22 +425,47 @@ mod tests {
         assert!(!script.contains("/dev/null"), "{script}");
     }
 
-    /// The system grants must be identical in both runs, or they — and not the
-    /// grant under test — could be the difference the measurement sees.
+    /// **The property the whole controlled-pair design rests on.** The baseline
+    /// must be in both runs, and each control run must exceed it by exactly the
+    /// one path under test.
+    ///
+    /// An earlier draft passed `Grants::default()` as the test run's grants, so
+    /// the test run had no read access to `/bin` or `/lib` and the confined shell
+    /// could not start. The effect was absent — but because no program ran, not
+    /// because the grant under test was missing, and the pair would have reported
+    /// `Denied` for a boundary that denied nothing in particular. This asserts
+    /// the shape that cannot do that.
     #[test]
     fn the_only_difference_between_the_runs_is_the_grant_under_test() {
         let dir = Path::new("/tmp");
-        let system = system_grants();
+        let baseline = system_grants();
+        assert!(
+            !baseline.read.is_empty(),
+            "the baseline grants nothing, so a confined shell cannot start in either run"
+        );
+        assert!(
+            baseline.write.is_empty(),
+            "the baseline grants a write nobody asked for"
+        );
+
         let read = read_grant(dir);
-        let write = write_grant(dir);
         assert_eq!(
-            read.read.difference(&system.read).collect::<Vec<_>>(),
+            read.read.difference(&baseline.read).collect::<Vec<_>>(),
             ["/tmp"],
             "the read control differs from the baseline by more than the path under test"
         );
-        assert!(read.write.is_empty());
-        assert_eq!(write.read, system.read);
-        assert_eq!(write.write.iter().collect::<Vec<_>>(), ["/tmp"]);
+        assert_eq!(read.write, baseline.write);
+
+        let write = write_grant(dir);
+        assert_eq!(
+            write.read, baseline.read,
+            "the write control differs from the baseline in its READ grants too"
+        );
+        assert_eq!(
+            write.write.difference(&baseline.write).collect::<Vec<_>>(),
+            ["/tmp"],
+            "the write control differs from the baseline by more than the path under test"
+        );
     }
 
     /// A path with a quote in it must not be able to end the quoting and start a
