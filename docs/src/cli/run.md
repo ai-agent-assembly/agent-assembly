@@ -51,7 +51,7 @@ flow (ADR 0035 §1):
 | `--enforcement-mode <MODE>` | `enforce` \| `observe` \| `disabled` | `enforce` | Enforcement posture for this session, overriding the policy default. `observe` records decisions but never applies them — the tool sees Allow for every action, and shadow events land in the audit log. |
 | `--observe` | flag | off | Shorthand for `--enforcement-mode observe`. Mutually exclusive with `--enforcement-mode`. |
 | `--isolation <INTENT>` | `none` \| `auto` \| `process` | `none` | How much execution isolation this launch requires. See [Isolation intent](#isolation-intent---isolation) below. |
-| `--isolation-backend <ID>` | string | _(the one compiled-in backend)_ | Pin the concrete isolation backend by id. Advanced and diagnostic only — see [Backend pinning](#backend-pinning---isolation-backend). |
+| `--isolation-backend <ID>` | string | _(unset — `auto` selects by capability, `process` defaults to `sandlock`)_ | Pin the concrete isolation backend by id. Advanced and diagnostic only — see [Backend pinning](#backend-pinning---isolation-backend). |
 
 ## Isolation intent (`--isolation`)
 
@@ -61,7 +61,7 @@ requires (ADR 0035 §3) — never a backend or mechanism name. Three values:
 | Value | Meaning |
 |---|---|
 | `none` (default) | No execution-isolation boundary is established. This is the pre-existing behaviour every `aasm run` had before this flag existed, stated explicitly rather than left as an absence — the report can then say *why* a run has no boundary: nobody asked for one, versus one was asked for and could not be built. |
-| `auto` | Agent Assembly selects the strongest isolation class it can provide on this host. Today exactly one class exists, so this resolves to `process`. It is not "isolate if convenient": when nothing can provide a class, `auto` refuses rather than running unconfined. |
+| `auto` | Agent Assembly selects a backend by capability: it walks the compiled-in backends in a fixed order and picks the first one that can meet this launch's lowered policy requirements, using the same negotiation every real launch goes through. It is not "isolate if convenient": when no compiled-in backend can meet the requirements, `auto` refuses — naming every backend it considered and why — rather than running unconfined or silently picking a default. |
 | `process` | Confine the launch and its descendants within one host's process model. |
 
 **The default is deliberate, not neutral.** Turning isolation on by default
@@ -105,6 +105,11 @@ operation should use `--isolation` alone.
 - `--isolation-backend` combined with `--isolation none` is refused as a
   contradiction: naming a backend for a launch that asked for no boundary
   would leave the operator believing one half of the request took effect.
+- `--isolation-backend` always wins over `auto`'s capability-based selection:
+  `--isolation auto --isolation-backend <ID>` names that backend outright and
+  reports its own refusal if it cannot meet the launch's requirements — it
+  does not fall through to a different backend automatic selection would
+  have picked.
 - Naming a backend this build does not have is refused, naming the one it
   does have.
 - The exact string it accepts is an implementation fact recorded in the
