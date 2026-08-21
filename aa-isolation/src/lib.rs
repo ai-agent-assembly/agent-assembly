@@ -211,8 +211,9 @@ pub use plan::{
     PlannedRequirement, Provenance, RefusalReason, RequirementOutcome,
 };
 pub use report::{
-    ControlState, DomainProjection, EvidenceBasis, IsolationReport, ReportStage, ReportedPosture, RequestedControl,
-    SessionRef, TargetRef, UnmeasuredReason, REPORT_SCHEMA,
+    BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainProjection, EvidenceBasis,
+    IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef, TargetRef,
+    UnmeasuredReason, REPORT_SCHEMA,
 };
 pub use spec::{
     ControlRequirement, CredentialPosture, DescendantRequirement, ExecutionSpec, IdentityRef, RequirementIntent,
