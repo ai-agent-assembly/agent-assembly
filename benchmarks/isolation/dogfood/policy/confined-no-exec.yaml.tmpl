@@ -1,0 +1,31 @@
+# AAASM-5809 dogfood driver — identical to confined.yaml.tmpl except process
+# spawning is explicitly denied.
+#
+# Used for exactly one scenario: "attempt capability use outside the selected
+# backend/policy" — spawning a child process here must be refused, with
+# confined.yaml.tmpl (`terminal_exec` allowed) as this scenario's negative
+# control: the same spawn attempt, same backend, same scratch tree, succeeds
+# under that policy. That is what makes the denial attributable to this one
+# policy line rather than to an unrelated launch failure.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-5809-dogfood-confined-no-exec
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "/"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__/permitted"
+        - "/dev/null"
+  capabilities:
+    deny:
+      - terminal_exec
+  network:
+    allowlist:
+      - "127.0.0.1"

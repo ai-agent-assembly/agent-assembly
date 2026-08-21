@@ -1,0 +1,45 @@
+# AAASM-5809 dogfood driver — the confined arm's baseline policy.
+#
+# Rendered by `../../policy/render.sh` (reused, not copied) into a concrete
+# policy before a run — the write grant below needs the scratch directory's
+# actual path, which is only known once the driver picks one.
+#
+# What this states, and why:
+#
+# - `filesystem.read.allow: ["/"]` — the driver invokes real developer
+#   tooling (a C compiler, python3, git) whose binaries and libraries live
+#   wherever the runner image put them; read confinement is not what this
+#   policy exercises (the sandlock/aasm-native suites already cover that in
+#   AAASM-5708/5802).
+# - `filesystem.write.allow` — only the scratch tree's `permitted/` subtree.
+#   `permitted/` and `forbidden/` are siblings under the same scratch root so
+#   a scenario that expects a write to land can be told apart from one that
+#   expects it denied by which subtree it targets, not by a different policy
+#   file.
+# - `capabilities: allow: [terminal_exec]` — this is the "spawn works" arm:
+#   the driver's spawn-child, descendant-confinement and compiler/package
+#   tooling scenarios all need `aasm run` to permit the confined process to
+#   fork further children. `confined-no-exec.yaml.tmpl` is this file's
+#   opposite, used for the "capability denied" scenario.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-5809-dogfood-confined
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "/"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__/permitted"
+        - "/dev/null"
+  capabilities:
+    allow:
+      - terminal_exec
+  network:
+    allowlist:
+      - "127.0.0.1"
