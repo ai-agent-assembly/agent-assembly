@@ -1,0 +1,33 @@
+# AAASM-5809 dogfood driver — the negative-control policy.
+#
+# Grants everything the confined policies restrict: write across the whole
+# scratch tree (including `forbidden/`) and process spawning. Used only to
+# pair with a denial scenario, so a "denied" result under confined.yaml.tmpl
+# or confined-no-exec.yaml.tmpl can be shown to succeed here — same command,
+# same backend, same scratch tree, only the grant differs. Without this pairing
+# a denial could equally mean "the command itself is broken" or "the scratch
+# directory is unwritable", not "the boundary denied it" (see
+# aa-cli/tests/run_isolation_linux.rs's module doc for why this discipline
+# matters).
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-5809-dogfood-permissive
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "/"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__"
+        - "/dev/null"
+  capabilities:
+    allow:
+      - terminal_exec
+  network:
+    allowlist:
+      - "127.0.0.1"
