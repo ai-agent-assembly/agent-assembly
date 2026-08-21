@@ -2581,4 +2581,118 @@ mod tests {
         );
         assert_eq!(report.posture(), ReportedPosture::Degraded);
     }
+
+    // -----------------------------------------------------------------------
+    // Backend selection (AAASM-5808).
+    // -----------------------------------------------------------------------
+
+    fn selection_of(considered: Vec<ConsideredBackend>) -> BackendSelection {
+        BackendSelection {
+            mode: SelectionMode::Automatic,
+            considered,
+        }
+    }
+
+    /// A report carrying a selection renders it: the mode, and one line per
+    /// candidate considered, each with its verdict and detail.
+    #[test]
+    fn a_recorded_selection_renders_every_candidate_considered() {
+        let selection = selection_of(vec![
+            ConsideredBackend {
+                id: "sandlock".into(),
+                verdict: CandidateVerdict::RejectedRequirementsUnmet,
+                detail: "the backend has no mechanism for syscall".into(),
+                unmet_domains: vec![CapabilityDomain::Syscall],
+            },
+            ConsideredBackend {
+                id: "aasm-native".into(),
+                verdict: CandidateVerdict::Selected,
+                detail: "this candidate could plan the launch's lowered requirements".into(),
+                unmet_domains: Vec::new(),
+            },
+        ]);
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 0),
+            CredentialPosture::default(),
+            "no boundary for this fixture",
+        )
+        .with_selection(selection);
+
+        let rendered = report.render();
+        assert!(rendered.contains("selection:        automatic"), "{rendered}");
+        assert!(
+            rendered.contains("sandlock") && rendered.contains("rejected_requirements_unmet"),
+            "the rejected candidate must be named with its verdict: {rendered}"
+        );
+        assert!(
+            rendered.contains("aasm-native") && rendered.contains("[selected]"),
+            "the selected candidate must be named with its verdict: {rendered}"
+        );
+    }
+
+    /// A report carrying no selection renders no `selection:` line at all —
+    /// an explicit or default selection has nothing to disclose, and printing
+    /// an empty section would read as "automatic selection ran and considered
+    /// nothing" rather than as "nothing recorded how this was selected".
+    #[test]
+    fn a_report_with_no_recorded_selection_renders_no_selection_section() {
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 0),
+            CredentialPosture::default(),
+            "no boundary for this fixture",
+        );
+        assert!(report.selection().is_none());
+        assert!(!report.render().contains("selection:"), "{}", report.render());
+    }
+
+    /// The machine projection carries the selection mode, the considered
+    /// count, and one full set of per-candidate keys per candidate — including
+    /// the unmet-domain enumeration for a rejected candidate.
+    #[test]
+    fn machine_output_carries_the_recorded_selection() {
+        let selection = selection_of(vec![
+            ConsideredBackend {
+                id: "sandlock".into(),
+                verdict: CandidateVerdict::RejectedRequirementsUnmet,
+                detail: "the backend has no mechanism for syscall".into(),
+                unmet_domains: vec![CapabilityDomain::Syscall],
+            },
+            ConsideredBackend {
+                id: "aasm-native".into(),
+                verdict: CandidateVerdict::Selected,
+                detail: "ok".into(),
+                unmet_domains: Vec::new(),
+            },
+        ]);
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 0),
+            CredentialPosture::default(),
+            "no boundary for this fixture",
+        )
+        .with_selection(selection);
+
+        let machine = parse(&report);
+        assert_eq!(machine["backend_selection_mode"], "automatic");
+        assert_eq!(machine["backend_selection.considered_count"], "2");
+        assert_eq!(machine["backend_selection.considered.0.id"], "sandlock");
+        assert_eq!(
+            machine["backend_selection.considered.0.verdict"],
+            "rejected_requirements_unmet"
+        );
+        assert_eq!(machine["backend_selection.considered.0.unmet_domain_count"], "1");
+        assert_eq!(machine["backend_selection.considered.0.unmet_domain.0"], "syscall");
+        assert_eq!(machine["backend_selection.considered.1.id"], "aasm-native");
+        assert_eq!(machine["backend_selection.considered.1.verdict"], "selected");
+        assert_eq!(machine["backend_selection.considered.1.unmet_domain_count"], "0");
+
+        for line in report.machine_lines() {
+            assert!(!line.contains('\n'), "a record must be one line: {line}");
+        }
+    }
 }
