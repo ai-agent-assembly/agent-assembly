@@ -567,18 +567,53 @@ fn filesystem(
     )
 }
 
+/// Unlike [`filesystem`] and [`network_egress`], this domain cannot reuse the
+/// generic [`restriction_sources`] over both `agent_spawn` and `terminal_exec`
+/// (AAASM-5816).
+///
+/// `restriction_sources`'s allow-list-omission rule is correct per capability,
+/// but this domain has no per-capability scope — it is a single whole-domain
+/// boolean, so a restriction sourced from *either* capability produces the
+/// exact same [`RequirementScope::Whole`] requirement as a restriction sourced
+/// from *both*. Feeding it `[AgentSpawn, TerminalExec]` therefore let an
+/// in-force allow-list that explicitly grants `terminal_exec` still collapse
+/// to whole-domain prevention, purely because `agent_spawn` — a capability
+/// with no wired [`GovernanceAction`](aa_core::GovernanceAction) anywhere in
+/// the product yet — was not *also* named. `capabilities: allow:
+/// [terminal_exec]` and `capabilities: deny: [terminal_exec]` lowered to the
+/// same requirement, which is backwards: allow must not restrict what it
+/// explicitly grants.
+///
+/// So the allow-list omission check here looks at `terminal_exec` alone — the
+/// only capability this domain actually enforces (`GovernanceAction::ProcessExec`
+/// maps to it, not to `agent_spawn`). An explicit `capabilities.deny` of
+/// either capability still restricts the domain; that half was never the bug
+/// and stays exactly as tested by
+/// [`tests::agent_spawn_and_terminal_exec_each_reach_process_creation`].
 fn process_creation(policy: &PolicyDocument) -> DomainResult {
     let gaps = vec![PROCESS_DESCENDANT_CEILING_GAP.to_string()];
-    match restriction_sources(policy, &[Capability::AgentSpawn, Capability::TerminalExec]) {
-        Some(sourced_from) => (
+    let mut sources = Vec::new();
+    if let Some(set) = policy.capabilities.as_ref() {
+        for capability in [Capability::AgentSpawn, Capability::TerminalExec] {
+            if set.deny.contains(&capability) {
+                sources.push(format!("capabilities.deny[{capability}]"));
+            }
+        }
+        if !set.allow.is_empty() && !set.allow.contains(&Capability::TerminalExec) {
+            sources.push("capabilities.allow omits terminal_exec (an allow-list restriction is in force)".to_string());
+        }
+    }
+    if sources.is_empty() {
+        (not_stated(CAPABILITY_NODE, CAPABILITY_ABSENT_MEANING), None, gaps)
+    } else {
+        (
             DomainCoverage::Lowered {
                 granularity: ScopeGranularity::WholeDomainOnly,
-                sourced_from,
+                sourced_from: sources,
             },
             Some(RequirementScope::Whole),
             gaps,
-        ),
-        None => (not_stated(CAPABILITY_NODE, CAPABILITY_ABSENT_MEANING), None, gaps),
+        )
     }
 }
 
