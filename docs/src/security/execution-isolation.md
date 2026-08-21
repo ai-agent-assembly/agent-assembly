@@ -50,7 +50,7 @@ claim merely because both use the word "sandbox":
 | | `aa-sandbox` | Execution isolation (`aasm run --isolation`) |
 |---|---|---|
 | **What it confines** | One WASM-marked **tool call**, run under Wasmtime/WASI | The agent's **whole native process tree** — the launched program and every descendant it spawns |
-| **Mechanism** | Userspace WASM runtime: preopened directories, instruction fuel, memory pages, wall-clock deadline | A host-level backend (currently [Sandlock](#platform-and-backend-support-matrix), Linux-only) confining a real OS process |
+| **Mechanism** | Userspace WASM runtime: preopened directories, instruction fuel, memory pages, wall-clock deadline | A host-level backend (currently [Sandlock or AASM-native](#platform-and-backend-support-matrix), both Linux-only) confining a real OS process |
 | **Where it runs** | Any platform Wasmtime supports | Only where a backend exists for the host — today, Linux only |
 | **Invoked via** | `aasm sandbox run <module.wasm>`, or a tool marked for sandboxed execution inside the governed tool-call path | `aasm run --isolation auto\|process` |
 | **ADR 0033 element** | Part of E2 (a WASM-marked tool call is itself a checkpoint) | E2 + E4 + E5 + E6, as above |
@@ -177,13 +177,22 @@ glossing over it (tracked as a known, non-blocking residual gap,
 
 ## Platform and backend support matrix
 
-**Only one execution-isolation backend ships today, and it is Linux-only.**
+**Two execution-isolation backends ship today, and both are Linux-only.**
+Sandlock (`sandlock`) was the first; AASM-native (`aasm-native`,
+[AAASM-5801](https://lightning-dust-mite.atlassian.net/browse/AAASM-5801)–[5804](https://lightning-dust-mite.atlassian.net/browse/AAASM-5804))
+is a second, AASM-owned implementor of the same `IsolationBackend` contract,
+composed from Landlock (filesystem) and seccomp-bpf (syscalls). Neither
+replaces the other — see [Choosing between the two backends](#choosing-between-the-two-backends)
+for which one `--isolation auto` selects and why, and
+[Compatibility with Sandlock](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md#compatibility-with-sandlock)
+in Core ADR 035 for the underlying record.
 
 | Platform | Process-level execution isolation | Notes |
 |---|---|---|
-| **Linux (x86_64 / aarch64)** | ✅ Available, subject to the runtime probe below | The only implemented backend, [Sandlock](https://github.com/multikernel/sandlock) (Apache-2.0). AASM does not bundle it — see [Licensing and distribution](#licensing-and-distribution) below. |
-| **macOS** | ❌ **Not supported.** `--isolation process` or `--isolation auto` is **refused** (`Boundary::Refused`) on this host, never silently downgraded to unconfined. | No backend targets macOS. This is not a roadmap statement — see ADR 0035 §8: "no Linux backend implies macOS or Windows support." |
-| **Windows** | ❌ **Not supported.** Same refusal behavior as macOS. | No backend targets Windows. |
+| **Linux (x86_64)** | ✅ Available, subject to the runtime probe below | Both backends: [Sandlock](https://github.com/multikernel/sandlock) (Apache-2.0, external executable) and AASM-native (this repository, Apache-2.0, filesystem + syscall confinement). AASM does not bundle Sandlock — see [Licensing and distribution](#licensing-and-distribution) below. |
+| **Linux (aarch64)** | ✅ Sandlock fully available. AASM-native: filesystem confinement only — syscall filtering is **not available** on this architecture (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)). | The seccomp filter AASM-native builds is a hand-assembled, architecture-specific cBPF program; only the x86_64 syscall-number table exists today. Landlock (filesystem) has no such restriction. |
+| **macOS** | ❌ **Not supported.** `--isolation process` or `--isolation auto` is **refused** (`Boundary::Refused`) on this host, never silently downgraded to unconfined. | No backend targets macOS, for either mechanism. This is not a roadmap statement — see Core ADR 035 §8: "no Linux backend implies macOS or Windows support." |
+| **Windows** | ❌ **Not supported.** Same refusal behavior as macOS. | No backend targets Windows, for either mechanism. |
 
 This intentionally does not read like the eBPF platform matrix in
 [ADR 0033 §5.3](../adr/0033-canonical-governance-and-enforcement-architecture.md#53-the-verified-platform-matrix) —
@@ -220,12 +229,125 @@ feature, the kernel release is new enough, or a security module is listed in
 `/sys`. Those are inputs to the *message* an operator reads, never inputs to
 the *verdict*.
 
-A **native-Linux backend** (as opposed to the third-party Sandlock substrate)
-is under active evaluation as a Go/No-Go benchmark spike
-([AAASM-5713](https://lightning-dust-mite.atlassian.net/browse/AAASM-5713),
-**in progress at the time of writing — no verdict exists yet**). This page
-will be updated once that evaluation concludes; it makes no recommendation
-about the outcome in the meantime.
+### AASM-native runtime prerequisites
+
+AASM-native (backend id `aasm-native`) is AASM's own second implementor —
+Landlock for filesystem confinement, seccomp-bpf for syscall confinement — not
+a third-party substrate. It has its own, narrower runtime floor:
+
+| Failure | Diagnostic | Fix |
+|---|---|---|
+| Not on Linux | Same refusal shape as Sandlock's — no configuration on this host can change the answer. | Use a Linux host, or `--isolation none`. |
+| Kernel has no Landlock (`CONFIG_SECURITY_LANDLOCK`) | `this kernel provides no Landlock (...)`. | Enable `CONFIG_SECURITY_LANDLOCK=y` and add `landlock` to `CONFIG_LSM`/the `lsm=` boot parameter, or use a newer kernel. |
+| Landlock ABI below v3 | `this kernel's Landlock ABI is v<n> and this backend's filesystem claim requires at least v3 (Linux 6.2 or newer)`. Below ABI v3 the kernel does not honour the truncate right, so a path-scoped write restriction would not stop `truncate(2)` on a file outside the permitted set — the backend refuses rather than making a claim that would be false. | Upgrade to Linux 6.2 or newer. |
+| Launcher binary not found | `no aa-isolation-launch binary was found`. | Build it (`cargo build -p aa-isolation-native --bin aa-isolation-launch`), install it beside `aasm`, or set `AA_ISOLATION_LAUNCHER`. |
+| `AA_ISOLATION_LAUNCHER` points at nothing | Names the missing path. | Correct the path or unset the variable. |
+| Syscall filtering requested on a non-x86_64 host | Reported as `Unsupported` for the `Syscall` capability domain, host architecture named in the diagnostic — filesystem domains are unaffected. | Use an x86_64 host if syscall confinement is required, or accept filesystem-only confinement on this architecture. |
+
+**Kernel/ABI floor, stated plainly:** Landlock ABI **v3**, Linux **6.2** or
+newer (`aa-isolation-native/src/rules.rs`'s `REQUIRED_ABI`/`REQUIRED_KERNEL_RELEASE`).
+Syscall filtering additionally requires an **x86_64** host — the filter this
+backend installs is a hand-built cBPF program against the x86_64 syscall
+table; on aarch64 the `Syscall` capability domain reports `Unsupported` while
+filesystem domains continue to work normally. As with Sandlock, a capability
+is reported able to prevent only when a denial was actually observed on this
+host, never inferred from a kernel-version or `/sys` check alone.
+
+**Selecting it explicitly:** pass `--isolation-backend aasm-native` alongside
+`--isolation process` (or `auto`) — see [Backend pinning](../cli/run.md#backend-pinning---isolation-backend)
+in the `aasm run` CLI reference. It is fully usable today for any policy whose
+required isolation domains are limited to filesystem read/write and syscall —
+see [Choosing between the two backends](#choosing-between-the-two-backends)
+for what it does not cover.
+
+## Compatibility and performance relative to Sandlock
+
+Measured by the AAASM-5805 three-arm benchmark (Sandlock confined /
+AASM-native confined / unconfined baseline, same host and session,
+`control_validity: VALID` against a fresh baseline in both comparisons); full
+methodology, admissibility rules, and raw results are committed in
+[`benchmarks/isolation/METHODOLOGY.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/main/benchmarks/isolation/METHODOLOGY.md).
+This is a summary of that record for an operator who should not have to leave
+this page to understand the trade-off — read the methodology document for the
+full per-family breakdown and the admissibility/control-validity rules behind
+each grade.
+
+| Dimension | Sandlock (confined) vs. unconfined | AASM-native (confined) vs. unconfined |
+|---|---|---|
+| P1 — Startup overhead | AMBER, +180.49 ms | AMBER, +175.33 ms |
+| P2 — Steady state, general | RED, 2.00x worst case (`rust_cargo_metadata`) | GREEN, 1.05x worst case |
+| P3 — Steady state, filesystem | RED, 5.39x (`many_small_files`) | GREEN, 1.01x |
+| P4 — Steady state, process spawn | RED, 1.75x | GREEN, 0.97x |
+| P5 — Steady state, network | **Not admissible** — this policy's undeclared-network family fails closed under Sandlock (see caveat below) | GREEN, 0.98x — **not a compatibility win**; AASM-native does not enforce `NetworkEgress` at all under this policy, so nothing here was actually confined |
+| P6 — Peak memory | GREEN, +13.55 MB worst-case delta | GREEN, +147 KB worst-case delta |
+| P7 — CPU time | RED, 83.37x worst case (`startup_nop`, near-zero unconfined baseline inflates the ratio) | RED, 13.13x worst case (same effect, smaller) |
+| C1 — Functional compatibility | 6/7 comparable families admissible (`https_loopback` fails closed; `repo_traversal` excluded, a pre-existing CI-checkout gap unrelated to confinement) | 7/7 comparable families admissible, 0 failed |
+
+**P5 caveat, stated plainly:** the benchmark policy declares no `network:`
+node. Under that policy Sandlock enforces the undeclared `NetworkEgress`
+domain as fail-closed (deny) — its `https_loopback` family exits 1 on every
+repetition — while AASM-native does not enforce that domain at all, because it
+has no network-egress mechanism to enforce it *with*. AASM-native's GREEN
+grade on P5 reflects a domain it never touched, not a capability it confined
+faster. It is not counted as a point in AASM-native's favor for that reason.
+
+**AASM-native is faster on every admissible P1–P7 dimension** measured by this
+policy (tying on P1 and P7's grade band, strictly better on P2/P3/P4, and
+P5 uncounted for the reason above), and passes the compatibility dimension
+(C1) with zero failures against Sandlock's one policy-driven failure.
+
+### Choosing between the two backends
+
+Each backend implements a different, non-overlapping slice of the
+policy-capability domains this contract covers (measured from each backend's
+own `CapabilityReport`, not asserted):
+
+| Capability domain | Sandlock | AASM-native |
+|---|---|---|
+| `FilesystemRead` | supported | supported |
+| `FilesystemWrite` | supported | supported |
+| `Syscall` | **Unsupported** | supported |
+| `NetworkEgress` | supported | **Unsupported** |
+| `ProcessCreation` | supported/partial | **Unsupported** |
+| `Resource` | supported/partial | **Unsupported** |
+| `Ipc` | partial | **Unsupported** |
+| `Credential` | supported/partial | **Unsupported** |
+
+Neither backend's supported-domain set contains the other's, so
+AAASM-5805's pre-registered [default-backend selection rule](https://github.com/ai-agent-assembly/agent-assembly/blob/main/benchmarks/isolation/METHODOLOGY.md#default-backend-selection-rule-aaasm-5805)
+resolves on performance alone, mechanically: applying it to the measured
+numbers above **recommends AASM-native as the default** for
+`aasm run --isolation auto`, since it grades at least as well as Sandlock on
+every measured dimension and strictly better on several.
+
+**`aasm run --isolation auto` does not use that recommendation. Sandlock
+remains the default.** The mechanical rule optimizes for measured performance
+alone; it has no way to weigh what a faster backend stops enforcing. AASM-native
+enforces only three of the eight domains above (`FilesystemRead`,
+`FilesystemWrite`, `Syscall`) — it enforces nothing for network egress,
+process creation, resource ceilings, IPC, or credential isolation, five
+domains Sandlock does at least partially cover. Flipping `--isolation auto`'s
+default to chase the performance win would silently reduce what every
+existing `--isolation auto` policy actually gets enforced, for callers who
+did not ask for that trade-off. That reduction was judged unacceptable
+regardless of the mechanical rule's output, so the default was **not**
+changed; `aa-cli/src/commands/run.rs`'s `isolation_backend` default continues
+to select Sandlock.
+
+AASM-native is fully usable today — it is not gated behind this decision —
+for any policy whose *required* isolation domains are limited to
+filesystem read/write and/or syscall: select it explicitly with
+`--isolation-backend aasm-native` (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)
+above). What this decision withholds is only the *automatic* selection
+`--isolation auto` performs when a policy does not name a backend.
+
+A capability-aware selection — one that inspects a policy's *required*
+domains, negotiates against each backend's actual capability report, and
+picks the safest/lowest-cost backend that fully satisfies the requirement,
+rather than picking the fastest backend regardless of coverage — is tracked
+as a follow-up, [AAASM-5808](https://lightning-dust-mite.atlassian.net/browse/AAASM-5808).
+It is not scheduled or committed to a timeline as of this page; until it
+ships, `--isolation auto` selects Sandlock unconditionally.
 
 ## Troubleshooting
 
@@ -298,6 +420,27 @@ A future backend with a materially different license or hosted-service terms
 would require a separate product/legal review before entering an equivalent
 built-in distribution path — see
 [ADR 0035 §11](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md#11-backend-provenance-and-license-compatibility-are-release-inputs).
+
+**AASM-native ships no third-party binary either — its licensing surface is
+different in kind, not absent.** Unlike Sandlock, there is no external
+executable to record provenance for: the backend implementation is this
+repository's own code (Apache-2.0, this repository's license), built into the
+`aa-isolation-launch` launcher binary that ships alongside `aasm`. The
+third-party surface is the Rust crate that binds the kernel mechanism —
+[`landlock`](https://github.com/landlock-lsm/rust-landlock) (`MIT OR
+Apache-2.0`, verified against the crate's own `LICENSE-MIT`/`LICENSE-APACHE`
+at the pinned version before it was pinned, per
+[ADR 0035 §11](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md#11-backend-provenance-and-license-compatibility-are-release-inputs)),
+plus that crate's own dependencies (`enumflags2`, `enumflags2_derive`, both
+`MIT OR Apache-2.0`) and `libc` (already a workspace dependency). Every one of
+these is a normal Rust crate in the cargo dependency graph, so — unlike a
+prebuilt backend binary — `cargo deny check` (`deny.toml`) evaluates it and
+its transitive dependencies on every CI run, the same gate every other
+workspace dependency goes through; this is why AASM-native carries **no
+entry** in `metadata/isolation-backends.json`, which exists specifically to
+cover backends outside that graph (see `THIRD_PARTY_NOTICES.md` for the exact
+boundary between the two mechanisms). All licenses named above are already in
+`deny.toml`'s `[licenses] allow` list.
 
 > **This is not legal advice.** This section and `metadata/isolation-backends.json`
 > record an engineering and release-process requirement — which facts a
