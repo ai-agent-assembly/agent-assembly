@@ -10,8 +10,8 @@ use aa_core::attestation::ClaimTerm;
 use aa_isolation::{
     negotiate, AchievedControl, BackendAvailability, BackendCapabilities, BackendIdentity, CapabilityDomain,
     CapabilityReport, ControlRequirement, DecisionTiming, DescendantCoverage, DescendantRequirement, ExecutionSpec,
-    IdentityRef, LaunchPosture, Lowering, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, Provenance,
-    RefusalReason, RequirementIntent, RequirementOutcome, RequirementPosture, SupportLevel, Synchrony,
+    IdentityRef, LaunchPosture, Lowering, Mediation, PlanRefusal, PlatformBoundary, Prerequisite, PrerequisiteStatus,
+    Provenance, RefusalReason, RequirementIntent, RequirementOutcome, RequirementPosture, SupportLevel, Synchrony,
 };
 
 fn identity(id: &str) -> BackendIdentity {
@@ -506,4 +506,217 @@ fn lowering_is_recorded_for_shortfalls_as_well_as_successes() {
     )
     .expect("degradation permitted");
     assert_eq!(plan.planned()[0].lowering.steps(), ["noted network_egress"]);
+}
+
+// ---------------------------------------------------------------------------
+// Capability-aware auto-selection (AAASM-5808).
+//
+// `aa-isolation` has no access to the real `SandlockBackend` / `NativeBackend`
+// types — those live in their own crates, downstream of this one — so these
+// tests exercise the premise `aa_cli::commands::run::plan::auto_select` is
+// built on, using fixture `BackendCapabilities` shaped like each real
+// backend's measured coverage (see the ticket's approved design): sandlock
+// covers every domain except `Syscall`; the native backend covers exactly
+// `FilesystemRead`, `FilesystemWrite` and `Syscall`. The two gaps are
+// complementary, not nested, which is why a fixed-order eligibility walk
+// against real `plan()`/`negotiate()` verdicts is the only correct selector —
+// a hand-written domain-subset comparison would have to reimplement this
+// logic and could drift from it.
+// ---------------------------------------------------------------------------
+
+/// Capabilities shaped like the sandlock backend's measured coverage: every
+/// domain this crate defines requirements for, except `Syscall`.
+fn sandlock_shaped() -> BackendCapabilities {
+    capabilities(vec![
+        preventing(CapabilityDomain::FilesystemRead),
+        preventing(CapabilityDomain::FilesystemWrite),
+        preventing(CapabilityDomain::NetworkEgress),
+        preventing(CapabilityDomain::ProcessCreation),
+        preventing(CapabilityDomain::Resource),
+        preventing(CapabilityDomain::Ipc),
+        preventing(CapabilityDomain::Credential),
+        CapabilityReport::unsupported(CapabilityDomain::Syscall, "no seccomp-equivalent mechanism"),
+    ])
+}
+
+/// Capabilities shaped like the native backend's measured coverage: exactly
+/// `FilesystemRead`, `FilesystemWrite` and `Syscall`, and silence — not a
+/// stated absence — about everything else.
+fn native_shaped() -> BackendCapabilities {
+    capabilities(vec![
+        preventing(CapabilityDomain::FilesystemRead),
+        preventing(CapabilityDomain::FilesystemWrite),
+        preventing(CapabilityDomain::Syscall),
+    ])
+}
+
+/// One candidate's id and the verdict `negotiate()` reached for it.
+type ConsideredVerdict<'a> = (&'a str, Result<(), PlanRefusal>);
+
+/// Walk `candidates` in the given fixed order and return the first whose
+/// `negotiate()` verdict is `Ok`, alongside every verdict considered along the
+/// way — the same fixed-order, lazy, plan()-is-the-oracle walk
+/// `auto_select` performs against real backends.
+fn select<'a>(
+    candidates: &[(&'a str, BackendCapabilities)],
+    probe: &ExecutionSpec,
+) -> (Option<&'a str>, Vec<ConsideredVerdict<'a>>) {
+    let mut considered = Vec::new();
+    for (id, caps) in candidates {
+        match negotiate(probe, &identity(id), caps, &no_lowering()) {
+            Ok(_) => {
+                considered.push((*id, Ok(())));
+                return (Some(id), considered);
+            }
+            Err(refusal) => {
+                considered.push((*id, Err(refusal)));
+            }
+        }
+    }
+    (None, considered)
+}
+
+/// A policy whose lowered requirements only the native-shaped candidate can
+/// satisfy selects it, after the sandlock-shaped candidate is tried first and
+/// rejected for the domain it cannot cover.
+#[test]
+fn a_policy_only_the_native_domains_can_satisfy_selects_the_native_candidate() {
+    let probe = spec(vec![
+        ControlRequirement::prevent(CapabilityDomain::FilesystemWrite),
+        ControlRequirement::prevent(CapabilityDomain::Syscall),
+    ]);
+    let candidates = [("sandlock", sandlock_shaped()), ("aasm-native", native_shaped())];
+
+    let (selected, considered) = select(&candidates, &probe);
+
+    assert_eq!(selected, Some("aasm-native"));
+    assert_eq!(considered.len(), 2, "both candidates must have been walked");
+    assert!(
+        considered[0].1.is_err(),
+        "sandlock cannot cover Syscall and must be rejected"
+    );
+    assert!(considered[1].1.is_ok(), "the native candidate must be the one selected");
+}
+
+/// A policy whose lowered requirements the first candidate already satisfies
+/// stops there — the second candidate is never reached.
+#[test]
+fn a_policy_requiring_network_egress_stays_on_the_first_candidate() {
+    let probe = spec(vec![
+        ControlRequirement::prevent(CapabilityDomain::FilesystemWrite),
+        ControlRequirement::prevent(CapabilityDomain::NetworkEgress),
+    ]);
+    let candidates = [("sandlock", sandlock_shaped()), ("aasm-native", native_shaped())];
+
+    let (selected, considered) = select(&candidates, &probe);
+
+    assert_eq!(selected, Some("sandlock"));
+    assert_eq!(
+        considered.len(),
+        1,
+        "the walk is lazy — a satisfied first candidate must never reach the second"
+    );
+}
+
+/// A policy no candidate can satisfy selects none and names both, each with
+/// its own distinct unmet domain.
+#[test]
+fn a_policy_no_candidate_satisfies_selects_none_and_names_both() {
+    let probe = spec(vec![
+        ControlRequirement::prevent(CapabilityDomain::NetworkEgress),
+        ControlRequirement::prevent(CapabilityDomain::Syscall),
+    ]);
+    let candidates = [("sandlock", sandlock_shaped()), ("aasm-native", native_shaped())];
+
+    let (selected, considered) = select(&candidates, &probe);
+
+    assert_eq!(selected, None);
+    assert_eq!(considered.len(), 2, "both candidates must be named in the refusal");
+
+    let sandlock_domains: Vec<CapabilityDomain> = considered[0]
+        .1
+        .as_ref()
+        .expect_err("sandlock cannot cover Syscall")
+        .unmet()
+        .iter()
+        .filter_map(|(_, reason)| reason.domain())
+        .collect();
+    let native_domains: Vec<CapabilityDomain> = considered[1]
+        .1
+        .as_ref()
+        .expect_err("the native candidate cannot cover NetworkEgress")
+        .unmet()
+        .iter()
+        .filter_map(|(_, reason)| reason.domain())
+        .collect();
+
+    assert_eq!(sandlock_domains, vec![CapabilityDomain::Syscall]);
+    assert_eq!(native_domains, vec![CapabilityDomain::NetworkEgress]);
+    assert_ne!(
+        sandlock_domains, native_domains,
+        "the two rejections must name different gaps, not the same generic refusal twice"
+    );
+}
+
+/// The control for the case above: drop `NetworkEgress` from the requirement
+/// set and the same two candidates must resolve to the second one succeeding,
+/// proving the "selects none" result above is about the requirement shape and
+/// not about selection being broken outright.
+#[test]
+fn a_policy_the_second_candidate_satisfies_is_not_reported_as_unsatisfiable() {
+    let probe = spec(vec![ControlRequirement::prevent(CapabilityDomain::Syscall)]);
+    let candidates = [("sandlock", sandlock_shaped()), ("aasm-native", native_shaped())];
+
+    let (selected, considered) = select(&candidates, &probe);
+
+    assert_eq!(selected, Some("aasm-native"));
+    assert_eq!(considered.len(), 2);
+    assert!(considered[0].1.is_err());
+    assert!(considered[1].1.is_ok());
+}
+
+/// The load-bearing premise of the whole design: a probe spec built from
+/// nothing but the lowered requirements gets the identical `plan()` verdict a
+/// real launch's spec would, because `narrow_for` and `negotiate` read only
+/// [`ExecutionSpec::requirements`]. Two specs with identical requirements but
+/// different program, args, identity, working directory and credentials must
+/// agree on `Ok`/`Err` and, when they refuse, on exactly which domains are
+/// unmet.
+#[test]
+fn probe_spec_and_real_spec_produce_the_same_verdict() {
+    let requirements = vec![
+        ControlRequirement::prevent(CapabilityDomain::FilesystemWrite),
+        ControlRequirement::prevent(CapabilityDomain::Syscall),
+    ];
+
+    let mut probe_like = ExecutionSpec::new("probe", IdentityRef::root("probe"));
+    for requirement in requirements.clone() {
+        probe_like = probe_like.with_requirement(requirement);
+    }
+
+    let mut real_like = ExecutionSpec::new("/usr/bin/python3", IdentityRef::root("agent-42").with_team("pioneer"))
+        .with_args(["ai_agent_main.py", "--flag"])
+        .with_working_dir("/home/operator/project");
+    for requirement in requirements {
+        real_like = real_like.with_requirement(requirement);
+    }
+
+    let backend = identity("sandlock");
+    let caps = sandlock_shaped();
+
+    let probe_result = negotiate(&probe_like, &backend, &caps, &no_lowering());
+    let real_result = negotiate(&real_like, &backend, &caps, &no_lowering());
+
+    match (&probe_result, &real_result) {
+        (Err(probe_refusal), Err(real_refusal)) => {
+            let probe_domains: Vec<_> = probe_refusal.unmet().iter().filter_map(|(_, r)| r.domain()).collect();
+            let real_domains: Vec<_> = real_refusal.unmet().iter().filter_map(|(_, r)| r.domain()).collect();
+            assert_eq!(
+                probe_domains, real_domains,
+                "the probe and the real spec must refuse for exactly the same domains"
+            );
+        }
+        (Ok(_), Ok(_)) => {}
+        other => panic!("the probe and the real spec disagreed on Ok/Err: {other:?}"),
+    }
 }
