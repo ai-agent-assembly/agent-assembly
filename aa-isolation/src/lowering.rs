@@ -1077,6 +1077,44 @@ mod tests {
         assert!(requirement_for(&lower(&empty()), CapabilityDomain::ProcessCreation).is_none());
     }
 
+    /// AAASM-5816 regression: `capabilities: allow: [terminal_exec]` must NOT
+    /// produce a ProcessCreation requirement. Before the fix, `terminal_exec`
+    /// being explicitly allowed didn't matter — the domain still restricted
+    /// itself because `agent_spawn` (a capability with no wired
+    /// `GovernanceAction`) was omitted from the same allow-list, so `allow`
+    /// collapsed to the identical whole-domain requirement `deny` produces.
+    #[test]
+    fn an_allow_list_naming_terminal_exec_does_not_restrict_process_creation() {
+        let lowering = lower(&with_allows(&[Capability::TerminalExec]));
+        assert!(
+            requirement_for(&lowering, CapabilityDomain::ProcessCreation).is_none(),
+            "an allow-list explicitly granting terminal_exec must not restrict process creation"
+        );
+    }
+
+    /// AAASM-5816: an allow-list that omits `terminal_exec` entirely (names
+    /// only `agent_spawn`) still restricts the domain — the fix narrows the
+    /// omission check to `terminal_exec`, it does not disable it.
+    #[test]
+    fn an_allow_list_omitting_terminal_exec_still_restricts_process_creation() {
+        let lowering = lower(&with_allows(&[Capability::AgentSpawn]));
+        assert!(
+            requirement_for(&lowering, CapabilityDomain::ProcessCreation).is_some(),
+            "an allow-list that never names terminal_exec must still restrict process creation"
+        );
+    }
+
+    /// AAASM-5816: `deny: [terminal_exec]` is unaffected by the fix — it must
+    /// keep restricting the domain exactly as before, so the negative case
+    /// (an actual denial) is still expressed.
+    #[test]
+    fn deny_of_terminal_exec_still_restricts_process_creation() {
+        let lowering = lower(&with_denies(&[Capability::TerminalExec]));
+        let requirement =
+            requirement_for(&lowering, CapabilityDomain::ProcessCreation).expect("a deny still restricts");
+        assert_eq!(requirement.scope(), &RequirementScope::Whole);
+    }
+
     /// The same two-sided reading the gateway applies at L7: an in-force
     /// allow-list restricts what it omits. Both halves are asserted, so the
     /// test cannot pass against a function that restricts everything or
