@@ -2548,6 +2548,18 @@ jobs:
         # `protoc`, and the runner does not ship it. Needed since this lane
         # started building `aa-cli` for the `run_isolation_linux` binary below.
         run: sudo apt-get install -y protobuf-compiler
+      - name: Build the native launcher for the auto-selection scenario
+        # AAASM-5808's `an_auto_selected_native_backend_kills_a_syscall_outside_its_allowlist`
+        # scenario calls `NativeBackend::discover()` (not `discover_with_launcher`),
+        # which only finds a launcher via `AA_ISOLATION_LAUNCHER`, beside the test
+        # executable, or `PATH` — it does not read the build-time
+        # `CARGO_BIN_EXE_aa-isolation-launch` the way `aa-isolation-native`'s own
+        # suite does. Build it explicitly and point the env var at it, or this one
+        # scenario declines `tool_absent` on a lane that otherwise measures
+        # everything else.
+        run: |
+          cargo build -p aa-isolation-native --bin aa-isolation-launch
+          echo "AA_ISOLATION_LAUNCHER=$PWD/target/debug/aa-isolation-launch" >> "$GITHUB_ENV"
       - name: Run the confinement suite
         # `--no-capture` so a `SKIP [...]` line is visible in the log; without
         # it a declining scenario reads exactly like a measuring one.
