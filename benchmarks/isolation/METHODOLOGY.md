@@ -582,9 +582,100 @@ paragraph — small enough for the same PR, per the ticket's own scope note.
 
 ### Three-arm measurement (AAASM-5805)
 
-_Recorded once the three-arm CI job (`isolation-benchmark-three-arm`) has
-run and its results downloaded — not yet populated as of this
-pre-registration._
+Run `20260821T021040Z`–`20260821T021153Z`, CI run
+[32436139941](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/32436139941),
+`main` `11b03464ef283d49db59846ecd5238ce196f662e`. All three arms same
+host/session: `kernel 6.17.0-1022-azure`, `AMD EPYC 9V74` (4 logical cores),
+`ext4` scratch on `/dev/nvme0n1p1`, `rustc/cargo 1.98.0`. Both comparisons'
+`control_validity: VALID` ("environment fingerprints match") against the
+same fresh unconfined baseline. Raw results and comparison JSON committed
+alongside this document as `results/three-arm-*.json`.
+
+| ID | Dimension | Baseline | Sandlock (confined) | AASM-native (confined) |
+| --- | --- | --- | --- | --- |
+| P1 | Startup overhead | 2.43 ms | 182.92 ms — **AMBER** (+180.49 ms) | 177.76 ms — **AMBER** (+175.33 ms) |
+| P2 | Steady state, general | 23.53–350.54 ms | 47.12–390.98 ms — **RED** (2.00x, `rust_cargo_metadata`; `python_pkg_test` also over-amber at 1.61x) | 24.66–365.84 ms — **GREEN** (1.05x, `rust_cargo_metadata`) |
+| P3 | Steady state, filesystem | 129.46 ms | 697.79 ms — **RED** (5.39x, `many_small_files`) | 130.94 ms — **GREEN** (1.01x, `many_small_files`) |
+| P4 | Steady state, process spawn | (baseline) | **RED** (1.75x, `process_spawn`) | **GREEN** (0.97x, `process_spawn`) |
+| P5 | Steady state, network | (baseline) | **BLOCKED** — `https_loopback` inadmissible for this arm (see finding below) | **GREEN** (0.98x, `https_loopback`) |
+| P6 | Peak memory | 18.28 MiB (`startup_nop`) | +13.55 MB worst-case delta — **GREEN** | +147 KB worst-case delta — **GREEN** |
+| P7 | CPU time | 2.2 ms (`startup_nop`) | **RED** (83.37x worst case, `startup_nop`) | **RED** (13.13x worst case, `startup_nop`) |
+| C1 | Functional compatibility | n/a | 6/7 comparable families admissible (`https_loopback` failed; `repo_traversal` excluded, fails identically in every arm including unconfined — the pre-existing `.git`-write finding, not a confinement effect) | 7/7 comparable families admissible, 0 failed |
+
+**Finding — Sandlock fails closed on undeclared network under this policy,
+AASM-native does not.** `three-arm.yaml.tmpl` states no `network:` node
+specifically so the native arm (`NetworkEgress` is `Unsupported` there) can
+plan against it at all. Under that same policy, Sandlock's `https_loopback`
+family exits 1 on every repetition — an undeclared network domain is
+enforced as fail-closed (deny), not left unconfined, unlike every other
+undeclared domain in this policy (filesystem read is `/`, process creation
+is unstated and unconfined). AASM-native's `https_loopback` runs and grades
+GREEN (0.98x) purely because it does not enforce that domain *at all* under
+this policy or any other — a coverage absence, not a compatibility win. P5
+is therefore **not a valid AASM-native-favorable data point**: Sandlock
+offers no admissible measurement to compare against, so the selection rule
+below treats P5 as uncounted (neither a tie nor a loss) for Sandlock rather
+than silently crediting native.
+
+#### Coverage table (measured from each backend's own `CapabilityReport`)
+
+| Domain | Sandlock | AASM-native |
+| --- | --- | --- |
+| `FilesystemRead` | supported | supported |
+| `FilesystemWrite` | supported | supported |
+| `NetworkEgress` | supported | **Unsupported** |
+| `ProcessCreation` | supported/partial | **Unsupported** |
+| `Resource` | supported/partial | **Unsupported** |
+| `Ipc` | partial | **Unsupported** |
+| `Credential` | supported/partial | **Unsupported** |
+| `Syscall` | **Unsupported** | supported |
+
+Confirms the pre-registered prediction: neither set contains the other, so
+the selection rule's rule 2 (coverage) does not fire.
+
+#### Applying the default-backend selection rule
+
+1. **Blocked?** No — both comparisons' `control_validity` is `VALID`.
+2. **Coverage decides?** No — confirmed above, neither domain set is a
+   strict superset of the other.
+3. **Performance, conservatively — does AASM-native grade at least as well
+   as Sandlock on every P dimension and strictly better on at least one?**
+   Comparing grade to grade (not raw ratio) on every dimension both arms
+   have an admissible measurement for: P1 AMBER=AMBER (tie), P2 GREEN>RED
+   (native better), P3 GREEN>RED (native better), P4 GREEN>RED (native
+   better), P6 GREEN=GREEN (tie), P7 RED=RED (tie — though native's raw
+   ratio, 13.13x vs 83.37x, is far better within the same grade band). P5
+   is uncounted per the finding above — Sandlock has no admissible
+   measurement to be worse than. **Yes**: at least as well everywhere
+   measurable, strictly better on P2/P3/P4. **Rule 3 fires.**
+
+**Mechanical result: AASM-native is the recommended default for
+`aasm run --isolation auto`, on the P1–P7 performance dimensions measured
+by this policy.**
+
+This is a narrower claim than "AASM-native is the better backend." The
+selection rule's own rule 2 exists precisely to catch a backend that wins
+on speed but not on the security surface it actually covers — and it did
+not fire here only because neither domain set is a strict superset of the
+other, a distinction the rule's binary containment test cannot see the
+*size* of the gap through. AASM-native covers 3 of the domains Sandlock
+also covers (`FilesystemRead`/`Write`) plus one Sandlock does not
+(`Syscall`); Sandlock covers those two plus five AASM-native does not at
+all (`NetworkEgress`, `ProcessCreation`, `Resource`, `Ipc`, `Credential`).
+Applying the pre-registered rule exactly as written, without tuning it
+after seeing this asymmetry, produces rule 3's recommendation regardless —
+stated here so the mechanical result and its most consequential caveat are
+both on the record, not just the former.
+
+**Not yet done as part of this measurement:** the code change
+(`aa-cli/src/commands/run.rs`'s `isolation_backend` default, its adjacent
+refusal message, and closing Core ADR 035's AAASM-5801 deferral paragraph)
+that would actually flip `--isolation auto`'s default. The ticket's own
+scope note allows it in the same PR "if the recommendation clearly calls
+for a trivial change achievable in the same PR" — the code change is
+trivial, but given the coverage caveat above, whether to act on the
+mechanical recommendation is a product decision, not a mechanical one, and
+is left to the engineer rather than executed unilaterally.
 
 ## Threshold changes
 
