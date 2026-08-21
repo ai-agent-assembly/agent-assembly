@@ -2570,7 +2570,7 @@ jobs:
         # nets declines against.
         run: |
           cargo nextest run --profile evidence --no-capture \
-            -p aa-isolation-sandlock -p aa-cli \
+            -p aa-isolation-sandlock -p aa-isolation-native -p aa-cli \
             -E 'package(aa-isolation-sandlock) + binary(run_isolation_linux)'
       - name: Report what this lane measured
         # `always()`: a lane that failed still has an outcome worth reading, and
