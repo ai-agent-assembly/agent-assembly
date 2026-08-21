@@ -106,7 +106,7 @@ pub async fn ws_alerts_handler(
     .await
     {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     let conn_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);

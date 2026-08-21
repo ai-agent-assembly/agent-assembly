@@ -45,16 +45,22 @@ where
 /// must have been minted for `purpose`. With no ticket, the header-derived
 /// caller (CLI / non-browser) is used. Either way a failure is a `401` response,
 /// never a silent downgrade to an unauthenticated stream.
+///
+/// `Response` is boxed on the error side — `clippy::result_large_err`, since
+/// `http::Response<tonic::service::AxumBody>` is >=128 bytes and this `Result`
+/// is moved through `match` arms on the success path too.
 pub async fn resolve_ws_caller(
     store: &WsTicketStore,
     ticket: Option<&str>,
     purpose: WsTicketPurpose,
     header_caller: Option<AuthenticatedCaller>,
-) -> Result<AuthenticatedCaller, Response> {
+) -> Result<AuthenticatedCaller, Box<Response>> {
     if let Some(ticket) = ticket {
         return store.consume(ticket, purpose).await.ok_or_else(|| {
-            AuthError::InvalidToken("invalid, expired, or already-used WebSocket ticket".into()).into_response()
+            Box::new(
+                AuthError::InvalidToken("invalid, expired, or already-used WebSocket ticket".into()).into_response(),
+            )
         });
     }
-    header_caller.ok_or_else(|| AuthError::MissingHeader.into_response())
+    header_caller.ok_or_else(|| Box::new(AuthError::MissingHeader.into_response()))
 }

@@ -80,7 +80,7 @@ pub async fn ws_events_handler(
     .await
     {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     // AAASM-3980: the authenticated caller's tenant travels into the dispatch
