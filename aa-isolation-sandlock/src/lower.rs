@@ -692,6 +692,32 @@ mod tests {
         assert_eq!(lowered.flags, ["--max-processes=1"]);
     }
 
+    /// AAASM-5816: the whole-domain requirement `aa_isolation::lower_policy`
+    /// produces for `capabilities: deny: [terminal_exec]` must deny descendant
+    /// process creation without denying the launched program's own execve. A
+    /// ceiling of one process leaves exactly one slot — the launched program
+    /// itself — so it is the target's own launch that fills it, and any
+    /// `fork`/`clone` it attempts afterward finds no room left. This backend
+    /// half of the bug was already correct (the defect was entirely in the
+    /// policy lowering that fed it); this test pins the step text as the
+    /// backend's own record of that split so a future change to the wording
+    /// cannot silently drop the "own launch is not denied" half of the claim.
+    #[test]
+    fn a_whole_domain_process_requirement_permits_the_launch_and_denies_descendants() {
+        let lowered =
+            lower_requirement(&ControlRequirement::prevent(CapabilityDomain::ProcessCreation)).expect("expressible");
+        assert!(
+            lowered.steps[0].contains("the launched program itself is the whole tree"),
+            "the step text must say the launched program's own execve is unaffected: {:?}",
+            lowered.steps
+        );
+        assert!(
+            lowered.steps[0].contains("any clone/fork is denied"),
+            "the step text must say descendant creation is denied: {:?}",
+            lowered.steps
+        );
+    }
+
     /// Least authority means starting from nothing and adding back, never
     /// starting from the ambient environment and subtracting.
     #[test]
