@@ -540,6 +540,91 @@ impl ReportedPosture {
     }
 }
 
+/// How a backend came to be the one this launch negotiated against.
+///
+/// Distinct from [`ReportedPosture`], which is about what the selected backend
+/// achieved; this is about how it came to be selected at all — a fact an
+/// operator reading a refusal needs to know before deciding whether to name a
+/// different backend or accept none (AAASM-5808).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum SelectionMode {
+    /// The operator named the backend directly (`--isolation-backend`, or
+    /// `--isolation process`, which is hardcoded to one backend).
+    Explicit,
+    /// `--isolation auto` walked the fixed candidate list in order and this
+    /// backend was the first one that could plan the launch.
+    Automatic,
+    /// No selection process ran — no boundary was requested.
+    Default,
+}
+
+impl SelectionMode {
+    /// A stable lowercase identifier for reports and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Automatic => "automatic",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// What became of one candidate backend during automatic selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum CandidateVerdict {
+    /// This candidate was the one selected.
+    Selected,
+    /// This candidate could not be selected on this host at all.
+    RejectedUnavailable,
+    /// This candidate is available but could not plan the launch's lowered
+    /// requirements.
+    RejectedRequirementsUnmet,
+}
+
+impl CandidateVerdict {
+    /// A stable lowercase identifier for reports and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Selected => "selected",
+            Self::RejectedUnavailable => "rejected_unavailable",
+            Self::RejectedRequirementsUnmet => "rejected_requirements_unmet",
+        }
+    }
+}
+
+/// One candidate backend automatic selection considered, and what became of
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ConsideredBackend {
+    /// The candidate's stable backend id.
+    pub id: String,
+    /// What became of this candidate.
+    pub verdict: CandidateVerdict,
+    /// An operator-facing sentence explaining the verdict.
+    pub detail: String,
+    /// The domains this candidate could not meet, when the verdict is
+    /// [`CandidateVerdict::RejectedRequirementsUnmet`]. Empty for every other
+    /// verdict.
+    pub unmet_domains: Vec<CapabilityDomain>,
+}
+
+/// How a backend was selected for this launch, and what the walk considered
+/// along the way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct BackendSelection {
+    /// How this launch's backend came to be selected.
+    pub mode: SelectionMode,
+    /// Every candidate the selection walk looked at, in the order it looked
+    /// at them.
+    pub considered: Vec<ConsideredBackend>,
+}
+
 /// How far negotiation with a backend got.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -574,6 +659,7 @@ pub struct IsolationReport {
     refusals: Vec<(CapabilityDomain, RefusalReason)>,
     backend_unavailable: Option<String>,
     negotiated: Negotiated,
+    selection: Option<BackendSelection>,
 }
 
 impl IsolationReport {
@@ -624,6 +710,7 @@ impl IsolationReport {
             refusals: Vec::new(),
             backend_unavailable: None,
             negotiated: Negotiated::Absent { reason: reason.into() },
+            selection: None,
         }
     }
 
@@ -703,6 +790,7 @@ impl IsolationReport {
             refusals: Vec::new(),
             backend_unavailable: None,
             negotiated,
+            selection: None,
         }
     }
 
@@ -777,6 +865,7 @@ impl IsolationReport {
                 .collect(),
             backend_unavailable: refusal.backend_unavailable().map(str::to_string),
             negotiated: Negotiated::Refused,
+            selection: None,
         }
     }
 
@@ -826,6 +915,16 @@ impl IsolationReport {
     /// unremoved ambient credentials do.
     pub fn with_descriptors(mut self, inventory: DescriptorInventory) -> Self {
         self.descriptors = Some(inventory);
+        self
+    }
+
+    /// Attach how the backend this report describes came to be selected.
+    ///
+    /// Absent entirely (`None`) rather than defaulted to
+    /// [`SelectionMode::Default`] when nothing calls this — a report that has
+    /// never been told how selection happened must not guess.
+    pub fn with_selection(mut self, selection: BackendSelection) -> Self {
+        self.selection = Some(selection);
         self
     }
 
@@ -906,6 +1005,12 @@ impl IsolationReport {
     /// is not enforcement.
     pub fn backend(&self) -> Option<&BackendIdentity> {
         self.backend.as_ref()
+    }
+
+    /// How the backend this report describes came to be selected, when
+    /// anything recorded it.
+    pub fn selection(&self) -> Option<&BackendSelection> {
+        self.selection.as_ref()
     }
 
     /// The capability set policy asked for, in declaration order.
@@ -1357,6 +1462,17 @@ impl IsolationReport {
                  have been is a fact about this host, not about this run, and is not stated here>\n",
             ),
         }
+        if let Some(selection) = &self.selection {
+            out.push_str(&format!("selection:        {}\n", selection.mode.as_str()));
+            for candidate in &selection.considered {
+                out.push_str(&format!(
+                    "  considered:     {} [{}] {}\n",
+                    sanitize(&candidate.id),
+                    candidate.verdict.as_str(),
+                    sanitize(&candidate.detail)
+                ));
+            }
+        }
     }
 
     /// The least-authority verdict, with the reason it is what it is.
@@ -1666,6 +1782,38 @@ impl IsolationReport {
             "backend_unavailable",
             self.backend_unavailable.clone().unwrap_or_default(),
         );
+
+        if let Some(selection) = &self.selection {
+            push("backend_selection_mode", selection.mode.as_str().to_string());
+            push(
+                "backend_selection.considered_count",
+                selection.considered.len().to_string(),
+            );
+            for (index, candidate) in selection.considered.iter().enumerate() {
+                push(
+                    &format!("backend_selection.considered.{index}.id"),
+                    candidate.id.clone(),
+                );
+                push(
+                    &format!("backend_selection.considered.{index}.verdict"),
+                    candidate.verdict.as_str().to_string(),
+                );
+                push(
+                    &format!("backend_selection.considered.{index}.detail"),
+                    candidate.detail.clone(),
+                );
+                push(
+                    &format!("backend_selection.considered.{index}.unmet_domain_count"),
+                    candidate.unmet_domains.len().to_string(),
+                );
+                for (gap_index, domain) in candidate.unmet_domains.iter().enumerate() {
+                    push(
+                        &format!("backend_selection.considered.{index}.unmet_domain.{gap_index}"),
+                        domain.as_str().to_string(),
+                    );
+                }
+            }
+        }
 
         push("requested_requirement_count", self.requested.len().to_string());
         push("domain_count", self.domains.len().to_string());
@@ -2432,5 +2580,119 @@ mod tests {
             "an observed requirement must not raise a degraded one out of the shortfall list"
         );
         assert_eq!(report.posture(), ReportedPosture::Degraded);
+    }
+
+    // -----------------------------------------------------------------------
+    // Backend selection (AAASM-5808).
+    // -----------------------------------------------------------------------
+
+    fn selection_of(considered: Vec<ConsideredBackend>) -> BackendSelection {
+        BackendSelection {
+            mode: SelectionMode::Automatic,
+            considered,
+        }
+    }
+
+    /// A report carrying a selection renders it: the mode, and one line per
+    /// candidate considered, each with its verdict and detail.
+    #[test]
+    fn a_recorded_selection_renders_every_candidate_considered() {
+        let selection = selection_of(vec![
+            ConsideredBackend {
+                id: "sandlock".into(),
+                verdict: CandidateVerdict::RejectedRequirementsUnmet,
+                detail: "the backend has no mechanism for syscall".into(),
+                unmet_domains: vec![CapabilityDomain::Syscall],
+            },
+            ConsideredBackend {
+                id: "aasm-native".into(),
+                verdict: CandidateVerdict::Selected,
+                detail: "this candidate could plan the launch's lowered requirements".into(),
+                unmet_domains: Vec::new(),
+            },
+        ]);
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 0),
+            CredentialPosture::default(),
+            "no boundary for this fixture",
+        )
+        .with_selection(selection);
+
+        let rendered = report.render();
+        assert!(rendered.contains("selection:        automatic"), "{rendered}");
+        assert!(
+            rendered.contains("sandlock") && rendered.contains("rejected_requirements_unmet"),
+            "the rejected candidate must be named with its verdict: {rendered}"
+        );
+        assert!(
+            rendered.contains("aasm-native") && rendered.contains("[selected]"),
+            "the selected candidate must be named with its verdict: {rendered}"
+        );
+    }
+
+    /// A report carrying no selection renders no `selection:` line at all —
+    /// an explicit or default selection has nothing to disclose, and printing
+    /// an empty section would read as "automatic selection ran and considered
+    /// nothing" rather than as "nothing recorded how this was selected".
+    #[test]
+    fn a_report_with_no_recorded_selection_renders_no_selection_section() {
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 0),
+            CredentialPosture::default(),
+            "no boundary for this fixture",
+        );
+        assert!(report.selection().is_none());
+        assert!(!report.render().contains("selection:"), "{}", report.render());
+    }
+
+    /// The machine projection carries the selection mode, the considered
+    /// count, and one full set of per-candidate keys per candidate — including
+    /// the unmet-domain enumeration for a rejected candidate.
+    #[test]
+    fn machine_output_carries_the_recorded_selection() {
+        let selection = selection_of(vec![
+            ConsideredBackend {
+                id: "sandlock".into(),
+                verdict: CandidateVerdict::RejectedRequirementsUnmet,
+                detail: "the backend has no mechanism for syscall".into(),
+                unmet_domains: vec![CapabilityDomain::Syscall],
+            },
+            ConsideredBackend {
+                id: "aasm-native".into(),
+                verdict: CandidateVerdict::Selected,
+                detail: "ok".into(),
+                unmet_domains: Vec::new(),
+            },
+        ]);
+        let report = IsolationReport::no_boundary(
+            session(),
+            IdentityRef::root("agent-1"),
+            TargetRef::new("mock-tool", 0),
+            CredentialPosture::default(),
+            "no boundary for this fixture",
+        )
+        .with_selection(selection);
+
+        let machine = parse(&report);
+        assert_eq!(machine["backend_selection_mode"], "automatic");
+        assert_eq!(machine["backend_selection.considered_count"], "2");
+        assert_eq!(machine["backend_selection.considered.0.id"], "sandlock");
+        assert_eq!(
+            machine["backend_selection.considered.0.verdict"],
+            "rejected_requirements_unmet"
+        );
+        assert_eq!(machine["backend_selection.considered.0.unmet_domain_count"], "1");
+        assert_eq!(machine["backend_selection.considered.0.unmet_domain.0"], "syscall");
+        assert_eq!(machine["backend_selection.considered.1.id"], "aasm-native");
+        assert_eq!(machine["backend_selection.considered.1.verdict"], "selected");
+        assert_eq!(machine["backend_selection.considered.1.unmet_domain_count"], "0");
+
+        for line in report.machine_lines() {
+            assert!(!line.contains('\n'), "a record must be one line: {line}");
+        }
     }
 }

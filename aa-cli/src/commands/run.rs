@@ -151,12 +151,15 @@ pub enum IsolationIntent {
     /// be built".
     #[default]
     None,
-    /// Agent Assembly selects the strongest isolation class it can provide here.
+    /// Agent Assembly selects a backend by capability (AAASM-5808).
     ///
-    /// Today exactly one class exists, so this resolves to
-    /// [`Process`](Self::Process). It is not a synonym for "isolate if
-    /// convenient": when nothing can provide a class, this refuses rather than
-    /// running unconfined.
+    /// Walks the compiled-in backends in a fixed order and selects the first
+    /// one whose `plan()` can meet this launch's lowered policy requirements
+    /// — the same negotiation a real launch uses, not a hand-written
+    /// comparison of what each backend is known to cover. It is not a synonym
+    /// for "isolate if convenient": when no compiled-in backend can meet the
+    /// requirements, this refuses — naming every backend it considered and
+    /// why — rather than running unconfined or falling back to a default.
     Auto,
     /// Confine the launch and its descendants within one host's process model.
     Process,
@@ -643,6 +646,14 @@ mod plan {
     }
 
     impl SelectedBackend {
+        /// What this backend is, and where it came from.
+        fn identity(&self) -> aa_isolation::BackendIdentity {
+            match self {
+                Self::Sandlock(backend) => backend.identity(),
+                Self::Native(backend) => backend.identity(),
+            }
+        }
+
         /// What the selected backend can do on this host, right now.
         fn capabilities(&self) -> aa_isolation::BackendCapabilities {
             match self {
@@ -708,6 +719,11 @@ mod plan {
         backend: Option<SelectedBackend>,
         /// Why this launch has no boundary, in words an operator can act on.
         absent: Option<String>,
+        /// How the backend was selected, and what automatic selection
+        /// considered along the way. `None` when selection was not automatic —
+        /// there is nothing here for `--dry-run`/live parity to disagree about
+        /// on an explicit or default selection.
+        selection: Option<aa_isolation::BackendSelection>,
     }
 
     impl IsolationPlan {
@@ -730,6 +746,20 @@ mod plan {
             self.absent.clone().unwrap_or_else(|| {
                 "no execution-isolation backend was selected for this launch, and nothing recorded why".to_string()
             })
+        }
+
+        /// Attach the recorded selection walk to `report`, when anything was
+        /// recorded.
+        ///
+        /// Mirrors how `with_policy` is threaded onto every report
+        /// [`resolve_boundary`](Self::resolve_boundary) produces: `--dry-run`
+        /// and a live launch must describe an automatic selection identically,
+        /// which only holds if every return point attaches it the same way.
+        fn with_selection(&self, report: IsolationReport) -> IsolationReport {
+            match &self.selection {
+                Some(selection) => report.with_selection(selection.clone()),
+                None => report,
+            }
         }
 
         /// The launch as an [`ExecutionSpec`], before any requirement is
@@ -794,7 +824,7 @@ mod plan {
                     command.get_program().to_string_lossy().into_owned(),
                     command.get_args().len(),
                 );
-                let report = IsolationReport::no_boundary(
+                let report = self.with_selection(IsolationReport::no_boundary(
                     session,
                     identity_ref,
                     target,
@@ -802,7 +832,7 @@ mod plan {
                     "this launch cannot be described faithfully — its program or an argument is not valid \
                      UTF-8 — so no execution specification exists, no backend was consulted, and nothing \
                      about its isolation is known",
-                );
+                ));
                 // A launch that asked for a boundary cannot get one without a
                 // spec, and running it anyway would be an unconfined launch of
                 // an untrusted program — the fallback this whole mode exists to
@@ -838,6 +868,7 @@ mod plan {
                 if let Some(lowering) = &self.lowering {
                     report = report.with_policy(lowering);
                 }
+                report = self.with_selection(report);
                 return (Some(base), report, Boundary::Absent);
             };
 
@@ -848,14 +879,14 @@ mod plan {
             // "we asked for nothing and got it" must not reach a reader as
             // readiness.
             let Some(lowering) = self.lowering.as_ref() else {
-                let report = IsolationReport::no_boundary(
+                let report = self.with_selection(IsolationReport::no_boundary(
                     session,
                     identity_ref,
                     TargetRef::of(&base),
                     credentials,
                     "an execution-isolation boundary was requested but no effective policy resolved, so \
                      there is nothing to lower into requirements for it to enforce",
-                );
+                ));
                 return (
                     Some(base),
                     report,
@@ -879,6 +910,7 @@ mod plan {
                         format!("the launch is refused: {detail}"),
                     );
                     report = report.with_policy(lowering);
+                    report = self.with_selection(report);
                     return (Some(base), report, Boundary::Refused(detail));
                 }
             };
@@ -886,12 +918,13 @@ mod plan {
             backend.set_child_environment(child_env.clone());
             match backend.plan(&spec) {
                 Ok(plan) => {
-                    let report = IsolationReport::from_plan(session, &plan).with_policy(lowering);
+                    let report = self.with_selection(IsolationReport::from_plan(session, &plan).with_policy(lowering));
                     (Some(spec), report, Boundary::Negotiated(Box::new(plan)))
                 }
                 Err(refusal) => {
                     let detail = super::describe_refusal(&refusal);
-                    let report = IsolationReport::from_refusal(session, &spec, &refusal).with_policy(lowering);
+                    let report = self
+                        .with_selection(IsolationReport::from_refusal(session, &spec, &refusal).with_policy(lowering));
                     (Some(spec), report, Boundary::Refused(detail))
                 }
             }
@@ -1417,79 +1450,248 @@ mod plan {
                          from an absence"
                             .to_string(),
                     ),
+                    selection: None,
                 });
             }
 
-            // The default is unchanged by AAASM-5802. ADR 0035's AAASM-5801
+            // A named backend always wins, whichever isolation class asked for
+            // it: it is the operator overriding selection outright, and
+            // `--isolation auto --isolation-backend X` must behave exactly as
+            // `--isolation process --isolation-backend X` does, not run
+            // automatic selection and then check whether it agreed.
+            if let Some(id) = &args.isolation_backend {
+                return explicit_backend(id, args.isolation, lowering, posture);
+            }
+
+            if args.isolation == super::IsolationIntent::Auto {
+                return auto_select(&lowering, posture);
+            }
+
+            // `--isolation process` with no backend named. The default is
+            // unchanged by AAASM-5802 or by this ticket. ADR 0035's AAASM-5801
             // amendment is explicit that which backend a deployment uses by
             // default "is an evidence-based decision to be made later, under
             // AAASM-5805, once both backends have comparable measured evidence —
             // it is not pre-decided by naming the native backend here". So the
-            // second backend is reachable only by naming it.
-            let requested = args
-                .isolation_backend
-                .as_deref()
-                .unwrap_or(aa_isolation_sandlock::BACKEND_ID);
-            let backend = match requested {
-                id if id == aa_isolation_sandlock::BACKEND_ID => {
-                    // Discovery measures the host; it starts nothing and confines
-                    // nothing, so a preview may call it too — and must, or the
-                    // preview would describe a boundary the live launch could not
-                    // build.
-                    SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover())
-                }
-                id if id == aa_isolation_native::BACKEND_ID => {
-                    SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
-                }
-                other => {
-                    posture.refuse(anyhow::anyhow!(
-                        "--isolation-backend {other} names no backend this build has. The backends \
-                         compiled in are `{}` and `{}`. Backend ids are a diagnostic control and are not \
-                         portable — `--isolation {}` asks for the isolation class instead, and survives a \
-                         backend change.",
-                        aa_isolation_sandlock::BACKEND_ID,
-                        aa_isolation_native::BACKEND_ID,
-                        match args.isolation {
-                            super::IsolationIntent::Auto => "auto",
-                            _ => "process",
-                        },
-                    ))?;
-                    return Ok(IsolationPlan {
-                        lowering,
-                        backend: None,
-                        absent: Some(format!("no backend answers to the id `{other}` in this build")),
-                    });
-                }
-            };
+            // second backend is reachable only by naming it, and `process`
+            // without a name stays hardcoded to `sandlock`.
+            explicit_backend(aa_isolation_sandlock::BACKEND_ID, args.isolation, lowering, posture)
+        }
+    }
 
-            if let aa_isolation::BackendAvailability::Unavailable { reason } =
-                backend.capabilities().availability().clone()
-            {
+    /// Select the backend named by `requested`, or record why there is none.
+    ///
+    /// The single path for a backend the operator named directly — by
+    /// `--isolation-backend`, or implicitly via `--isolation process`'s
+    /// hardcoded default. Both must refuse for an unknown id and for an
+    /// unavailable backend in exactly the same words, which is what pulling
+    /// this out of [`RunPlanner::resolve_isolation`] guarantees rather than
+    /// leaves to two call sites staying in sync by hand.
+    fn explicit_backend(
+        requested: &str,
+        intent: super::IsolationIntent,
+        lowering: Option<aa_isolation::PolicyLowering>,
+        posture: PlanPosture,
+    ) -> anyhow::Result<IsolationPlan> {
+        let backend = match requested {
+            id if id == aa_isolation_sandlock::BACKEND_ID => {
+                // Discovery measures the host; it starts nothing and confines
+                // nothing, so a preview may call it too — and must, or the
+                // preview would describe a boundary the live launch could not
+                // build.
+                SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover())
+            }
+            id if id == aa_isolation_native::BACKEND_ID => {
+                SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
+            }
+            other => {
                 posture.refuse(anyhow::anyhow!(
-                    "refusing to launch: an execution-isolation boundary was requested and the `{requested}` \
-                     backend cannot be selected on this host — {reason}.\n\
-                     \n\
-                     There is no fallback. A launch that asked for a boundary and quietly ran without one \
-                     would report as governed while being unconfined, which is the failure this mode \
-                     exists to prevent. Install the backend, or re-run with `--isolation none` to launch \
-                     unconfined deliberately.",
+                    "--isolation-backend {other} names no backend this build has. The backends \
+                     compiled in are `{}` and `{}`. Backend ids are a diagnostic control and are not \
+                     portable — `--isolation {}` asks for the isolation class instead, and survives a \
+                     backend change.",
+                    aa_isolation_sandlock::BACKEND_ID,
+                    aa_isolation_native::BACKEND_ID,
+                    match intent {
+                        super::IsolationIntent::Auto => "auto",
+                        _ => "process",
+                    },
                 ))?;
                 return Ok(IsolationPlan {
                     lowering,
                     backend: None,
-                    absent: Some(format!(
-                        "an execution-isolation boundary was requested and no backend could be selected on \
-                         this host: {reason}"
-                    )),
+                    absent: Some(format!("no backend answers to the id `{other}` in this build")),
+                    selection: None,
                 });
             }
+        };
 
-            Ok(IsolationPlan {
+        if let aa_isolation::BackendAvailability::Unavailable { reason } = backend.capabilities().availability().clone()
+        {
+            posture.refuse(anyhow::anyhow!(
+                "refusing to launch: an execution-isolation boundary was requested and the `{requested}` \
+                 backend cannot be selected on this host — {reason}.\n\
+                 \n\
+                 There is no fallback. A launch that asked for a boundary and quietly ran without one \
+                 would report as governed while being unconfined, which is the failure this mode \
+                 exists to prevent. Install the backend, or re-run with `--isolation none` to launch \
+                 unconfined deliberately.",
+            ))?;
+            return Ok(IsolationPlan {
                 lowering,
-                backend: Some(backend),
-                absent: None,
-            })
+                backend: None,
+                absent: Some(format!(
+                    "an execution-isolation boundary was requested and no backend could be selected on \
+                     this host: {reason}"
+                )),
+                selection: None,
+            });
         }
+
+        Ok(IsolationPlan {
+            lowering,
+            backend: Some(backend),
+            absent: None,
+            selection: None,
+        })
+    }
+
+    /// A throwaway [`ExecutionSpec`] carrying `lowering`'s requirements, for
+    /// probing whether a candidate backend can plan a launch — before any real
+    /// launch exists to build one from.
+    ///
+    /// This is the eligibility oracle the whole design turns on: `narrow_for`
+    /// and `negotiate` read only [`ExecutionSpec::requirements`], never the
+    /// program, args, identity, working directory or credentials (pinned by
+    /// `probe_spec_and_real_spec_produce_the_same_verdict` in
+    /// `aa-isolation/tests/negotiation.rs`), so a probe spec built from nothing
+    /// but the lowered requirements gets the identical verdict a real launch's
+    /// negotiation would reach. `None` when the lowering has nothing to lower —
+    /// the existing `NoRequirementsLowered` refusal in
+    /// [`IsolationPlan::resolve_boundary`] handles that case; this function
+    /// does not duplicate it.
+    fn probe_spec(lowering: &aa_isolation::PolicyLowering) -> Option<ExecutionSpec> {
+        let throwaway = ExecutionSpec::new("probe", IdentityRef::root("probe"));
+        lowering.apply_to(throwaway).ok()
+    }
+
+    /// Walk the fixed, ordered candidate list and select the first backend that
+    /// can plan this launch's lowered requirements, or refuse naming every
+    /// candidate and why it was rejected.
+    ///
+    /// "Eligible" means `backend.plan(probe_spec).is_ok()` — the same
+    /// `plan()`/`negotiate()` machinery a real launch uses, not a hand-written
+    /// comparison of what each backend's capability gaps are known to be. That
+    /// is deliberate: sandlock and the native backend's gaps are complementary
+    /// rather than nested, so a domain-subset comparison would have to be kept
+    /// in step with both backends by hand, and the negotiation machinery
+    /// already has to be right for every other code path.
+    fn auto_select(
+        lowering: &Option<aa_isolation::PolicyLowering>,
+        posture: PlanPosture,
+    ) -> anyhow::Result<IsolationPlan> {
+        const CANDIDATES: [&str; 2] = [aa_isolation_sandlock::BACKEND_ID, aa_isolation_native::BACKEND_ID];
+
+        let Some(probe) = lowering.as_ref().and_then(probe_spec) else {
+            // Nothing to lower — the existing `NoRequirementsLowered` refusal
+            // in `resolve_boundary` fires downstream against today's default
+            // candidate. Refusing here as well would duplicate that message
+            // under a different name.
+            return Ok(IsolationPlan {
+                lowering: lowering.clone(),
+                backend: Some(SelectedBackend::Sandlock(
+                    aa_isolation_sandlock::SandlockBackend::discover(),
+                )),
+                absent: None,
+                selection: None,
+            });
+        };
+
+        let mut considered = Vec::new();
+        for id in CANDIDATES {
+            let backend = if id == aa_isolation_sandlock::BACKEND_ID {
+                SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover())
+            } else {
+                SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
+            };
+
+            // The candidate's own advertised identity, not the loop's literal
+            // — a considered-backend record must name the backend that was
+            // actually probed, not merely the id the walk expected it under.
+            let backend_id = backend.identity().id;
+
+            if let aa_isolation::BackendAvailability::Unavailable { reason } =
+                backend.capabilities().availability().clone()
+            {
+                considered.push(aa_isolation::ConsideredBackend {
+                    id: backend_id,
+                    verdict: aa_isolation::CandidateVerdict::RejectedUnavailable,
+                    detail: format!("the backend cannot be selected on this host — {reason}"),
+                    unmet_domains: Vec::new(),
+                });
+                continue;
+            }
+
+            match backend.plan(&probe) {
+                Ok(_) => {
+                    considered.push(aa_isolation::ConsideredBackend {
+                        id: backend_id,
+                        verdict: aa_isolation::CandidateVerdict::Selected,
+                        detail: "this candidate could plan the launch's lowered requirements".to_string(),
+                        unmet_domains: Vec::new(),
+                    });
+                    return Ok(IsolationPlan {
+                        lowering: lowering.clone(),
+                        backend: Some(backend),
+                        absent: None,
+                        selection: Some(aa_isolation::BackendSelection {
+                            mode: aa_isolation::SelectionMode::Automatic,
+                            considered,
+                        }),
+                    });
+                }
+                Err(refusal) => {
+                    let unmet_domains = refusal
+                        .unmet()
+                        .iter()
+                        .filter_map(|(_, reason)| reason.domain())
+                        .collect();
+                    considered.push(aa_isolation::ConsideredBackend {
+                        id: backend_id,
+                        verdict: aa_isolation::CandidateVerdict::RejectedRequirementsUnmet,
+                        detail: super::describe_refusal(&refusal),
+                        unmet_domains,
+                    });
+                }
+            }
+        }
+
+        let names = considered
+            .iter()
+            .map(|c| format!("  - {}: {}", c.id, c.detail))
+            .collect::<Vec<_>>()
+            .join("\n");
+        posture.refuse(anyhow::anyhow!(
+            "refusing to launch: --isolation auto walked every backend this build has and none of them \
+             can plan this launch's lowered requirements.\n{names}\n\
+             \n\
+             There is no fallback. Use --isolation-backend to see one backend's full refusal, or \
+             --isolation none to launch unconfined deliberately.",
+        ))?;
+
+        Ok(IsolationPlan {
+            lowering: lowering.clone(),
+            backend: None,
+            absent: Some(format!(
+                "--isolation auto found no backend on this host that can plan this launch's lowered \
+                 requirements; considered: {}",
+                considered.iter().map(|c| c.id.clone()).collect::<Vec<_>>().join(", ")
+            )),
+            selection: Some(aa_isolation::BackendSelection {
+                mode: aa_isolation::SelectionMode::Automatic,
+                considered,
+            }),
+        })
     }
 
     impl PlanPosture {

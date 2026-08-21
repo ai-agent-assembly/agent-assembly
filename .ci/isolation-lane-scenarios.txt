@@ -28,6 +28,7 @@
 # `aa-cli/tests/run_isolation_linux.rs`. These ran in the `Test` lane before,
 # which does not install the mechanism, so all four took the `ToolAbsent`
 # branch and reported PASS in 8-14 ms. They are measured here instead.
+aasm-run-auto-native-syscall-denied
 aasm-run-confined-child-environment
 aasm-run-confined-exit-code
 aasm-run-devtool-confined-write-denied

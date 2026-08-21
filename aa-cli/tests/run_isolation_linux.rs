@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 use aa_cli::commands::run::{execute_with_adapters, IsolationIntent, RunArgs};
 use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument};
+use aa_isolation_native::NativeBackend;
 use aa_isolation_sandlock::SandlockBackend;
 use async_trait::async_trait;
 
@@ -116,6 +117,52 @@ fn require_confining_host(scenario: &str) -> Option<()> {
                  precondition. read: {} | write: {}",
                 probe.filesystem_read.describe(),
                 probe.filesystem_write.describe()
+            ),
+        );
+    }
+    Some(())
+}
+
+/// `Some(())` when this host can actually confine syscalls via the AASM-native
+/// backend.
+///
+/// Mirrors [`require_confining_host`] for the other backend `--isolation auto`
+/// can select (AAASM-5808): the native backend is what a syscall-restricting
+/// policy resolves to, so a scenario that measures syscall confinement must
+/// decline on a host that cannot demonstrate it rather than pass by accident
+/// of the process never being confined at all.
+fn require_confining_native_host(scenario: &str) -> Option<()> {
+    if !cfg!(target_os = "linux") {
+        return decline(
+            scenario,
+            Measurement::UnsupportedPlatform,
+            &format!(
+                "the AASM-native backend confines Linux processes; this host is {}",
+                std::env::consts::OS
+            ),
+        );
+    }
+    let backend = NativeBackend::discover();
+    let Some(_host) = backend.host() else {
+        return decline(
+            scenario,
+            Measurement::ToolAbsent,
+            "no usable native launcher was found on this host; a lane that installs it and still \
+             reports this is broken",
+        );
+    };
+    let probe = backend.probe_result();
+    if !probe.syscall.is_denied() {
+        // Every precondition held and the discovery probe still observed no
+        // syscall denial. That is a failed measurement, not an opt-out, and it
+        // must never read as a skip.
+        return decline(
+            scenario,
+            Measurement::NotMeasured,
+            &format!(
+                "the discovery probe established no syscall denial on a host that meets every \
+                 precondition: {}",
+                probe.syscall.describe()
             ),
         );
     }
@@ -207,6 +254,56 @@ fn policy_permitting_writes(scratch: &Scratch, name: &str, writes: &[PathBuf]) -
              \x20     allow:\n{reads}\
              \x20   write:\n\
              \x20     allow:\n{writes}"
+        ),
+    )
+    .expect("write policy");
+    path
+}
+
+/// A policy artifact whose write allow-list is exactly `writes` and whose
+/// syscall allow-list is exactly `syscalls`.
+///
+/// Authored the way an operator authors one — `syscalls.allow`, per
+/// `aa-isolation/src/lowering.rs`'s syscall lowering — rather than assembled
+/// as a `ControlRequirement`, for the same reason
+/// [`policy_permitting_writes`] is: the requirement has to survive
+/// resolution, the canonical projection and the lowering to get here, and
+/// `--isolation auto` has to select a backend that can actually enforce it.
+fn policy_permitting_writes_and_syscalls(
+    scratch: &Scratch,
+    name: &str,
+    writes: &[PathBuf],
+    syscalls: &[&str],
+) -> PathBuf {
+    let reads: String = system_reads()
+        .into_iter()
+        .chain(std::iter::once(scratch.root.display().to_string()))
+        .map(|p| format!("        - \"{p}\"\n"))
+        .collect();
+    let writes: String = writes
+        .iter()
+        .map(|p| format!("        - \"{}\"\n", p.display()))
+        .collect();
+    let syscalls: String = syscalls.iter().map(|s| format!("      - \"{s}\"\n")).collect();
+    let path = scratch.root.join(name);
+    std::fs::write(
+        &path,
+        format!(
+            "apiVersion: agent-assembly/v1\n\
+             kind: Policy\n\
+             metadata:\n\
+             \x20 name: run-isolation-linux-native\n\
+             spec:\n\
+             \x20 tools:\n\
+             \x20   bash:\n\
+             \x20     allow: true\n\
+             \x20 filesystem:\n\
+             \x20   read:\n\
+             \x20     allow:\n{reads}\
+             \x20   write:\n\
+             \x20     allow:\n{writes}\
+             \x20 syscalls:\n\
+             \x20   allow:\n{syscalls}"
         ),
     )
     .expect("write policy");
@@ -511,5 +608,83 @@ fn the_adapter_environment_reaches_the_confined_program() {
         SCENARIO,
         "the governance identity, the adapter's NODE_EXTRA_CA_CERTS and the policy annotation were all \
          observed by the program from inside the boundary",
+    );
+}
+
+/// **End-to-end: `--isolation auto` selects the native backend for a
+/// syscall-restricting policy, and the confined program is killed for a
+/// syscall outside its allowlist.**
+///
+/// The scenario `run_isolation.rs` cannot measure on any host, because it
+/// needs a backend that can actually confine syscalls: Sandlock reports no
+/// mechanism for `CapabilityDomain::Syscall` at all, so a policy carrying
+/// `syscalls.allow` and nothing else the sandlock domains can satisfy is a
+/// launch only the native backend can plan — proving `--isolation auto`
+/// (AAASM-5808) walks past Sandlock and selects it through the real CLI path,
+/// not through a fixture. The assertion is on the observed effect — the
+/// target file's content — never on exit code alone, per this file's own
+/// rule; the control is the identical launch with `write` additionally
+/// allowlisted.
+#[test]
+fn an_auto_selected_native_backend_kills_a_syscall_outside_its_allowlist() {
+    const SCENARIO: &str = "aasm-run-auto-native-syscall-denied";
+    if require_confining_native_host(SCENARIO).is_none() {
+        return;
+    }
+    let scratch = Scratch::new("auto-native-syscall");
+    let target = scratch.permitted().join("secret");
+
+    // `openat(O_CREAT)` is inside the baseline the native backend always
+    // grants a launcher, so the target file's mere *existence* is a false
+    // positive: it exists whether or not `write` ran. What `write` decides is
+    // whether the empty file `openat` created gets any bytes in it.
+    let has_content = |p: &Path| p.exists() && std::fs::read(p).map(|b| !b.is_empty()).unwrap_or(false);
+    let baseline: &[&str] = &[
+        "read",
+        "openat",
+        "close",
+        "fstat",
+        "lseek",
+        "mmap",
+        "munmap",
+        "brk",
+        "exit_group",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "clock_gettime",
+        "getrandom",
+    ];
+
+    // Control: the identical launch with `write` additionally allowlisted.
+    let mut allowlisted = baseline.to_vec();
+    allowlisted.push("write");
+    let control_policy =
+        policy_permitting_writes_and_syscalls(&scratch, "control.yaml", &[scratch.permitted()], &allowlisted);
+    let mut control_args = confined_exec_args(&control_policy, &creates(&target));
+    control_args.isolation = IsolationIntent::Auto;
+    let _ = launch(&control_args, no_adapters()).expect("the control launch runs");
+    assert!(
+        has_content(&target),
+        "the control run, with `write` allowlisted, did not produce the effect, so the kill below \
+         proves nothing"
+    );
+    std::fs::remove_file(&target).expect("reset between the pair");
+
+    // Test: the identical launch, `write` omitted from the syscall allowlist.
+    let test_policy = policy_permitting_writes_and_syscalls(&scratch, "test.yaml", &[scratch.permitted()], baseline);
+    let mut test_args = confined_exec_args(&test_policy, &creates(&target));
+    test_args.isolation = IsolationIntent::Auto;
+    let _ = launch(&test_args, no_adapters());
+    assert!(
+        !has_content(&target),
+        "the confined program wrote even though `write` was not in the syscall allowlist: {} has content",
+        target.display()
+    );
+
+    measured(
+        SCENARIO,
+        "a syscalls.allow policy resolved `--isolation auto` to the native backend, its filter killed \
+         the process for the write it did not permit, and the identical launch with `write` \
+         allowlisted produced the effect instead",
     );
 }

@@ -329,6 +329,73 @@ ADR.
 
 ---
 
+## Amendment — AAASM-5808 (2026-08-21): `--isolation auto` selects by capability, not by a fixed default
+
+**Scope of this amendment: it names the algorithm `--isolation auto` uses now that two
+`IsolationBackend` implementors exist, and records why eligibility is decided by the same
+`plan()`/`negotiate()` machinery a real launch uses rather than a hand-written comparison.
+It reverses no prior decision.**
+
+### Why an amendment rather than a new ADR
+
+[Decision 8](#8-linux-process-isolation-is-the-first-implementation-target-sandlock-is-the-first-candidate-backend)
+already reserved that AASM "may replace or supplement [Sandlock] with a native Linux
+backend," and the AAASM-5801 amendment exercised that reservation by adding a second
+`IsolationBackend` implementor. Neither recorded what `--isolation auto` does once two
+implementors exist. Before this amendment, `auto` resolved to the same fixed default
+`--isolation process` already used — whichever id `--isolation-backend` named, or
+`sandlock` otherwise — because, per the pre-AAASM-5801 `IsolationIntent::Auto` doc
+comment, "today exactly one class exists." AAASM-5805's benchmark data established that
+Sandlock's and the native backend's capability gaps are **complementary, not nested**:
+Sandlock covers every domain this ADR's capability model defines except `Syscall`; the
+native backend covers exactly `FilesystemRead`, `FilesystemWrite` and `Syscall`. A fixed
+default cannot be capability-correct for every policy under that shape — a policy
+requiring `Syscall` enforcement cannot be met by the fixed default, and a policy requiring
+`NetworkEgress` enforcement cannot be met by the native backend — so this amendment
+decides what `auto` now means, rather than leaving two backends behind one hardcoded
+choice that is wrong for some policies by construction.
+
+### The selection algorithm: a fixed, ordered eligibility walk over `plan()` verdicts
+
+`--isolation auto` walks a fixed, ordered candidate list — `[sandlock, aasm-native]`,
+Sandlock first — and selects the first candidate for which `backend.plan(probe_spec)`
+returns `Ok`, where `probe_spec` is an `ExecutionSpec` carrying nothing but the launch's
+lowered requirements. The walk is lazy: once a candidate is eligible, no later candidate
+is even discovered or probed. When no candidate is eligible, the launch refuses, naming
+every candidate considered and why it was rejected — there is no fallback to a default
+backend or to an unconfined launch, matching
+[decision 4](#4-capability-negotiation-happens-before-the-untrusted-process-starts)'s
+existing "refuse before spawn, never degrade to unconfined" rule.
+
+Eligibility is decided by the same `narrow_for`/`negotiate` machinery a real launch's own
+negotiation uses — not by a hand-written comparison of which domains each backend is known
+to cover. That is a correctness decision, not a style preference: `narrow_for` and
+`negotiate` read only `ExecutionSpec::requirements` — never the program, args, identity,
+working directory or credentials — so a probe spec carrying only the lowered requirement
+set reaches the identical verdict a real launch's own spec would against the same backend.
+A hand-written domain-subset comparison would have to be kept in step with both backends'
+actual negotiation behavior by hand and could silently drift from it; reusing the
+negotiation path the rest of this ADR already requires every backend to answer correctly
+cannot drift from itself.
+
+### What `--isolation auto` does not do
+
+Naming a backend directly — `--isolation-backend`, or `--isolation process`'s existing
+hardcoded default — is unaffected and unchanged by this amendment: an operator who names a
+backend always gets that backend, or its own refusal, never automatic selection's
+substitute. Automatic selection also does not run when no policy lowered to any
+requirement at all; that remains the existing `NoRequirementsLowered` refusal this ADR
+already records, not a new refusal this amendment introduces.
+
+### Consequence for existing text
+
+Where the `IsolationIntent::Auto` documentation previously said this intent "resolves to
+Process" because "today exactly one class exists," that statement described the period
+before AAASM-5801 added a second backend; this amendment supersedes it with the algorithm
+above. No other recorded text in this ADR changes.
+
+---
+
 ## Context
 
 Agent Assembly already owns the governance semantics above execution: agent identity and
