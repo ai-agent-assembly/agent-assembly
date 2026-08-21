@@ -97,6 +97,11 @@ const TOOL_RULE_ONLY: &str = "  tools:\n    bash:\n      allow: true\n";
 const TOOL_RULE_AND_WRITE_DENIAL: &str =
     "  tools:\n    bash:\n      allow: true\n  capabilities:\n    deny:\n      - file_write\n";
 
+/// The same artifact plus a `syscalls.allow` node — a domain only the
+/// AASM-native backend reports any mechanism for at all (AAASM-5808).
+const TOOL_RULE_AND_SYSCALL_ALLOW: &str =
+    "  tools:\n    bash:\n      allow: true\n  syscalls:\n    allow:\n      - read\n";
+
 /// `aasm run exec -- <argv>` with the flags every test here shares.
 ///
 /// `--no-proxy` because these measure the execution boundary, not proxy trust;
@@ -519,4 +524,136 @@ fn no_cli_isolation_value_names_a_kernel_mechanism() {
     // fire on a value that would violate the rule.
     assert_eq!(values.len(), 5);
     assert!("landlock-process".contains("landlock"));
+
+    // AAASM-5808: the new selection-record output goes through the same
+    // sweep. A `--isolation auto` receipt now carries a `selection:` section
+    // and `backend_selection.*` machine keys naming the candidates it
+    // considered; per ADR 0035 §3 those candidate ids are backend identity,
+    // never a mechanism name, and the sweep must hold over that surface too.
+    //
+    // Scoped to the selection lines rather than the whole receipt: the report
+    // also carries unrelated, pre-existing policy-gap prose that legitimately
+    // mentions `aa_security::policy::lower_to_ebpf` (containing the substring
+    // `bpf`), and sweeping the whole receipt would fail on that text instead
+    // of measuring anything about selection.
+    let scratch = Scratch::new("mechanism-vocabulary-selection");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_AND_WRITE_DENIAL);
+    let printed = receipt(&artifact, &["--isolation", "auto"]);
+    let selection_lines: String = printed
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().contains("selection"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !selection_lines.is_empty(),
+        "the sweep found no selection lines to check — the fixture stopped exercising `--isolation auto`'s \
+         selection record:\n{printed}"
+    );
+    for mechanism in ["landlock", "seccomp", "bpf", "namespace", "cgroup"] {
+        assert!(
+            !selection_lines.to_ascii_lowercase().contains(mechanism),
+            "the selection-record output names the kernel mechanism `{mechanism}`:\n{selection_lines}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Capability-aware auto-selection (AAASM-5808).
+// ---------------------------------------------------------------------------
+
+/// An explicit `--isolation-backend` always wins over `--isolation auto`'s
+/// capability-based selection, even for a policy shape automatic selection
+/// alone would resolve differently.
+///
+/// Naming a backend is the operator overriding selection outright — it must
+/// never run automatic selection and substitute a different backend's
+/// verdict, and the refusal it carries must be the named backend's own, not
+/// a report about what automatic selection would have picked instead.
+#[test]
+fn an_explicit_backend_id_is_never_replaced_by_auto_selection() {
+    let scratch = Scratch::new("explicit-not-replaced");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_AND_SYSCALL_ALLOW);
+    let target = scratch.target("must-not-exist");
+
+    let mut args = exec_args(&artifact, &["/bin/sh", "-c", &creates(&target)]);
+    args.isolation = IsolationIntent::Auto;
+    args.isolation_backend = Some(aa_isolation_sandlock::BACKEND_ID.into());
+
+    let error = run(&args)
+        .expect_err("sandlock cannot be selected on this host, or has no Syscall mechanism, either way it refuses")
+        .to_string();
+    assert!(
+        error.contains(aa_isolation_sandlock::BACKEND_ID),
+        "the refusal must be sandlock's own: {error}"
+    );
+    assert!(
+        !error.contains(aa_isolation_native::BACKEND_ID),
+        "naming sandlock explicitly must never surface the native backend at all: {error}"
+    );
+    assert!(!target.exists(), "the program ran: {}", target.display());
+}
+
+/// An automatic selection records that it was automatic, and names the first
+/// candidate the fixed walk order considered.
+///
+/// Asserted against the `--dry-run` receipt's machine-readable section, which
+/// is the surface a downstream consumer actually parses; the prose render is
+/// exercised elsewhere. Only the first candidate is asserted by id: on a host
+/// where sandlock is eligible for this write-only requirement the walk stops
+/// there and the native candidate is never considered at all — that laziness
+/// is itself pinned by `a_policy_requiring_network_egress_stays_on_the_first_candidate`
+/// in `aa-isolation/tests/negotiation.rs`, so asserting both ids here would
+/// make this test host-dependent for the wrong reason.
+#[test]
+fn an_auto_selected_run_records_that_selection_was_automatic_and_what_it_rejected() {
+    let scratch = Scratch::new("auto-selection-record");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_AND_WRITE_DENIAL);
+
+    let printed = receipt(&artifact, &["--isolation", "auto"]);
+
+    assert!(
+        printed.contains("backend_selection_mode=automatic"),
+        "an automatic selection must record its mode: {printed}"
+    );
+    assert!(printed.contains("backend_selection.considered_count="), "{printed}");
+    assert!(
+        printed.contains(&format!(
+            "backend_selection.considered.0.id={}",
+            aa_isolation_sandlock::BACKEND_ID
+        )),
+        "sandlock is first in the fixed candidate order and must be the first one considered: {printed}"
+    );
+    assert!(printed.contains("backend_selection.considered.0.verdict="), "{printed}");
+}
+
+/// The auto refusal names every candidate it considered and why, on a host
+/// where none is eligible — the common case on this development machine,
+/// where neither backend is available at all.
+#[test]
+fn the_auto_refusal_names_every_candidate_it_considered() {
+    let scratch = Scratch::new("auto-refusal-names-both");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_AND_WRITE_DENIAL);
+    let target = scratch.target("must-not-exist");
+
+    let mut args = exec_args(&artifact, &["/bin/sh", "-c", &creates(&target)]);
+    args.isolation = IsolationIntent::Auto;
+
+    let Err(error) = run(&args) else {
+        // Both backends are selectable on this host (e.g. a fully-provisioned
+        // Linux CI runner) and one of them met the write-only requirement —
+        // there is no "none eligible" refusal to measure here.
+        println!(
+            "SKIP [the_auto_refusal_names_every_candidate_it_considered]: a backend was selected on this \
+             host, so there is no refusal to measure"
+        );
+        return;
+    };
+    let text = error.to_string();
+    for id in [aa_isolation_sandlock::BACKEND_ID, aa_isolation_native::BACKEND_ID] {
+        assert!(
+            text.contains(id),
+            "the refusal does not name the `{id}` candidate it considered: {text}"
+        );
+    }
+    assert!(!target.exists(), "the program ran: {}", target.display());
 }
