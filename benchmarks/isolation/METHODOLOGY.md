@@ -514,6 +514,78 @@ sixth catalogue entry, and not required to reach this measurement's verdict.
   next-phase trigger — scoping that work is future Epic/ticket planning, not
   part of AAASM-5713's own deliverable.
 
+## Default-backend selection rule (AAASM-5805)
+
+The decision rule and matrix above answer "should AASM build a native Linux
+backend at all" — they do not answer AAASM-5805's question, which is which
+of the two now-existing backends `aasm run --isolation auto` should prefer,
+if either. Applying the matrix above "mechanically" to a native measurement
+would produce two independent grade tables, not a comparison; this section
+pre-registers the actual selection rule, **before any native-backend
+benchmark number exists**, git-timestamping it the same way the rest of this
+document pre-registers its own thresholds.
+
+Applied only when both arms' `control_validity` is `VALID` against the same
+same-host/same-session unconfined baseline (this document's own
+admissibility gate — an inadmissible measurement gets no verdict here
+either, same as rule 0 above). Evaluated in order; first match wins.
+
+1. **Blocked.** Either arm's `control_validity` is not `VALID` — no default
+   changes; `aasm run --isolation auto` keeps selecting Sandlock, and the
+   reason is recorded rather than guessed around.
+2. **Coverage decides before performance.** If one backend's
+   `SupportLevel`-supported domain set (as reported by its own
+   `IsolationBackend::capabilities()`, not asserted from memory) is a strict
+   superset of the other's on the measured host, that backend is
+   recommended regardless of what P1–P7 show — an advertised control that
+   cannot be enforced at all is not tradeable against latency; this is the
+   same rule the Security dimensions section above already applies within a
+   single backend's own verdict.
+3. **Neither domain set contains the other — performance decides,
+   conservatively.** A backend is recommended only if it grades at least as
+   well as the other on every P dimension **and** strictly better on at
+   least one. Anything short of that is not a recommendation to switch.
+4. **Otherwise: no default change.** `aasm run --isolation auto` continues
+   to select Sandlock; backend choice stays reachable only via the explicit
+   `--isolation-backend` flag until a later measurement separates the two.
+
+**Prediction, recorded before the run:** rule 2 will not fire. As of this
+pre-registration, the two backends' supported domains are:
+
+| Domain | Sandlock | AASM-native |
+| --- | --- | --- |
+| `FilesystemRead` | supported | supported |
+| `FilesystemWrite` | supported | supported |
+| `NetworkEgress` | supported | **Unsupported** |
+| `ProcessCreation` | supported/partial | **Unsupported** |
+| `Resource` | supported/partial | **Unsupported** |
+| `Ipc` | partial | **Unsupported** |
+| `Credential` | supported/partial | **Unsupported** |
+| `Syscall` | **Unsupported** | supported |
+
+Neither set contains the other — Sandlock covers six domains native does
+not, native covers one domain (`Syscall`) Sandlock does not — so rule 2 is
+expected to be inapplicable and rule 3 or rule 4 is expected to decide. This
+asymmetry is itself a finding, not prose: it is recorded from each
+backend's own measured `CapabilityReport` in the same benchmark run that
+produces the P-dimension numbers, not asserted ahead of it.
+
+**Note for whoever runs this: rule 4 ("no default change") is a likely and
+entirely honest outcome, not a failure of this ticket.** AAASM-5805's own
+acceptance criteria ask which backend should be preferred "if either" —
+plan around reporting the numbers and applying the rule mechanically, not
+around switching the default. If rule 2 or rule 3 does fire for native, the
+code change is `aa-cli/src/commands/run.rs`'s `isolation_backend` match
+(currently defaulting to `aa_isolation_sandlock::BACKEND_ID`) plus its
+adjacent refusal message, plus closing Core ADR 035's AAASM-5801 deferral
+paragraph — small enough for the same PR, per the ticket's own scope note.
+
+### Three-arm measurement (AAASM-5805)
+
+_Recorded once the three-arm CI job (`isolation-benchmark-three-arm`) has
+run and its results downloaded — not yet populated as of this
+pre-registration._
+
 ## Threshold changes
 
 Thresholds live in exactly two places that must agree: the tables above and

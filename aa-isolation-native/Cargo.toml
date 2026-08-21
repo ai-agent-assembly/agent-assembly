@@ -80,6 +80,14 @@ default = []
 [dev-dependencies]
 aa-isolation-native = { path = "." }
 
+# AAASM-5805, and only for `tests/adversarial/`: the in-memory reference
+# backend. Mirrors the identical entry in `aa-isolation-sandlock/Cargo.toml` —
+# see that entry's comment for why it has to be a `dev-dependencies` line
+# distinct from the plain `aa-isolation` edge above, and why it reaches other
+# crates' TEST builds under `cargo nextest run --workspace` even though it
+# adds nothing to what ships.
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6", features = ["mock-backend"] }
+
 # AAASM-5802, and only for the descriptor scenario in
 # `tests/linux_confinement_native.rs`: `dup`, to obtain a descriptor that is
 # inheritable across `exec` by construction. The scenario's control depends on
