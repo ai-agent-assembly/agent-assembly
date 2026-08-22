@@ -1059,36 +1059,39 @@ needs.
    one that is both bootable on this hypervisor via virtio-block *and*
    Landlock-capable — is squarely a next-pass task, not a small addition to
    this one. **The three scenarios this pass already wired into `guest-init`
-   are not, as currently parameterized, ready to demonstrate a successful
-   confined launch even once such a kernel exists** — worth stating
-   precisely rather than leaving as an implied "just rerun it": Landlock's
-   `Execute` right is part of `AccessFs::from_all`, which `rules::install`
-   always requests as a *handled* right (see "Reading this result honestly"
-   above), so once any grant is installed, the kernel denies execution of
-   any path not explicitly granted — including the confined program's own
-   binary. None of the three scenarios grants read/execute on
-   `/usr/local/bin`, where `busybox` lives: `no-grants` and `syscall-filter`
-   request no filesystem rule at all, and `fs-read+fs-write` grants only
-   `/etc` (for `/etc/testfile`) and `/tmp`, not the program path. So on a
-   Landlock-capable kernel, all three would still be expected to reach
-   `execvp` (unlike on this kernel, where none of them do) and then fail
-   there with `EACCES` — a real result in launcher terms (a `FAILURE_MARKER`
-   naming `execvp`, or none at all for the syscall-filter case if `libc`'s
-   own error path differs), but still not a demonstration of a *successful*
-   confined launch. A scenario that can actually reach and execute
-   `busybox` needs a grant covering the program's own path too, e.g.
-   `--fs-read=/etc --fs-read=/usr/local/bin --fs-write=/tmp`; `no-grants`
-   and `syscall-filter` are deliberately strictest-posture probes and are
-   expected to keep refusing before the program runs, by design, once
-   Landlock is available — that is correct behavior for them, not a gap.
-   And the `Syscall`-domain-specific claim the ticket brief originally
-   predicted (truthfully reporting the x86_64 arch gate) was never actually
-   exercised this pass, only assumed to be next in line once Landlock
-   stopped being the blocker — it remains to be checked once a
-   Landlock-capable kernel exists, and even then only in the launcher's own
-   terms (a `FAILURE_MARKER` line naming the arch gate versus a real
-   `busybox` execution succeeding), not in `IsolationReport` vocabulary,
-   which — as established above — the launcher itself never produces.
+   do not all mean the same thing once a Landlock-capable kernel exists** —
+   worth splitting out precisely rather than leaving as an implied "just
+   rerun them and they'll separate as predicted":
+   - `no-grants` and `fs-read+fs-write` would both still reach `execvp` and
+     fail *there*, not at `rules::install`. Landlock's `Execute` right is
+     part of `AccessFs::from_all`, which `rules::install` always requests as
+     a *handled* right (see "Reading this result honestly" above), so once
+     any grant is installed the kernel denies execution of any path not
+     explicitly granted — including the confined program's own binary.
+     Neither scenario grants read/execute on `/usr/local/bin`, where
+     `busybox` lives: `no-grants` requests no filesystem rule at all, and
+     `fs-read+fs-write` grants only `/etc` (for `/etc/testfile`) and `/tmp`,
+     not the program path. So on a Landlock-capable kernel both are expected
+     to move one step further than they do on this kernel — reaching
+     `execvp` — and then fail there with `EACCES`, still short of a
+     *successful* confined launch. A scenario that can actually reach and
+     execute `busybox` needs a grant covering the program's own path too,
+     e.g. `--fs-read=/etc --fs-read=/usr/local/bin --fs-write=/tmp`.
+   - `syscall-filter` is different, and needs no parameterization change at
+     all: `confine_and_exec` installs Landlock first (step 3) and the
+     syscall filter second (step 4), and `syscall::install` is the function
+     that is `cfg(target_arch = "x86_64")`-gated. On a Landlock-capable
+     arm64 kernel this scenario would pass step 3 (its grant set is empty
+     but valid) and then refuse at step 4 with the arch-gate message —
+     *never reaching* `execvp` at all, unlike the other two. That is exactly
+     the `Syscall`-domain claim the ticket brief originally predicted, and
+     it is ready to observe as-is, distinguishable from the other two
+     scenarios' eventual `EACCES`-at-`execvp` refusal by the `FAILURE_MARKER`
+     text alone — it was simply never reachable on *this* kernel, because
+     step 3 refuses first, every time, regardless of what step 4 would have
+     done. None of this is `IsolationReport` vocabulary — as established
+     above, the launcher itself never produces that; it is the launcher's
+     own `FAILURE_MARKER`/exit-code signal, in its own terms.
 4. **The natural shape for a real integration, once a Landlock-capable
    kernel exists**: replace `guest-init`'s hand-rolled virtiofs/vsock checks
    with `aa-isolation-launch` itself as the thing being driven, dial vsock
