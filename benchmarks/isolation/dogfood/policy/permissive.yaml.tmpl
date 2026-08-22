@@ -9,6 +9,13 @@
 # directory is unwritable", not "the boundary denied it" (see
 # aa-cli/tests/run_isolation_linux.rs's module doc for why this discipline
 # matters).
+#
+# `capabilities.allow` is a genuine allow-list — a capability omitted from an
+# in-force allow-list is restricted (`aa-isolation/src/lowering.rs`'s
+# `restriction_sources`), so `file_read`/`file_write` are named alongside
+# `terminal_exec` here for the same reason confined.yaml.tmpl names them: a
+# permissive policy that silently restricted filesystem access via an
+# unrelated capabilities node would not be permissive at all.
 apiVersion: agent-assembly/v1
 kind: Policy
 metadata:
@@ -28,6 +35,8 @@ spec:
   capabilities:
     allow:
       - terminal_exec
+      - file_read
+      - file_write
   network:
     allowlist:
       - "127.0.0.1"
