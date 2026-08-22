@@ -32,7 +32,7 @@ git pull --ff-only remote main
 bash scripts/release-readiness.sh <version>      # e.g. 0.0.1-alpha.5
 ```
 
-All 11 checks must report ✓ before continuing. Common failures and what to do:
+All 13 checks must report ✓ before continuing. Common failures and what to do:
 
 - *Cargo.toml version mismatch* — bump PR not yet merged.
 - *Workspace path-dep literals don't match* — at least one Cargo.toml was
@@ -43,6 +43,9 @@ All 11 checks must report ✓ before continuing. Common failures and what to do:
 - *Security-review sign-off missing or not PASS* — see section 1.5; run
   `/release-security-gate <version>`, resolve any High/Critical finding, commit
   the PASS sign-off, then re-run.
+- *QA sign-off missing or not PASS* — see section 1.6; run
+  `/release-qa-gate <version>`, resolve or waive any release-blocking finding,
+  commit the PASS sign-off, then re-run.
 
 ## 1.5. Security gate — review sign-off (BLOCKS the tag push)
 
@@ -74,6 +77,44 @@ for tier detail and the BLOCK-on-unaddressed-High/Critical rule. The gate wraps
 Claude Code's built-in `/security-review` diff scanner (and, at major tier, the
 `anthropics/claude-code-security-review` Action) — it does not reimplement diff
 scanning.
+
+## 1.6. QA gate — release-QA sign-off (BLOCKS the tag push, independently of 1.5)
+
+> **This gate is independent of section 1.5 in both directions.** A QA
+> `Verdict: PASS` never substitutes for a missing/non-PASS security sign-off,
+> and a security `Verdict: PASS` never substitutes for a missing/non-PASS QA
+> sign-off. `scripts/release-readiness.sh` checks 11 and 12 both gate the tag
+> push independently.
+
+Before tagging, run the release-gate QA review, scaled by release risk per
+[the release QA policy](../src/qa/release-qa-policy.md):
+
+```bash
+/release-qa-gate <version>      # e.g. 0.0.1-rc.7
+```
+
+- **patch** = all P0 golden journeys + changed/impacted surfaces (via the
+  [risk mapper](../../qa/RISK-MAPPER.md)) + touched config/docs/artifacts.
+- **RC/minor** = + relevant P1 journeys + a representative config matrix +
+  broader SDK interoperability + any changed trust boundary.
+- **major/deep-sweep** = + broad P1/P2 journey set + full adversarial pass +
+  docs/examples/design audit + long-tail configurations.
+
+The review writes a committed sign-off artifact at
+`docs/release/qa-signoff/v<version>.md` (from
+`docs/release/qa-signoff/TEMPLATE.md`) ending in a `Verdict: PASS` or
+`Verdict: BLOCK` line. **`scripts/release-readiness.sh` check 12 fails the
+readiness run unless that file exists and its verdict is `PASS`** — so a BLOCK
+verdict, or a missing sign-off, structurally stops the tag push in section 2,
+exactly like section 1.5's security gate. See the
+[`/release-qa-gate` SKILL](../../.claude/skills/release-qa-gate/SKILL.md) for
+the full run procedure, the bounded 5-worker orchestration
+(`.claude/agents/qa-*.md`), and the independent finding-verification protocol
+before any Jira Bug is filed. **A truthful `Verdict: BLOCK` because mandatory
+P0/HIGH-risk coverage could not be completed is a correct outcome of this
+gate** — it must never be converted into an inferred PASS to unblock a
+release; unresolved mandatory coverage requires either completing the
+verification or an explicit, recorded human waiver.
 
 ## 2. Tag push — IRREVERSIBLE
 
