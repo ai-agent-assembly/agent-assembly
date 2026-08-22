@@ -43,7 +43,17 @@ def load_p0_journeys(catalog_path: str) -> list[str]:
 def matches(pattern: str, path: str) -> bool:
     if "*" in pattern:
         return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.rstrip("/") + "/*")
-    return path.startswith(pattern)
+    # Bidirectional prefix match: the common case is a full file path against
+    # a directory pattern (path.startswith(pattern)), but AAASM-5825's
+    # verification-manifest generator truncates affected_surfaces to two path
+    # segments (e.g. "aa-gateway/src", not "aa-gateway/src/policy/mod.rs").
+    # Without pattern.startswith(path) too, that truncation silently drops a
+    # HIGH-risk rule like "aa-gateway/src/policy/" to whatever shallower rule
+    # (or the fallback) matches the truncated surface instead — a real
+    # downgrade, not just an artifact of an unrealistic test input. Matching
+    # either direction means a truncated surface still activates every rule
+    # nested under it, which is the conservative (never-narrower) direction.
+    return path.startswith(pattern) or pattern.startswith(path)
 
 
 def map_path(path: str, rules_doc: dict) -> dict:

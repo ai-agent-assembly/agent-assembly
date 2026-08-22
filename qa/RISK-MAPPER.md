@@ -50,6 +50,15 @@ Run against realistic file-level paths (as `git diff --name-only` produces):
 | `some/totally/unmapped/path.rs` | `MEDIUM` fallback, `fallback_used: true` |
 | `target/debug/foo.rlib` (exclude negative control) | `excluded: true`, contributes no scope |
 | `docs/src/foo.md` + `aa-proxy/src/lib.rs` together (union negative control) | `HIGH` overall — the low-risk docs path does not dilute the high-risk proxy path |
+| `aa-gateway/src` (truncated 2-segment surface, matching AAASM-5825's generator output exactly) | `HIGH` — bidirectional prefix matching (`matches()`) still finds the nested `aa-gateway/src/policy/` rule instead of downgrading to the shallower `aa-gateway/` MEDIUM rule |
+
+**Fixed during review**: an earlier version of `matches()` only checked
+`path.startswith(pattern)`, which silently downgraded HIGH-risk rules
+whenever the input surface was shorter than the rule's pattern — exactly
+what `--manifest` mode feeds it, since AAASM-5825's generator truncates
+`affected_surfaces` to two path segments. `matches()` now also checks
+`pattern.startswith(path)`, so a truncated surface still activates every
+rule nested under it (the conservative, never-narrower direction).
 
 Every case's overall `journeys` list includes the full P0 set
 (`J04,J08,J17,J19,J21,J24,J41,J53,J56,J59`) regardless of which case ran.
