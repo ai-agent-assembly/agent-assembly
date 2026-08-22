@@ -1,0 +1,11 @@
+# Downloaded guest images — reproducible via scripts/fetch-images.sh with
+# pinned+verified checksums, not committed (large binaries, per repo policy).
+images/
+
+# Swift build output
+.build/
+*.o
+*.swiftmodule
+
+# Console capture evidence from local runs
+boot-console.log
