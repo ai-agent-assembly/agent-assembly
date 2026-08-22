@@ -1,0 +1,189 @@
+# Deterministic path/surface -> risk/lane/journey mapping (AAASM-5829).
+#
+# Consumed by scripts/qa/map-risk.py. Keep in sync with the HIGH-risk surface
+# list in docs/src/qa/release-qa-policy.md (AAASM-5820) — that page is the
+# human-readable policy statement; this file is its enforced, reviewable
+# encoding. When one changes, check the other.
+#
+# Matching: `pattern` is a path prefix (matches if a changed path starts with
+# it) OR a glob containing `*`/`**` (fnmatch semantics). Multiple matching
+# rules compose by UNION of lanes/journeys and HIGHEST risk tier — see
+# map-risk.py's aggregation, not first-match-wins.
+#
+# `journeys` references stable IDs from qa/golden-journeys.yaml — never
+# redefines a journey here.
+
+rules:
+  # --- Authentication / authorization / RBAC / tenant isolation ---
+  - pattern: "aa-auth/"
+    risk: HIGH
+    lanes: [functional, security]
+    journeys: []
+  - pattern: "aa-security/"
+    risk: HIGH
+    lanes: [functional, security]
+    journeys: []
+
+  # --- Policy parsing/evaluation/enforcement, fail-open/fail-closed ---
+  - pattern: "aa-gateway/src/policy/"
+    risk: HIGH
+    lanes: [functional, security, reliability]
+    journeys: [J19, J24, J25, J26, J27, J28, J29]
+  - pattern: "aa-policy/"
+    risk: HIGH
+    lanes: [functional, security]
+    journeys: [J19, J24]
+  - pattern: "policy-examples/"
+    risk: MEDIUM
+    lanes: [functional, docs]
+    journeys: [J19]
+
+  # --- Proxy / network / egress ---
+  - pattern: "aa-proxy/"
+    risk: HIGH
+    lanes: [functional, security, reliability]
+    journeys: [J41, J42]
+
+  # --- IPC / runtime / local-trust boundary ---
+  - pattern: "aa-runtime/src/pipeline/"
+    risk: HIGH
+    lanes: [functional, security, reliability]
+    journeys: [J41]
+  - pattern: "aa-sdk-client/"
+    risk: HIGH
+    lanes: [functional, security]
+    journeys: [J08, J09, J10, J41]
+
+  # --- Secrets / sensitive-data handling ---
+  - pattern: "aa-security/src/redact"
+    risk: HIGH
+    lanes: [security]
+    journeys: [J27]
+
+  # --- Persistence / data model / migrations ---
+  - pattern: "aa-storage"
+    risk: HIGH
+    lanes: [functional, reliability]
+    journeys: []
+  - pattern: "aa-cache/"
+    risk: MEDIUM
+    lanes: [functional, reliability]
+    journeys: []
+
+  # --- Privileged execution / isolation ---
+  - pattern: "aa-ebpf"
+    risk: HIGH
+    lanes: [functional, security]
+    journeys: [J41, J43]
+  - pattern: "aa-isolation"
+    risk: HIGH
+    lanes: [functional, security]
+    journeys: [J41]
+  - pattern: "aa-sandbox/"
+    risk: HIGH
+    lanes: [functional, security]
+    journeys: [J41]
+
+  # --- CLI / user-facing commands / configuration ---
+  - pattern: "aa-cli/"
+    risk: MEDIUM
+    lanes: [functional]
+    journeys: [J04, J20, J23]
+  - pattern: "agent-assembly.toml.example"
+    risk: MEDIUM
+    lanes: [functional, docs]
+    journeys: [J04]
+
+  # --- SDK public API / transport / interception (in-repo shim only —
+  #     language SDKs live in separate repos) ---
+  - pattern: "aa-devtool"
+    risk: MEDIUM
+    lanes: [functional]
+    journeys: []
+
+  # --- Gateway / API surface ---
+  - pattern: "aa-gateway/src/budget/"
+    risk: MEDIUM
+    lanes: [functional]
+    journeys: [J26]
+  - pattern: "aa-gateway/"
+    risk: MEDIUM
+    lanes: [functional, reliability]
+    journeys: [J17, J53]
+  - pattern: "aa-api/"
+    risk: MEDIUM
+    lanes: [functional]
+    journeys: [J18]
+
+  # --- Dashboard / UI ---
+  - pattern: "dashboard/"
+    risk: MEDIUM
+    lanes: [functional, design]
+    journeys: [J18]
+
+  # --- Docs / examples ---
+  - pattern: "docs/src/"
+    risk: LOW
+    lanes: [docs]
+    journeys: [J21]
+  - pattern: "examples/"
+    risk: MEDIUM
+    lanes: [functional, docs]
+    journeys: [J11, J12, J13, J14, J15]
+  - pattern: "docker/"
+    risk: MEDIUM
+    lanes: [functional, reliability, docs]
+    journeys: [J16, J49, J50, J51, J52, J53, J54]
+
+  # --- Release / packaging / supply chain ---
+  - pattern: "scripts/release-"
+    risk: HIGH
+    lanes: [security, reliability]
+    journeys: []
+  - pattern: ".github/workflows/release"
+    risk: HIGH
+    lanes: [security, reliability]
+    journeys: []
+  - pattern: "Cargo.lock"
+    risk: MEDIUM
+    lanes: [security, reliability]
+    journeys: []
+  - pattern: "deny.toml"
+    risk: MEDIUM
+    lanes: [security]
+    journeys: []
+
+  # --- Governance / this Epic's own infrastructure ---
+  - pattern: ".claude/skills/release-qa-gate/"
+    risk: HIGH
+    lanes: [functional, reliability]
+    journeys: []
+  - pattern: ".claude/skills/release-security-gate/"
+    risk: HIGH
+    lanes: [security]
+    journeys: []
+
+# Paths that never independently drive verification scope — build output and
+# vendored/generated artifacts. Excluded deliberately and visibly, not by
+# accidental non-match. A path matching BOTH an exclude and a rule above is
+# still excluded (build output under a HIGH-risk crate is still build output).
+excludes:
+  - "target/"
+  - "**/target/"
+  - "node_modules/"
+  - "**/node_modules/"
+  - "dist/"
+  - "**/dist/"
+  - ".venv/"
+  - "docs/src/generated/"
+  - "docs/book/"
+
+# Conservative fallback for any changed path matched by no rule above and no
+# exclude. Never LOW, never "no verification" — MEDIUM plus an explicit note
+# so the manifest records why broader scope was selected, per AAASM-5829's
+# unknown-path requirement.
+fallback:
+  risk: MEDIUM
+  lanes: [functional]
+  journeys: []
+  note: "unmapped path — conservative fallback, not silently treated as unchanged"
