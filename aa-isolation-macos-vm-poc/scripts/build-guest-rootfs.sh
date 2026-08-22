@@ -11,6 +11,12 @@
 # since macOS has no native ext4 tooling) to populate the filesystem
 # directly from a host staging directory — no loop-mount/root privilege
 # needed inside the container.
+#
+# AAASM-5812 "aa-isolation-launch cross-compile" pass: also bakes in the
+# real, unmodified aa-isolation-launch binary (./build-isolation-launch.sh)
+# at /usr/local/bin, a static busybox (./fetch-busybox.sh) as the trivial
+# confined workload for it to exec, and /etc/testfile as the fs-read grant's
+# target — see ../README.md "aa-isolation-launch cross-compile".
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,14 +37,31 @@ if [ -z "${INIT_BIN}" ] || [ ! -f "${INIT_BIN}" ]; then
 fi
 echo "using guest-init binary: ${INIT_BIN}"
 
+LAUNCH_BIN="${IMAGES_DIR}/aa-isolation-launch-aarch64"
+if [ ! -f "${LAUNCH_BIN}" ]; then
+  echo "could not find ${LAUNCH_BIN} — run ./build-isolation-launch.sh first" >&2
+  exit 1
+fi
+BUSYBOX_BIN="${IMAGES_DIR}/busybox-aarch64"
+if [ ! -f "${BUSYBOX_BIN}" ]; then
+  echo "could not find ${BUSYBOX_BIN} — run ./fetch-busybox.sh first" >&2
+  exit 1
+fi
+
 STAGING_DIR="$(mktemp -d)"
 OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "${STAGING_DIR}" "${OUT_DIR}"' EXIT
 
 mkdir -p "${STAGING_DIR}/sbin" "${STAGING_DIR}/dev" "${STAGING_DIR}/proc" \
-  "${STAGING_DIR}/sys" "${STAGING_DIR}/mnt/share"
+  "${STAGING_DIR}/sys" "${STAGING_DIR}/mnt/share" "${STAGING_DIR}/usr/local/bin" \
+  "${STAGING_DIR}/etc" "${STAGING_DIR}/tmp"
 cp "${INIT_BIN}" "${STAGING_DIR}/sbin/init"
 chmod 0755 "${STAGING_DIR}/sbin/init"
+cp "${LAUNCH_BIN}" "${STAGING_DIR}/usr/local/bin/aa-isolation-launch"
+chmod 0755 "${STAGING_DIR}/usr/local/bin/aa-isolation-launch"
+cp "${BUSYBOX_BIN}" "${STAGING_DIR}/usr/local/bin/busybox"
+chmod 0755 "${STAGING_DIR}/usr/local/bin/busybox"
+echo "aa-isolation-launch-guest-rootfs-test-marker" > "${STAGING_DIR}/etc/testfile"
 
 docker run --rm --platform linux/arm64 \
   -v "${STAGING_DIR}:/staging:ro" \
