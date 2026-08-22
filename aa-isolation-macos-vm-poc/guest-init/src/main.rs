@@ -83,6 +83,42 @@ fn errno() -> i32 {
     unsafe { *libc::__errno_location() }
 }
 
+/// Load a kernel module via `finit_module(2)` from a `.ko` file packed into
+/// the initramfs itself. This substitute Debian generic kernel builds
+/// virtio_mmio/virtio_console/virtiofs/vsock as loadable modules rather than
+/// built-in (`=m`, not `=y` — see ../README.md "Debian generic kernel"),
+/// so unlike the LinuxKit substitute used in the prior pass, this kernel
+/// reaches userspace with *no* working console or virtio transport at all
+/// until these are inserted — unusual for a minimal-init environment with no
+/// modprobe/udev, hence loading them by hand here in a fixed dependency
+/// order (mmio before console; fuse before virtiofs; vsock before its
+/// virtio transport) instead of relying on module auto-loading.
+fn load_module(console: RawFd, path: &str) -> bool {
+    let c_path = CString::new(path).unwrap();
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+    if fd < 0 {
+        write_fd(
+            console,
+            &format!("[guest-init] modprobe: open {path} FAILED errno={}\n", errno()),
+        );
+        return false;
+    }
+    let params = CString::new("").unwrap();
+    let rc = unsafe { libc::syscall(libc::SYS_finit_module, fd, params.as_ptr(), 0) };
+    unsafe {
+        libc::close(fd);
+    }
+    if rc != 0 {
+        write_fd(
+            console,
+            &format!("[guest-init] modprobe: finit_module {path} FAILED errno={}\n", errno()),
+        );
+        return false;
+    }
+    write_fd(console, &format!("[guest-init] modprobe: {path} OK\n"));
+    true
+}
+
 fn try_virtiofs(console: RawFd, tag: &str, mountpoint: &str) {
     mkdir_p(mountpoint);
     let rc = mount(tag, mountpoint, "virtiofs");
@@ -203,12 +239,28 @@ fn try_vsock(console: RawFd) {
 
 fn main() {
     // devtmpfs gives us /dev/hvc0 and /dev/console without needing to know
-    // their major/minor numbers ourselves.
+    // their major/minor numbers ourselves. devtmpfs reacts to devices
+    // registered *after* this mount too, so nodes for modules inserted below
+    // (hvc0 from virtio_console, etc.) still appear via this same mount.
     mkdir_p("/dev");
     let _ = mount("devtmpfs", "/dev", "devtmpfs");
 
+    // No console exists at all until virtio_mmio (transport) and
+    // virtio_console (the actual /dev/hvc0 driver) are loaded — write_fd
+    // silently drops output while console is still -1.
+    let no_console: RawFd = -1;
+    load_module(no_console, "/lib/modules/virtio_mmio.ko");
+    load_module(no_console, "/lib/modules/virtio_console.ko");
+
     let console = open_console();
     write_fd(console, "[guest-init] GUEST-INIT-START pid1 up, devtmpfs mounted\n");
+    write_fd(console, "[guest-init] modprobe: virtio_mmio + virtio_console loaded pre-console\n");
+
+    load_module(console, "/lib/modules/fuse.ko");
+    load_module(console, "/lib/modules/virtiofs.ko");
+    load_module(console, "/lib/modules/vsock.ko");
+    load_module(console, "/lib/modules/vmw_vsock_virtio_transport_common.ko");
+    load_module(console, "/lib/modules/vmw_vsock_virtio_transport.ko");
 
     try_virtiofs(console, "aa-share", "/mnt/share");
     try_vsock(console);
