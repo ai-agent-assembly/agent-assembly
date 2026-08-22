@@ -879,8 +879,8 @@ manifest reads as the broadest admissible value.
    outstanding. `host_enforced` beside `coverage: unsupported` is contradictory
    on its face: ADR 0030 §4.1 reserves that rung for bypass resistance and ADR
    0033 §6 defines `unsupported` as *not available on this platform or
-   configuration*, and a capability cannot be bypass-resistant for something it
-   does not provide. The row's own `interception_component` settles which half
+   configuration*, and a capability cannot supply bypass resistance for something
+   it does not provide. The row's own `interception_component` settles which half
    is wrong — "E4: NONE … NO TEST PINS IT … a pass-through tautology" — and
    neither cited test pins the rung either: both gate their macOS lane on
    `require_claude`, and the real binary is absent from CI, so those lanes skip
