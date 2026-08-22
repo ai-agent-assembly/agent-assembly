@@ -22,8 +22,8 @@ Initial release of the Agent Assembly protocol specification.
   heartbeat, deregistration, and runtime control stream
 - `PolicyService` (`proto/policy.proto`) — synchronous policy check RPC for intercepting
   agent actions before execution
-- `AuditService` (`proto/audit.proto`) — event reporting and streaming RPC for immutable
-  audit log ingestion
+- `AuditService` (`proto/audit.proto`) — event reporting and streaming RPC for
+  append-only, hash-chained audit log ingestion
 
 #### Agent lifecycle messages (`proto/agent.proto`)
 
@@ -72,7 +72,7 @@ Initial release of the Agent Assembly protocol specification.
 
 #### Audit messages (`proto/audit.proto`)
 
-- `AuditEvent` — immutable audit record with agent identity, timestamp, sequence number,
+- `AuditEvent` — append-only, hash-chained audit record with agent identity, timestamp, sequence number,
   SHA-256 hash chain field, and oneof payload for five detail subtypes:
   - `LLMCallDetail` — model, token counts, finish reason
   - `ToolCallDetail` — tool name, source, args hash, result hash
