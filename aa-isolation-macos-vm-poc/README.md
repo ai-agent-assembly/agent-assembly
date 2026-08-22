@@ -796,7 +796,7 @@ earlier, on a dependency the arch gate has nothing to do with. That
 prediction may still hold on a kernel that *does* carry Landlock; this pass
 did not have one available to check it against.
 
-**This is still exactly the behavior ADR 0035 requires, and it is real
+**This is still exactly the behavior Core ADR 035 requires, and it is real
 evidence of it**: `aa-isolation-launch` did not silently execute `busybox`
 unconfined when it could not establish the requested boundary. It refused,
 wrote the honest `FAILURE_MARKER` reason to the console (which a real
