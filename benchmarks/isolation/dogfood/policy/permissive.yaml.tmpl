@@ -12,8 +12,10 @@
 #
 # `capabilities.allow` is a genuine allow-list — a capability omitted from an
 # in-force allow-list is restricted (`aa-isolation/src/lowering.rs`'s
-# `restriction_sources`), so `file_read`/`file_write` are named alongside
-# `terminal_exec` here for the same reason confined.yaml.tmpl names them: a
+# `restriction_sources`), so `file_read`/`file_write`/`file_delete` are named
+# alongside `terminal_exec` here for the same reason confined.yaml.tmpl names
+# them (`file_write` and `file_delete` both lower to the one
+# `filesystem_write` domain — naming only one still leaves it restricted): a
 # permissive policy that silently restricted filesystem access via an
 # unrelated capabilities node would not be permissive at all.
 apiVersion: agent-assembly/v1
@@ -37,6 +39,7 @@ spec:
       - terminal_exec
       - file_read
       - file_write
+      - file_delete
   network:
     allowlist:
       - "127.0.0.1"
