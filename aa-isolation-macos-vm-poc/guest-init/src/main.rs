@@ -169,19 +169,26 @@ fn try_virtiofs(console: RawFd, tag: &str, mountpoint: &str) {
 
 /// AAASM-5812 AC "a path outside [the share] is verified unreachable from
 /// the guest… structurally absent, not merely policy-denied": attempt to
-/// open a path one level above the virtiofs mountpoint via a `..`
-/// traversal. The host places a marker file there that must never be
-/// readable from the guest (see `main.swift`'s "OUTSIDE-share negative-
-/// control file"). ENOENT is the claim this AC asks for — the path does not
-/// exist in the guest's namespace past the export root at all; EACCES would
-/// only mean a policy denied a path that does exist, a weaker claim.
+/// open a *fixed*-name marker file *inside* the virtiofs mount that the
+/// host placed one level *above* the exported directory (see
+/// `main.swift`'s "OUTSIDE-share negative-control file"), not a `..`
+/// traversal off the mountpoint — `..` at a virtiofs mount root re-enters
+/// the guest's own rootfs and never reaches the host at all, so it would
+/// report ENOENT unconditionally regardless of how the export is scoped;
+/// that version shipped in this pass's first cut and was caught in review
+/// as a probe that cannot fail (see README "AC closure" for the
+/// correction). This version has a real failure mode: if the export were
+/// ever misconfigured to include the shared directory's parent rather than
+/// the directory itself, this exact in-mount path would resolve and
+/// open() would succeed.
 fn try_virtiofs_negative_control(console: RawFd, mountpoint: &str) {
-    let probe_path = format!("{mountpoint}/../outside-marker-probe.txt");
+    let probe_path = format!("{mountpoint}/outside-marker.txt");
     let c_path = CString::new(probe_path.clone()).unwrap();
     let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
     if fd >= 0 {
-        // This would be the actual security failure this control exists to
-        // catch: the traversal succeeded and opened *something*.
+        // This is the actual security failure this control exists to
+        // catch: a file that only exists one level above the intended
+        // export root is visible inside the mount.
         unsafe {
             libc::close(fd);
         }
