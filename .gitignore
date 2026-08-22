@@ -59,3 +59,4 @@ verification-reports/__pycache__/
 # workflow so job-level `env:` can name it — `runner.temp` is a steps-only
 # context and cannot be used there (AAASM-5326).
 /.conformance-outcomes/
+.qa/
