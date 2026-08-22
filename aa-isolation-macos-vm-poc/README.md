@@ -1015,29 +1015,56 @@ absent, not merely policy-denied."** `VIRTIOFS-OK` (present since pass 2)
 only proves the positive half — that the exported directory *is* reachable.
 This pass adds the negative half.
 
-`main.swift` now places a second marker file — distinct content, a fresh
-UUID each run — one directory level **above** the virtiofs-exported scratch
-directory, logged as `virtiofs: created OUTSIDE-share negative-control file
-...`. `guest-init` (`try_virtiofs_negative_control`) attempts to open it from
-inside the guest via a `..` traversal off the mountpoint
-(`/mnt/share/../outside-marker-probe.txt`) and reports the errno by name.
+**First cut of this control was broken and got caught in review before
+release, not after** — worth stating plainly rather than quietly fixing.
+`main.swift` placed a marker file one directory level **above** the
+exported scratch directory, and `guest-init` probed for it via a `..`
+traversal off the mountpoint (`/mnt/share/../outside-marker-probe.txt`).
+That probe cannot fail: `..` at a virtiofs mount root re-enters the guest's
+own rootfs and never reaches the host at all, so `open()` reports `ENOENT`
+unconditionally — the same result whether the export is scoped correctly or
+not. Applying "what edit makes this false?" to it finds nothing: no
+misconfiguration of the virtiofs export changes the outcome, which is
+exactly the tautology this session's own testing discipline exists to
+catch. It was never run against a deliberately-misconfigured export to
+check it could actually fail.
 
-Real run, this pass:
+The corrected version: `main.swift` places the marker at a **fixed** name
+(`outside-marker.txt`, distinct content via a UUID, not via the filename)
+one level above the scratch directory, and `guest-init`
+(`try_virtiofs_negative_control`) checks for that fixed name **inside** the
+mount (`/mnt/share/outside-marker.txt`) — not via traversal. This has a real
+failure mode: if the export were ever misconfigured to include the shared
+directory's *parent* rather than the directory itself, this exact in-mount
+path resolves and `open()` succeeds.
+
+Real run, corrected version, correctly-scoped export:
 
 ```
-[guest-init] virtiofs negative control: open(/mnt/share/../outside-marker-probe.txt) FAILED errno=2 (ENOENT)
+[guest-init] virtiofs negative control: open(/mnt/share/outside-marker.txt) FAILED errno=2 (ENOENT)
 [guest-init] VIRTIOFS-NEGATIVE-CONTROL-OK
 ```
 
-`ENOENT`, not `EACCES`, is the claim the AC asks for: the path does not
-exist in the guest's mount namespace past the export root at all — virtiofs
-itself never presents anything above the one directory `VZSharedDirectory`
-was configured with — rather than existing-but-permission-denied, which
-would be a policy claim, not a structural one.
+**And the falsifiability check itself, run once against a deliberately
+misconfigured export** (`--share-dir` pointed at the marker's own parent
+directory instead of the scratch directory) to prove the probe can actually
+fail:
 
-This alone doesn't rule out a wrongly-scoped export (an `ENOENT` on the
-*wrong* path proves nothing), so it's paired with an authoritative
-enumeration of what's actually mounted:
+```
+[poc] virtiofs: sharing /var/folders/.../T as tag 'aa-share'
+[guest-init] VIRTIOFS-NEGATIVE-CONTROL-FAILED: /mnt/share/outside-marker.txt opened successfully
+```
+
+Same probe, same code, a genuinely different outcome depending on how the
+export is scoped — the signature of a control that means something, not a
+tautology. `ENOENT` in the correctly-scoped run is the claim the AC asks
+for: the path does not exist in the guest's mount namespace past the export
+root at all — rather than existing-but-permission-denied, which would be a
+policy claim, not a structural one.
+
+This alone doesn't rule out a wrongly-scoped export in some *other*
+direction (an `ENOENT` on the *wrong* path proves nothing), so it's paired
+with an authoritative enumeration of what's actually mounted:
 
 ```
 [guest-init] === proc-mounts (virtiofs scope evidence) ===
