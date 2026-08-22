@@ -237,6 +237,81 @@ fn try_vsock(console: RawFd) {
     }
 }
 
+/// Run the real, unmodified `aa-isolation-launch` binary (AAASM-5812's own
+/// acceptance-criteria target — see ../README.md "aa-isolation-launch
+/// cross-compile") as a child of this PID 1, with `argv` as its own argument
+/// vector (everything after the launcher's binary name). `fork`+`exec`
+/// rather than replacing this process: PID 1 must never exit, and the
+/// launcher itself may `execve` all the way into the confined program on
+/// success, so only a child of PID 1 can safely run it.
+///
+/// The child's stdout/stderr are duped onto `console` before `execv`, so
+/// both the launcher's own refusal line (`FAILURE_MARKER`, written to
+/// stderr) and anything the confined program itself prints reach the same
+/// captured console log this PoC already uses for VIRTIOFS-OK/VSOCK-OK.
+fn run_isolation_launch(console: RawFd, label: &str, argv: &[&str]) {
+    write_fd(console, &format!("[guest-init] === aa-isolation-launch test: {label} ===\n"));
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        write_fd(console, &format!("[guest-init] fork() FAILED errno={}\n", errno()));
+        return;
+    }
+    if pid == 0 {
+        // Child.
+        unsafe {
+            libc::dup2(console, 1);
+            libc::dup2(console, 2);
+        }
+        let path = CString::new("/usr/local/bin/aa-isolation-launch").unwrap();
+        let argv_c: Vec<CString> = std::iter::once(path.clone())
+            .chain(argv.iter().map(|a| CString::new(*a).unwrap()))
+            .collect();
+        let mut argv_ptrs: Vec<*const libc::c_char> = argv_c.iter().map(|c| c.as_ptr()).collect();
+        argv_ptrs.push(std::ptr::null());
+        unsafe {
+            libc::execv(path.as_ptr(), argv_ptrs.as_ptr());
+        }
+        // Only reached if execv itself failed (e.g. binary missing).
+        write_fd(
+            console,
+            &format!("[guest-init] aa-isolation-launch execv() FAILED errno={}\n", errno()),
+        );
+        unsafe {
+            libc::_exit(127);
+        }
+    }
+
+    // Parent: wait for the child (the launcher, or whatever it exec'd into)
+    // to finish, then report how it ended.
+    let mut status: i32 = 0;
+    unsafe {
+        libc::waitpid(pid, &mut status, 0);
+    }
+    if libc::WIFEXITED(status) {
+        write_fd(
+            console,
+            &format!(
+                "[guest-init] aa-isolation-launch test '{label}' exited status={}\n",
+                libc::WEXITSTATUS(status)
+            ),
+        );
+    } else if libc::WIFSIGNALED(status) {
+        write_fd(
+            console,
+            &format!(
+                "[guest-init] aa-isolation-launch test '{label}' killed by signal={}\n",
+                libc::WTERMSIG(status)
+            ),
+        );
+    } else {
+        write_fd(
+            console,
+            &format!("[guest-init] aa-isolation-launch test '{label}' ended with raw status={status}\n"),
+        );
+    }
+}
+
 fn main() {
     // devtmpfs gives us /dev/hvc0 and /dev/console without needing to know
     // their major/minor numbers ourselves. devtmpfs reacts to devices
@@ -264,6 +339,41 @@ fn main() {
 
     try_virtiofs(console, "aa-share", "/mnt/share");
     try_vsock(console);
+
+    // AAASM-5812 "aa-isolation-launch cross-compile" pass: run the real,
+    // unmodified aa-isolation-launch binary inside this guest against three
+    // scenarios, to characterize what it can actually enforce on this
+    // particular substitute guest kernel — see ../README.md
+    // "aa-isolation-launch cross-compile" for what each one is expected to
+    // show and why.
+    run_isolation_launch(console, "no-grants", &["--", "/usr/local/bin/busybox", "true"]);
+    run_isolation_launch(
+        console,
+        "fs-read+fs-write",
+        &[
+            "--fs-read=/etc",
+            "--fs-write=/tmp",
+            "--",
+            "/usr/local/bin/busybox",
+            "cat",
+            "/etc/testfile",
+        ],
+    );
+    run_isolation_launch(
+        console,
+        "syscall-filter",
+        &[
+            "--syscall-filter",
+            "--syscall-allow=read",
+            "--syscall-allow=write",
+            "--syscall-allow=close",
+            "--syscall-allow=exit",
+            "--syscall-allow=exit_group",
+            "--",
+            "/usr/local/bin/busybox",
+            "true",
+        ],
+    );
 
     write_fd(console, "[guest-init] GUEST-INIT-DONE, parking\n");
 
