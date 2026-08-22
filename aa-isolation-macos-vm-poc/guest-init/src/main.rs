@@ -167,6 +167,43 @@ fn try_virtiofs(console: RawFd, tag: &str, mountpoint: &str) {
     write_fd(console, "[guest-init] VIRTIOFS-OK\n");
 }
 
+/// AAASM-5812 AC "a path outside [the share] is verified unreachable from
+/// the guest… structurally absent, not merely policy-denied": attempt to
+/// open a path one level above the virtiofs mountpoint via a `..`
+/// traversal. The host places a marker file there that must never be
+/// readable from the guest (see `main.swift`'s "OUTSIDE-share negative-
+/// control file"). ENOENT is the claim this AC asks for — the path does not
+/// exist in the guest's namespace past the export root at all; EACCES would
+/// only mean a policy denied a path that does exist, a weaker claim.
+fn try_virtiofs_negative_control(console: RawFd, mountpoint: &str) {
+    let probe_path = format!("{mountpoint}/../outside-marker-probe.txt");
+    let c_path = CString::new(probe_path.clone()).unwrap();
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+    if fd >= 0 {
+        // This would be the actual security failure this control exists to
+        // catch: the traversal succeeded and opened *something*.
+        unsafe {
+            libc::close(fd);
+        }
+        write_fd(
+            console,
+            &format!("[guest-init] VIRTIOFS-NEGATIVE-CONTROL-FAILED: {probe_path} opened successfully\n"),
+        );
+        return;
+    }
+    let err = errno();
+    write_fd(
+        console,
+        &format!(
+            "[guest-init] virtiofs negative control: open({probe_path}) FAILED errno={err} ({})\n",
+            if err == libc::ENOENT { "ENOENT" } else { "not ENOENT" }
+        ),
+    );
+    if err == libc::ENOENT {
+        write_fd(console, "[guest-init] VIRTIOFS-NEGATIVE-CONTROL-OK\n");
+    }
+}
+
 fn try_vsock(console: RawFd) {
     let fd = unsafe { libc::socket(AF_VSOCK, libc::SOCK_STREAM, 0) };
     if fd < 0 {
@@ -272,7 +309,10 @@ fn run_child(console: RawFd, label: &str, program: &str, argv: &[&str]) {
             libc::execv(path.as_ptr(), argv_ptrs.as_ptr());
         }
         // Only reached if execv itself failed (e.g. binary missing).
-        write_fd(console, &format!("[guest-init] {program} execv() FAILED errno={}\n", errno()));
+        write_fd(
+            console,
+            &format!("[guest-init] {program} execv() FAILED errno={}\n", errno()),
+        );
         unsafe {
             libc::_exit(127);
         }
@@ -287,7 +327,10 @@ fn run_child(console: RawFd, label: &str, program: &str, argv: &[&str]) {
     if libc::WIFEXITED(status) {
         write_fd(
             console,
-            &format!("[guest-init] test '{label}' exited status={}\n", libc::WEXITSTATUS(status)),
+            &format!(
+                "[guest-init] test '{label}' exited status={}\n",
+                libc::WEXITSTATUS(status)
+            ),
         );
     } else if libc::WIFSIGNALED(status) {
         write_fd(
@@ -322,7 +365,10 @@ fn main() {
 
     let console = open_console();
     write_fd(console, "[guest-init] GUEST-INIT-START pid1 up, devtmpfs mounted\n");
-    write_fd(console, "[guest-init] modprobe: virtio_mmio + virtio_console loaded pre-console\n");
+    write_fd(
+        console,
+        "[guest-init] modprobe: virtio_mmio + virtio_console loaded pre-console\n",
+    );
 
     load_module(console, "/lib/modules/fuse.ko");
     load_module(console, "/lib/modules/virtiofs.ko");
@@ -331,7 +377,22 @@ fn main() {
     load_module(console, "/lib/modules/vmw_vsock_virtio_transport.ko");
 
     try_virtiofs(console, "aa-share", "/mnt/share");
+    try_virtiofs_negative_control(console, "/mnt/share");
     try_vsock(console);
+
+    // AAASM-5812 AC "the primary security boundary at this layer" — the
+    // authoritative enumeration of what is actually mounted, so the claim
+    // above ("exactly one virtiofs share") is asserted over the guest's own
+    // mount table, not inferred only from one open() attempt succeeding or
+    // failing. Requires /proc, which nothing before this point has needed.
+    mkdir_p("/proc");
+    let _ = mount("proc", "/proc", "proc");
+    run_child(
+        console,
+        "proc-mounts (virtiofs scope evidence)",
+        "/usr/local/bin/busybox",
+        &["cat", "/proc/mounts"],
+    );
 
     // AAASM-5812 "aa-isolation-launch cross-compile" pass.
     //
