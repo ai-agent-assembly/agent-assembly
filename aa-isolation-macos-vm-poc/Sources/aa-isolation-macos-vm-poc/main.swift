@@ -208,6 +208,20 @@ if args.enableVirtiofs {
         try? markerContents.write(
             to: scratch.appendingPathComponent("marker.txt"), atomically: true, encoding: .utf8)
         log("virtiofs: created scratch share dir \(scratch.path) with marker.txt = \(markerContents.trimmingCharacters(in: .whitespacesAndNewlines))")
+
+        // AAASM-5812 AC "a path outside [the share] is verified unreachable
+        // from the guest": a sibling file, one level above the exported
+        // directory, that the guest must never be able to read. guest-init
+        // attempts to open it via a `..` traversal off the mountpoint and
+        // reports the errno — ENOENT (the path does not exist in the guest's
+        // namespace at all) is the claim this AC asks for, not EACCES (which
+        // would only mean a policy denied a path that does exist).
+        let outsideMarkerContents = "outside-marker-\(UUID().uuidString)\n"
+        let outsideMarkerURL = scratch.deletingLastPathComponent()
+            .appendingPathComponent("aa-isolation-macos-vm-poc-outside-marker-\(UUID().uuidString).txt")
+        try? outsideMarkerContents.write(to: outsideMarkerURL, atomically: true, encoding: .utf8)
+        log("virtiofs: created OUTSIDE-share negative-control file \(outsideMarkerURL.path) (must stay unreachable from the guest)")
+
         dirPath = scratch.path
     }
     shareDirURL = URL(fileURLWithPath: dirPath, isDirectory: true)
