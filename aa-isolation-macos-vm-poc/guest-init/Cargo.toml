@@ -1,0 +1,25 @@
+[workspace]
+# Standalone workspace root — deliberately NOT a member of the outer
+# agent-assembly Cargo workspace. This crate cross-compiles to
+# aarch64-unknown-linux-musl and is packaged into the initramfs as the
+# guest's PID 1; it never builds or runs on the host toolchain/target and
+# has nothing to do with the product's own crates. See ../README.md
+# ("virtiofs + vsock guest-init").
+
+[package]
+name = "guest-init"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+panic = "abort"
+strip = true
+opt-level = "z"
