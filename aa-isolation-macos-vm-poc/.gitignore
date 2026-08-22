@@ -9,3 +9,8 @@ images/
 
 # Console capture evidence from local runs
 boot-console.log
+virtiofs-vsock-hostside-console.log
+
+# guest-init cross-compile output (cargo build artifacts for the guest
+# aarch64-unknown-linux-musl binary — see scripts/build-guest-init.sh)
+guest-init/target/
