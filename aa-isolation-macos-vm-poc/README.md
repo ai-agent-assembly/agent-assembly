@@ -28,12 +28,21 @@ built in two bounded increments:
    host-side config acceptance. That pass hit a real, precisely-diagnosed
    wall (cpio-initrd unsupported by the substitute kernel — see "virtiofs +
    vsock: result summary" below) which the third pass resolved.
-3. **Kernel/rootfs resolution + full round trip** (this pass, still
+3. **Kernel/rootfs resolution + full round trip** (third pass, still
    AAASM-5812): switches the substitute kernel to a virtio-block root disk
    instead of a cpio initramfs, which sidesteps the wall from pass 2
    entirely. Result: real guest-side `VIRTIOFS-OK` and `VSOCK-OK`, not just
    host-side config acceptance. See "Kernel/rootfs resolution: full
    guest-side round trip achieved" below.
+4. **`aa-isolation-launch` cross-compile + in-guest run** (this pass, still
+   AAASM-5812): cross-compiles the real, unmodified `aa-isolation-launch`
+   binary from `aa-isolation-native` and runs it — for real, inside the guest
+   built by pass 3 — against a trivial confined workload. Result: the binary
+   builds and runs unmodified, but this specific substitute guest kernel
+   lacks Landlock support, so every invocation is honestly refused before
+   `execve` — a real, new finding about what the eventual product guest
+   kernel needs, not the "prevention" demonstration this pass set out to
+   get. See "`aa-isolation-launch` cross-compile: real run, real wall" below.
 
 **What this proves (across all three passes):**
 - `Virtualization.framework` is usable on this host (Apple Silicon, macOS
@@ -59,18 +68,27 @@ built in two bounded increments:
   completes a real two-way vsock byte exchange with the host
   (`VSOCK-OK`, `roundTripSucceeded=true`) — see "Kernel/rootfs resolution"
   below.
+- **`aa-isolation-native`'s real `aa-isolation-launch` binary cross-compiles
+  and runs, unmodified, inside this guest** — no source change, to
+  `aarch64-unknown-linux-musl`, reusing the exact rust-lld cross-linking
+  recipe `guest-init/` already established. It executes as PID 1's child,
+  parses its real argv grammar, and reaches its real Landlock call — see
+  "`aa-isolation-launch` cross-compile: real run, real wall" below for what
+  it actually did once it got there.
 
 **What this deliberately does NOT do** (out of scope for this work — see
 AAASM-5813/5814 for where it belongs):
 - No NAT / network device configuration.
-- No cross-compiling or running `aa-isolation-launch` (or any `aa-*` binary)
-  inside the guest — `guest-init/` stands in for it, proving the boot path
-  and guest-side virtiofs/vsock mechanics work, not `aa-isolation-launch`
-  itself.
-- No integration with any existing Rust crate, CI workflow, or product code.
-  This directory is 100% additive. `guest-init/` is its own standalone Cargo
+- No integration with any existing Rust crate's *source*, CI workflow, or
+  product code — `aa-isolation-native` is built against unmodified, exactly
+  as published, and nothing in this directory is wired into the outer
+  workspace's own build. `guest-init/` remains its own standalone Cargo
   workspace (see its `Cargo.toml`), not a member of the outer
   `agent-assembly` workspace.
+- No kernel that actually has Landlock compiled in — this pass's own finding
+  is that the substitute LinuxKit kernel used since pass 1 does not, so no
+  successful confined launch was demonstrated this pass (see below). Sourcing
+  a Landlock-capable guest kernel is explicitly left to a future pass.
 
 ## Result summary
 
@@ -579,6 +597,250 @@ host-created marker file, and a real two-way vsock byte exchange**, both
 exercised from inside a kernel that booted from cold, entirely from scripted
 artifacts, with no manual file placement.
 
+## `aa-isolation-launch` cross-compile: real run, real wall
+
+This section covers AAASM-5812's own acceptance-criteria item this pass was
+scoped to: *"`aa-isolation-launch`/`aasm` binaries run inside the guest
+unmodified from their existing Linux source."* `aa-isolation-native`'s
+source was not touched (verify with `git status` against this pass's diff —
+the only files this pass changed are inside `aa-isolation-macos-vm-poc/`:
+`guest-init/src/main.rs` and the `scripts/` additions/edits below).
+
+### Cross-compilation: `aarch64-unknown-linux-musl`, first try, no source change
+
+`aa-isolation-native`'s `[[bin]] name = "aa-isolation-launch"` cross-compiled
+cleanly to `aarch64-unknown-linux-musl` on the first attempt, reusing
+*exactly* `guest-init`'s own cross-linking recipe (`RUSTFLAGS="-C
+linker-flavor=ld.lld -C linker=rust-lld -C target-feature=+crt-static"`,
+rustc's own bundled `rust-lld`, rustup's self-contained musl sysroot — no
+external cross-toolchain):
+
+```
+./scripts/build-isolation-launch.sh
+```
+
+```
+cross-compiling aa-isolation-launch for aarch64-unknown-linux-musl (unmodified source, outer workspace) ...
+    Finished `release` profile [optimized] target(s) in 0.12s
+found binary: /Users/bryant/.cargo/shared-target/aarch64-unknown-linux-musl/release/aa-isolation-launch
+copied to .../aa-isolation-macos-vm-poc/images/aa-isolation-launch-aarch64
+```
+
+```
+$ file images/aa-isolation-launch-aarch64
+images/aa-isolation-launch-aarch64: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, stripped
+```
+
+Nothing about this needed a workaround: `aa-isolation-native`'s only
+platform-specific dependencies are `landlock` (a pure-Rust binding that
+issues raw Linux `landlock_*` syscalls directly — no libc-specific ABI
+assumption) and `libc` itself, and both are `cfg(target_os = "linux")`
+already, so musl's libc is exactly as valid a target as glibc from the
+crate's own point of view. **`aarch64-unknown-linux-gnu` was never needed**
+— the fallback this pass was briefed with ("try `-gnu` if musl doesn't fit")
+does not apply here; musl fit on the first attempt, for the same reason it
+already fit `guest-init`.
+
+### Getting a workload to hand it: `busybox` via `fetch-busybox.sh`
+
+The 16 MiB guest rootfs (`build-guest-rootfs.sh`) contained nothing
+`aa-isolation-launch` could actually `execve` into — its own doc comment
+requires *some* real program at the end of its argv. `scripts/fetch-busybox.sh`
+extracts a real, statically-linked (`static-pie`) `aarch64` `busybox` binary
+from the official `busybox:musl` Docker Hub image, pinned by digest and
+sha256-verified, the same pattern `fetch-debian-kernel.sh` already uses to
+pull a real kernel from a container rather than a third-party tarball. It
+needs no dynamic linker (`static-pie`, no `PT_INTERP`), so it runs in this
+guest's minimal rootfs with nothing else installed.
+
+`build-guest-rootfs.sh` was extended (not replaced) to also stage
+`aa-isolation-launch` at `/usr/local/bin/aa-isolation-launch`, `busybox` at
+`/usr/local/bin/busybox`, and a small `/etc/testfile` for the filesystem
+grant scenario below.
+
+### `guest-init` extended: a positive control, then three real invocations
+
+`guest-init/src/main.rs` gained one new function, `run_child`, called after
+the existing `VIRTIOFS-OK`/`VSOCK-OK` checks. It `fork()`s (PID 1 itself
+must never exit or exec into anything — the kernel panics on "Attempted to
+kill init!" — so only a *child* of PID 1 may safely run a binary that might
+successfully `execve` into something else), dupes the child's
+stdout/stderr onto the same console fd `guest-init` already writes its own
+progress to, `execv`s a given program with a given argv, and reports how
+the child exited.
+
+**Every one of the three `aa-isolation-launch` scenarios below turned out
+to refuse before `execve` ever runs** (see the Landlock finding two
+sections down) — which means, on its own, none of them would have proven
+that `busybox`, the rootfs staging, `/etc/testfile`, or `static-pie`
+loading on this kernel actually work. A refusal at the same first step
+looks identical whether or not the rest of the harness is sound. So
+`run_child` was run once more first, as a positive control, with no
+`aa-isolation-launch` involved at all — `busybox` executed directly:
+
+```
+run_child(console, "busybox-direct (positive control)", "/usr/local/bin/busybox", &["cat", "/etc/testfile"]);
+```
+
+```
+[guest-init] === busybox-direct (positive control) ===
+aa-isolation-launch-guest-rootfs-test-marker
+[guest-init] test 'busybox-direct (positive control)' exited status=0
+```
+
+This is real, and it is what makes the refusals below meaningful rather
+than vacuous: `busybox` is present at the right path, the right
+architecture, executable, and its `static-pie` layout loads and runs on
+this kernel with no dynamic linker; `/etc/testfile` was staged with the
+expected content and is readable; and `run_child`'s
+fork/dup2/execv/waitpid harness itself can observe and report a genuine
+success, not only a refusal.
+
+With that established, the same harness ran the real `aa-isolation-launch`
+binary against three scenarios, to separately exercise the two boundary
+domains AAASM-5812/5811 asked about:
+
+1. `no-grants` — `-- /usr/local/bin/busybox true` (no `--fs-read`/`--fs-write`
+   at all, no `--syscall-filter`): the plainest possible launch.
+2. `fs-read+fs-write` — `--fs-read=/etc --fs-write=/tmp --
+   /usr/local/bin/busybox cat /etc/testfile`: exercises the Landlock
+   filesystem boundary this backend's `rules::install` installs.
+3. `syscall-filter` — `--syscall-filter --syscall-allow=read
+   --syscall-allow=write --syscall-allow=close --syscall-allow=exit
+   --syscall-allow=exit_group -- /usr/local/bin/busybox true`: exercises the
+   seccomp boundary `seccomp::install` installs, which the ticket's own brief
+   correctly notes is `cfg(target_arch = "x86_64")`-gated
+   (`aa-isolation-native/src/seccomp.rs:468`) and so should truthfully report
+   `Unsupported` on this arm64 guest — see what actually happened below.
+
+### Real console output — the control succeeds, all three refuse, honestly, at the same step
+
+```
+[guest-init] === busybox-direct (positive control) ===
+aa-isolation-launch-guest-rootfs-test-marker
+[guest-init] test 'busybox-direct (positive control)' exited status=0
+[guest-init] === aa-isolation-launch test: no-grants ===
+aa-isolation-launch:refused:the kernel cannot handle the access rights this backend's filesystem claim requires (Landlock ABI v3, Linux 6.2 or newer): fully incompatible access-rights: BitFlags<AccessFs>(0b111111111111111, Execute | WriteFile | ReadFile | ReadDir | RemoveDir | RemoveFile | MakeChar | MakeDir | MakeReg | MakeSock | MakeFifo | MakeBlock | MakeSym | Refer | Truncate)
+[guest-init] test 'aa-isolation-launch test: no-grants' exited status=121
+[guest-init] === aa-isolation-launch test: fs-read+fs-write ===
+aa-isolation-launch:refused:the kernel cannot handle the access rights this backend's filesystem claim requires (Landlock ABI v3, Linux 6.2 or newer): fully incompatible access-rights: BitFlags<AccessFs>(0b111111111111111, Execute | WriteFile | ReadFile | ReadDir | RemoveDir | RemoveFile | MakeChar | MakeDir | MakeReg | MakeSock | MakeFifo | MakeBlock | MakeSym | Refer | Truncate)
+[guest-init] test 'aa-isolation-launch test: fs-read+fs-write' exited status=121
+[guest-init] === aa-isolation-launch test: syscall-filter ===
+aa-isolation-launch:refused:the kernel cannot handle the access rights this backend's filesystem claim requires (Landlock ABI v3, Linux 6.2 or newer): fully incompatible access-rights: BitFlags<AccessFs>(0b111111111111111, Execute | WriteFile | ReadFile | ReadDir | RemoveDir | RemoveFile | MakeChar | MakeDir | MakeReg | MakeSock | MakeFifo | MakeBlock | MakeSym | Refer | Truncate)
+[guest-init] test 'aa-isolation-launch test: syscall-filter' exited status=121
+```
+
+Full command, fully reproducible from scripts:
+
+```
+./scripts/build-isolation-launch.sh
+./scripts/fetch-busybox.sh
+./scripts/build-guest-init.sh
+./scripts/build-guest-rootfs.sh
+swift build
+codesign -s - --entitlements aa-isolation-macos-vm-poc.entitlements --force \
+  .build/debug/aa-isolation-macos-vm-poc
+
+.build/debug/aa-isolation-macos-vm-poc \
+  --kernel /Applications/Docker.app/Contents/Resources/linuxkit/kernel \
+  --no-initrd \
+  --disk images/guest-rootfs.img \
+  --cmdline "console=hvc0 root=/dev/vda rw rootfstype=ext4 init=/sbin/init" \
+  --timeout 20
+```
+
+### Reading this result honestly: the binary ran; the boundary it needs isn't there
+
+**This is a real result, not a null one, and it is not the result this pass
+expected to get.** `exit=0` on the VM process; 275 lines of real captured
+console output; `VIRTIOFS-OK` and `VSOCK-OK` both still fire exactly as pass
+3 established; the `busybox-direct` positive control exits `status=0` and
+echoes the real testfile content back, so the refusals that follow are not
+an artifact of a broken harness; and then all three `aa-isolation-launch`
+invocations reach real code inside the real binary — argv parsing succeeds,
+`rules::plan` runs, and `rules::install` makes a real
+`landlock_create_ruleset` call against this guest kernel — and every one is
+refused **at the same first step**, before ever reaching the syscall filter
+or `execve`.
+
+Why: `aa-isolation-native/src/rules.rs`'s `install()` calls
+`Ruleset::default().set_compatibility(CompatLevel::HardRequirement)
+.handle_access(...)` **unconditionally**, before it ever looks at whether
+the plan's rule list is empty — a design AAASM-5801/5802 chose deliberately,
+so a kernel too old to enforce the exact boundary requested fails loudly
+rather than installing a silently weaker one (see that function's own doc
+comment, "Why this refuses instead of degrading"). Checking this substitute
+LinuxKit kernel's own embedded config (same `IKCONFIG` extraction technique
+pass 3 already used to find `CONFIG_VIRTIO_BLK=y`) confirms why:
+
+```
+$ python3 - <<'EOF'
+... (extract IKCFG_ST..IKCFG_ED, gunzip, grep)
+EOF
+# CONFIG_SECURITY_LANDLOCK is not set
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+```
+
+**Landlock is not compiled into this kernel at all.** `CONFIG_SECCOMP` is —
+but it never matters here, because `confine_and_exec`
+(`src/bin/aa-isolation-launch.rs`) calls `rules::install` (Landlock) as its
+unconditional first step and only reaches the syscall filter afterward, so a
+kernel missing Landlock refuses before the seccomp arch-gate is ever
+exercised — even for the `syscall-filter` scenario, which asked for no
+filesystem grant at all. **The ticket brief's own prediction — that
+`Syscall` would truthfully report `Unsupported` due to the x86_64 arch gate
+while filesystem enforcement succeeded — was not what this kernel let us
+observe**: this kernel can't even reach that gate, because it fails one step
+earlier, on a dependency the arch gate has nothing to do with. That
+prediction may still hold on a kernel that *does* carry Landlock; this pass
+did not have one available to check it against.
+
+**This is still exactly the behavior Core ADR 035 requires, and it is real
+evidence of it**: `aa-isolation-launch` did not silently execute `busybox`
+unconfined when it could not establish the requested boundary. It refused,
+wrote the honest `FAILURE_MARKER` reason to the console (which a real
+supervisor would parse and surface, not paper over), and exited `121` —
+*every single time*, including the `no-grants` case where nothing was even
+asked for, because Landlock's own kernel-support check happens before this
+backend looks at whether any rule needs it. Fail-closed, not fail-open, is
+the property this binary is *for*, and this run demonstrates it under real
+conditions — a kernel missing a facility it depends on — not a synthetic
+one.
+
+**What this pass does NOT get to claim**: a successful confined `busybox`
+execution, or a `ControlState::Prevention`-vs-`ControlState::Unsupported`
+comparison between the filesystem and syscall domains on this guest. Both
+need a guest kernel with `CONFIG_SECURITY_LANDLOCK=y`, which neither
+substitute kernel evaluated across all four passes has had: the LinuxKit
+kernel used since pass 1 (confirmed above, doesn't have it) and the Debian
+generic kernel fetched in pass 3 (which independently doesn't boot to any
+observable state on this hypervisor at all — see "Debian generic kernel"
+above, a wall unrelated to Landlock). **Neither of those is a claim that
+Landlock enforcement doesn't work** — `aa-isolation-native`'s own test suite
+already exercises it on real Linux — only that this PoC's specific substitute
+guest kernel choice has never yet been one that carries it, which is new
+information this pass surfaced, not something passes 1–3 could have known
+before a real binary was run against it.
+
+**On the `IsolationReport` machine-readable format**: worth stating plainly
+rather than silently working around. `aa-isolation-launch` itself is a
+narrow, unmodified exec wrapper — it prints nothing on success (it
+`execve`s and vanishes into the confined program) and one `FAILURE_MARKER`
+line on refusal (see above). The structured `IsolationReport`
+(`aa-isolation/src/report.rs`, `REPORT_SCHEMA = "aasm.isolation.report/1"`)
+that projects `ControlState`/`ClaimTerm` per `CapabilityDomain` is built and
+rendered by the **supervisor** (`aa-cli`'s `aasm run`, via
+`aa-isolation-native`'s `probe.rs`/`backend.rs`), not by the launcher binary
+this pass cross-compiled and ran — the launcher is what the supervisor's
+report describes, not what emits it. Reproducing an actual `IsolationReport`
+inside this guest would mean cross-compiling and running `aa-cli`'s
+supervisor path too, which is new scope beyond this pass's target binary and
+was not attempted. The console output above is the launcher's own, real,
+unmodified machine-readable-enough signal (`FAILURE_MARKER` prefix + exit
+`121`) — not a fabricated stand-in for the CLI's report format, and not the
+report format itself.
+
 ## Checksum provenance
 
 `scripts/fetch-images.sh` downloads and verifies Alpine's `vmlinuz-virt` +
@@ -629,12 +891,28 @@ any observable state on this hypervisor) — the script and its pinned
 digests are kept for reproducibility of that finding, not because the
 kernel is in active use.
 
-`images/guest-rootfs.img` (built by `scripts/build-guest-rootfs.sh`, this
-pass) is not a downloaded artifact — it is assembled locally from
+`images/guest-rootfs.img` (built by `scripts/build-guest-rootfs.sh`, pass 3,
+extended pass 4) is not a downloaded artifact — it is assembled locally from
 `guest-init`'s own build output, which is itself built from source in this
 repo. No external checksum applies; the script itself is the reproducible
 source of truth, and `e2fsck -fn` is run on every build as a structural
 sanity check.
+
+`scripts/fetch-busybox.sh` (pass 4) extracts a real, statically-linked
+`aarch64` `busybox` from the official `busybox:musl` Docker Hub image,
+pinned by digest (`busybox@sha256:32b5cdad7cce41dfd53d0ae06baebcf8357a147ee7694dc706911c373bc30c37`)
+and sha256-verified per extracted file — same pattern as
+`fetch-debian-kernel.sh`.
+
+`images/aa-isolation-launch-aarch64` (built by
+`scripts/build-isolation-launch.sh`, pass 4) is, like `guest-rootfs.img`,
+not a downloaded artifact — it is `aa-isolation-native`'s own real
+`[[bin]] name = "aa-isolation-launch"`, built unmodified from source
+already in this repo (`../aa-isolation-native/src/bin/aa-isolation-launch.rs`)
+by the outer workspace's own `cargo build`, cross-compiled to
+`aarch64-unknown-linux-musl`. No external checksum applies; the crate's
+source and `Cargo.lock` are the reproducible source of truth, verified the
+same way any other workspace build is.
 
 ## Reproducing locally
 
@@ -663,10 +941,18 @@ codesign -s - --entitlements aa-isolation-macos-vm-poc.entitlements --force \
   --initrd images/guest-initramfs.cpio \
   --timeout 15
 
-# virtiofs + vsock via virtio-block root disk (this pass) — FULL guest-side
+# virtiofs + vsock via virtio-block root disk (pass 3) — FULL guest-side
 # round trip: VIRTIOFS-OK, VSOCK-OK, connectionAccepted=true
 # roundTripSucceeded=true. See "Kernel/rootfs resolution" above.
+#
+# build-guest-rootfs.sh now (pass 4) also requires aa-isolation-launch and
+# busybox to be present — see build-isolation-launch.sh/fetch-busybox.sh
+# just below — so this block alone no longer runs standalone; it is kept
+# here for the pass-3 command shape, but needs those two artifacts staged
+# first, same as the pass-4 block that follows it.
 ./scripts/build-guest-init.sh
+./scripts/build-isolation-launch.sh
+./scripts/fetch-busybox.sh
 ./scripts/build-guest-rootfs.sh
 .build/debug/aa-isolation-macos-vm-poc \
   --kernel /Applications/Docker.app/Contents/Resources/linuxkit/kernel \
@@ -678,17 +964,36 @@ codesign -s - --entitlements aa-isolation-macos-vm-poc.entitlements --force \
 # override the defaults, or --no-virtiofs / --no-vsock to disable either
 # device individually.
 
-# Debian generic kernel (this pass) — extracts a real distro kernel with
+# Debian generic kernel (prior pass) — extracts a real distro kernel with
 # CONFIG_BLK_DEV_INITRD=y, but hangs before any console output on this
 # hypervisor. Kept for reproducing that finding; see "Debian generic kernel"
 # above. Not a working path.
 ./scripts/fetch-debian-kernel.sh
+
+# aa-isolation-launch cross-compile + in-guest run (this pass) — cross-
+# compiles the real, unmodified aa-isolation-launch binary, bakes it (plus a
+# real busybox workload) into the rootfs, and runs three real invocations
+# from inside the guest. Every one is honestly refused because this
+# substitute guest kernel lacks Landlock — see "aa-isolation-launch
+# cross-compile: real run, real wall" above for the full console output and
+# why.
+./scripts/build-isolation-launch.sh
+./scripts/fetch-busybox.sh
+./scripts/build-guest-init.sh
+./scripts/build-guest-rootfs.sh
+.build/debug/aa-isolation-macos-vm-poc \
+  --kernel /Applications/Docker.app/Contents/Resources/linuxkit/kernel \
+  --no-initrd \
+  --disk images/guest-rootfs.img \
+  --cmdline "console=hvc0 root=/dev/vda rw rootfstype=ext4 init=/sbin/init" \
+  --timeout 20
 ```
 
 `images/` is git-ignored (large binaries; repo policy). Run
 `scripts/fetch-images.sh` / `scripts/fetch-debian-kernel.sh` /
-`scripts/build-guest-rootfs.sh` to populate the artifacts each command
-above needs.
+`scripts/build-guest-rootfs.sh` / `scripts/build-isolation-launch.sh` /
+`scripts/fetch-busybox.sh` to populate the artifacts each command above
+needs.
 
 ## Recommendations for AAASM-5812's remaining scope
 
@@ -728,27 +1033,95 @@ above needs.
    the first time any consumer relied on a full round trip, not just
    `connectionAccepted` — worth carrying the fix's rationale forward into
    any future rewrite of this listener code path.
-3. **`aa-isolation-launch` cross-compilation is next**, now genuinely
-   unblocked rather than gated on an open kernel-sourcing question: a
-   `aarch64-unknown-linux-musl` (or `-gnu`) target build, plus whatever
-   init/service wiring gets it running as guest PID 1 or under a minimal
-   init/supervisor — `guest-init/` is a working, proven example of the same
-   cross-compile technique (`rust-lld`, no external cross-toolchain) and of
-   the boot path (virtio-block ext4 root, `init=/sbin/init`) it would need
-   to run under. The natural shape: replace `guest-init`'s hand-rolled
-   virtiofs/vsock checks with `aa-isolation-launch` itself, dial vsock for
-   control instead of a fixed greeting, and use virtiofs for delivering the
-   binary/config into the guest rather than baking it into the rootfs image
-   at build time (baking it in, as `build-guest-rootfs.sh` currently does
-   for `guest-init`, doesn't scale to iterating on `aa-isolation-launch`
-   without a full image rebuild each time).
-4. **NAT / network device configuration remains fully out of scope** — no
-   network device was configured or attempted in either this pass or the
-   prior one. This is the other major piece of AAASM-5812's acceptance
-   criteria still untouched.
-5. **This host's slow path to `dl-cdn.alpinelinux.org` (noted in the prior
+3. **`aa-isolation-launch` cross-compilation and in-guest execution are now
+   done, not just unblocked** — see "`aa-isolation-launch` cross-compile:
+   real run, real wall" above. `aarch64-unknown-linux-musl` was the right
+   target on the first try (no `-gnu` fallback needed: the crate's only
+   platform dependencies, `landlock` and `libc`, carry no glibc-specific
+   requirement), and the real, unmodified binary runs as a child of
+   `guest-init`'s PID 1 today, reproducibly, via `scripts/build-isolation-launch.sh`.
+   **What is not done**: a demonstration of it actually confining and
+   executing something, because this pass's own finding is that the
+   substitute LinuxKit kernel used since pass 1 has `CONFIG_SECURITY_LANDLOCK`
+   unset, so `rules::install`'s Landlock call — which runs unconditionally,
+   before any grant or syscall filter is even considered — refuses every
+   invocation before `execve`. **This is now a concrete, added requirement
+   for whatever kernel the product eventually ships**, on top of the
+   virtio-block/virtiofs/vsock-built-in bar pass 3 already established: it
+   must also carry `CONFIG_SECURITY_LANDLOCK=y`, and that must be
+   re-verified the same way this pass verified its absence (the IKCONFIG
+   extraction technique, or — more conclusively — an actual successful
+   `aa-isolation-launch` run against it) rather than assumed. The already-
+   fetched Debian generic kernel is not a shortcut here even if it turns out
+   to carry Landlock: it independently hangs before any console output on
+   this hypervisor (see "Debian generic kernel" above), a wall this pass did
+   not re-attempt to solve. Finding or building a *third* kernel candidate —
+   one that is both bootable on this hypervisor via virtio-block *and*
+   Landlock-capable — is squarely a next-pass task, not a small addition to
+   this one. **The three scenarios this pass already wired into `guest-init`
+   do not all mean the same thing once a Landlock-capable kernel exists** —
+   worth splitting out precisely rather than leaving as an implied "just
+   rerun them and they'll separate as predicted":
+   - `no-grants` and `fs-read+fs-write` would both still reach `execvp` and
+     fail *there*, not at `rules::install`. Landlock's `Execute` right is
+     part of `AccessFs::from_all`, which `rules::install` always requests as
+     a *handled* right (see "Reading this result honestly" above), so once
+     any grant is installed the kernel denies execution of any path not
+     explicitly granted — including the confined program's own binary.
+     Neither scenario grants read/execute on `/usr/local/bin`, where
+     `busybox` lives: `no-grants` requests no filesystem rule at all, and
+     `fs-read+fs-write` grants only `/etc` (for `/etc/testfile`) and `/tmp`,
+     not the program path. So on a Landlock-capable kernel both are expected
+     to move one step further than they do on this kernel — reaching
+     `execvp` — and then fail there with `EACCES`, still short of a
+     *successful* confined launch. A scenario that can actually reach and
+     execute `busybox` needs a grant covering the program's own path too,
+     e.g. `--fs-read=/etc --fs-read=/usr/local/bin --fs-write=/tmp`.
+   - `syscall-filter` is different, and needs no parameterization change at
+     all: `confine_and_exec` installs Landlock first (step 3) and the
+     syscall filter second (step 4), and `syscall::install` is the function
+     that is `cfg(target_arch = "x86_64")`-gated. On a Landlock-capable
+     arm64 kernel this scenario would pass step 3 (its grant set is empty
+     but valid) and then refuse at step 4 with the arch-gate message —
+     *never reaching* `execvp` at all, unlike the other two. That is exactly
+     the `Syscall`-domain claim the ticket brief originally predicted, and
+     it is ready to observe as-is, distinguishable from the other two
+     scenarios' eventual `EACCES`-at-`execvp` refusal by the `FAILURE_MARKER`
+     text alone — it was simply never reachable on *this* kernel, because
+     step 3 refuses first, every time, regardless of what step 4 would have
+     done. None of this is `IsolationReport` vocabulary — as established
+     above, the launcher itself never produces that; it is the launcher's
+     own `FAILURE_MARKER`/exit-code signal, in its own terms.
+4. **The natural shape for a real integration, once a Landlock-capable
+   kernel exists**: replace `guest-init`'s hand-rolled virtiofs/vsock checks
+   with `aa-isolation-launch` itself as the thing being driven, dial vsock
+   for control instead of a fixed greeting, and use virtiofs for delivering
+   the binary/config into the guest rather than baking it into the rootfs
+   image at build time (baking it in, as `build-guest-rootfs.sh` now does for
+   both `guest-init` and `aa-isolation-launch`, doesn't scale to iterating on
+   either without a full image rebuild each time).
+5. **NAT / network device configuration remains fully out of scope** — no
+   network device was configured or attempted in any of the four passes.
+   This is the other major piece of AAASM-5812's acceptance criteria still
+   untouched.
+6. **This host's slow path to `dl-cdn.alpinelinux.org` (noted in an earlier
    pass) no longer blocks anything** — the working path no longer depends
    on any Alpine artifact. `scripts/fetch-images.sh` and the Alpine
    provenance discussion above are kept for historical/negative-control
    value (see "Alpine attempt: failure analysis"), not because anything
    downstream still needs them.
+7. **Taken together, passes 1–4 demonstrate the full technical mechanism
+   AAASM-5813 needs to wire into `aasm run` as a real macOS backend** —
+   Virtualization.framework boots a real kernel with a live console (pass 1),
+   virtiofs and vsock devices attach and carry real guest-side traffic (passes
+   2–3), and the real, unmodified `aa-isolation-launch` binary cross-compiles
+   and runs as a guest process reachable the same way a product supervisor
+   would reach it (this pass) — **provided** the guest kernel AAASM-5813
+   actually ships also carries `CONFIG_SECURITY_LANDLOCK=y`, which is now a
+   named, checked-for requirement rather than an unstated assumption. Say
+   this plainly rather than either overclaiming or underclaiming it: the
+   *mechanism* is proven end to end; the specific substitute kernel used to
+   prove it is demonstrably not yet the one the product should ship, on this
+   one axis. AAASM-5813 should treat "does the chosen guest kernel have
+   Landlock" as an explicit go/no-go check before any other integration work,
+   not something discovered downstream the way this pass discovered it.
