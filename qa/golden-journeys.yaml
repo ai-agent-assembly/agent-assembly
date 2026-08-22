@@ -1,0 +1,842 @@
+catalog_version: '1'
+source: AAASM-4522 (durable human-readable journey inventory) — this file is a selection index, not a
+  replacement
+policy: docs/src/qa/release-qa-policy.md
+journeys:
+- id: J01
+  jira: AAASM-4523
+  name: Land on the core repo README and understand what AI Agent Assembly is
+  priority: P2
+  persona_track: Discovery
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: true
+  outcome: See AAASM-4523 for the full acceptance contract; this row is a selection index only.
+- id: J02
+  jira: AAASM-4524
+  name: Land on the canonical docs hub and follow the "govern my first agent" CTA
+  priority: P2
+  persona_track: Discovery
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: true
+  outcome: See AAASM-4524 for the full acceptance contract; this row is a selection index only.
+- id: J03
+  jira: AAASM-4528
+  name: Read Why / comparison / security-model / open-core pages to decide whether to adopt
+  priority: P2
+  persona_track: Evaluate
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: true
+  outcome: See AAASM-4528 for the full acceptance contract; this row is a selection index only.
+- id: J04
+  jira: AAASM-4542
+  name: Install the aasm CLI (install.sh / Homebrew / version pin / profiles)
+  priority: P0
+  persona_track: Install
+  surfaces:
+  - docs/src/quick-start
+  - scripts
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4542 for the full acceptance contract; this row is a selection index only.
+- id: J05
+  jira: AAASM-4543
+  name: Install the Python SDK and confirm the native core is present
+  priority: P1
+  persona_track: Install
+  surfaces:
+  - docs/src/quick-start
+  - scripts
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4543 for the full acceptance contract; this row is a selection index only.
+- id: J06
+  jira: AAASM-4544
+  name: Install the Node SDK
+  priority: P1
+  persona_track: Install
+  surfaces:
+  - docs/src/quick-start
+  - scripts
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4544 for the full acceptance contract; this row is a selection index only.
+- id: J07
+  jira: AAASM-4526
+  name: Install the Go SDK
+  priority: P1
+  persona_track: Install
+  surfaces:
+  - docs/src/quick-start
+  - scripts
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4526 for the full acceptance contract; this row is a selection index only.
+- id: J08
+  jira: AAASM-4530
+  name: Govern your first agent with the Python SDK, end-to-end
+  priority: P0
+  persona_track: Quick Start
+  surfaces:
+  - docs/src/quick-start
+  - aa-cli
+  - aa-sdk-client
+  entry_point: sdk
+  lanes:
+  - functional
+  - golden-journey
+  browser_required: false
+  outcome: See AAASM-4530 for the full acceptance contract; this row is a selection index only.
+- id: J09
+  jira: AAASM-4533
+  name: Govern your first agent with the Node SDK, end-to-end
+  priority: P1
+  persona_track: Quick Start
+  surfaces:
+  - docs/src/quick-start
+  - aa-cli
+  - aa-sdk-client
+  entry_point: sdk
+  lanes:
+  - functional
+  - golden-journey
+  browser_required: false
+  outcome: See AAASM-4533 for the full acceptance contract; this row is a selection index only.
+- id: J10
+  jira: AAASM-4535
+  name: Govern your first agent with the Go SDK, end-to-end
+  priority: P1
+  persona_track: Quick Start
+  surfaces:
+  - docs/src/quick-start
+  - aa-cli
+  - aa-sdk-client
+  entry_point: sdk
+  lanes:
+  - functional
+  - golden-journey
+  browser_required: false
+  outcome: See AAASM-4535 for the full acceptance contract; this row is a selection index only.
+- id: J11
+  jira: AAASM-4537
+  name: Run a Python framework example (allow / deny / pending) offline
+  priority: P2
+  persona_track: Examples
+  surfaces:
+  - examples
+  entry_point: sdk
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4537 for the full acceptance contract; this row is a selection index only.
+- id: J12
+  jira: AAASM-4525
+  name: Run a Node framework example (deny throws) offline
+  priority: P2
+  persona_track: Examples
+  surfaces:
+  - examples
+  entry_point: sdk
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4525 for the full acceptance contract; this row is a selection index only.
+- id: J13
+  jira: AAASM-4531
+  name: Run a Go example (offline ALLOW)
+  priority: P2
+  persona_track: Examples
+  surfaces:
+  - examples
+  entry_point: sdk
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4531 for the full acceptance contract; this row is a selection index only.
+- id: J14
+  jira: AAASM-4539
+  name: Run the cross-framework scenario demos (policy / approval / audit / budget)
+  priority: P2
+  persona_track: Examples
+  surfaces:
+  - examples
+  entry_point: sdk
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4539 for the full acceptance contract; this row is a selection index only.
+- id: J15
+  jira: AAASM-4540
+  name: Run live-core-enforcement against a real gateway
+  priority: P2
+  persona_track: Examples
+  surfaces:
+  - examples
+  entry_point: sdk
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4540 for the full acceptance contract; this row is a selection index only.
+- id: J16
+  jira: AAASM-4541
+  name: Bring up the limited-OSS stack with Docker Compose
+  priority: P1
+  persona_track: Self-host
+  surfaces:
+  - docker
+  - docs/src/quick-start
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - reliability
+  browser_required: false
+  outcome: See AAASM-4541 for the full acceptance contract; this row is a selection index only.
+- id: J17
+  jira: AAASM-4527
+  name: Install & run the gateway from a published artifact (no source build)
+  priority: P0
+  persona_track: Self-host
+  surfaces:
+  - docker
+  - docs/src/quick-start
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - reliability
+  browser_required: false
+  outcome: See AAASM-4527 for the full acceptance contract; this row is a selection index only.
+- id: J18
+  jira: AAASM-4529
+  name: View agents and decisions in the dashboard / TUI
+  priority: P1
+  persona_track: Observe
+  surfaces:
+  - dashboard
+  - aa-cli
+  entry_point: dashboard
+  lanes:
+  - design
+  - functional
+  browser_required: true
+  outcome: See AAASM-4529 for the full acceptance contract; this row is a selection index only.
+- id: J19
+  jira: AAASM-4532
+  name: Author, validate, simulate, and apply a policy
+  priority: P0
+  persona_track: Policy
+  surfaces:
+  - aa-gateway/src/policy
+  - aa-policy
+  - policy-examples
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4532 for the full acceptance contract; this row is a selection index only.
+- id: J20
+  jira: AAASM-4534
+  name: Verify the read/inspection CLI command matrix (status / topology / agent / audit / logs / trace
+    / cost / alerts / approvals)
+  priority: P1
+  persona_track: CLI
+  surfaces:
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4534 for the full acceptance contract; this row is a selection index only.
+- id: J21
+  jira: AAASM-4536
+  name: Doc + command integrity — every documented command and internal link works
+  priority: P0
+  persona_track: Cross-cutting
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: false
+  outcome: See AAASM-4536 for the full acceptance contract; this row is a selection index only.
+- id: J22
+  jira: AAASM-4538
+  name: Recover from a failure using the troubleshooting / FAQ docs
+  priority: P2
+  persona_track: Cross-cutting
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: false
+  outcome: See AAASM-4538 for the full acceptance contract; this row is a selection index only.
+- id: J23
+  jira: AAASM-4546
+  name: Verify the lifecycle / config / admin CLI command matrix (start/stop / proxy / sandbox / config
+    / context / admin / version / completion)
+  priority: P1
+  persona_track: CLI
+  surfaces:
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-4546 for the full acceptance contract; this row is a selection index only.
+- id: J24
+  jira: AAASM-4598
+  name: Verify allow / deny enforcement (tool allow, capability allow-deny, network egress)
+  priority: P0
+  persona_track: Policy
+  surfaces:
+  - aa-gateway/src/policy
+  - aa-policy
+  - policy-examples
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4598 for the full acceptance contract; this row is a selection index only.
+- id: J25
+  jira: AAASM-4599
+  name: Verify human-in-the-loop approval workflow (requires_approval_if -> approve / reject / timeout)
+  priority: P1
+  persona_track: Policy
+  surfaces:
+  - aa-gateway/src/policy
+  - aa-policy
+  - policy-examples
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4599 for the full acceptance contract; this row is a selection index only.
+- id: J26
+  jira: AAASM-4600
+  name: Verify budget enforcement (daily / monthly limits, action_on_exceed deny vs suspend)
+  priority: P1
+  persona_track: Policy
+  surfaces:
+  - aa-gateway/src/policy
+  - aa-policy
+  - policy-examples
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4600 for the full acceptance contract; this row is a selection index only.
+- id: J27
+  jira: AAASM-4595
+  name: Verify data protection (credential redact_only / block / alert_only + PII patterns)
+  priority: P1
+  persona_track: Policy
+  surfaces:
+  - aa-gateway/src/policy
+  - aa-policy
+  - policy-examples
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4595 for the full acceptance contract; this row is a selection index only.
+- id: J28
+  jira: AAASM-4596
+  name: Verify rate limiting (limit_per_hour) and scheduling (active_hours)
+  priority: P1
+  persona_track: Policy
+  surfaces:
+  - aa-gateway/src/policy
+  - aa-policy
+  - policy-examples
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4596 for the full acceptance contract; this row is a selection index only.
+- id: J29
+  jira: AAASM-4597
+  name: Verify enforcement modes (Enforce / Observe / Disabled)
+  priority: P1
+  persona_track: Policy
+  surfaces:
+  - aa-gateway/src/policy
+  - aa-policy
+  - policy-examples
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4597 for the full acceptance contract; this row is a selection index only.
+- id: J30
+  jira: AAASM-4604
+  name: Rust core contributor — clone, build, test, make a change, open a PR
+  priority: P1
+  persona_track: Contributor
+  surfaces:
+  - CONTRIBUTING.md
+  - Makefile
+  entry_point: repo
+  lanes:
+  - functional
+  - docs
+  browser_required: false
+  outcome: See AAASM-4604 for the full acceptance contract; this row is a selection index only.
+- id: J31
+  jira: AAASM-4605
+  name: Build & work on the harder crates — eBPF probes, FFI, proxy
+  priority: P1
+  persona_track: Contributor
+  surfaces:
+  - CONTRIBUTING.md
+  - Makefile
+  entry_point: repo
+  lanes:
+  - functional
+  - docs
+  browser_required: false
+  outcome: See AAASM-4605 for the full acceptance contract; this row is a selection index only.
+- id: J32
+  jira: AAASM-4607
+  name: SDK contributor — dev-setup, tests, lint, native-binding rebuild, PR (Py/Node/Go)
+  priority: P1
+  persona_track: Contributor
+  surfaces:
+  - CONTRIBUTING.md
+  - Makefile
+  entry_point: repo
+  lanes:
+  - functional
+  - docs
+  browser_required: false
+  outcome: See AAASM-4607 for the full acceptance contract; this row is a selection index only.
+- id: J33
+  jira: AAASM-4612
+  name: Community contributor viability & community-health files
+  priority: P1
+  persona_track: Contributor
+  surfaces:
+  - CONTRIBUTING.md
+  - Makefile
+  entry_point: repo
+  lanes:
+  - functional
+  - docs
+  browser_required: false
+  outcome: See AAASM-4612 for the full acceptance contract; this row is a selection index only.
+- id: J34
+  jira: AAASM-4617
+  name: Understand "what is it / why / for whom / the goal" in 5 minutes (non-technical)
+  priority: P2
+  persona_track: Non-dev
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: false
+  outcome: See AAASM-4617 for the full acceptance contract; this row is a selection index only.
+- id: J35
+  jira: AAASM-4613
+  name: Planner / PM — roadmap, feature maturity, how work is organized
+  priority: P2
+  persona_track: Non-dev
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: false
+  outcome: See AAASM-4613 for the full acceptance contract; this row is a selection index only.
+- id: J36
+  jira: AAASM-4618
+  name: Security / compliance officer — threat model, audit & compliance posture
+  priority: P2
+  persona_track: Non-dev
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: false
+  outcome: See AAASM-4618 for the full acceptance contract; this row is a selection index only.
+- id: J37
+  jira: AAASM-4620
+  name: Ops / SRE — deployment options, observability, monitoring, SLA, runbooks
+  priority: P2
+  persona_track: Non-dev
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: false
+  outcome: See AAASM-4620 for the full acceptance contract; this row is a selection index only.
+- id: J38
+  jira: AAASM-4621
+  name: Decision-maker / buyer — comparison, open-core vs SaaS, pricing, maturity, trust
+  priority: P2
+  persona_track: Non-dev
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  browser_required: false
+  outcome: See AAASM-4621 for the full acceptance contract; this row is a selection index only.
+- id: J39
+  jira: AAASM-4622
+  name: i18n / localization readiness for a non-English newcomer
+  priority: P2
+  persona_track: Worldwide
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  - design
+  browser_required: true
+  outcome: See AAASM-4622 for the full acceptance contract; this row is a selection index only.
+- id: J40
+  jira: AAASM-4606
+  name: Accessibility statement & jargon on-ramp (no insider knowledge assumed)
+  priority: P2
+  persona_track: Worldwide
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  - design
+  browser_required: true
+  outcome: See AAASM-4606 for the full acceptance contract; this row is a selection index only.
+- id: J41
+  jira: AAASM-4608
+  name: Understand & exercise the three-layer interception model (SDK / proxy / eBPF)
+  priority: P0
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4608 for the full acceptance contract; this row is a selection index only.
+- id: J42
+  jira: AAASM-4611
+  name: Govern agent egress with the sidecar proxy — no code change
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4611 for the full acceptance contract; this row is a selection index only.
+- id: J43
+  jira: AAASM-4615
+  name: Kernel-layer enforcement with eBPF (Linux) — catch the bypass
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4615 for the full acceptance contract; this row is a selection index only.
+- id: J44
+  jira: AAASM-4619
+  name: Audit trail — emit, consume via aasm audit, immutability & export
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4619 for the full acceptance contract; this row is a selection index only.
+- id: J45
+  jira: AAASM-4609
+  name: Operator observability — alerts, topology, cost
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4609 for the full acceptance contract; this row is a selection index only.
+- id: J46
+  jira: AAASM-4610
+  name: Govern MCP tool usage (mcp_tool:* capabilities)
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4610 for the full acceptance contract; this row is a selection index only.
+- id: J47
+  jira: AAASM-4614
+  name: Org / team admin — multi-tenancy, teams, RBAC, SCIM (SaaS control plane)
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4614 for the full acceptance contract; this row is a selection index only.
+- id: J48
+  jira: AAASM-4616
+  name: Enterprise self-hosted governance onboarding
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-runtime
+  - aa-proxy
+  - aa-ebpf
+  - aa-gateway
+  entry_point: gateway
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-4616 for the full acceptance contract; this row is a selection index only.
+- id: J49
+  jira: AAASM-4747
+  name: Containerize a Python agent on the published python SDK base image
+  priority: P1
+  persona_track: SDK-dev
+  surfaces:
+  - docker
+  - examples
+  entry_point: container
+  lanes:
+  - functional
+  - reliability
+  browser_required: false
+  outcome: See AAASM-4747 for the full acceptance contract; this row is a selection index only.
+- id: J50
+  jira: AAASM-4748
+  name: Containerize a Node agent on the published node SDK base image
+  priority: P1
+  persona_track: SDK-dev
+  surfaces:
+  - docker
+  - examples
+  entry_point: container
+  lanes:
+  - functional
+  - reliability
+  browser_required: false
+  outcome: See AAASM-4748 for the full acceptance contract; this row is a selection index only.
+- id: J51
+  jira: AAASM-4749
+  name: Containerize a Go agent on the published go SDK base image
+  priority: P1
+  persona_track: SDK-dev
+  surfaces:
+  - docker
+  - examples
+  entry_point: container
+  lanes:
+  - functional
+  - reliability
+  browser_required: false
+  outcome: See AAASM-4749 for the full acceptance contract; this row is a selection index only.
+- id: J52
+  jira: AAASM-4750
+  name: Run aa-runtime as a sidecar and govern a containerized agent
+  priority: P1
+  persona_track: SDK-dev
+  surfaces:
+  - docker
+  - examples
+  entry_point: container
+  lanes:
+  - functional
+  - reliability
+  browser_required: false
+  outcome: See AAASM-4750 for the full acceptance contract; this row is a selection index only.
+- id: J53
+  jira: AAASM-4751
+  name: Pull, configure & operate the aa-gateway container image
+  priority: P0
+  persona_track: Operator
+  surfaces:
+  - docker
+  - aa-gateway
+  entry_point: container
+  lanes:
+  - functional
+  - reliability
+  browser_required: false
+  outcome: See AAASM-4751 for the full acceptance contract; this row is a selection index only.
+- id: J54
+  jira: AAASM-4752
+  name: Docker & container usage documentation completeness
+  priority: P2
+  persona_track: Worldwide
+  surfaces:
+  - docs/src
+  entry_point: docs
+  lanes:
+  - docs
+  - design
+  browser_required: true
+  outcome: See AAASM-4752 for the full acceptance contract; this row is a selection index only.
+- id: J55
+  jira: AAASM-4753
+  name: Docker image provenance & supply-chain hardening
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - docker
+  - SECURITY.md
+  entry_point: container
+  lanes:
+  - security
+  browser_required: false
+  outcome: See AAASM-4753 for the full acceptance contract; this row is a selection index only.
+- id: J56
+  jira: AAASM-4976
+  name: Clean-env -> governed Python agent (canonical 11-step) [Python Dev]
+  priority: P0
+  persona_track: Golden Path
+  surfaces:
+  - aa-sdk-client
+  - aa-gateway
+  - aa-cli
+  entry_point: sdk-or-gateway
+  lanes:
+  - golden-journey
+  - functional
+  browser_required: false
+  outcome: See AAASM-4976 for the full acceptance contract; this row is a selection index only.
+- id: J57
+  jira: AAASM-4977
+  name: Clean-env -> governed Node.js agent (canonical 11-step) [Node.js Dev]
+  priority: P1
+  persona_track: Golden Path
+  surfaces:
+  - aa-sdk-client
+  - aa-gateway
+  - aa-cli
+  entry_point: sdk-or-gateway
+  lanes:
+  - golden-journey
+  - functional
+  browser_required: false
+  outcome: See AAASM-4977 for the full acceptance contract; this row is a selection index only.
+- id: J58
+  jira: AAASM-4978
+  name: Clean-env -> governed Go agent (canonical 11-step) [Go Dev]
+  priority: P1
+  persona_track: Golden Path
+  surfaces:
+  - aa-sdk-client
+  - aa-gateway
+  - aa-cli
+  entry_point: sdk-or-gateway
+  lanes:
+  - golden-journey
+  - functional
+  browser_required: false
+  outcome: See AAASM-4978 for the full acceptance contract; this row is a selection index only.
+- id: J59
+  jira: AAASM-4979
+  name: Deploy -> observe -> govern -> recover, no agent-code changes (12-step) [Operator]
+  priority: P0
+  persona_track: Golden Path
+  surfaces:
+  - aa-sdk-client
+  - aa-gateway
+  - aa-cli
+  entry_point: sdk-or-gateway
+  lanes:
+  - golden-journey
+  - functional
+  browser_required: false
+  outcome: See AAASM-4979 for the full acceptance contract; this row is a selection index only.
+- id: J60
+  jira: AAASM-4980
+  name: Continuous cross-persona governance loop [Dev->Operator Handoff]
+  priority: P1
+  persona_track: Golden Path
+  surfaces:
+  - aa-sdk-client
+  - aa-gateway
+  - aa-cli
+  entry_point: sdk-or-gateway
+  lanes:
+  - golden-journey
+  - functional
+  browser_required: false
+  outcome: See AAASM-4980 for the full acceptance contract; this row is a selection index only.
