@@ -16,25 +16,28 @@
 #   a scenario that expects a write to land can be told apart from one that
 #   expects it denied by which subtree it targets, not by a different policy
 #   file.
-# - `capabilities: allow: [terminal_exec, file_read, file_write]` — this is
-#   the "spawn works" arm: the driver's spawn-child, descendant-confinement
-#   and compiler/package tooling scenarios all need `aasm run` to permit the
-#   confined process to fork further children. `confined-no-exec.yaml.tmpl`
-#   is this file's opposite, used for the "capability denied" scenario.
+# - `capabilities: allow: [terminal_exec, file_read, file_write,
+#   file_delete]` — this is the "spawn works" arm: the driver's spawn-child,
+#   descendant-confinement and compiler/package tooling scenarios all need
+#   `aasm run` to permit the confined process to fork further children.
+#   `confined-no-exec.yaml.tmpl` is this file's opposite, used for the
+#   "capability denied" scenario.
 #
 #   `capabilities.allow` is a genuine allow-list, not a per-capability toggle
 #   (`aa-isolation/src/lowering.rs`'s `restriction_sources` — a capability
 #   omitted from an in-force allow-list is restricted, matching
 #   `aa_gateway::PolicyEngine::capability_guard`'s L7 reading of the same
-#   node). Naming only `terminal_exec` here silently swept `file_read` and
-#   `file_write` into whole-domain prevention regardless of what
-#   `filesystem.read.allow`/`filesystem.write.allow` below separately state —
-#   the two nodes intersect, they don't compose independently. AAASM-5809's
-#   first dogfood run read as "sandlock denies all execve" for exactly this
-#   reason: it wasn't `terminal_exec` denying anything (AAASM-5816 fixed a
-#   real, separate bug there), it was this list's *absence* of `file_read`/
-#   `file_write` denying the filesystem reads/writes every scenario needs
-#   before it can even reach an exec.
+#   node). Naming only `terminal_exec` here silently swept `file_read`/
+#   `file_write`/`file_delete` into whole-domain prevention regardless of
+#   what `filesystem.read.allow`/`filesystem.write.allow` below separately
+#   state — the two nodes intersect, they don't compose independently.
+#   `file_write` and `file_delete` are two distinct `Capability` variants
+#   that both lower to the one `filesystem_write` domain
+#   (`aa-isolation/src/lowering.rs`'s `write()` call passes
+#   `&[Capability::FileWrite, Capability::FileDelete]`) — naming only
+#   `file_write` still left `file_delete` "omitted" and the whole write
+#   domain fell back to prevention despite `file_write` itself being
+#   granted; both must be named for the domain to narrow.
 apiVersion: agent-assembly/v1
 kind: Policy
 metadata:
@@ -56,6 +59,7 @@ spec:
       - terminal_exec
       - file_read
       - file_write
+      - file_delete
   network:
     allowlist:
       - "127.0.0.1"
