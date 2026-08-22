@@ -5,7 +5,7 @@
 # Usage: bash scripts/release-readiness.sh <version>
 #   e.g. bash scripts/release-readiness.sh 0.0.1-alpha.5
 #
-# Runs 12 local checks that must all pass before pushing a release tag.
+# Runs 13 local checks that must all pass before pushing a release tag.
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
@@ -148,7 +148,24 @@ else
   fail "Security-review sign-off verdict is not PASS ($SIGNOFF)" "resolve High/Critical findings and re-run /release-security-gate $VERSION"
 fi
 
-# 12. Every published workspace crate has a README.md (AAASM-3778, Epic AAASM-3774).
+# 12. QA sign-off artifact present AND verdict is PASS.
+# AAASM-5823 release-QA gate: the /release-qa-gate SKILL writes
+# docs/release/qa-signoff/v<version>.md with a `Verdict: PASS` line, the same
+# machine-readable contract check 11 already enforces for security. This check
+# is independent of check 11 in both directions: a QA PASS never substitutes
+# for a missing/non-PASS security sign-off, and vice versa — both must be
+# exact PASS for readiness to succeed. See docs/release/RUNBOOK.md and
+# .claude/skills/release-qa-gate/SKILL.md.
+QA_SIGNOFF="docs/release/qa-signoff/v${VERSION}.md"
+if [ ! -f "$QA_SIGNOFF" ]; then
+  fail "QA sign-off missing ($QA_SIGNOFF)" "run /release-qa-gate $VERSION and commit the sign-off"
+elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$QA_SIGNOFF"; then
+  pass "QA sign-off present and Verdict: PASS ($QA_SIGNOFF)"
+else
+  fail "QA sign-off verdict is not PASS ($QA_SIGNOFF)" "resolve/waive blockers and re-run /release-qa-gate $VERSION"
+fi
+
+# 13. Every published workspace crate has a README.md (AAASM-3778, Epic AAASM-3774).
 # crates.io renders the crate page from its README; a missing one ships a blank
 # package page. Enumerate members from [workspace].members (same source as the
 # version-literal check above) and skip crates marked `publish = false` — those are
