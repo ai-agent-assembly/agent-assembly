@@ -70,6 +70,10 @@
 - [Audit and assurance](security/audit-assurance.md)
 - [Execution isolation](security/execution-isolation.md)
 
+# Release QA
+
+- [Release QA policy](qa/release-qa-policy.md)
+
 # Architecture
 
 - [Architecture](architecture/README.md)
