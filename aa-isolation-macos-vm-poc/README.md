@@ -14,14 +14,21 @@ Security.
 
 AAASM-5812's full acceptance criteria cover the entire macOS isolation
 substrate: VM lifecycle, virtiofs file sharing, vsock control channel, NAT
-networking, and running `aa-isolation-launch` inside the guest. This PoC does
-**one** thing, as the first de-risking step of a phased build:
+networking, and running `aa-isolation-launch` inside the guest. This PoC was
+built in two bounded increments:
 
-> Prove the single highest-risk unknown first: can this host actually boot a
-> Linux kernel inside a Virtualization.framework VM at all, with real console
-> output reaching the host process.
+1. **Boot proof** (first pass): can this host actually boot a Linux kernel
+   inside a Virtualization.framework VM at all, with real console output
+   reaching the host process. See "Result summary" below.
+2. **virtiofs + vsock prototype** (this pass, still AAASM-5812): can a
+   `VZVirtioFileSystemDevice` share a host directory into the guest, and can
+   a `VZVirtioSocketDevice` carry a host↔guest byte stream, against the same
+   substitute kernel — with a purpose-built minimal guest-init binary
+   (`guest-init/`) so both are checked from *inside* the guest, not just
+   host-side config acceptance. See "virtiofs + vsock: result summary"
+   below — this is where the pass hit a real, precisely-diagnosed wall.
 
-**What this proves:**
+**What this proves (across both passes):**
 - `Virtualization.framework` is usable on this host (Apple Silicon, macOS
   26.4.1) from an ad-hoc-signed, non-App-Store command-line tool carrying only
   the `com.apple.security.virtualization` entitlement — no Developer ID, no
@@ -30,17 +37,27 @@ networking, and running `aa-isolation-launch` inside the guest. This PoC does
   `VZVirtioConsoleDeviceSerialPortConfiguration` console, and the guest's
   kernel boot log reaches the host process's stdout / a capture file in real
   time.
+- `VZVirtioFileSystemDeviceConfiguration` (a single-directory virtiofs share)
+  and `VZVirtioSocketDeviceConfiguration` + `VZVirtioSocketListener` (vsock)
+  are accepted by `VZVirtualMachineConfiguration.validate()`, attach without
+  error, and the VM reaches `running` state with both devices present, on
+  this host, with this entitlement.
+- A real, statically-linked aarch64 Linux ELF binary can be cross-compiled
+  from this host using **only tools already installed** (rustc's own bundled
+  `rust-lld`, no external musl-cross/zig toolchain) — see
+  `guest-init/` and `scripts/build-guest-init.sh`.
 
 **What this deliberately does NOT do** (out of scope for this pass — see
 AAASM-5813/5814 for where this belongs):
-- No virtiofs directory sharing.
-- No vsock control channel.
 - No NAT / network device configuration.
 - No cross-compiling or running `aa-isolation-launch` (or any `aa-*` binary)
   inside the guest.
-- No disk/virtio-block root filesystem — this is a console-boot proof only.
 - No integration with any existing Rust crate, CI workflow, or product code.
-  This directory is 100% additive.
+  This directory is 100% additive. `guest-init/` is its own standalone Cargo
+  workspace (see its `Cargo.toml`), not a member of the outer
+  `agent-assembly` workspace.
+- **Guest-side virtiofs mount / vsock dial is NOT verified** — see below for
+  exactly why, and what the wall is.
 
 ## Result summary
 
@@ -216,6 +233,153 @@ this configuration (no `earlycon=` was set on the cmdline). Fixing that is a
 one-line cmdline change or the actual `earlycon` address for a hvc0 UART, but
 it doesn't affect the conclusion above.
 
+## virtiofs + vsock: result summary
+
+**Driver support confirmed in the substitute kernel.** Before writing any
+guest code, the LinuxKit kernel binary itself
+(`/Applications/Docker.app/Contents/Resources/linuxkit/kernel`) was checked
+for the relevant driver symbols via `strings`:
+
+```
+$ strings kernel | grep -c virtio_fs_     # virtio-fs transport
+21
+$ strings kernel | grep -c fuse_mount     # FUSE (virtiofs rides on FUSE)
+3
+$ strings kernel | grep -c vhost_vsock    # host-side vsock transport
+13
+$ strings kernel | grep -c virtio_vsock   # guest-side vsock transport
+9
+```
+
+Both are compiled in. This isn't a coincidence: Docker Desktop's own
+LinuxKit VM (which this kernel is extracted from — see "Verified boot"
+above) uses virtiofs for bind mounts and vsock for its host↔VM control API,
+so a kernel build shipped for that purpose was always going to carry both.
+
+**Host-side configuration: proven.** With both a
+`VZVirtioFileSystemDeviceConfiguration` (tag `aa-share`, sharing a
+freshly-created scratch temp directory containing a `marker.txt`) and a
+`VZVirtioSocketDeviceConfiguration` attached to the same
+`VZVirtualMachineConfiguration` used for the boot proof:
+
+```
+.build/debug/aa-isolation-macos-vm-poc \
+  --kernel /Applications/Docker.app/Contents/Resources/linuxkit/kernel \
+  --initrd images/guest-initramfs.cpio \
+  --cmdline "console=hvc0" --timeout 8
+```
+
+```
+[poc] virtiofs: created scratch share dir /var/folders/.../aa-isolation-macos-vm-poc-share-5F5888A2-... with marker.txt = virtiofs-marker-4130741A-...
+[poc] virtiofs: sharing /var/folders/.../aa-isolation-macos-vm-poc-share-5F5888A2-... as tag 'aa-share'
+[poc] vsock: device configured, will listen on guest-dialed port 5555 once VM starts
+...
+[poc] VZVirtualMachine.start succeeded, state=1
+[poc] vsock: host listener registered on port 5555
+...
+[poc] vsock: connectionAccepted=false roundTripSucceeded=false
+```
+
+`config.validate()` accepted both devices, `VZVirtualMachine.start` reached
+`running` state with them attached, and `VZVirtioSocketDevice
+.setSocketListener(_:forPort:)` succeeded — all real API calls against real
+Virtualization.framework objects, not stubs. This is genuine, if partial,
+evidence: the substrate-level acceptance of virtiofs and vsock device
+configuration is proven on this host.
+
+**Guest-side round trip: NOT achieved — a real, precisely-diagnosed wall,
+not a shortcut taken.** The plan was for `guest-init` (below) to mount the
+share, echo `marker.txt`'s content to the console, dial vsock, and exchange
+bytes with the host listener above. It never got the chance to run: the
+guest kernel never reaches userspace at all with this initrd. Console output
+ends at the exact same `Kernel panic - not syncing: VFS: Unable to mount
+root fs on unknown-block(0,0)` panic already documented in "Verified boot"
+above — meaning the kernel is not unpacking the supplied initrd as an
+initramfs-rootfs and executing `/init` from it, full stop.
+
+This was diagnosed empirically, not assumed, by varying every axis that
+could plausibly explain a `/init`-not-found outcome and observing the
+*identical* panic every time:
+
+| Variant tried | Result |
+|---|---|
+| Our own uncompressed `newc` cpio (verified structurally correct — `070701` magic, `./init` entry present with mode `0100755`, correct file size, valid `TRAILER!!!`) | same panic |
+| Same cpio, gzip-compressed | same panic |
+| Explicit `rdinit=/init` on the kernel cmdline (rules out a non-default `ramdisk_execute_command`) | same panic |
+| Alpine's `initramfs-virt` (original boot-proof run, different cpio entirely) | same panic |
+
+A kernel that successfully unpacks an initramfs and finds `/init` never
+reaches `mount_root_generic`/`prepare_namespace` at all — it execs `/init`
+directly instead. Reaching that panic regardless of cpio content, compression,
+or an explicit `rdinit=` override means `populate_rootfs()` is not running
+this kernel's initrd through the initramfs-as-rootfs path — most likely
+because this specific LinuxKit build's kernel config doesn't wire that up in
+the way that matters here, corroborated by `strings kernel | grep -i
+initramfs` returning nothing resembling `init/initramfs.c`'s own log output
+(`"Trying to unpack rootfs image as initramfs"` is conspicuously absent),
+while `rdinit_setup` / `rdinit=` and old-style-initrd strings (`/initrd.image`)
+are present. It's also consistent with this kernel shipping alongside a
+558 MB `boot.img` disk file in the same Docker.app directory — this build is
+plausibly meant to boot from a virtio-block root disk, not a bootloader-
+supplied cpio initrd.
+
+This **confirms, rather than merely repeats**, the original boot-proof's own
+tentative read ("this LinuxKit kernel build expects its own virtio-block
+root disk... not an ad hoc initramfs") — that was a reasonable guess before;
+it is now an empirically cross-checked conclusion. It is squarely the
+**kernel-sourcing decision this pass was explicitly told not to resolve**
+(see "Scope of this pass"), not a virtiofs/vsock-specific gap — the devices
+themselves are proven to attach cleanly; guest code simply never gets to run
+against them with this kernel/initrd combination.
+
+### `guest-init`: the guest-side proof that's ready and waiting
+
+`guest-init/` is a minimal PID 1 (raw `libc` syscalls, no shell, no runtime
+beyond what mounting virtiofs and dialing vsock need) built specifically to
+exercise both checks the moment a working guest kernel/rootfs exists:
+
+- mounts `devtmpfs` at `/dev` and opens `/dev/hvc0` (falling back to
+  `/dev/console`) directly by fd, rather than relying on `std::io::stdout`
+  wrapping fd 1 — fd 1 isn't attached to anything when the kernel execs
+  PID 1 with no `/dev` nodes present yet.
+- `mount("aa-share", "/mnt/share", "virtiofs", …)`, then reads and echoes
+  `/mnt/share/marker.txt` to the console (`VIRTIOFS-OK` on success).
+- opens an `AF_VSOCK` socket, connects to `VMADDR_CID_HOST` (2) on port 5555
+  (matching the host's registered listener above), sends a greeting, reads
+  the host's reply, and echoes it (`VSOCK-OK` on success).
+- parks in an infinite sleep loop (PID 1 must never exit).
+
+It cross-compiles to a real static `aarch64-unknown-linux-musl` ELF
+executable **using only tools already on this machine** — no
+`musl-cross`/`zig`/other third-party cross-toolchain install was needed or
+attempted:
+
+```
+cd guest-init
+RUSTFLAGS="-C linker-flavor=ld.lld -C linker=rust-lld -C target-feature=+crt-static" \
+  cargo build --release --target aarch64-unknown-linux-musl
+```
+
+This works because `rustc` ships its own `rust-lld` (a full LLVM linker,
+multi-target, ELF-capable) inside its sysroot
+(`$(rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/rust-lld`),
+and rustup's `aarch64-unknown-linux-musl` target component bundles a
+self-contained musl libc + crt objects — so `cc`/ld64 (which can't link ELF)
+never enters the picture. `scripts/build-guest-init.sh` wraps this, then
+packs the resulting binary as the sole content of an uncompressed cpio
+`newc` initramfs (`images/guest-initramfs.cpio`) — uncompressed specifically
+so it doesn't depend on any `CONFIG_RD_*` decompressor, unlike Alpine's
+netboot artifact (see "Alpine attempt: failure analysis").
+
+`guest-init` itself is unverified — it never got to run. That is stated
+plainly, not implied by silence: nothing between "cross-compiles cleanly"
+and "genuinely mounts virtiofs and dials vsock" has been exercised. The
+moment AAASM-5812's kernel-sourcing decision lands on something that boots
+from a cpio initramfs (or `guest-init` gets adapted into a tiny root
+filesystem image for a virtio-block boot instead), this binary is the
+existing, ready-to-run artifact for finishing that guest-side proof — not
+new work.
+
 ## Checksum provenance
 
 `scripts/fetch-images.sh` downloads and verifies Alpine's `vmlinuz-virt` +
@@ -243,10 +407,17 @@ tarball at several hours — well past this task's bounded-exploration budget.
 This is disclosed here rather than silently skipped: the digests above are
 this run's own direct-download measurement, not yet independently
 cross-verified against Alpine's published tarball checksum. `initramfs-virt`
-was used successfully as the guest's initial ramdisk in the verified-boot
-run above (the bootloader accepted it without complaint — cpio/gzip format
-integrity is not in question), so the open item is provenance
-cross-verification, not functional correctness.
+was accepted by `VZLinuxBootLoader` without complaint at the bootloader
+level (no load/decode error) in the verified-boot run above — **correction,
+this pass**: that is *not* the same as it having worked as an initramfs
+rootfs. The "virtiofs + vsock" section above establishes, by direct
+comparison against our own known-good-format cpio, that this kernel never
+unpacks *any* supplied initrd as an initramfs-rootfs at all. So
+`initramfs-virt`'s cpio/gzip format integrity was never actually exercised
+end-to-end either — only that the bootloader could hand the bytes to the
+kernel without erroring. The open item is genuinely broader than originally
+scoped here: provenance cross-verification, *and* functional correctness is
+now known to be blocked on the kernel-sourcing decision, not just unverified.
 
 ## Reproducing locally
 
@@ -265,6 +436,18 @@ codesign -s - --entitlements aa-isolation-macos-vm-poc.entitlements --force \
   --kernel /Applications/Docker.app/Contents/Resources/linuxkit/kernel \
   --initrd images/initramfs-virt \
   --timeout 15
+
+# virtiofs + vsock host-side proof (this pass) — builds guest-init, packs it
+# into images/guest-initramfs.cpio, then attaches both devices. Guest-side
+# checks never run — see "virtiofs + vsock: result summary" for the wall.
+./scripts/build-guest-init.sh
+.build/debug/aa-isolation-macos-vm-poc \
+  --kernel /Applications/Docker.app/Contents/Resources/linuxkit/kernel \
+  --initrd images/guest-initramfs.cpio \
+  --timeout 15
+# add --share-dir <path> / --share-tag <tag> / --vsock-port <port> to
+# override the defaults, or --no-virtiofs / --no-vsock to disable either
+# device individually.
 ```
 
 `images/` is git-ignored (large binaries; repo policy). Run
@@ -272,32 +455,64 @@ codesign -s - --entitlements aa-isolation-macos-vm-poc.entitlements --force \
 
 ## Recommendations for AAASM-5812's remaining scope
 
-1. **Guest kernel sourcing is the next real decision, not virtiofs/vsock.**
-   Before building the rest of the substrate, pick (or build) a guest kernel
-   artifact that is (a) a plain, directly `VZLinuxBootLoader`-loadable arm64
-   `Image`, (b) small, (c) reproducibly downloadable with a real published
-   checksum, and (d) paired with an initramfs/init that actually reaches a
-   shell or the intended payload. Candidates worth evaluating next:
-   - A LinuxKit-built kernel + a purpose-built minimal initramfs (LinuxKit's
-     own build tooling produces exactly this pairing already; this pass only
-     had the kernel half of that on hand).
+1. **Guest kernel/rootfs sourcing is now confirmed blocking, not just the
+   next decision.** This pass's own finding sharpens the requirement beyond
+   what the boot-proof pass could tell: it's not enough to find a plain
+   `VZLinuxBootLoader`-loadable arm64 `Image` — the artifact must also
+   actually **reach and exec `/init` from a bootloader-supplied initrd**
+   (or, alternatively, the project commits to a virtio-block root disk
+   instead of a cpio initramfs, matching how this substitute kernel's own
+   origin — Docker Desktop's LinuxKit VM — actually boots). Verify this
+   specific property empirically before adopting any candidate; don't infer
+   it from "the kernel boots" alone, which is exactly the gap this pass
+   fell into. Candidates worth evaluating next, in light of that:
+   - A LinuxKit kernel **built together with** LinuxKit's own minimal
+     initramfs via `linuxkit build` (this pass only had the bare kernel
+     half on hand, extracted from an unrelated Docker Desktop install) —
+     highest chance of an initramfs-compatible config, since it would be
+     the pairing LinuxKit's tooling actually produces and tests, rather
+     than a kernel half borrowed from a disk-image-booting deployment.
    - Alpine's kernel `Image` extracted from a different, non-netboot Alpine
      artifact — e.g. the plain `-virt` uboot/dtb-free build if one exists, or
-     properly reverse-engineering the wrapper format this pass didn't chase.
+     properly reverse-engineering the netboot wrapper format this pass
+     didn't chase (see "Alpine attempt: failure analysis").
    - A minimal Buildroot-produced kernel+initramfs pair, built from source
-     specifically to be `VZLinuxBootLoader`-clean, so the project isn't
-     depending on any third party's packaging choices.
-2. **virtiofs and vsock are genuinely separable next steps**, not blocked on
-   picking the final kernel — they can be prototyped against whichever
-   kernel unblocks boot first (the substitute one above is fine for that),
-   then swapped once the kernel-sourcing decision above lands.
+     specifically to be `VZLinuxBootLoader`-clean with `CONFIG_BLK_DEV_INITRD`
+     and initramfs-as-rootfs behavior explicitly verified, so the project
+     isn't depending on any third party's packaging choices — and gets a
+     kernel config it fully controls and can assert this property against.
+   - Alternatively: **commit to a virtio-block root disk** (`root=/dev/vda`
+     + `VZVirtioBlockDeviceConfiguration`) instead of a cpio initramfs. This
+     is real, scoped work (needs an on-macOS ext2/ext4/vfat filesystem
+     builder — not currently installed — plus a minimal root filesystem
+     layout), not a quick swap, but it sidesteps the initramfs-support
+     question entirely and is what this substitute kernel's own origin
+     actually does (see the sibling `boot.img` next to it).
+2. **virtiofs and vsock device *configuration* are proven separable from
+   kernel sourcing** — attaching `VZVirtioFileSystemDeviceConfiguration` and
+   `VZVirtioSocketDeviceConfiguration` and reaching `running` state works
+   against any kernel that boots this far, independent of what that kernel
+   does afterward. **Guest-side verification is not separable** — it needs
+   a kernel/rootfs pairing that reaches userspace, i.e. it's gated on
+   recommendation 1. `guest-init/` (this pass) is the ready-to-run guest
+   binary for finishing that verification the moment recommendation 1 lands
+   — no new guest code should be needed, only a working boot target to run
+   it against.
 3. **`aa-isolation-launch` cross-compilation is its own, larger piece of
    work** (likely a `aarch64-unknown-linux-musl` or `-gnu` target, plus
    whatever init/service wiring gets it running as guest PID 1 or under a
    minimal init) — start it once vsock (for control) and virtiofs (for
-   binary delivery) are working, not before.
+   binary delivery) are verified guest-side, not before. This pass's
+   `guest-init/` also serves as a working example of cross-compiling a
+   static aarch64 Linux binary from this host using only already-installed
+   tooling (`rust-lld`, no external cross-toolchain) — the same technique
+   applies directly to `aa-isolation-launch` once that work starts.
 4. **This host's slow path to `dl-cdn.alpinelinux.org` is worth flagging
    separately** — if CI or other engineers hit similarly slow throughput to
    Alpine's CDN, the checksum-verify-on-fetch pattern in
    `scripts/fetch-images.sh` will make that visible immediately (retries,
-   partial-download resume via `-C -`) rather than as a silent hang.
+   partial-download resume via `-C -`) rather than as a silent hang. This
+   pass hit the same class of slow-CDN symptom again fetching the
+   `aarch64-unknown-linux-musl` rustup component (~50 KB/s, multiple
+   `rustup target add` invocations needed after transient corrupt-cache
+   retries) — not unique to Alpine's CDN specifically on this host/network.
