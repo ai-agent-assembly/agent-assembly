@@ -70,6 +70,10 @@
 - [Audit and assurance](security/audit-assurance.md)
 - [Execution isolation](security/execution-isolation.md)
 
+# Release QA
+
+- [Evidence contract and worker result schema](qa/evidence-and-worker-result-contract.md)
+
 # Architecture
 
 - [Architecture](architecture/README.md)
