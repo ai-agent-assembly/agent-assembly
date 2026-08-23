@@ -485,12 +485,28 @@ fn the_aasm_native_backend_id_is_selectable() {
 /// "unavailable on this host" vocabulary [`a_requested_boundary_with_no_available_backend_refuses_and_starts_nothing`]
 /// asserts for a backend with no available candidate — not the "names no
 /// backend this build has" refusal a genuinely unknown id gets. This backend
-/// is deterministically `Unavailable` (AAASM-5813: no host↔guest launch
-/// protocol, no entitled binary, see `aa-isolation-macos-vm`'s docs), so
-/// unlike the native backend's test above this one asserts the specific
-/// outcome rather than merely "did not refuse as unknown".
+/// is `Unavailable` on essentially every host (no host↔guest launch protocol
+/// artifacts exported, no entitled binary — see `aa-isolation-macos-vm`'s
+/// docs), so unlike the native backend's test above this one asserts the
+/// specific outcome rather than merely "did not refuse as unknown".
+///
+/// Skipped when `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` are exported
+/// (a real hardware-verification run, e.g. AAASM-5813's own): on such a
+/// host this backend genuinely is `Available` with measured capability
+/// rows, and this test's own premise — "always unavailable today" — no
+/// longer holds. Mirrors `aa_isolation_macos_vm`'s own
+/// `without_env_configuration_this_backend_is_unavailable` guard.
 #[test]
 fn the_aasm_macos_vm_backend_id_is_selectable_and_honestly_unavailable() {
+    for var in [
+        "AA_ISOLATION_MACOS_VM_HELPER",
+        "AA_ISOLATION_MACOS_VM_KERNEL",
+        "AA_ISOLATION_MACOS_VM_ROOTFS",
+    ] {
+        if std::env::var(var).is_ok() {
+            return;
+        }
+    }
     let scratch = Scratch::new("macos-vm-id");
     let artifact = policy(&scratch, "p.yaml", TOOL_RULE_ONLY);
     let target = scratch.target("must-not-exist");
