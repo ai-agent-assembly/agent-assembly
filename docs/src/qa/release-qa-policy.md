@@ -19,6 +19,61 @@ every patch spends context on unchanged low-risk surfaces before the paths that
 actually matter are exercised. This policy makes "how much is enough" a
 deterministic lookup instead of something the LLM reinvents every run.
 
+## Feature delta discovery
+
+> Governs [`scripts/qa/build-feature-delta.py`](../../../scripts/qa/build-feature-delta.py)
+> (AAASM-5843), which runs between manifest generation and risk mapping (see
+> [`/release-qa-gate`](../../../.claude/skills/release-qa-gate/SKILL.md)'s
+> run procedure). It answers a different question than risk mapping does:
+> risk mapping classifies *changed paths*; feature delta discovery answers
+> "what product capabilities actually completed in the baseline→candidate
+> window" — a file list is not a capability list.
+
+Neither Jira status nor git history is trustworthy alone for "what shipped
+this release": a ticket can be marked Done with its implementation PR still
+open, and a merged PR can reference a ticket whose branch never reached the
+candidate build. Feature delta discovery cross-checks both signals against
+each other and reports disagreement rather than guessing.
+
+### Eligibility rules
+
+A ticket is `RELEASE_ELIGIBLE` only when **all** of the following hold:
+
+1. The ticket's Jira status is Done (or the anti-circularity rule below
+   applies).
+2. At least one merged PR exists whose title matches the `[<ticket>]`
+   convention.
+3. That PR's merge commit is a real ancestor of candidate HEAD
+   (`git merge-base --is-ancestor`, not just "referenced somewhere").
+
+Any other outcome is `OUT_OF_CURRENT_RELEASE_QA_SCOPE`, with one of three
+specific reasons: `"ticket not Done"`, `"no merged PR found referencing this
+ticket"`, or `"merge commit not an ancestor of candidate HEAD"`.
+
+### Anti-circularity rule
+
+A ticket whose only remaining unchecked acceptance criterion or comment
+references this Epic's own QA-gate execution ("QA sign-off", "release QA
+gate", "QA-complete") must not be excluded for "not Done" on that basis
+alone — the eligibility check is about the *feature's own* implementation
+completion, not this Epic's gate having run yet. When a ticket's Jira status
+is not Done but its only unchecked item is gate-related **and** its
+implementation PR is merged with a merge commit that is a real ancestor of
+candidate HEAD, it is still classified `RELEASE_ELIGIBLE`, with the
+override recorded explicitly in the evidence. A ticket with any other
+genuinely unfinished item does not get this override.
+
+### Classification taxonomy
+
+| Classification | Meaning |
+|---|---|
+| `RELEASE_ELIGIBLE` | Done (or anti-circularity-overridden) + merged PR + merge commit is a real ancestor of candidate HEAD. |
+| `OUT_OF_CURRENT_RELEASE_QA_SCOPE` | One of the eligibility conditions failed; the specific reason is always recorded in the evidence, never a bare exclusion. |
+
+Output is a single git-ignored per-run artifact, `.qa/feature-delta.json`
+(same convention as the verification manifest), consumed by AAASM-5844's
+feature → QA-coverage reconciliation — it is not re-derived per QA worker.
+
 ## Risk tiers
 
 Every changed path/surface is classified LOW, MEDIUM or HIGH. The mapping from
