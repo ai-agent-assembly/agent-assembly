@@ -200,6 +200,18 @@ impl MacosVmBackend {
 /// Verify the helper binary's codesignature carries the virtualization
 /// entitlement, via `codesign -d --entitlements :-`.
 ///
+/// # What this does and does not prove
+///
+/// This only proves the entitlement is *present in the signature* — it does
+/// not prove AMFI actually *honors* it at VM-creation time (a mismatched
+/// provisioning profile, a revoked cert, or a wrong entitlement scope could
+/// all still pass this check and fail to boot a guest). `probe::measure`,
+/// called immediately after this in [`discover`](MacosVmBackend::discover),
+/// is the strictly stronger check: it boots a real guest, i.e. actually
+/// constructs a `VZVirtualMachine`. This function exists only to fail fast
+/// and legibly, before spending a boot, when the entitlement is missing
+/// outright.
+///
 /// # Why shelling out rather than parsing the Mach-O signature directly
 ///
 /// `codesign` is the same tool this workspace's own `aa-isolation-macos-vm-poc`
