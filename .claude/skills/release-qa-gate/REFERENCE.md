@@ -158,6 +158,13 @@ waivers, and the final verdict line.
 
 Commit it: `📝 (release): QA sign-off for v<version>`.
 
+After the sign-off is committed (and after any remediation loop the run
+triggered, per `qa/FINDING-VERIFICATION-PROTOCOL.md`), apply
+`qa/CLEANUP-PROTOCOL.md` (AAASM-5846) before reporting the campaign
+complete: per-merge worktree/process teardown, a real CI-waiting mechanism,
+and the final-completion bar (0 stale worktrees, 0 unnecessary background
+processes, 0 leftover listeners/servers, 0 leftover temp folders).
+
 ## Worked example
 
 A patch release touching only `aa-gateway/src/policy/mod.rs`:
