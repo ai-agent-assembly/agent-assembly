@@ -56,9 +56,26 @@ def matches(pattern: str, path: str) -> bool:
     return path.startswith(pattern) or pattern.startswith(path)
 
 
+def matches_exclude(pattern: str, path: str) -> bool:
+    # One-directional only: an exclude must never be widened by a truncated
+    # candidate path. matches()'s bidirectional check is correct for RULES
+    # (a truncated surface should conservatively activate every nested rule),
+    # but applying the same reverse check here let a broad real path like
+    # "docs/src" get excluded merely because a narrower, unrelated exclude
+    # pattern ("docs/src/generated/") happens to start with it — excluding a
+    # path that was never actually generated output. Found in review: this
+    # collapsed "docs/src" to zero verification scope, breaching the "cannot
+    # silently yield zero verification" requirement. Excludes only ever
+    # narrow FROM a real path INTO a known-generated subtree, never the
+    # reverse.
+    if "*" in pattern:
+        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, pattern.rstrip("/") + "/*")
+    return path.startswith(pattern)
+
+
 def map_path(path: str, rules_doc: dict) -> dict:
     for exclude in rules_doc.get("excludes", []):
-        if matches(exclude, path):
+        if matches_exclude(exclude, path):
             return {"path": path, "excluded": True, "risk": None, "lanes": [], "journeys": []}
 
     matched_rules = [r for r in rules_doc["rules"] if matches(r["pattern"], path)]

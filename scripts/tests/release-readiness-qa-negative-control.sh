@@ -23,8 +23,10 @@ TESTVERSION="0.0.1-aaasm5823-negctl"
 QA_SIGNOFF="docs/release/qa-signoff/v${TESTVERSION}.md"
 SEC_SIGNOFF="docs/release/security-signoff/v${TESTVERSION}.md"
 FAILED=0
+OUT_FILE="$(mktemp)"
+EXIT_FILE="$(mktemp)"
 
-cleanup() { rm -f "$QA_SIGNOFF" "$SEC_SIGNOFF"; }
+cleanup() { rm -f "$QA_SIGNOFF" "$SEC_SIGNOFF" "$OUT_FILE" "$EXIT_FILE"; }
 trap cleanup EXIT
 
 assert_line() {
@@ -38,38 +40,38 @@ assert_line() {
 }
 
 run_readiness() {
-  bash scripts/release-readiness.sh "$TESTVERSION" > /tmp/qa-negctl-out.$$ 2>&1
-  echo $? > /tmp/qa-negctl-exit.$$
+  bash scripts/release-readiness.sh "$TESTVERSION" > "$OUT_FILE" 2>&1
+  echo $? > "$EXIT_FILE"
 }
 
 echo "== State (a): QA sign-off absent =="
 rm -f "$QA_SIGNOFF" "$SEC_SIGNOFF"
 cp docs/release/security-signoff/TEMPLATE.md "$SEC_SIGNOFF"  # PASS template line as-is
 run_readiness
-assert_line /tmp/qa-negctl-out.$$ '✗ QA sign-off missing' "check 12 fails when $QA_SIGNOFF is absent"
+assert_line "$OUT_FILE" '✗ QA sign-off missing' "check 12 fails when $QA_SIGNOFF is absent"
 
 echo "== State (b): QA sign-off present, Verdict: BLOCK =="
 cp docs/release/qa-signoff/fixtures/block.md "$QA_SIGNOFF"
 run_readiness
-assert_line /tmp/qa-negctl-out.$$ '✗ QA sign-off verdict is not PASS' "check 12 fails on Verdict: BLOCK"
+assert_line "$OUT_FILE" '✗ QA sign-off verdict is not PASS' "check 12 fails on Verdict: BLOCK"
 
 echo "== State (b2): QA sign-off present, malformed verdict =="
 cp docs/release/qa-signoff/fixtures/malformed.md "$QA_SIGNOFF"
 run_readiness
-assert_line /tmp/qa-negctl-out.$$ '✗ QA sign-off verdict is not PASS' "check 12 fails on a malformed/ambiguous verdict line"
+assert_line "$OUT_FILE" '✗ QA sign-off verdict is not PASS' "check 12 fails on a malformed/ambiguous verdict line"
 
 echo "== State (c): QA sign-off present, exact Verdict: PASS =="
 cp docs/release/qa-signoff/fixtures/pass.md "$QA_SIGNOFF"
 run_readiness
-assert_line /tmp/qa-negctl-out.$$ '✓ QA sign-off present and Verdict: PASS' "check 12 passes on exact Verdict: PASS"
+assert_line "$OUT_FILE" '✓ QA sign-off present and Verdict: PASS' "check 12 passes on exact Verdict: PASS"
 
 echo "== State (d): QA PASS but security sign-off is Verdict: BLOCK — must still fail overall =="
 cp docs/release/qa-signoff/fixtures/pass.md "$QA_SIGNOFF"
 cp docs/release/qa-signoff/fixtures/block.md "$SEC_SIGNOFF"  # reuse the BLOCK fixture body; grep only cares about the Verdict line
 run_readiness
-assert_line /tmp/qa-negctl-out.$$ '✓ QA sign-off present and Verdict: PASS' "check 12 still passes independently"
-assert_line /tmp/qa-negctl-out.$$ '✗ Security-review sign-off verdict is not PASS' "check 11 fails independently on security Verdict: BLOCK"
-EXIT_D="$(cat /tmp/qa-negctl-exit.$$)"
+assert_line "$OUT_FILE" '✓ QA sign-off present and Verdict: PASS' "check 12 still passes independently"
+assert_line "$OUT_FILE" '✗ Security-review sign-off verdict is not PASS' "check 11 fails independently on security Verdict: BLOCK"
+EXIT_D="$(cat "$EXIT_FILE")"
 if [ "$EXIT_D" -ne 0 ]; then
   printf '  ✓ %s\n' "overall script exit is non-zero (QA PASS does not override a security BLOCK)"
 else
@@ -77,7 +79,6 @@ else
   FAILED=1
 fi
 
-rm -f /tmp/qa-negctl-out.$$ /tmp/qa-negctl-exit.$$
 echo
 if [ "$FAILED" -ne 0 ]; then
   echo "release-readiness-qa-negative-control: FAILED"

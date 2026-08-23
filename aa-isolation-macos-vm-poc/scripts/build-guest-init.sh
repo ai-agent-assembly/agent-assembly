@@ -60,6 +60,21 @@ mkdir -p "${STAGING_DIR}/dev" "${STAGING_DIR}/mnt/share" "${STAGING_DIR}/proc" "
 cp "${INIT_BIN}" "${STAGING_DIR}/init"
 chmod 0755 "${STAGING_DIR}/init"
 
+# The Debian generic arm64 kernel (see ../README.md "Debian generic kernel")
+# builds virtio_mmio/virtio_console/virtiofs/vsock as loadable modules, not
+# built-in — bundle them into the initramfs itself so guest-init's
+# finit_module() calls can find them with no modprobe/udev available.
+# scripts/fetch-debian-kernel.sh populates images/kernel-modules/.
+MODULES_DIR="${IMAGES_DIR}/kernel-modules"
+if [ -d "${MODULES_DIR}" ]; then
+  mkdir -p "${STAGING_DIR}/lib/modules"
+  cp "${MODULES_DIR}"/*.ko "${STAGING_DIR}/lib/modules/"
+  echo "bundled $(ls "${MODULES_DIR}"/*.ko | wc -l | tr -d ' ') kernel module(s) from ${MODULES_DIR}"
+else
+  echo "note: ${MODULES_DIR} not found — skipping kernel module bundling" \
+       "(guest-init's finit_module() calls will fail open; run scripts/fetch-debian-kernel.sh first)"
+fi
+
 mkdir -p "${IMAGES_DIR}"
 OUT="${IMAGES_DIR}/guest-initramfs.cpio"
 (
