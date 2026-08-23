@@ -112,6 +112,20 @@ impl VmSession {
     pub fn recv(&mut self) -> Result<Message, FrameError> {
         read_frame(&mut self.reader)
     }
+
+    /// Bound how long [`recv`](Self::recv) can block before giving up.
+    ///
+    /// Used by [`crate::probe::measure`], which runs inside
+    /// [`crate::MacosVmBackend::discover`] (including on the CLI's
+    /// `--dry-run` preview path) — a wedged guest must not be able to hang a
+    /// caller that has no way to know whether anything is running while it
+    /// waits. `None` restores the unbounded default a real launch's own
+    /// session still wants (its caller decides how long to wait via
+    /// [`aa_isolation::IsolationBackend::wait_for_exit`]'s own contract, not
+    /// this connection's read timeout).
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.reader.get_ref().set_read_timeout(timeout)
+    }
 }
 
 impl Drop for VmSession {
