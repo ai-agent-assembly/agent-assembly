@@ -50,6 +50,20 @@
 > only the journeys actually selected and run for this release, not the whole
 > catalog.
 
+## Feature → Coverage ledger
+
+One row per `.qa/feature-delta.json` entry (AAASM-5843) — every ticket the
+feature-delta step classified for this release window, cross-referenced
+against its reconciled QA coverage (AAASM-5844). `RELEASE_ELIGIBLE` features
+classified `NOT_COVERED`/`STALE_COVERAGE` must show a committed journey/Story
+reference here, not "pending" — see the reconciliation procedure
+(`.claude/skills/release-qa-gate/REFERENCE.md#feature--qa-coverage-reconciliation`)
+for the classification taxonomy.
+
+| Ticket | Capability / summary | Coverage classification | Journey / Story reference | Evidence |
+|---|---|---|---|---|
+| <AAASM-XXXX> | <one-line capability summary> | COVERED / PARTIALLY_COVERED / STALE_COVERAGE / NOT_COVERED / DUPLICATE_EXISTING_COVERAGE / OUT_OF_CURRENT_RELEASE_QA_SCOPE | <journey ID + Jira Story, or "n/a"> | <lane result / run reference backing the classification> |
+
 ## Lane results
 
 Six lanes, each: PASS / FAIL / PARTIAL / UNTESTED, one line of evidence

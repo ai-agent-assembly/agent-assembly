@@ -88,19 +88,26 @@ full adversarial pass + docs/examples/design audit.
 1. **Manifest** — run `scripts/qa/build-verification-manifest.sh` once.
    Discovers canonical default branch, HEAD, baseline (qa-signoff -> deep-
    sweep-epic -> released-tag -> unknown), delta, CI state.
-2. **Feature delta discovery** — run `scripts/qa/build-feature-delta.py`
-   once. Cross-checks Jira ticket status against merged PRs and candidate-
-   HEAD ancestry to classify every candidate ticket `RELEASE_ELIGIBLE` or
-   `OUT_OF_CURRENT_RELEASE_QA_SCOPE` — see
+2. **Feature delta discovery + coverage reconciliation** — run
+   `scripts/qa/build-feature-delta.py` once. Cross-checks Jira ticket status
+   against merged PRs and candidate-HEAD ancestry to classify every
+   candidate ticket `RELEASE_ELIGIBLE` or `OUT_OF_CURRENT_RELEASE_QA_SCOPE`
+   — see
    [Feature delta discovery](../../../docs/src/qa/release-qa-policy.md#feature-delta-discovery)
-   for the eligibility rules and anti-circularity rule.
+   for the eligibility rules and anti-circularity rule. Then run
+   `scripts/qa/check-feature-coverage.py` and apply the AAASM-5844
+   reconciliation procedure (
+   [detail](REFERENCE.md#feature--qa-coverage-reconciliation)) to classify
+   each `RELEASE_ELIGIBLE` feature's QA coverage and create durable
+   Story/journey coverage for anything `NOT_COVERED`/`STALE_COVERAGE`.
 3. **Risk mapping** — run `scripts/qa/map-risk.py --manifest
    .qa/verification-manifest.json`. Produces overall risk, required lanes,
    and the journey set (always including the full P0 set from
    `qa/golden-journeys.yaml`).
 4. **Depth/scope selection** — apply the release QA policy's tier rules to
-   the risk-mapper output to get the final journey/lane list for this run's
-   depth.
+   the risk-mapper output, **unioned with the reconciliation step's
+   feature-selected journeys**, to get the final journey/lane list for this
+   run's depth.
 5. **Bounded parallel verification** — launch up to 10 `qa-*` sub-agents (see
    `qa/ORCHESTRATION.md`), each scoped to a manifest/journey slice, each
    returning the AAASM-5828 compact result schema.
