@@ -127,6 +127,16 @@ coverage into an inferred PASS to make a run look clean.
 3. `gh`, `git`, `python3` (with `pyyaml`), `jq` available for the manifest/
    risk-mapper scripts.
 
+## Closing the campaign (mandatory)
+
+`qa/CLEANUP-PROTOCOL.md` (AAASM-5846) is a mandatory closing step of both
+this gate's own run and any remediation loop it triggers, per
+`qa/FINDING-VERIFICATION-PROTOCOL.md`: per-merge worktree/process teardown,
+a real CI-waiting mechanism (never a passive "monitoring" claim), and the
+campaign's final-completion bar (0 stale worktrees, 0 unnecessary background
+processes, 0 leftover listeners/servers, 0 leftover temp folders). Apply it
+before reporting the campaign complete, not only at the very end.
+
 ## What this skill does NOT do
 
 - It does not cut the tag (`/release-tag-cut`).
@@ -144,3 +154,5 @@ coverage into an inferred PASS to make a run look clean.
 - **Release relay** → [`release-tag-cut/SKILL.md`](../release-tag-cut/SKILL.md)
 - **Security gate (independent, composed alongside this one)** →
   [`release-security-gate/SKILL.md`](../release-security-gate/SKILL.md)
+- **Mandatory campaign closing step** →
+  [`../../../qa/CLEANUP-PROTOCOL.md`](../../../qa/CLEANUP-PROTOCOL.md)
