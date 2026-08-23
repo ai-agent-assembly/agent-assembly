@@ -6,11 +6,22 @@ glob = "*.rs"
 run = "cargo fmt --all -- --check"
 fail_text = "Formatting issues found. Run 'cargo fmt --all' to fix."
 
-[pre-commit.commands.clippy]
-glob = "*.rs"
-run = "cargo clippy --all-targets --all-features -- -D warnings"
-fail_text = "Clippy warnings found. Run 'cargo clippy --fix' or fix manually."
-
+# AAASM-5838: `cargo clippy --all-targets --all-features` used to run here on
+# every commit touching a `*.rs` file — a full-workspace invocation with no
+# per-crate scoping. On this repo's shared-`CARGO_TARGET_DIR` convention
+# (multiple worktrees/sessions sharing one build cache), that routinely
+# blocked a single-crate commit for 50+ minutes waiting on unrelated crates'
+# incremental compilation, or on the shared target-dir lock another session
+# already held — synchronously, in the commit path, with no way to bypass it
+# short of `--no-verify` (forbidden — see the repo root CLAUDE.md).
+#
+# CI's `clippy` job (`.github/workflows/ci.yml`) already runs the identical
+# `--workspace --all-targets --all-features --exclude aa-ebpf -- -D warnings`
+# invocation as a required check before merge — this hook only ever duplicated
+# that coverage, synchronously, on every commit rather than once per PR. Run
+# `scripts/clippy-changed-crates.sh` explicitly before opening a PR for a fast,
+# scoped local check (only the crates your diff actually touches); CI remains
+# the authoritative full-workspace gate.
 [pre-commit.commands.deny]
 # AAASM-5699: patterns match against the *whole path*, so a wildcard-free
 # `Cargo.toml` is an exact path match — it caught the workspace-root manifest and
@@ -68,6 +79,23 @@ parallel = true
 # path match: plain `Cargo.toml` catches the root manifest and misses all 35
 # crate manifests under `aa-*/`. Hence the leading `*` (which does cross `/`).
 #
+# AAASM-5838: `@{u}` does not resolve for a worktree branch before its first
+# `git push -u` — every ticket branch created via `git worktree add -b`, which
+# is this repo's normal workflow (see root CLAUDE.md's Git Worktree Workflow).
+# That used to fall straight to `git ls-files` (the whole tracked tree), so a
+# ticket branch's very first push ran the full-workspace doc build regardless
+# of how small the actual diff was — measured elsewhere at ~27 minutes on a
+# 2-file, non-Rust diff, purely because upstream tracking wasn't set yet.
+#
+# Before falling all the way to the whole tree, try the merge-base against
+# this repo's canonical remote-tracking branches — `remote/main` (the org
+# remote per CLAUDE.md's push-remote convention) and `origin/main` (a fork
+# checkout) — both of which resolve for a freshly-branched worktree with no
+# push history at all, since the branch was cut from one of them. This is the
+# same diff `@{u}` would compute after the first push in the common case
+# (branching from the current tip of the default branch), just resolvable
+# before that push happens.
+#
 # Known gaps — tracked, not hidden:
 #   - Pushing a ref that is not HEAD (`git push remote <branch>` from a checkout
 #     sitting elsewhere, or `git push --all`) computes an empty set and skips.
@@ -80,7 +108,13 @@ parallel = true
 #     covered. The residual is bounded: this hook sets no RUSTDOCFLAGS, so it
 #     only ever caught rustdoc *hard* errors — it passed at exit 0 while
 #     emitting 67 rustdoc warnings in aa-api.
-files = 'git diff --name-only --merge-base @{u} HEAD 2>/dev/null || git ls-files'
+#   - A worktree branch cut from something other than `remote/main` /
+#     `origin/main` tip (e.g. stacked on another feature branch, per the Git
+#     Worktree Workflow's dependency-stacking case) still falls to the full
+#     `git ls-files` tree until its first push sets `@{u}` — deliberately: a
+#     merge-base against the wrong branch would silently under-scope the
+#     check, which is worse than the slow-but-correct fallback it replaces.
+files = 'git diff --name-only --merge-base @{u} HEAD 2>/dev/null || git diff --name-only --merge-base remote/main HEAD 2>/dev/null || git diff --name-only --merge-base origin/main HEAD 2>/dev/null || git ls-files'
 glob = ["*.rs", "*Cargo.toml", "*Cargo.lock"]
 run = "cargo doc --workspace --no-deps"
 fail_text = "Documentation build failed. Fix rustdoc errors before pushing."

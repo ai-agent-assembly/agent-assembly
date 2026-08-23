@@ -84,7 +84,8 @@ authoritative *versus the untrusted SDK's own scan*, not the policy gate. The
 See `CONTRIBUTING.md` and the `Makefile` for the full list. Common commands:
 
 ```bash
-lefthook install                       # one-time: fmt/clippy/deny on commit, doc on push
+lefthook install                       # one-time: fmt/deny on commit, doc on push
+scripts/clippy-changed-crates.sh       # scoped clippy for your diff — run before opening a PR (AAASM-5838)
 cargo build --workspace
 cargo nextest run --workspace          # full suite
 cargo nextest run -p aa-core           # one crate
@@ -118,16 +119,24 @@ cargo doc --workspace --no-deps        # checked on push by hooks, Rust-affectin
   far ahead of a fork checkout.
 - **Pre-push `cargo doc` is filtered to Rust-affecting diffs** (AAASM-5695): the
   `pre-push.commands.doc` entry in `lefthook.toml` carries a `files` command
-  (`git diff --name-only --merge-base @{u} HEAD`) plus
-  `glob = ["*.rs", "*Cargo.toml", "*Cargo.lock"]`, so a Markdown/`.claude`-only push
-  skips the build in seconds instead of costing the 3046 s (50m46s) full-workspace
-  rustdoc build it used to. Two gaps are **tracked, not covered**: pushing a ref that
-  is not `HEAD` (`git push remote <branch>` from elsewhere, `git push --all`) computes
-  an empty file set and skips (**AAASM-5726**), and `.proto`-only or deletion-only
-  diffs skip here with **no workspace rustdoc gate anywhere in CI**. The measurements
-  behind both live in the `lefthook.toml` comment block — read it before changing that
-  command. **Never `--no-verify`; never force-push; don't route commits around the
-  hook by other means either.**
+  (`git diff --name-only --merge-base @{u} HEAD`, falling back through
+  `remote/main` then `origin/main` merge-bases before the full tree — AAASM-5838,
+  so a worktree branch's first push before `@{u}` resolves still scopes correctly)
+  plus `glob = ["*.rs", "*Cargo.toml", "*Cargo.lock"]`, so a Markdown/`.claude`-only
+  push skips the build in seconds instead of costing the 3046 s (50m46s)
+  full-workspace rustdoc build it used to. Two gaps are **tracked, not covered**:
+  pushing a ref that is not `HEAD` (`git push remote <branch>` from elsewhere,
+  `git push --all`) computes an empty file set and skips (**AAASM-5726**), and
+  `.proto`-only or deletion-only diffs skip here with **no workspace rustdoc gate
+  anywhere in CI**. The measurements behind both live in the `lefthook.toml`
+  comment block — read it before changing that command. **Never `--no-verify`;
+  never force-push; don't route commits around the hook by other means either.**
+- **Pre-commit no longer runs a full-workspace `cargo clippy`** (AAASM-5838 —
+  it routinely blocked a single-crate commit 50+ minutes on this repo's
+  shared-`CARGO_TARGET_DIR` convention, duplicating CI's own required `clippy`
+  job synchronously on every commit). Run `scripts/clippy-changed-crates.sh`
+  explicitly before opening a PR for a fast, scoped local check; CI remains
+  the authoritative full-workspace gate.
 - **Org GitHub Actions is billing-blocked** on private repos and intermittently
   org-wide — jobs abort in ~2–11s with a payments message. Check run **annotations**
   before triaging as a code bug; **validate locally** instead of waiting on CI.
