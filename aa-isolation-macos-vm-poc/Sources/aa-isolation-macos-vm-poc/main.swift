@@ -16,7 +16,8 @@ import Virtualization
 
 struct Args {
     var kernelPath: String
-    var initrdPath: String
+    var initrdPath: String?
+    var diskPath: String?
     var cmdLine: String
     var memoryMiB: UInt64
     var cpuCount: Int
@@ -31,7 +32,8 @@ struct Args {
 
 func parseArgs() -> Args {
     var kernelPath = "images/vmlinuz-virt"
-    var initrdPath = "images/initramfs-virt"
+    var initrdPath: String? = "images/initramfs-virt"
+    var diskPath: String? = nil
     var cmdLine = "console=hvc0"
     var memoryMiB: UInt64 = 768
     var cpuCount = 2
@@ -50,6 +52,10 @@ func parseArgs() -> Args {
             kernelPath = args.next() ?? kernelPath
         case "--initrd":
             initrdPath = args.next() ?? initrdPath
+        case "--no-initrd":
+            initrdPath = nil
+        case "--disk":
+            diskPath = args.next()
         case "--cmdline":
             cmdLine = args.next() ?? cmdLine
         case "--memory-mib":
@@ -78,6 +84,7 @@ func parseArgs() -> Args {
     return Args(
         kernelPath: kernelPath,
         initrdPath: initrdPath,
+        diskPath: diskPath,
         cmdLine: cmdLine,
         memoryMiB: memoryMiB,
         cpuCount: cpuCount,
@@ -126,21 +133,49 @@ consolePipe.fileHandleForReading.readabilityHandler = { handle in
 guard FileManager.default.fileExists(atPath: args.kernelPath) else {
     fail("kernel not found at \(args.kernelPath) — run scripts/fetch-images.sh first")
 }
-guard FileManager.default.fileExists(atPath: args.initrdPath) else {
-    fail("initrd not found at \(args.initrdPath) — run scripts/fetch-images.sh first")
+if let initrdPath = args.initrdPath {
+    guard FileManager.default.fileExists(atPath: initrdPath) else {
+        fail("initrd not found at \(initrdPath) — run scripts/fetch-images.sh first")
+    }
+}
+if let diskPath = args.diskPath {
+    guard FileManager.default.fileExists(atPath: diskPath) else {
+        fail("disk image not found at \(diskPath)")
+    }
 }
 
 let kernelURL = URL(fileURLWithPath: args.kernelPath)
-let initrdURL = URL(fileURLWithPath: args.initrdPath)
 
 let bootLoader = VZLinuxBootLoader(kernelURL: kernelURL)
-bootLoader.initialRamdiskURL = initrdURL
+if let initrdPath = args.initrdPath {
+    bootLoader.initialRamdiskURL = URL(fileURLWithPath: initrdPath)
+}
 bootLoader.commandLine = args.cmdLine
 
 let config = VZVirtualMachineConfiguration()
 config.bootLoader = bootLoader
 config.cpuCount = args.cpuCount
 config.memorySize = args.memoryMiB * 1024 * 1024
+
+// MARK: - virtio-block root disk
+//
+// The substitute LinuxKit kernel used for this PoC has CONFIG_BLK_DEV_INITRD
+// unset (confirmed by extracting its embedded IKCONFIG — see README.md
+// "Debian generic kernel" / "virtio-block root disk") — it never unpacks a
+// bootloader-supplied cpio initrd, matching pass 2's empirical finding. It
+// does have CONFIG_VIRTIO_BLK=y and CONFIG_EXT4_FS=y built in, so a
+// virtio-block root disk sidesteps the initramfs question entirely.
+if let diskPath = args.diskPath {
+    let diskURL = URL(fileURLWithPath: diskPath)
+    do {
+        let attachment = try VZDiskImageStorageDeviceAttachment(url: diskURL, readOnly: false)
+        let blockConfig = VZVirtioBlockDeviceConfiguration(attachment: attachment)
+        config.storageDevices = [blockConfig]
+        log("disk:    \(diskPath) attached as virtio-blk (rw)")
+    } catch {
+        fail("could not attach disk \(diskPath): \(error)")
+    }
+}
 
 let serialConfig = VZVirtioConsoleDeviceSerialPortConfiguration()
 let serialAttachment = VZFileHandleSerialPortAttachment(
@@ -173,6 +208,28 @@ if args.enableVirtiofs {
         try? markerContents.write(
             to: scratch.appendingPathComponent("marker.txt"), atomically: true, encoding: .utf8)
         log("virtiofs: created scratch share dir \(scratch.path) with marker.txt = \(markerContents.trimmingCharacters(in: .whitespacesAndNewlines))")
+
+        // AAASM-5812 AC "a path outside [the share] is verified unreachable
+        // from the guest, structurally absent, not merely policy-denied":
+        // a sibling file, one level *above* the exported directory, at a
+        // FIXED name the guest checks for *inside* its mount
+        // (`/mnt/share/outside-marker.txt`) — not via a `..` traversal.
+        // `..` at a virtiofs mount root re-enters the guest's own rootfs,
+        // never reaches the host at all, and would report ENOENT
+        // unconditionally regardless of how the export is scoped — that
+        // probe cannot fail and is not evidence (caught in review after
+        // pass 5 first shipped it, see README "AC closure" for the
+        // correction). This version has a real failure mode instead: if the
+        // export were ever misconfigured to include `scratch`'s *parent*
+        // rather than `scratch` itself, this file would actually appear at
+        // that exact in-mount path, and the guest's open() would succeed.
+        let outsideMarkerName = "outside-marker.txt"
+        let outsideMarkerContents = "outside-marker-\(UUID().uuidString)\n"
+        let outsideMarkerURL = scratch.deletingLastPathComponent()
+            .appendingPathComponent(outsideMarkerName)
+        try? outsideMarkerContents.write(to: outsideMarkerURL, atomically: true, encoding: .utf8)
+        log("virtiofs: created OUTSIDE-share negative-control file \(outsideMarkerURL.path) (must stay unreachable from the guest at /mnt/share/\(outsideMarkerName))")
+
         dirPath = scratch.path
     }
     shareDirURL = URL(fileURLWithPath: dirPath, isDirectory: true)
@@ -207,7 +264,7 @@ do {
 }
 
 log("kernel:  \(args.kernelPath)")
-log("initrd:  \(args.initrdPath)")
+log("initrd:  \(args.initrdPath ?? "none")")
 log("cmdline: \(args.cmdLine)")
 log("memory:  \(args.memoryMiB) MiB, cpus: \(args.cpuCount)")
 log("starting VM, will run for up to \(args.timeoutSeconds)s ...")
@@ -233,6 +290,12 @@ final class VsockListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
     var connectionAccepted = false
     var roundTripSucceeded = false
     private var activeHandle: FileHandle?
+    // VZVirtioSocketConnection owns the fd `activeHandle` wraps — without
+    // keeping the connection itself alive here, it was observed to be
+    // deallocated (closing the fd out from under the FileHandle) before the
+    // readabilityHandler ran, crashing with NSFileHandleOperationException
+    // "Bad file descriptor" on `fh.availableData`.
+    private var activeConnection: VZVirtioSocketConnection?
 
     func listener(
         _ listener: VZVirtioSocketListener,
@@ -241,6 +304,7 @@ final class VsockListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
     ) -> Bool {
         connectionAccepted = true
         log("vsock: incoming connection accepted, guest sourcePort=\(connection.sourcePort)")
+        activeConnection = connection
         let handle = FileHandle(fileDescriptor: connection.fileDescriptor, closeOnDealloc: false)
         activeHandle = handle
         handle.readabilityHandler = { [weak self] fh in

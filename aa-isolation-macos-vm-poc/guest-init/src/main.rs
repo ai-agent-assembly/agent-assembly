@@ -83,6 +83,42 @@ fn errno() -> i32 {
     unsafe { *libc::__errno_location() }
 }
 
+/// Load a kernel module via `finit_module(2)` from a `.ko` file packed into
+/// the initramfs itself. This substitute Debian generic kernel builds
+/// virtio_mmio/virtio_console/virtiofs/vsock as loadable modules rather than
+/// built-in (`=m`, not `=y` — see ../README.md "Debian generic kernel"),
+/// so unlike the LinuxKit substitute used in the prior pass, this kernel
+/// reaches userspace with *no* working console or virtio transport at all
+/// until these are inserted — unusual for a minimal-init environment with no
+/// modprobe/udev, hence loading them by hand here in a fixed dependency
+/// order (mmio before console; fuse before virtiofs; vsock before its
+/// virtio transport) instead of relying on module auto-loading.
+fn load_module(console: RawFd, path: &str) -> bool {
+    let c_path = CString::new(path).unwrap();
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+    if fd < 0 {
+        write_fd(
+            console,
+            &format!("[guest-init] modprobe: open {path} FAILED errno={}\n", errno()),
+        );
+        return false;
+    }
+    let params = CString::new("").unwrap();
+    let rc = unsafe { libc::syscall(libc::SYS_finit_module, fd, params.as_ptr(), 0) };
+    unsafe {
+        libc::close(fd);
+    }
+    if rc != 0 {
+        write_fd(
+            console,
+            &format!("[guest-init] modprobe: finit_module {path} FAILED errno={}\n", errno()),
+        );
+        return false;
+    }
+    write_fd(console, &format!("[guest-init] modprobe: {path} OK\n"));
+    true
+}
+
 fn try_virtiofs(console: RawFd, tag: &str, mountpoint: &str) {
     mkdir_p(mountpoint);
     let rc = mount(tag, mountpoint, "virtiofs");
@@ -129,6 +165,50 @@ fn try_virtiofs(console: RawFd, tag: &str, mountpoint: &str) {
         &format!("[guest-init] virtiofs marker CONTENT: {}\n", content.trim_end()),
     );
     write_fd(console, "[guest-init] VIRTIOFS-OK\n");
+}
+
+/// AAASM-5812 AC "a path outside [the share] is verified unreachable from
+/// the guest… structurally absent, not merely policy-denied": attempt to
+/// open a *fixed*-name marker file *inside* the virtiofs mount that the
+/// host placed one level *above* the exported directory (see
+/// `main.swift`'s "OUTSIDE-share negative-control file"), not a `..`
+/// traversal off the mountpoint — `..` at a virtiofs mount root re-enters
+/// the guest's own rootfs and never reaches the host at all, so it would
+/// report ENOENT unconditionally regardless of how the export is scoped;
+/// that version shipped in this pass's first cut and was caught in review
+/// as a probe that cannot fail (see README "AC closure" for the
+/// correction). This version has a real failure mode: if the export were
+/// ever misconfigured to include the shared directory's parent rather than
+/// the directory itself, this exact in-mount path would resolve and
+/// open() would succeed.
+fn try_virtiofs_negative_control(console: RawFd, mountpoint: &str) {
+    let probe_path = format!("{mountpoint}/outside-marker.txt");
+    let c_path = CString::new(probe_path.clone()).unwrap();
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+    if fd >= 0 {
+        // This is the actual security failure this control exists to
+        // catch: a file that only exists one level above the intended
+        // export root is visible inside the mount.
+        unsafe {
+            libc::close(fd);
+        }
+        write_fd(
+            console,
+            &format!("[guest-init] VIRTIOFS-NEGATIVE-CONTROL-FAILED: {probe_path} opened successfully\n"),
+        );
+        return;
+    }
+    let err = errno();
+    write_fd(
+        console,
+        &format!(
+            "[guest-init] virtiofs negative control: open({probe_path}) FAILED errno={err} ({})\n",
+            if err == libc::ENOENT { "ENOENT" } else { "not ENOENT" }
+        ),
+    );
+    if err == libc::ENOENT {
+        write_fd(console, "[guest-init] VIRTIOFS-NEGATIVE-CONTROL-OK\n");
+    }
 }
 
 fn try_vsock(console: RawFd) {
@@ -201,17 +281,185 @@ fn try_vsock(console: RawFd) {
     }
 }
 
+/// Run `program` as a child of this PID 1, with `argv` as its own argument
+/// vector (everything after `program`'s own path). `fork`+`exec` rather than
+/// replacing this process: PID 1 must never exit, and `aa-isolation-launch`
+/// itself may `execve` all the way into the confined program on success, so
+/// only a child of PID 1 can safely run either.
+///
+/// The child's stdout/stderr are duped onto `console` before `execv`, so
+/// whatever `program` prints — a launcher refusal line
+/// (`FAILURE_MARKER`, written to stderr) or a confined program's own
+/// output — reaches the same captured console log this PoC already uses for
+/// VIRTIOFS-OK/VSOCK-OK.
+fn run_child(console: RawFd, label: &str, program: &str, argv: &[&str]) {
+    write_fd(console, &format!("[guest-init] === {label} ===\n"));
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        write_fd(console, &format!("[guest-init] fork() FAILED errno={}\n", errno()));
+        return;
+    }
+    if pid == 0 {
+        // Child.
+        unsafe {
+            libc::dup2(console, 1);
+            libc::dup2(console, 2);
+        }
+        let path = CString::new(program).unwrap();
+        let argv_c: Vec<CString> = std::iter::once(path.clone())
+            .chain(argv.iter().map(|a| CString::new(*a).unwrap()))
+            .collect();
+        let mut argv_ptrs: Vec<*const libc::c_char> = argv_c.iter().map(|c| c.as_ptr()).collect();
+        argv_ptrs.push(std::ptr::null());
+        unsafe {
+            libc::execv(path.as_ptr(), argv_ptrs.as_ptr());
+        }
+        // Only reached if execv itself failed (e.g. binary missing).
+        write_fd(
+            console,
+            &format!("[guest-init] {program} execv() FAILED errno={}\n", errno()),
+        );
+        unsafe {
+            libc::_exit(127);
+        }
+    }
+
+    // Parent: wait for the child (`program`, or whatever it exec'd into) to
+    // finish, then report how it ended.
+    let mut status: i32 = 0;
+    unsafe {
+        libc::waitpid(pid, &mut status, 0);
+    }
+    if libc::WIFEXITED(status) {
+        write_fd(
+            console,
+            &format!(
+                "[guest-init] test '{label}' exited status={}\n",
+                libc::WEXITSTATUS(status)
+            ),
+        );
+    } else if libc::WIFSIGNALED(status) {
+        write_fd(
+            console,
+            &format!(
+                "[guest-init] test '{label}' killed by signal={}\n",
+                libc::WTERMSIG(status)
+            ),
+        );
+    } else {
+        write_fd(
+            console,
+            &format!("[guest-init] test '{label}' ended with raw status={status}\n"),
+        );
+    }
+}
+
 fn main() {
     // devtmpfs gives us /dev/hvc0 and /dev/console without needing to know
-    // their major/minor numbers ourselves.
+    // their major/minor numbers ourselves. devtmpfs reacts to devices
+    // registered *after* this mount too, so nodes for modules inserted below
+    // (hvc0 from virtio_console, etc.) still appear via this same mount.
     mkdir_p("/dev");
     let _ = mount("devtmpfs", "/dev", "devtmpfs");
 
+    // No console exists at all until virtio_mmio (transport) and
+    // virtio_console (the actual /dev/hvc0 driver) are loaded — write_fd
+    // silently drops output while console is still -1.
+    let no_console: RawFd = -1;
+    load_module(no_console, "/lib/modules/virtio_mmio.ko");
+    load_module(no_console, "/lib/modules/virtio_console.ko");
+
     let console = open_console();
     write_fd(console, "[guest-init] GUEST-INIT-START pid1 up, devtmpfs mounted\n");
+    write_fd(
+        console,
+        "[guest-init] modprobe: virtio_mmio + virtio_console loaded pre-console\n",
+    );
+
+    load_module(console, "/lib/modules/fuse.ko");
+    load_module(console, "/lib/modules/virtiofs.ko");
+    load_module(console, "/lib/modules/vsock.ko");
+    load_module(console, "/lib/modules/vmw_vsock_virtio_transport_common.ko");
+    load_module(console, "/lib/modules/vmw_vsock_virtio_transport.ko");
 
     try_virtiofs(console, "aa-share", "/mnt/share");
+    try_virtiofs_negative_control(console, "/mnt/share");
     try_vsock(console);
+
+    // AAASM-5812 AC "the primary security boundary at this layer" — the
+    // authoritative enumeration of what is actually mounted, so the claim
+    // above ("exactly one virtiofs share") is asserted over the guest's own
+    // mount table, not inferred only from one open() attempt succeeding or
+    // failing. Requires /proc, which nothing before this point has needed.
+    mkdir_p("/proc");
+    let _ = mount("proc", "/proc", "proc");
+    run_child(
+        console,
+        "proc-mounts (virtiofs scope evidence)",
+        "/usr/local/bin/busybox",
+        &["cat", "/proc/mounts"],
+    );
+
+    // AAASM-5812 "aa-isolation-launch cross-compile" pass.
+    //
+    // Positive control, run first: exec busybox *directly*, with no
+    // aa-isolation-launch involved at all. Every one of the three
+    // aa-isolation-launch scenarios below refuses before ever calling
+    // execve on busybox (see the Landlock finding in ../README.md), so
+    // without this control run, nothing in this guest ever actually proves
+    // busybox is present, executable, the right architecture, that
+    // static-pie loads on this kernel, or that /etc/testfile has the
+    // expected content — the three refusal scenarios would look byte-
+    // identical whether or not any of that were true. Expected:
+    // 'exited status=0' and the testfile's own marker line echoed back.
+    run_child(
+        console,
+        "busybox-direct (positive control)",
+        "/usr/local/bin/busybox",
+        &["cat", "/etc/testfile"],
+    );
+
+    // Now the real, unmodified aa-isolation-launch binary, against three
+    // scenarios, to characterize what it can actually enforce on this
+    // particular substitute guest kernel — see ../README.md
+    // "aa-isolation-launch cross-compile" for what each one is expected to
+    // show and why.
+    run_child(
+        console,
+        "aa-isolation-launch test: no-grants",
+        "/usr/local/bin/aa-isolation-launch",
+        &["--", "/usr/local/bin/busybox", "true"],
+    );
+    run_child(
+        console,
+        "aa-isolation-launch test: fs-read+fs-write",
+        "/usr/local/bin/aa-isolation-launch",
+        &[
+            "--fs-read=/etc",
+            "--fs-write=/tmp",
+            "--",
+            "/usr/local/bin/busybox",
+            "cat",
+            "/etc/testfile",
+        ],
+    );
+    run_child(
+        console,
+        "aa-isolation-launch test: syscall-filter",
+        "/usr/local/bin/aa-isolation-launch",
+        &[
+            "--syscall-filter",
+            "--syscall-allow=read",
+            "--syscall-allow=write",
+            "--syscall-allow=close",
+            "--syscall-allow=exit",
+            "--syscall-allow=exit_group",
+            "--",
+            "/usr/local/bin/busybox",
+            "true",
+        ],
+    );
 
     write_fd(console, "[guest-init] GUEST-INIT-DONE, parking\n");
 
