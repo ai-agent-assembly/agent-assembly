@@ -45,7 +45,12 @@ pub const MCP_TOOL_SOURCE: &str = "mcp";
 /// agent-agnostic at Layer 2 — the gateway evaluates the ToolCallContext
 /// directly. Used because `CheckActionRequest.agent_id` is a required
 /// field on the proto.
-const PROXY_AGENT_ID: &str = "aa-proxy";
+///
+/// `pub(crate)` so [`crate::network_enforce`] (AAASM-5851) can reuse the same
+/// synthetic identity for network-egress `CheckAction` requests, keeping one
+/// definition of "who the proxy claims to be when it has no real agent
+/// identity" rather than a second, possibly-diverging constant.
+pub(crate) const PROXY_AGENT_ID: &str = "aa-proxy";
 
 /// Top-level decision the proxy data path branches on after a gateway
 /// `CheckAction` response. Maps the proto `Decision` enum onto the
