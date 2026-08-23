@@ -431,12 +431,24 @@ fn main() {
         "/usr/local/bin/aa-isolation-launch",
         &["--", "/usr/local/bin/busybox", "true"],
     );
+    // AAASM-5813 prerequisite: on the first Landlock-capable kernel this PoC
+    // has had (see ../README.md), this scenario surfaced a real gap in its
+    // own test design — `--fs-read=/etc` grants Landlock's read-rights set
+    // (which includes Execute, see `landlock::Access::from_read`) on /etc,
+    // but the busybox binary being exec'd lives at /usr/local/bin, never
+    // covered by any grant in the original three scenarios. Every one of
+    // them denied exec outright, including this one, until this fix added
+    // an explicit grant for busybox's own path — without it, this scenario
+    // could never have demonstrated a successful confined execution on any
+    // kernel, real or substitute; nothing here was truly validated end to
+    // end before now.
     run_child(
         console,
         "aa-isolation-launch test: fs-read+fs-write",
         "/usr/local/bin/aa-isolation-launch",
         &[
             "--fs-read=/etc",
+            "--fs-read=/usr/local/bin",
             "--fs-write=/tmp",
             "--",
             "/usr/local/bin/busybox",
@@ -458,6 +470,32 @@ fn main() {
             "--",
             "/usr/local/bin/busybox",
             "true",
+        ],
+    );
+
+    // AAASM-5813 prerequisite: on a Landlock-capable guest kernel, the three
+    // scenarios above stop refusing pre-flight (see ../README.md) — this
+    // fourth scenario is the one that actually exercises enforcement, not
+    // just installation. Same fs-read=/etc,fs-write=/tmp grant as scenario
+    // 2, but the target is /root/outside-grant.txt — outside both granted
+    // paths. If Landlock is doing its job, aa-isolation-launch installs the
+    // ruleset and execs busybox successfully (no refusal marker), and
+    // busybox itself gets a real EACCES trying to open the file — a
+    // genuinely different, enforcement-level failure signature than the
+    // "kernel cannot handle" refusals above, and the negative half of the
+    // AC this pass exists to close (fs-read+fs-write is the positive half).
+    run_child(
+        console,
+        "aa-isolation-launch test: fs-read+fs-write, target OUTSIDE grant",
+        "/usr/local/bin/aa-isolation-launch",
+        &[
+            "--fs-read=/etc",
+            "--fs-read=/usr/local/bin",
+            "--fs-write=/tmp",
+            "--",
+            "/usr/local/bin/busybox",
+            "cat",
+            "/root/outside-grant.txt",
         ],
     );
 
