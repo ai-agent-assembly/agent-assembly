@@ -56,6 +56,18 @@ def validate(path: str) -> list[str]:
         if not isinstance(entry["jira"], str) or not entry["jira"].startswith("AAASM-"):
             problems.append(f"{jid}: 'jira' must reference an AAASM-* ticket, got '{jira}'")
 
+        # feature_refs (AAASM-5844) is optional — absent on any pre-existing
+        # entry — but when present must be a non-empty list of AAASM-* keys,
+        # same convention as 'jira'.
+        if "feature_refs" in entry:
+            refs = entry["feature_refs"]
+            if not isinstance(refs, list) or not refs:
+                problems.append(f"{jid}: 'feature_refs' must be a non-empty list when present")
+            else:
+                for ref in refs:
+                    if not isinstance(ref, str) or not ref.startswith("AAASM-"):
+                        problems.append(f"{jid}: 'feature_refs' entry must reference an AAASM-* ticket, got '{ref}'")
+
     for jid, count in seen_ids.items():
         if count > 1:
             problems.append(f"duplicate journey id: {jid} appears {count} times")

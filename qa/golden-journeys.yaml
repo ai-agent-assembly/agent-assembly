@@ -2,6 +2,14 @@ catalog_version: '1'
 source: AAASM-4522 (durable human-readable journey inventory) — this file is a selection index, not a
   replacement
 policy: docs/src/qa/release-qa-policy.md
+# feature_refs (optional, per journey; AAASM-5844): the implementation ticket(s)
+# this journey provides release-QA coverage for — distinct from each entry's own
+# `jira:` field, which points to the journey's own AAASM-4522 Story, not an
+# implementation ticket. Omit entirely on journeys with no known feature-delta
+# coverage yet (backward-compatible — every pre-existing entry omits it and stays
+# valid). Populated/maintained by the feature -> QA-coverage reconciliation
+# procedure (.claude/skills/release-qa-gate/REFERENCE.md#feature--qa-coverage-reconciliation)
+# and mechanically checked by scripts/qa/check-feature-coverage.py.
 journeys:
 - id: J01
   jira: AAASM-4523
@@ -53,6 +61,8 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4542 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-3952
 - id: J05
   jira: AAASM-4543
   name: Install the Python SDK and confirm the native core is present
@@ -296,6 +306,8 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4538 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-5715
 - id: J23
   jira: AAASM-4546
   name: Verify the lifecycle / config / admin CLI command matrix (start/stop / proxy / sandbox / config
