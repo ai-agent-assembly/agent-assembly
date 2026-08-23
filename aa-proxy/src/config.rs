@@ -94,7 +94,7 @@ pub struct ProxyConfig {
     /// is `None` (explicit standalone/local mode — this list is intentionally
     /// the local source of truth). When a gateway endpoint is configured, the
     /// egress-allowlist question is answered by the gateway's own
-    /// `policy.network` stage instead (`network_enforce::gateway_egress_decision`),
+    /// `policy.network` stage instead (`network_enforce::evaluate_network_call`),
     /// so this local list is not consulted and cannot silently diverge from
     /// the gateway's policy — see ADR 0033 §2.
     ///
