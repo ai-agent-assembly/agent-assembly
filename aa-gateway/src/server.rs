@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Server;
 
+use crate::alerts::SecretAlert;
 use crate::anomaly::{AnomalyConfig, AnomalyDetector, AnomalyEvent};
 use crate::audit::AuditWriter;
 use crate::edges::InMemoryEdgeRepo;
@@ -434,6 +435,42 @@ fn setup_anomaly() -> (
     (detector, event_tx, event_rx)
 }
 
+/// Construct the live secret-detection alert channel for the gateway serve
+/// path and attach a real consumer (AAASM-5848).
+///
+/// `PolicyServiceImpl::with_secret_alert_tx` (AAASM-1545) existed and was
+/// unit-tested, but no production `serve_tcp`/`serve_uds` call site ever
+/// called it — the shipped gateway ran `credential_action: alert_only` with
+/// the documented "forward unredacted, alert instead" contract silently
+/// broken: the raw secret was forwarded and no alert was ever recorded,
+/// indefinitely. This builds the broadcast channel `with_secret_alert_tx`
+/// needs and spawns a task that logs each [`SecretAlert`] at `WARN`, so
+/// `alert_only` mode has a real, observable (log-aggregation-greppable)
+/// side effect instead of none. A structured cross-process bridge to
+/// `aa-api`'s own `EventBroadcast` (so alerts surface on the dashboard) is
+/// a separate, larger design question — this only makes the alert real,
+/// it does not attempt to route it everywhere `SecretAlert` could
+/// eventually be consumed.
+///
+/// The returned [`broadcast::Sender`] is what the caller passes to
+/// [`crate::service::policy_service::PolicyServiceImpl::with_secret_alert_tx`].
+fn setup_secret_alerts() -> broadcast::Sender<SecretAlert> {
+    let (alert_tx, mut alert_rx) = broadcast::channel::<SecretAlert>(256);
+    tokio::spawn(async move {
+        while let Ok(alert) = alert_rx.recv().await {
+            tracing::warn!(
+                agent_id = ?alert.agent_id,
+                team_id = alert.team_id.as_deref().unwrap_or(""),
+                primary_kind = %alert.primary_kind().as_str(),
+                finding_count = alert.finding_count,
+                "credential_action=alert_only: sensitive-data finding detected (AAASM-1545/5848)"
+            );
+        }
+    });
+    tracing::info!("secret-detection alerting enabled on the gateway serve path");
+    alert_tx
+}
+
 /// Build the in-process op-control broadcast for the gRPC `op_control_stream`,
 /// and — when cross-process delivery is configured — spawn the NATS bridge that
 /// feeds it (AAASM-3883).
@@ -771,6 +808,11 @@ pub async fn serve_tcp(
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
 
+    // AAASM-1545/5848: enable live secret-detection alerting on the shipped
+    // serve path — see `setup_secret_alerts` for why this was previously a
+    // silent no-op.
+    let secret_alert_tx = setup_secret_alerts();
+
     // AAASM-3883: attach the op-control broadcast so `op_control_stream` is live,
     // and (when AA_OPCONTROL_NATS_URL is set) bridge cross-process halts into it.
     let op_control_publisher = setup_op_control();
@@ -787,6 +829,7 @@ pub async fn serve_tcp(
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone())
     .with_anomaly_detection(anomaly_detector, anomaly_tx)
+    .with_secret_alert_tx(secret_alert_tx)
     .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
@@ -965,6 +1008,11 @@ pub async fn serve_uds(
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
 
+    // AAASM-1545/5848: enable live secret-detection alerting on the shipped
+    // serve path — see `setup_secret_alerts` for why this was previously a
+    // silent no-op.
+    let secret_alert_tx = setup_secret_alerts();
+
     // AAASM-3883: attach the op-control broadcast so `op_control_stream` is live,
     // and (when AA_OPCONTROL_NATS_URL is set) bridge cross-process halts into it.
     let op_control_publisher = setup_op_control();
@@ -981,6 +1029,7 @@ pub async fn serve_uds(
     .with_initial_seq(initial_seq)
     .with_db_scheduler(db_scheduler.clone())
     .with_anomaly_detection(anomaly_detector, anomaly_tx)
+    .with_secret_alert_tx(secret_alert_tx)
     .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
         .with_initial_seq(initial_seq);
