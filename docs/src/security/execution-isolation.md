@@ -177,28 +177,44 @@ glossing over it (tracked as a known, non-blocking residual gap,
 
 ## Platform and backend support matrix
 
-**Two execution-isolation backends ship today, and both are Linux-only.**
-Sandlock (`sandlock`) was the first; AASM-native (`aasm-native`,
+**Three execution-isolation backends ship today.** Sandlock (`sandlock`) was
+the first, on Linux; AASM-native (`aasm-native`,
 [AAASM-5801](https://lightning-dust-mite.atlassian.net/browse/AAASM-5801)–[5804](https://lightning-dust-mite.atlassian.net/browse/AAASM-5804))
-is a second, AASM-owned implementor of the same `IsolationBackend` contract,
-composed from Landlock (filesystem) and seccomp-bpf (syscalls). Neither
+is a second, AASM-owned implementor of the same `IsolationBackend` contract on
+Linux, composed from Landlock (filesystem) and seccomp-bpf (syscalls); neither
 replaces the other — see [Choosing between the two backends](#choosing-between-the-two-backends)
 for which one `--isolation auto` selects and why, and
 [Compatibility with Sandlock](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md#compatibility-with-sandlock)
-in Core ADR 035 for the underlying record.
+in Core ADR 035 for the underlying record. The third, `aasm-macos-vm`
+(Epic [AAASM-5811](https://lightning-dust-mite.atlassian.net/browse/AAASM-5811)),
+targets macOS by booting a confined Linux guest via Virtualization.framework
+rather than confining the host process directly — a different platform
+boundary from the other two, not a competing implementation of the same one;
+it has no default-selection relationship with them (see [macOS VM runtime
+prerequisites](#macos-vm-runtime-prerequisites) below).
 
 | Platform | Process-level execution isolation | Notes |
 |---|---|---|
-| **Linux (x86_64)** | ✅ Available, subject to the runtime probe below | Both backends: [Sandlock](https://github.com/multikernel/sandlock) (Apache-2.0, external executable) and AASM-native (this repository, Apache-2.0, filesystem + syscall confinement). AASM does not bundle Sandlock — see [Licensing and distribution](#licensing-and-distribution) below. |
+| **Linux (x86_64)** | ✅ Available, subject to the runtime probe below | Both Linux backends: [Sandlock](https://github.com/multikernel/sandlock) (Apache-2.0, external executable) and AASM-native (this repository, Apache-2.0, filesystem + syscall confinement). AASM does not bundle Sandlock — see [Licensing and distribution](#licensing-and-distribution) below. |
 | **Linux (aarch64)** | ✅ Sandlock fully available. AASM-native: filesystem confinement only — syscall filtering is **not available** on this architecture (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)). | The seccomp filter AASM-native builds is a hand-assembled, architecture-specific cBPF program; only the x86_64 syscall-number table exists today. Landlock (filesystem) has no such restriction. |
-| **macOS** | ❌ **Not supported.** `--isolation process` or `--isolation auto` is **refused** (`Boundary::Refused`) on this host, never silently downgraded to unconfined. | No backend targets macOS, for either mechanism. This is not a roadmap statement — see Core ADR 035 §8: "no Linux backend implies macOS or Windows support." |
-| **Windows** | ❌ **Not supported.** Same refusal behavior as macOS. | No backend targets Windows, for either mechanism. |
+| **macOS (Apple Silicon)** | ✅ Available via `aasm-macos-vm`, subject to the runtime probe below — filesystem read/write confinement only, with named platform limitations. | Guest-boundary confinement via Virtualization.framework, not a host-process mechanism — see [macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites). |
+| **macOS (Intel)** | ❌ **Not supported.** `aasm-macos-vm` requires Apple Silicon. | Not attempted; the guest kernel and helper are built arm64-only through this Epic. |
+| **Windows** | ❌ **Not supported.** `--isolation process` or `--isolation auto` is **refused** (`Boundary::Refused`) on this host, never silently downgraded to unconfined. | No backend targets Windows. |
+
+Core ADR 035 §8 ("no Linux backend implies macOS or Windows support") is
+sometimes read as "macOS is unsupported" — it is not that; it says a *Linux*
+backend's existence doesn't itself grant macOS support, and names
+platform-specific mechanisms as separate decisions. `aasm-macos-vm` is that
+separate decision. [Reconsideration trigger
+4](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md#reconsideration-triggers)
+names Endpoint Security/App Sandbox specifically — a different, in-process
+mechanism AAASM-5810 explicitly did not choose — and has not fired.
 
 This intentionally does not read like the eBPF platform matrix in
 [ADR 0033 §5.3](../adr/0033-canonical-governance-and-enforcement-architecture.md#53-the-verified-platform-matrix) —
 eBPF is an *observation* mechanism with a macOS non-goal already recorded
-there; execution isolation is a *confinement* mechanism with no macOS or
-Windows implementation at all. Do not conflate the two absences.
+there; execution isolation is a *confinement* mechanism with a real, measured
+macOS implementation as of this Epic. Do not conflate the two.
 
 ### Runtime prerequisites on Linux
 
@@ -259,6 +275,51 @@ in the `aasm run` CLI reference. It is fully usable today for any policy whose
 required isolation domains are limited to filesystem read/write and syscall —
 see [Choosing between the two backends](#choosing-between-the-two-backends)
 for what it does not cover.
+
+### macOS VM runtime prerequisites
+
+`aasm-macos-vm` (Epic AAASM-5811) confines by booting a Linux guest via
+Virtualization.framework and running the launch inside it, rather than
+confining the host process — a different boundary shape from the two Linux
+backends above.
+
+| Failure | Diagnostic | Fix |
+|---|---|---|
+| Not on macOS / Apple Silicon | Backend reports `Unavailable` with the reason named. | Use an Apple Silicon macOS host, or `--isolation none`. |
+| `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` not set, or a named path does not exist | `Unavailable`, naming which variable and why. | Build the substrate artifacts (`aa-isolation-macos-vm-poc/README.md`) and export all three. |
+| Helper binary missing the `com.apple.security.virtualization` entitlement | `Unavailable`, naming the missing entitlement (AAASM-5840). | Sign the helper with an entitlements plist carrying that entitlement. |
+| Guest probe measured no denial for a domain this launch requires | Reported per-domain in the isolation report, same shape as the Linux backends; the launch is refused if the requirement's posture requires prevention. | See [Requested vs. achieved](#requested-vs-achieved-the-report-shape); relax the policy's posture for that domain, or accept `--isolation none`. |
+
+**Stated plainly, this backend's real limitations:**
+
+- **Apple Silicon only.** No Intel build exists through this Epic.
+- **No general toolchain inside the guest.** Only `/usr/local/bin/busybox`
+  (`sh`/`cat`/`printf`) and `/usr/local/bin/aa-isolation-launch` are present —
+  `aasm run python …`, `git …`, or a compiler invocation refuses, tracked as
+  AAASM-5849. This is a materially narrower usable surface than either Linux
+  backend today.
+- **Syscall domain is `Unsupported`, not degraded.** The guest is aarch64;
+  `aa-isolation-native`'s syscall filter is x86_64-only and this backend never
+  attempts a translation — every launch sends `syscall_filter: None`.
+- **No network device in the guest.** Network egress, cloud-metadata, and
+  address-representation capability domains are structurally absent rather
+  than measured-and-denied — there is nothing to deny.
+- **Guest kernel and rootfs are not shipped by AASM** (AAASM-5840). They are
+  large, gitignored, hand-built dev artifacts the operator supplies — see
+  [Licensing and distribution](#licensing-and-distribution) below for their
+  GPL-2.0-only provenance.
+- **One guest boot per launch**, plus one more inside `discover()`'s own
+  capability probe — this backend's cold-start cost is a full VM boot, not a
+  process fork.
+- **No CI lane exercises the host↔guest path today.** GitHub-hosted macOS
+  runners provide no nested virtualization, so this boundary is measured by
+  hand on entitled Apple Silicon hardware (`aa-isolation-macos-vm/tests/`,
+  `#[ignore]`d, run explicitly), not by an automated gate. Self-hosted
+  macOS CI to close this gap is tracked under AAASM-5814.
+
+**Selecting it explicitly:** pass `--isolation-backend aasm-macos-vm` — it has
+no default-selection relationship with the Linux backends and is only reached
+on a macOS host in the first place.
 
 ## Compatibility and performance relative to Sandlock
 
@@ -441,6 +502,24 @@ entry** in `metadata/isolation-backends.json`, which exists specifically to
 cover backends outside that graph (see `THIRD_PARTY_NOTICES.md` for the exact
 boundary between the two mechanisms). All licenses named above are already in
 `deny.toml`'s `[licenses] allow` list.
+
+**`aasm-macos-vm` distributes no guest artifact either, and two of its guest
+components are GPL-2.0-only.** The guest kernel (Linux 6.6.71, built via
+linuxkit's tooling with three Kconfig patches to enable Landlock — see
+`aa-isolation-macos-vm-poc/scripts/build-landlock-kernel.sh`) and the guest's
+`busybox` (extracted unmodified from the `busybox:musl` Docker Hub image) are
+both recorded in `metadata/isolation-backends.json` as
+`macos-vm-guest-kernel`/`macos-vm-guest-busybox`. **AASM does not ship
+either** (AAASM-5840) — no distribution channel bundles, downloads, or builds
+them; the operator supplies both via `AA_ISOLATION_MACOS_VM_{KERNEL,ROOTFS}`.
+Because no channel's strategy is `bundled`/`downloaded`/`source` for these two
+rows, `GPL-2.0-only` is deliberately absent from `metadata/isolation-backends.json`'s
+license allowlists — the day either artifact ships through any AASM channel,
+the compliance gate (`scripts/check-backend-license-compliance.sh`) fails
+until a reviewer adds it. See `THIRD_PARTY_NOTICES.md` for the corresponding
+notice entry. The guest rootfs these two are packaged into also carries
+first-party `aa-isolation-launch` and `guest-init` (Apache-2.0, this
+repository's own code) — not a third-party licensing concern.
 
 > **This is not legal advice.** This section and `metadata/isolation-backends.json`
 > record an engineering and release-process requirement — which facts a
