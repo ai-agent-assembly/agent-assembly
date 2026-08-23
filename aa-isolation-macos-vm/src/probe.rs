@@ -245,20 +245,40 @@ fn run_confined(
     run_confined_inner(session, request_id, fs_read, &[], script)
 }
 
-/// Run `script` with read+write granted on the share's target directory.
+/// The share's target directory, as granted to [`run_confined_rw`] and
+/// [`run_confined_ro`] — a named const rather than a literal repeated at
+/// each call site so
+/// [`tests::the_write_pair_differs_only_in_the_write_grant`] can assert the
+/// two grant sets directly, the same discipline
+/// `aa_isolation_native::probe`'s
+/// `the_only_difference_between_the_runs_is_the_grant_under_test` uses.
+const SHARE_TARGET: &str = "/mnt/share/target";
+
+/// Run `script` with read+write granted on the share's target directory —
+/// the control side of [`measure_write`]'s pair.
 fn run_confined_rw(session: &mut VmSession, request_id: &str, script: &str) -> Result<RunOutput, String> {
-    run_confined_inner(
-        session,
-        request_id,
-        &["/mnt/share/target"],
-        &["/mnt/share/target"],
-        script,
-    )
+    let (fs_read, fs_write) = write_pair_control_grants();
+    run_confined_inner(session, request_id, fs_read, fs_write, script)
 }
 
-/// Run `script` with read only granted on the share's target directory.
+/// Run `script` with read only granted on the share's target directory —
+/// the test side of [`measure_write`]'s pair.
 fn run_confined_ro(session: &mut VmSession, request_id: &str, script: &str) -> Result<RunOutput, String> {
-    run_confined_inner(session, request_id, &["/mnt/share/target"], &[], script)
+    let (fs_read, fs_write) = write_pair_test_grants();
+    run_confined_inner(session, request_id, fs_read, fs_write, script)
+}
+
+/// `(fs_read, fs_write)` granted to [`run_confined_rw`].
+fn write_pair_control_grants() -> (&'static [&'static str], &'static [&'static str]) {
+    (&[SHARE_TARGET], &[SHARE_TARGET])
+}
+
+/// `(fs_read, fs_write)` granted to [`run_confined_ro`]. Read is granted
+/// (same as the control) so a write failure cannot be misread as "the shell
+/// could not even open the target directory" — see [`measure_write`]'s own
+/// docs.
+fn write_pair_test_grants() -> (&'static [&'static str], &'static [&'static str]) {
+    (&[SHARE_TARGET], &[])
 }
 
 fn run_confined_inner(
@@ -390,6 +410,35 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mirrors `aa_isolation_native::probe`'s own
+    /// `the_only_difference_between_the_runs_is_the_grant_under_test`: pins
+    /// the write pair's grants so a future edit can't silently widen the
+    /// control run's own boundary (which would make every write measurement
+    /// read as `Permitted` regardless of the guest's actual behavior — the
+    /// same failure mode this crate already hit once, see `measure_write`'s
+    /// docs on the exit-code trap) or narrow the test run's read grant
+    /// (which would make a failed write unattributable to the write right in
+    /// particular).
+    #[test]
+    fn the_write_pair_differs_only_in_the_write_grant() {
+        let (control_read, control_write) = write_pair_control_grants();
+        let (test_read, test_write) = write_pair_test_grants();
+        assert_eq!(
+            control_read, test_read,
+            "the write control and test runs must grant the same read access, \
+             or a write failure could be misread as an unopenable target directory"
+        );
+        assert_eq!(
+            control_write,
+            [SHARE_TARGET],
+            "the write control must grant write on the target"
+        );
+        assert!(
+            test_write.is_empty(),
+            "the write test run must grant no write — write is exactly what this pair measures"
+        );
+    }
 
     /// The asymmetry that keeps a broken probe from reading as a denial.
     #[test]
