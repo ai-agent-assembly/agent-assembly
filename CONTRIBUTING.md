@@ -25,7 +25,7 @@ day-to-day contribution workflow in more detail.
 git clone https://github.com/ai-agent-assembly/agent-assembly.git
 cd agent-assembly
 
-# Install git hooks (runs fmt, clippy, deny on commit; doc on push)
+# Install git hooks (runs fmt, deny on commit; doc on push)
 # See lefthook.toml for the full hook list.
 lefthook install
 
@@ -266,10 +266,28 @@ Pre-commit hooks enforce these automatically on every `git commit`:
 | Check | Command | Config |
 |---|---|---|
 | Formatting | `cargo fmt --all -- --check` | [`rustfmt.toml`](rustfmt.toml) |
-| Linting | `cargo clippy --all-targets -- -D warnings` | [`clippy.toml`](clippy.toml) + `[workspace.lints.clippy]` in [`Cargo.toml`](Cargo.toml) |
-| Dependencies | `cargo deny check` | [`deny.toml`](deny.toml) |
+| Dependencies | `cargo deny check` (only when `Cargo.toml`/`Cargo.lock` changed) | [`deny.toml`](deny.toml) |
 
-On `git push`, documentation is also checked: `cargo doc --workspace --no-deps`.
+On `git push`, documentation is also checked: `cargo doc --workspace --no-deps` (scoped to
+Rust-affecting pushes — see the `lefthook.toml` comment on `pre-push.commands.doc`).
+
+**Linting** (`cargo clippy --all-targets -- -D warnings`, [`clippy.toml`](clippy.toml) +
+`[workspace.lints.clippy]` in [`Cargo.toml`](Cargo.toml)) is **not** a pre-commit hook
+(AAASM-5838 — a full-workspace clippy invocation on every commit was too slow on this
+repo's shared-`CARGO_TARGET_DIR` convention). Run it explicitly before opening a PR,
+scoped to only the crates your diff touches:
+
+```bash
+scripts/clippy-changed-crates.sh          # diff = working tree vs HEAD
+scripts/clippy-changed-crates.sh origin/main  # diff = working tree vs a given base
+```
+
+CI's `clippy` job runs the full, unscoped `--workspace --all-targets --all-features`
+invocation (`--exclude aa-ebpf`) as a required check before merge — that remains the
+authoritative gate for every crate it covers; the script above is a fast local
+pre-flight, not a substitute for it. **Known gap:** `aa-ebpf` (Linux-only, nightly
+toolchain) is excluded from that CI job and is not linted anywhere else in CI — run
+the script above explicitly on a diff touching it, since nothing else will.
 
 The workspace-level clippy lints (`correctness = deny`, `suspicious = deny`, others `warn`) live in `[workspace.lints.clippy]` of the top-level `Cargo.toml` — do not override them per-crate.
 
