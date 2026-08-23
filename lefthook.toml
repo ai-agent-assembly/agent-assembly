@@ -6,7 +6,8 @@ glob = "*.rs"
 run = "cargo fmt --all -- --check"
 fail_text = "Formatting issues found. Run 'cargo fmt --all' to fix."
 
-# AAASM-5838: `cargo clippy --all-targets --all-features` used to run here on
+# --- Why there is no [pre-commit.commands.clippy] here anymore (AAASM-5838) ---
+# `cargo clippy --all-targets --all-features` used to run here on
 # every commit touching a `*.rs` file — a full-workspace invocation with no
 # per-crate scoping. On this repo's shared-`CARGO_TARGET_DIR` convention
 # (multiple worktrees/sessions sharing one build cache), that routinely
@@ -15,13 +16,20 @@ fail_text = "Formatting issues found. Run 'cargo fmt --all' to fix."
 # already held — synchronously, in the commit path, with no way to bypass it
 # short of `--no-verify` (forbidden — see the repo root CLAUDE.md).
 #
-# CI's `clippy` job (`.github/workflows/ci.yml`) already runs the identical
+# CI's `clippy` job (`.github/workflows/ci.yml`) already runs
 # `--workspace --all-targets --all-features --exclude aa-ebpf -- -D warnings`
-# invocation as a required check before merge — this hook only ever duplicated
-# that coverage, synchronously, on every commit rather than once per PR. Run
-# `scripts/clippy-changed-crates.sh` explicitly before opening a PR for a fast,
-# scoped local check (only the crates your diff actually touches); CI remains
-# the authoritative full-workspace gate.
+# as a required check before merge — this hook duplicated that coverage,
+# synchronously, on every commit rather than once per PR, for every crate CI
+# already covers. Not identical, though: `aa-ebpf` (the `--exclude`, a
+# nightly-toolchain-only Linux crate) was linted ONLY by this hook — CI does
+# not lint it anywhere else (`ebpf-build`'s clippy step targets the separate
+# `aa-ebpf-probes` crate, not `aa-ebpf` itself). Removing this hook leaves
+# `aa-ebpf` with no clippy coverage except `scripts/clippy-changed-crates.sh`
+# run explicitly on a diff that touches it — a real, narrow gap, not silently
+# assumed away. Run `scripts/clippy-changed-crates.sh` before opening a PR for
+# a fast, scoped local check on whatever your diff actually touches; CI
+# remains the authoritative full-workspace gate for every crate it covers.
+
 [pre-commit.commands.deny]
 # AAASM-5699: patterns match against the *whole path*, so a wildcard-free
 # `Cargo.toml` is an exact path match — it caught the workspace-root manifest and

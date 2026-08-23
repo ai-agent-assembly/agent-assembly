@@ -283,8 +283,11 @@ scripts/clippy-changed-crates.sh origin/main  # diff = working tree vs a given b
 ```
 
 CI's `clippy` job runs the full, unscoped `--workspace --all-targets --all-features`
-invocation as a required check before merge — that remains the authoritative gate; the
-script above is a fast local pre-flight, not a substitute for it.
+invocation (`--exclude aa-ebpf`) as a required check before merge — that remains the
+authoritative gate for every crate it covers; the script above is a fast local
+pre-flight, not a substitute for it. **Known gap:** `aa-ebpf` (Linux-only, nightly
+toolchain) is excluded from that CI job and is not linted anywhere else in CI — run
+the script above explicitly on a diff touching it, since nothing else will.
 
 The workspace-level clippy lints (`correctness = deny`, `suspicious = deny`, others `warn`) live in `[workspace.lints.clippy]` of the top-level `Cargo.toml` — do not override them per-crate.
 
