@@ -1,0 +1,22 @@
+[package]
+name = "aa-isolation-macos-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "macOS process-isolation backend for Agent Assembly, over a Virtualization.framework Linux guest (AAASM-5813)"
+# AAASM-5813. Held back from crates.io for the same reason as
+# `aa-isolation-native` and `aa-isolation-sandlock`: this backend's `discover()`
+# reports `Unavailable` on every host today (see `src/lib.rs`), so a published
+# copy would advertise a capability nothing published can currently provide.
+publish = false
+
+[dependencies]
+# The backend-neutral contract this crate implements.
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6" }
+
+[features]
+default = []
+
+[lints]
+workspace = true

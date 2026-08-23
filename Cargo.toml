@@ -20,6 +20,7 @@ members = [
     "aa-isolation",
     "aa-isolation-sandlock",
     "aa-isolation-native",
+    "aa-isolation-macos-vm",
     "aa-policy",
     "aa-gateway",
     "aa-api",
