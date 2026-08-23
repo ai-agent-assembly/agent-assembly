@@ -2192,6 +2192,56 @@ mod tests {
         ProxyServer::new(config, ca, tx)
     }
 
+    /// A server with `gateway_endpoint` configured but never `run()`, so
+    /// `gateway_client` stays unpopulated — the "configured but no live
+    /// client" branch of `gateway_egress_deny_reason`, distinct from a live
+    /// RPC failure (covered by the e2e suite's dead-listener tests).
+    async fn server_with_gateway_configured(network_fail_open: bool) -> Arc<ProxyServer> {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let config = ProxyConfig {
+            bind_addr: ([127, 0, 0, 1], 0).into(),
+            ca_dir: dir.path().to_path_buf(),
+            cert_cache_capacity: 8,
+            llm_only: true,
+            mitm_hosts: Vec::new(),
+            denied_hosts: Vec::new(),
+            network_allowlist: Vec::new(),
+            skip_upstream_tls_verify: false,
+            credential_action: crate::config::CredentialAction::default(),
+            upstream_override: None,
+            gateway_endpoint: Some("http://127.0.0.1:1".to_string()),
+            mcp_fail_open: false,
+            network_fail_open,
+            allow_private_connect_targets: false,
+        };
+        let (tx, _rx) = broadcast::channel(8);
+        ProxyServer::new(config, ca, tx)
+    }
+
+    #[tokio::test]
+    async fn egress_deny_reason_fails_closed_when_gateway_configured_but_client_never_populated() {
+        // AAASM-5851: gateway_endpoint is Some, but no `run()` call means
+        // `gateway_client` was never populated — this must NOT silently fall
+        // through to allow-all just because neither the local allowlist
+        // branch (skipped, gateway configured) nor the gateway RPC (no
+        // client to call) ran.
+        let server = server_with_gateway_configured(false).await;
+        assert_eq!(
+            server.egress_deny_reason("anything.example.com", 443, "https").await,
+            Some(EgressDenyReason::GatewayNetworkPolicy)
+        );
+    }
+
+    #[tokio::test]
+    async fn egress_deny_reason_fails_open_when_configured_and_no_client_populated() {
+        let server = server_with_gateway_configured(true).await;
+        assert_eq!(
+            server.egress_deny_reason("anything.example.com", 443, "https").await,
+            None
+        );
+    }
+
     #[test]
     fn parse_plain_http_host_from_origin_form_target() {
         // Origin-form `http://host/path` targets resolve the host from the URL.

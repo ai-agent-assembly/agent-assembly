@@ -546,6 +546,55 @@ async fn an_mcp_tools_call_deny_persists_a_refusal() {
     assert_eq!(entry.host, MITM_HOST);
 }
 
+// ── Gateway-backed network-egress deny (AAASM-5851) ────────────────────────
+
+/// The CONNECT-time and in-tunnel gateway checks are two independent
+/// decisions against two different hosts, not one check reused for both.
+/// `AllowOnlyNetworkHost` allows only `MITM_HOST`, so the CONNECT (whose
+/// `NetworkCallContext.host` is `MITM_HOST`) succeeds, opening the tunnel —
+/// then a forged in-tunnel `Host:` header naming a *different* host is
+/// re-evaluated against the same gateway and denied, proving
+/// `in_tunnel_deny_reason`'s AAASM-4829 defense is gateway-bound in managed
+/// mode, not just the local allowlist a no-gateway fixture would use.
+#[tokio::test]
+async fn a_forged_in_tunnel_host_is_denied_by_gateway_policy() {
+    const FORGED_HOST: &str = "evil.attacker.example";
+
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = gateway_stub::spawn_network_allow_one_host_gateway(MITM_HOST).await;
+    let (proxy, mut audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway),
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+
+    // CONNECT to the one host the gateway allows — the tunnel opens.
+    let tunnel = open_tunnel(proxy, MITM_HOST)
+        .await
+        .expect("CONNECT to the gateway-allowed host must succeed");
+
+    // Inside that tunnel, forge a Host header naming a host the gateway
+    // never allowed. The SNI/tunnel host is still MITM_HOST (AcceptAnyCert
+    // skips certificate-name verification), so this exercises the in-tunnel
+    // Host-header re-check specifically, not the CONNECT-time check again.
+    let request = format!("GET /v1/x HTTP/1.1\r\nHost: {FORGED_HOST}\r\nContent-Length: 0\r\n\r\n");
+    let response = mitm_send(tunnel, MITM_HOST, &request).await;
+    assert!(
+        response.contains("403"),
+        "a forged in-tunnel Host naming a gateway-denied host must be refused, got: {response:?}"
+    );
+
+    let entry = sole_refusal_record(&mut audit, RefusalRule::GatewayEgressPolicy).await;
+    assert_eq!(
+        entry.host, FORGED_HOST,
+        "the persisted refusal must name the forged host, not the CONNECT host"
+    );
+}
+
 /// A minimal `PolicyService` that denies every `CheckAction`.
 mod gateway_stub {
     use std::pin::Pin;
@@ -628,6 +677,75 @@ mod gateway_stub {
         tokio::spawn(async move {
             let _ = tonic::transport::Server::builder()
                 .add_service(PolicyServiceServer::new(DenyEverything))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        format!("http://{addr}")
+    }
+
+    /// AAASM-5851: allows a `NetworkCall` only when its host matches
+    /// `allowed_host` exactly; denies every other host and every non-network
+    /// action. Lets a test prove the CONNECT-time and in-tunnel gateway
+    /// checks are two independent decisions against two different hosts —
+    /// `DenyEverything` above can't do that, since it doesn't look at the
+    /// request at all for non-`ToolCall` actions.
+    struct AllowOnlyNetworkHost {
+        allowed_host: String,
+    }
+
+    #[tonic::async_trait]
+    impl PolicyService for AllowOnlyNetworkHost {
+        async fn check_action(
+            &self,
+            req: Request<CheckActionRequest>,
+        ) -> Result<Response<CheckActionResponse>, Status> {
+            use aa_proto::assembly::policy::v1::action_context::Action;
+            let host = match req.get_ref().context.as_ref().and_then(|c| c.action.as_ref()) {
+                Some(Action::NetworkCall(nc)) => Some(nc.host.clone()),
+                _ => None,
+            };
+            let allow = host.as_deref() == Some(self.allowed_host.as_str());
+            Ok(Response::new(CheckActionResponse {
+                decision: if allow {
+                    aa_proto::assembly::common::v1::Decision::Allow as i32
+                } else {
+                    aa_proto::assembly::common::v1::Decision::Deny as i32
+                },
+                reason: if allow {
+                    String::new()
+                } else {
+                    format!("host {host:?} is not the one policy allows")
+                },
+                ..Default::default()
+            }))
+        }
+
+        async fn batch_check(&self, _req: Request<BatchCheckRequest>) -> Result<Response<BatchCheckResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+
+        type OpControlStreamStream = Pin<Box<dyn Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+        async fn op_control_stream(
+            &self,
+            _req: Request<OpControlSubscribeRequest>,
+        ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+    }
+
+    /// Bind a gateway that allows `NetworkCall` egress to `allowed_host` only.
+    pub async fn spawn_network_allow_one_host_gateway(allowed_host: &str) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let service = AllowOnlyNetworkHost {
+            allowed_host: allowed_host.to_string(),
+        };
+        tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(PolicyServiceServer::new(service))
                 .serve(addr)
                 .await;
         });

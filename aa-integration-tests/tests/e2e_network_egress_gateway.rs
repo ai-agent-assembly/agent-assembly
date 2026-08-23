@@ -352,27 +352,27 @@ async fn gateway_check_action_failure_fails_open_when_configured() {
 // ── G. In-tunnel host-header smuggling is denied under gateway mode ────────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn gateway_in_tunnel_forged_host_header_denied() {
+async fn gateway_connect_succeeds_for_a_mitm_relevant_allowlisted_host() {
+    // NOTE: this test does NOT cover the in-tunnel Host-header smuggling
+    // defense (AAASM-4829) under gateway mode — an earlier version of this
+    // test claimed to, but never actually sent a forged Host header inside
+    // an open tunnel, so it proved nothing beyond what test A already does.
+    // The real coverage for that specific bypass vector is
+    // `a_forged_in_tunnel_host_is_denied_by_gateway_policy` in
+    // `aa-proxy/tests/refusal_evidence.rs`, which opens a real MitM tunnel
+    // to a gateway-allowed host and sends a genuinely forged `Host:` header
+    // for a different, gateway-denied host inside it.
     let (gateway_addr, _engine) = start_gateway_from_fixture("network_allowlist.yaml").await;
     let dir = tempfile::tempdir().unwrap();
     let ca = CaStore::load_or_create(dir.path()).await.unwrap();
     let config = proxy_config_with_gateway(dir.path(), gateway_addr, false);
     let (proxy_addr, _rx, abort) = start_proxy(config, ca).await;
 
-    // CONNECT to an allowlisted host (opens the tunnel)...
     let connect_response = connect_to_proxy(proxy_addr, "api.openai.com:443").await;
     assert!(
         connect_response.contains("200"),
         "CONNECT to the allowlisted host must succeed, got: {connect_response}"
     );
-
-    // ...this test only proves the CONNECT-time gateway check (test B
-    // already covers non-allowlisted denial). The in-tunnel Host-header
-    // re-check itself is exercised by `aa-proxy`'s own
-    // `in_tunnel_deny_reason_blocks_forged_host_under_allowlist`-style unit
-    // tests (`aa-proxy/src/proxy/mod.rs`), which now route through the same
-    // `egress_deny_reason` this e2e test exercises at CONNECT time — see
-    // that module for the header-splitting-specific assertions.
 
     abort.abort();
 }
