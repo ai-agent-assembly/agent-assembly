@@ -101,6 +101,7 @@ dependencies = [
  "aa-devtool-claude-code",
  "aa-gateway",
  "aa-isolation",
+ "aa-isolation-macos-vm",
  "aa-isolation-native",
  "aa-isolation-sandlock",
  "aa-policy",
@@ -461,6 +462,13 @@ dependencies = [
  "aa-security",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "aa-isolation-macos-vm"
+version = "0.0.1-rc.6"
+dependencies = [
+ "aa-isolation",
 ]
 
 [[package]]
