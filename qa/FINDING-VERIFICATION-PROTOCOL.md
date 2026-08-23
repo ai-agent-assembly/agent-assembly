@@ -45,7 +45,7 @@ match in the sign-off's findings table with a reference to the existing key.
 | Severity | Requirement |
 |---|---|
 | **High / Critical, or any P0-release-blocker candidate** | **Mandatory** second independent reproduction by `qa-finding-verifier` (or the coordinator itself acting in that capacity, but never the same agent instance that reported it). The reporting worker is never the sole authority on its own High/Critical finding. |
-| **Medium** | Independent verification **expected when practical**. If verifier slots are genuinely constrained (see AAASM-5826's 5-worker ceiling), the coordinator may verify directly — but this is a fallback, not the default. |
+| **Medium** | Independent verification **expected when practical**. If verifier slots are genuinely constrained (see AAASM-5826's 10-worker ceiling), the coordinator may verify directly — but this is a fallback, not the default. |
 | **Low / cosmetic** | Lightweight confirmation is sufficient (the coordinator re-reads the worker's cited evidence and agrees it's concrete), but still requires actual evidence — not "it's probably fine to skip verifying this." |
 
 Environment/test-harness failures are classified separately from product
@@ -93,13 +93,58 @@ encodes the type-specific description schema). Populate at minimum:
   relevant, to this Epic (AAASM-5819) or the specific child ticket whose
   scope surfaced it.
 
-Do not silently fix a confirmed defect inside the release-QA gate's own
-work — file it and let it be picked up as separate work, per the Epic's
-operating rules (§7). The one exception: a defect in the QA *infrastructure
-itself* (this Epic's own scripts/skills) is fixed directly, not filed as a
-product Bug — see AAASM-5829's PR (#2125) for a worked example of that
-distinction (a bug in `map-risk.py` found during self-review, fixed in the
-same PR, not filed as a product Bug because it isn't one).
+An ordinary confirmed defect (Low/Medium/High, not requiring one of the
+human-escalation carve-outs below) is filed as a Bug **and then remediated
+within the same campaign** — see "Autonomous remediation loop" below. This
+supersedes the earlier framing that a filed Bug was categorically separate
+work picked up later; the AAASM-5832/AAASM-5833 remediation showed that
+genuine role independence (implementer ≠ reviewer) and evidence discipline
+are what make same-campaign remediation safe, not a separate human-initiated
+session. The one exception: a defect in the QA *infrastructure itself* (this
+Epic's own scripts/skills) is fixed directly, not filed as a product Bug —
+see AAASM-5829's PR (#2125) for a worked example of that distinction (a bug
+in `map-risk.py` found during self-review, fixed in the same PR, not filed
+as a product Bug because it isn't one).
+
+## Autonomous remediation loop
+
+An ordinary confirmed defect (filed per the section above) is remediated
+within the same campaign via this closed-loop sequence:
+
+```text
+FILED -> implementation (fix the root cause, not the symptom) -> direct
+reproduction of the original failure before/after the fix -> PR ->
+independent review by a genuinely separate sub-agent instance (never
+the implementing agent reviewing its own work) -> resolve confirmed
+review findings -> required CI green -> explicit LGTM comment/review ->
+admin merge using a merge commit (never squash, never rebase) ->
+resync canonical main -> independent post-merge reproduction against
+the merged base -> continue the same campaign.
+```
+
+This does **not** require a separate human-initiated Claude Code session for
+ordinary Bugs. Independence is achieved through separate sub-agent roles and
+evidence (an implementer instance and a reviewer instance that never share
+identity or self-certify each other's work), not through an artificial
+top-level-session boundary. This is the same pattern the AAASM-5832/
+AAASM-5833 remediation actually used: two real, separate sub-agent
+implementers; a real design flaw (a TOCTOU issue) caught during independent
+review and escalated under carve-out (1), material architecture change,
+rather than silently forced through; real admin merges using real merge
+commits; real post-merge reproduction against the merged base.
+
+## Human-escalation carve-out
+
+Only the following stop the autonomous remediation loop for human input:
+
+1. A material architecture change.
+2. A security-policy decision.
+3. Breaking a public contract.
+4. A destructive production action.
+5. An unavailable secret/account.
+6. A legal/compliance question.
+
+Anything not on this list is not, by itself, a reason to stop and ask.
 
 ## Demonstration (AAASM-5827 AC)
 
