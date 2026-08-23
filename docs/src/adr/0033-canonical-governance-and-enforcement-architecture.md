@@ -244,8 +244,9 @@ so is narrower than "the proxy":
 | --- | --- | --- |
 | `aa-proxy`, **MCP `tools/call` on a non-LLM MitM'd host, gateway configured** | Yes, synchronously, before dialling upstream | `handle_non_llm_mitm` (`aa-proxy/src/proxy/mod.rs:801`) calls `evaluate_mcp_request` (`:614`, invoked at `:834`) — *"MCP detection — only when a gateway is configured"* (`:832`). On `McpEvalOutcome::Deny` the handler answers the client and returns **without** reaching `dial_upstream_tls` (`:552`, reached at `:910`). This is the only gateway-bound pre-dial block in the system. |
 | `aa-proxy`, **LLM-provider hosts** (the only hosts MitM'd under the `llm_only` default) | **No** | `handle_llm_mitm` (`:1038-1241`) contains **zero** gateway references. It refuses locally at two points, both returning 403 on its own authority: `in_tunnel_deny_reason` (`:984`, called at `:1055`, 403 at `:1066`) and the `Interceptor`'s `VerdictDecision::Block` (`:1153`, 403 at `:1173`). |
-| `aa-proxy`, **CONNECT-time egress** | **No** | Refusal comes from local configuration — the denied-host list and `is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist)` (`:960-966`) — not from the control plane. |
-| **Any host not MitM'd** (the `llm_only` default sends every non-LLM host here) | **No** | Still evaluated at CONNECT by the same local egress policy as the row above — `connect_deny_reason` (`:934`) runs at `:1308`, *before* the `llm_only` branch at `:1333`. What is skipped is **payload** inspection: `handle_llm_mitm`/`handle_non_llm_mitm` are never entered and the bytes are relayed by `transparent_tunnel` (`:1397`). Per §6 the **connection is Observed** — `transmission_evidence::forwarded(…).persist(…)` (`:1402-1408`) — while the **payload is Unmeasured**. |
+| `aa-proxy`, **CONNECT-time egress, gateway configured** (AAASM-5851) | **Yes, synchronously, before dialling upstream** — bounded within the allowlist question only | `egress_deny_reason` (`aa-proxy/src/proxy/mod.rs`) runs the local SSRF guard and denylist unconditionally, then — only when `ProxyConfig.gateway_endpoint` is `Some` — sends a `NetworkCallContext` through the same `CheckAction` RPC the row above uses, mirroring its pre-dial-block shape. The gateway evaluates it at **Global scope under a synthetic, unregistered `"aa-proxy"` identity** (`network_enforce::PROXY_AGENT_ID` — same identity the MCP row already uses): a cascade-scoped gateway consults only Global-tier `policy.network`, not Org/Team/Agent-scoped network rules (`aa-gateway/src/engine/mod.rs::collect_cascade_with_lineage`); a single-file `AA_POLICY_PATH` deployment (the common case) is unaffected by this caveat — its `network:` section applies regardless of identity. Threading a real, credentialed agent identity through to the proxy — so scoped network rules would also apply — is deferred: it would require the proxy to hold a `credential_token` capable of acting as the agent it mediates, a materially new trust boundary, not decided here. |
+| `aa-proxy`, **CONNECT-time egress, no gateway configured** | **No** | Refusal comes from local configuration — the denied-host list and `is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist)` — not from the control plane. This is the pre-AAASM-5851 behaviour, still the only path when `gateway_endpoint` is unset (explicit standalone/local mode). |
+| **Any host not MitM'd** (the `llm_only` default sends every non-LLM host here) | Same as the two CONNECT-time-egress rows above — gateway-bound when configured, local otherwise | Still evaluated at CONNECT by the same egress policy as those rows — `egress_deny_reason` runs before the `llm_only` branch. What is skipped is **payload** inspection: `handle_llm_mitm`/`handle_non_llm_mitm` are never entered and the bytes are relayed by `transparent_tunnel`. Per §6 the **connection is Observed** — `transmission_evidence::forwarded(…).persist(…)` — while the **payload is Unmeasured**. |
 | `aa-runtime` `handle_policy_query` (`fn handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`) | Yes | A `Deny` is returned to the SDK — which must then honour it (§4). |
 
 > **A truthfulness defect this table exposed — fixed.** `aa-proxy/src/proxy/mod.rs`
@@ -261,9 +262,14 @@ so is narrower than "the proxy":
 > checklist, section B.
 
 The distinction matters for anyone choosing an enforcement path: a gateway `Deny` stops
-bytes **only** for MCP tool-call envelopes on non-LLM MitM'd hosts with a gateway
-endpoint configured. Everything else the proxy refuses, it refuses on its own local
-policy — which is real prevention, but it is *not* the control plane deciding.
+bytes for MCP tool-call envelopes on non-LLM MitM'd hosts, and (AAASM-5851) for CONNECT/
+in-tunnel/plain-HTTP network-egress destinations, whenever a gateway endpoint is
+configured — both under the proxy's synthetic identity, so only Global-tier policy is
+reachable (see the CONNECT-time-egress row above). Everything else the proxy refuses —
+including all egress when no gateway is configured — it refuses on its own local policy,
+which is real prevention, but it is *not* the control plane deciding. LLM-provider-host
+payload refusals (credential/DLP scan, MCP detection on the built-in LLM hosts) remain
+entirely local regardless of gateway configuration; this ADR does not claim otherwise.
 
 Therefore: **the gateway is E1 and only E1.** Describing it as a fourth interception
 layer misstates both what it holds (no traffic) and what it can do alone (nothing to
