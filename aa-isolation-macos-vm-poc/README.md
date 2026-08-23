@@ -1409,3 +1409,200 @@ So: **build support** for x86_64 is real and now demonstrated (this pass).
 open, and closing it needs an actual Intel Mac, not further work here. Do not
 read this pass as having verified x86_64 end-to-end — it has verified exactly
 the artifact-production half, honestly, and no further.
+
+## Landlock-capable guest kernel (AAASM-5813 prerequisite)
+
+AAASM-5813's own AC1 — `aasm run` launching a real *confined* process inside
+the macOS-hosted guest — needs the in-guest `aa-isolation-native` runtime to
+actually enforce something. Every guest kernel this PoC had used through
+AAASM-5812 pass 5 lacked `CONFIG_SECURITY_LANDLOCK`, so every prior in-guest
+`aa-isolation-launch` run refused pre-flight ("the kernel cannot handle the
+access rights this backend's filesystem claim requires") before Landlock's
+own enforcement was ever reachable — real evidence of fail-closed behavior,
+but never evidence of a successful confined execution. AAASM-5812's own
+README already named this as the explicit go/no-go check AAASM-5813 needed
+to run first, not discover mid-implementation.
+
+### No existing prebuilt kernel had it
+
+Checked in this order, per the smallest-trustworthy-solution preference:
+
+1. **Docker Desktop's shipped kernel** (`6.10.14-linuxkit`, the kernel this
+   PoC otherwise boots) — `# CONFIG_SECURITY_LANDLOCK is not set`, confirmed
+   in AAASM-5812 pass 4/5.
+2. **Upstream linuxkit's own published kernel image** (`linuxkit/kernel:
+   6.6.13-arm64` on Docker Hub, the same project Docker Desktop's kernel is
+   built from) — pulled and inspected its embedded IKCONFIG directly rather
+   than trusting the tag name or a related GitHub issue's claim: also
+   `# CONFIG_SECURITY_LANDLOCK is not set`. A `docker/for-mac` issue had
+   claimed upstream linuxkit "already has it enabled" — false for the actual
+   built image; the issue conflated `CONFIG_SECURITY=y` (which *is* on) with
+   `CONFIG_SECURITY_LANDLOCK=y` (which is not). Its own raw per-series config
+   file (`kernel/6.6.x/config-aarch64` at the pinned commit) confirms this
+   directly: `# CONFIG_SECURITY_LANDLOCK is not set`, and Landlock's own
+   upstream Kconfig has no `default` line, so an absent entry means off, not
+   inherited-on.
+3. **A newer upstream tag** (`linuxkit/kernel:6.12.59`) — pulled to check,
+   but its kernel binary turned out to be in a different boot format (an
+   EFI-stub-wrapped image, not the raw `Image` this PoC's
+   `VZLinuxBootLoader` path already boots successfully) — a second,
+   independent reason not to use it even before checking its Landlock
+   config, and a reminder that "newer" isn't free of its own new risk.
+
+No maintained prebuilt kernel — from Docker Desktop, from upstream linuxkit,
+across the two versions checked — was known to carry Landlock. Building one
+was the smallest remaining option, not the first one reached for.
+
+### The build: linuxkit's own tooling, three Kconfig lines, no new patches
+
+`scripts/build-landlock-kernel.sh` reproduces this exactly: clones
+`linuxkit/linuxkit` at a pinned commit, patches its own published
+`kernel/6.6.x/config-aarch64`, and builds via linuxkit's own
+`make buildplainkernel-6.6.x` — which itself fetches the real kernel.org
+`linux-6.6.71.tar.xz`, GPG- and SHA256-verifies it against kernel.org's own
+signed checksums, and compiles unmodified upstream Linux source. No
+out-of-tree Landlock patches (mainline has carried Landlock since 5.13;
+nothing needed backporting), no custom build system, no new source.
+
+Three patches on top of linuxkit's own config, found in two passes:
+
+1. `CONFIG_SECURITY_LANDLOCK=y` — the actual prerequisite. Compiling it in
+   was not, on its own, sufficient: Landlock's own Kconfig help text notes it
+   must also be present in the active boot-time LSM list, so
+   `CONFIG_LSM="landlock,yama,loadpin,safesetid,integrity"` (landlock
+   prepended to linuxkit's existing list) is the second half of the same
+   change.
+2. Booting a first build with only patch 1 applied surfaced a second, real
+   regression: virtiofs and vsock — both working on every prior kernel this
+   PoC used — failed (`virtiofs mount FAILED: ... errno=19`,
+   `vsock socket() FAILED errno=97`). Diffing linuxkit's own config against
+   Docker Desktop's proven-working kernel's embedded IKCONFIG found the
+   cause: linuxkit's default builds `CONFIG_VIRTIO_FS` off entirely and
+   `CONFIG_VSOCKETS`/`CONFIG_VIRTIO_VSOCKETS(_COMMON)`/`CONFIG_VHOST_VSOCK`
+   as loadable modules (`=m`), while Docker Desktop's kernel builds all of
+   them in (`=y`) — and this PoC's minimal rootfs has never staged any
+   kernel modules (`modprobe` failing to find `.ko` files is visible in
+   every console transcript in this document, including the working ones —
+   it was always working *around* a missing `/lib/modules`, not because
+   nothing needed one). Flipped to `=y`, matching Docker Desktop's kernel
+   exactly, resolved it — this is config-matching a kernel already proven to
+   work, not a new design decision.
+
+A first attempt at patch 2 crossed a real dependency edge: setting
+`CONFIG_VHOST_VSOCK=y` while leaving `CONFIG_VHOST=m` failed linuxkit's own
+build-time consistency check (`make defconfig` normalizing the file
+differently from what was checked in, since a `depends on VHOST` option
+compiled as a boolean requires its dependency to be boolean too, not a
+module) — caught by the build itself refusing to proceed, not discovered
+downstream. Fixed by also flipping `CONFIG_VHOST`/`CONFIG_VHOST_IOTLB` to
+`=y`, matching Docker Desktop's kernel there too.
+
+One tooling pitfall worth recording: linuxkit's build cache keys on the git
+tree hash of `HEAD`, not working-tree content — an uncommitted config edit
+silently hit a stale cache entry from the *previous*, unpatched attempt on
+the second build. The script commits each config patch to a throwaway local
+clone specifically so the cache key changes; skipping that step reproduces a
+build that looks successful but silently used the old config.
+
+### Real boot evidence — Landlock genuinely enforcing, not just present
+
+Booted the final kernel (`6.6.71-linuxkit`, `CONFIG_SECURITY_LANDLOCK=y`)
+against the existing rootfs, extended with one new fixture
+(`/root/outside-grant.txt`, staged outside every grant any scenario uses) and
+a fourth `aa-isolation-launch` scenario alongside the three from AAASM-5812
+pass 4. Real console output:
+
+```
+[guest-init] === busybox-direct (positive control) ===
+aa-isolation-launch-guest-rootfs-test-marker
+[guest-init] test 'busybox-direct (positive control)' exited status=0
+[guest-init] === aa-isolation-launch test: no-grants ===
+aa-isolation-launch:refused:the boundary was installed and `/usr/local/bin/busybox` could not be executed: Permission denied (os error 13)
+[guest-init] test 'aa-isolation-launch test: no-grants' exited status=121
+[guest-init] === aa-isolation-launch test: fs-read+fs-write ===
+aa-isolation-launch-guest-rootfs-test-marker
+[guest-init] test 'aa-isolation-launch test: fs-read+fs-write' exited status=0
+[guest-init] === aa-isolation-launch test: syscall-filter ===
+aa-isolation-launch:refused:this backend's syscall filter is built for Linux on x86_64; this host is linux on aarch64
+[guest-init] test 'aa-isolation-launch test: syscall-filter' exited status=121
+[guest-init] === aa-isolation-launch test: fs-read+fs-write, target OUTSIDE grant ===
+cat: can't open '/root/outside-grant.txt': Permission denied
+[guest-init] test 'aa-isolation-launch test: fs-read+fs-write, target OUTSIDE grant' exited status=1
+[guest-init] GUEST-INIT-DONE, parking
+```
+
+What each line actually proves:
+
+* **`no-grants` now denies for a genuinely different reason than before** —
+  not "kernel cannot handle Landlock" (pre-flight, kernel-capability check),
+  but "the boundary was installed and busybox could not be executed:
+  Permission denied" (post-install, real enforcement). `rules::install`
+  installs a deny-all ruleset when no `--fs-read`/`--fs-write` is given, and
+  the kernel now genuinely enforces it — fail-closed by default, and this is
+  the first time that default has actually been exercised against a live
+  Landlock implementation rather than refused one layer earlier.
+* **`fs-read+fs-write` is the first genuinely successful confined execution
+  in this project's history** — `busybox` exec'd and read `/etc/testfile`,
+  exit `0`. Getting here surfaced a real gap in the scenario's own design,
+  caught before trusting the first attempt's result: `--fs-read=/etc` grants
+  Landlock's read-rights set (which includes `Execute`, per
+  `landlock::Access::from_read` in the `landlock` crate this backend
+  depends on) on `/etc`, but `busybox` itself lives at `/usr/local/bin`,
+  never covered by any grant in the original three scenarios inherited from
+  AAASM-5812 pass 4. Every one of them denied exec outright on the first
+  real Landlock kernel — including this one — until `--fs-read=/usr/local/bin`
+  was added. None of the three scenarios, on any kernel, could ever have
+  demonstrated success without this; it went unnoticed for as long as it did
+  because every kernel before this one refused before reaching the point
+  where it would have mattered.
+* **`syscall-filter` finally reaches the arch gate the ticket brief
+  predicted** — `this backend's syscall filter is built for Linux on
+  x86_64; this host is linux on aarch64`. AAASM-5812 pass 4 could not
+  observe this: Landlock refused first, every time, regardless of what the
+  syscall filter would have done. This is the first kernel where that
+  prediction was actually checkable, and it held.
+* **The new fourth scenario is the negative half `fs-read+fs-write` alone
+  can't provide** — same grants (now including `/usr/local/bin`), but the
+  target is `/root/outside-grant.txt`, outside every granted path. `busybox`
+  execs successfully (no refusal marker — the boundary let a legitimate exec
+  through) and then gets a real `Permission denied` from the kernel trying
+  to open the file — a different, enforcement-level failure signature
+  (`cat: can't open ...`, exit `1`) than the pre-flight refusals above (exit
+  `121`). Same binary, same grants, a file outside them denied and a file
+  inside them (in the prior scenario) allowed — the differential control
+  this whole prerequisite exists to produce.
+
+virtiofs, vsock, and the AAASM-5812 pass 5 negative control all still work
+on this kernel, from the same boot:
+
+```
+[guest-init] virtiofs mount OK: tag=aa-share -> /mnt/share
+[guest-init] virtiofs marker CONTENT: virtiofs-marker-6165DD36-BCF7-4297-BFF2-24D76EB2EED5
+[guest-init] VIRTIOFS-OK
+[guest-init] virtiofs negative control: open(/mnt/share/outside-marker.txt) FAILED errno=2 (ENOENT)
+[guest-init] VIRTIOFS-NEGATIVE-CONTROL-OK
+[guest-init] vsock connect() OK (cid=2 port=5555)
+[guest-init] vsock greeting sent
+[guest-init] vsock host reply: hello-from-host-vsock
+[guest-init] VSOCK-OK
+```
+
+### Provenance
+
+* linuxkit base commit: `2308529` (pinned in `build-landlock-kernel.sh`).
+* Kernel source: `https://www.kernel.org/pub/linux/kernel/v6.x/linux-6.6.71.tar.xz`,
+  GPG-verified against kernel.org's signed `sha256sums.asc`
+  (key `B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1`, "Kernel.org checksum
+  autosigner") and SHA256-checked — both by linuxkit's own build tooling,
+  not a step this script adds.
+* Built kernel: `Linux version 6.6.71-linuxkit`, `arm64`, raw `Image` format
+  (matches the format this PoC's boot path already used successfully — not
+  the EFI-stub format the newer upstream tag turned out to use).
+
+### What this closes, and what it doesn't
+
+This closes AAASM-5813's own prerequisite check — a Landlock-capable guest
+kernel that boots under this PoC's existing Virtualization.framework path
+now exists and is reproducible. It does **not** itself close any AAASM-5813
+acceptance criterion; wiring this substrate into `aasm run` as a real
+`IsolationBackend` is that ticket's own scope, not this prerequisite's.
