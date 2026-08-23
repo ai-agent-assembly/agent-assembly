@@ -1264,14 +1264,107 @@ decided by this pass.
    one axis. AAASM-5813 should treat "does the chosen guest kernel have
    Landlock" as an explicit go/no-go check before any other integration work,
    not something discovered downstream the way this pass discovered it.
-8. **Three of the six AC checkboxes are now closed with real evidence, not
-   just the mechanism they depend on** — see "AC closure: virtiofs negative
-   control, teardown, syscall truthfulness" above: the virtiofs share is
-   verified structurally scoped (not merely policy-scoped), VM teardown
-   leaves no orphaned host process, and the arm64 syscall-filter capability
-   report is confirmed truthful (already correct in shipped
-   `aa-isolation-native` code — this pass's contribution is verifying it on
-   real hardware, not fixing anything). What's still open of the six: the
-   virtiofs/vsock/`aa-isolation-launch`-runs-unmodified checkboxes remain
-   gated on the same Landlock-capable-kernel and NAT gaps items 4–5 above
-   already named — this pass did not touch either.
+8. **Five of AAASM-5812's six AC checkboxes are closed with real evidence,
+   not just the mechanism they depend on** — corrected here after an earlier
+   version of this item understated it (virtiofs and vsock had already been
+   real, guest-side-verified since passes 2–3; this pass's own contribution
+   was only the *negative*-control half of the virtiofs AC and the teardown
+   + syscall-truthfulness ACs). Full ledger:
+   - AC 1 (host boots a real guest VM): closed, pass 1.
+   - AC 2 (virtiofs scoped + outside path verified unreachable): closed —
+     positive half since pass 2, negative half this pass (see "AC closure"
+     above; its first cut was tautological, caught in review and fixed —
+     see that section's own correction).
+   - AC 3 (vsock round-trip): closed, pass 3.
+   - AC 4 (`aa-isolation-launch`/`aasm` run inside the guest unmodified):
+     **partially closed** — see item 9 below.
+   - AC 5 (arm64 syscall-filter capability report truthful): closed, pass 5
+     — already correct in shipped `aa-isolation-native` code; this pass's
+     contribution was verifying the real aarch64 input on real hardware,
+     not fixing anything.
+   - AC 6 (clean teardown): closed, pass 5.
+
+## `aa-isolation-launch` / `aasm` x86_64 cross-compile: real build, hard architectural ceiling
+
+This pass (sixth) closes the build half of AC 4's other target — `aa-cli`
+(`aasm`) and `aa-isolation-native`'s `aa-isolation-launch`, both cross-compiled
+to `x86_64-unknown-linux-musl`, unmodified — and states plainly what it cannot
+close on this hardware.
+
+### What blocked it, and what didn't
+
+`aa-isolation-launch`/arm64 (pass 4) cross-compiled with `rustc`'s own bundled
+`rust-lld` alone — no external toolchain. `aasm` (`aa-cli`) needed two more
+things `aa-isolation-launch` never touches:
+
+1. **A C cross-compiler.** `aa-cli`'s dependency tree pulls in `aws-lc-sys`
+   (TLS backend, reached through `aa-gateway`/`aa-devtool`'s network clients),
+   which needs a real `aarch64`-hosted `x86_64-linux-musl-gcc`, not just a
+   Rust linker. Sourced from `messense/macos-cross-toolchains` (GCC 15.2.0,
+   prebuilt, version-pinned, per-arch `sha256`-verified — reviewed before
+   installing: 14-year-old maintainer account, 1,205★/77 forks, active,
+   pinned artifact checksums, no material supply-chain concern found).
+2. **AAASM-5834** (see above) — without it, cross-compiling `aa-cli` (which
+   pulls `aa-runtime` → `aa-ebpf`) from this macOS host to *any* Linux target
+   failed outright, not just slowly: `aa-ebpf/build.rs`'s Linux-only gate
+   checked the wrong OS (host, not target) and never even reached its own
+   documented stub fallback. Fixed there, not worked around here.
+
+Neither installing `bpf-linker` nor any other BPF toolchain was needed —
+AAASM-5834's fix routes cross-compilation through the *existing* graceful
+stub-fallback path, the same one this crate already uses when the nightly
+toolchain is simply absent.
+
+### Real artifacts, real provenance
+
+```
+$ file .../x86_64-unknown-linux-musl/release/aasm
+ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, stripped
+$ shasum -a 256 .../x86_64-unknown-linux-musl/release/aasm
+a900874f80f424e916afeab242ac5940c73fc5fb1f7da135e832c0c0a3bf060  aasm
+
+$ file .../x86_64-unknown-linux-musl/release/aa-isolation-launch
+ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, stripped
+$ shasum -a 256 .../x86_64-unknown-linux-musl/release/aa-isolation-launch
+7828061edbc2de0fd2336d869b25b18f486b002fa8789c6c57ffc4b692e485f  aa-isolation-launch
+```
+
+Toolchain provenance: `x86_64-linux-musl-gcc (GCC) 15.2.0` (messense/macos-
+cross-toolchains v15.2.0, `sha256` pinned in the formula, installed via
+formula-scoped `brew trust` — not tap-wide); `rustc 1.98.0 (88d9e12ae
+2026-08-18)`, host `aarch64-apple-darwin`, target `x86_64-unknown-linux-musl`.
+Both binaries statically linked (`static-pie`, no dynamic dependencies to
+resolve at runtime) — the same load-bearing property that made
+`aa-isolation-launch`/arm64 runnable in a minimal guest rootfs with no
+dynamic linker.
+
+### What this does *not* close, and why no amount of toolchain work would
+
+**AC 4's "runs inside the guest" half cannot be demonstrated for x86_64 on
+this hardware, full stop — not a resource gap, an architectural one.**
+Virtualization.framework sits on `Hypervisor.framework`, which virtualizes
+using the **host CPU's own instruction set**: an Apple Silicon host's
+hypervisor extensions (ARM EL2) can create only ARM64 vCPUs, the same way an
+Intel host's (VT-x) can create only x86_64 vCPUs. There is no cross-ISA guest
+boot path through this framework on either host type — this is not
+"Intel hardware happened to be unavailable this session" (the same class of
+gap as AC 1's Apple-Silicon-only real-hardware coverage), it is "no Apple
+Silicon Mac, regardless of tooling, can ever boot an x86_64 guest this way."
+The correct mental model, stated explicitly because an earlier draft of this
+document implied otherwise by omission:
+
+* **Apple Silicon host → arm64 Linux guest → arm64 `aasm`/`aa-isolation-launch`**
+  — the path this PoC has exercised in passes 1–5, on real hardware.
+* **Intel Mac host → x86_64 Linux guest → x86_64 `aasm`/`aa-isolation-launch`**
+  — architecturally real (AAASM-5811's own Compatibility section targets
+  "Intel and Apple Silicon"), but genuinely unexercised: this pass produces
+  real, correct x86_64 artifacts, and that is *all* it produces. No x86_64
+  guest was booted, no x86_64 in-guest execution was attempted, on this
+  Apple Silicon machine — attempting one would not have failed informatively,
+  it would not have started at all.
+
+So: **build support** for x86_64 is real and now demonstrated (this pass).
+**Real-hardware-verified** in-guest execution for x86_64 remains genuinely
+open, and closing it needs an actual Intel Mac, not further work here. Do not
+read this pass as having verified x86_64 end-to-end — it has verified exactly
+the artifact-production half, honestly, and no further.
