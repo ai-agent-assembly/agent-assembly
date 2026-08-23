@@ -7,13 +7,19 @@ repository.workspace = true
 description = "macOS process-isolation backend for Agent Assembly, over a Virtualization.framework Linux guest (AAASM-5813)"
 # AAASM-5813. Held back from crates.io for the same reason as
 # `aa-isolation-native` and `aa-isolation-sandlock`: this backend's `discover()`
-# reports `Unavailable` on every host today (see `src/lib.rs`), so a published
-# copy would advertise a capability nothing published can currently provide.
+# reports `Unavailable` on every host lacking the gitignored VM substrate
+# artifacts (see `src/vmm.rs`), which no published build ships.
 publish = false
 
 [dependencies]
 # The backend-neutral contract this crate implements.
 aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6" }
+# AAASM-5837: the wire contract shared with guest-init, on the other side of
+# the vsock connection this crate's `vmm` module drives.
+aa-isolation-vm-proto = { path = "../aa-isolation-vm-proto", version = "0.0.1-rc.6" }
+# `permitted_scope`: derives this launch's grant set from the plan itself
+# rather than re-deriving (or, worse, widening) it — see `spawn`'s use.
+aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.6" }
 
 [features]
 default = []

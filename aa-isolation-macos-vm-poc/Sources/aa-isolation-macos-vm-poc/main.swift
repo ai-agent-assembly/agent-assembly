@@ -28,6 +28,13 @@ struct Args {
     var vsockPort: UInt32
     var enableVirtiofs: Bool
     var enableVsock: Bool
+    // AAASM-5837: when set, the guest vsock connection is pumped byte-for-byte
+    // to/from a Unix-domain socket at this path instead of replying with the
+    // fixed "hello-from-host-vsock" greeting. This process never parses what
+    // crosses the pump — see VsockPumpDelegate's own documentation for why
+    // protocol knowledge belongs entirely in the Rust process on the other
+    // end of the socket, not here.
+    var controlSocketPath: String?
 }
 
 func parseArgs() -> Args {
@@ -44,6 +51,7 @@ func parseArgs() -> Args {
     var vsockPort: UInt32 = 5555
     var enableVirtiofs = true
     var enableVsock = true
+    var controlSocketPath: String? = nil
 
     var args = CommandLine.arguments.dropFirst().makeIterator()
     while let arg = args.next() {
@@ -76,6 +84,8 @@ func parseArgs() -> Args {
             enableVirtiofs = false
         case "--no-vsock":
             enableVsock = false
+        case "--control-socket":
+            controlSocketPath = args.next()
         default:
             FileHandle.standardError.write("unknown argument: \(arg)\n".data(using: .utf8)!)
         }
@@ -94,7 +104,8 @@ func parseArgs() -> Args {
         shareTag: shareTag,
         vsockPort: vsockPort,
         enableVirtiofs: enableVirtiofs,
-        enableVsock: enableVsock
+        enableVsock: enableVsock,
+        controlSocketPath: controlSocketPath
     )
 }
 
@@ -296,12 +307,33 @@ final class Delegate: NSObject, VZVirtualMachineDelegate {
 }
 
 // Accepts the guest-initiated vsock connection dialed by guest-init
-// (VMADDR_CID_HOST, args.vsockPort — see guest-init/src/main.rs), replies
-// with a fixed greeting, and logs the round trip. This is the host half of
-// the vsock proof; guest-init's own console output is the guest half.
+// (VMADDR_CID_HOST, args.vsockPort — see guest-init/src/main.rs).
+//
+// AAASM-5837: when `args.controlSocketPath` is set, this stops replying with
+// the fixed greeting and instead becomes a dumb bidirectional byte pump
+// between the guest vsock connection and a Unix-domain socket at that path.
+// This process never parses a single byte that crosses the pump — the wire
+// protocol (`aa-isolation-vm-proto`) is Rust code shared between the host
+// (`aa-isolation-macos-vm`) and guest (`guest-init`) processes, and keeping
+// Swift ignorant of it means a protocol change never touches this file or
+// requires re-signing/re-verifying the entitled helper binary. Rust is
+// expected to already be listening on `controlSocketPath` before the VM
+// boots — `accept()` returning there *is* the "guest is connected" signal,
+// which is why this class does not itself send anything on connect.
+//
+// Falls back to the AAASM-5812 fixed hello/reply when no control socket is
+// configured, preserving that behaviour for the boot-proof and virtiofs/vsock
+// passes' own existing verification commands.
 final class VsockListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
     var connectionAccepted = false
     var roundTripSucceeded = false
+    // Set once either side of the pump reaches EOF. Polled by a watcher
+    // declared after `vm`/`finish` exist (this class is defined before
+    // those top-level values, so it cannot call them directly) — see the
+    // watcher below the VM setup, which mirrors the existing boot-marker
+    // watcher's own polling pattern.
+    var pumpEnded = false
+    private let controlSocketPath: String?
     private var activeHandle: FileHandle?
     // VZVirtioSocketConnection owns the fd `activeHandle` wraps — without
     // keeping the connection itself alive here, it was observed to be
@@ -309,6 +341,13 @@ final class VsockListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
     // readabilityHandler ran, crashing with NSFileHandleOperationException
     // "Bad file descriptor" on `fh.availableData`.
     private var activeConnection: VZVirtioSocketConnection?
+    // Same reasoning as activeConnection/activeHandle above, for the
+    // control-socket side of the pump.
+    private var controlHandle: FileHandle?
+
+    init(controlSocketPath: String?) {
+        self.controlSocketPath = controlSocketPath
+    }
 
     func listener(
         _ listener: VZVirtioSocketListener,
@@ -318,22 +357,88 @@ final class VsockListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
         connectionAccepted = true
         log("vsock: incoming connection accepted, guest sourcePort=\(connection.sourcePort)")
         activeConnection = connection
-        let handle = FileHandle(fileDescriptor: connection.fileDescriptor, closeOnDealloc: false)
-        activeHandle = handle
-        handle.readabilityHandler = { [weak self] fh in
+        let vsockHandle = FileHandle(fileDescriptor: connection.fileDescriptor, closeOnDealloc: false)
+        activeHandle = vsockHandle
+
+        guard let controlSocketPath else {
+            vsockHandle.readabilityHandler = { [weak self] fh in
+                let data = fh.availableData
+                guard !data.isEmpty else { return }
+                let text = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
+                log("vsock: received from guest: \(text.trimmingCharacters(in: .whitespacesAndNewlines))")
+                fh.write("hello-from-host-vsock\n".data(using: .utf8)!)
+                log("vsock: reply sent to guest")
+                self?.roundTripSucceeded = true
+                fh.readabilityHandler = nil
+            }
+            return true
+        }
+
+        let controlFd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard controlFd >= 0 else {
+            log("control-socket: socket() failed errno=\(errno)")
+            return false
+        }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(controlSocketPath.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: addr.sun_path) else {
+            log("control-socket: path too long: \(controlSocketPath)")
+            close(controlFd)
+            return false
+        }
+        withUnsafeMutableBytes(of: &addr.sun_path) { rawPtr in
+            let buf = rawPtr.bindMemory(to: CChar.self)
+            for (i, byte) in pathBytes.enumerated() {
+                buf[i] = CChar(bitPattern: byte)
+            }
+            buf[pathBytes.count] = 0
+        }
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                connect(controlFd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            log("control-socket: connect(\(controlSocketPath)) failed errno=\(errno)")
+            close(controlFd)
+            return false
+        }
+        log("control-socket: connected to \(controlSocketPath), pumping bytes")
+
+        let ctrlHandle = FileHandle(fileDescriptor: controlFd, closeOnDealloc: true)
+        controlHandle = ctrlHandle
+
+        // Guest → control socket.
+        vsockHandle.readabilityHandler = { [weak self] fh in
             let data = fh.availableData
-            guard !data.isEmpty else { return }
-            let text = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
-            log("vsock: received from guest: \(text.trimmingCharacters(in: .whitespacesAndNewlines))")
-            fh.write("hello-from-host-vsock\n".data(using: .utf8)!)
-            log("vsock: reply sent to guest")
+            if data.isEmpty {
+                // EOF from the guest: stop pumping in both directions and
+                // let the control socket's own EOF (below) tell the Rust
+                // side the connection ended.
+                self?.controlHandle?.closeFile()
+                fh.readabilityHandler = nil
+                self?.pumpEnded = true
+                return
+            }
             self?.roundTripSucceeded = true
-            fh.readabilityHandler = nil
+            self?.controlHandle?.write(data)
+        }
+        // Control socket → guest.
+        ctrlHandle.readabilityHandler = { [weak self] fh in
+            let data = fh.availableData
+            if data.isEmpty {
+                self?.activeHandle?.closeFile()
+                fh.readabilityHandler = nil
+                self?.pumpEnded = true
+                return
+            }
+            self?.activeHandle?.write(data)
         }
         return true
     }
 }
-let vsockListenerDelegate = VsockListenerDelegate()
+let vsockListenerDelegate = VsockListenerDelegate(controlSocketPath: args.controlSocketPath)
 
 let vm = VZVirtualMachine(configuration: config)
 let delegate = Delegate()
@@ -402,19 +507,53 @@ if let marker = args.bootMarker {
     }
 }
 
-// Bounded run: always stop after the timeout even if no marker fires.
-DispatchQueue.main.asyncAfter(deadline: .now() + args.timeoutSeconds) {
-    guard !finished else { return }
-    log("timeout reached (\(args.timeoutSeconds)s), stopping VM")
-    if vm.canStop {
-        vm.stop { error in
-            if let error {
-                log("stop error: \(error)")
+// AAASM-5837: when a control socket is configured, either side of the pump
+// reaching EOF means this launch's protocol exchange has ended — stop the VM
+// rather than waiting on a timeout that may not even be armed (see
+// `--timeout 0` below). Mirrors the boot-marker watcher's own polling
+// pattern for the same forward-reference reason (VsockListenerDelegate is
+// defined before `vm`/`finish` exist).
+if args.controlSocketPath != nil {
+    DispatchQueue.global().async {
+        while !finished {
+            if vsockListenerDelegate.pumpEnded {
+                log("control-socket: pump ended, stopping VM")
+                DispatchQueue.main.async {
+                    if vm.canStop {
+                        vm.stop { _ in finish(code: 0) }
+                    } else {
+                        finish(code: 0)
+                    }
+                }
+                return
             }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+    }
+}
+
+// Bounded run: always stop after the timeout even if no marker fires.
+// AAASM-5837: `--timeout 0` means no deadline — a supervised launch's
+// lifetime is owned by the Rust process on the other end of
+// `--control-socket`, not by a fixed wall-clock bound. Rust closing that
+// socket produces EOF on the guest vsock's read side (see
+// VsockListenerDelegate above), which is this process's actual signal to
+// stop; there is nothing for a timer to add in that mode except a spurious
+// kill of a launch that is legitimately still running.
+if args.timeoutSeconds > 0 {
+    DispatchQueue.main.asyncAfter(deadline: .now() + args.timeoutSeconds) {
+        guard !finished else { return }
+        log("timeout reached (\(args.timeoutSeconds)s), stopping VM")
+        if vm.canStop {
+            vm.stop { error in
+                if let error {
+                    log("stop error: \(error)")
+                }
+                finish(code: 0)
+            }
+        } else {
             finish(code: 0)
         }
-    } else {
-        finish(code: 0)
     }
 }
 

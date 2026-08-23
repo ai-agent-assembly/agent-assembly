@@ -469,6 +469,8 @@ name = "aa-isolation-macos-vm"
 version = "0.0.1-rc.6"
 dependencies = [
  "aa-isolation",
+ "aa-isolation-native",
+ "aa-isolation-vm-proto",
 ]
 
 [[package]]
@@ -491,6 +493,15 @@ dependencies = [
  "aa-isolation",
  "aa-isolation-sandlock",
  "libc",
+]
+
+[[package]]
+name = "aa-isolation-vm-proto"
+version = "0.0.1-rc.6"
+dependencies = [
+ "aa-isolation-native",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

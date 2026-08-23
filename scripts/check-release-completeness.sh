@@ -72,7 +72,15 @@ pkg_of() {
 # explicit classification this gate exists to force — AAASM-5806 moves it to
 # RELEASE_BINARIES, and this comment is what tells that ticket the line is
 # waiting for it.
-UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd aa-devint-harness aa-api-server-pg-qa aa-isolation-launch"
+# protocol-harness (AAASM-5837): a standalone binary that exercises the
+# host<->guest launch protocol directly over the wire, for verifying the
+# protocol in isolation from the IsolationBackend trait plumbing. It is not
+# part of any library surface `aa-isolation-vm-proto` exports and has no
+# product reason to ship — it exists purely as a developer verification tool,
+# the same role `aa-isolation-launch`'s own entry above documents for a
+# different reason (that one is provisional pending AAASM-5806; this one is
+# permanent by design).
+UNRELEASED_BINARIES="generate_openapi generate_policy_rbac_doc generate_golden aa-ebpf-loaderd aa-devint-harness aa-api-server-pg-qa aa-isolation-launch protocol-harness"
 
 fail=0
 err() { echo "::error::$*" >&2; fail=1; }

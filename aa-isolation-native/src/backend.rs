@@ -379,9 +379,11 @@ fn identity() -> BackendIdentity {
 
 /// Everything every enforced or observed requirement contributes: filesystem
 /// grants and the syscall allowlist alike.
-struct PermittedScope {
-    grants: Grants,
-    syscalls: SyscallFilter,
+pub struct PermittedScope {
+    /// The filesystem grants every enforced requirement contributed.
+    pub grants: Grants,
+    /// The syscall allowlist every enforced requirement contributed.
+    pub syscalls: SyscallFilter,
 }
 
 /// Collect the permitted scope every enforced requirement contributes.
@@ -402,7 +404,7 @@ struct PermittedScope {
 /// shortfall's syscalls is still correct behavior — this backend must never
 /// report a control as installed when it was not — but "narrower" does not
 /// mean "stricter" here the way it does for filesystem grants.
-fn permitted_scope(plan: &EnforcementPlan) -> Result<PermittedScope, SpawnError> {
+pub fn permitted_scope(plan: &EnforcementPlan) -> Result<PermittedScope, SpawnError> {
     let mut grants = Grants::default();
     let mut syscalls: BTreeSet<Syscall> = BTreeSet::new();
     let mut syscall_requirement_seen = false;
