@@ -83,29 +83,35 @@ changed/impacted surfaces; RC/minor = patch + relevant P1 + config matrix +
 SDK interop + changed trust boundaries; major = RC/minor + broad P1/P2 +
 full adversarial pass + docs/examples/design audit.
 
-## The seven-step run procedure (summary — detail in REFERENCE.md)
+## The eight-step run procedure (summary — detail in REFERENCE.md)
 
 1. **Manifest** — run `scripts/qa/build-verification-manifest.sh` once.
    Discovers canonical default branch, HEAD, baseline (qa-signoff -> deep-
    sweep-epic -> released-tag -> unknown), delta, CI state.
-2. **Risk mapping** — run `scripts/qa/map-risk.py --manifest
+2. **Feature delta discovery** — run `scripts/qa/build-feature-delta.py`
+   once. Cross-checks Jira ticket status against merged PRs and candidate-
+   HEAD ancestry to classify every candidate ticket `RELEASE_ELIGIBLE` or
+   `OUT_OF_CURRENT_RELEASE_QA_SCOPE` — see
+   [Feature delta discovery](../../../docs/src/qa/release-qa-policy.md#feature-delta-discovery)
+   for the eligibility rules and anti-circularity rule.
+3. **Risk mapping** — run `scripts/qa/map-risk.py --manifest
    .qa/verification-manifest.json`. Produces overall risk, required lanes,
    and the journey set (always including the full P0 set from
    `qa/golden-journeys.yaml`).
-3. **Depth/scope selection** — apply the release QA policy's tier rules to
+4. **Depth/scope selection** — apply the release QA policy's tier rules to
    the risk-mapper output to get the final journey/lane list for this run's
    depth.
-4. **Bounded parallel verification** — launch up to 5 `qa-*` sub-agents (see
+5. **Bounded parallel verification** — launch up to 5 `qa-*` sub-agents (see
    `qa/ORCHESTRATION.md`), each scoped to a manifest/journey slice, each
    returning the AAASM-5828 compact result schema.
-5. **Finding verification** — for each `SUSPECTED_FINDINGS` entry, run the
+6. **Finding verification** — for each `SUSPECTED_FINDINGS` entry, run the
    AAASM-5827 protocol (dedup -> independent verification by
    `qa-finding-verifier` for High/Critical/P0 -> confirm/reject).
-6. **Jira filing** — confirmed defects only, in the project's Bug structure.
+7. **Jira filing** — confirmed defects only, in the project's Bug structure.
    QA-infrastructure-only defects (bugs in this gate's own scripts/skills)
    are fixed directly instead of filed — see the protocol's stated
    exception.
-7. **Sign-off** — write `docs/release/qa-signoff/v<version>.md` from the
+8. **Sign-off** — write `docs/release/qa-signoff/v<version>.md` from the
    template, with an exact `Verdict: PASS` or `Verdict: BLOCK` line.
 
 ## BLOCK rule (mandatory coverage cannot be silently skipped)
