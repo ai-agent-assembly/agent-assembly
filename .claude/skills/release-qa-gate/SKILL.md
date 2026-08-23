@@ -1,6 +1,6 @@
 ---
 name: release-qa-gate
-description: Run the release-gate QA review for an agent-assembly release, scaled by risk (patch / RC-minor / major-deep-sweep). Performs baseline discovery (verification manifest) -> risk mapping -> P0/P1/P2 journey selection -> bounded parallel verification (max 5 qa-* sub-agents) -> independent finding verification -> Jira defect filing -> committed QA sign-off -> Verdict PASS|BLOCK. Composes with, and never replaces, /release-security-gate — both sign-offs are independently required by scripts/release-readiness.sh. Use as a stage-0 pre-cut gate before /release-tag-cut, alongside /release-security-gate. NOTE: this is the QA half of the release gate — distinct from /release-security-gate, which owns security sign-off.
+description: Run the release-gate QA review for an agent-assembly release, scaled by risk (patch / RC-minor / major-deep-sweep). Performs baseline discovery (verification manifest) -> risk mapping -> P0/P1/P2 journey selection -> bounded parallel verification (max 10 qa-* sub-agents) -> independent finding verification -> Jira defect filing -> autonomous same-campaign remediation of ordinary confirmed defects -> committed QA sign-off -> Verdict PASS|BLOCK. Composes with, and never replaces, /release-security-gate — both sign-offs are independently required by scripts/release-readiness.sh. Use as a stage-0 pre-cut gate before /release-tag-cut, alongside /release-security-gate. NOTE: this is the QA half of the release gate — distinct from /release-security-gate, which owns security sign-off.
 ---
 
 # release-qa-gate
@@ -21,7 +21,7 @@ QA orchestration in a single giant prompt every run:
 | [QA sign-off template](../../../docs/release/qa-signoff/TEMPLATE.md) | AAASM-5822 | The committed `Verdict: PASS\|BLOCK` artifact this gate writes |
 | [Golden-journey catalog](../../../qa/golden-journeys.yaml) | AAASM-5824 | Machine-readable P0/P1/P2 index over AAASM-4522 |
 | [Verification manifest generator](../../../scripts/qa/build-verification-manifest.sh) | AAASM-5825 | One-shot baseline/delta/CI-state discovery, shared by every worker |
-| [`.claude/agents/qa-*.md`](../../agents/) + [orchestration policy](../../../qa/ORCHESTRATION.md) | AAASM-5826 | 5 reusable roles, hard 5-concurrent ceiling, no nested spawning |
+| [`.claude/agents/qa-*.md`](../../agents/) + [orchestration policy](../../../qa/ORCHESTRATION.md) | AAASM-5826 | 5 reusable roles, hard 10-concurrent ceiling, no nested spawning |
 | [Finding-verification protocol](../../../qa/FINDING-VERIFICATION-PROTOCOL.md) | AAASM-5827 | SUSPECTED->DEDUPED->INDEPENDENTLY_VERIFIED->CONFIRMED\|REJECTED->FILED |
 | [Evidence contract + worker result schema](../../../docs/src/qa/evidence-and-worker-result-contract.md) | AAASM-5828 | What counts as evidence; the compact result shape every worker returns |
 | [Risk mapper](../../../qa/risk-rules.yaml) + [`scripts/qa/map-risk.py`](../../../scripts/qa/map-risk.py) | AAASM-5829 | Deterministic changed-path -> risk/lane/journey selection |
@@ -101,16 +101,21 @@ full adversarial pass + docs/examples/design audit.
 4. **Depth/scope selection** — apply the release QA policy's tier rules to
    the risk-mapper output to get the final journey/lane list for this run's
    depth.
-5. **Bounded parallel verification** — launch up to 5 `qa-*` sub-agents (see
+5. **Bounded parallel verification** — launch up to 10 `qa-*` sub-agents (see
    `qa/ORCHESTRATION.md`), each scoped to a manifest/journey slice, each
    returning the AAASM-5828 compact result schema.
 6. **Finding verification** — for each `SUSPECTED_FINDINGS` entry, run the
    AAASM-5827 protocol (dedup -> independent verification by
    `qa-finding-verifier` for High/Critical/P0 -> confirm/reject).
-7. **Jira filing** — confirmed defects only, in the project's Bug structure.
-   QA-infrastructure-only defects (bugs in this gate's own scripts/skills)
-   are fixed directly instead of filed — see the protocol's stated
-   exception.
+7. **Jira filing and remediation** — confirmed defects only, in the project's
+   Bug structure. Ordinary confirmed defects are then remediated within the
+   same campaign via the autonomous remediation loop in
+   `qa/FINDING-VERIFICATION-PROTOCOL.md` (implementation -> independent
+   sub-agent review -> CI green -> admin merge -> post-merge reproduction),
+   with human escalation reserved for that protocol's bounded carve-out
+   list. QA-infrastructure-only defects (bugs in this gate's own
+   scripts/skills) are fixed directly instead of filed — see the protocol's
+   stated exception.
 8. **Sign-off** — write `docs/release/qa-signoff/v<version>.md` from the
    template, with an exact `Verdict: PASS` or `Verdict: BLOCK` line.
 
@@ -133,13 +138,26 @@ coverage into an inferred PASS to make a run look clean.
 3. `gh`, `git`, `python3` (with `pyyaml`), `jq` available for the manifest/
    risk-mapper scripts.
 
+## Closing the campaign (mandatory)
+
+`qa/CLEANUP-PROTOCOL.md` (AAASM-5846) is a mandatory closing step of both
+this gate's own run and any remediation loop it triggers, per
+`qa/FINDING-VERIFICATION-PROTOCOL.md`: per-merge worktree/process teardown,
+a real CI-waiting mechanism (never a passive "monitoring" claim), and the
+campaign's final-completion bar (0 stale worktrees, 0 unnecessary background
+processes, 0 leftover listeners/servers, 0 leftover temp folders). Apply it
+before reporting the campaign complete, not only at the very end.
+
 ## What this skill does NOT do
 
 - It does not cut the tag (`/release-tag-cut`).
 - It does not replace or gate `/release-security-gate` — both sign-offs are
   independently required.
-- It does not fix confirmed defects — it classifies, verifies, files, and
-  gates; fixes are separate reviewed work.
+- It classifies, verifies, and files confirmed defects, and remediates
+  ordinary ones within the same campaign via the closed-loop sequence in
+  `qa/FINDING-VERIFICATION-PROTOCOL.md` — human escalation is reserved for
+  that protocol's bounded carve-out list, not confirmed-defect fixing in
+  general.
 - It does not run every P1/P2 journey on every patch — depth is risk-based,
   per the release QA policy.
 
@@ -150,3 +168,5 @@ coverage into an inferred PASS to make a run look clean.
 - **Release relay** → [`release-tag-cut/SKILL.md`](../release-tag-cut/SKILL.md)
 - **Security gate (independent, composed alongside this one)** →
   [`release-security-gate/SKILL.md`](../release-security-gate/SKILL.md)
+- **Mandatory campaign closing step** →
+  [`../../../qa/CLEANUP-PROTOCOL.md`](../../../qa/CLEANUP-PROTOCOL.md)
