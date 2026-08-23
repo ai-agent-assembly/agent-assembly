@@ -1365,6 +1365,47 @@ jobs:
             --no-default-features \
             --features alloc
 
+  aa-ebpf-cross-target:
+    needs: [changes]
+    if: needs.changes.outputs.ebpf == 'true'
+    name: aa-ebpf cross-target build (AAASM-5812)
+    runs-on: ubuntu-latest
+    # AAASM-5812: aa-ebpf/build.rs used to gate its Linux-only BPF-probe-build
+    # step on `#[cfg(target_os = "linux")]` in the build script's own source,
+    # which reflects the *host* running the build script, not the crate's
+    # `--target`. That's invisible on this repo's ubuntu-only CI (host and
+    # target OS always agree here), and only broke when AAASM-5812's guest-
+    # image cross-compile built this crate for a Linux target *from a macOS
+    # host* — the mismatch left the embedded-BPF-bytecode statics in lib.rs
+    # expecting files the (wrongly-gated) build script never created, not even
+    # its own documented stub fallback. Fixed by switching the gate to
+    # `CARGO_CFG_TARGET_OS` (the target, always set by Cargo for build
+    # scripts), matching lib.rs's `#[cfg(target_os = "linux")]` semantics.
+    #
+    # This job builds for an explicit `--target` on a stable toolchain with no
+    # nightly installed, so the build script's internal `rustup run nightly`
+    # probe-build attempt fails and the graceful stub fallback is exercised —
+    # it cannot reproduce the macOS-host half of the original bug (no macOS
+    # runner exists in this repo's CI; AAASM-5811 tracks that gap separately),
+    # but it does pin the fix's actual logic: an explicit `--target` build
+    # must succeed via the stub path, on any host, not just when host and
+    # target happen to already match.
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Check aa-ebpf for an explicit target (stub-fallback path)
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo check -p aa-ebpf --target "$TARGET"
+
   buf-lint:
     needs: [changes]
     if: needs.changes.outputs.proto == 'true'

@@ -77,9 +77,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // BPF compilation is Linux-only. On macOS/Windows the build script is a no-op;
-    // the userspace constants in lib.rs are gated with the same cfg predicate.
-    #[cfg(target_os = "linux")]
-    {
+    // the userspace constants in lib.rs are gated with the same cfg predicate —
+    // but lib.rs's `#[cfg(target_os = "linux")]` and a `#[cfg(target_os = "linux")]`
+    // *here* are not actually the same predicate: a build script always compiles
+    // and runs on the *host*, so `#[cfg(...)]` in this file's own source reflects
+    // the host's OS, while `#[cfg(...)]` in lib.rs reflects the crate's target OS.
+    // Those agree for a native build (host == target) but diverge under cross-
+    // compilation — e.g. building this crate for a Linux target from a macOS
+    // host, as AAASM-5812's guest-image cross-compile does (found in review:
+    // the mismatch left `AA_FILE_IO_BPF` etc. expecting real files that this
+    // block, gated on the wrong OS, never created — not even the stub fallback).
+    // `CARGO_CFG_TARGET_OS` is the one Cargo always sets to the crate's actual
+    // target for build scripts; that's the predicate to match lib.rs's gate.
+    let target_is_linux = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
+    if target_is_linux {
         use std::{env, fs, process::Command};
 
         let out_dir = env::var("OUT_DIR")?;
@@ -148,12 +159,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         emit_object_digest(&release_dir, "aa-exec-probes", "AA_EXEC_BPF_SHA256")?;
         emit_object_digest(&release_dir, "aa-tls-probes", "AA_TLS_BPF_SHA256")?;
         emit_object_digest(&release_dir, "aa-syscall-guard", "AA_SYSCALL_GUARD_BPF_SHA256")?;
-    }
-
-    // On non-Linux the BPF statics in lib.rs are cfg'd out, so the digest env
-    // vars are never read; emit empty placeholders so any `env!()` resolves.
-    #[cfg(not(target_os = "linux"))]
-    {
+    } else {
+        // On a non-Linux *target* the BPF statics in lib.rs are cfg'd out, so
+        // the digest env vars are never read; emit empty placeholders so any
+        // `env!()` resolves regardless.
         for var in [
             "AA_FILE_IO_BPF_SHA256",
             "AA_EXEC_BPF_SHA256",
@@ -164,13 +173,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Suppress unused warning on non-Linux hosts.
+    // Suppress unused warning when target_is_linux is false.
     let _ = probes_dir;
     Ok(())
 }
 
 /// Hash a compiled probe object and emit `cargo:rustc-env=<var>=<hex>`.
-#[cfg(target_os = "linux")]
 fn emit_object_digest(release_dir: &Path, object: &str, var: &str) -> Result<(), Box<dyn std::error::Error>> {
     use sha2::{Digest, Sha256};
 
