@@ -4,6 +4,7 @@ The per-step detail behind [SKILL.md](SKILL.md)'s seven-step summary.
 
 ## Contents
 
+- [The six verification lanes](#the-six-verification-lanes)
 - [Step 1: verification manifest](#step-1-verification-manifest)
 - [Step 2: risk mapping](#step-2-risk-mapping)
 - [Step 3: depth/scope selection](#step-3-depthscope-selection)
@@ -13,6 +14,26 @@ The per-step detail behind [SKILL.md](SKILL.md)'s seven-step summary.
 - [Step 7: writing the sign-off](#step-7-writing-the-sign-off)
 - [Worked example](#worked-example)
 - [Troubleshooting](#troubleshooting)
+
+## The six verification lanes
+
+Every selected journey/surface is verified along one or more of these six
+lanes (the same six the QA sign-off's lane-results table records, per
+`docs/release/qa-signoff/TEMPLATE.md`):
+
+| Lane | Owning role(s) | What it checks | Evidence contract |
+|---|---|---|---|
+| **Functional / configuration** | `qa-functional` | CLI commands, gateway startup/registration, policy authoring/apply, config schema behavior | CLI/command-behavior section of `docs/src/qa/evidence-and-worker-result-contract.md` |
+| **Golden journeys** | `qa-sdk-journey` (SDK/install/Quick-Start/Golden-Path journeys), `qa-functional` (CLI/gateway-entry journeys) | The outside-in journeys selected in Step 3, run against the real public/documented path | Same contract's CLI/API/browser sections, per journey's `entry_point` |
+| **Design** | `qa-design` | Dashboard visual/functional behavior, any journey with `browser_required: true`, CLI/TUI presentation | Browser/design-QA section of the evidence contract |
+| **Reliability** | `qa-reliability-docs` | Induced failure -> recovery/degradation -> diagnostics, for HIGH-risk or explicitly reliability-tagged surfaces | Reliability/failure-path section |
+| **Documentation / product consistency** | `qa-reliability-docs` | Every documented command/link in the release delta's touched docs actually works (J21) | Documentation-contract section |
+| **Security-relevant behavior** | any role, escalated per AAASM-5827 | Security-relevant behavioral findings surfaced *during* QA — independent of, and never a substitute for, `/release-security-gate`'s own review | Security-relevant-behavior section |
+
+A given run does not necessarily exercise all six lanes — Step 3's
+depth/scope selection determines which lanes apply, driven by the risk
+mapper's `lanes` output (`qa/risk-rules.yaml`) union'd with each selected
+journey's own `lanes` field in `qa/golden-journeys.yaml`.
 
 ## Step 1: verification manifest
 
