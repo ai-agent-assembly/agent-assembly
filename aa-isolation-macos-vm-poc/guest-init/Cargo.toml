@@ -18,6 +18,13 @@ path = "src/main.rs"
 
 [dependencies]
 libc = "0.2"
+# AAASM-5837. Path dependency across the outer agent-assembly workspace
+# boundary — this crate is deliberately its own standalone workspace (see the
+# note at the top of this file) but the wire contract with the host process
+# must be the exact same code on both sides, so it reaches across that
+# boundary for exactly this one crate. Verified buildable from a clean clone
+# during AAASM-5837's design pass.
+aa-isolation-vm-proto = { path = "../../aa-isolation-vm-proto" }
 
 [profile.release]
 panic = "abort"

@@ -21,6 +21,11 @@
 use std::ffi::CString;
 use std::os::unix::io::RawFd;
 
+// AAASM-5837: the real host↔guest launch protocol, layered on top of the
+// vsock connectivity `try_vsock` below already proved. See protocol.rs's own
+// module documentation.
+mod protocol;
+
 // AF_VSOCK is not exposed by the `libc` crate for every target the same way
 // glibc/musl headers define it, so the handful of constants this needs are
 // spelled out directly against their stable Linux uAPI values
@@ -211,76 +216,6 @@ fn try_virtiofs_negative_control(console: RawFd, mountpoint: &str) {
     }
 }
 
-fn try_vsock(console: RawFd) {
-    let fd = unsafe { libc::socket(AF_VSOCK, libc::SOCK_STREAM, 0) };
-    if fd < 0 {
-        write_fd(
-            console,
-            &format!("[guest-init] vsock socket() FAILED errno={}\n", errno()),
-        );
-        return;
-    }
-
-    let addr = SockaddrVm {
-        svm_family: AF_VSOCK as libc::sa_family_t,
-        svm_reserved1: 0,
-        svm_port: VSOCK_PORT,
-        svm_cid: VMADDR_CID_HOST,
-        svm_zero: [0; 4],
-    };
-
-    let rc = unsafe {
-        libc::connect(
-            fd,
-            &addr as *const SockaddrVm as *const libc::sockaddr,
-            std::mem::size_of::<SockaddrVm>() as u32,
-        )
-    };
-    if rc != 0 {
-        write_fd(
-            console,
-            &format!(
-                "[guest-init] vsock connect() to host CID={VMADDR_CID_HOST} port={VSOCK_PORT} FAILED errno={}\n",
-                errno()
-            ),
-        );
-        unsafe {
-            libc::close(fd);
-        }
-        return;
-    }
-    write_fd(
-        console,
-        &format!("[guest-init] vsock connect() OK (cid={VMADDR_CID_HOST} port={VSOCK_PORT})\n"),
-    );
-
-    let greeting = b"hello-from-guest-vsock\n";
-    unsafe {
-        libc::write(fd, greeting.as_ptr() as *const _, greeting.len());
-    }
-    write_fd(console, "[guest-init] vsock greeting sent\n");
-
-    let mut buf = [0u8; 256];
-    let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
-    if n > 0 {
-        let reply = String::from_utf8_lossy(&buf[..n as usize]);
-        write_fd(
-            console,
-            &format!("[guest-init] vsock host reply: {}\n", reply.trim_end()),
-        );
-        write_fd(console, "[guest-init] VSOCK-OK\n");
-    } else {
-        write_fd(
-            console,
-            &format!("[guest-init] vsock read() got n={n} errno={}\n", errno()),
-        );
-    }
-
-    unsafe {
-        libc::close(fd);
-    }
-}
-
 /// Run `program` as a child of this PID 1, with `argv` as its own argument
 /// vector (everything after `program`'s own path). `fork`+`exec` rather than
 /// replacing this process: PID 1 must never exit, and `aa-isolation-launch`
@@ -385,7 +320,17 @@ fn main() {
 
     try_virtiofs(console, "aa-share", "/mnt/share");
     try_virtiofs_negative_control(console, "/mnt/share");
-    try_vsock(console);
+    // AAASM-5837: try_vsock's fixed hello/reply used to run here as a
+    // standalone vsock-connectivity proof. It now conflicts with the real
+    // protocol below rather than complementing it: the host side (Swift's
+    // VsockListenerDelegate, in --control-socket mode) pumps every incoming
+    // vsock connection's bytes to a Rust listener expecting exactly one
+    // connection speaking framed `Message`s — a second, earlier connection
+    // sending the unframed greeting is indistinguishable from a wire error
+    // to that listener (confirmed on real hardware: `WrongMagic`). The new
+    // protocol's own `GuestReady` message proves vsock connectivity at
+    // least as rigorously (a real two-way exchange, not just one byte
+    // round trip) — see protocol.rs.
 
     // AAASM-5812 AC "the primary security boundary at this layer" — the
     // authoritative enumeration of what is actually mounted, so the claim
@@ -499,12 +444,11 @@ fn main() {
         ],
     );
 
-    write_fd(console, "[guest-init] GUEST-INIT-DONE, parking\n");
+    write_fd(console, "[guest-init] GUEST-INIT-DONE, boot diagnostics complete\n");
 
-    // PID 1 must never return/exit.
-    loop {
-        unsafe {
-            libc::sleep(3600);
-        }
-    }
+    // AAASM-5837: real launches from here on. `dial_and_serve_forever` never
+    // returns (see its own docs) — it is this process's "PID 1 must never
+    // exit" mechanism, replacing the fixed sleep-loop this line used to end
+    // on.
+    protocol::dial_and_serve_forever(console);
 }
