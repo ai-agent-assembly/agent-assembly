@@ -124,6 +124,7 @@ async fn start_proxy(fixture: Fixture, ca_dir: &std::path::Path) -> (SocketAddr,
         upstream_override: fixture.upstream_override,
         gateway_endpoint: fixture.gateway_endpoint,
         mcp_fail_open: false,
+        network_fail_open: false,
         // The mock upstreams are on loopback, which the SSRF guard would
         // (correctly) refuse in production.
         allow_private_connect_targets: !fixture.block_private_targets,
@@ -560,6 +561,14 @@ mod gateway_stub {
 
     pub const DENY_REASON: &str = "no tools for you";
 
+    /// Denies MCP `tools/call` (`ActionContext::ToolCall`), allows everything
+    /// else. AAASM-5851: the proxy now also sends a `NetworkCall` context for
+    /// every CONNECT/in-tunnel/plain-HTTP destination when a gateway is
+    /// configured, so a stub that denied unconditionally would refuse the
+    /// CONNECT this test needs to succeed *before* it can reach the MCP
+    /// tools/call this test actually exercises. Branching on the action type
+    /// keeps this test's original, still-valid intent: prove an MCP deny
+    /// specifically persists a refusal record.
     #[derive(Default)]
     struct DenyEverything;
 
@@ -567,11 +576,25 @@ mod gateway_stub {
     impl PolicyService for DenyEverything {
         async fn check_action(
             &self,
-            _req: Request<CheckActionRequest>,
+            req: Request<CheckActionRequest>,
         ) -> Result<Response<CheckActionResponse>, Status> {
+            use aa_proto::assembly::policy::v1::action_context::Action;
+            let is_tool_call = matches!(
+                req.get_ref().context.as_ref().and_then(|c| c.action.as_ref()),
+                Some(Action::ToolCall(_))
+            );
+            let decision = if is_tool_call {
+                aa_proto::assembly::common::v1::Decision::Deny
+            } else {
+                aa_proto::assembly::common::v1::Decision::Allow
+            };
             Ok(Response::new(CheckActionResponse {
-                decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
-                reason: DENY_REASON.to_owned(),
+                decision: decision as i32,
+                reason: if is_tool_call {
+                    DENY_REASON.to_owned()
+                } else {
+                    String::new()
+                },
                 ..Default::default()
             }))
         }
