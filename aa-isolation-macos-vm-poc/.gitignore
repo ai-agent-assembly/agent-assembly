@@ -2,6 +2,10 @@
 # pinned+verified checksums, not committed (large binaries, per repo policy).
 images/
 
+# Landlock-capable guest kernel — reproducible via
+# scripts/build-landlock-kernel.sh (large binary, same policy as images/).
+images-landlock-kernel/
+
 # Swift build output
 .build/
 *.o
