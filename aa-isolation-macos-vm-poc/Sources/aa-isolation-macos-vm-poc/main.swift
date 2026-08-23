@@ -208,31 +208,44 @@ if args.enableVirtiofs {
         try? markerContents.write(
             to: scratch.appendingPathComponent("marker.txt"), atomically: true, encoding: .utf8)
         log("virtiofs: created scratch share dir \(scratch.path) with marker.txt = \(markerContents.trimmingCharacters(in: .whitespacesAndNewlines))")
-
-        // AAASM-5812 AC "a path outside [the share] is verified unreachable
-        // from the guest, structurally absent, not merely policy-denied":
-        // a sibling file, one level *above* the exported directory, at a
-        // FIXED name the guest checks for *inside* its mount
-        // (`/mnt/share/outside-marker.txt`) — not via a `..` traversal.
-        // `..` at a virtiofs mount root re-enters the guest's own rootfs,
-        // never reaches the host at all, and would report ENOENT
-        // unconditionally regardless of how the export is scoped — that
-        // probe cannot fail and is not evidence (caught in review after
-        // pass 5 first shipped it, see README "AC closure" for the
-        // correction). This version has a real failure mode instead: if the
-        // export were ever misconfigured to include `scratch`'s *parent*
-        // rather than `scratch` itself, this file would actually appear at
-        // that exact in-mount path, and the guest's open() would succeed.
-        let outsideMarkerName = "outside-marker.txt"
-        let outsideMarkerContents = "outside-marker-\(UUID().uuidString)\n"
-        let outsideMarkerURL = scratch.deletingLastPathComponent()
-            .appendingPathComponent(outsideMarkerName)
-        try? outsideMarkerContents.write(to: outsideMarkerURL, atomically: true, encoding: .utf8)
-        log("virtiofs: created OUTSIDE-share negative-control file \(outsideMarkerURL.path) (must stay unreachable from the guest at /mnt/share/\(outsideMarkerName))")
-
         dirPath = scratch.path
     }
     shareDirURL = URL(fileURLWithPath: dirPath, isDirectory: true)
+
+    // AAASM-5812 AC "a path outside [the share] is verified unreachable
+    // from the guest, structurally absent, not merely policy-denied":
+    // a sibling file, one level *above* the exported directory, at a
+    // FIXED name the guest checks for *inside* its mount
+    // (`/mnt/share/outside-marker.txt`) — not via a `..` traversal.
+    // `..` at a virtiofs mount root re-enters the guest's own rootfs,
+    // never reaches the host at all, and would report ENOENT
+    // unconditionally regardless of how the export is scoped — that
+    // probe cannot fail and is not evidence (caught in review after
+    // pass 5 first shipped it, see README "AC closure" for the
+    // correction). Written unconditionally — including on the
+    // `--share-dir` path, which previously skipped this entirely and made
+    // the guest's ENOENT true only by the accident of no such file existing
+    // anywhere, not because the export boundary held (caught in review a
+    // second time, same class of bug). This version has a real failure
+    // mode: if the export were ever misconfigured to include the shared
+    // dir's *parent* rather than the dir itself, this file would actually
+    // appear at that exact in-mount path, and the guest's open() would
+    // succeed.
+    let outsideMarkerName = "outside-marker.txt"
+    let outsideMarkerContents = "outside-marker-\(UUID().uuidString)\n"
+    let outsideMarkerURL = shareDirURL!.deletingLastPathComponent()
+        .appendingPathComponent(outsideMarkerName)
+    do {
+        try outsideMarkerContents.write(to: outsideMarkerURL, atomically: true, encoding: .utf8)
+        log("virtiofs: created OUTSIDE-share negative-control file \(outsideMarkerURL.path) (must stay unreachable from the guest at /mnt/share/\(outsideMarkerName))")
+    } catch {
+        // A parent dir we can't write to (e.g. a --share-dir whose parent
+        // isn't ours) means the negative control wasn't planted — the
+        // guest's later ENOENT would be unfalsifiable, same failure mode
+        // this fix closes. Fail loudly instead of silently degrading to
+        // that.
+        fail("virtiofs: could not create negative-control file at \(outsideMarkerURL.path): \(error)")
+    }
 
     let sharedDirectory = VZSharedDirectory(url: shareDirURL!, readOnly: false)
     let singleShare = VZSingleDirectoryShare(directory: sharedDirectory)

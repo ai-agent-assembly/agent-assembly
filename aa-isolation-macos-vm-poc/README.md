@@ -1062,6 +1062,25 @@ for: the path does not exist in the guest's mount namespace past the export
 root at all — rather than existing-but-permission-denied, which would be a
 policy claim, not a structural one.
 
+**Second correction, caught in review before this pass shipped.** The fix
+above still had a gap on the exact recipe used to produce the
+`VIRTIOFS-NEGATIVE-CONTROL-FAILED` transcript: `main.swift` only wrote the
+`outside-marker.txt` file inside the `else` branch that runs when
+`--share-dir` is *not* given (the scratch-dir default path). The
+falsification recipe passes `--share-dir` explicitly — that branch never
+ran, so the marker file was never planted by that invocation. The transcript
+above only reproduced because a marker happened to already exist at that
+path from an earlier default (no-`--share-dir`) run left over in
+`NSTemporaryDirectory()`. From a clean machine, re-running the documented
+recipe exactly as written would find no marker at all, `open()` would report
+`ENOENT` regardless of export scoping, and the check would misreport a pass
+— the identical tautology class the first correction above exists to catch,
+just one level down. Fixed by moving the marker creation out of the
+`else` and running it unconditionally against the resolved share directory
+(`--share-dir` or scratch, either way), so the falsification recipe now
+plants and proves its own precondition on every run rather than depending on
+state left over from a previous invocation.
+
 This alone doesn't rule out a wrongly-scoped export in some *other*
 direction (an `ENOENT` on the *wrong* path proves nothing), so it's paired
 with an authoritative enumeration of what's actually mounted:
