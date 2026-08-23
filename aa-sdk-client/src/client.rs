@@ -43,6 +43,25 @@ pub struct AssemblyClient {
     /// dump readable by a host attacker (AAASM-3629). The plaintext is only
     /// cloned out transiently when attached to an outgoing request.
     credential_token: Mutex<Option<Zeroizing<String>>>,
+    /// The `did:key` DID this client actually registered as, stored at
+    /// [`register`](Self::register) success (AAASM-5835).
+    ///
+    /// `AssemblyConfig::registration_did` resolves a caller-supplied
+    /// `agent_id` (a human label such as `"my-agent"`) to the `did:key` the
+    /// gateway's `AgentLifecycleService.Register` actually recorded — the
+    /// registry keys agents by that DID, not by the label. `query_policy`
+    /// callers (the per-language FFI shims) pass the human label straight
+    /// through on `CheckActionRequest.agent_id`, since they never see the
+    /// derived DID; forwarded as-is, that label never matches any
+    /// registered triple, and the gateway's `find_by_credential_token`
+    /// fallback then reports it as "credential token registered to a
+    /// different agent" — a real decision is never reached, on *every*
+    /// governed call, allow or deny alike. Stored here so `query_policy` can
+    /// substitute the DID that was actually registered — mirroring how
+    /// `credential_token` above is captured once at registration and
+    /// reattached on every subsequent check, rather than trusted from the
+    /// caller.
+    registered_agent_id: Mutex<Option<String>>,
     #[cfg(feature = "preflight")]
     preflight: Option<Preflight>,
 }
@@ -55,6 +74,7 @@ impl AssemblyClient {
             inner: Mutex::new(Some(ipc_handle)),
             detected_frameworks,
             credential_token: Mutex::new(None),
+            registered_agent_id: Mutex::new(None),
             #[cfg(feature = "preflight")]
             preflight: Some(Preflight::new()),
         }
@@ -74,6 +94,7 @@ impl AssemblyClient {
             inner: Mutex::new(Some(ipc_handle)),
             detected_frameworks,
             credential_token: Mutex::new(None),
+            registered_agent_id: Mutex::new(None),
             preflight,
         }
     }
@@ -129,6 +150,23 @@ impl AssemblyClient {
         {
             let mut guard = self.credential_token.lock().map_err(|_| SdkClientError::LockPoisoned)?;
             *guard = Some(Zeroizing::new(response.credential_token));
+        }
+
+        // Re-resolve the same durable identity `build_register_request` just
+        // registered with — `registration_did` reads the persisted key
+        // `identity_store` enrolled above, so this returns the identical DID
+        // rather than deriving a new one (AAASM-5835). Stored so
+        // `query_policy` can correct a caller's human-label `agent_id` to
+        // what the gateway actually recorded the agent under.
+        {
+            let did = config
+                .registration_did()
+                .map_err(|e| SdkClientError::IdentityUnavailable(e.to_string()))?;
+            let mut guard = self
+                .registered_agent_id
+                .lock()
+                .map_err(|_| SdkClientError::LockPoisoned)?;
+            *guard = Some(did);
         }
 
         Ok(response.assigned_policy)
@@ -265,6 +303,21 @@ impl AssemblyClient {
         if request.credential_token.is_empty() {
             if let Some(token) = self.credential_token() {
                 request.credential_token = token;
+            }
+        }
+
+        // Substitute the DID this client actually registered as (AAASM-5835).
+        // Every FFI shim builds `CheckActionRequest.agent_id` from the same
+        // human-label `agent_id` the caller passed to `register` — it never
+        // learns the derived `did:key` `register` resolved that label to, so
+        // it cannot supply it. Unconditional, unlike `credential_token`
+        // above: one `AssemblyClient` registers as exactly one identity, so
+        // there is no legitimate per-call override to preserve — a caller-
+        // supplied `agent_id` here is always the pre-registration label, never
+        // a deliberate choice of a *different* registered identity.
+        if let Ok(guard) = self.registered_agent_id.lock() {
+            if let Some(did) = guard.as_ref() {
+                request.agent_id.get_or_insert_with(Default::default).agent_id = did.clone();
             }
         }
 
@@ -663,6 +716,12 @@ mod tests {
         fn clear_credential_token_for_test(&self) {
             *self.credential_token.lock().unwrap() = None;
         }
+
+        /// Test-only seam: set the stored registered DID without a live
+        /// gateway round-trip (AAASM-5835).
+        fn set_registered_agent_id_for_test(&self, did: &str) {
+            *self.registered_agent_id.lock().unwrap() = Some(did.to_string());
+        }
     }
 
     #[test]
@@ -763,6 +822,81 @@ mod tests {
         match rx.blocking_recv().expect("should receive a command") {
             IpcCommand::QueryPolicy { request, resp } => {
                 assert_eq!(request.credential_token, "explicit-tok");
+                resp.send(CheckActionResponse::default()).unwrap();
+            }
+            other => panic!("expected QueryPolicy, got {other:?}"),
+        }
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn query_policy_substitutes_the_registered_did_for_a_callers_human_label() {
+        // AAASM-5835: every FFI shim builds `CheckActionRequest.agent_id` from
+        // the human label the caller registered with (it never sees the
+        // derived DID `register` resolved that label to). Forwarded as-is,
+        // that label never matches any registered gateway triple, so a real
+        // decision is never reached on any governed call. `query_policy` must
+        // correct it to the DID this client actually registered as.
+        use aa_proto::assembly::common::v1::AgentId;
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (client, mut rx) = test_client(vec![]);
+        client.set_registered_agent_id_for_test("did:key:z6MkRealRegisteredDid");
+
+        let request = CheckActionRequest {
+            agent_id: Some(AgentId {
+                org_id: String::new(),
+                team_id: String::new(),
+                agent_id: "my-human-label".to_string(),
+            }),
+            ..Default::default()
+        };
+        let handle = std::thread::spawn(move || {
+            client.query_policy(request).unwrap();
+        });
+
+        match rx.blocking_recv().expect("should receive a command") {
+            IpcCommand::QueryPolicy { request, resp } => {
+                assert_eq!(
+                    request.agent_id.as_ref().map(|a| a.agent_id.as_str()),
+                    Some("did:key:z6MkRealRegisteredDid"),
+                    "query_policy must substitute the registered DID, not forward the caller's human label"
+                );
+                resp.send(CheckActionResponse::default()).unwrap();
+            }
+            other => panic!("expected QueryPolicy, got {other:?}"),
+        }
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn query_policy_leaves_agent_id_untouched_before_registration() {
+        // Before `register` succeeds there is no DID to substitute — an
+        // unregistered/observe-mode caller's request passes through
+        // unchanged, matching the pre-fix behaviour for that case.
+        use aa_proto::assembly::common::v1::AgentId;
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (client, mut rx) = test_client(vec![]);
+
+        let request = CheckActionRequest {
+            agent_id: Some(AgentId {
+                org_id: String::new(),
+                team_id: String::new(),
+                agent_id: "unregistered-label".to_string(),
+            }),
+            ..Default::default()
+        };
+        let handle = std::thread::spawn(move || {
+            client.query_policy(request).unwrap();
+        });
+
+        match rx.blocking_recv().expect("should receive a command") {
+            IpcCommand::QueryPolicy { request, resp } => {
+                assert_eq!(
+                    request.agent_id.as_ref().map(|a| a.agent_id.as_str()),
+                    Some("unregistered-label")
+                );
                 resp.send(CheckActionResponse::default()).unwrap();
             }
             other => panic!("expected QueryPolicy, got {other:?}"),
