@@ -368,11 +368,19 @@ journeys:
   outcome: See AAASM-4600 for the full acceptance contract; this row is a selection index only.
 - id: J27
   jira: AAASM-4595
+  feature_refs:
+  - AAASM-5738
+  - AAASM-5739
+  - AAASM-5791
+  - AAASM-5792
   name: Verify data protection (credential redact_only / block / alert_only + PII patterns)
-  priority: P1
+  priority: P0
   persona_track: Policy
   surfaces:
   - aa-gateway/src/policy
+  - aa-gateway/src/service
+  - aa-gateway/src/alerts.rs
+  - aa-security
   - aa-policy
   - policy-examples
   entry_point: cli
@@ -381,6 +389,13 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4595 for the full acceptance contract; this row is a selection index only.
+  # AAASM-5848 (2026-08-23): this journey's own P1/not-selected status is what
+  # let a real defect ship undetected in the rc.6 baseline — alert_only forwarded
+  # raw secrets with no compensating alert ever recorded, contradicting its own
+  # documented contract. Promoted to P0 (a real live-gateway run of all three
+  # modes belongs in every risk-based release sweep, not just a periodic deep
+  # sweep) after AAASM-5848's fix. See docs/release/qa-signoff/v0.0.1-rc.7.md
+  # for the direct evidence this promotion is based on.
 - id: J28
   jira: AAASM-4596
   name: Verify rate limiting (limit_per_hour) and scheduling (active_hours)
@@ -852,3 +867,77 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4980 for the full acceptance contract; this row is a selection index only.
+- id: J61
+  jira: AAASM-5852
+  feature_refs:
+  - AAASM-5702
+  - AAASM-5703
+  - AAASM-5704
+  - AAASM-5705
+  - AAASM-5706
+  - AAASM-5707
+  - AAASM-5708
+  - AAASM-5709
+  - AAASM-5710
+  - AAASM-5711
+  - AAASM-5712
+  - AAASM-5713
+  - AAASM-5714
+  - AAASM-5751
+  - AAASM-5801
+  - AAASM-5802
+  - AAASM-5803
+  - AAASM-5804
+  - AAASM-5805
+  - AAASM-5806
+  name: Verify aasm run's execution-isolation runtime confines a real launch on Linux
+  priority: P0
+  persona_track: Function
+  surfaces:
+  - aa-isolation
+  - aa-isolation-sandlock
+  - aa-isolation-native
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-5852 for the full acceptance contract; this row is a selection index only.
+  # Added 2026-08-23 during the rc.7 coverage-audit directive: AAASM-5702's
+  # Epic (Done, fix version v0.0.1-rc.7) and all 16 children shipped with zero
+  # catalog representation, confirmed both manually and by
+  # scripts/qa/check-feature-coverage.py's mechanical NOT_COVERED_CANDIDATE
+  # result. Real, strong Linux CI evidence already exists
+  # (isolation-backend-linux / isolation-backend-native-linux jobs in
+  # .github/workflows/ci.yml) — this entry is a traceability fix, not a new
+  # test requirement. macOS-hosted Linux isolation (AAASM-5811 family) is
+  # explicitly excluded: no fix version, still In Progress/To Do.
+- id: J62
+  jira: AAASM-5853
+  name: Verify aasm run's real governed launch of a supported dev tool end to end
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-cli
+  - aa-devtool
+  - aa-devtool-claude-code
+  - aa-devtool-codex
+  - aa-devtool-copilot
+  - aa-devtool-windsurf
+  - aa-proxy
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-5853 for the full acceptance contract; this row is a selection index only.
+  # Added 2026-08-23 during the rc.7 coverage-audit directive: aasm run's real
+  # implementation (4 distinct adapter crates) had no golden-journey or QA
+  # sign-off evidence of a real launch->policy->allow/deny->audit loop.
+  # AAASM-5462 covers dry-run/refusal mechanics only. Currently PARTIAL —
+  # launch mechanics and refusal gates verified real; a policy-gated tool call
+  # reaching an allow/deny outcome was not, and two confirmed security gaps
+  # (AAASM-5644 CA trust, AAASM-5851 network allowlist) remain open. See
+  # AAASM-5853 for the acceptance contract this journey is not yet meeting.
