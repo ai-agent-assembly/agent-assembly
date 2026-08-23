@@ -852,3 +852,18 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4980 for the full acceptance contract; this row is a selection index only.
+- id: J61
+  jira: AAASM-5850
+  name: Gateway lifecycle failure-diagnostics accuracy (start/status truthfully report real process state)
+  priority: P1
+  persona_track: Operator
+  surfaces:
+  - aa-cli/src/commands/gateway
+  entry_point: cli
+  lanes:
+  - reliability
+  browser_required: false
+  outcome: See AAASM-5850 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-5832
+  - AAASM-5833
