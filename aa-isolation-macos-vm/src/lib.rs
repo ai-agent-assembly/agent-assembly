@@ -29,13 +29,17 @@
 //! discipline `aa-isolation-native`'s own `capability::discover` holds
 //! itself to (a controlled pair of confined commands, checked *on this
 //! host*, not "it worked once in a different pass"). Building that probe for
-//! a VM backend means booting a guest as part of `discover()`, which every
-//! sibling backend's own probe is written to avoid needing (theirs cost one
-//! `--version` call or one local confined command; this backend's would cost
-//! a multi-second VM boot on every selection walk). That tradeoff is real
-//! engineering work this pass does not do — see the AAASM-5813 Jira history
-//! for the decision to defer it rather than either skip the probe discipline
-//! or eat the boot cost silently.
+//! a VM backend means booting a guest as part of `discover()` — which is
+//! *not* the multi-second cost this doc block previously assumed without
+//! measuring: `tests/real_hardware.rs`'s full round trip (boot, connect,
+//! launch, exit, teardown) measures at ~0.3s on this host, the same order of
+//! magnitude as sandlock's own `discover()`, which already runs a controlled
+//! confined-command pair rather than a bare `--version` call. The corrected
+//! finding is that a guest-boot probe is affordable; building one (a
+//! positive/negative confined-launch pair through this exact protocol,
+//! mirroring `aa-isolation-native::probe`'s discipline) is real, scoped
+//! engineering work AAASM-5837 did not do — tracked as AAASM-5813's own AC3,
+//! not deferred on a cost basis that turned out to be wrong.
 //!
 //! The practical consequence: `Available` with an empty capability report
 //! means [`aa_isolation::plan::negotiate`] correctly *refuses* any launch
