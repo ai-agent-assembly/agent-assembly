@@ -170,7 +170,7 @@ fi
 # package page. Enumerate members from [workspace].members (same source as the
 # version-literal check above) and skip crates marked `publish = false` — those are
 # never uploaded, so their READMEs are not release-gated.
-MEMBERS="$(awk '/^\[workspace\]/{w=1} w && /members[[:space:]]*=[[:space:]]*\[/{m=1; next} m && /\]/{m=0} m{gsub(/[",]/,""); gsub(/[[:space:]]/,""); if ($0 != "") print}' Cargo.toml)"
+MEMBERS="$(awk '/^\[workspace\]/{w=1} w && /members[[:space:]]*=[[:space:]]*\[/{m=1; next} m && /\]/{m=0} m && /^[[:space:]]*#/{next} m{gsub(/[",]/,""); gsub(/[[:space:]]/,""); if ($0 != "") print}' Cargo.toml)"
 MISSING_READMES=""
 for CRATE in $MEMBERS; do
   if grep -qE '^[[:space:]]*publish[[:space:]]*=[[:space:]]*false' "$CRATE/Cargo.toml" 2>/dev/null; then
