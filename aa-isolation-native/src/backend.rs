@@ -380,7 +380,9 @@ fn identity() -> BackendIdentity {
 /// Everything every enforced or observed requirement contributes: filesystem
 /// grants and the syscall allowlist alike.
 pub struct PermittedScope {
+    /// The filesystem grants every enforced requirement contributed.
     pub grants: Grants,
+    /// The syscall allowlist every enforced requirement contributed.
     pub syscalls: SyscallFilter,
 }
 
