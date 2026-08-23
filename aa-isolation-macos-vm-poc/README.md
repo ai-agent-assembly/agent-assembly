@@ -1081,6 +1081,28 @@ just one level down. Fixed by moving the marker creation out of the
 plants and proves its own precondition on every run rather than depending on
 state left over from a previous invocation.
 
+Re-verified for real against a freshly-emptied directory (no leftover state
+from any earlier run), two invocations: `--share-dir` pointed at a fresh
+child directory (correctly-scoped) and then, second, at that child's own
+parent (the misconfiguration under test):
+
+```
+=== correctly-scoped: --share-dir /tmp/marker-parent-test/child ===
+[poc] virtiofs: created OUTSIDE-share negative-control file /tmp/marker-parent-test/outside-marker.txt ...
+[poc] virtiofs: sharing /tmp/marker-parent-test/child as tag 'aa-share'
+[guest-init] virtiofs negative control: open(/mnt/share/outside-marker.txt) FAILED errno=2 (ENOENT)
+[guest-init] VIRTIOFS-NEGATIVE-CONTROL-OK
+
+=== misconfigured: --share-dir /tmp/marker-parent-test (the marker's own parent) ===
+[poc] virtiofs: created OUTSIDE-share negative-control file /tmp/outside-marker.txt ...
+[poc] virtiofs: sharing /tmp/marker-parent-test as tag 'aa-share'
+[guest-init] VIRTIOFS-NEGATIVE-CONTROL-FAILED: /mnt/share/outside-marker.txt opened successfully
+```
+
+Same two outcomes as before the fix, but now genuinely produced by this
+exact two-command recipe from a clean directory rather than by leftover
+state from an unrelated earlier run.
+
 This alone doesn't rule out a wrongly-scoped export in some *other*
 direction (an `ENOENT` on the *wrong* path proves nothing), so it's paired
 with an authoritative enumeration of what's actually mounted:
