@@ -26,6 +26,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         upstream_override: None,
         gateway_endpoint: None,
         mcp_fail_open: false,
+        network_fail_open: false,
         // Integration tests dial loopback mock upstreams over both the CONNECT
         // and the plain-HTTP forward paths. The plain-HTTP path now re-validates
         // resolved IPs against the SSRF denylist (AAASM-3140), which blocks
@@ -524,6 +525,7 @@ mod attacker {
             upstream_override: Some(upstream),
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             allow_private_connect_targets: true,
         }
     }

@@ -78,8 +78,8 @@ pub struct ProxyConfig {
     /// Empty means allow all hosts.
     pub denied_hosts: Vec<String>,
 
-    /// AAASM-1943 — network egress allowlist. When **non-empty**, the proxy
-    /// permits CONNECT only to hosts matching at least one pattern; all
+    /// AAASM-1943 — local network egress allowlist. When **non-empty**, the
+    /// proxy permits CONNECT only to hosts matching at least one pattern; all
     /// others are blocked with HTTP 403 + `A2AImpersonationAttempted`-style
     /// audit event. When **empty** (the default), no allowlist filter is
     /// applied — the `denied_hosts` block-list continues to be the only
@@ -89,6 +89,14 @@ pub struct ProxyConfig {
     /// [`aa_core::policy::is_host_allowed_by_egress_allowlist`]: exact
     /// case-insensitive match, leftmost-label wildcard (`*.openai.com`), or
     /// universal `*`.
+    ///
+    /// AAASM-5851: this field is consulted only when [`Self::gateway_endpoint`]
+    /// is `None` (explicit standalone/local mode — this list is intentionally
+    /// the local source of truth). When a gateway endpoint is configured, the
+    /// egress-allowlist question is answered by the gateway's own
+    /// `policy.network` stage instead (`network_enforce::gateway_egress_decision`),
+    /// so this local list is not consulted and cannot silently diverge from
+    /// the gateway's policy — see ADR 0033 §2.
     ///
     /// Comma-separated list from env var `AA_PROXY_NETWORK_ALLOWLIST`.
     pub network_allowlist: Vec<String>,
@@ -150,6 +158,25 @@ pub struct ProxyConfig {
     /// Env: `AA_PROXY_MCP_FAIL_OPEN` — `1`/`true` to fail open; default `false`.
     pub mcp_fail_open: bool,
 
+    /// AAASM-5851 — what to do when the gateway is authoritative for network
+    /// egress (a [`Self::gateway_endpoint`] is set) but a `CheckAction` RPC
+    /// for a CONNECT/in-tunnel/plain-HTTP destination fails (unreachable,
+    /// times out, or returns a malformed response).
+    ///
+    /// Deliberately a **separate** knob from [`Self::mcp_fail_open`]: network
+    /// egress and MCP tool-call enforcement are different risk surfaces, and
+    /// an operator opting one path into fail-open must not silently also
+    /// relax the other. Default is **fail-closed** (`false`) — the connection
+    /// is refused with HTTP 403 when the gateway cannot answer.
+    ///
+    /// This knob only governs the *per-decision* RPC failure. Gateway
+    /// unreachability at proxy **startup** is still governed by
+    /// [`Self::mcp_fail_open`] (`ProxyServer::run`'s initial connect) — this
+    /// field is not consulted there.
+    ///
+    /// Env: `AA_PROXY_NETWORK_FAIL_OPEN` — `1`/`true` to fail open; default `false`.
+    pub network_fail_open: bool,
+
     /// When `true`, the AAASM-3130 SSRF guard permits CONNECT targets that
     /// resolve to private / loopback / link-local address ranges. Intended for
     /// integration tests **only** — they stand up an in-process mock upstream
@@ -182,6 +209,8 @@ impl ProxyConfig {
             // AAASM-3357: default fail-closed. Only an explicit truthy value
             // opts into the historical fail-open soft-degradation behaviour.
             mcp_fail_open: env_truthy("AA_PROXY_MCP_FAIL_OPEN"),
+            // AAASM-5851: default fail-closed, independently of mcp_fail_open.
+            network_fail_open: env_truthy("AA_PROXY_NETWORK_FAIL_OPEN"),
             // No env var: production binaries can never relax the SSRF guard.
             allow_private_connect_targets: false,
         })

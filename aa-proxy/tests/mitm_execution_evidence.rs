@@ -203,6 +203,7 @@ async fn start_proxy(
         upstream_override,
         gateway_endpoint: None,
         mcp_fail_open: false,
+        network_fail_open: false,
         // The mock/dead upstreams are on loopback, which the SSRF guard would
         // (correctly) refuse in production.
         allow_private_connect_targets: true,
