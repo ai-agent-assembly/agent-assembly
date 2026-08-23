@@ -437,7 +437,11 @@ fn the_refusal_for_an_unknown_id_names_every_backend_this_build_has() {
     let error = run(&args)
         .expect_err("an id no backend answers to must refuse")
         .to_string();
-    for id in [aa_isolation_sandlock::BACKEND_ID, aa_isolation_native::BACKEND_ID] {
+    for id in [
+        aa_isolation_sandlock::BACKEND_ID,
+        aa_isolation_native::BACKEND_ID,
+        aa_isolation_macos_vm::BACKEND_ID,
+    ] {
         assert!(
             error.contains(id),
             "the refusal does not name the `{id}` backend this build has: {error}"
@@ -475,6 +479,38 @@ fn the_aasm_native_backend_id_is_selectable() {
             "the native backend id was refused as unknown: {error}"
         );
     }
+}
+
+/// The macOS-VM backend is reachable by id, and refuses with the same
+/// "unavailable on this host" vocabulary [`a_requested_boundary_with_no_available_backend_refuses_and_starts_nothing`]
+/// asserts for a backend with no available candidate — not the "names no
+/// backend this build has" refusal a genuinely unknown id gets. This backend
+/// is deterministically `Unavailable` (AAASM-5813: no host↔guest launch
+/// protocol, no entitled binary, see `aa-isolation-macos-vm`'s docs), so
+/// unlike the native backend's test above this one asserts the specific
+/// outcome rather than merely "did not refuse as unknown".
+#[test]
+fn the_aasm_macos_vm_backend_id_is_selectable_and_honestly_unavailable() {
+    let scratch = Scratch::new("macos-vm-id");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_ONLY);
+    let target = scratch.target("must-not-exist");
+
+    let mut args = exec_args(&artifact, &["/bin/sh", "-c", &creates(&target)]);
+    args.isolation = IsolationIntent::Process;
+    args.isolation_backend = Some(aa_isolation_macos_vm::BACKEND_ID.into());
+
+    let error = run(&args)
+        .expect_err("this backend is always unavailable today and must refuse, not launch unconfined")
+        .to_string();
+    assert!(
+        !error.contains("names no backend this build has"),
+        "the macos-vm backend id was refused as unknown rather than as unavailable: {error}"
+    );
+    assert!(
+        error.contains("There is no fallback"),
+        "the refusal does not use the shared unavailable-backend vocabulary: {error}"
+    );
+    assert!(!target.exists(), "the program ran unconfined: {}", target.display());
 }
 
 /// Naming the AASM-native backend for a launch that asked for no boundary is
@@ -649,7 +685,11 @@ fn the_auto_refusal_names_every_candidate_it_considered() {
         return;
     };
     let text = error.to_string();
-    for id in [aa_isolation_sandlock::BACKEND_ID, aa_isolation_native::BACKEND_ID] {
+    for id in [
+        aa_isolation_sandlock::BACKEND_ID,
+        aa_isolation_native::BACKEND_ID,
+        aa_isolation_macos_vm::BACKEND_ID,
+    ] {
         assert!(
             text.contains(id),
             "the refusal does not name the `{id}` candidate it considered: {text}"
