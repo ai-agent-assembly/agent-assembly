@@ -21,6 +21,7 @@ members = [
     "aa-isolation-sandlock",
     "aa-isolation-native",
     "aa-isolation-macos-vm",
+    "aa-isolation-vm-proto",
     "aa-policy",
     "aa-gateway",
     "aa-api",

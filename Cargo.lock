@@ -494,6 +494,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-isolation-vm-proto"
+version = "0.0.1-rc.6"
+dependencies = [
+ "aa-isolation-native",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aa-policy"
 version = "0.0.1-rc.6"
 dependencies = [

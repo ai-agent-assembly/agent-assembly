@@ -1,0 +1,29 @@
+[package]
+name = "aa-isolation-vm-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wire contract for the aa-isolation-macos-vm host↔guest launch protocol (AAASM-5837)"
+# AAASM-5837. Held back from crates.io for the same reason as the two crates
+# it exists to connect: `aa-isolation-macos-vm` and `guest-init` are both
+# `publish = false` (the former useless without the macOS-only VM substrate,
+# the latter not a library at all), and this crate's only reason to exist is
+# to be the one place both of them import from.
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `to_launcher_argv` builds on `aa-isolation-native::launch::build` rather than
+# re-deriving the launcher's argv grammar (ARG_SEPARATOR, flag names, grant
+# ordering) a second time — see this crate's `src/lib.rs` for why duplicating
+# that grammar would be exactly the two-sided-contract-drift bug AAASM-5837
+# exists to close.
+aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.6" }
+
+[features]
+default = []
+
+[lints]
+workspace = true
