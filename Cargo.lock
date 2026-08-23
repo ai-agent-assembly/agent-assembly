@@ -469,6 +469,7 @@ name = "aa-isolation-macos-vm"
 version = "0.0.1-rc.6"
 dependencies = [
  "aa-isolation",
+ "aa-isolation-vm-proto",
 ]
 
 [[package]]
