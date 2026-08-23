@@ -17,6 +17,9 @@ aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6" }
 # AAASM-5837: the wire contract shared with guest-init, on the other side of
 # the vsock connection this crate's `vmm` module drives.
 aa-isolation-vm-proto = { path = "../aa-isolation-vm-proto", version = "0.0.1-rc.6" }
+# `permitted_scope`: derives this launch's grant set from the plan itself
+# rather than re-deriving (or, worse, widening) it — see `spawn`'s use.
+aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.6" }
 
 [features]
 default = []

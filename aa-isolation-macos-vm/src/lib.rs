@@ -71,6 +71,7 @@ use aa_isolation::{
     ExecutionHandle, ExecutionSpec, ExitDisposition, IsolationBackend, Lowering, PlanRefusal, PlatformBoundary,
     PreparedExecution, Provenance, SpawnError, TerminationRequest,
 };
+use aa_isolation_native::permitted_scope;
 use aa_isolation_vm_proto::{Disposition, Message, TerminationMode};
 
 /// Stable machine identifier for this backend, named in `--isolation-backend`
@@ -311,8 +312,6 @@ impl IsolationBackend for MacosVmBackend {
         // because `spawn` is where the mapped value actually gets used, and
         // a caller could in principle call it with a different prepared
         // value than the one `prepare` validated.
-        let mut fs_read = Vec::new();
-        let mut fs_write = Vec::new();
         let program = match paths::to_guest_path(spec.program(), session.share_dir.as_deref()) {
             Ok(mapped) => mapped,
             Err(err) => {
@@ -321,18 +320,31 @@ impl IsolationBackend for MacosVmBackend {
                 })
             }
         };
-        // This pass grants exactly the working directory (the whole share)
-        // for read and write when one is configured — a per-path grant
-        // model mirroring the policy-derived grants a real `ExecutionSpec`
-        // would carry is `aa_isolation_native::backend::permitted_scope`'s
-        // job once this backend's own capability rows exist (see this
-        // crate's module docs on why they don't yet); until then, the
-        // *only* thing this launch can be trusted to grant is the boundary
-        // that already exists structurally — the virtiofs share itself.
-        if let Some(share) = &session.share_dir {
-            fs_read.push(paths::GUEST_SHARE_MOUNTPOINT.to_string());
-            fs_write.push(paths::GUEST_SHARE_MOUNTPOINT.to_string());
-            let _ = share;
+        // The grant set comes from the plan itself, via the same
+        // `permitted_scope` this backend was made `pub` for — never a
+        // blanket grant on the whole share. A prior version of this pass
+        // pushed the entire virtiofs share into both `fs_read` and
+        // `fs_write` whenever one was configured, regardless of whether any
+        // requirement named it; that widened the sibling invariant this
+        // workspace holds elsewhere ("no requirement grants a path policy
+        // did not name") and is exactly what `permitted_scope` exists to
+        // avoid re-deriving badly. Each host path it returns is translated
+        // to its guest form the same way the program path is — refusing
+        // (not dropping) a grant this guest cannot reach.
+        let scope = permitted_scope(prepared.plan()).map_err(|err| match err {
+            SpawnError::Prepare { detail } => SpawnError::Spawn { detail },
+            other => other,
+        })?;
+        let mut fs_read = Vec::new();
+        let mut fs_write = Vec::new();
+        for (host_path, guest_paths) in [(&scope.grants.read, &mut fs_read), (&scope.grants.write, &mut fs_write)] {
+            for path in host_path {
+                let mapped =
+                    paths::to_guest_path(path, session.share_dir.as_deref()).map_err(|err| SpawnError::Spawn {
+                        detail: format!("the plan grants `{path}`, which this guest cannot reach: {err}"),
+                    })?;
+                guest_paths.push(mapped);
+            }
         }
 
         let request_id = token.clone();
