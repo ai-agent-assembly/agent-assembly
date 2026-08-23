@@ -868,6 +868,21 @@ journeys:
   browser_required: false
   outcome: See AAASM-4980 for the full acceptance contract; this row is a selection index only.
 - id: J61
+  jira: AAASM-5850
+  name: Gateway lifecycle failure-diagnostics accuracy (start/status truthfully report real process state)
+  priority: P1
+  persona_track: Operator
+  surfaces:
+  - aa-cli/src/commands/gateway
+  entry_point: cli
+  lanes:
+  - reliability
+  browser_required: false
+  outcome: See AAASM-5850 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-5832
+  - AAASM-5833
+- id: J62
   jira: AAASM-5852
   feature_refs:
   - AAASM-5702
@@ -913,7 +928,7 @@ journeys:
   # .github/workflows/ci.yml) — this entry is a traceability fix, not a new
   # test requirement. macOS-hosted Linux isolation (AAASM-5811 family) is
   # explicitly excluded: no fix version, still In Progress/To Do.
-- id: J62
+- id: J63
   jira: AAASM-5853
   name: Verify aasm run's real governed launch of a supported dev tool end to end
   priority: P1
