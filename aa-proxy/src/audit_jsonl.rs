@@ -128,6 +128,13 @@ pub enum RefusalRule {
     /// The gateway denied an MCP `tools/call`, or the call could not be
     /// evaluated and was refused fail-closed.
     McpToolCall,
+    /// AAASM-5851: the gateway's `policy.network` stage denied a CONNECT /
+    /// in-tunnel / plain-HTTP destination, or the `CheckAction` RPC could not
+    /// be evaluated and was refused fail-closed. Distinct from
+    /// [`Self::EgressAllowlist`] (the local, standalone-mode allowlist) so
+    /// the audit record names the control plane, not local config, as the
+    /// decider.
+    GatewayEgressPolicy,
 }
 
 /// A single audit record emitted by the proxy's data path.

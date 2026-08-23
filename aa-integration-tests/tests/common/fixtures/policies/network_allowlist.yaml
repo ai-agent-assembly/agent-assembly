@@ -6,9 +6,16 @@ metadata:
 
 # AAASM-1943 (F116 ST-W — Scenario 2): demonstrates the policy-DSL shape
 # operators write to declare which outbound hosts a sandboxed tool may
-# reach. The aa-proxy CONNECT handler consults the matching list via the
-# AA_PROXY_NETWORK_ALLOWLIST env var; future work will sync this YAML
-# block to the proxy at gateway startup.
+# reach. Used by `e2e_tool_sandbox.rs` against a standalone (no-gateway)
+# proxy — that path still reads AA_PROXY_NETWORK_ALLOWLIST, unrelated to
+# this file's spec.network.allowlist section.
+#
+# AAASM-5851: this same fixture is also loaded directly as a real gateway
+# policy by `e2e_network_egress_gateway.rs`, where spec.network.allowlist
+# IS what's consulted — aa-proxy's egress checks ask the gateway for a
+# CheckAction decision whenever ProxyConfig.gateway_endpoint is configured,
+# closing the gap the previous version of this comment described as
+# "future work".
 #
 # Pattern grammar (shared with aa-core::policy::is_host_allowed_by_egress_allowlist):
 # * exact case-insensitive match — `api.openai.com`

@@ -130,10 +130,16 @@ const NOT_FORWARDED_BY_RULE: ExecutionEvidence = transmission_evidence::not_forw
 enum EgressDenyReason {
     /// The host matched the operator's denylist.
     Denylist,
-    /// A non-empty network allowlist did not match the host.
+    /// A non-empty local network allowlist did not match the host
+    /// (standalone mode — no gateway endpoint configured).
     NetworkAllowlist,
     /// The host was an IP literal in a blocked range.
     SsrfBlockedAddress,
+    /// AAASM-5851: the gateway's `policy.network` stage denied the host —
+    /// distinct from [`Self::NetworkAllowlist`] so the audit/decision record
+    /// names who actually decided (control-plane vs local config), per
+    /// ADR 0033 §2's who-decided-at-what-claim-level axis.
+    GatewayNetworkPolicy,
 }
 
 impl EgressDenyReason {
@@ -143,6 +149,7 @@ impl EgressDenyReason {
             Self::Denylist => "host policy",
             Self::NetworkAllowlist => "network allowlist",
             Self::SsrfBlockedAddress => "ssrf: blocked address range",
+            Self::GatewayNetworkPolicy => "gateway network policy",
         }
     }
 
@@ -152,6 +159,7 @@ impl EgressDenyReason {
             Self::Denylist => RefusalRule::EgressDenylist,
             Self::NetworkAllowlist => RefusalRule::EgressAllowlist,
             Self::SsrfBlockedAddress => RefusalRule::SsrfBlockedAddress,
+            Self::GatewayNetworkPolicy => RefusalRule::GatewayEgressPolicy,
         }
     }
 }
@@ -891,7 +899,7 @@ impl ProxyServer {
 
         // AAASM-3580: re-enforce the egress allowlist against the in-tunnel
         // host before any gateway dispatch or upstream dial.
-        if let Some(reason) = self.in_tunnel_deny_reason(&req) {
+        if let Some(reason) = self.in_tunnel_deny_reason(&req).await {
             let in_host = Self::effective_request_host(&req).unwrap_or(host);
             tracing::info!(
                 connect_host = %host,
@@ -1023,11 +1031,23 @@ impl ProxyServer {
         Ok(())
     }
 
-    /// Evaluate egress policy for a `CONNECT` host. Returns `Some(reason)` when
-    /// the connection must be denied — the host is on the deny-list, or (when a
-    /// non-empty network allowlist is configured) it matches no allowlist
-    /// pattern. Returns `None` when the connection is allowed. An empty
-    /// allowlist preserves the pre-AAASM-1943 default-open behaviour.
+    /// Evaluate the proxy-*local* egress policy for a `CONNECT` host: the SSRF
+    /// guard and the operator denylist, unconditionally, plus the local
+    /// [`ProxyConfig::network_allowlist`] **only when no gateway is
+    /// configured** (standalone mode). Returns `Some(reason)` when the
+    /// connection must be denied by one of these local checks. Returns `None`
+    /// when none of them deny it — which, in gateway (managed) mode, means
+    /// "not denied *locally*", not "allowed": the caller must still await
+    /// [`Self::gateway_egress_deny_reason`] before dialling upstream. See
+    /// [`Self::egress_deny_reason`], which combines both correctly.
+    ///
+    /// AAASM-5851: the local allowlist branch is skipped when
+    /// [`ProxyConfig::gateway_endpoint`] is `Some` — the gateway's own
+    /// `policy.network` stage is authoritative for that question in managed
+    /// mode, so this proxy-local list is not consulted and cannot silently
+    /// diverge from it (ADR 0033 §3: no two independently-evolving
+    /// allowlist implementations). An empty local allowlist in standalone
+    /// mode preserves the pre-AAASM-1943 default-open behaviour, unchanged.
     fn connect_deny_reason(&self, host: &str) -> Option<EgressDenyReason> {
         // SSRF guard (AAASM-3130): an IP-literal CONNECT target pointed at
         // loopback / RFC-1918 / link-local / cloud-metadata space must be
@@ -1058,10 +1078,92 @@ impl ProxyServer {
         {
             return Some(EgressDenyReason::Denylist);
         }
-        if !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist) {
+        if self.config.gateway_endpoint.is_none()
+            && !aa_core::policy::is_host_allowed_by_egress_allowlist(host, &self.config.network_allowlist)
+        {
             return Some(EgressDenyReason::NetworkAllowlist);
         }
         None
+    }
+
+    /// AAASM-5851: ask the gateway's `policy.network` stage whether `host` is
+    /// permitted, when a gateway is configured. Returns `None` immediately
+    /// (no gateway to ask, or [`Self::connect_deny_reason`] already denied
+    /// locally) — the caller combines this with the local check via
+    /// [`Self::egress_deny_reason`].
+    ///
+    /// Fail-closed by default: an RPC error (unreachable, timeout, malformed
+    /// response) denies, unless [`ProxyConfig::network_fail_open`] is set.
+    /// `port`/`protocol` are passed through to
+    /// [`crate::network_enforce::evaluate_network_call`] for the gateway's
+    /// audit trail; they do not affect the match outcome (port is stripped
+    /// before comparison).
+    async fn gateway_egress_deny_reason(&self, host: &str, port: u16, protocol: &str) -> Option<EgressDenyReason> {
+        // No gateway configured at all — standalone mode, nothing for this
+        // checkpoint to add; `connect_deny_reason`'s local allowlist branch
+        // already ran (and is the only thing that runs).
+        self.config.gateway_endpoint.as_ref()?;
+        let Some(gateway) = self.gateway_client.get() else {
+            // AAASM-5851: `gateway_endpoint` is configured but the client was
+            // never populated — either the initial connect at startup failed
+            // under `mcp_fail_open` (soft-degraded start), or `run()` hasn't
+            // reached the connect step yet. Treat exactly like a live RPC
+            // failure: fail-closed unless the operator explicitly opted into
+            // `network_fail_open`. Without this branch, a gateway that is
+            // configured-but-unreachable would silently leave BOTH the local
+            // allowlist (skipped because a gateway is configured) and the
+            // gateway check (a no-op with no client) providing zero egress
+            // enforcement — the exact "no silent fallback to allow-all"
+            // failure mode this ticket exists to close.
+            return if self.config.network_fail_open {
+                None
+            } else {
+                tracing::error!(
+                    %host,
+                    "gateway configured for network egress but no live client is connected; \
+                     denying (fail-closed). Set AA_PROXY_NETWORK_FAIL_OPEN=1 to forward without \
+                     enforcement instead.",
+                );
+                Some(EgressDenyReason::GatewayNetworkPolicy)
+            };
+        };
+        match crate::network_enforce::evaluate_network_call(gateway, host, port, protocol).await {
+            Ok(crate::network_enforce::NetworkDecision::Allow) => None,
+            Ok(crate::network_enforce::NetworkDecision::Deny { reason }) => {
+                tracing::info!(%host, %reason, "network egress denied by gateway policy");
+                Some(EgressDenyReason::GatewayNetworkPolicy)
+            }
+            Err(e) if self.config.network_fail_open => {
+                tracing::warn!(
+                    %host,
+                    error = %e,
+                    "gateway CheckAction failed for network egress; forwarding without enforcement \
+                     (AA_PROXY_NETWORK_FAIL_OPEN is set, failing OPEN)",
+                );
+                None
+            }
+            Err(e) => {
+                tracing::error!(
+                    %host,
+                    error = %e,
+                    "gateway CheckAction failed for network egress; denying (fail-closed). \
+                     Set AA_PROXY_NETWORK_FAIL_OPEN=1 to forward without enforcement instead.",
+                );
+                Some(EgressDenyReason::GatewayNetworkPolicy)
+            }
+        }
+    }
+
+    /// Combine the local (SSRF/denylist/standalone-allowlist) and, when a
+    /// gateway is configured, gateway-backed egress checks for `host`. This
+    /// is the one entry point CONNECT, in-tunnel, and plain-HTTP call sites
+    /// should use — see [`Self::connect_deny_reason`] and
+    /// [`Self::gateway_egress_deny_reason`] for what each half covers.
+    async fn egress_deny_reason(&self, host: &str, port: u16, protocol: &str) -> Option<EgressDenyReason> {
+        if let Some(reason) = self.connect_deny_reason(host) {
+            return Some(reason);
+        }
+        self.gateway_egress_deny_reason(host, port, protocol).await
     }
 
     /// Re-enforce the egress policy against the host the agent actually sent
@@ -1078,7 +1180,14 @@ impl ProxyServer {
     /// When the in-tunnel host is empty (no Host header, origin-form target) the
     /// CONNECT-time check already covered the destination, so this is a no-op.
     /// An empty allowlist keeps the default-open behaviour unchanged.
-    fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<EgressDenyReason> {
+    ///
+    /// AAASM-5851: routes both candidate hosts through [`Self::egress_deny_reason`]
+    /// (not just the local check), so a gateway-configured deployment cannot be
+    /// bypassed by smuggling a gateway-denied host into the `Host` header of an
+    /// already-open tunnel — the same in-tunnel port/protocol default as the
+    /// original CONNECT (443/"https") is used, since the header check has no
+    /// authority-port context of its own.
+    async fn in_tunnel_deny_reason(&self, req: &HttpRequest) -> Option<EgressDenyReason> {
         // AAASM-4829: defense-in-depth against in-tunnel header host-splitting.
         // Check BOTH the absolute-form request target host AND the `Host` header
         // and deny if EITHER is disallowed — an agent must not pass the egress
@@ -1086,10 +1195,15 @@ impl ProxyServer {
         // disallowed host in the `Host` header (or vice versa). Previously only
         // the target-preferred "effective" host was checked, so a mismatched
         // pair let the un-checked half slip past the allowlist.
-        [Self::target_request_host(req), Self::header_request_host(req)]
+        for host in [Self::target_request_host(req), Self::header_request_host(req)]
             .into_iter()
             .flatten()
-            .find_map(|host| self.connect_deny_reason(host))
+        {
+            if let Some(reason) = self.egress_deny_reason(host, 443, "https").await {
+                return Some(reason);
+            }
+        }
+        None
     }
 
     /// Extract the effective upstream host the in-tunnel request addresses.
@@ -1149,7 +1263,7 @@ impl ProxyServer {
         // AAASM-3580: re-enforce the egress allowlist against the host the agent
         // sent INSIDE the tunnel, not just the CONNECT line. A forged
         // `Host: evil.attacker.com` is rejected here, before any upstream dial.
-        if let Some(reason) = self.in_tunnel_deny_reason(&req) {
+        if let Some(reason) = self.in_tunnel_deny_reason(&req).await {
             let in_host = Self::effective_request_host(&req).unwrap_or(host);
             tracing::info!(
                 connect_host = %host,
@@ -1426,9 +1540,11 @@ impl ProxyServer {
         let host = canonical_host(target);
         let host = host.as_str();
 
-        // Egress policy: deny-list, then AAASM-1943 network allowlist.
+        // Egress policy: SSRF guard + deny-list (always local), then either
+        // the local AAASM-1943 network allowlist (standalone) or the
+        // gateway's `policy.network` stage (AAASM-5851, managed mode).
         // Both return 403 + emit a deny decision and end the connection.
-        if let Some(reason) = self.connect_deny_reason(host) {
+        if let Some(reason) = self.egress_deny_reason(host, 443, "https").await {
             tracing::info!(
                 %host,
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
@@ -1599,8 +1715,10 @@ impl ProxyServer {
         // bypasses `denied_hosts`/`network_allowlist` — the SSRF resolved-IP
         // recheck below only guards address ranges, not policy hosts. Deny here
         // (before any upstream dial), mirroring the CONNECT path's 403.
+        // AAASM-5851: routed through `egress_deny_reason` too, so a
+        // scheme-downgrade cannot also bypass gateway-mode network policy.
         let deny_host = strip_host_port(&host);
-        if let Some(reason) = self.connect_deny_reason(deny_host) {
+        if let Some(reason) = self.egress_deny_reason(deny_host, 80, "http").await {
             tracing::info!(
                 host = %deny_host,
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
@@ -2065,12 +2183,63 @@ mod tests {
             upstream_override: None,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
             allow_private_connect_targets: false,
         };
         config.bind_addr = ([127, 0, 0, 1], 0).into();
         let (tx, _rx) = broadcast::channel(8);
         ProxyServer::new(config, ca, tx)
+    }
+
+    /// A server with `gateway_endpoint` configured but never `run()`, so
+    /// `gateway_client` stays unpopulated — the "configured but no live
+    /// client" branch of `gateway_egress_deny_reason`, distinct from a live
+    /// RPC failure (covered by the e2e suite's dead-listener tests).
+    async fn server_with_gateway_configured(network_fail_open: bool) -> Arc<ProxyServer> {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let config = ProxyConfig {
+            bind_addr: ([127, 0, 0, 1], 0).into(),
+            ca_dir: dir.path().to_path_buf(),
+            cert_cache_capacity: 8,
+            llm_only: true,
+            mitm_hosts: Vec::new(),
+            denied_hosts: Vec::new(),
+            network_allowlist: Vec::new(),
+            skip_upstream_tls_verify: false,
+            credential_action: crate::config::CredentialAction::default(),
+            upstream_override: None,
+            gateway_endpoint: Some("http://127.0.0.1:1".to_string()),
+            mcp_fail_open: false,
+            network_fail_open,
+            allow_private_connect_targets: false,
+        };
+        let (tx, _rx) = broadcast::channel(8);
+        ProxyServer::new(config, ca, tx)
+    }
+
+    #[tokio::test]
+    async fn egress_deny_reason_fails_closed_when_gateway_configured_but_client_never_populated() {
+        // AAASM-5851: gateway_endpoint is Some, but no `run()` call means
+        // `gateway_client` was never populated — this must NOT silently fall
+        // through to allow-all just because neither the local allowlist
+        // branch (skipped, gateway configured) nor the gateway RPC (no
+        // client to call) ran.
+        let server = server_with_gateway_configured(false).await;
+        assert_eq!(
+            server.egress_deny_reason("anything.example.com", 443, "https").await,
+            Some(EgressDenyReason::GatewayNetworkPolicy)
+        );
+    }
+
+    #[tokio::test]
+    async fn egress_deny_reason_fails_open_when_configured_and_no_client_populated() {
+        let server = server_with_gateway_configured(true).await;
+        assert_eq!(
+            server.egress_deny_reason("anything.example.com", 443, "https").await,
+            None
+        );
     }
 
     #[test]
@@ -2292,12 +2461,12 @@ mod tests {
         let server = server_with(vec![], vec!["api.openai.com".to_string()]).await;
         let forged = req_with(vec![("Host", "evil.attacker.com")], "/v1/chat/completions");
         assert_eq!(
-            server.in_tunnel_deny_reason(&forged),
+            server.in_tunnel_deny_reason(&forged).await,
             Some(EgressDenyReason::NetworkAllowlist)
         );
         // The allowlisted host inside the tunnel is permitted.
         let ok = req_with(vec![("Host", "api.openai.com")], "/v1/chat/completions");
-        assert_eq!(server.in_tunnel_deny_reason(&ok), None);
+        assert_eq!(server.in_tunnel_deny_reason(&ok).await, None);
     }
 
     #[tokio::test]
@@ -2312,7 +2481,7 @@ mod tests {
             "https://api.openai.com/v1/chat/completions",
         );
         assert_eq!(
-            server.in_tunnel_deny_reason(&split),
+            server.in_tunnel_deny_reason(&split).await,
             Some(EgressDenyReason::NetworkAllowlist)
         );
         // The symmetric case: allowed header, disallowed absolute target.
@@ -2321,12 +2490,12 @@ mod tests {
             "https://evil.attacker.com/v1/chat/completions",
         );
         assert_eq!(
-            server.in_tunnel_deny_reason(&split2),
+            server.in_tunnel_deny_reason(&split2).await,
             Some(EgressDenyReason::NetworkAllowlist)
         );
         // Both halves allowlisted → permitted.
         let ok = req_with(vec![("Host", "api.openai.com")], "https://api.openai.com/v1/chat");
-        assert_eq!(server.in_tunnel_deny_reason(&ok), None);
+        assert_eq!(server.in_tunnel_deny_reason(&ok).await, None);
     }
 
     #[tokio::test]
@@ -2334,7 +2503,7 @@ mod tests {
         // Backward compatibility: no allowlist configured → no in-tunnel denial.
         let server = server_with(vec![], vec![]).await;
         let req = req_with(vec![("Host", "anything.example.com")], "/v1/x");
-        assert_eq!(server.in_tunnel_deny_reason(&req), None);
+        assert_eq!(server.in_tunnel_deny_reason(&req).await, None);
     }
 
     #[tokio::test]
@@ -2457,6 +2626,7 @@ mod tests {
             upstream_override,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2589,6 +2759,7 @@ mod tests {
             upstream_override: None,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             allow_private_connect_targets: false,
         };
 
@@ -2672,6 +2843,7 @@ mod tests {
             upstream_override,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
