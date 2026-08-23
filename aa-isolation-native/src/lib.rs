@@ -99,7 +99,9 @@ pub mod proc_scope;
 pub mod rules;
 pub mod seccomp;
 
-pub use backend::{CompletedRun, NativeBackend, BACKEND_ID, BINDING_CRATE, SOURCE_URL, SPDX_LICENSE};
+pub use backend::{
+    permitted_scope, CompletedRun, NativeBackend, PermittedScope, BACKEND_ID, BINDING_CRATE, SOURCE_URL, SPDX_LICENSE,
+};
 pub use host::{AbiFloor, HostFacts, HostUnusable, SyscallFilterSupport, LAUNCHER_PATH_ENV, LAUNCHER_PROGRAM};
 pub use inherit::seal_inherited_descriptors;
 pub use launch::{Grants, LauncherArgv, SyscallFilter, EXIT_LAUNCH_REFUSED, FAILURE_MARKER};
