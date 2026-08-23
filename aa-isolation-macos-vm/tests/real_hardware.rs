@@ -7,19 +7,32 @@
 //!
 //! ```text
 //! AA_ISOLATION_MACOS_VM_HELPER=... AA_ISOLATION_MACOS_VM_KERNEL=... AA_ISOLATION_MACOS_VM_ROOTFS=... \
-//!   cargo test -p aa-isolation-macos-vm --test real_hardware -- --ignored --nocapture
+//!   cargo test -p aa-isolation-macos-vm --test real_hardware -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! This bypasses `aa_isolation::plan::negotiate` deliberately (calls
-//! `prepare`/`spawn`/`wait_for_exit` directly against a hand-built
-//! `EnforcementPlan`) — see AAASM-5837's Jira history for why: with zero
-//! `CapabilityReport` rows, `negotiate` correctly refuses every real launch
-//! through the ordinary `aasm run` CLI path today, which is a genuine,
-//! separately-tracked gap (a capability probe, not yet built) — not evidence
-//! that `prepare`/`spawn`/`wait_for_exit` themselves are unproven. This test
-//! is what proves those three methods against the real substrate.
+//! `--test-threads=1` is required, not a suggestion: every test here calls
+//! `MacosVmBackend::discover()` or boots a guest directly, and
+//! `main.swift`'s `--disk` attaches the shared `rootfs.img` read-write
+//! (AAASM-5837's own known risk — concurrent guests writing the same image
+//! can corrupt it). Run in parallel, this file's own tests observably
+//! collide: a concurrent boot randomly fails outright, or a probe launch's
+//! effect reads back as the wrong outcome. Confirmed empirically during
+//! AAASM-5813's own verification pass — this is not a hypothetical.
+//!
+//! The first test below bypasses `aa_isolation::plan::negotiate` deliberately
+//! (calls `prepare`/`spawn`/`wait_for_exit` directly against a hand-built
+//! `EnforcementPlan`) — this predates AAASM-5813's capability probe
+//! (`aa_isolation_macos_vm::probe`/`capability`), from when this backend's
+//! `discover()` reported zero `CapabilityReport` rows and `negotiate`
+//! refused every real launch. Left in place because it isolates
+//! `prepare`/`spawn`/`wait_for_exit` from `plan()`'s own correctness. The
+//! tests below it exercise the real `plan()` path — no bypass — now that
+//! `discover()` measures real capability rows.
 
-use aa_isolation::{BackendIdentity, EnforcementPlan, ExecutionSpec, IdentityRef, IsolationBackend, LaunchPosture};
+use aa_isolation::{
+    permit_only_selector, BackendIdentity, CapabilityDomain, ControlRequirement, DescendantCoverage, EnforcementPlan,
+    ExecutionSpec, FailurePosture, IdentityRef, IsolationBackend, LaunchPosture, RequirementScope,
+};
 use aa_isolation_macos_vm::MacosVmBackend;
 
 fn hand_built_plan(backend: &BackendIdentity, spec: ExecutionSpec) -> EnforcementPlan {
@@ -74,4 +87,84 @@ fn a_real_launch_round_trips_through_prepare_spawn_wait_for_exit() {
     // contract) without hanging on an already-drained connection.
     let second = backend.wait_for_exit(&handle).expect("second wait_for_exit");
     assert_eq!(second.code(), Some(0));
+}
+
+/// AAASM-5813 AC3: `discover()`'s probe must have produced real,
+/// prevention-capable rows for both filesystem domains, each backed by an
+/// observed grandchild denial — not zero rows, and not a report that merely
+/// looks complete without a measurement behind it.
+#[test]
+#[ignore]
+fn discover_measures_real_capability_rows() {
+    let backend = MacosVmBackend::discover();
+    assert!(
+        backend.capabilities().availability().is_available(),
+        "backend is Unavailable — set AA_ISOLATION_MACOS_VM_{{HELPER,KERNEL,ROOTFS}}: {:?}",
+        backend.capabilities().availability()
+    );
+
+    let capabilities = backend.capabilities();
+    for domain in [CapabilityDomain::FilesystemRead, CapabilityDomain::FilesystemWrite] {
+        let report = capabilities
+            .report_for(domain)
+            .unwrap_or_else(|| panic!("{domain} not reported at all"));
+        assert!(
+            report.can_prevent(),
+            "{domain} did not measure a prevention capability: {report:?}"
+        );
+        assert_eq!(
+            report.descendants(),
+            DescendantCoverage::ProcessTree,
+            "{domain}: {report:?}"
+        );
+        assert_eq!(
+            report.failure_posture(),
+            FailurePosture::FailClosed,
+            "{domain}: {report:?}"
+        );
+    }
+}
+
+/// AAASM-5813 AC1, through the real product path: a spec carrying an actual
+/// `FilesystemWrite` prevention requirement now plans through
+/// `backend.plan()` — real `negotiate`, no hand-built bypass — because
+/// `discover()`'s probe gave it a prevention-capable row to satisfy the
+/// requirement against. This is the gap the crate's module docs describe:
+/// AAASM-5837 proved the trait mechanism; this proves the policy-driven path
+/// AAASM-5813 actually asks for.
+#[test]
+#[ignore]
+fn a_real_filesystem_write_requirement_now_plans_through_negotiate() {
+    let backend = MacosVmBackend::discover();
+    assert!(
+        backend.capabilities().availability().is_available(),
+        "backend is Unavailable — set AA_ISOLATION_MACOS_VM_{{HELPER,KERNEL,ROOTFS}}: {:?}",
+        backend.capabilities().availability()
+    );
+
+    let scratch = std::env::temp_dir().join(format!("aa-macos-vm-negotiate-test-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("create scratch dir");
+
+    let spec = ExecutionSpec::new(
+        "/usr/local/bin/busybox",
+        IdentityRef::root("real-hardware-negotiate-test"),
+    )
+    .with_args(["true"])
+    .with_working_dir(scratch.clone())
+    .with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::FilesystemWrite).with_scope(RequirementScope::Selectors(vec![
+            permit_only_selector(&scratch.to_string_lossy()),
+        ])),
+    );
+
+    let plan = backend
+        .plan(&spec)
+        .expect("a real FilesystemWrite requirement plans now that discover() measured a capability row");
+
+    let prepared = backend.prepare(plan).expect("prepare");
+    let handle = backend.spawn(prepared).expect("spawn");
+    let disposition = backend.wait_for_exit(&handle).expect("wait_for_exit");
+    assert_eq!(disposition.code(), Some(0), "expected exit 0, got {disposition}");
+
+    let _ = std::fs::remove_dir_all(&scratch);
 }

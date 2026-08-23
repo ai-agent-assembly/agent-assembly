@@ -18,38 +18,32 @@
 //! checks and what it does not (per-guest capability negotiation, still
 //! future work).
 //!
-//! **[`MacosVmBackend::capabilities`] reports zero [`aa_isolation::CapabilityReport`]
-//! rows even when `Available`.** This is deliberate, not an oversight: this
-//! crate has real hardware evidence from AAASM-5837's own verification pass
-//! that Landlock genuinely enforces filesystem grants inside this guest, and
-//! that the arm64 guest kernel cannot enforce a syscall filter (see
-//! `aa-isolation-macos-vm-poc/README.md`) — but AAASM-5813's own AC3
-//! requires that claim be "verified against AAASM-5812's own capability
-//! findings, not asserted independently", through the same measured-probe
-//! discipline `aa-isolation-native`'s own `capability::discover` holds
-//! itself to (a controlled pair of confined commands, checked *on this
-//! host*, not "it worked once in a different pass"). Building that probe for
-//! a VM backend means booting a guest as part of `discover()` — which is
-//! *not* the multi-second cost this doc block previously assumed without
-//! measuring: `tests/real_hardware.rs`'s full round trip (boot, connect,
-//! launch, exit, teardown) measures at ~0.3s on this host, the same order of
-//! magnitude as sandlock's own `discover()`, which already runs a controlled
-//! confined-command pair rather than a bare `--version` call. The corrected
-//! finding is that a guest-boot probe is affordable; building one (a
-//! positive/negative confined-launch pair through this exact protocol,
-//! mirroring `aa-isolation-native::probe`'s discipline) is real, scoped
-//! engineering work AAASM-5837 did not do — tracked as AAASM-5813's own AC3,
-//! not deferred on a cost basis that turned out to be wrong.
+//! **[`MacosVmBackend::discover`] measures capabilities, it does not assume
+//! them.** [`probe::measure`] boots one short-lived guest and runs a
+//! controlled positive/negative pair for filesystem read and write through
+//! this exact protocol — the same measured-probe discipline
+//! `aa-isolation-native`'s own `capability::discover` holds itself to (a
+//! controlled pair of confined commands, checked *on this host*, not "it
+//! worked once in a different pass"), which is what AAASM-5813's AC3
+//! requires. The guest-boot cost this needed turned out to be affordable,
+//! not the multi-second cost an earlier pass assumed without measuring:
+//! `tests/real_hardware.rs`'s full round trip (boot, connect, launch, exit,
+//! teardown) measures at ~0.3s on this host, and [`probe::measure`]'s own
+//! four launches through one guest cost about the same. See [`probe`] and
+//! [`capability`] for the measurement and the reports built from it.
 //!
-//! The practical consequence: `Available` with an empty capability report
-//! means [`aa_isolation::plan::negotiate`] correctly *refuses* any launch
-//! whose lowered policy requires prevention on a domain (filesystem,
-//! syscall) — there is nothing here yet for it to trust — while correctly
-//! *permitting* a launch with no capability-domain requirement to reach
-//! [`IsolationBackend::prepare`](aa_isolation::IsolationBackend::prepare)
-//! and run for real inside the guest. That is exactly AAASM-5813's AC1
-//! ("launches a real confined process") without prematurely claiming AC3
-//! ("capability report accurately reflects guest-actual enforcement").
+//! The syscall domain is reported unsupported without a probe attempt — see
+//! [`capability`]'s module documentation for why nothing needs measuring
+//! there. Every other domain borrows its unsupported reason from
+//! `aa-isolation-native`'s own lowering, since that is what
+//! [`IsolationBackend::spawn`] actually delegates grant computation to (via
+//! `permitted_scope`) — see [`capability`] again.
+//!
+//! The practical consequence: a filesystem-domain requirement now plans and
+//! runs through the real, policy-driven `aasm run` path on a host where the
+//! probe observed real denials — not merely through the trait mechanism
+//! directly, which is what AAASM-5837's own verification proved before this
+//! probe existed.
 //!
 //! # The guest has no general toolchain (AAASM-5849)
 //!
@@ -60,16 +54,18 @@
 //! that reason, honestly, rather than reaching a guest with nothing able to
 //! exec it.
 
+pub mod capability;
 pub mod paths;
+pub mod probe;
 pub mod vmm;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use aa_isolation::{
-    negotiate, BackendAvailability, BackendCapabilities, BackendIdentity, EnforcementEvidence, EnforcementPlan,
-    ExecutionHandle, ExecutionSpec, ExitDisposition, IsolationBackend, Lowering, PlanRefusal, PlatformBoundary,
-    PreparedExecution, Provenance, SpawnError, TerminationRequest,
+    negotiate, BackendCapabilities, BackendIdentity, EnforcementEvidence, EnforcementPlan, ExecutionHandle,
+    ExecutionSpec, ExitDisposition, IsolationBackend, Lowering, PlanRefusal, PreparedExecution, Provenance, SpawnError,
+    TerminationRequest,
 };
 use aa_isolation_native::permitted_scope;
 use aa_isolation_vm_proto::{Disposition, Message, TerminationMode};
@@ -94,6 +90,10 @@ struct Session {
 pub struct MacosVmBackend {
     config: Option<vmm::VmConfig>,
     unavailable_reason: Option<String>,
+    /// Computed once, in [`MacosVmBackend::discover`] or
+    /// [`MacosVmBackend::unavailable`] — never recomputed per call, so
+    /// [`IsolationBackend::capabilities`] never re-boots a guest.
+    capabilities: BackendCapabilities,
     child_environment: Option<BTreeMap<String, String>>,
     sessions: Mutex<BTreeMap<String, Session>>,
     next_token: std::sync::atomic::AtomicU64,
@@ -114,7 +114,7 @@ impl Default for MacosVmBackend {
 }
 
 impl MacosVmBackend {
-    /// Discover this backend's availability.
+    /// Discover this backend's availability and measure what it can prevent.
     ///
     /// Checks, in order:
     /// 1. [`vmm::VmConfig::from_env`] — the helper binary, guest kernel and
@@ -129,6 +129,11 @@ impl MacosVmBackend {
     ///    --entitlements :-` — a real per-host probe, not an assumption from
     ///    the artifact merely existing. Costs one subprocess call, not a VM
     ///    boot.
+    /// 3. [`probe::measure`] — boots one short-lived guest and runs a
+    ///    controlled filesystem read/write pair through it, so
+    ///    [`capabilities`](IsolationBackend::capabilities) reports what was
+    ///    actually observed rather than zero rows. Runs only once the first
+    ///    two checks pass — a host this cannot run on never pays this cost.
     ///
     /// Never fails, matching every other backend in this workspace: a host
     /// this cannot run on produces a backend whose availability is
@@ -144,21 +149,24 @@ impl MacosVmBackend {
                 vmm::VmConfig::ENV_ROOTFS,
             ));
         };
-        match entitlement_check(&config.helper_path) {
-            Ok(()) => Self {
-                config: Some(config),
-                unavailable_reason: None,
-                child_environment: None,
-                sessions: Mutex::new(BTreeMap::new()),
-                next_token: std::sync::atomic::AtomicU64::new(0),
-            },
-            Err(reason) => Self::unavailable(reason),
+        if let Err(reason) = entitlement_check(&config.helper_path) {
+            return Self::unavailable(reason);
+        }
+        let probe = probe::measure(&config);
+        Self {
+            config: Some(config),
+            unavailable_reason: None,
+            capabilities: capability::discover(&probe),
+            child_environment: None,
+            sessions: Mutex::new(BTreeMap::new()),
+            next_token: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     fn unavailable(reason: String) -> Self {
         Self {
             config: None,
+            capabilities: capability::unavailable(reason.clone()),
             unavailable_reason: Some(reason),
             child_environment: None,
             sessions: Mutex::new(BTreeMap::new()),
@@ -181,18 +189,6 @@ impl MacosVmBackend {
                 modified: false,
             },
         }
-    }
-
-    fn capabilities_value(&self) -> BackendCapabilities {
-        let availability = match &self.unavailable_reason {
-            Some(reason) => BackendAvailability::Unavailable { reason: reason.clone() },
-            None => BackendAvailability::Available,
-        };
-        // Zero CapabilityReport rows even when Available — see this crate's
-        // module documentation for why that is the honest choice this pass,
-        // not a placeholder.
-        BackendCapabilities::new(availability, PlatformBoundary::GuestKernel, Vec::new())
-            .expect("no two reports name the same domain: this backend reports none yet")
     }
 
     fn next_token(&self) -> String {
@@ -243,16 +239,20 @@ impl IsolationBackend for MacosVmBackend {
     }
 
     fn capabilities(&self) -> BackendCapabilities {
-        self.capabilities_value()
+        self.capabilities.clone()
     }
 
     fn plan(&self, spec: &ExecutionSpec) -> Result<EnforcementPlan, PlanRefusal> {
-        negotiate(
-            spec,
-            &self.identity(),
-            &self.capabilities(),
-            &|_requirement, _outcome| Lowering::new(Vec::<String>::new()),
-        )
+        // Narrow first: a requirement `aa_isolation_native::lower` cannot
+        // express inside an otherwise-supported domain is refused here, at
+        // plan time, rather than surfacing as a `spawn()` failure after a
+        // guest has already booted — see `aa_isolation_native::capability::narrow_for`,
+        // reused as-is since this backend delegates grant computation to the
+        // same lowering.
+        let capabilities = aa_isolation_native::capability::narrow_for(&self.capabilities, spec);
+        negotiate(spec, &self.identity(), &capabilities, &|_requirement, _outcome| {
+            Lowering::new(Vec::<String>::new())
+        })
     }
 
     fn prepare(&self, plan: EnforcementPlan) -> Result<PreparedExecution, SpawnError> {
@@ -455,13 +455,13 @@ impl IsolationBackend for MacosVmBackend {
     }
 
     fn evidence(&self, handle: &ExecutionHandle) -> EnforcementEvidence {
-        // No prevention claims recorded — see this crate's module
-        // documentation on why capability rows (and therefore evidence
-        // records that would depend on them) are deliberately deferred this
-        // pass. `implicit_grants` from the guest's own LaunchOutcome is
-        // available (`aa_isolation_vm_proto::implicit_grant`) but has
-        // nowhere honest to go yet without an existing ClaimTerm this
-        // backend is entitled to use — recorded once capability rows exist.
+        // Still no per-decision records: the guest kernel delivers a denial
+        // to the confined process, not to this supervisor, so — like
+        // `aa-isolation-native` on Linux — this backend has no `Decision`
+        // record to report for any run. `Configured`/`Installed`/`Exercised`
+        // evidence built from a run's own `implicit_grants` and grant set is
+        // real, scoped follow-on work (AAASM-5813 AC4/evidence reporting),
+        // not yet built this pass.
         EnforcementEvidence::new(self.identity(), handle.posture())
     }
 }
@@ -469,6 +469,7 @@ impl IsolationBackend for MacosVmBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aa_isolation::BackendAvailability;
 
     #[test]
     fn discovery_always_yields_a_backend() {
