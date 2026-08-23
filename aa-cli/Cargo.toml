@@ -73,6 +73,12 @@ aa-isolation-sandlock = { path = "../aa-isolation-sandlock", version = "0.0.1-rc
 # comparable measured evidence — so the default id is unchanged and this one is
 # reached by naming it.
 aa-isolation-native  = { path = "../aa-isolation-native", version = "0.0.1-rc.6" }
+# AAASM-5813: the third backend, selectable by id alongside the first two. It
+# reports `Unavailable` on every host today (no host↔guest launch protocol, no
+# entitled binary — see the crate's own docs) so registering it here cannot
+# change any existing `--isolation auto` selection outcome, only add a name
+# `--isolation-backend` and the "considered" listing can refer to.
+aa-isolation-macos-vm = { path = "../aa-isolation-macos-vm", version = "0.0.1-rc.6" }
 # strip-for-publish:end devtool
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.6" }
 aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.6" }

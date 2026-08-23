@@ -634,15 +634,19 @@ mod plan {
     /// change made for a caller's convenience, which the AAASM-5801 amendment
     /// explicitly verified was not needed.
     ///
-    /// So the enum lives here, in the module that already names both backends,
+    /// So the enum lives here, in the module that already names every backend,
     /// and it ends at [`Self::into_arc`]: everything downstream of selection
-    /// holds the trait object and cannot tell the two apart.
+    /// holds the trait object and cannot tell the concrete backends apart.
     pub(super) enum SelectedBackend {
         /// The backend built on the external `sandlock` supervisor (AAASM-5708).
         Sandlock(aa_isolation_sandlock::SandlockBackend),
         /// The AASM-native backend, whose boundary is installed by a launcher
         /// binary this workspace builds (AAASM-5802).
         Native(aa_isolation_native::NativeBackend),
+        /// The macOS backend delegating to `aa-isolation-native` inside a
+        /// Virtualization.framework guest (AAASM-5813). `Unavailable` on
+        /// every host today — see the crate's own docs for why.
+        MacosVm(aa_isolation_macos_vm::MacosVmBackend),
     }
 
     impl SelectedBackend {
@@ -651,6 +655,7 @@ mod plan {
             match self {
                 Self::Sandlock(backend) => backend.identity(),
                 Self::Native(backend) => backend.identity(),
+                Self::MacosVm(backend) => backend.identity(),
             }
         }
 
@@ -659,6 +664,7 @@ mod plan {
             match self {
                 Self::Sandlock(backend) => backend.capabilities(),
                 Self::Native(backend) => backend.capabilities(),
+                Self::MacosVm(backend) => backend.capabilities(),
             }
         }
 
@@ -667,6 +673,7 @@ mod plan {
             match self {
                 Self::Sandlock(backend) => backend.set_child_environment(env),
                 Self::Native(backend) => backend.set_child_environment(env),
+                Self::MacosVm(backend) => backend.set_child_environment(env),
             }
         }
 
@@ -677,6 +684,7 @@ mod plan {
             match self {
                 Self::Sandlock(backend) => backend.plan(spec),
                 Self::Native(backend) => backend.plan(spec),
+                Self::MacosVm(backend) => backend.plan(spec),
             }
         }
 
@@ -689,6 +697,7 @@ mod plan {
             match self {
                 Self::Sandlock(backend) => std::sync::Arc::new(backend),
                 Self::Native(backend) => std::sync::Arc::new(backend),
+                Self::MacosVm(backend) => std::sync::Arc::new(backend),
             }
         }
     }
@@ -1504,14 +1513,18 @@ mod plan {
             id if id == aa_isolation_native::BACKEND_ID => {
                 SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
             }
+            id if id == aa_isolation_macos_vm::BACKEND_ID => {
+                SelectedBackend::MacosVm(aa_isolation_macos_vm::MacosVmBackend::discover())
+            }
             other => {
                 posture.refuse(anyhow::anyhow!(
                     "--isolation-backend {other} names no backend this build has. The backends \
-                     compiled in are `{}` and `{}`. Backend ids are a diagnostic control and are not \
+                     compiled in are `{}`, `{}` and `{}`. Backend ids are a diagnostic control and are not \
                      portable — `--isolation {}` asks for the isolation class instead, and survives a \
                      backend change.",
                     aa_isolation_sandlock::BACKEND_ID,
                     aa_isolation_native::BACKEND_ID,
+                    aa_isolation_macos_vm::BACKEND_ID,
                     match intent {
                         super::IsolationIntent::Auto => "auto",
                         _ => "process",
@@ -1590,7 +1603,11 @@ mod plan {
         lowering: &Option<aa_isolation::PolicyLowering>,
         posture: PlanPosture,
     ) -> anyhow::Result<IsolationPlan> {
-        const CANDIDATES: [&str; 2] = [aa_isolation_sandlock::BACKEND_ID, aa_isolation_native::BACKEND_ID];
+        const CANDIDATES: [&str; 3] = [
+            aa_isolation_sandlock::BACKEND_ID,
+            aa_isolation_native::BACKEND_ID,
+            aa_isolation_macos_vm::BACKEND_ID,
+        ];
 
         let Some(probe) = lowering.as_ref().and_then(probe_spec) else {
             // Nothing to lower — the existing `NoRequirementsLowered` refusal
@@ -1611,8 +1628,15 @@ mod plan {
         for id in CANDIDATES {
             let backend = if id == aa_isolation_sandlock::BACKEND_ID {
                 SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover())
-            } else {
+            } else if id == aa_isolation_native::BACKEND_ID {
                 SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
+            } else {
+                debug_assert_eq!(
+                    id,
+                    aa_isolation_macos_vm::BACKEND_ID,
+                    "CANDIDATES names every arm below"
+                );
+                SelectedBackend::MacosVm(aa_isolation_macos_vm::MacosVmBackend::discover())
             };
 
             // The candidate's own advertised identity, not the loop's literal
