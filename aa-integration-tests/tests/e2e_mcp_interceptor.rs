@@ -812,6 +812,7 @@ mod proxy_e2e {
             upstream_override: Some(upstream_override),
             gateway_endpoint: Some(format!("http://{gateway_addr}")),
             mcp_fail_open: false,
+            network_fail_open: false,
             // CONNECT host is a public name redirected via `upstream_override`,
             // so the SSRF guard stays fully active.
             allow_private_connect_targets: false,

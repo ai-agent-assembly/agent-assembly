@@ -2065,6 +2065,7 @@ mod tests {
             upstream_override: None,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
             allow_private_connect_targets: false,
         };
@@ -2457,6 +2458,7 @@ mod tests {
             upstream_override,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2589,6 +2591,7 @@ mod tests {
             upstream_override: None,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             allow_private_connect_targets: false,
         };
 
@@ -2672,6 +2675,7 @@ mod tests {
             upstream_override,
             gateway_endpoint: None,
             mcp_fail_open: false,
+            network_fail_open: false,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);

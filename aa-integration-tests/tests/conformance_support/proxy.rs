@@ -123,6 +123,7 @@ impl RestartableProxy {
                 upstream_override: Some(self.upstream),
                 gateway_endpoint: None,
                 mcp_fail_open: false,
+                network_fail_open: false,
                 allow_private_connect_targets: false,
             };
             let (tx, events) = broadcast::channel(256);
