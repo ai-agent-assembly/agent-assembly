@@ -54,7 +54,7 @@ trap 'rm -rf "${STAGING_DIR}" "${OUT_DIR}"' EXIT
 
 mkdir -p "${STAGING_DIR}/sbin" "${STAGING_DIR}/dev" "${STAGING_DIR}/proc" \
   "${STAGING_DIR}/sys" "${STAGING_DIR}/mnt/share" "${STAGING_DIR}/usr/local/bin" \
-  "${STAGING_DIR}/etc" "${STAGING_DIR}/tmp"
+  "${STAGING_DIR}/etc" "${STAGING_DIR}/tmp" "${STAGING_DIR}/root"
 cp "${INIT_BIN}" "${STAGING_DIR}/sbin/init"
 chmod 0755 "${STAGING_DIR}/sbin/init"
 cp "${LAUNCH_BIN}" "${STAGING_DIR}/usr/local/bin/aa-isolation-launch"
@@ -62,6 +62,14 @@ chmod 0755 "${STAGING_DIR}/usr/local/bin/aa-isolation-launch"
 cp "${BUSYBOX_BIN}" "${STAGING_DIR}/usr/local/bin/busybox"
 chmod 0755 "${STAGING_DIR}/usr/local/bin/busybox"
 echo "aa-isolation-launch-guest-rootfs-test-marker" > "${STAGING_DIR}/etc/testfile"
+# AAASM-5813 prerequisite (Landlock-capable kernel): a target file outside
+# the fs-read+fs-write scenario's granted paths (/etc, /tmp), for a fourth
+# scenario proving genuine enforcement-level denial rather than the
+# pre-flight "kernel cannot handle Landlock" refusal seen on every prior
+# substitute kernel. If aa-isolation-launch's Landlock ruleset is installed
+# correctly, busybox itself (already exec'd, confined) gets a real EACCES
+# reading this file — a different failure signature than the refusals above.
+echo "aa-isolation-launch-guest-rootfs-test-marker-outside-grant" > "${STAGING_DIR}/root/outside-grant.txt"
 
 docker run --rm --platform linux/arm64 \
   -v "${STAGING_DIR}:/staging:ro" \
