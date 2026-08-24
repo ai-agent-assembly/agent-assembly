@@ -113,6 +113,17 @@ else
   FAILED=1
 fi
 
+echo "== ambiguous-PASS-substring fixture: FAIL cell containing unrelated 'PASS' prose resolves to FAIL =="
+TMP_AMBIG="$(mktemp)"
+python3 scripts/qa/build-release-evidence.py --version 0.0.0-test-ambiguous-pass \
+  --repo-root . --candidate-sha "$SYNTH_SHA" \
+  --catalog "$FIX/catalog-ambiguous-pass.yaml" \
+  --qa-signoff "$FIX/qa-signoff-ambiguous-pass.md" \
+  --security-signoff "$FIX/security-signoff-minimal.md" \
+  --out "$TMP_AMBIG" > /dev/null
+check "J95 (FAIL cell containing 'PASS' substring)" "$(jq -r '.journeys[0].status' "$TMP_AMBIG")" "FAIL"
+rm -f "$TMP_AMBIG"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "build-release-evidence fixtures check: PASS"
 else

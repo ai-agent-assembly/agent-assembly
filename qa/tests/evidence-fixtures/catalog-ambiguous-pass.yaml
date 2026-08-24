@@ -1,0 +1,26 @@
+# Synthetic, test-only catalog fixture (AAASM-5898) — one required journey
+# whose sign-off Result cell (see qa-signoff-ambiguous-pass.md) contains a
+# real status token (FAILS) alongside the unrelated substring "PASS" in
+# free-text prose. Proves build-release-evidence.py resolves to the real
+# status instead of letting the "PASS" substring silently overrule it —
+# the AAASM-5878 AC that non-PASS states "cannot silently become PASS".
+catalog_version: '1'
+journeys:
+- id: J95
+  jira: AAASM-0005
+  name: Synthetic journey — FAIL cell containing unrelated "PASS" prose
+  priority: P1
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-ambiguous-pass.yaml::t95"
+  execution_lanes: [pr]
+  fidelity: mock

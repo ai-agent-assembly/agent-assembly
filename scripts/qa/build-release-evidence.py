@@ -62,14 +62,28 @@ HARNESS_SCRIPTS = [
 ]
 
 _STATUS_TOKEN_RULES: list[tuple[str, str]] = [
-    # Order matters: checked top to bottom, first match wins. Phrases that
-    # are substrings of a later rule's token (e.g. "UNTESTED_OR_BLOCKED"
-    # contains "BLOCKED") must be listed first.
+    # Order matters: checked top to bottom, first match wins. Two distinct
+    # concerns drive the order, and both must hold:
+    #
+    #  1. A rule whose token is a substring of a later rule's token (e.g.
+    #     "UNTESTED_OR_BLOCKED" contains "BLOCKED") must be listed first.
+    #
+    #  2. FAIL/BLOCKED must be checked before PASS. A Result cell's prose
+    #     routinely narrates a failure using language that itself contains
+    #     the word "pass" with no relation to the row's actual status (e.g.
+    #     "the PASS criteria were not met", "cannot run until PASS criteria
+    #     are defined") — checking PASS first would let that unrelated
+    #     substring silently overrule the row's real FAIL/BLOCKED token,
+    #     which is exactly the "non-PASS states ... cannot silently become
+    #     PASS" failure AAASM-5878's AC exists to prevent. PASS itself has
+    #     no equivalent risk of masking a real failure (a genuinely-passing
+    #     row's prose has no reason to also contain "FAIL"/"BLOCKED"), so
+    #     checking the higher-severity tokens first is safe both ways.
     (r"UNTESTED_OR_BLOCKED", "UNTESTED"),
     (r"\bPARTIAL\b", "UNTESTED"),
-    (r"\bPASS\b", "PASS"),
     (r"\bFAILS?\b", "FAIL"),
     (r"\bBLOCKED\b", "BLOCKED"),
+    (r"\bPASS\b", "PASS"),
     (r"\bSKIPPED\b", "SKIPPED"),
     (r"\bXFAIL\b|\bKNOWN[- ]FAIL\b", "XFAIL"),
     (r"\bSTALE\b", "STALE"),
