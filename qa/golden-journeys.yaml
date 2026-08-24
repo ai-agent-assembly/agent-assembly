@@ -23,13 +23,17 @@ policy: docs/src/qa/release-qa-policy.md
 #   ci_job | manual_record. `selector` for kind=test is a
 #   `<path>::<test-or-function-name>` the validator resolves against the
 #   named repo checkout (file exists + selector name found in it) — it does
-#   NOT invoke a build/test runner. Required (non-empty) when
-#   lifecycle_state is automated or partial.
+#   NOT invoke a build/test runner. Required (non-empty + resolvable) when
+#   lifecycle_state is automated AND release_blocking is true. Populating it
+#   on a `partial` entry is still encouraged (it documents what evidence
+#   does exist) but is not enforced by the validator — `gap_owner` is what's
+#   enforced there instead, since the incompleteness is the point.
 # execution_lanes (list of pr|main|nightly|release|live_dogfood, optional):
-#   required (non-empty) when lifecycle_state is automated.
+#   required (non-empty) when lifecycle_state is automated AND
+#   release_blocking is true.
 # fidelity (enum, optional): mock | controlled_fake | real_local_process |
-#   container | published_artifact | real_external_provider. Required when
-#   lifecycle_state is automated.
+#   container | published_artifact | real_external_provider. Required under
+#   the same automated + release_blocking condition as execution_lanes.
 # platforms (list of str, optional): required OS/runner scope when relevant.
 # negative_control (str, optional): reference to the mutation/fault-injection
 #   evidence proving the journey's test is load-bearing.

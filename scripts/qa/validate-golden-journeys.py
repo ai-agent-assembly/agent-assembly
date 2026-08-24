@@ -186,12 +186,17 @@ def validate(path: str, check_p0_bounds: bool = True) -> list[str]:
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if a != "--no-catalog-invariants"]
     # --no-catalog-invariants (AAASM-5874): skip the whole-catalog P0-bounds
     # check. Only for validating an isolated per-entry schema fixture (see
     # scripts/qa/validate-golden-journeys-negative-control.sh) — the real
     # qa/golden-journeys.yaml is always validated with this check ON.
-    check_p0_bounds = "--no-catalog-invariants" not in sys.argv[1:]
+    check_p0_bounds = True
+    args = []
+    for a in sys.argv[1:]:
+        if a == "--no-catalog-invariants":
+            check_p0_bounds = False
+        else:
+            args.append(a)
     path = args[0] if args else "qa/golden-journeys.yaml"
     problems = validate(path, check_p0_bounds=check_p0_bounds)
     if problems:
