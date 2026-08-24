@@ -1,0 +1,136 @@
+{
+  "schema_version": "1.0.0",
+  "generated_utc": "2026-08-24T01:57:30.293326+00:00",
+  "thresholds": {
+    "max_rel_iqr": 0.15,
+    "min_repetitions": 10
+  },
+  "baseline": {
+    "path": "/private/tmp/claude-501/-Users-bryant-Bryant-Developments-AI-agent-assembly/aa5a676d-f2b8-4a5d-9207-13fdf47d1044/scratchpad/unconfined-baseline.json",
+    "run_id": "20260824T015700Z-879b1ee0",
+    "launcher": {
+      "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5812d/benchmarks/isolation/launchers/unconfined.sh",
+      "argv": [
+        "sh",
+        "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5812d/benchmarks/isolation/launchers/unconfined.sh"
+      ],
+      "throttle_env": {}
+    },
+    "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+  },
+  "candidate": {
+    "path": "/private/tmp/claude-501/-Users-bryant-Bryant-Developments-AI-agent-assembly/aa5a676d-f2b8-4a5d-9207-13fdf47d1044/scratchpad/macos-vm-confined.json",
+    "run_id": "20260824T015700Z-afcaac1d",
+    "launcher": {
+      "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5812d/benchmarks/isolation/launchers/macos-vm.sh",
+      "argv": [
+        "sh",
+        "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5812d/benchmarks/isolation/launchers/macos-vm.sh"
+      ],
+      "throttle_env": {}
+    },
+    "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+  },
+  "control_validity": "VALID",
+  "control_validity_reason": "environment fingerprints match",
+  "dimensions": {
+    "P1": {
+      "key": "P1",
+      "blocked": false,
+      "label": "Startup overhead",
+      "unit": "ms",
+      "value": 706.706625,
+      "grade": "RED",
+      "baseline_ms": 8.4629585,
+      "candidate_ms": 715.1695835
+    },
+    "P2": {
+      "key": "P2",
+      "blocked": true,
+      "reason": "no comparable admissible general family"
+    },
+    "P3": {
+      "key": "P3",
+      "blocked": true,
+      "reason": "no comparable admissible fs family"
+    },
+    "P4": {
+      "key": "P4",
+      "blocked": true,
+      "reason": "no comparable admissible process family"
+    },
+    "P5": {
+      "key": "P5",
+      "blocked": true,
+      "reason": "no comparable admissible network family"
+    },
+    "P6": {
+      "key": "P6",
+      "blocked": false,
+      "label": "Peak memory",
+      "unit": "bytes",
+      "value": 19685376.0,
+      "grade": "GREEN",
+      "aggregation": "worst family overall",
+      "worst_family": "startup_nop",
+      "contributions": [
+        {
+          "family": "startup_nop",
+          "baseline": 1966080.0,
+          "candidate": 21651456.0,
+          "value": 19685376.0
+        }
+      ]
+    },
+    "P7": {
+      "key": "P7",
+      "blocked": false,
+      "label": "CPU time",
+      "unit": "x",
+      "value": 6.938645542093818,
+      "grade": "RED",
+      "aggregation": "worst family overall",
+      "worst_family": "startup_nop",
+      "contributions": [
+        {
+          "family": "startup_nop",
+          "baseline": 0.006437999999999999,
+          "candidate": 0.044670999999999995,
+          "value": 6.938645542093818
+        }
+      ]
+    }
+  },
+  "blocked": [
+    {
+      "key": "P2",
+      "reason": "no comparable admissible general family"
+    },
+    {
+      "key": "P3",
+      "reason": "no comparable admissible fs family"
+    },
+    {
+      "key": "P4",
+      "reason": "no comparable admissible process family"
+    },
+    {
+      "key": "P5",
+      "reason": "no comparable admissible network family"
+    },
+    {
+      "key": "C1",
+      "reason": "functional compatibility requires a backend to run the families under (AAASM-5708)"
+    },
+    {
+      "key": "S1",
+      "reason": "advertised-control coverage is a judgement about the backend's capability surface"
+    },
+    {
+      "key": "S2",
+      "reason": "kernel-floor coverage requires testing the backend across supported kernels"
+    }
+  ],
+  "verdict": null,
+  "verdict_reason": "Rule 0: blocked, no verdict. Inadmissible or missing dimensions: C1, P2, P3, P4, P5, S1, S2"
+}

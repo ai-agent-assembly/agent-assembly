@@ -1,0 +1,180 @@
+{
+  "schema_version": "1.0.0",
+  "harness_version": "0.1.0",
+  "run_id": "20260824T015700Z-879b1ee0",
+  "label": "unconfined-baseline-macos-vm-comparison",
+  "started_utc": "2026-08-24T01:57:00.291101+00:00",
+  "finished_utc": "2026-08-24T01:57:00.732997+00:00",
+  "control_experiment": false,
+  "launcher": {
+    "spec": "sh /Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5812d/benchmarks/isolation/launchers/unconfined.sh",
+    "argv": [
+      "sh",
+      "/Users/bryant/Bryant-Developments/AI-agent-assembly/aa-5812d/benchmarks/isolation/launchers/unconfined.sh"
+    ],
+    "throttle_env": {}
+  },
+  "config": {
+    "repetitions": 30,
+    "warmups": 3,
+    "families_requested": "startup_nop",
+    "heavy": false,
+    "network": true,
+    "scratch_root": "/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/aabench-eevqig41"
+  },
+  "notes": [],
+  "environment": {
+    "captured_utc": "2026-08-24T01:57:00.291332+00:00",
+    "platform": {
+      "system": "Darwin",
+      "release": "25.4.0",
+      "version": "Darwin Kernel Version 25.4.0: Thu Mar 19 19:26:07 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6031",
+      "machine": "arm64",
+      "python": "3.14.7",
+      "python_implementation": "CPython"
+    },
+    "cpu": {
+      "model": "Apple M3 Max",
+      "logical_cores": 16
+    },
+    "memory": {
+      "total_bytes": 137438953472,
+      "ru_maxrss_native_unit": "bytes"
+    },
+    "filesystem": {
+      "scratch_path": "/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/aabench-eevqig41",
+      "type": "apfs",
+      "device": "/dev/disk3s5",
+      "source": "df -P + mount"
+    },
+    "toolchains": {
+      "sh": "3.2.57(1)-release"
+    },
+    "repo": {
+      "commit": "8188351655b9326d123b23694ce0c99604b8e1a8",
+      "branch": "v0.0.1/AAASM-5814/feat/macos_vm_dogfood_and_benchmark",
+      "dirty_tracked_files": false,
+      "untracked_file_count": 7
+    },
+    "load_average_at_start": [
+      38.1630859375,
+      20.029296875,
+      10.74951171875
+    ],
+    "fingerprint": "sha256:50659b58d018c730c5f5655bd7cae36103dcd7b646bd05c9dc7675c0beaec170"
+  },
+  "startup_correction_ms": 8.4629585,
+  "results": [
+    {
+      "family": "startup_nop",
+      "dimension_tag": "startup",
+      "status": "ok",
+      "requires": [
+        "sh"
+      ],
+      "description": "Empty payload. Isolates the launcher's fixed per-invocation cost: sandbox construction plus teardown, paid once for every command an agent shells out to.",
+      "skip_reason": null,
+      "samples_ms": [
+        8.626541,
+        8.5925,
+        8.641375,
+        8.297959,
+        8.358375,
+        10.1145,
+        8.580166,
+        8.231042,
+        7.937084,
+        8.888542,
+        7.909875,
+        7.850667,
+        8.104791,
+        9.303042,
+        9.601875,
+        8.239084,
+        8.550292,
+        9.337333,
+        9.032958,
+        8.326416,
+        8.313041,
+        8.035417,
+        8.163042,
+        8.576375,
+        8.195666,
+        8.375625,
+        8.612041,
+        8.135041,
+        9.840667,
+        8.666166
+      ],
+      "stats_ms": {
+        "n": 30.0,
+        "min": 7.850667,
+        "max": 10.1145,
+        "mean": 8.581249933333334,
+        "median": 8.4629585,
+        "p95": 9.7332106,
+        "stdev": 0.5687429326976402,
+        "q1": 8.204509999999999,
+        "q3": 8.65996825,
+        "iqr": 0.4554582500000013,
+        "rel_iqr": 0.053817852232171684
+      },
+      "steady_state_ms": null,
+      "steady_state_note": null,
+      "cpu_seconds": {
+        "utime_median": 0.002497,
+        "stime_median": 0.0039485,
+        "total_median": 0.006437999999999999
+      },
+      "memory": {
+        "max_rss_bytes_median": 1966080.0,
+        "source": "wait4 rusage ru_maxrss",
+        "native_unit": "bytes",
+        "normalised_to": "bytes"
+      },
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "admissible": true,
+      "inadmissible_reason": null
+    }
+  ],
+  "denominators": {
+    "families_declared_in_manifest": 9,
+    "families_selected": 1,
+    "families_attempted": 1,
+    "families_ok": 1,
+    "families_skipped": 0,
+    "families_failed": 0,
+    "families_admissible": 1
+  }
+}
