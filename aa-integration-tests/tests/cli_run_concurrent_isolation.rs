@@ -364,21 +364,15 @@ exit 0
              {ids_in_b:?}",
         );
 
-        // ── falsification control: swapping the two files must turn this red ──
-        //
-        // Proves the two assertions above are actually discriminating rather
-        // than vacuously true for some unrelated reason (e.g. both lists
-        // being empty, or `did_a == did_b`). If this does *not* fail, the
-        // isolation assertions above are not measuring what this test claims.
-        let cross_attribution_would_be_undetected = !ids_in_b.iter().any(|id| id.as_deref() == Some(did_a.as_str()))
-            && !ids_in_a.iter().any(|id| id.as_deref() == Some(did_b.as_str()));
-        assert!(
-            cross_attribution_would_be_undetected,
-            "sanity check on the test itself: swapping which file is checked against which DID \
-             should currently find no match (proving the real check above is non-trivial); if it \
-             does find one, the two audit files are not actually distinguishable by agent id and \
-             this test cannot prove isolation",
-        );
+        // Non-vacuity for the negative checks above comes from the positive
+        // checks together with `assert_ne!(did_a, did_b)` earlier: each file
+        // is shown to contain its *own* identity and distinct identities are
+        // shown to exist, so "contains none of the other's" is excluding a
+        // real, known-present value — not vacuously true over two empty or
+        // identical sets. (An earlier version of this test carried a
+        // redundant assertion here that recomputed the same two predicates
+        // already checked above and could never fail; removed rather than
+        // left as false rigor — see AAASM-5865 PR review.)
 
         // ── the gateway agrees: two registrations, two distinct identities ──
         let registrations = gateway.session().registrations();
