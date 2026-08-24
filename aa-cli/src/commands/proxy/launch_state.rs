@@ -13,6 +13,8 @@
 //! doc for why a per-launch CA dir would be actively wrong (a fresh CA per
 //! launch, re-prompting macOS Keychain trust every `aasm run`).
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 /// Everything a launch's dedicated proxy needs written to disk, all inside
@@ -54,6 +56,20 @@ pub fn allocate(label: &str) -> std::io::Result<PerLaunchState> {
     // drop — this directory's lifetime is this module's/`ProxyGuard`'s to
     // manage explicitly (see `PerLaunchState::audit_jsonl_path`'s doc), not
     // tied to how long some Rust value happens to stay in scope.
+    //
+    // Unlike temp *files*, `tempfile` does not make temp *directories*
+    // private by default (world-readable under a typical umask) — set 0700
+    // explicitly, matching `aa-proxy/src/audit_jsonl.rs`'s export-dir
+    // precedent, since this directory holds the audit evidence path.
+    #[cfg(unix)]
+    let builder_perms = std::fs::Permissions::from_mode(0o700);
+    #[cfg(unix)]
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("{}-", sanitize_label(label)))
+        .permissions(builder_perms)
+        .tempdir_in(&root)?
+        .keep();
+    #[cfg(not(unix))]
     let dir = tempfile::Builder::new()
         .prefix(&format!("{}-", sanitize_label(label)))
         .tempdir_in(&root)?
@@ -207,5 +223,19 @@ mod tests {
             state.dir.is_dir(),
             "allocate must actually create the directory, not just name it"
         );
+    }
+
+    /// Regression test for the world-readable-by-default gap `tempfile`'s own
+    /// docs warn about for directories (unlike temp files, which it already
+    /// makes private) — the audit-evidence path lives under this directory.
+    #[cfg(unix)]
+    #[test]
+    fn allocate_creates_the_directory_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = StateDirGuard::new();
+        let state = allocate("test").unwrap();
+        let mode = std::fs::metadata(&state.dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "per-launch state dir must be owner-only");
     }
 }
