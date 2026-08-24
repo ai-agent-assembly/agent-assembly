@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# AAASM-5874/5876 negative-control harness for scripts/qa/validate-golden-journeys.py.
+# AAASM-5874/5876/5877 negative-control harness for scripts/qa/validate-golden-journeys.py.
 #
 # Proves the registry validation is genuinely load-bearing — not merely
-# present — by asserting the validator's real exit code against 14 small,
+# present — by asserting the validator's real exit code against 16 small,
 # self-contained fixtures in qa/tests/fixtures/. Cases 1-8 cover the 8 cases
 # AAASM-5874's Testing/Verification section requires (case 7, the rename
 # scenario, is 2 fixtures: before/after); cases 9-13 cover AAASM-5876's
@@ -13,7 +13,9 @@
 # declared-but-unsupported platform (no matching ci.yml runner) fails; cases
 # 12-13 are regressions for two bugs an independent reviewer found in the
 # first cut of 9/10 (a globstar false-negative on crate-root files, a
-# prefix-substring false-positive in the #[ignore] scan). Mirrors the pattern
+# prefix-substring false-positive in the #[ignore] scan); cases 14-15 cover
+# AAASM-5877's mandatory negative_control rule for security-lane
+# release-blocking journeys (missing / present). Mirrors the pattern
 # already established by scripts/tests/release-readiness-qa-negative-control.sh
 # (AAASM-5823) — assert on exit codes, not narrative.
 #
@@ -81,6 +83,12 @@ assert_exit "12-globstar-zero-dir.yaml" 0
 echo "== Case 13 (AAASM-5876 regression): prefix-of-an-ignored-sibling must not itself be flagged =="
 assert_exit "13-prefix-collision-not-ignored.yaml" 0
 
+echo "== Case 14 (AAASM-5877): security-lane release-blocking journey with no negative_control =="
+assert_exit "14-missing-negative-control.yaml" 1
+
+echo "== Case 15 (AAASM-5877): security-lane release-blocking journey WITH a negative_control =="
+assert_exit "15-security-lane-with-negative-control.yaml" 0
+
 if [ "$FAILED" -ne 0 ]; then
   echo ""
   echo "validate-golden-journeys-negative-control: FAILED — the validator is not load-bearing for one or more cases"
@@ -88,4 +96,4 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 echo ""
-echo "validate-golden-journeys-negative-control: all 14 assertions passed"
+echo "validate-golden-journeys-negative-control: all 16 assertions passed"

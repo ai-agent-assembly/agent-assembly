@@ -135,7 +135,7 @@ existing `ci.yml` filter, add both the `on.push.paths` entry and the
 catch a missed one for any `automated` + `release_blocking` entry, but P1/P2
 entries aren't strictly checked, so don't rely on the gate alone for those.
 
-Negative-control proof this is load-bearing (14 fixtures, exit-code
+Negative-control proof this is load-bearing (16 fixtures, exit-code
 assertions, mirrors `scripts/tests/release-readiness-qa-negative-control.sh`):
 
 ```bash
