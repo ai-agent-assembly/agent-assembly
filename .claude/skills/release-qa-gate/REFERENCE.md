@@ -278,13 +278,13 @@ explicitly waived (see Step 8).
 Assign the selected scope across the `.claude/agents/qa-*.md` roles per
 `qa/ORCHESTRATION.md`:
 
-- Maximum **5** concurrent workers, a ceiling not a target — a narrow patch
-  scope should use 1-3.
+- Maximum **10** concurrent workers (AAASM-5845), a ceiling not a target — a
+  narrow patch scope should use 1-3.
 - No nested spawning (each role's `tools:` frontmatter excludes agent-
   spawning capability).
 - Reserve a slot for `qa-finding-verifier` when the scope is likely to
   surface High/Critical candidates (HIGH-risk surfaces in scope) rather than
-  always filling all 5 wave-1 slots.
+  always filling every wave-1 slot.
 - Each worker receives only its manifest/journey slice — never the full
   Jira history or the full manifest for unrelated surfaces.
 - Every worker returns exactly the AAASM-5828 compact schema
@@ -372,7 +372,7 @@ python3 scripts/qa/map-risk.py --manifest .qa/verification-manifest.json
 
 Depth = patch tier -> P0 (all 10) + the impacted P1 policy journeys. Assign
 `qa-functional` (policy enforcement checks) + `qa-reliability-docs` (J21
-doc-integrity, since HIGH-risk surfaces changed) — 2 of 5 slots, 3 free for
+doc-integrity, since HIGH-risk surfaces changed) — 2 of 10 slots, 8 free for
 `qa-finding-verifier` if either surfaces a candidate.
 
 ## Troubleshooting
