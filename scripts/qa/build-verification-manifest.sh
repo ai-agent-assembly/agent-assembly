@@ -84,16 +84,16 @@ for REPO_PATH in "${REPOS[@]}"; do
   # v<version>.evidence.json (AAASM-5878) is authoritative when present and
   # itself verdict: PASS — candidate.candidate_sha is a structured field, not
   # prose to grep. When no evidence JSON exists yet (pre-AAASM-5898 releases),
-  # this falls back to the original `**Verified HEAD SHA:**` grep, unchanged —
-  # that grep is known to return 0 matches against every real sign-off's
-  # actual line shape (`**Verified HEAD SHA (real, canonical ...):**`, with
-  # parenthetical text between the label and the colon; see
-  # docs/release/qa-signoff/v0.0.1-rc.7.md:141), silently degrading
-  # baseline.source to "unknown" rather than failing loudly. Fixing the grep
-  # itself was considered and rejected: the evidence JSON is the intended
-  # long-term authoritative source (AAASM-5878's whole point is a structured,
-  # digest-bound record instead of parsed prose), so the fallback is left as
-  # a known, documented gap rather than patched twice.
+  # this falls back to a `**Verified HEAD SHA:**` grep that tolerates an
+  # optional trailing parenthetical between the label and the colon — every
+  # real sign-off's actual line shape (`**Verified HEAD SHA (real, canonical
+  # ...):**`; see docs/release/qa-signoff/v0.0.1-rc.7.md:141) has one, and
+  # the plain `**Verified HEAD SHA:**` form (docs/release/qa-signoff/
+  # TEMPLATE.md:32) still matches too. The evidence JSON remains the
+  # intended long-term authoritative source (AAASM-5878's whole point is a
+  # structured, digest-bound record instead of parsed prose) — this fallback
+  # just no longer silently degrades to "unknown" against the real line
+  # shape it exists to handle.
   BASELINE_SOURCE="unknown"
   BASELINE_SHA="null"
   BASELINE_REF="null"
@@ -113,7 +113,7 @@ for REPO_PATH in "${REPOS[@]}"; do
         fi
       fi
       if [ "$BASELINE_SOURCE" = "unknown" ] && grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$LATEST_SIGNOFF"; then
-        SHA_LINE="$(grep -E '\*\*Verified HEAD SHA:\*\*' "$LATEST_SIGNOFF" | head -1)"
+        SHA_LINE="$(grep -E '\*\*Verified HEAD SHA([[:space:]]*\([^)]*\))?:\*\*' "$LATEST_SIGNOFF" | head -1)"
         EXTRACTED_SHA="$(printf '%s' "$SHA_LINE" | grep -oE '[0-9a-f]{7,40}' | head -1)"
         if [ -n "$EXTRACTED_SHA" ]; then
           BASELINE_SOURCE="qa-signoff"

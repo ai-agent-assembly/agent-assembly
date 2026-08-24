@@ -4,19 +4,19 @@
 #
 # Proves two things against the REAL rc.7 line shape (not a synthetic
 # strawman that avoids the actual defect):
-#   (a) the pre-existing `**Verified HEAD SHA:**` grep still returns 0
-#       matches against `- **Verified HEAD SHA (real, canonical
-#       \`remote/main\`, all 12 PRs merged):** \`<sha>\`` — the exact line
-#       from docs/release/qa-signoff/v0.0.1-rc.7.md:141 — so baseline.source
-#       degrades to "unknown" when no evidence JSON exists (the known,
-#       documented fallback gap, left unpatched on purpose — see the script's
-#       own comment);
+#   (a) the `**Verified HEAD SHA:**` grep fallback (tolerant of the
+#       trailing parenthetical between the label and the colon) correctly
+#       matches `- **Verified HEAD SHA (real, canonical \`remote/main\`,
+#       all 12 PRs merged):** \`<sha>\`` — the exact line from
+#       docs/release/qa-signoff/v0.0.1-rc.7.md:141 — resolving
+#       baseline.source: "qa-signoff" and the extracted SHA, when no
+#       evidence JSON exists yet;
 #   (b) once a companion v<version>.evidence.json (AAASM-5878/5898) exists
 #       alongside that SAME real-shaped sign-off and is itself
 #       verdict: PASS, build-verification-manifest.sh resolves
 #       baseline.source: "qa-evidence" and the exact candidate_sha from the
-#       JSON — the real defect line shape no longer matters, because the
-#       evidence JSON, not the prose line, is now the authoritative source.
+#       JSON instead — the evidence JSON, not the prose line, is the
+#       authoritative source when both are present.
 #
 # Design mirrors scripts/tests/release-readiness-qa-negative-control.sh
 # (AAASM-5823): run the real script against throwaway fixture files at a
@@ -41,7 +41,8 @@ cleanup() { rm -f "$SIGNOFF" "$EVIDENCE" .qa/verification-manifest.json; }
 trap cleanup EXIT
 
 # The exact real line shape from docs/release/qa-signoff/v0.0.1-rc.7.md:141 —
-# parenthetical text between the label and the colon is the defect trigger.
+# parenthetical text between the label and the colon is what the grep must
+# tolerate.
 cat > "$SIGNOFF" <<EOF
 # QA sign-off — v${TESTVERSION}
 
@@ -58,15 +59,15 @@ cat > "$SIGNOFF" <<EOF
 Verdict: PASS
 EOF
 
-echo "== Case (a): real rc.7 line shape, no evidence JSON — bug persists in the fallback =="
+echo "== Case (a): real rc.7 line shape, no evidence JSON — fallback grep resolves it =="
 rm -f "$EVIDENCE"
 bash scripts/qa/build-verification-manifest.sh . > /dev/null
 SOURCE_A="$(jq -r '.repos[0].baseline.source' .qa/verification-manifest.json)"
 SHA_A="$(jq -r '.repos[0].baseline.sha' .qa/verification-manifest.json)"
-if [ "$SOURCE_A" = "unknown" ] && [ "$SHA_A" = "null" ]; then
-  echo "  ✓ baseline.source=unknown, baseline.sha=null (grep still 0-matches the real line shape, as documented)"
+if [ "$SOURCE_A" = "qa-signoff" ] && [ "$SHA_A" = "$REAL_SHA" ]; then
+  echo "  ✓ baseline.source=qa-signoff, baseline.sha=$SHA_A (grep matches the real parenthetical line shape)"
 else
-  echo "  ✗ expected source=unknown/sha=null, got source=$SOURCE_A sha=$SHA_A"
+  echo "  ✗ expected source=qa-signoff/sha=$REAL_SHA, got source=$SOURCE_A sha=$SHA_A"
   FAILED=1
 fi
 
