@@ -50,7 +50,16 @@ use tokio::sync::oneshot;
 // `plain_capture_handler`) is unused *from this compilation of the file*
 // even though `common::capturing_upstream` (compiled separately, see
 // `tests/common/mod.rs`) uses all of it.
+//
+// `#[allow(clippy::duplicate_mod)]`: in a binary that declares both `mod
+// common;` and `mod spike_support;` (only `cli_run_claude_governed_launch.rs`
+// today), `capturing_upstream.rs` is genuinely compiled twice — once as
+// `common::capturing_upstream`, once as this module. That duplication is the
+// intended trade-off described above (a binary that pulls in only
+// `spike_support` stays free of a `mod common;` requirement), not an
+// oversight.
 #[allow(dead_code)]
+#[allow(clippy::duplicate_mod)]
 #[path = "../common/capturing_upstream.rs"]
 mod capturing_upstream_impl;
 
