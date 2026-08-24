@@ -449,7 +449,7 @@ journeys:
   - main
   - release
   fidelity: real_local_process
-  negative_control: 'aa-gateway/tests/cross_layer_policy_consistency_test.rs::artificial_divergence_is_detected — drops one deny rule from the lowered kernel ruleset and asserts the gap is observably absent (AAASM-5877)'
+  negative_control: 'aa-gateway/tests/cross_layer_policy_consistency_test.rs::policy_without_the_guard_clause_produces_no_deny — a real differential: two structurally different real policy documents through the same real lower_to_ebpf, asserting the deny is present for one and absent for the other (AAASM-5877)'
 - id: J25
   jira: AAASM-4599
   name: Verify human-in-the-loop approval workflow (requires_approval_if -> approve / reject / timeout)
@@ -523,6 +523,7 @@ journeys:
   - pr
   - main
   fidelity: real_local_process
+  negative_control: 'aa-gateway/tests/sensitive_data_producer_test.rs::primary_seam_writes_the_event_and_its_finding_rows — a real seam test: kills the evaluate_primary wiring mutation (module doc), proving the alert-producing path is actually wired to the detection engine, not a hardcoded emit (AAASM-5877)'
 - id: J28
   jira: AAASM-4596
   name: Verify rate limiting (limit_per_hour) and scheduling (active_hours)
@@ -798,7 +799,6 @@ journeys:
   browser_required: false
   outcome: See AAASM-4619 for the full acceptance contract; this row is a selection index only.
   lifecycle_state: automated
-  negative_control: 'aa-gateway/tests/audit_seq_recovery_test.rs::without_recovery_seq_would_duplicate — asserts that WITHOUT the sequence-recovery mechanism a gateway restart would produce duplicate audit sequence numbers, proving the cross-process (restart-spanning) evidence-continuity property is actually load-bearing (AAASM-5877)'
 - id: J45
   jira: AAASM-4609
   name: Operator observability — alerts, topology, cost
