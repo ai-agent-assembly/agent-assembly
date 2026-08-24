@@ -41,3 +41,17 @@ allowlists and the MCP disabled-server list to `admin_settings.json` — closing
 the gap noted in an earlier revision of this page (AAASM-204 shipped this).
 It governs MCP servers and terminal-exec allowlisting only; file-write and
 network-egress enforcement still require `aa-proxy`.
+
+**AAASM-5644:** `aa-proxy` interception additionally requires the Windsurf
+process to trust the Agent Assembly CA, and no launch-time mechanism
+establishes that for Windsurf. Windsurf is Electron (a VS Code fork): traffic
+splits across Chromium's own net stack and Node (extension host).
+`NODE_EXTRA_CA_CERTS` is a Node.js TLS-stack setting — Node's own docs scope it
+to `node`'s TLS implementation. Electron's renderer/Chromium net stack is a
+separate TLS implementation that `NODE_EXTRA_CA_CERTS` was never documented to
+cover, and `aa-devtool-windsurf`'s `build_launch_command` injects no CA-trust
+variable of any kind — so no launch-time mechanism establishes this regardless
+of which stack carries Windsurf's own HTTPS traffic. The only trust path that does work is OS-level —
+`aa-proxy` installs its CA into the system trust store independently of any
+adapter — so proxy interception of Windsurf traffic depends on that, not on
+anything `aa-devtool-windsurf` can inject per-launch.
