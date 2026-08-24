@@ -1,0 +1,47 @@
+# AAASM-5814 macOS-VM dogfood driver — the confined arm's baseline policy.
+#
+# Differs from `../policy/confined.yaml.tmpl` (the native/sandlock arms'
+# template) in exactly one structural way: `capabilities.allow` names
+# `network_outbound` in addition to the filesystem/exec capabilities every
+# arm grants. Without it, `aa_isolation::lowering::network_egress`'s
+# `restriction_sources` check (an allow-list that omits `network_outbound` is
+# itself a whole-domain-deny requirement, the same asymmetry
+# `file_write`/`file_delete` already document in the sibling template) forces
+# a required, whole-domain `network_egress` requirement — and this backend
+# has no network device in the guest to satisfy it with (see
+# `docs/src/security/execution-isolation.md`'s "No network device in the
+# guest" limitation). Every other backend in this benchmark suite can at
+# least attempt a network requirement; this one structurally cannot, so this
+# template grants the capability rather than trying to narrow the
+# requirement — the alternative (`network.allowlist`) still produces a
+# `required` posture no mechanism here can satisfy, and still refuses.
+#
+# `filesystem.read.allow: ["/"]` is deliberately NOT reused from the sibling
+# template — this backend's host→guest path mapping
+# (`aa-isolation-macos-vm/src/paths.rs::to_guest_path`) refuses any granted
+# path that does not fall under the launch's shared working directory, so a
+# `/` read grant would itself make every launch refuse at `spawn()`. Granting
+# exactly `__SCRATCH_ROOT__` (the directory `--workdir` shares into the
+# guest) is both sufficient and required.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-5814-dogfood-macos-vm-confined
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "__SCRATCH_ROOT__"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__/permitted"
+  capabilities:
+    allow:
+      - terminal_exec
+      - file_read
+      - file_write
+      - file_delete
+      - network_outbound
