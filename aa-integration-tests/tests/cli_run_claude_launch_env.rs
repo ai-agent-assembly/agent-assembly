@@ -252,13 +252,22 @@ exit 0
         /// Run `aasm run claude` against `gateway`, routed through `proxy`, and
         /// return the child stub's self-reported environment.
         fn run(&self, gateway: &GrpcGateway, proxy: &TrustedProxy) -> anyhow::Result<BTreeMap<String, String>> {
+            // `proxy.proxy_bin_dir()` is prefixed onto `self.path_var` here,
+            // not baked in at `create()` time (AAASM-5863): the child `aasm
+            // run` now resolves and spawns its own dedicated `aa-proxy`
+            // rather than trusting the already-running one `proxy` stood up,
+            // so that binary's directory must be on *this* launch's PATH too.
+            let mut path_parts = vec![proxy.proxy_bin_dir().to_path_buf()];
+            path_parts.extend(std::env::split_paths(&self.path_var));
+            let path_var = std::env::join_paths(path_parts)?;
+
             let out = std::process::Command::new(aasm_binary())
                 .current_dir(&self.project)
                 // Where the verified proxy's state record lives. Without it the
                 // launch refuses and nothing is measured.
                 .env("AA_DATA_DIR", proxy.data_dir())
                 .env("HOME", &self.home)
-                .env("PATH", &self.path_var)
+                .env("PATH", &path_var)
                 .env("CLAUDE_CONFIG_DIR", self.home.join(".claude"))
                 .env("AASM_STATE_DIR", &self.state_dir)
                 .env("AA_CA_DIR", self.root.join("ca"))
@@ -339,21 +348,35 @@ exit 0
             render(&seen),
         );
 
-        // ── the child is routed at the endpoint this host verified ────────
+        // ── the child is routed at a loopback endpoint this launch owns ────
         //
         // Nothing on the registration path names a proxy: a gateway response is
         // remote and unauthenticated, so letting it choose where a governed
         // session's traffic goes is the bypass AAASM-5323 closes. The value must
         // also be a URL, not a bare authority — no HTTP client routes through
         // the latter (AAASM-5324).
-        let expected_proxy = proxy.expected_proxy_url();
+        //
+        // AAASM-5863: the endpoint is `aasm run`'s own dedicated proxy for this
+        // launch, bound to an ephemeral port `ProxyGuard` picked — not `proxy`
+        // (the standalone shared proxy this fixture starts as this launch's
+        // registration/CA-trust precondition), whose address is asserted
+        // *distinct* below rather than equal, for the same reason as
+        // `cli_run_claude_governed_launch.rs`'s equivalent assertion.
+        let standalone_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
-            assert_eq!(
-                seen.get(key).map(String::as_str),
-                Some(expected_proxy.as_str()),
-                "`{key}` must carry the verified local endpoint as a URL. A bare `host:port` \
-                 means an unusable authority reached the child; `__UNSET__` means the launch was \
-                 not proxied at all. Saw:\n{}",
+            let value = seen.get(key).map(String::as_str);
+            assert!(
+                value.is_some_and(|v| v.starts_with("http://127.0.0.1:")),
+                "`{key}` must carry a loopback endpoint as a URL. A bare `host:port` means an \
+                 unusable authority reached the child; `__UNSET__` means the launch was not \
+                 proxied at all. Saw:\n{}",
+                render(&seen),
+            );
+            assert_ne!(
+                value,
+                Some(standalone_proxy.as_str()),
+                "`{key}` names the standalone shared proxy this fixture started for registration/CA \
+                 trust, not this launch's own dedicated proxy (AAASM-5863). Saw:\n{}",
                 render(&seen),
             );
         }

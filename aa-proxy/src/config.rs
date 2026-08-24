@@ -236,20 +236,23 @@ pub struct ProxyConfig {
     /// environment**, if set.
     ///
     /// This closes the attribution gap only when whatever started `aa-proxy`
-    /// put a real agent id in its env — it does **not**, by itself, close
-    /// attribution for the `aasm run <tool>` golden path: `aasm proxy start`
-    /// spawns `aa-proxy` as a standalone, agent-agnostic sidecar
+    /// put a real agent id in its env. `aasm proxy start` spawns `aa-proxy`
+    /// as a standalone, agent-agnostic sidecar
     /// (`aa-cli/src/commands/proxy/start.rs::proxy_child_env`, which sets no
-    /// `AA_AGENT_ID`) *before* any `aasm run` launch exists to register an
-    /// identity, and one running sidecar can go on to serve many sequential
-    /// `aasm run` launches with different registered agents. `aasm run` only
-    /// exports `AA_AGENT_ID` into the *launched tool's* process env
-    /// (`aa-cli/src/commands/run.rs`), which this field never sees. Attributing
-    /// each intercepted request to the launch that actually made it needs
-    /// per-request/per-connection identity, not a static per-process field —
-    /// tracked as a follow-up design question, not implemented here. `None`
-    /// when the proxy's own launcher never set `AA_AGENT_ID` (the common case
-    /// today).
+    /// `AA_AGENT_ID`) that can go on to serve many sequential `aasm run`
+    /// launches with different registered agents — that path stays
+    /// unattributed (`None`) by design, and stays available as an explicit
+    /// standalone/shared-proxy mode (AAASM-5857).
+    ///
+    /// The `aasm run <tool>` golden path closes the gap instead: as of
+    /// AAASM-5863 it starts one dedicated `aa-proxy` per governed launch
+    /// (`aa-cli/src/commands/proxy/guard.rs::ProxyGuard`), spawned only
+    /// *after* the launch has registered, with that registration's real
+    /// `agent_id` set here — never an unauthenticated client-provided claim.
+    /// One dedicated proxy serves exactly one launch, so a static
+    /// per-process field is sufficient; a shared sidecar serving concurrent
+    /// launches would need per-request/per-connection identity instead, and
+    /// deliberately isn't how the golden path works.
     ///
     /// Env: `AA_AGENT_ID` — no default, absent unless set.
     pub agent_id: Option<String>,

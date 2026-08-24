@@ -1,6 +1,7 @@
 //! `aasm run` — launch an AI dev tool with governance wiring.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -12,6 +13,8 @@ use tokio::signal::unix::SignalKind;
 
 use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel};
 
+use crate::commands::proxy::guard::{ProxyGuard, ProxyGuardOptions};
+use crate::commands::proxy::launch_state;
 // AAASM-5349: resolution is shared with the devint service, so it lives in
 // `aa-policy` rather than here. Aliased so the call sites read unchanged.
 use crate::commands::run_registration::{self, GovernedRegistration};
@@ -463,16 +466,27 @@ mod plan {
     }
 
     impl NetworkPlan {
-        /// The proxy origin [`crate::commands::proxy::trust`] vouched for, or
+        /// This launch's dedicated proxy's bound address (AAASM-5863), or
         /// `None`.
         ///
-        /// `None` means one of exactly two things, and the distinction is
-        /// [`Self::no_proxy`]: the operator opted out, or nothing could be
-        /// vouched for. It never means "use whatever the shell had" — an
-        /// environment-supplied proxy address is the class of input this
-        /// feature exists to stop treating as authoritative (AAASM-5323).
+        /// `None` before `execute_with_adapters` calls [`Self::set_endpoint`]
+        /// — every `resolve()`d plan starts this way, since the dedicated
+        /// proxy cannot exist before registration has produced the identity
+        /// it is configured with — and permanently for [`Self::no_proxy`] or a
+        /// preview, neither of which ever starts one. It never means "use
+        /// whatever the shell had" — an environment-supplied proxy address is
+        /// the class of input this feature exists to stop treating as
+        /// authoritative (AAASM-5323).
         pub(super) fn endpoint(&self) -> Option<&str> {
             self.endpoint.as_deref()
+        }
+
+        /// Record this launch's dedicated proxy's bound address, once
+        /// [`super::ProxyGuard::spawn`] has confirmed it is ready. Called
+        /// exactly once per live launch, after registration and before
+        /// [`ResolvedRunPlan::bind`] — see `execute_with_adapters`.
+        pub(super) fn set_endpoint(&mut self, endpoint: String) {
+            self.endpoint = Some(endpoint);
         }
 
         /// Whether the operator explicitly opted out of interception.
@@ -1107,6 +1121,14 @@ mod plan {
             &self.network
         }
 
+        /// Record this live launch's dedicated proxy address — see
+        /// [`NetworkPlan::set_endpoint`]. Must be called, if at all, before
+        /// [`Self::bind`]: `bind` is what reads `network.endpoint()` into the
+        /// child's `HTTP_PROXY`/`HTTPS_PROXY` and the adapter's launch command.
+        pub(super) fn set_endpoint(&mut self, endpoint: String) {
+            self.network.set_endpoint(endpoint);
+        }
+
         /// The effective policy.
         pub(super) fn policy(&self) -> &PolicyPlan {
             &self.policy
@@ -1343,14 +1365,27 @@ mod plan {
                 }
             }
 
-            // 2. Network. Resolved before registration on purpose.
-            let endpoint = match super::resolve_launch_proxy(self.args.no_proxy) {
-                Ok(endpoint) => endpoint,
-                Err(e) => {
-                    posture.refuse(e)?;
-                    None
-                }
-            };
+            // 2. Network. Only the `--no-proxy` opt-out is decided here — the
+            //    endpoint itself is deliberately left unresolved.
+            //
+            //    AAASM-5863 (Option 2, AAASM-5857): a governed launch's proxy is
+            //    configured with the *registered* agent_id, so it cannot be
+            //    started before registration exists — starting one earlier
+            //    would mean either configuring it with an unauthenticated
+            //    claim, or leaving it unattributed, both of which this
+            //    architecture exists to rule out. `execute_with_adapters` fills
+            //    `network.endpoint` in once registration has produced a real
+            //    identity and the dedicated proxy for this launch is ready, or
+            //    refuses the launch before anything is spawned if the proxy
+            //    never comes up (see `ProxyGuard::spawn`). Stage 3 below still
+            //    needs the `no_proxy` flag itself before registration, so it is
+            //    decided here; only the address is deferred.
+            if self.args.no_proxy {
+                eprintln!(
+                    "warning: --no-proxy — launching WITHOUT interception. This session's traffic is \
+                     not inspected and no egress policy applies to it."
+                );
+            }
 
             // 3. AAASM-5350 AC 1: `--no-proxy` is refused where a party other
             //    than the invoking user has already decided this host runs
@@ -1404,7 +1439,7 @@ mod plan {
                 identity: IdentityPlan::of(self.args),
                 integration,
                 network: NetworkPlan {
-                    endpoint,
+                    endpoint: None,
                     no_proxy: self.args.no_proxy,
                 },
                 policy: PolicyPlan { resolution, document },
@@ -2038,25 +2073,6 @@ fn no_proxy_refusal(tool: &str) -> Option<crate::commands::run_no_proxy_guard::R
     crate::commands::run_no_proxy_guard::refusal_for(&kind, scope, receipt_profile, managed)
 }
 
-fn resolve_launch_proxy(no_proxy: bool) -> Result<Option<String>> {
-    if no_proxy {
-        eprintln!(
-            "warning: --no-proxy — launching WITHOUT interception. This session's traffic is not \
-             inspected and no egress policy applies to it."
-        );
-        return Ok(None);
-    }
-    let url = crate::commands::proxy::trust::resolve_trusted_endpoint()
-        .map_err(|e| anyhow::anyhow!("refusing to launch ungoverned: {e}"))?;
-    // `Url` appends a path; a proxy variable wants the bare origin.
-    Ok(Some(format!(
-        "{}://{}:{}",
-        url.scheme(),
-        url.host_str().unwrap_or_default(),
-        url.port().unwrap_or_default()
-    )))
-}
-
 /// Resolve the effective policy for this launch, and announce which of the four
 /// states it landed in.
 ///
@@ -2262,8 +2278,9 @@ fn format_dry_run_output(
         if no_proxy {
             "--no-proxy: nothing is intercepted, no egress policy applies, and nothing is inspected"
         } else {
-            "a trusted proxy endpoint was resolved and injected; whether interception works is \
-             adjudicated later, not asserted here"
+            "a dedicated proxy is started for this launch only after it registers, so a preview \
+             cannot show its address without starting one; whether interception works is \
+             adjudicated at launch time, not asserted here"
         },
         policy.state_token(),
         policy.source().map_or("<none>".to_string(), |p| p.display().to_string()),
@@ -2784,6 +2801,54 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     let registration = register_with_gateway(&subject, resolved.identity(), mode).await?;
     let handle = RegistrationHandle::of(&registration);
 
+    // Created here, immediately after registration succeeds, rather than just
+    // before the spawn: from this point on the function has refusal paths —
+    // the dedicated-proxy spawn below is one, the boundary refusal further
+    // down is another — and a registered session abandoned without
+    // deregistration is a governed identity with no process behind it.
+    // `deregistered` is still set on the normal path so the Drop does not
+    // duplicate the request.
+    let mut guard = RegistrationGuard {
+        registration: registration.clone(),
+        deregistered: false,
+    };
+
+    // AAASM-5863 (Option 2, AAASM-5857): start this launch's dedicated proxy
+    // now that a real registered identity exists to configure it with. Fails
+    // closed — a proxy that cannot start or does not become ready refuses the
+    // launch here, before any managed settings are written or any child
+    // exists, rather than falling back to an unproxied or shared-proxy
+    // connection a session presenting as governed must never make silently.
+    // `None` only for `--no-proxy`, which took the same warned, explicit
+    // opt-out path before registration existed (`RunPlanner::resolve` stage
+    // 2) and reaches here unchanged.
+    let proxy_guard = if args.no_proxy {
+        None
+    } else {
+        let state = launch_state::allocate(launch_state::run_state_label(Some(&handle.agent_id))).map_err(|e| {
+            anyhow::anyhow!("refusing to launch ungoverned: could not allocate per-launch proxy state: {e}")
+        })?;
+        // `AA_CA_DIR` is read here, not delegated to `shared_ca_dir()`'s own
+        // resolution, so an operator's override is honoured for the proxy
+        // this launch actually starts — `shared_ca_dir()` stays a pure
+        // function of nothing but the default, which is what its own tests
+        // pin down (AAASM-5862 review).
+        let ca_dir = std::env::var_os("AA_CA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(launch_state::shared_ca_dir);
+        let opts = ProxyGuardOptions {
+            ready_file: state.ready_file,
+            ca_dir,
+            agent_id: Some(handle.agent_id.clone()),
+            gateway_endpoint: Some(run_registration::gateway_endpoint()),
+            audit_jsonl_path: Some(state.audit_jsonl_path),
+        };
+        Some(
+            ProxyGuard::spawn(opts)
+                .map_err(|e| anyhow::anyhow!("refusing to launch ungoverned: dedicated proxy failed to start: {e}"))?,
+        )
+    };
+
     // Recorded now, not at exit: an audit trail that only learns about a session
     // when it ends loses every session still running and every one that does not
     // end cleanly. Reachable only for a policy that permitted the launch — the
@@ -2801,6 +2866,10 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     )
     .await;
 
+    if let Some(pg) = &proxy_guard {
+        resolved.set_endpoint(format!("http://{}", pg.bound_addr()));
+    }
+
     // The same bind `--dry-run` renders, against the identity the gateway just
     // accepted. No `cmd.envs(&child_env)` anywhere: `spawn_and_wait` applies both
     // sources with the adapter's on top, and overlaying `child_env` onto the
@@ -2808,16 +2877,6 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // would then faithfully carry forward the very values it is meant to
     // override.
     let bound = resolved.bind(&handle);
-
-    // Created here rather than just before the spawn, because from this point
-    // on the function has refusal paths — the boundary refusal below is one —
-    // and a registered session abandoned without deregistration is a governed
-    // identity with no process behind it. `deregistered` is still set on the
-    // normal path so the Drop does not duplicate the request.
-    let mut guard = RegistrationGuard {
-        registration: registration.clone(),
-        deregistered: false,
-    };
 
     // The same projection `--dry-run` renders, on the path that actually starts a
     // child (AAASM-5710). Machine-readable and on stderr: stdout is reserved for
@@ -2874,6 +2933,13 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         // Refused above, before the managed settings were written.
         plan::Boundary::Refused(why) => anyhow::bail!("refusing to launch: {why}"),
     };
+
+    // Stop this launch's dedicated proxy before deregistering, not after: its
+    // `Drop` is what flushes/finalizes this launch's audit segment, and a
+    // governed session should not be reported as ended to the gateway while
+    // its own proxy is still writing that session's audit trail. `None` under
+    // `--no-proxy`, where there is nothing to stop.
+    drop(proxy_guard);
 
     // Primary deregistration path — async, reliable. Mark the guard first so its
     // Drop does not fire a duplicate request when the function returns normally.

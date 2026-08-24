@@ -221,14 +221,22 @@ exit 0
 
         // `PATH` is prefixed rather than replaced: `build_launch_command`'s
         // `which` probe must find our stub first, while the child `aasm` keeps
-        // whatever else it needs from the host.
+        // whatever else it needs from the host. `proxy.proxy_bin_dir()` is
+        // included too (AAASM-5863): the child `aasm run` now resolves and
+        // spawns its own dedicated `aa-proxy` rather than trusting the
+        // already-running one `TrustedProxy::start()` stood up, so the same
+        // binary directory that command used must also be on *this* PATH, not
+        // just the harness process's own.
         let path_var = match std::env::var_os("PATH") {
             Some(existing) => {
-                let mut parts = vec![stub.parent().expect("stub has a parent").to_path_buf()];
+                let mut parts = vec![
+                    stub.parent().expect("stub has a parent").to_path_buf(),
+                    proxy.proxy_bin_dir().to_path_buf(),
+                ];
                 parts.extend(std::env::split_paths(&existing));
                 std::env::join_paths(parts)?
             }
-            None => std::env::join_paths([stub.parent().expect("stub has a parent")])?,
+            None => std::env::join_paths([stub.parent().expect("stub has a parent"), proxy.proxy_bin_dir()])?,
         };
 
         // ── the run ────────────────────────────────────────────────────────
@@ -311,20 +319,35 @@ exit 0
         // the pre-fix bare `host:port`.
         //
         // AAASM-5323 changes what the right answer *is*. The child is routed at
-        // the endpoint **this host** resolved and verified, and nothing on the
-        // registration path names a proxy any more — the field was removed from
-        // the response entirely. A gateway reply is remote and unauthenticated,
-        // so it is not entitled to choose where this session's traffic goes.
-        // `PROXY_ADDR` survives only as a deliberately dead test-local constant,
-        // so a regression that reinstated *any* remote source for the route
-        // would show up here as a wrong value rather than as a silent pass.
-        let expected_proxy = proxy.expected_proxy_url();
+        // an endpoint **this host** resolved, and nothing on the registration
+        // path names a proxy any more — the field was removed from the response
+        // entirely. A gateway reply is remote and unauthenticated, so it is not
+        // entitled to choose where this session's traffic goes.
+        //
+        // AAASM-5863 changes it again: the endpoint is no longer `proxy` (the
+        // standalone shared proxy this fixture stands up as this launch's
+        // *registration/CA-trust* precondition, per the module doc above) — it
+        // is `aasm run`'s own dedicated proxy for this one launch, bound to an
+        // ephemeral port `ProxyGuard` picked, which by construction differs
+        // from `proxy`'s. Asserting equality with `proxy.expected_proxy_url()`
+        // would therefore be asserting the *wrong* thing on correct code; the
+        // loopback-and-distinct assertion below is what actually distinguishes
+        // "routed through *a* dedicated proxy" from "not routed through a proxy
+        // at all" without hard-coding a port this test does not control.
+        let standalone_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
-            assert_eq!(
-                seen.get(key).map(String::as_str),
-                Some(expected_proxy.as_str()),
-                "the launched tool must be routed at the verified local proxy via `{key}`; an \
-                 empty value would mean no interception at all. Saw:\n{raw}",
+            let value = seen.get(key).map(String::as_str);
+            assert!(
+                value.is_some_and(|v| v.starts_with("http://127.0.0.1:")),
+                "the launched tool must be routed at a loopback proxy via `{key}`; an empty or \
+                 non-loopback value would mean no interception at all. Saw:\n{raw}",
+            );
+            assert_ne!(
+                value,
+                Some(standalone_proxy.as_str()),
+                "`{key}` names the standalone shared proxy this fixture started for registration/CA \
+                 trust, not this launch's own dedicated proxy (AAASM-5863) — the two must be distinct \
+                 processes on distinct ports. Saw:\n{raw}",
             );
         }
 
@@ -598,10 +621,9 @@ mod real_binary_governed_launch {
         unsafe { libc::killpg(pgid, signal) };
     }
 
-    /// `PATH` with `first` prepended, so the child's `which claude` resolves the
-    /// binary this scenario measured rather than another one on the host.
-    fn path_with(first: &Path) -> anyhow::Result<std::ffi::OsString> {
-        let mut parts = vec![first.to_path_buf()];
+    /// `PATH` with `first` and `second` both prepended, in that order.
+    fn path_with_both(first: &Path, second: &Path) -> anyhow::Result<std::ffi::OsString> {
+        let mut parts = vec![first.to_path_buf(), second.to_path_buf()];
         parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         Ok(std::env::join_paths(parts)?)
     }
@@ -740,9 +762,19 @@ mod real_binary_governed_launch {
         let mut cmd = std::process::Command::new(aasm_binary());
         cmd.current_dir(&project)
             .env("HOME", &home)
+            // `claude.parent()` so `which claude` finds this scenario's binary,
+            // and `proxy.proxy_bin_dir()` (AAASM-5863) so the *dedicated* proxy
+            // `aasm run` now starts for this launch resolves to the same
+            // mock-upstream stand-in `proxy` (`start_intercepting`) copied there
+            // as `aa-proxy` — without it the dedicated proxy would either fail
+            // to resolve at all or resolve to a real `aa-proxy` with no
+            // knowledge of the mock upstream this scenario's capture depends on.
             .env(
                 "PATH",
-                path_with(claude.parent().expect("the claude binary has a parent"))?,
+                path_with_both(
+                    claude.parent().expect("the claude binary has a parent"),
+                    proxy.proxy_bin_dir(),
+                )?,
             )
             .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
             .env("AASM_STATE_DIR", &state)
@@ -750,6 +782,13 @@ mod real_binary_governed_launch {
             .env("AASM_CLAUDE_MANAGED_ROOT", root.join("managed"))
             .env("AA_DATA_DIR", proxy.data_dir())
             .env("AA_GATEWAY_ENDPOINT", gateway.endpoint())
+            // Mirrors what `start_intercepting` set on its own (now-unused, for
+            // this scenario's purposes) standalone proxy: the dedicated proxy
+            // this launch starts is the one that must redirect to the mock
+            // upstream and skip its self-signed leaf's verification now.
+            .env("AA_TEST_PROXY_UPSTREAM", upstream.addr.to_string())
+            .env("AA_PROXY_LLM_ONLY", "false")
+            .env("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY", "1")
             // A token that is obviously not a credential: the run must reach the
             // mock, and the mock answers whatever it is asked.
             .env("ANTHROPIC_AUTH_TOKEN", "AAASM1112-DUMMY-NOT-A-REAL-TOKEN")
