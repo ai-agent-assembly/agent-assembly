@@ -161,6 +161,14 @@ on:
       - "qa/tests/fixtures/**"
       - "scripts/qa/validate-golden-journeys.py"
       - "scripts/qa/validate-golden-journeys-negative-control.sh"
+      # AAASM-5878/5899: the release-evidence freshness checker and its
+      # digest module. Same ADR 0028 pairing rule as above — every path here
+      # has a matching `qa_registry` router filter entry below.
+      - "scripts/qa/registry_digest.py"
+      - "scripts/qa/build-release-evidence.py"
+      - "scripts/qa/check-release-evidence.py"
+      - "scripts/tests/release-evidence-negative-control.sh"
+      - "qa/tests/evidence-fixtures/**"
   pull_request:
     branches: [main]
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
@@ -442,6 +450,12 @@ jobs:
               - 'qa/tests/fixtures/**'
               - 'scripts/qa/validate-golden-journeys.py'
               - 'scripts/qa/validate-golden-journeys-negative-control.sh'
+              # AAASM-5878/5899: the release-evidence freshness checker.
+              - 'scripts/qa/registry_digest.py'
+              - 'scripts/qa/build-release-evidence.py'
+              - 'scripts/qa/check-release-evidence.py'
+              - 'scripts/tests/release-evidence-negative-control.sh'
+              - 'qa/tests/evidence-fixtures/**'
               - '.github/workflows/ci.yml'
             # AAASM-5677: the governance surface. Before this filter existed, a
             # change to `governance/capability-manifest.yaml` selected NO job in
@@ -1189,6 +1203,17 @@ jobs:
 
       - name: Validate the real registry
         run: python3 scripts/qa/validate-golden-journeys.py qa/golden-journeys.yaml
+
+      # AAASM-5878/5899: same "negative control first" convention as above,
+      # for scripts/qa/check-release-evidence.py. There is deliberately no
+      # "run the checker against the real repo" step here yet — no
+      # docs/release/qa-signoff/v<version>.evidence.json is committed to
+      # this repo yet (AAASM-5898 intentionally shipped no instance; see
+      # that subtask's post-review notes), so there is nothing real for the
+      # checker to evaluate until AAASM-5900 (Subtask C) or a real release
+      # produces one.
+      - name: Self-test the release-evidence checker (negative control)
+        run: bash scripts/tests/release-evidence-negative-control.sh
 
   detection-egress-closure:
     needs: [changes]
