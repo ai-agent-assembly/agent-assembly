@@ -27,6 +27,31 @@ use crate::state::AppState;
 /// (never `0.0.0.0`) without reaching into private internals.
 pub const LOCAL_GRPC_ADDR: &str = "127.0.0.1:50051";
 
+/// Loopback gRPC endpoint for the cross-process redaction telemetry ingest
+/// (AAASM-5871).
+///
+/// Deliberately NOT [`LOCAL_GRPC_ADDR`] (:50051): in the standard co-located
+/// deployment `aa-gateway` owns :50051, so `serve_local_grpc` degrades to
+/// REST-only there and the ingest would land in the wrong process. A dedicated
+/// loopback port keeps the ingest in the same process as `state.events` and the
+/// alert store, which is the whole point. Loopback-only by design — a redaction
+/// telemetry sink must never be reachable off-host. Overridable via
+/// `AA_API_TELEMETRY_ADDR` for tests / port conflicts.
+pub const LOCAL_TELEMETRY_GRPC_ADDR: &str = "127.0.0.1:50052";
+
+/// Resolve the telemetry ingest bind address from `AA_API_TELEMETRY_ADDR`,
+/// falling back to [`LOCAL_TELEMETRY_GRPC_ADDR`]. An unparseable override is a
+/// misconfiguration the operator should see, so it propagates as an error
+/// rather than silently reverting to the default.
+fn resolve_telemetry_addr() -> Result<std::net::SocketAddr, Box<dyn std::error::Error>> {
+    match std::env::var("AA_API_TELEMETRY_ADDR") {
+        Ok(raw) => Ok(raw.parse()?),
+        Err(_) => Ok(LOCAL_TELEMETRY_GRPC_ADDR
+            .parse()
+            .expect("LOCAL_TELEMETRY_GRPC_ADDR is a valid loopback address")),
+    }
+}
+
 /// Max accepted gRPC decode size (4 MiB). Parity with `aa-gateway`'s legacy-grpc
 /// services (`aa-gateway/src/server.rs`): the registration endpoint is
 /// attacker-influenceable, so the response/request buffer is bounded explicitly
@@ -184,9 +209,20 @@ pub async fn serve_local(
         .parse()
         .expect("LOCAL_GRPC_ADDR is a valid loopback address");
 
+    // AAASM-5871: alongside REST + lifecycle gRPC, serve the redaction telemetry
+    // ingest on a dedicated loopback port over a clone of the SAME secret-alert
+    // broadcast sender the in-process capture task subscribes to. This lets the
+    // out-of-process `aa-proxy` report a pre-transmission REDACT decision that
+    // then flows through the existing capture → alert store → `/api/v1/alerts`
+    // path. Cloned before `state` moves into `run_server_with_spa`, mirroring
+    // the `registry` clone above.
+    let secret_tx = state.events.secret_sender();
+    let telemetry_addr = resolve_telemetry_addr()?;
+
     let rest = run_server_with_spa(config, state, spa_dist.as_deref());
     let grpc = serve_local_grpc(grpc_addr, registry);
-    tokio::try_join!(rest, grpc)?;
+    let telemetry = serve_local_telemetry_grpc(telemetry_addr, secret_tx);
+    tokio::try_join!(rest, grpc, telemetry)?;
     Ok(())
 }
 
@@ -220,6 +256,59 @@ async fn serve_local_grpc(
     };
     tracing::info!(%addr, "aa-api local gRPC AgentLifecycleService listening (loopback-only)");
     serve_lifecycle_grpc(listener, registry, crate::shutdown::shutdown_signal()).await
+}
+
+/// Bind the redaction telemetry ingest on `addr` and serve until shutdown
+/// (AAASM-5871).
+///
+/// `addr` must be loopback ([`LOCAL_TELEMETRY_GRPC_ADDR`] or an
+/// `AA_API_TELEMETRY_ADDR` override); the caller controls that. As with
+/// [`serve_local_grpc`], a port already in use downgrades to a warning and
+/// returns `Ok(())` so the REST surface still comes up — cross-process
+/// redaction telemetry is best-effort observability and must never block the
+/// API from starting. Any other bind error propagates.
+async fn serve_local_telemetry_grpc(
+    addr: std::net::SocketAddr,
+    secret_tx: tokio::sync::broadcast::Sender<aa_gateway::alerts::SecretAlert>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = match TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            tracing::warn!(
+                target: "aa_api::serve_local",
+                %addr,
+                error = %e,
+                "redaction telemetry ingest port already in use — cross-process proxy \
+                 redaction events will not be captured by this process"
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    tracing::info!(%addr, "aa-api redaction telemetry ingest listening (loopback-only)");
+    serve_telemetry_grpc(listener, secret_tx, crate::shutdown::shutdown_signal()).await
+}
+
+/// Serve the redaction telemetry ingest on an already-bound `listener`, over
+/// `secret_tx`, until `shutdown` resolves (AAASM-5871).
+///
+/// Extracted so tests can drive the exact production wiring on an ephemeral
+/// port. The `event_id` idempotency key bounds a decode buffer no larger than
+/// the lifecycle service's, and the surface accepts only non-sensitive
+/// evidence, so it adds no new attacker-influenceable secret-bearing surface.
+pub async fn serve_telemetry_grpc(
+    listener: TcpListener,
+    secret_tx: tokio::sync::broadcast::Sender<aa_gateway::alerts::SecretAlert>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ingest = crate::redaction_telemetry::RedactionTelemetryIngest::new(secret_tx);
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    Server::builder()
+        .add_service(ingest.into_server().max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE))
+        .serve_with_incoming_shutdown(incoming, shutdown)
+        .await?;
+    Ok(())
 }
 
 /// Serve the gRPC `AgentLifecycleService` on an already-bound `listener` over
