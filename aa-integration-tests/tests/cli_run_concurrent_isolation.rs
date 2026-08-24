@@ -19,14 +19,26 @@
 //! agent id, and asserts on the artifacts each one actually produced:
 //!
 //! * distinct dedicated-proxy addresses (scenario B/C: no shared proxy)
-//! * distinct per-launch audit files, each containing at least one record
-//!   attributed to its own agent id and **zero** attributed to the other's
-//!   (scenario H: no cross-attribution, and non-vacuously — an empty file
-//!   would trivially pass a "contains none of the other's records" check
-//!   without proving anything, so this also asserts each file is not
-//!   empty and is attributed to the right agent)
-//! * the gateway's own registration records agree with what each launch's
-//!   audit trail says about itself
+//! * two genuinely distinct identities independently registered *and*
+//!   deregistered, per the gateway's own real records
+//! * *if* either launch's dedicated-proxy audit file is non-empty, it is
+//!   attributed to its own agent id and **zero** records are attributed to
+//!   the other's (scenario H: no cross-attribution)
+//!
+//! **Not evidenced here:** that a launch's audit file is *always* non-empty.
+//! `write_stub_binary` below is a static shell script standing in for the
+//! real `claude` binary — it makes no network call, so `${state_dir}/runs/
+//! */audit.jsonl` is empty by construction on every platform, not
+//! intermittently. Driving real MitM traffic through the dedicated proxy
+//! hermetically was evaluated and rejected: `ProxyConfig::
+//! allow_private_connect_targets` is hardcoded `false` with no env override
+//! (`aa-proxy/src/config.rs` — "production binaries can never relax the SSRF
+//! guard"), so a loopback mock listener is refused at the CONNECT stage;
+//! routing the stub at a real external host would make this test depend on
+//! live network egress from CI, which this suite avoids elsewhere. Per-
+//! record `agent_id` tagging correctness is unit-tested independently at
+//! `aa-proxy/src/audit_jsonl.rs`. See AAASM-5865's ticket comment trail for
+//! this gap.
 //!
 //! Sequential-launch isolation (the two-launches-in-a-row half of scenario
 //! B) is not re-derived here: `launch_state::allocate`'s own
@@ -313,7 +325,7 @@ exit 0
              share one — sharing would mean one launch's traffic can be attributed to the other",
         );
 
-        // ── each launch's audit trail is attributed to itself, and only itself ──
+        // ── each launch's audit trail, if any, is attributed to itself only ──
         let did_a = expected_did(&state_a, LAUNCH_A.agent_id);
         let did_b = expected_did(&state_b, LAUNCH_B.agent_id);
         assert_ne!(did_a, did_b, "two distinct agent ids must derive two distinct DIDs");
@@ -321,68 +333,36 @@ exit 0
         let ids_in_a = read_audit_agent_ids(&state_a)?;
         let ids_in_b = read_audit_agent_ids(&state_b)?;
 
-        // Non-vacuity first: an empty audit file would trivially satisfy "no
-        // cross-attribution" below without establishing anything. A governed
-        // launch that reaches a real Claude Code adapter always emits at
-        // least the settings-file / telemetry side-channel traffic the
-        // adapter's own MitM host list covers, so an empty file here is
-        // itself a finding, not a quiet pass.
-        assert!(
-            !ids_in_a.is_empty(),
-            "launch A's audit file is empty — either it produced no traffic through its own \
-             dedicated proxy, or this test found the wrong file. Either way, the cross-attribution \
-             assertion below would be vacuous.",
-        );
-        assert!(!ids_in_b.is_empty(), "launch B's audit file is empty (see A's message)");
-
-        assert!(
-            ids_in_a.iter().any(|id| id.as_deref() == Some(did_a.as_str())),
-            "launch A's own audit file must contain at least one record attributed to A's own \
-             identity ({did_a}); saw: {ids_in_a:?}",
-        );
-        assert!(
-            ids_in_b.iter().any(|id| id.as_deref() == Some(did_b.as_str())),
-            "launch B's own audit file must contain at least one record attributed to B's own \
-             identity ({did_b}); saw: {ids_in_b:?}",
-        );
-
-        assert!(
-            !ids_in_a.iter().any(|id| id.as_deref() == Some(did_b.as_str())),
-            "launch A's audit file must contain zero records attributed to B ({did_b}); saw: \
-             {ids_in_a:?} — cross-attribution between two concurrent launches is the exact defect \
-             AAASM-5865 exists to catch",
-        );
-        assert!(
-            !ids_in_b.iter().any(|id| id.as_deref() == Some(did_a.as_str())),
-            "launch B's audit file must contain zero records attributed to A ({did_a}); saw: \
-             {ids_in_b:?}",
-        );
-
-        // Scenario H, directly: no `<unknown>` (i.e. `None`/absent) agent id
-        // where attribution is expected — every record either launch's own
-        // dedicated proxy wrote carries a real identity, since that proxy's
-        // `AA_AGENT_ID` was always set (AAASM-5863 starts the dedicated
-        // proxy only after registration succeeds).
-        assert!(
-            ids_in_a.iter().all(|id| id.is_some()),
-            "every record in A's audit file must carry a real agent id, never `None`; saw: \
-             {ids_in_a:?}",
-        );
-        assert!(
-            ids_in_b.iter().all(|id| id.is_some()),
-            "every record in B's audit file must carry a real agent id, never `None`; saw: \
-             {ids_in_b:?}",
-        );
-
-        // Non-vacuity for the negative checks above comes from the positive
-        // checks together with `assert_ne!(did_a, did_b)` earlier: each file
-        // is shown to contain its *own* identity and distinct identities are
-        // shown to exist, so "contains none of the other's" is excluding a
-        // real, known-present value — not vacuously true over two empty or
-        // identical sets. (An earlier version of this test carried a
-        // redundant assertion here that recomputed the same two predicates
-        // already checked above and could never fail; removed rather than
-        // left as false rigor — see AAASM-5865 PR review.)
+        // Conditional, not unconditional (see the module doc's "Not
+        // evidenced here"): the fixture's stub makes no network call, so
+        // both files are empty by construction today, not intermittently.
+        // Asserting non-emptiness here would be asserting a premise this
+        // fixture can never satisfy — see AAASM-5865's ticket comment trail.
+        // This still catches a real regression if a future fixture change
+        // (or a defect that makes the stub's env leak real traffic) starts
+        // producing records: whatever *is* produced must still be correctly
+        // and exclusively attributed.
+        for (label, ids, own_did, other_did) in [("A", &ids_in_a, &did_a, &did_b), ("B", &ids_in_b, &did_b, &did_a)] {
+            if ids.is_empty() {
+                continue;
+            }
+            assert!(
+                ids.iter().any(|id| id.as_deref() == Some(own_did.as_str())),
+                "launch {label}'s audit file is non-empty but contains no record attributed to \
+                 its own identity ({own_did}); saw: {ids:?}",
+            );
+            assert!(
+                !ids.iter().any(|id| id.as_deref() == Some(other_did.as_str())),
+                "launch {label}'s audit file contains a record attributed to the other launch \
+                 ({other_did}); saw: {ids:?} — cross-attribution between two concurrent launches \
+                 is the exact defect AAASM-5865 exists to catch",
+            );
+            assert!(
+                ids.iter().all(|id| id.is_some()),
+                "every record in launch {label}'s audit file must carry a real agent id, never \
+                 `None`; saw: {ids:?}",
+            );
+        }
 
         // ── the gateway agrees: two registrations, two distinct identities ──
         let registrations = gateway.session().registrations();
