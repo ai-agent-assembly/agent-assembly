@@ -1214,19 +1214,23 @@ jobs:
     # against static rules, while this one exercises live process/fcntl
     # behavior (real concurrent subprocesses, real slot contention, a real
     # execvp) — different failure surface, worth isolating in its own check
-    # run. Matrixed across ubuntu-latest and macos-latest: the mechanism this
-    # Story exists to fix (AAASM-5877's shared CARGO_TARGET_DIR deadlock) was
-    # measured on macOS, and `os.set_inheritable`-before-`execvp` behavior
-    # (case 11 in the harness) is exactly the kind of thing that can differ
-    # across platforms — an ubuntu-only gate would not have caught a
-    # macOS-specific regression here. Cheap either way: pure Python/bash
-    # fixtures, no cargo/nextest involved.
+    # run.
+    #
+    # ubuntu-latest only, deliberately NOT matrixed onto macos-latest despite
+    # the incident this Story fixes (AAASM-5877) being measured on macOS:
+    # adding a macos-latest runner to *this* workflow file changes what
+    # `scripts/qa/validate-golden-journeys.py` sees as a "platform with a
+    # matching ci.yml runner" (it scans ci.yml's `runs-on` values), which
+    # flips `qa/tests/fixtures/11-unsupported-platform.yaml` — a fixture that
+    # asserts a declared-but-unsupported platform fails validation — from
+    # exit 1 to exit 0, breaking registry-health-gate's own negative control.
+    # Confirmed by trying it and watching that case turn red. A macOS leg for
+    # this job would need to land together with a fix to that scan (or the
+    # fixture), which is out of this subtask's scope; AAASM-5811 already
+    # tracks the broader "no macOS runner in this repo's CI" gap.
     if: needs.changes.outputs.qa_registry == 'true'
-    name: Resource-lock health gate (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: Resource-lock health gate
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
