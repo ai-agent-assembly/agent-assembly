@@ -189,15 +189,25 @@ pub struct ProxyConfig {
     /// every non-test build.
     pub allow_private_connect_targets: bool,
 
-    /// AAASM-5855 — the registered identity of the agent this proxy instance is
-    /// running on behalf of, if any.
+    /// AAASM-5855 — the registered identity to attribute this proxy's audit
+    /// records to, read from `AA_AGENT_ID` in **this process's own
+    /// environment**, if set.
     ///
-    /// `aasm run` registers a real `did:key`/`agent_id` and exports it into the
-    /// launched tool's process env as `AA_AGENT_ID` (`aa-cli/src/commands/run.rs`);
-    /// this is the proxy reading that same env var back so intercepted-traffic
-    /// audit records (`ProxyEvent`, `DecisionRecord`) can be attributed to the
-    /// actual agent instead of rendering as `<unknown>`. `None` in standalone
-    /// mode (no `aasm run` launch) or when the launcher never set it.
+    /// This closes the attribution gap only when whatever started `aa-proxy`
+    /// put a real agent id in its env — it does **not**, by itself, close
+    /// attribution for the `aasm run <tool>` golden path: `aasm proxy start`
+    /// spawns `aa-proxy` as a standalone, agent-agnostic sidecar
+    /// (`aa-cli/src/commands/proxy/start.rs::proxy_child_env`, which sets no
+    /// `AA_AGENT_ID`) *before* any `aasm run` launch exists to register an
+    /// identity, and one running sidecar can go on to serve many sequential
+    /// `aasm run` launches with different registered agents. `aasm run` only
+    /// exports `AA_AGENT_ID` into the *launched tool's* process env
+    /// (`aa-cli/src/commands/run.rs`), which this field never sees. Attributing
+    /// each intercepted request to the launch that actually made it needs
+    /// per-request/per-connection identity, not a static per-process field —
+    /// tracked as a follow-up design question, not implemented here. `None`
+    /// when the proxy's own launcher never set `AA_AGENT_ID` (the common case
+    /// today).
     ///
     /// Env: `AA_AGENT_ID` — no default, absent unless set.
     pub agent_id: Option<String>,

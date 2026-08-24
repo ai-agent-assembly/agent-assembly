@@ -333,6 +333,16 @@ async fn a_connect_denylist_refusal_persists_non_transmission_evidence() {
         entry.probe_correlation.is_none(),
         "ordinary traffic must not look synthetic"
     );
+    // AAASM-5855: this is the negative control for
+    // `a_refusal_is_persisted_with_the_configured_agent_id` below — this
+    // fixture's `agent_id` is `Fixture::default()`'s `None`, so the persisted
+    // record must say so explicitly. Without this assertion the sibling test
+    // cannot prove anything: `agent_id: self.agent_id.or(Some("x".into()))`
+    // would pass every test in this file undetected.
+    assert_eq!(
+        entry.agent_id, None,
+        "an unset agent_id must not be defaulted to a value"
+    );
 }
 
 /// AAASM-5855: reproduction and regression for the `agent_id="<unknown>"`
