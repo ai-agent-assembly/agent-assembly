@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T10
+  jira: AAASM-0012
+  name: Fixture — evidence references a test marked #[ignore] (AAASM-5876)
+  priority: P1
+  persona_track: Fixture
+  surfaces: [qa/tests]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'qa/tests/fixtures/sample-ignored-test.rs::a_deliberately_ignored_test_used_only_as_a_fixture'
+  execution_lanes: [pr]
+  fidelity: real_local_process

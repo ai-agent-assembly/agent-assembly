@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate qa/golden-journeys.yaml (AAASM-5824, extended by AAASM-5874).
+"""Validate qa/golden-journeys.yaml (AAASM-5824, extended by AAASM-5874/5876).
 
 Catches:
   - duplicate journey IDs / duplicate Jira references
@@ -12,20 +12,33 @@ Catches:
     `execution_lanes`, or missing/invalid `fidelity`; for `partial`/`gap`/
     `unsupported`/`stale`, a missing `gap_owner`; invalid vocabulary in
     `execution_lanes`/`fidelity`/`platforms`/`lifecycle_state`.
+  - AAASM-5876 CI-execution-integrity: for a `test`-kind evidence entry on a
+    release_blocking + automated journey, (a) the referenced file's path is
+    not covered by ANY `ci.yml` `on.push.paths` trigger glob — i.e. a real
+    dead-trigger, the exact historical "tests exist but no workflow executes
+    them" failure mode this Story exists to catch; (b) the referenced
+    function is marked `#[ignore]` — a deterministic skip cannot count as
+    automated evidence (reuses the same `gap_owner` mechanism AAASM-5874
+    already built, rather than inventing a second waiver system per
+    AAASM-4479's precedent: represent it honestly as `lifecycle_state: gap`
+    with an owner instead of `automated`).
 
 `evidence` resolution for `kind: test` is file-existence + selector-name
 grep against the named repo checkout — it does not invoke a build/test
 runner (a workspace build routinely takes 50+ minutes on this repo's
 shared CARGO_TARGET_DIR; see AAASM-5874's design notes). Only `repo:
 agent-assembly` is resolved locally (the checkout this script runs in);
-other repo names are accepted but not resolved (out of this validator's
-reach — CI-execution reality for a declared lane is AAASM-5876's scope,
-not this one).
+other repo names are accepted but not resolved. The CI-trigger-coverage
+check (AAASM-5876) is similarly static: it parses `ci.yml`'s `on.push.paths`
+glob list and pattern-matches the evidence file's path against it — it does
+not reconcile actual per-run JUnit/nextest output against journey IDs
+(candidate-exact evidence binding is AAASM-5878's scope, not this one).
 
 Usage: python3 scripts/qa/validate-golden-journeys.py [path]
   Defaults to qa/golden-journeys.yaml. Exits non-zero with a list of
   problems if validation fails.
 """
+import fnmatch
 import os
 import re
 import sys
@@ -69,11 +82,141 @@ def _resolve_test_selector(repo: str, selector: str, repo_root: str) -> str | No
     return None
 
 
-def validate(path: str, check_p0_bounds: bool = True) -> list[str]:
+_RUNS_ON_TO_PLATFORM = {
+    "ubuntu": "linux",
+    "macos": "macos",
+    "windows": "windows",
+}
+
+
+def _load_ci_runner_platforms(repo_root: str) -> set[str] | None:
+    """Static best-effort scan of every `runs-on:` literal in ci.yml, mapped
+    to the platform family it provisions. Only literal `runs-on: <os>-...`
+    values are seen — a `runs-on: ${{ matrix.os }}` job's actual OS set
+    (defined by its `matrix.os` list) is not resolved here; such a job is
+    conservatively assumed to cover every platform rather than risk a false
+    'no runner' failure this static pass can't actually verify.
+    """
+    ci_path = os.path.join(repo_root, ".github", "workflows", "ci.yml")
+    if not os.path.isfile(ci_path):
+        return None
+    with open(ci_path) as f:
+        content = f.read()
+    literal = set(re.findall(r"runs-on:\s*([a-zA-Z][a-zA-Z0-9_.-]*)", content))
+    if "${{" in content and "matrix.os" in content:
+        return set(_RUNS_ON_TO_PLATFORM.values())  # can't resolve the matrix; don't false-fail
+    platforms = set()
+    for runner in literal:
+        for prefix, plat in _RUNS_ON_TO_PLATFORM.items():
+            if runner.startswith(prefix):
+                platforms.add(plat)
+    return platforms
+
+
+def _load_ci_trigger_globs(repo_root: str) -> list[str] | None:
+    """Extract .github/workflows/ci.yml's on.push.paths glob list.
+
+    Returns None if ci.yml can't be found/parsed (AAASM-5876 CI-wiring check
+    is then skipped rather than false-failing on a repo layout this script
+    can't see — e.g. a fixture-only invocation with no real .github/).
+    """
+    ci_path = os.path.join(repo_root, ".github", "workflows", "ci.yml")
+    if not os.path.isfile(ci_path):
+        return None
+    with open(ci_path) as f:
+        doc = yaml.safe_load(f)
+    # pyyaml resolves the bare `on:` key to the boolean True (YAML 1.1
+    # on/off alias) — this is the actual documented behavior, not a bug to
+    # route around silently, so both keys are checked explicitly.
+    on_block = doc.get("on") if isinstance(doc.get("on"), dict) else doc.get(True)
+    if not isinstance(on_block, dict):
+        return None
+    push = on_block.get("push")
+    if not isinstance(push, dict):
+        return None
+    paths = push.get("paths")
+    return paths if isinstance(paths, list) else None
+
+
+def _glob_to_regex(pattern: str) -> re.Pattern:
+    """Translate a GitHub Actions path-filter glob to a regex.
+
+    plain `fnmatch` is wrong here: it treats `/` as an ordinary character, so
+    `aa-*/**/*.rs` requires at least two literal `/`-separated segments and
+    never matches a crate-root file like `aa-gateway/build.rs` — even though
+    GitHub Actions' real `**` matches *zero or more* path segments there.
+    This was a confirmed false-negative in the fnmatch-based first cut of
+    this check (a real dead-trigger false positive on any crate-root
+    evidence file) — found by independent review, fixed here.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "*" and pattern[i:i + 2] == "**":
+            if pattern[i:i + 3] == "**/":
+                out.append("(?:.*/)?")
+                i += 3
+            else:
+                out.append(".*")
+                i += 2
+        elif c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _path_has_ci_trigger(rel_path: str, globs: list[str]) -> bool:
+    return any(_glob_to_regex(g).match(rel_path) for g in globs)
+
+
+def _is_ignored_test(repo_root: str, root: str, path: str, name: str) -> bool:
+    """True if `name`'s definition is immediately preceded by `#[ignore]`.
+
+    Word-bounded on purpose: a naive substring match false-positives when a
+    shorter name is a prefix of a longer, `#[ignore]`d sibling defined
+    earlier in the same file (e.g. `foo` vs. an ignored `foo_extended`) —
+    found by independent review, fixed here.
+    """
+    full = os.path.join(repo_root, root, path)
+    if not os.path.isfile(full):
+        return False
+    with open(full, "r", errors="replace") as f:
+        lines = f.readlines()
+    name_re = re.compile(r"\bfn\s+" + re.escape(name) + r"\b")
+    for i, line in enumerate(lines):
+        if name_re.search(line) or line.strip() == name:
+            # Walk backward only through a *contiguous* run of attribute
+            # lines (`#[...]`) — stops at the first non-attribute line, so a
+            # nearby-but-unrelated preceding function's own `#[ignore]`
+            # can't leak into this one's window. An unbounded fixed-size
+            # window (the first cut of this check) could cross exactly that
+            # boundary when two functions sit a few lines apart — found by
+            # independent review, fixed here.
+            j = i - 1
+            found = False
+            while j >= 0 and lines[j].strip().startswith("#["):
+                if "#[ignore" in lines[j]:
+                    found = True
+                j -= 1
+            if found:
+                return True
+    return False
+
+
+def validate(path: str, check_p0_bounds: bool = True, check_ci_wiring: bool = True) -> list[str]:
     problems: list[str] = []
     abspath = os.path.abspath(path)
     repo_root = os.path.dirname(os.path.dirname(abspath)) \
         if os.path.basename(os.path.dirname(abspath)) == "qa" else "."
+    ci_globs = _load_ci_trigger_globs(repo_root) if check_ci_wiring else None
+    ci_platforms = _load_ci_runner_platforms(repo_root) if check_ci_wiring else None
     with open(path) as f:
         doc = yaml.safe_load(f)
 
@@ -144,6 +287,27 @@ def validate(path: str, check_p0_bounds: bool = True) -> list[str]:
                         err = _resolve_test_selector(ev.get("repo", ""), ev.get("selector", ""), repo_root)
                         if err:
                             problems.append(f"{jid}: evidence unresolvable — {err}")
+                        elif "::" in ev.get("selector", ""):
+                            ev_repo = ev.get("repo", "")
+                            ev_path, ev_name = ev.get("selector", "").split("::", 1)
+                            root = LOCAL_REPO_ROOTS.get(ev_repo)
+                            if root is not None:
+                                # AAASM-5876: the file/name resolved above —
+                                # now check it's actually wired into CI and
+                                # isn't a deterministic skip.
+                                if ci_globs is not None and not _path_has_ci_trigger(ev_path, ci_globs):
+                                    problems.append(
+                                        f"{jid}: evidence path '{ev_path}' is not covered by any "
+                                        f"ci.yml on.push.paths trigger — a real dead trigger "
+                                        f"(Core ADR 028): the test may exist but no workflow runs it"
+                                    )
+                                if _is_ignored_test(repo_root, root, ev_path, ev_name):
+                                    problems.append(
+                                        f"{jid}: evidence selector '{ev_path}::{ev_name}' is "
+                                        f"marked #[ignore] — a deterministic skip cannot count as "
+                                        f"automated evidence; reclassify as lifecycle_state: gap "
+                                        f"with a gap_owner instead"
+                                    )
 
             lanes = entry.get("execution_lanes")
             if not isinstance(lanes, list) or not lanes:
@@ -171,6 +335,14 @@ def validate(path: str, check_p0_bounds: bool = True) -> list[str]:
             plats = entry["platforms"]
             if not isinstance(plats, list) or not plats:
                 problems.append(f"{jid}: 'platforms' must be a non-empty list when present")
+            elif lifecycle == "automated" and release_blocking and ci_platforms is not None:
+                for plat in plats:
+                    if plat not in ci_platforms:
+                        problems.append(
+                            f"{jid}: declared platform '{plat}' has no matching "
+                            f"ci.yml runner (only {sorted(ci_platforms)} found) — "
+                            f"required coverage with no execution path"
+                        )
 
     for jid, count in seen_ids.items():
         if count > 1:

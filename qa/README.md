@@ -102,7 +102,40 @@ entry missing `gap_owner`. `evidence[].selector` for `kind: test` is resolved
 by file-existence + name grep against this checkout — it does not invoke a
 build/test runner.
 
-Negative-control proof this is load-bearing (9 fixtures, exit-code
+**AAASM-5876 (CI-execution integrity)** additionally catches, for a `test`-
+kind evidence entry on a `release_blocking` + `automated` journey:
+
+- the evidence file's path is not covered by **any** `ci.yml`
+  `on.push.paths` trigger glob — a real dead trigger (Core ADR 028): a
+  release-blocking claim can point at a real test file that no workflow on
+  `main` actually runs. This is the exact "tests exist but CI never
+  executes them" failure mode that motivated this Story (a real Dashboard
+  Playwright suite once existed with no invoking workflow).
+- the referenced test is marked `#[ignore]` — a deterministic skip is never
+  automated evidence. Reclassify honestly as `lifecycle_state: gap` with a
+  `gap_owner` instead of leaving it `automated`; this reuses AAASM-5874's
+  existing `gap_owner` mechanism rather than inventing a second waiver
+  system (AAASM-4479's precedent — this repo's tests are Rust/nextest, not
+  pytest, so the `rc_pending` marker in `e2e-public` doesn't apply here;
+  `#[ignore]` is this repo's actual skip primitive).
+- a declared `platforms` entry has no matching `runs-on:` in `ci.yml` —
+  required coverage with literally no execution path (e.g. `windows` when
+  every job in `ci.yml` currently runs on `ubuntu-latest`).
+
+This is a **static** check (parses `ci.yml`'s glob list and greps for
+`#[ignore]`/`runs-on:`) — it does not reconcile actual per-run JUnit/nextest output
+against journey IDs for the exact candidate SHA. That reconciliation is
+AAASM-5878's scope (binding evidence to the exact release candidate), not
+this validator's.
+
+**When adding/changing/removing a journey**, to avoid registry/workflow
+drift: if the evidence file's directory isn't already covered by an
+existing `ci.yml` filter, add both the `on.push.paths` entry and the
+`dorny/paths-filter` glob in the same PR (Core ADR 028) — the validator will
+catch a missed one for any `automated` + `release_blocking` entry, but P1/P2
+entries aren't strictly checked, so don't rely on the gate alone for those.
+
+Negative-control proof this is load-bearing (14 fixtures, exit-code
 assertions, mirrors `scripts/tests/release-readiness-qa-negative-control.sh`):
 
 ```bash

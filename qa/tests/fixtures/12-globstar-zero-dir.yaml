@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T12
+  jira: AAASM-0014
+  name: Fixture — crate-root file (0 subdirs) must still resolve via ** globstar (AAASM-5876 regression)
+  priority: P1
+  persona_track: Fixture
+  surfaces: [aa-cli]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'aa-cli/build.rs::copy_dir_recursive'
+  execution_lanes: [pr]
+  fidelity: real_local_process
