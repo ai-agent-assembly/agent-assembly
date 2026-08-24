@@ -161,6 +161,14 @@ on:
       - "qa/tests/fixtures/**"
       - "scripts/qa/validate-golden-journeys.py"
       - "scripts/qa/validate-golden-journeys-negative-control.sh"
+      # AAASM-5893: the resource-lock slot mechanism (Subtask 1 of AAASM-5891's
+      # resource-aware QA-campaign scheduler). Paired with the `qa_registry`
+      # router filter below — `qa/tests/fixtures/**` above already covers the
+      # new `qa/tests/fixtures/sched/**` fixtures, so only the new script
+      # files need their own entries here.
+      - "qa/resource-classes.yaml"
+      - "scripts/qa/resource-lock.py"
+      - "scripts/qa/resource-scheduler-negative-control.sh"
   pull_request:
     branches: [main]
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
@@ -442,6 +450,14 @@ jobs:
               - 'qa/tests/fixtures/**'
               - 'scripts/qa/validate-golden-journeys.py'
               - 'scripts/qa/validate-golden-journeys-negative-control.sh'
+              # AAASM-5893: resource-lock slot mechanism. Every path here has
+              # a matching `on.push.paths` entry above (live trigger, ADR
+              # 0028) — shares this router flag with the golden-journeys
+              # registry above rather than a new one, since both gates key
+              # off the same `qa/**` + `scripts/qa/**` surface.
+              - 'qa/resource-classes.yaml'
+              - 'scripts/qa/resource-lock.py'
+              - 'scripts/qa/resource-scheduler-negative-control.sh'
               - '.github/workflows/ci.yml'
             # AAASM-5677: the governance surface. Before this filter existed, a
             # change to `governance/capability-manifest.yaml` selected NO job in
@@ -1189,6 +1205,44 @@ jobs:
 
       - name: Validate the real registry
         run: python3 scripts/qa/validate-golden-journeys.py qa/golden-journeys.yaml
+
+  resource-lock-health-gate:
+    needs: [changes]
+    # AAASM-5893 (Subtask 1 of AAASM-5891's resource-aware QA-campaign
+    # scheduler). Its own job rather than folded into `registry-health-gate`
+    # above: that job validates a *data* registry (`qa/golden-journeys.yaml`)
+    # against static rules, while this one exercises live process/fcntl
+    # behavior (real concurrent subprocesses, real slot contention, a real
+    # execvp) — different failure surface, worth isolating in its own check
+    # run. Matrixed across ubuntu-latest and macos-latest: the mechanism this
+    # Story exists to fix (AAASM-5877's shared CARGO_TARGET_DIR deadlock) was
+    # measured on macOS, and `os.set_inheritable`-before-`execvp` behavior
+    # (case 11 in the harness) is exactly the kind of thing that can differ
+    # across platforms — an ubuntu-only gate would not have caught a
+    # macOS-specific regression here. Cheap either way: pure Python/bash
+    # fixtures, no cargo/nextest involved.
+    if: needs.changes.outputs.qa_registry == 'true'
+    name: Resource-lock health gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+
+      - name: Validate qa/resource-classes.yaml
+        run: python3 scripts/qa/resource-lock.py validate qa/resource-classes.yaml
+
+      # Runs the fixture-driven concurrency/duplicate-suppression/sweep/
+      # exec-lock-survival cases (see the harness's own header comment) —
+      # including case 11, the dedicated regression for `os.set_inheritable`
+      # silently being dropped before `execvp`.
+      - name: Self-test resource-lock.py (negative control)
+        run: bash scripts/qa/resource-scheduler-negative-control.sh
 
   detection-egress-closure:
     needs: [changes]
@@ -3496,6 +3550,12 @@ jobs:
       # not a metric — an advisory version would be exactly the "false PASS"
       # this Epic exists to prevent.
       - registry-health-gate
+      # AAASM-5893: blocks, like `registry-health-gate` above and for the
+      # same reason — a resource-lock mechanism that validates against a
+      # broken registry, or whose exec-lock-survival regression case (11)
+      # silently fails, is a false PASS on the exact incident (AAASM-5877)
+      # this Story exists to prevent.
+      - resource-lock-health-gate
       # AAASM-5738: blocks. AAASM-5270 exit criterion 6 asks for behaviour
       # *verified* under egress-denied testing, and an advisory version of this
       # would be a dependency-tree argument again — which is what the criterion
