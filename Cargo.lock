@@ -468,7 +468,9 @@ dependencies = [
 name = "aa-isolation-macos-vm"
 version = "0.0.1-rc.6"
 dependencies = [
+ "aa-core",
  "aa-isolation",
+ "aa-isolation-macos-vm",
  "aa-isolation-native",
  "aa-isolation-vm-proto",
 ]

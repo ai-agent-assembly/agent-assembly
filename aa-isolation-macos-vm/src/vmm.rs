@@ -143,9 +143,60 @@ impl Drop for VmSession {
     }
 }
 
+/// How many times [`boot`] retries a boot attempt that fails with
+/// [`BootAttemptError::HelperExitedEarly`] before giving up — see [`boot`]'s
+/// own docs for why this specific failure, and only this one, is retried.
+const MAX_BOOT_ATTEMPTS: u32 = 3;
+
+/// How long [`boot`] waits between a failed attempt and the next one.
+const BOOT_RETRY_BACKOFF: Duration = Duration::from_millis(300);
+
+/// Why one attempt at [`boot_attempt`] failed.
+enum BootAttemptError {
+    /// The helper process exited on its own before the guest connected —
+    /// see [`boot`]'s docs on why this is retried and nothing else is.
+    HelperExitedEarly(String),
+    /// Any other failure — not retried.
+    Other(String),
+}
+
+impl BootAttemptError {
+    fn into_message(self) -> String {
+        match self {
+            Self::HelperExitedEarly(detail) | Self::Other(detail) => detail,
+        }
+    }
+}
+
 /// Boot a guest via `config`, sharing `share_dir` (when given) at
 /// [`crate::paths::GUEST_SHARE_MOUNTPOINT`], and wait for it to connect and
 /// send `GuestReady`.
+///
+/// # Retries exactly one failure mode, and why
+///
+/// AAASM-5814's own adversarial-suite verification hit
+/// `VZVirtualMachine.start failed: ... "The storage device attachment is
+/// invalid."` deterministically when a second guest attached the same
+/// `--disk` image immediately after a first guest (in the same process,
+/// fully serialized — not the concurrent-access corruption
+/// [`crate::MacosVmBackend`]'s module docs and AAASM-5854 already track)
+/// released it. This is real, measured Virtualization.framework behavior,
+/// confirmed by temporarily un-suppressing the helper's stderr during
+/// diagnosis — not a test-fixture artifact, and not hidden here: a host
+/// whose *every* retry fails this way still surfaces the real error,
+/// verbatim, in [`BootAttemptError::HelperExitedEarly`]'s message.
+///
+/// **Measured effect: none, on the one failure this pass could reproduce.**
+/// `tests/adversarial_boundary_macos_vm_guest.rs`'s boundary suite hit this
+/// same storage-attach error 4/5 runs, and neither 3 attempts at 300ms
+/// backoff nor 5 attempts at 2s backoff resolved it there — see that file's
+/// module docs for the full investigation. This retry is kept anyway as
+/// defense-in-depth for a genuinely transient attach failure, a failure mode
+/// this pass could not characterize well enough to say whether it exists;
+/// it is not a fix for the boundary suite's instability, and every other
+/// failure in [`boot_attempt`] (bind failure, timeout waiting for the guest,
+/// a malformed `GuestReady`) is [`BootAttemptError::Other`] and is never
+/// retried.
 ///
 /// # Errors
 ///
@@ -153,20 +204,38 @@ impl Drop for VmSession {
 /// maps this to [`aa_isolation::SpawnError::Prepare`], since nothing is
 /// running yet at any failure point this function can reach.
 pub fn boot(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession, String> {
+    let mut last_error = None;
+    for attempt in 1..=MAX_BOOT_ATTEMPTS {
+        match boot_attempt(config, share_dir) {
+            Ok(session) => return Ok(session),
+            Err(BootAttemptError::HelperExitedEarly(detail)) if attempt < MAX_BOOT_ATTEMPTS => {
+                last_error = Some(detail);
+                std::thread::sleep(BOOT_RETRY_BACKOFF);
+            }
+            Err(err) => return Err(err.into_message()),
+        }
+    }
+    // Unreachable unless MAX_BOOT_ATTEMPTS == 0: the loop above returns on
+    // every Ok and on every non-retried Err, and the last iteration
+    // (attempt == MAX_BOOT_ATTEMPTS) never matches the retry guard.
+    Err(last_error.unwrap_or_else(|| "boot attempted zero times".to_string()))
+}
+
+fn boot_attempt(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession, BootAttemptError> {
     let control_socket_dir = std::env::temp_dir().join(format!(
         "aa-isolation-macos-vm-{}-{}",
         std::process::id(),
         unique_suffix()
     ));
     std::fs::create_dir_all(&control_socket_dir)
-        .map_err(|err| format!("could not create a scratch directory: {err}"))?;
+        .map_err(|err| BootAttemptError::Other(format!("could not create a scratch directory: {err}")))?;
     let control_socket_path = control_socket_dir.join("control.sock");
 
-    let listener =
-        UnixListener::bind(&control_socket_path).map_err(|err| format!("could not bind control socket: {err}"))?;
+    let listener = UnixListener::bind(&control_socket_path)
+        .map_err(|err| BootAttemptError::Other(format!("could not bind control socket: {err}")))?;
     listener
         .set_nonblocking(true)
-        .map_err(|err| format!("could not configure control socket: {err}"))?;
+        .map_err(|err| BootAttemptError::Other(format!("could not configure control socket: {err}")))?;
 
     let mut command = Command::new(&config.helper_path);
     command
@@ -190,9 +259,12 @@ pub fn boot(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession, St
         command.arg("--no-virtiofs");
     }
 
-    let mut helper = command
-        .spawn()
-        .map_err(|err| format!("could not spawn the helper at {}: {err}", config.helper_path.display()))?;
+    let mut helper = command.spawn().map_err(|err| {
+        BootAttemptError::Other(format!(
+            "could not spawn the helper at {}: {err}",
+            config.helper_path.display()
+        ))
+    })?;
 
     let deadline = Instant::now() + GUEST_CONNECT_TIMEOUT;
     let stream = loop {
@@ -201,16 +273,18 @@ pub fn boot(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession, St
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 if let Ok(Some(status)) = helper.try_wait() {
                     let _ = std::fs::remove_dir_all(&control_socket_dir);
-                    return Err(format!("the helper exited before the guest connected: {status}"));
+                    return Err(BootAttemptError::HelperExitedEarly(format!(
+                        "the helper exited before the guest connected: {status}"
+                    )));
                 }
                 if Instant::now() >= deadline {
                     let _ = helper.kill();
                     let _ = helper.wait();
                     let _ = std::fs::remove_dir_all(&control_socket_dir);
-                    return Err(format!(
+                    return Err(BootAttemptError::Other(format!(
                         "timed out after {}s waiting for the guest to connect",
                         GUEST_CONNECT_TIMEOUT.as_secs()
-                    ));
+                    )));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -218,24 +292,26 @@ pub fn boot(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession, St
                 let _ = helper.kill();
                 let _ = helper.wait();
                 let _ = std::fs::remove_dir_all(&control_socket_dir);
-                return Err(format!("accept() on the control socket failed: {err}"));
+                return Err(BootAttemptError::Other(format!(
+                    "accept() on the control socket failed: {err}"
+                )));
             }
         }
     };
     stream
         .set_nonblocking(false)
-        .map_err(|err| format!("could not configure the accepted connection: {err}"))?;
+        .map_err(|err| BootAttemptError::Other(format!("could not configure the accepted connection: {err}")))?;
 
     let mut reader = BufReader::new(
         stream
             .try_clone()
-            .map_err(|err| format!("could not clone the connection: {err}"))?,
+            .map_err(|err| BootAttemptError::Other(format!("could not clone the connection: {err}")))?,
     );
     let writer = BufWriter::new(stream);
 
     let ready = read_frame(&mut reader).map_err(|err| {
         let _ = helper.kill();
-        format!("failed to read GuestReady: {err}")
+        BootAttemptError::Other(format!("failed to read GuestReady: {err}"))
     })?;
     let Message::GuestReady {
         protocol_version,
@@ -243,13 +319,13 @@ pub fn boot(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession, St
     } = ready
     else {
         let _ = helper.kill();
-        return Err(format!("expected GuestReady, got {ready:?}"));
+        return Err(BootAttemptError::Other(format!("expected GuestReady, got {ready:?}")));
     };
     if protocol_version != PROTOCOL_VERSION {
         let _ = helper.kill();
-        return Err(format!(
+        return Err(BootAttemptError::Other(format!(
             "guest speaks protocol version {protocol_version}, this build speaks {PROTOCOL_VERSION}"
-        ));
+        )));
     }
 
     Ok(VmSession {

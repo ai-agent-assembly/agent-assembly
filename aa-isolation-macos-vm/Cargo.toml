@@ -20,6 +20,22 @@ aa-isolation-vm-proto = { path = "../aa-isolation-vm-proto", version = "0.0.1-rc
 # `permitted_scope`: derives this launch's grant set from the plan itself
 # rather than re-deriving (or, worse, widening) it — see `spawn`'s use.
 aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.6" }
+# AAASM-5814, and only for `tests/adversarial/`: the backend-neutral harness
+# in `aa-integration-tests/tests/adversarial/mod.rs` names `ClaimTerm` from
+# here. Mirrors the identical entry in `aa-isolation-native/Cargo.toml`.
+aa-core = { path = "../aa-core", version = "0.0.1-rc.6" }
+
+[dev-dependencies]
+# Self-reference: `tests/adversarial/mod.rs` uses `aa_isolation_macos_vm::*`
+# as an external crate, same reason `aa-isolation-native/Cargo.toml` depends
+# on itself under `[dev-dependencies]`.
+aa-isolation-macos-vm = { path = "." }
+# AAASM-5814, and only for `tests/adversarial/`: the in-memory reference
+# backend the negotiation-level scenarios exercise alongside this backend.
+# Mirrors the identical entry in `aa-isolation-native/Cargo.toml` — see that
+# entry's comment for why it has to be a `dev-dependencies` line distinct
+# from the plain `aa-isolation` edge above.
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6", features = ["mock-backend"] }
 
 [features]
 default = []

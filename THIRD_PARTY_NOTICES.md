@@ -73,6 +73,44 @@ The gate enforces the other direction too: while a backend's manifest entry is
 `status: "pending"`, it must carry **no** provenance fields at all, so an
 unmeasured backend cannot acquire a plausible-looking record.
 
+### Not redistributed: macOS VM guest image (AAASM-5814)
+
+The macOS isolation backend (`aa-isolation-macos-vm`, Epic AAASM-5811) boots a
+minimal Linux guest via Virtualization.framework. Two of that guest's
+components are third-party GPL-2.0-only works, recorded in
+[`metadata/isolation-backends.json`](metadata/isolation-backends.json) as
+`macos-vm-guest-kernel` and `macos-vm-guest-busybox`:
+
+- **Guest kernel** — Linux 6.6.71, built via linuxkit's kernel build tooling
+  from a pinned commit, with three Kconfig patches applied (Landlock enabled,
+  added to the active LSM list, virtio/vsock/vhost built in) — see
+  `aa-isolation-macos-vm-poc/scripts/build-landlock-kernel.sh` for the exact
+  patch and rationale.
+- **Guest `busybox`** — extracted unmodified from the `busybox:musl` Docker
+  Hub image (digest-pinned), providing the guest's `sh`/`cat`/`printf`.
+
+**Agent Assembly does not redistribute either.** Per
+`aa-isolation-macos-vm/src/vmm.rs::VmConfig`'s own docs, both are large,
+gitignored, hand-built dev artifacts the operator supplies via
+`AA_ISOLATION_MACOS_VM_{KERNEL,ROOTFS}` — no distribution channel is
+`bundled`, `downloaded` or `source` for either, and no attribution obligation
+attaches to anything this project ships. That statement is checked the same
+way as the Sandlock entry above: the gate greps every channel's packaging
+surface for each artifact's binary name and fails if either appears while the
+manifest claims non-distribution.
+
+These headings are deliberately *not* `### macos-vm-guest-kernel` /
+`### macos-vm-guest-busybox`, for the same reason the Sandlock heading above
+isn't `### sandlock`: the day AAASM-5840 ships either artifact through any
+channel, the gate must fail until a real notice section exists — not find
+this placeholder already satisfying it.
+
+The guest rootfs image these two are packaged into also carries **first-party**
+content — `guest-init` and `aa-isolation-launch` (Apache-2.0, this repository's
+own code, same as the eBPF probe objects in the table above) — which is not a
+third-party notice obligation and is listed here only to make clear the image
+is not entirely third-party.
+
 ## Adding an entry
 
 When a backend or other third-party artifact starts being redistributed, add a

@@ -249,6 +249,113 @@
         "reported through `aa-isolation`'s capability contract; the mechanism's",
         "own feature documentation is not used as an AASM claim anywhere."
       ]
+    },
+    {
+      "id": "macos-vm-guest-kernel",
+      "status": "active",
+      "tracking_ticket": "AAASM-5814",
+      "upstream_name": "Linux kernel, built via linuxkit's kernel build tooling",
+      "version": "kernel.org 6.6.71, linuxkit commit 2308529, 3 Kconfig patches (Landlock, LSM list, virtio/vsock/vhost)",
+      "source_url": "https://github.com/linuxkit/linuxkit/tree/2308529",
+      "release_sha256": "8cb44bfeb5a955e7813da125a0473d90bfccf2f87e01c15a49443dae97a95c23",
+      "spdx_license": "GPL-2.0-only",
+      "modifications": {
+        "modified": true,
+        "notice_path": "aa-isolation-macos-vm-poc/scripts/build-landlock-kernel.sh"
+      },
+      "review": {
+        "ticket": "AAASM-5814",
+        "reviewed_at": "2026-08-24",
+        "capability_evidence": "`aa_isolation_macos_vm::probe::measure` boots a real guest running exactly this kernel and measures FilesystemRead/FilesystemWrite as a control/test pair (a granted path readable/writable, an ungranted path denied, never asserted from the kernel's own documentation) — see `aa-isolation-macos-vm/src/probe.rs` and the real-hardware evidence in `aa-isolation-macos-vm/tests/real_hardware.rs::discover_measures_real_capability_rows`. The syscall-filter domain is reported `Unsupported` truthfully (`capability::syscall_unsupported`) rather than claimed, since `aa_isolation_native`'s x86_64-only filter has no arm64 counterpart. A kernel swap invalidates this row: `discover()`'s probe re-measures on every backend construction, so a kernel that regresses a capability reports itself unable rather than passing on the strength of this record."
+      },
+      "distribution_probe": {
+        "binary_names": ["images-landlock-kernel"]
+      },
+      "channels": {
+        "github-release": "system",
+        "crates-io": "not-distributed",
+        "homebrew-tap": "system",
+        "ghcr-container": "system",
+        "shell-installer": "system",
+        "enterprise": "system",
+        "saas": "system"
+      },
+      "notes": [
+        "AASM DISTRIBUTES NOTHING (AAASM-5840). This is a large, gitignored,",
+        "hand-built dev artifact (`aa-isolation-macos-vm/src/vmm.rs::VmConfig`'s",
+        "own docs) the operator supplies via `AA_ISOLATION_MACOS_VM_KERNEL` — no",
+        "channel is `bundled`, `downloaded` or `source`, so `GPL-2.0-only` is not",
+        "added to either `license_policy` allowlist: this row is not gated by",
+        "them (see `GATED_STRATEGIES` in the gate script), and adding a license",
+        "to an allowlist is a security/licensing-reviewer decision (CODEOWNERS),",
+        "not one this row should make preemptively. The day AAASM-5840 ships",
+        "this artifact through any channel, that channel's strategy changes to",
+        "`bundled`/`downloaded`/`source` and the gate starts failing here until",
+        "a human adds `GPL-2.0-only` to the relevant allowlist and this row",
+        "carries a real notice-of-modification path a recipient can actually",
+        "reach — the fail-closed behavior this file exists to guarantee.",
+        "",
+        "`distribution_probe.binary_names` deliberately does not use the bare",
+        "words `kernel` or `Image`: `kernel` hits `scripts/install-cli.sh` and",
+        "`Image` hits roughly two dozen Dockerfiles, both false positives that",
+        "would permanently trip this row's own check. `images-landlock-kernel`",
+        "is the exact path fragment a packaging step would have to name to ship",
+        "this specific artifact, and does not appear anywhere in the current",
+        "packaging surface today.",
+        "",
+        "MODIFIED: three Kconfig changes on top of linuxkit's own published",
+        "6.6.x/config-aarch64 (CONFIG_SECURITY_LANDLOCK, the active LSM list,",
+        "and virtio/vsock/vhost flipped built-in) — see the notice_path script",
+        "for the exact patch and why each line is there. The underlying kernel",
+        "source itself is unmodified upstream kernel.org 6.6.71, fetched and",
+        "GPG/SHA256-verified by linuxkit's own build tooling."
+      ]
+    },
+    {
+      "id": "macos-vm-guest-busybox",
+      "status": "active",
+      "tracking_ticket": "AAASM-5814",
+      "upstream_name": "busybox",
+      "version": "busybox:musl, Docker Hub image digest sha256:32b5cdad7cce41dfd53d0ae06baebcf8357a147ee7694dc706911c373bc30c37 (upstream does not tag a bare busybox release version for this image; the pinned image digest is the actual provenance anchor `fetch-busybox.sh` verifies against)",
+      "source_url": "https://hub.docker.com/_/busybox",
+      "release_sha256": "4ab4ce065532286051cf7f3ca9d142a115b98da96016fb8be378008fedd70bda",
+      "spdx_license": "GPL-2.0-only",
+      "modifications": {
+        "modified": false
+      },
+      "review": {
+        "ticket": "AAASM-5814",
+        "reviewed_at": "2026-08-24",
+        "capability_evidence": "Same real-guest measurement as `macos-vm-guest-kernel` above: `busybox` is the program every launch in `aa-isolation-macos-vm/src/probe.rs` and `aa-isolation-macos-vm/tests/real_hardware.rs` actually executes inside the guest to produce the FilesystemRead/FilesystemWrite control/test pairs. It provides the guest's `sh`/`cat`/`printf` as a single static-PIE binary with no dynamic-linker dependency (see `fetch-busybox.sh`'s own docs), which is why it is the confined workload rather than a stand-in for one."
+      },
+      "distribution_probe": {
+        "binary_names": ["busybox-aarch64", "guest-rootfs.img"]
+      },
+      "channels": {
+        "github-release": "system",
+        "crates-io": "not-distributed",
+        "homebrew-tap": "system",
+        "ghcr-container": "system",
+        "shell-installer": "system",
+        "enterprise": "system",
+        "saas": "system"
+      },
+      "notes": [
+        "AASM DISTRIBUTES NOTHING (AAASM-5840) — same reasoning as",
+        "`macos-vm-guest-kernel` above: no channel is gated, `GPL-2.0-only` is",
+        "deliberately not added to either allowlist, and the day this changes",
+        "the gate fails closed until a human reviewer decides. The digest is",
+        "extracted byte-for-byte from the pinned Docker image (`fetch-busybox.sh`)",
+        "with no build step of AASM's own, hence `modifications.modified: false`.",
+        "",
+        "`guest-rootfs.img` is listed alongside `busybox-aarch64` in",
+        "`distribution_probe.binary_names` because it is the assembled ext4 image",
+        "a packaging step would actually have to name to ship this backend's",
+        "guest content — it also carries first-party `aa-isolation-launch` and",
+        "`guest-init` (Apache-2.0, not third-party; see THIRD_PARTY_NOTICES.md).",
+        "Its own digest is a build artifact, not upstream provenance, so it is",
+        "not recorded as this row's `release_sha256`."
+      ]
     }
   ]
 }

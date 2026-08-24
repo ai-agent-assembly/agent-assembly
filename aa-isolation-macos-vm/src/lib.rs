@@ -163,7 +163,13 @@ impl MacosVmBackend {
         }
     }
 
-    fn unavailable(reason: String) -> Self {
+    /// An unavailable backend reporting `reason`. `pub` (not just used
+    /// internally by [`discover`](Self::discover)) so
+    /// `tests/adversarial/mod.rs`'s negotiation scenarios (AAASM-5814) can
+    /// construct the "backend that cannot enforce it" arm without a real
+    /// host — mirrors `NativeBackend::unavailable`.
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
         Self {
             config: None,
             capabilities: capability::unavailable(reason.clone()),
@@ -194,6 +200,25 @@ impl MacosVmBackend {
     fn next_token(&self) -> String {
         let n = self.next_token.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         format!("{BACKEND_ID}-{n}")
+    }
+
+    /// The confined program's captured stdout/stderr, once
+    /// [`wait_for_exit`](IsolationBackend::wait_for_exit) has recorded the
+    /// guest's `LaunchOutcome`. Not part of the `IsolationBackend` trait —
+    /// this backend is the only one whose stdout/stderr live behind a wire
+    /// message rather than a local `std::process::Child`, so there is
+    /// nowhere else on the trait to put it. Added for
+    /// `aa-isolation-macos-vm/tests/adversarial/mod.rs`'s `AdversarialTarget`
+    /// adapter (AAASM-5814), which needs stdout content the same way the
+    /// Linux backends' `RunOutcome` does — empty streams before
+    /// `wait_for_exit` has run, or if it errored.
+    pub fn captured_output(&self, handle: &ExecutionHandle) -> (Vec<u8>, Vec<u8>) {
+        let token = handle.token().to_string();
+        let sessions = self.sessions.lock().expect("session lock poisoned");
+        match sessions.get(&token).and_then(|s| s.outcome.as_ref()) {
+            Some(Message::LaunchOutcome { stdout, stderr, .. }) => (stdout.clone(), stderr.clone()),
+            _ => (Vec::new(), Vec::new()),
+        }
     }
 }
 
