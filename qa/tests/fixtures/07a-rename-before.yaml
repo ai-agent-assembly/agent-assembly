@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T7
+  jira: AAASM-0008
+  name: Fixture — stable ID, selector points at pre-rename path (must fail)
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'scripts/qa/old_name_before_rename.py::def validate'
+  execution_lanes: [pr]
+  fidelity: real_local_process

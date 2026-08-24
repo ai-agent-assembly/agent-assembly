@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T4
+  jira: AAASM-0004
+  name: Fixture — evidence references a nonexistent/renamed test
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'scripts/qa/this_file_does_not_exist.py::def whatever'
+  execution_lanes: [pr]
+  fidelity: real_local_process
