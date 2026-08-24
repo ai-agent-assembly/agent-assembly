@@ -25,7 +25,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::managed_process::{ManagedProcess, ProcessSpec, Readiness};
@@ -163,25 +163,31 @@ pub struct AlertsResponse {
     pub total: u64,
 }
 
-/// Resolve the `aa-api-server` binary: `AA_API_SERVER_BIN_PATH` override, then
-/// `target/{debug,release}`, then build it.
+/// Resolve the `aa-api-server` binary: `AA_API_SERVER_BIN_PATH` override, else
+/// build it unconditionally.
 ///
-/// Mirrors `proxy_trust_support::build_binary`'s unconditional-build stance:
-/// `aa-integration-tests` does not depend on `aa-api`'s `aa-api-server` bin
-/// target, so a stale artefact could otherwise be measured instead of the
-/// current tree.
+/// Mirrors `proxy_trust_support::build_binary`'s unconditional-build stance —
+/// genuinely, not just in name: an earlier version of this function checked
+/// `target/{debug,release}` for an existing artefact first and only built on a
+/// miss, which is exactly the staleness hazard the original comment warned
+/// about but didn't prevent. A `target/debug/aa-api-server` left over from an
+/// earlier checkout state (normal on a dev machine or any CI runner with a
+/// persistent cache) would be silently reused instead of measuring the
+/// current tree. `cargo build` on an already-fresh target is fast (its own
+/// incremental check is the freshness check), so there is no real cost to
+/// invoking it every time. Memoized per test binary so repeated
+/// `ApiServerProcess::spawn()` calls in one process don't re-invoke cargo.
 fn resolve_binary() -> Result<PathBuf> {
     if let Ok(explicit) = std::env::var("AA_API_SERVER_BIN_PATH") {
         return std::fs::canonicalize(&explicit)
             .with_context(|| format!("AA_API_SERVER_BIN_PATH={explicit:?} could not be resolved"));
     }
 
-    let target_dir = super::managed_process::cargo_target_dir();
-    for profile in ["debug", "release"] {
-        let candidate = target_dir.join(profile).join("aa-api-server");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
+    static BUILT: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
+    let cache = BUILT.get_or_init(Default::default);
+    let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(path) = cache.as_ref() {
+        return Ok(path.clone());
     }
 
     let status = std::process::Command::new(env!("CARGO"))
@@ -191,13 +197,14 @@ fn resolve_binary() -> Result<PathBuf> {
         .context("invoking cargo to build aa-api-server")?;
     anyhow::ensure!(status.success(), "`cargo build -p aa-api --bin aa-api-server` failed");
 
+    let target_dir = super::managed_process::cargo_target_dir();
     let built = target_dir.join("debug").join("aa-api-server");
-    if built.is_file() {
-        return Ok(built);
-    }
-    Err(anyhow!(
+    anyhow::ensure!(
+        built.is_file(),
         "no aa-api-server artefact at {} even after building it. Skipping instead would leave the \
          behaviour unmeasured.",
         built.display(),
-    ))
+    );
+    *cache = Some(built.clone());
+    Ok(built)
 }
