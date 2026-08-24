@@ -348,21 +348,35 @@ exit 0
             render(&seen),
         );
 
-        // ── the child is routed at the endpoint this host verified ────────
+        // ── the child is routed at a loopback endpoint this launch owns ────
         //
         // Nothing on the registration path names a proxy: a gateway response is
         // remote and unauthenticated, so letting it choose where a governed
         // session's traffic goes is the bypass AAASM-5323 closes. The value must
         // also be a URL, not a bare authority — no HTTP client routes through
         // the latter (AAASM-5324).
-        let expected_proxy = proxy.expected_proxy_url();
+        //
+        // AAASM-5863: the endpoint is `aasm run`'s own dedicated proxy for this
+        // launch, bound to an ephemeral port `ProxyGuard` picked — not `proxy`
+        // (the standalone shared proxy this fixture starts as this launch's
+        // registration/CA-trust precondition), whose address is asserted
+        // *distinct* below rather than equal, for the same reason as
+        // `cli_run_claude_governed_launch.rs`'s equivalent assertion.
+        let standalone_proxy = proxy.expected_proxy_url();
         for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
-            assert_eq!(
-                seen.get(key).map(String::as_str),
-                Some(expected_proxy.as_str()),
-                "`{key}` must carry the verified local endpoint as a URL. A bare `host:port` \
-                 means an unusable authority reached the child; `__UNSET__` means the launch was \
-                 not proxied at all. Saw:\n{}",
+            let value = seen.get(key).map(String::as_str);
+            assert!(
+                value.is_some_and(|v| v.starts_with("http://127.0.0.1:")),
+                "`{key}` must carry a loopback endpoint as a URL. A bare `host:port` means an \
+                 unusable authority reached the child; `__UNSET__` means the launch was not \
+                 proxied at all. Saw:\n{}",
+                render(&seen),
+            );
+            assert_ne!(
+                value,
+                Some(standalone_proxy.as_str()),
+                "`{key}` names the standalone shared proxy this fixture started for registration/CA \
+                 trust, not this launch's own dedicated proxy (AAASM-5863). Saw:\n{}",
                 render(&seen),
             );
         }
