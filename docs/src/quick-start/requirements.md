@@ -87,14 +87,14 @@ install only their requirements.
 
 ## Execution isolation (`aasm run --isolation`)
 
-This is a separate capability from the three enforcement mechanisms above, and
-has its own, narrower platform reach: **Linux only**, and even there it
-requires a backend executable Agent Assembly does not bundle.
+This is a separate capability from the three enforcement mechanisms above, with
+its own, narrower platform reach.
 
 | Platform | `aasm run --isolation process`/`auto` | Requirement |
 |---|---|---|
 | Linux | ✅ | A separately-installed backend executable on `PATH` (or `AA_SANDLOCK_BIN`) |
-| macOS | ❌ Refused, never silently unconfined | No backend targets macOS |
+| macOS (Apple Silicon) | ✅ via `--isolation-backend aasm-macos-vm` | `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` (built from `aa-isolation-macos-vm-poc/README.md`) + `com.apple.security.virtualization` entitlement; filesystem-only confinement, hardware-qualified for Apple Silicon (see matrix below) |
+| macOS (Intel) | ❌ Refused, never silently unconfined | Not supported — guest kernel/helper are arm64-only |
 | Windows | ❌ Refused, never silently unconfined | No backend targets Windows |
 
 See [Execution isolation](../security/execution-isolation.md#platform-and-backend-support-matrix)
