@@ -170,6 +170,42 @@ impl std::fmt::Display for EgressDenyReason {
     }
 }
 
+/// How often to check `ProxyConfig::parent_pid`'s liveness (AAASM-5861).
+///
+/// A tradeoff, not a correctness knob: shorter detects a dead parent faster
+/// but wakes the process more often for no reason in the common case (the
+/// parent is alive almost always). Two seconds is fast enough that a
+/// governed launch's cleanup isn't perceptibly delayed by it, and cheap
+/// enough (`kill(pid, 0)` is a single non-blocking syscall) to not matter for
+/// a proxy otherwise spending its time on the accept loop.
+const PARENT_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the process named by `pid` exists and this process may signal it.
+///
+/// `kill(pid, 0)` is the standard POSIX liveness probe: signal `0` is
+/// delivered to nothing, but the kernel still performs the existence/
+/// permission checks a real signal would, so a `0` return means "exists and
+/// is signalable" without actually affecting the target. A `pid` reused by
+/// an unrelated process after the watched one exits would read as "alive" —
+/// acceptable here because the window is one [`PARENT_CHECK_INTERVAL`], the
+/// consequence of a false positive is only a delayed shutdown (never a
+/// missed one — the SIGTERM/SIGINT paths are unaffected by this check), and
+/// same reasoning `aa-cli/src/commands/proxy/stop.rs` already relies on for
+/// its own liveness poll.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    // parent_pid is never set on non-Unix (aa-cli's ProxyGuard is
+    // Unix-signal-based end to end); treat as alive so nothing here can ever
+    // be the reason a non-Unix build behaves differently from before this
+    // field existed.
+    true
+}
+
 /// Write the proxy's actual bound address to `ready_file` (AAASM-5859), so a
 /// caller that requested port 0 can discover the real port without a
 /// bind-probe-and-release race (which would be TOCTOU under concurrent
@@ -397,6 +433,15 @@ impl ProxyServer {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(ProxyError::Io)?;
 
+        // AAASM-5861: watched only when `parent_pid` is configured (never for
+        // standalone `aasm proxy start`, whose whole point is to outlive its
+        // launching shell — see the field doc). The first tick is consumed
+        // immediately below so the interval's *next* tick is genuinely
+        // `PARENT_CHECK_INTERVAL` away, not near-zero (`tokio::time::interval`
+        // fires its first tick right away by default).
+        let mut parent_check = tokio::time::interval(PARENT_CHECK_INTERVAL);
+        parent_check.tick().await;
+
         loop {
             tokio::select! {
                 result = listener.accept() => {
@@ -416,6 +461,16 @@ impl ProxyServer {
                 _ = sigterm.recv() => {
                     tracing::info!("received SIGTERM, shutting down");
                     break;
+                }
+                _ = parent_check.tick(), if self.config.parent_pid.is_some() => {
+                    let parent_pid = self.config.parent_pid.expect("guarded by the if above");
+                    if !pid_is_alive(parent_pid) {
+                        tracing::warn!(
+                            parent_pid,
+                            "watched parent process is gone; shutting down (AAASM-5861)",
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -2240,6 +2295,7 @@ mod tests {
             // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
             agent_id: None,
             ready_file: None,
+            parent_pid: None,
             allow_private_connect_targets: false,
         };
         config.bind_addr = ([127, 0, 0, 1], 0).into();
@@ -2270,6 +2326,7 @@ mod tests {
             network_fail_open,
             agent_id: None,
             ready_file: None,
+            parent_pid: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2686,6 +2743,7 @@ mod tests {
             network_fail_open: false,
             agent_id: None,
             ready_file: None,
+            parent_pid: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2821,6 +2879,7 @@ mod tests {
             network_fail_open: false,
             agent_id: None,
             ready_file: None,
+            parent_pid: None,
             allow_private_connect_targets: false,
         };
 
@@ -2907,6 +2966,7 @@ mod tests {
             network_fail_open: false,
             agent_id: None,
             ready_file: None,
+            parent_pid: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);

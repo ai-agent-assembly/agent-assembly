@@ -35,6 +35,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         // Production `from_env` keeps this false.
         agent_id: None,
         ready_file: None,
+        parent_pid: None,
         allow_private_connect_targets: true,
     }
 }
@@ -530,6 +531,7 @@ mod attacker {
             network_fail_open: false,
             agent_id: None,
             ready_file: None,
+            parent_pid: None,
             allow_private_connect_targets: true,
         }
     }
@@ -806,6 +808,7 @@ async fn a_ready_file_reports_the_real_bound_port_for_an_ephemeral_bind() {
 
     let config = ProxyConfig {
         ready_file: Some(ready_file.clone()),
+        parent_pid: None,
         ..test_config(dir.path())
     };
     assert_eq!(
@@ -877,5 +880,75 @@ async fn a_ready_file_reports_the_real_bound_port_for_an_ephemeral_bind() {
     assert!(
         response_line.contains("200"),
         "the address in the ready file must be the real listening proxy, got: {response_line}"
+    );
+}
+
+/// AAASM-5861: with `parent_pid` set to a process that is already gone before
+/// the proxy even starts, `run()` must return promptly rather than run
+/// forever — proving the watch loop actually terminates the accept loop
+/// (`break`, then `Ok(())`) rather than merely logging.
+#[tokio::test]
+async fn a_dead_watched_parent_ends_run_without_a_signal() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+
+    // A pid that is guaranteed to be dead when the proxy checks it: spawn a
+    // trivial child, wait for it to exit, then use its now-free pid. Reusing
+    // a real (recently exited) pid rather than a made-up large number is
+    // deliberate — it's what `kill(pid, 0)` actually needs to have returned
+    // ESRCH against in this test to mean anything.
+    let mut helper = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("exit 0")
+        .spawn()
+        .expect("spawn sh");
+    let dead_pid = helper.id();
+    helper.wait().expect("reap the helper");
+
+    let config = ProxyConfig {
+        parent_pid: Some(dead_pid),
+        ..test_config(dir.path())
+    };
+    let (tx, _rx) = broadcast::channel::<PipelineEvent>(16);
+    let server = aa_proxy::proxy::ProxyServer::new(config, ca, tx);
+
+    // No SIGINT/SIGTERM is ever sent in this test — if `run()` completes, it
+    // can only be because the parent-watch branch fired.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), server.run()).await;
+
+    match result {
+        Ok(run_result) => assert!(
+            run_result.is_ok(),
+            "run() must return Ok on a clean parent-watch shutdown, got: {run_result:?}"
+        ),
+        Err(_) => panic!("run() did not return within 10s of its watched parent (pid {dead_pid}) already being dead"),
+    }
+}
+
+/// The negative control for the test above: a watched parent that is alive
+/// must NOT cause `run()` to return. Without this, a bug that made the watch
+/// fire unconditionally (ignoring liveness entirely) would still pass the
+/// positive test.
+#[tokio::test]
+async fn a_live_watched_parent_does_not_end_run() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+
+    // This test process itself is alive for as long as the test runs.
+    let live_pid = std::process::id();
+
+    let config = ProxyConfig {
+        parent_pid: Some(live_pid),
+        ..test_config(dir.path())
+    };
+    let (tx, _rx) = broadcast::channel::<PipelineEvent>(16);
+    let server = aa_proxy::proxy::ProxyServer::new(config, ca, tx);
+
+    // Longer than one PARENT_CHECK_INTERVAL (2s), so a watch that fired
+    // despite a live parent would have already returned by the deadline.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), server.run()).await;
+    assert!(
+        result.is_err(),
+        "run() must not return while its watched parent is alive, but it did: {result:?}"
     );
 }

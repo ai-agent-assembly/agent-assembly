@@ -208,6 +208,7 @@ async fn start_proxy(
         // (correctly) refuse in production.
         agent_id: None,
         ready_file: None,
+        parent_pid: None,
         allow_private_connect_targets: true,
     };
 

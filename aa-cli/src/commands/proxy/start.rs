@@ -174,7 +174,7 @@ fn state_for_child(child_pid: u32, binary: &Path, listen_addr: &str) -> ProxySta
 /// the only image fact left (see [`super::identity`]). Resolving here also means
 /// the record names the file that was executed rather than a symlink that could
 /// be repointed afterwards.
-fn canonical_binary(binary: PathBuf) -> PathBuf {
+pub(super) fn canonical_binary(binary: PathBuf) -> PathBuf {
     std::fs::canonicalize(&binary).unwrap_or(binary)
 }
 

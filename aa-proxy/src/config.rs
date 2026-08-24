@@ -207,6 +207,30 @@ pub struct ProxyConfig {
     /// Env: `AA_PROXY_READY_FILE` — a path, or absent.
     pub ready_file: Option<PathBuf>,
 
+    /// AAASM-5861 — a PID to watch; the proxy shuts down (same path as
+    /// SIGTERM) once that PID is no longer alive.
+    ///
+    /// The gap this closes: `SIGKILL` on a parent process is not observable
+    /// by its children through any signal — there is nothing to catch. On
+    /// Linux `PR_SET_PDEATHSIG` solves this at the kernel level; **there is
+    /// no macOS equivalent**, so this is a portable poll-based fallback
+    /// instead (checked every [`PARENT_CHECK_INTERVAL`] via `kill(pid, 0)`,
+    /// which the kernel already exposes without a signal actually being
+    /// sent). The tradeoff is latency, not correctness: a dead parent is
+    /// detected within one interval, not instantly.
+    ///
+    /// **Do not set this for a long-lived, intentionally-detached process.**
+    /// Standalone `aasm proxy start` uses `process_group(0)` precisely so
+    /// its proxy survives after the launching shell exits and gets
+    /// reparented to init — the *opposite* of what this field enforces. It
+    /// is exclusively for the per-launch dedicated proxy (AAASM-5857), whose
+    /// entire reason to exist ends when its one governing `aasm run` process
+    /// does. `ProxyConfig::from_env` reads it from the environment like every
+    /// other field, but only `ProxyGuard::spawn` (`aa-cli`) ever sets it.
+    ///
+    /// Env: `AA_PROXY_PARENT_PID` — a `u32`, or absent (no watch).
+    pub parent_pid: Option<u32>,
+
     /// AAASM-5855 — the registered identity to attribute this proxy's audit
     /// records to, read from `AA_AGENT_ID` in **this process's own
     /// environment**, if set.
@@ -258,6 +282,7 @@ impl ProxyConfig {
             // not necessarily `aasm run`, see the field doc above.
             agent_id: env_optional("AA_AGENT_ID"),
             ready_file: env_optional("AA_PROXY_READY_FILE").map(PathBuf::from),
+            parent_pid: env_optional("AA_PROXY_PARENT_PID").and_then(|s| s.parse().ok()),
         })
     }
 }
