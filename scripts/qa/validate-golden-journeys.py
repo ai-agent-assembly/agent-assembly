@@ -138,30 +138,74 @@ def _load_ci_trigger_globs(repo_root: str) -> list[str] | None:
     return paths if isinstance(paths, list) else None
 
 
+def _glob_to_regex(pattern: str) -> re.Pattern:
+    """Translate a GitHub Actions path-filter glob to a regex.
+
+    plain `fnmatch` is wrong here: it treats `/` as an ordinary character, so
+    `aa-*/**/*.rs` requires at least two literal `/`-separated segments and
+    never matches a crate-root file like `aa-gateway/build.rs` — even though
+    GitHub Actions' real `**` matches *zero or more* path segments there.
+    This was a confirmed false-negative in the fnmatch-based first cut of
+    this check (a real dead-trigger false positive on any crate-root
+    evidence file) — found by independent review, fixed here.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "*" and pattern[i:i + 2] == "**":
+            if pattern[i:i + 3] == "**/":
+                out.append("(?:.*/)?")
+                i += 3
+            else:
+                out.append(".*")
+                i += 2
+        elif c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
 def _path_has_ci_trigger(rel_path: str, globs: list[str]) -> bool:
-    # fnmatch's '*' already spans path separators, so a doubled '**' behaves
-    # the same as a single '*' here — sufficiently accurate for this
-    # workflow's actual glob shapes (verified against every existing filter
-    # in ci.yml during AAASM-5876 design); a stricter path-aware matcher
-    # (e.g. pathlib.PurePath.match with '**' semantics) was not worth the
-    # added dependency for this static, non-authoritative check.
-    return any(fnmatch.fnmatch(rel_path, g) for g in globs)
+    return any(_glob_to_regex(g).match(rel_path) for g in globs)
 
 
 def _is_ignored_test(repo_root: str, root: str, path: str, name: str) -> bool:
-    """True if `name`'s definition is immediately preceded by `#[ignore]`."""
+    """True if `name`'s definition is immediately preceded by `#[ignore]`.
+
+    Word-bounded on purpose: a naive substring match false-positives when a
+    shorter name is a prefix of a longer, `#[ignore]`d sibling defined
+    earlier in the same file (e.g. `foo` vs. an ignored `foo_extended`) —
+    found by independent review, fixed here.
+    """
     full = os.path.join(repo_root, root, path)
     if not os.path.isfile(full):
         return False
     with open(full, "r", errors="replace") as f:
         lines = f.readlines()
+    name_re = re.compile(r"\bfn\s+" + re.escape(name) + r"\b")
     for i, line in enumerate(lines):
-        if name in line and ("fn " + name in line or line.strip() == name):
-            # Scan up to 5 preceding non-blank lines for the attribute —
-            # covers the common `#[test]\n#[ignore]\nfn foo()` ordering and
-            # `#[ignore = "reason"]` variants, without needing a real parser.
-            window = lines[max(0, i - 5):i]
-            if any("#[ignore" in w for w in window):
+        if name_re.search(line) or line.strip() == name:
+            # Walk backward only through a *contiguous* run of attribute
+            # lines (`#[...]`) — stops at the first non-attribute line, so a
+            # nearby-but-unrelated preceding function's own `#[ignore]`
+            # can't leak into this one's window. An unbounded fixed-size
+            # window (the first cut of this check) could cross exactly that
+            # boundary when two functions sit a few lines apart — found by
+            # independent review, fixed here.
+            j = i - 1
+            found = False
+            while j >= 0 and lines[j].strip().startswith("#["):
+                if "#[ignore" in lines[j]:
+                    found = True
+                j -= 1
+            if found:
                 return True
     return False
 
