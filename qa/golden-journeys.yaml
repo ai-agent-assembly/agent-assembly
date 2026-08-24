@@ -523,7 +523,7 @@ journeys:
   - pr
   - main
   fidelity: real_local_process
-  negative_control: 'aa-gateway/tests/sensitive_data_producer_test.rs::primary_seam_writes_the_event_and_its_finding_rows — a real seam test: kills the evaluate_primary wiring mutation (module doc), proving the alert-producing path is actually wired to the detection engine, not a hardcoded emit (AAASM-5877)'
+  negative_control: 'aa-gateway/tests/sensitive_data_producer_test.rs::primary_a_write_failure_leaves_the_decision_intact_and_is_counted — genuine fault injection via FailingStore: asserts the lost row is actually counted (written=0, write_failures=1) while the enforcement decision stays unaffected, proving projection-write failures are observable rather than silently dropped (AAASM-5877)'
 - id: J28
   jira: AAASM-4596
   name: Verify rate limiting (limit_per_hour) and scheduling (active_hours)
