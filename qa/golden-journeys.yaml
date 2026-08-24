@@ -10,6 +10,42 @@ policy: docs/src/qa/release-qa-policy.md
 # valid). Populated/maintained by the feature -> QA-coverage reconciliation
 # procedure (.claude/skills/release-qa-gate/REFERENCE.md#feature--qa-coverage-reconciliation)
 # and mechanically checked by scripts/qa/check-feature-coverage.py.
+# --- AAASM-5874: Release Assurance Registry fields (all optional additive) ---
+# release_blocking (bool, optional, default false): mirrors the release-QA
+#   policy's P0 "always executed, release-blocking" tier. Explicit rather than
+#   re-derived from `priority` so a P1 can be escalated without renumbering it.
+# lifecycle_state (enum, optional): automated | partial | manual_live | gap |
+#   unsupported | stale | retired. Truthful coverage state per AAASM-5873's
+#   audit taxonomy (EXECUTABLE->automated, PARTIAL->partial,
+#   MANUAL_OR_LIVE_ONLY->manual_live, NOT_EXECUTED/NOT_COVERED->gap,
+#   STALE->stale). Required when release_blocking is true.
+# evidence (list of {repo, kind, selector}, optional): kind is test |
+#   ci_job | manual_record. `selector` for kind=test is a
+#   `<path>::<test-or-function-name>` the validator resolves against the
+#   named repo checkout (file exists + selector name found in it) — it does
+#   NOT invoke a build/test runner. Required (non-empty + resolvable) when
+#   lifecycle_state is automated AND release_blocking is true. Populating it
+#   on a `partial` entry is still encouraged (it documents what evidence
+#   does exist) but is not enforced by the validator — `gap_owner` is what's
+#   enforced there instead, since the incompleteness is the point.
+# execution_lanes (list of pr|main|nightly|release|live_dogfood, optional):
+#   required (non-empty) when lifecycle_state is automated AND
+#   release_blocking is true.
+# fidelity (enum, optional): mock | controlled_fake | real_local_process |
+#   container | published_artifact | real_external_provider. Required under
+#   the same automated + release_blocking condition as execution_lanes.
+# platforms (list of str, optional): required OS/runner scope when relevant.
+# negative_control (str, optional): reference to the mutation/fault-injection
+#   evidence proving the journey's test is load-bearing.
+# gap_owner (str, optional): an AAASM-* ticket owning an incomplete/missing
+#   entry. Required when release_blocking is true and lifecycle_state is
+#   partial, gap, unsupported or stale.
+# retirement ({reason, ref}, optional): used only for lifecycle_state:
+#   retired — the row stays (stable IDs are never deleted), but is excluded
+#   from active selection. `ref` may be a ticket or a policy document.
+# See scripts/qa/validate-golden-journeys.py for the enforced rules and
+# docs/src/qa/release-qa-policy.md for how execution_lanes/fidelity feed
+# release-tier selection.
 journeys:
 - id: J01
   jira: AAASM-4523
@@ -23,6 +59,7 @@ journeys:
   - docs
   browser_required: true
   outcome: See AAASM-4523 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
 - id: J02
   jira: AAASM-4524
   name: Land on the canonical docs hub and follow the "govern my first agent" CTA
@@ -35,6 +72,7 @@ journeys:
   - docs
   browser_required: true
   outcome: See AAASM-4524 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: manual_live
 - id: J03
   jira: AAASM-4528
   name: Read Why / comparison / security-model / open-core pages to decide whether to adopt
@@ -47,6 +85,7 @@ journeys:
   - docs
   browser_required: true
   outcome: See AAASM-4528 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: manual_live
 - id: J04
   jira: AAASM-4542
   name: Install the aasm CLI (install.sh / Homebrew / version pin / profiles)
@@ -63,6 +102,15 @@ journeys:
   outcome: See AAASM-4542 for the full acceptance contract; this row is a selection index only.
   feature_refs:
   - AAASM-3952
+  release_blocking: true
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J05
   jira: AAASM-4543
   name: Install the Python SDK and confirm the native core is present
@@ -77,6 +125,8 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4543 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
+  gap_owner: AAASM-5374
 - id: J06
   jira: AAASM-4544
   name: Install the Node SDK
@@ -91,6 +141,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4544 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J07
   jira: AAASM-4526
   name: Install the Go SDK
@@ -105,6 +156,8 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4526 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
+  gap_owner: AAASM-5374
 - id: J08
   jira: AAASM-4530
   name: Govern your first agent with the Python SDK, end-to-end
@@ -120,6 +173,9 @@ journeys:
   - golden-journey
   browser_required: false
   outcome: See AAASM-4530 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-5882
 - id: J09
   jira: AAASM-4533
   name: Govern your first agent with the Node SDK, end-to-end
@@ -135,6 +191,7 @@ journeys:
   - golden-journey
   browser_required: false
   outcome: See AAASM-4533 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J10
   jira: AAASM-4535
   name: Govern your first agent with the Go SDK, end-to-end
@@ -150,6 +207,8 @@ journeys:
   - golden-journey
   browser_required: false
   outcome: See AAASM-4535 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
+  gap_owner: AAASM-5374
 - id: J11
   jira: AAASM-4537
   name: Run a Python framework example (allow / deny / pending) offline
@@ -162,6 +221,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4537 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: stale
 - id: J12
   jira: AAASM-4525
   name: Run a Node framework example (deny throws) offline
@@ -174,6 +234,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4525 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: stale
 - id: J13
   jira: AAASM-4531
   name: Run a Go example (offline ALLOW)
@@ -186,6 +247,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4531 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
 - id: J14
   jira: AAASM-4539
   name: Run the cross-framework scenario demos (policy / approval / audit / budget)
@@ -198,6 +260,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4539 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: stale
 - id: J15
   jira: AAASM-4540
   name: Run live-core-enforcement against a real gateway
@@ -210,6 +273,8 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4540 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: stale
+  gap_owner: AAASM-4475
 - id: J16
   jira: AAASM-4541
   name: Bring up the limited-OSS stack with Docker Compose
@@ -225,6 +290,7 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4541 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
 - id: J17
   jira: AAASM-4527
   name: Install & run the gateway from a published artifact (no source build)
@@ -240,6 +306,15 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4527 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J18
   jira: AAASM-4529
   name: View agents and decisions in the dashboard / TUI
@@ -254,6 +329,7 @@ journeys:
   - functional
   browser_required: true
   outcome: See AAASM-4529 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J19
   jira: AAASM-4532
   name: Author, validate, simulate, and apply a policy
@@ -269,6 +345,18 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4532 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_policy_fail_closed.rs::a_policy_with_no_rules_refuses_rather_than_launching_permissively
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-cli/tests/run_policy_fail_closed.rs (fail-closed regression)
 - id: J20
   jira: AAASM-4534
   name: Verify the read/inspection CLI command matrix (status / topology / agent / audit / logs / trace
@@ -282,6 +370,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4534 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J21
   jira: AAASM-4536
   name: Doc + command integrity — every documented command and internal link works
@@ -294,6 +383,16 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4536 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: partial
+  gap_owner: AAASM-5888
+  evidence:
+  - repo: agent-assembly
+    kind: ci_job
+    selector: 'doc-links.yml (link integrity only, not full command matrix)'
+  execution_lanes:
+  - pr
+  fidelity: real_local_process
 - id: J22
   jira: AAASM-4538
   name: Recover from a failure using the troubleshooting / FAQ docs
@@ -308,6 +407,8 @@ journeys:
   outcome: See AAASM-4538 for the full acceptance contract; this row is a selection index only.
   feature_refs:
   - AAASM-5715
+  lifecycle_state: manual_live
+  gap_owner: AAASM-4538
 - id: J23
   jira: AAASM-4546
   name: Verify the lifecycle / config / admin CLI command matrix (start/stop / proxy / sandbox / config
@@ -321,6 +422,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4546 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J24
   jira: AAASM-4598
   name: Verify allow / deny enforcement (tool allow, capability allow-deny, network egress)
@@ -336,6 +438,17 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4598 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/cross_layer_policy_consistency_test.rs::egress_decisions_agree_across_layers
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
 - id: J25
   jira: AAASM-4599
   name: Verify human-in-the-loop approval workflow (requires_approval_if -> approve / reject / timeout)
@@ -351,6 +464,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4599 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J26
   jira: AAASM-4600
   name: Verify budget enforcement (daily / monthly limits, action_on_exceed deny vs suspend)
@@ -366,6 +480,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4600 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J27
   jira: AAASM-4595
   feature_refs:
@@ -396,6 +511,17 @@ journeys:
   # modes belongs in every risk-based release sweep, not just a periodic deep
   # sweep) after AAASM-5848's fix. See docs/release/qa-signoff/v0.0.1-rc.7.md
   # for the direct evidence this promotion is based on.
+  release_blocking: true
+  lifecycle_state: partial
+  gap_owner: AAASM-5848
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_secret_alert_e2e_test.rs::tool_call_with_credential_over_live_grpc_fires_secret_alert
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
 - id: J28
   jira: AAASM-4596
   name: Verify rate limiting (limit_per_hour) and scheduling (active_hours)
@@ -411,6 +537,8 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4596 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
+  gap_owner: AAASM-5883
 - id: J29
   jira: AAASM-4597
   name: Verify enforcement modes (Enforce / Observe / Disabled)
@@ -426,6 +554,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4597 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J30
   jira: AAASM-4604
   name: Rust core contributor — clone, build, test, make a change, open a PR
@@ -440,6 +569,7 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4604 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
 - id: J31
   jira: AAASM-4605
   name: Build & work on the harder crates — eBPF probes, FFI, proxy
@@ -454,6 +584,7 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4605 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
 - id: J32
   jira: AAASM-4607
   name: SDK contributor — dev-setup, tests, lint, native-binding rebuild, PR (Py/Node/Go)
@@ -468,6 +599,7 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4607 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
 - id: J33
   jira: AAASM-4612
   name: Community contributor viability & community-health files
@@ -482,6 +614,8 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4612 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
+  gap_owner: AAASM-5884
 - id: J34
   jira: AAASM-4617
   name: Understand "what is it / why / for whom / the goal" in 5 minutes (non-technical)
@@ -494,6 +628,8 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4617 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: manual_live
+  gap_owner: AAASM-4617
 - id: J35
   jira: AAASM-4613
   name: Planner / PM — roadmap, feature maturity, how work is organized
@@ -506,6 +642,8 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4613 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: manual_live
+  gap_owner: AAASM-4613
 - id: J36
   jira: AAASM-4618
   name: Security / compliance officer — threat model, audit & compliance posture
@@ -518,6 +656,8 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4618 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
+  gap_owner: AAASM-4618
 - id: J37
   jira: AAASM-4620
   name: Ops / SRE — deployment options, observability, monitoring, SLA, runbooks
@@ -530,6 +670,8 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4620 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: manual_live
+  gap_owner: AAASM-4620
 - id: J38
   jira: AAASM-4621
   name: Decision-maker / buyer — comparison, open-core vs SaaS, pricing, maturity, trust
@@ -542,6 +684,8 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4621 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: manual_live
+  gap_owner: AAASM-4621
 - id: J39
   jira: AAASM-4622
   name: i18n / localization readiness for a non-English newcomer
@@ -555,6 +699,8 @@ journeys:
   - design
   browser_required: true
   outcome: See AAASM-4622 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
+  gap_owner: AAASM-4622
 - id: J40
   jira: AAASM-4606
   name: Accessibility statement & jargon on-ramp (no insider knowledge assumed)
@@ -568,6 +714,8 @@ journeys:
   - design
   browser_required: true
   outcome: See AAASM-4606 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
+  gap_owner: AAASM-4606
 - id: J41
   jira: AAASM-4608
   name: Understand & exercise the three-layer interception model (SDK / proxy / eBPF)
@@ -584,6 +732,19 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4608 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: ci_job
+    selector: 'e2e — eBPF (Linux): AAASM-1523 e2e three-layer suite'
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  platforms:
+  - linux
 - id: J42
   jira: AAASM-4611
   name: Govern agent egress with the sidecar proxy — no code change
@@ -600,6 +761,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4611 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J43
   jira: AAASM-4615
   name: Kernel-layer enforcement with eBPF (Linux) — catch the bypass
@@ -616,6 +778,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4615 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J44
   jira: AAASM-4619
   name: Audit trail — emit, consume via aasm audit, immutability & export
@@ -632,6 +795,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4619 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J45
   jira: AAASM-4609
   name: Operator observability — alerts, topology, cost
@@ -648,6 +812,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4609 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J46
   jira: AAASM-4610
   name: Govern MCP tool usage (mcp_tool:* capabilities)
@@ -664,6 +829,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4610 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J47
   jira: AAASM-4614
   name: Org / team admin — multi-tenancy, teams, RBAC, SCIM (SaaS control plane)
@@ -680,6 +846,8 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4614 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
+  gap_owner: AAASM-5885
 - id: J48
   jira: AAASM-4616
   name: Enterprise self-hosted governance onboarding
@@ -696,6 +864,10 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4616 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: retired
+  retirement:
+    reason: Contradicts documented product policy (self-hosted deployment is out of scope product-wide, .claude/CLAUDE.md)
+    ref: .claude/CLAUDE.md#project-policy
 - id: J49
   jira: AAASM-4747
   name: Containerize a Python agent on the published python SDK base image
@@ -710,6 +882,7 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4747 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J50
   jira: AAASM-4748
   name: Containerize a Node agent on the published node SDK base image
@@ -724,6 +897,7 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4748 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J51
   jira: AAASM-4749
   name: Containerize a Go agent on the published go SDK base image
@@ -738,6 +912,7 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4749 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: automated
 - id: J52
   jira: AAASM-4750
   name: Run aa-runtime as a sidecar and govern a containerized agent
@@ -752,6 +927,8 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4750 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
+  gap_owner: AAASM-5886
 - id: J53
   jira: AAASM-4751
   name: Pull, configure & operate the aa-gateway container image
@@ -766,6 +943,18 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4751 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: ci_job
+    selector: docker.yml::build-and-push (publish-gateway)
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J54
   jira: AAASM-4752
   name: Docker & container usage documentation completeness
@@ -779,6 +968,7 @@ journeys:
   - design
   browser_required: true
   outcome: See AAASM-4752 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
 - id: J55
   jira: AAASM-4753
   name: Docker image provenance & supply-chain hardening
@@ -792,6 +982,8 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4753 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: partial
+  gap_owner: AAASM-5887
 - id: J56
   jira: AAASM-4976
   name: Clean-env -> governed Python agent (canonical 11-step) [Python Dev]
@@ -807,6 +999,16 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4976 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: manual_live
+  gap_owner: AAASM-5839
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J57
   jira: AAASM-4977
   name: Clean-env -> governed Node.js agent (canonical 11-step) [Node.js Dev]
@@ -822,6 +1024,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4977 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
 - id: J58
   jira: AAASM-4978
   name: Clean-env -> governed Go agent (canonical 11-step) [Go Dev]
@@ -837,6 +1040,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4978 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
 - id: J59
   jira: AAASM-4979
   name: Deploy -> observe -> govern -> recover, no agent-code changes (12-step) [Operator]
@@ -852,6 +1056,15 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4979 for the full acceptance contract; this row is a selection index only.
+  release_blocking: true
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J60
   jira: AAASM-4980
   name: Continuous cross-persona governance loop [Dev->Operator Handoff]
@@ -867,6 +1080,7 @@ journeys:
   - functional
   browser_required: false
   outcome: See AAASM-4980 for the full acceptance contract; this row is a selection index only.
+  lifecycle_state: gap
 - id: J61
   jira: AAASM-5850
   name: Gateway lifecycle failure-diagnostics accuracy (start/status truthfully report real process state)
@@ -882,6 +1096,8 @@ journeys:
   feature_refs:
   - AAASM-5832
   - AAASM-5833
+  lifecycle_state: partial
+  gap_owner: AAASM-5850
 - id: J62
   jira: AAASM-5852
   feature_refs:
@@ -928,6 +1144,20 @@ journeys:
   # .github/workflows/ci.yml) — this entry is a traceability fix, not a new
   # test requirement. macOS-hosted Linux isolation (AAASM-5811 family) is
   # explicitly excluded: no fix version, still In Progress/To Do.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: ci_job
+    selector: ci.yml::isolation-backend-linux
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  platforms:
+  - linux
+  negative_control: 'lane fails on decline, per-scenario recorded'
 - id: J63
   jira: AAASM-5853
   name: Verify aasm run's real governed launch of a supported dev tool end to end
@@ -956,3 +1186,5 @@ journeys:
   # reaching an allow/deny outcome was not, and two confirmed security gaps
   # (AAASM-5644 CA trust, AAASM-5851 network allowlist) remain open. See
   # AAASM-5853 for the acceptance contract this journey is not yet meeting.
+  lifecycle_state: partial
+  gap_owner: AAASM-5853

@@ -1,0 +1,22 @@
+catalog_version: '1'
+journeys:
+- id: J-T6
+  jira: AAASM-0006
+  name: Fixture — duplicate id, first
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+- id: J-T6
+  jira: AAASM-0007
+  name: Fixture — duplicate id, second
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only

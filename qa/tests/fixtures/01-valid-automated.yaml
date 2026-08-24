@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T1
+  jira: AAASM-0001
+  name: Fixture — valid automated release-blocking entry
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'scripts/qa/validate-golden-journeys.py::def validate'
+  execution_lanes: [pr]
+  fidelity: real_local_process

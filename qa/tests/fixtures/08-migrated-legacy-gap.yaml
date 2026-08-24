@@ -1,0 +1,15 @@
+catalog_version: '1'
+journeys:
+- id: J-T8
+  jira: AAASM-0009
+  name: Fixture — legacy entry migrated truthfully as a gap, not invented PASS
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-0010

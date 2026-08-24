@@ -1,0 +1,16 @@
+catalog_version: '1'
+journeys:
+- id: J-T3
+  jira: AAASM-0003
+  name: Fixture — automated release-blocking entry with no evidence
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  execution_lanes: [pr]
+  fidelity: real_local_process

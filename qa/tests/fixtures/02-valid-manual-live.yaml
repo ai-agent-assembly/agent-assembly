@@ -1,0 +1,14 @@
+catalog_version: '1'
+journeys:
+- id: J-T2
+  jira: AAASM-0002
+  name: Fixture — valid intentionally manual/live-only entry
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: manual_live
