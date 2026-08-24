@@ -113,8 +113,8 @@ references a surface that no longer matches the journey's description).
 this replaces an arithmetically wrong first draft caught by adversarial
 review, see Revision history): EXECUTABLE 21 · PARTIAL 13 ·
 MANUAL_OR_LIVE_ONLY 11 · NOT_EXECUTED 5 · NOT_COVERED 8 (7 + J32's
-out-of-repo-scope case) · STALE 5 (J11/J12/J13/J14/J15/J48 — 6 STALE-tagged
-rows, one is STALE-and-also-out-of-scope; see per-row detail). Total 63.
+out-of-repo-scope case) · STALE 5 (J11/J12/J14/J15/J48; see per-row detail
+for each). Total 63.
 
 **P0 journeys (12 total, no double-counting):** EXECUTABLE 5 (J19, J24, J41,
 J53, J62) · MANUAL_OR_LIVE_ONLY 4, covered by the release-time-mandatory QA
@@ -147,12 +147,14 @@ owned by AAASM-5848) · NOT_COVERED 1, now filed (J08, AAASM-5882). 5+4+2+1=12.
 ## AAASM-5871 — confirmed still open (detailed, unchanged from first pass)
 
 Real product/security gap, transport-design decision explicitly not yet
-approved (owned by AAASM-5871 itself, an external epic — this Epic's own
-description says to "consume and verify its eventual production fix as a
-regression dependency," not to make the transport-design call here). Evidence:
+approved. AAASM-5871 is its own open Jira Epic, external to AAASM-5872 — its
+Dependencies/Traceability section lists AAASM-5871 as something to
+"reconcile rather than duplicate," not something this audit or AAASM-5872 has
+authority to resolve. The transport-design call belongs to AAASM-5871, not
+here. Evidence:
 `aa-proxy/tests/proxy_integration.rs` proves redaction with a real in-process
 proxy + controlled-upstream `TcpListener` capturing raw bytes
-(`start_recording_upstream`, lines 216-246) — proxy-only, stops at the wire.
+(`start_recording_upstream`, lines 218-252) — proxy-only, stops at the wire.
 `mitm_execution_evidence.rs`
 asserts via the audit-log record, not a live upstream. `aa-gateway`/`aa-api`
 sensitive-data tests prove producer and consumer separately against a shared
