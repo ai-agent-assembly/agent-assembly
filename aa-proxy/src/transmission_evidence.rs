@@ -93,8 +93,9 @@ pub struct ForwardAuthorized(());
 pub struct DecisionRecord {
     /// The registered agent this record is attributed to, if any (AAASM-5855).
     /// Supplied by the caller from [`crate::config::ProxyConfig::agent_id`]
-    /// rather than hardcoded, so the persisted entry matches the same identity
-    /// `aasm run` registered — not the literal string `<unknown>`.
+    /// rather than hardcoded, so the persisted entry carries whatever identity
+    /// this proxy process's own env was started with — not the literal string
+    /// `<unknown>`. See that field's doc for what this does and does not cover.
     pub agent_id: Option<String>,
     /// Target host, no port.
     pub host: String,

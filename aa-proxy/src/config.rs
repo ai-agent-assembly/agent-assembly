@@ -236,7 +236,8 @@ impl ProxyConfig {
             network_fail_open: env_truthy("AA_PROXY_NETWORK_FAIL_OPEN"),
             // No env var: production binaries can never relax the SSRF guard.
             allow_private_connect_targets: false,
-            // AAASM-5855: read back what `aasm run` exported for this launch.
+            // AAASM-5855: read back whatever started this proxy process set —
+            // not necessarily `aasm run`, see the field doc above.
             agent_id: env_optional("AA_AGENT_ID"),
         })
     }

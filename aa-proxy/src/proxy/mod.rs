@@ -1300,10 +1300,10 @@ impl ProxyServer {
         // Emit the legacy ProxyEvent for the audit broadcast — keeps
         // existing subscribers wired up unchanged.
         let event = ProxyEvent {
-            // AAASM-5855: attribute the intercepted event to the real
-            // registered agent (read back from `AA_AGENT_ID`, the same env var
-            // `aasm run` exports into the launched tool) instead of hardcoding
-            // an unattributed event.
+            // AAASM-5855: attribute to whatever `AA_AGENT_ID` this proxy
+            // process's own env carries (`ProxyConfig::agent_id`, see its doc
+            // for the scope this does and does not cover) instead of
+            // hardcoding an unattributed event.
             agent_id: self.config.agent_id.clone(),
             pattern,
             method: req.method.clone(),
