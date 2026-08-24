@@ -152,6 +152,15 @@ on:
       - "benchmarks/**/*.sh"
       - "benchmarks/**/*.json"
       - "benchmarks/**/*.toml"
+      # AAASM-5874: the Release Assurance Registry and its validator. Paired
+      # with the `qa_registry` router filter below — a router filter without
+      # a matching `on.*.paths` entry is a dead trigger (ADR 0028), and this
+      # gate exists specifically to stop a registry entry from silently
+      # drifting past its own schema.
+      - "qa/golden-journeys.yaml"
+      - "qa/tests/fixtures/**"
+      - "scripts/qa/validate-golden-journeys.py"
+      - "scripts/qa/validate-golden-journeys-negative-control.sh"
   pull_request:
     branches: [main]
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
@@ -216,6 +225,7 @@ jobs:
       doc_links_gate: ${{ steps.filter.outputs.doc_links_gate }}
       release_completeness_gate: ${{ steps.filter.outputs.release_completeness_gate }}
       docs_governance_gate: ${{ steps.filter.outputs.docs_governance_gate }}
+      qa_registry: ${{ steps.filter.outputs.qa_registry }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -416,6 +426,15 @@ jobs:
               - 'benchmarks/**/*.sh'
               - 'benchmarks/**/*.json'
               - 'benchmarks/**/*.toml'
+              - '.github/workflows/ci.yml'
+            # AAASM-5874: the Release Assurance Registry. Every path here has a
+            # matching `on.push.paths` entry above, so this is a live trigger,
+            # not a dead one (ADR 0028).
+            qa_registry:
+              - 'qa/golden-journeys.yaml'
+              - 'qa/tests/fixtures/**'
+              - 'scripts/qa/validate-golden-journeys.py'
+              - 'scripts/qa/validate-golden-journeys-negative-control.sh'
               - '.github/workflows/ci.yml'
             # AAASM-5677: the governance surface. Before this filter existed, a
             # change to `governance/capability-manifest.yaml` selected NO job in
@@ -1134,6 +1153,35 @@ jobs:
 
       - name: Run backend license and provenance gate
         run: bash scripts/check-backend-license-compliance.sh
+
+  registry-health-gate:
+    needs: [changes]
+    # AAASM-5874. `qa/golden-journeys.yaml` is the Release Assurance
+    # Registry — a release-blocking entry that validates while its evidence
+    # is absent, unresolvable, or malformed is a false PASS the whole Epic
+    # exists to prevent. Deliberately its own job/filter rather than folded
+    # into an existing one: its inputs (`qa/**`, `scripts/qa/validate-*`)
+    # match no `rust`/`dashboard`/`governance` path, so a registry-only PR
+    # would skip every existing gate.
+    if: needs.changes.outputs.qa_registry == 'true'
+    name: Release Assurance Registry health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+
+      # The negative control runs FIRST and in the same job — a validator
+      # proven only against the entries it currently accepts may be passing
+      # vacuously. This asserts it still rejects each violation class the
+      # AAASM-5874 Story's own Testing/Verification section requires.
+      - name: Self-test the validator (negative control)
+        run: bash scripts/qa/validate-golden-journeys-negative-control.sh
+
+      - name: Validate the real registry
+        run: python3 scripts/qa/validate-golden-journeys.py qa/golden-journeys.yaml
 
   detection-egress-closure:
     needs: [changes]
@@ -3435,6 +3483,12 @@ jobs:
       # property (no unreviewed license reaches a channel), not a metric, so an
       # advisory version of it would be a report nobody acts on.
       - backend-license
+      # AAASM-5874: blocks, like `backend-license` above. It asserts a
+      # release-authorization-boundary property (a release-blocking registry
+      # entry cannot validate with absent/unresolvable/malformed evidence),
+      # not a metric — an advisory version would be exactly the "false PASS"
+      # this Epic exists to prevent.
+      - registry-health-gate
       # AAASM-5738: blocks. AAASM-5270 exit criterion 6 asks for behaviour
       # *verified* under egress-denied testing, and an advisory version of this
       # would be a dependency-tree argument again — which is what the criterion
