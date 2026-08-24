@@ -77,7 +77,7 @@ not simulated, not marked automated, not silently downgraded to P1/P2.
 | AAASM-4452 | In Progress | Umbrella follow-up epic; several rows still `AAASM-TBD`, largely unfiled. Not this Epic's scope; reference only. |
 | AAASM-4475 | In Progress | `examples` CI confirmed still mock-only by design; wants ≥1 scheduled real-gateway lane per SDK. Overlaps AAASM-5875's harness-pattern goal conceptually but is SDK-repo scoped — reconcile via registry reference, don't duplicate. |
 | AAASM-4479 | Done | Skip/xfail governance — lives in `e2e-public` (`rc_pending` marker, `skip_audit.py`), not in this repo. AAASM-5876 reuses this mechanism, does not rebuild it. |
-| AAASM-5526 | In Progress | Truthful-capability-boundary Epic (`ADR 0033`, `governance/capability-manifest.yaml`) — no code overlap found with the release-QA-gate system. Reference only. |
+| AAASM-5526 | In Progress | Truthful-capability-boundary Epic (Core ADR 033, `governance/capability-manifest.yaml`) — no code overlap found with the release-QA-gate system. Reference only. |
 | AAASM-4522 | In Progress | 50 children, 33 Done / 6 In Progress / 11 To Do (Journeys 56-62). Golden-journey source of truth; AAASM-5874 registry references it, does not duplicate its inventory. |
 
 ## 5. CI execution-integrity spot check (informs AAASM-5876)
