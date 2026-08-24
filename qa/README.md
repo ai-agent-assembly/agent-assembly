@@ -135,12 +135,60 @@ existing `ci.yml` filter, add both the `on.push.paths` entry and the
 catch a missed one for any `automated` + `release_blocking` entry, but P1/P2
 entries aren't strictly checked, so don't rely on the gate alone for those.
 
-Negative-control proof this is load-bearing (14 fixtures, exit-code
+Negative-control proof this is load-bearing (16 fixtures, exit-code
 assertions, mirrors `scripts/tests/release-readiness-qa-negative-control.sh`):
 
 ```bash
 bash scripts/qa/validate-golden-journeys-negative-control.sh
 ```
+
+## Negative controls (AAASM-5877)
+
+A `release_blocking` + `automated` journey on the `security` lane must
+declare a non-empty `negative_control` — enforced by the validator (see
+`docs/src/qa/release-qa-policy.md`'s "Negative-control policy"). This is
+what's actually declared today, spanning the 3 required classes from
+AAASM-5877's own scope:
+
+| Class | Journey | Negative control | What it proves |
+|---|---|---|---|
+| Security enforcement | `J24` (allow/deny) | `cross_layer_policy_consistency_test.rs::policy_without_the_guard_clause_produces_no_deny` | Asserts the `/etc` deny is genuinely absent when the policy document omits the guard clause (the sibling test `artificial_divergence_is_detected` asserts the presence half, for the document that has the clause) — together, a real differential through the same real `lower_to_ebpf`, proving the lowering genuinely derives denies from policy input, not a hardcoded emit. |
+| Security enforcement | `J41` (three-layer interception) | `e2e_ebpf.rs::ebpf_catches_traffic_that_bypasses_proxy` | Simulates the SDK/proxy layers being absent and asserts eBPF independently observes the traffic they'd otherwise catch — proves the "three layers, each independently authoritative" claim isn't just three tests of the same path. |
+| Cross-process evidence/observability | `J27` (data protection) | `sensitive_data_producer_test.rs::primary_a_write_failure_leaves_the_decision_intact_and_is_counted` | Genuine fault injection via a `FailingStore`: asserts the lost projection row is actually counted (`written=0`, `write_failures=1`) while the enforcement decision itself stays unaffected — proves a sensitive-data projection-write failure is observable, not silently dropped. |
+| Registry/CI execution-integrity | (the registry-health gate itself) | `scripts/qa/validate-golden-journeys-negative-control.sh` cases 9-13 (AAASM-5876) | Removes/breaks a required execution path (dead trigger, `#[ignore]`d evidence, unsupported platform) in an isolated fixture and asserts the gate goes non-zero — this Story's own required demonstration that "tests exist but nothing runs them" is caught, not silently green. |
+
+All four selectors are pre-existing or newly-written real tests, but three of
+the four went through a round of independent adversarial review finding they
+didn't actually prove what they claimed, and had to be repointed:
+
+- `J24`'s first candidate (`artificial_divergence_is_detected`) and `J44`'s
+  original candidate (`audit_seq_recovery_test.rs::without_recovery_seq_would_duplicate`)
+  were both tautological — each simulated the broken state by mutating a
+  local copy of the test's own data rather than re-invoking the real
+  production function with genuinely broken input, so neither actually
+  proved the property it claimed to. `J24` was repointed to a newly-written,
+  genuinely differential test in the same file; `J44`'s claim was removed
+  rather than left standing on disproven evidence.
+- `J27`'s first candidate (`primary_seam_writes_the_event_and_its_finding_rows`,
+  proposed as `J44`'s replacement for the "cross-process evidence" class) was
+  a second, independent round's finding: it's the test file's own
+  self-labeled **positive** control (its docstring says so directly) —
+  real code, no fault injected, happy path only. A negative control has to
+  exercise a genuinely broken state and assert the non-pass outcome, not
+  merely call a real function. Repointed to
+  `primary_a_write_failure_leaves_the_decision_intact_and_is_counted`, which
+  injects a real fault (a `FailingStore`) and asserts the resulting lost row
+  is actually counted rather than silently dropped.
+
+`J41`'s evidence
+selector (`aa-integration-tests/tests/e2e_ebpf.rs`) also had a real CI dead-
+trigger gap — `ci.yml`'s `ebpf` path filter only matched `aa-ebpf*/**`, so a
+change to that test file alone would not retrigger `e2e-ebpf-linux` on PR
+(schedule/`workflow_dispatch` only); fixed by adding the file to the filter
+in the same PR (AAASM-5877), per this doc's own dead-trigger policy above.
+None of the surviving controls weaken production/default state: each
+mutates a local, in-test copy of data or process topology, asserts on it,
+and the process exits — nothing persists outside the test's own process.
 
 ## Selection demonstration
 

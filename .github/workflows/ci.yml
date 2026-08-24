@@ -349,6 +349,13 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'scripts/build-ebpf-probes.sh'
               - '.github/workflows/release.yml'
+              # AAASM-5877: e2e-ebpf-linux is the authoritative job for
+              # aa-integration-tests/tests/e2e_ebpf.rs (see its comment at
+              # the coverage step above) but this filter previously only
+              # matched aa-ebpf*/** — a change to this test file alone did
+              # not retrigger the job on PR (schedule/workflow_dispatch
+              # only), a dead-trigger gap for J41's registry evidence.
+              - 'aa-integration-tests/tests/e2e_ebpf.rs'
             # AAASM-5714: the isolation-backend license/provenance gate. Its
             # inputs are NOT a subset of `rust` — `metadata/isolation-backends.json`
             # and `THIRD_PARTY_NOTICES.md` match no `aa-*/**` pattern — so this

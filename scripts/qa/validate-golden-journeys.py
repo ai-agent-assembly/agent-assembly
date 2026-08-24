@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate qa/golden-journeys.yaml (AAASM-5824, extended by AAASM-5874/5876).
+"""Validate qa/golden-journeys.yaml (AAASM-5824, extended by AAASM-5874/5876/5877).
 
 Catches:
   - duplicate journey IDs / duplicate Jira references
@@ -22,6 +22,13 @@ Catches:
     already built, rather than inventing a second waiver system per
     AAASM-4479's precedent: represent it honestly as `lifecycle_state: gap`
     with an owner instead of `automated`).
+  - AAASM-5877 negative-control policy: a release_blocking + automated
+    journey on the `security` lane must declare a non-empty
+    `negative_control` — the release QA policy's mandatory class for this
+    check (see docs/src/qa/release-qa-policy.md). This is a presence check
+    only, not a claim the control was re-run this invocation; the control
+    itself is proven separately (see qa/README.md's negative-control
+    section for how each declared control is verified).
 
 `evidence` resolution for `kind: test` is file-existence + selector-name
 grep against the named repo checkout — it does not invoke a build/test
@@ -320,6 +327,21 @@ def validate(path: str, check_p0_bounds: bool = True, check_ci_wiring: bool = Tr
             fidelity = entry.get("fidelity")
             if fidelity is None or fidelity not in VALID_FIDELITY:
                 problems.append(f"{jid}: lifecycle_state 'automated' + release_blocking requires valid 'fidelity' (one of {sorted(VALID_FIDELITY)})")
+
+            # AAASM-5877: a release-blocking, automated journey on the
+            # `security` lane is exactly the class this Story's own scope
+            # names first ("priority on security enforcement") — it must
+            # declare the negative control proving its protected invariant
+            # is actually load-bearing, not just document a positive path.
+            if "security" in (entry.get("lanes") or []):
+                neg = entry.get("negative_control")
+                if not neg or not isinstance(neg, str):
+                    problems.append(
+                        f"{jid}: release_blocking + automated on the 'security' "
+                        f"lane requires a non-empty 'negative_control' — a "
+                        f"security-blocking claim with no proof it fails when "
+                        f"broken is not release-blocking evidence"
+                    )
 
         if lifecycle in GAP_OWNER_REQUIRED_STATES and release_blocking:
             owner = entry.get("gap_owner")

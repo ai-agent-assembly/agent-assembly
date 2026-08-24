@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T14
+  jira: AAASM-0016
+  name: Fixture — security-lane release-blocking automated journey with no negative_control (AAASM-5877)
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional, security]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'scripts/qa/validate-golden-journeys.py::def validate'
+  execution_lanes: [pr]
+  fidelity: real_local_process
