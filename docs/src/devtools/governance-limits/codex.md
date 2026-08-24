@@ -12,7 +12,7 @@
 
 | Capability | Status | Reason |
 |---|---|---|
-| network deny | Yes — sandbox | Codex sandbox natively enforces `blocked_domains`, synced from policy the same way as the exec/file-write allowlists below. The proxy leg is separately broken (see Notes) but does not affect this row — the sandbox enforces on its own. |
+| network deny | Yes — sandbox | `generate_managed_settings`/`apply_settings` (`aa-devtool-codex/src/lib.rs:219-279`) writes `blocked_domains` (via `sandbox.rs::network_block_list`) into `~/.codex/config.json` alongside `sandbox_mode`/`approval_policy`. The proxy leg is separately broken (see Notes) but does not affect this row — the sandbox enforces on its own. |
 | network allowlist | Yes — sandbox | Same mechanism as network deny — `allowed_domains` synced to the sandbox config |
 | file read | Partial — eBPF | No SDK integration; eBPF kprobes on `openat` are the only path |
 | file write | Partial — eBPF | Same as file read — eBPF only |
