@@ -10,14 +10,24 @@
 //!   cargo test -p aa-isolation-macos-vm --test real_hardware -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! `--test-threads=1` is required, not a suggestion: every test here calls
-//! `MacosVmBackend::discover()` or boots a guest directly, and
-//! `main.swift`'s `--disk` attaches the shared `rootfs.img` read-write
-//! (AAASM-5837's own known risk — concurrent guests writing the same image
-//! can corrupt it). Run in parallel, this file's own tests observably
-//! collide: a concurrent boot randomly fails outright, or a probe launch's
-//! effect reads back as the wrong outcome. Confirmed empirically during
-//! AAASM-5813's own verification pass — this is not a hypothetical.
+//! `--test-threads=1` is required, not a suggestion. **AAASM-5854 fixed the
+//! specific hazard this note used to describe** — every boot used to attach
+//! the same `rootfs.img` read-write; `vmm::boot_attempt` now copies it into
+//! each boot's own disposable scratch directory, and that class of collision
+//! (a concurrent boot's effect reading back as the wrong outcome) is gone —
+//! repeated verification for that fix included this file passing cleanly
+//! under the default parallel runner. `--test-threads=1` is kept anyway
+//! because a second, distinct, still-open issue exists independently of the
+//! rootfs sharing: this file's own three tests, each booting a guest at
+//! nearly the same instant under the default runner, intermittently hit
+//! `VZVirtualMachine.start failed: ... "A directory sharing device
+//! configuration is invalid." ... "No such file or directory"` — a
+//! Virtualization.framework-level race in concurrent `VZVirtualMachine`
+//! *start* validation, confirmed via un-suppressed helper stderr, not a
+//! defect in this crate's own directory creation (the shared directory is
+//! created synchronously before the helper is spawned, and nothing removes
+//! it early). Not root-caused or fixed this pass — `--test-threads=1`
+//! remains the correct, documented product constraint until it is.
 //!
 //! The first test below bypasses `aa_isolation::plan::negotiate` deliberately
 //! (calls `prepare`/`spawn`/`wait_for_exit` directly against a hand-built

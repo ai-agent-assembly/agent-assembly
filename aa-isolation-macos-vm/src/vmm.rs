@@ -178,24 +178,23 @@ impl BootAttemptError {
 /// `VZVirtualMachine.start failed: ... "The storage device attachment is
 /// invalid."` deterministically when a second guest attached the same
 /// `--disk` image immediately after a first guest (in the same process,
-/// fully serialized — not the concurrent-access corruption
-/// [`crate::MacosVmBackend`]'s module docs and AAASM-5854 already track)
-/// released it. This is real, measured Virtualization.framework behavior,
-/// confirmed by temporarily un-suppressing the helper's stderr during
-/// diagnosis — not a test-fixture artifact, and not hidden here: a host
-/// whose *every* retry fails this way still surfaces the real error,
-/// verbatim, in [`BootAttemptError::HelperExitedEarly`]'s message.
+/// fully serialized) released it. This is real, measured Virtualization.
+/// framework behavior, confirmed by temporarily un-suppressing the helper's
+/// stderr during diagnosis — not a test-fixture artifact, and not hidden
+/// here: a host whose *every* retry fails this way still surfaces the real
+/// error, verbatim, in [`BootAttemptError::HelperExitedEarly`]'s message.
 ///
-/// **Measured effect: none, on the one failure this pass could reproduce.**
-/// `tests/adversarial_boundary_macos_vm_guest.rs`'s boundary suite hit this
-/// same storage-attach error 4/5 runs, and neither 3 attempts at 300ms
-/// backoff nor 5 attempts at 2s backoff resolved it there — see that file's
-/// module docs for the full investigation. This retry is kept anyway as
-/// defense-in-depth for a genuinely transient attach failure, a failure mode
-/// this pass could not characterize well enough to say whether it exists;
-/// it is not a fix for the boundary suite's instability, and every other
-/// failure in [`boot_attempt`] (bind failure, timeout waiting for the guest,
-/// a malformed `GuestReady`) is [`BootAttemptError::Other`] and is never
+/// **Superseded by AAASM-5854's real fix, not just retried around.**
+/// `boot_attempt` no longer attaches the shared `config.rootfs_path`
+/// directly — each boot gets its own disposable copy (see the per-boot-copy
+/// comment in [`boot_attempt`]), which removes the same-file contention this
+/// error and the concurrent-boot corruption AAASM-5854 tracked shared one
+/// root cause with. This retry is kept anyway as defense-in-depth for a
+/// genuinely transient attach failure unrelated to file sharing — a failure
+/// mode this pass still cannot characterize well enough to rule out; it is
+/// not a substitute for the per-boot-copy fix, and every other failure in
+/// [`boot_attempt`] (bind failure, timeout waiting for the guest, a
+/// malformed `GuestReady`) is [`BootAttemptError::Other`] and is never
 /// retried.
 ///
 /// # Errors
@@ -231,6 +230,28 @@ fn boot_attempt(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession
         .map_err(|err| BootAttemptError::Other(format!("could not create a scratch directory: {err}")))?;
     let control_socket_path = control_socket_dir.join("control.sock");
 
+    // AAASM-5854: `config.rootfs_path` is one file shared by every boot on
+    // the host. Attaching it directly (as every prior pass did) means two
+    // guests — concurrent processes, or successive boots in the same
+    // process — hold `--disk` open on the *same* mutable image at once,
+    // which both corrupts the shared image under real concurrency and
+    // produces `VZVirtualMachine.start failed: "The storage device
+    // attachment is invalid."` on a second boot even fully serialized (the
+    // failure AAASM-5814's adversarial boundary suite hit 4/5 runs — see
+    // `boot`'s own docs above, written before this fix, for that
+    // investigation). A cheap per-boot copy — the image is a few MB, this
+    // directory already exists and is already torn down by
+    // `VmSession::drop`'s `remove_dir_all`, so the copy needs no cleanup of
+    // its own — gives each boot a private, disposable disk instead of
+    // serializing access to a shared one: it fixes the actual hazard
+    // (candidate approach 1 in AAASM-5854) rather than queuing around it.
+    let boot_rootfs_path = control_socket_dir.join("rootfs.img");
+    std::fs::copy(&config.rootfs_path, &boot_rootfs_path).map_err(|err| {
+        BootAttemptError::Other(format!(
+            "could not copy the guest rootfs image into the per-boot scratch directory: {err}"
+        ))
+    })?;
+
     let listener = UnixListener::bind(&control_socket_path)
         .map_err(|err| BootAttemptError::Other(format!("could not bind control socket: {err}")))?;
     listener
@@ -243,7 +264,7 @@ fn boot_attempt(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession
         .arg(&config.kernel_path)
         .arg("--no-initrd")
         .arg("--disk")
-        .arg(&config.rootfs_path)
+        .arg(&boot_rootfs_path)
         .arg("--cmdline")
         .arg(GUEST_CMDLINE)
         .arg("--control-socket")

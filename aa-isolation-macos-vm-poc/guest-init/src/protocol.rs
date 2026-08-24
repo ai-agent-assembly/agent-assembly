@@ -125,6 +125,7 @@ fn validate(request: &Message) -> Result<(), String> {
         program,
         args,
         env,
+        working_dir,
         fs_read,
         fs_write,
         ..
@@ -140,6 +141,16 @@ fn validate(request: &Message) -> Result<(), String> {
         return Err(format!(
             "program `{program}` is not an absolute path; this guest never resolves against PATH"
         ));
+    }
+    if let Some(dir) = working_dir {
+        if let Some(reason) = nul_check("working_dir", dir) {
+            return Err(reason);
+        }
+        if !dir.starts_with('/') {
+            return Err(format!(
+                "working_dir `{dir}` is not an absolute path; this guest never resolves a relative chdir"
+            ));
+        }
     }
     for (index, arg) in args.iter().enumerate() {
         if let Some(reason) = nul_check(&format!("args[{index}]"), arg) {
@@ -205,6 +216,30 @@ fn run_launch(console: RawFd, vsock_fd: RawFd, request: &Message, argv: Vec<Stri
         };
     }
 
+    // AAASM-5854 follow-on: `Message::LaunchRequest::working_dir` was sent
+    // over the wire and validated (`validate`'s NUL check covers every
+    // string field) but never actually applied — this fork/exec inherited
+    // whatever cwd guest-init's own PID 1 process happened to have (`/`,
+    // since nothing before this point ever calls `chdir`), so every relative
+    // path in a confined program's own argv silently resolved against the
+    // wrong directory instead of the launch's intended working directory.
+    // Found via AAASM-5814's adversarial boundary suite once AAASM-5854's
+    // rootfs fix let those scenarios' guests boot reliably enough to reach
+    // this code path at all: every scenario that named its target with a
+    // relative path (`forbidden/secret`, relying on `working_dir` being the
+    // shared mountpoint) silently ran `cat` against a nonexistent path under
+    // `/` instead, indistinguishable from a real Landlock denial except that
+    // *both* the granted control and the denied attack failed identically —
+    // exactly the "control produced no effect" signal
+    // `assert_prevented`/`compare` exist to catch rather than mis-attribute.
+    let working_dir = match request {
+        Message::LaunchRequest { working_dir, .. } => working_dir.as_deref(),
+        _ => None,
+    };
+    let working_dir_c = working_dir.map(|dir| {
+        CString::new(dir).expect("working_dir is NUL-checked by validate() before run_launch is ever called")
+    });
+
     let launcher_path = CString::new(LAUNCHER_PATH).expect("LAUNCHER_PATH is a fixed constant with no NUL byte");
     let argv_c: Vec<CString> = std::iter::once(launcher_path.clone())
         .chain(argv.iter().map(|a| {
@@ -256,6 +291,28 @@ fn run_launch(console: RawFd, vsock_fd: RawFd, request: &Message, argv: Vec<Stri
                 libc::close(null_fd);
             }
             libc::close(vsock_fd);
+            if let Some(dir) = &working_dir_c {
+                if libc::chdir(dir.as_ptr()) != 0 {
+                    // Fail loudly and distinctly from an execv failure
+                    // rather than silently execing the launcher into the
+                    // wrong directory — a confined program that trusted
+                    // `working_dir` would then run against whatever cwd
+                    // guest-init happened to have instead, the exact bug
+                    // this chdir call exists to close. Written with a plain
+                    // `libc::write` (not a formatting call) for the same
+                    // reason `write_fd` elsewhere in this crate is: no
+                    // allocator/formatting machinery is assumed safe this
+                    // deep into a fork'd child.
+                    if let Ok(msg) = CString::new(format!(
+                        "[guest-init] chdir({}) FAILED errno={}\n",
+                        dir.to_string_lossy(),
+                        errno()
+                    )) {
+                        libc::write(2, msg.as_ptr().cast(), msg.as_bytes().len());
+                    }
+                    libc::_exit(127);
+                }
+            }
             libc::execv(launcher_path.as_ptr(), argv_ptrs.as_ptr());
         }
         // Only reached if execv itself failed.

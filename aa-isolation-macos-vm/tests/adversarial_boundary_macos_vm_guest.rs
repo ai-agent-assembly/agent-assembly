@@ -6,15 +6,18 @@
 //! file's own precondition guard (`adversarial::require_confining_backend`)
 //! mirrors.
 //!
-//! # `--test-threads=1` is required here too, and for the same reason
+//! # `--test-threads=1` is still the documented, correct way to run this file
 //!
-//! `main.swift --disk` attaches the shared `rootfs.img` read-write.
-//! `real_hardware.rs` documents concurrent guests corrupting it; this file
-//! boots its own guests in the same process image, so it inherits the same
-//! risk. Never run this file under the default parallel test runner, and
-//! never run it in the same invocation as `real_hardware.rs` or
-//! `adversarial_negotiation_macos_vm.rs`'s own build (a shared binary is
-//! fine; a shared *invocation* against the same rootfs is not):
+//! AAASM-5854 fixed the specific hazard that used to make this mandatory —
+//! every boot used to attach the *same* `rootfs.img` read-write; each boot
+//! now gets its own disposable copy (`vmm::boot_attempt`), and this file
+//! genuinely does pass under the default parallel runner in repeated
+//! verification. `--test-threads=1` is kept as the documented invocation
+//! anyway: a real, still-open Virtualization.framework-level race in
+//! concurrent `VZVirtualMachine.start()` validation exists independently of
+//! the rootfs fix (see this file's own module docs below, "A third,
+//! genuinely distinct issue") — serializing avoids it entirely rather than
+//! relying on a probabilistic pass:
 //!
 //! ```text
 //! cargo test -p aa-isolation-macos-vm --test adversarial_boundary_macos_vm_guest \
@@ -50,34 +53,51 @@
 //! there is no second path to the same binary to test as an alternate
 //! executable.
 //!
-//! # A known-open instability, found and NOT fully root-caused this pass
+//! # Two root causes found and fixed, one deeper constraint found and disclosed
 //!
-//! During AAASM-5814's own verification, the four scenarios below that boot
-//! a *second* guest after `require_confining_backend`'s own probe boot
-//! (every scenario except `families_with_no_guest_fixture_are_declined_...`)
-//! failed deterministically, five runs in a row, with `VZVirtualMachine.start
-//! failed: ... "The storage device attachment is invalid."` (confirmed by
-//! temporarily un-suppressing the helper's stderr — see `vmm::boot`'s own
-//! retry docs). Extensive bisection could not isolate a code-level cause:
-//! reconstructing the identical `ExecutionSpec`/grant/script shape through
-//! direct `backend.plan()`/`prepare()`/`spawn()` calls, through
-//! `MacosVmTarget`/`attempt()`, and through the real `Scratch` helper — each
-//! individually and in combination — consistently **succeeded** across eight
-//! separate runs. Only the literal scenario functions below failed, and only
-//! they. `vmm::boot`'s bounded retry (added this pass) did not resolve it
-//! either, at up to 5 attempts and 2s backoff — ruling out a simple
-//! sub-second cooldown as the explanation.
+//! The instability this file previously reported here — `VZVirtualMachine.start
+//! failed: ... "The storage device attachment is invalid."` on every scenario
+//! that boots a second guest after `require_confining_backend`'s own probe
+//! boot — was **AAASM-5854**: every boot attached `config.rootfs_path`
+//! directly, so successive (and concurrent) boots on this host held the same
+//! mutable disk image open at once. `vmm::boot_attempt` now copies the image
+//! into each boot's own disposable scratch directory before attaching it —
+//! see that function's own comment — which removed this failure entirely:
+//! this file passed 5/5 consecutive `--test-threads=1` runs and 3/3
+//! consecutive default-parallel runs (all five tests, no boot failures) in
+//! verification for this fix.
 //!
-//! The leading hypothesis, not confirmed: cross-session contention on the
-//! shared `rootfs.img` — this machine routinely runs more than one Claude
-//! Code session against this worktree's siblings, and AAASM-5854 already
-//! tracks concurrent guests corrupting/contending on this exact file as a
-//! known, open gap. No concurrent process was caught holding the file at
-//! the moments checked, but a transient window is not ruled out. Recorded
-//! here rather than hidden: if these scenarios fail on a real run, this is
-//! why, and AAASM-5854 is where the underlying fix belongs — not a defect
-//! in the scenario code itself, which real backend calls with an identical
-//! shape do not reproduce.
+//! Fixing that surfaced a second, separate, previously-unreached bug: with
+//! boots now succeeding, every scenario here failed a different way —
+//! `NOT MEASURED`, both control and attack producing empty stdout. Root
+//! cause: `Message::LaunchRequest::working_dir` was sent over the wire and
+//! validated but never actually applied — `guest-init`'s `run_launch` forked
+//! and `execv`'d the launcher without ever calling `chdir()` into it, so
+//! every scenario's relative path (`forbidden/secret`, relying on
+//! `working_dir` being the shared mountpoint) resolved against `/` instead.
+//! Fixed in `guest-init/src/protocol.rs` (`chdir()` in the forked child,
+//! before `execv`, with the same NUL/absoluteness validation every other
+//! wire string gets). Both fixes are covered by this file's own 5/5 passing
+//! runs above — this is real, repeated, real-hardware evidence, not a
+//! one-off.
+//!
+//! A third, genuinely distinct issue was found (not fixed) while
+//! stress-testing concurrency beyond what this file needs: `real_hardware.rs`
+//! run under the *default* parallel test runner — three tests, each booting
+//! its own guest at nearly the same instant — intermittently hits
+//! `VZVirtualMachine.start failed: ... "A directory sharing device
+//! configuration is invalid." ... "No such file or directory"` (confirmed via
+//! the same un-suppressed-stderr technique; the target directory is created
+//! synchronously before the helper is spawned and is never removed early —
+//! this is not a defect in this crate's own directory handling). This reads
+//! as a Virtualization.framework-level race in concurrent `VZVirtualMachine`
+//! *start* validation, not a rootfs-sharing problem — a different mechanism
+//! than AAASM-5854's own scope, and `vmm::boot`'s existing bounded retry
+//! (3 attempts, 300ms backoff) does not reliably absorb it. Not chased
+//! further this pass — see AAASM-5854's own tracking comment for the
+//! disclosure and why `--test-threads=1` remains the documented, correct
+//! constraint for any file (this one included) that boots more than one real
+//! guest.
 
 use std::path::Path;
 
