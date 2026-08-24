@@ -187,12 +187,21 @@ fn write_ready_file(ready_file: &std::path::Path, addr: std::net::SocketAddr) ->
 
     let tmp = ready_file.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&tmp)?;
+        // Mode set at creation, not via a separate `set_permissions` call
+        // afterward: a create-then-chmod leaves a window where the file is
+        // world-readable at its default mode before the chmod lands.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?
+        };
+        #[cfg(not(unix))]
+        let mut file = std::fs::File::create(&tmp)?;
         writeln!(file, "{addr}")?;
         writeln!(file, "{}", std::process::id())?;
         file.sync_all()?;

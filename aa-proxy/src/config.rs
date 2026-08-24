@@ -372,8 +372,7 @@ impl std::fmt::Display for BindRefusal {
                  nowhere. The proxy would bind a real port that nothing can name: `aasm run` \
                  refuses a port-0 endpoint, `aasm proxy stop` could not reach the process, and \
                  the start itself would be reported as failed while the proxy kept running. Name \
-                 the port you want (for example 127.0.0.1:8899), or set AA_PROXY_READY_FILE so \
-                 the bound address is reported back.",
+                 the port you want (for example 127.0.0.1:8899).",
             ),
         }
     }

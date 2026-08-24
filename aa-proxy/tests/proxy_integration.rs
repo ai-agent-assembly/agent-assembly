@@ -843,6 +843,16 @@ async fn a_ready_file_reports_the_real_bound_port_for_an_ephemeral_bind() {
     assert_ne!(addr.port(), 0, "the reported port must be the real bound port, not 0");
     assert_eq!(addr.ip(), std::net::Ipv4Addr::LOCALHOST);
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&ready_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the ready file names an interception endpoint's address/pid and must not be world-readable"
+        );
+    }
+
     let pid: u32 = lines
         .next()
         .expect("ready file must have a pid line")
