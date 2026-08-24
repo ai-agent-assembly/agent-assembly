@@ -46,9 +46,11 @@ network-egress enforcement still require `aa-proxy`.
 process to trust the Agent Assembly CA, and no launch-time mechanism
 establishes that for Windsurf. Windsurf is Electron (a VS Code fork): traffic
 splits across Chromium's own net stack (majority) and Node (extension host).
-`NODE_EXTRA_CA_CERTS` is documented-unreliable for Electron's Chromium stack
-(open upstream Electron/Chromium issues), and Windsurf's own docs expose no
-CA-trust env var or setting. The only trust path that does work is OS-level —
+`NODE_EXTRA_CA_CERTS` is a Node.js TLS-stack setting — Node's own docs scope it
+to `node`'s TLS implementation. Electron's renderer/Chromium net stack, which
+carries the majority of an Electron app's own HTTPS traffic, is a separate TLS
+implementation that `NODE_EXTRA_CA_CERTS` was never documented to cover, and
+Windsurf's own docs expose no CA-trust env var or setting of its own. The only trust path that does work is OS-level —
 `aa-proxy` installs its CA into the system trust store independently of any
 adapter — so proxy interception of Windsurf traffic depends on that, not on
 anything `aa-devtool-windsurf` can inject per-launch.

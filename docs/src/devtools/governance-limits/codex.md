@@ -12,8 +12,8 @@
 
 | Capability | Status | Reason |
 |---|---|---|
-| network deny | Partial — sandbox only | `build_launch_command` sets proxy env vars but injects no CA-trust variable, so the proxy MitM handshake fails and traffic tunnels through uninspected (AAASM-5644/AAASM-5856); the Codex sandbox's own native `blocked_domains` is the enforcement actually in effect |
-| network allowlist | Partial — sandbox only | Same gap as network deny — proxy allowlisting requires the same unestablished CA trust |
+| network deny | Yes — sandbox | Codex sandbox natively enforces `blocked_domains`, synced from policy the same way as the exec/file-write allowlists below. The proxy leg is separately broken (see Notes) but does not affect this row — the sandbox enforces on its own. |
+| network allowlist | Yes — sandbox | Same mechanism as network deny — `allowed_domains` synced to the sandbox config |
 | file read | Partial — eBPF | No SDK integration; eBPF kprobes on `openat` are the only path |
 | file write | Partial — eBPF | Same as file read — eBPF only |
 | process spawn | Partial — eBPF | eBPF `sched_process_exec` tracepoint detects spawned processes |
@@ -34,14 +34,13 @@ earlier revision of this page named the file `.codex/config.toml`, which does
 not match the adapter's actual write path. eBPF fills the file-system and
 process-spawn gaps that the proxy cannot observe.
 
-**AAASM-5644/AAASM-5856:** the proxy-dependent rows above (network deny/
-allowlist, prompt/response redaction, budget enforcement) previously read
-`Yes`, on the assumption that setting `HTTPS_PROXY`/`HTTP_PROXY` was
-sufficient. It is not — the proxy can only enforce or redact what it
-decrypts, and decrypting requires Codex to trust the Agent Assembly CA, which
-nothing in `build_launch_command` establishes. Unlike Windsurf, Codex is
-fixable (`CODEX_CA_CERTIFICATE`/`SSL_CERT_FILE`, a native mechanism its own
-`reqwest`/rustls stack reads), tracked in AAASM-5856. Until that lands, the
-sandbox's native `allowed_domains`/`blocked_domains` config is the real
-enforcement for network deny/allowlist; nothing currently substitutes for the
-proxy on redaction or budget enforcement.
+**AAASM-5644/AAASM-5856:** prompt redaction, response redaction, and budget
+enforcement above previously read `Yes`, on the assumption that setting
+`HTTPS_PROXY` was sufficient. It is not — the proxy can only enforce or
+redact what it decrypts, and decrypting requires Codex to trust the Agent
+Assembly CA, which nothing in `build_launch_command` establishes. Unlike
+Windsurf, Codex is fixable (`CODEX_CA_CERTIFICATE`/`SSL_CERT_FILE`, a native
+mechanism its own `reqwest`/rustls stack reads), tracked in AAASM-5856. Until
+that lands, nothing currently substitutes for the proxy on redaction or
+budget enforcement. Network deny/allowlist are unaffected by this gap — they
+run on the sandbox-native path above, not the proxy.
