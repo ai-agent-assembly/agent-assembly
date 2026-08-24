@@ -423,3 +423,66 @@ fn families_with_no_guest_fixture_are_declined_not_silently_skipped() {
         decline::<()>(scenario, Measurement::UnsupportedPlatform, &format!("{}: {reason}", family.as_str()));
     }
 }
+
+/// AAASM-5811 QA pass (independent, not authored alongside the implementation
+/// fix): the whole scratch tree — permitted *and* forbidden halves — is one
+/// virtiofs share (`lib.rs`'s `session.share_dir`), so a symlink inside the
+/// granted directory that points at the forbidden one is reachable at the
+/// guest's filesystem-namespace level regardless of what was granted; only
+/// the guest's Landlock ruleset stands between that and a read. Landlock is
+/// documented to resolve a symlink to its real path before applying a rule,
+/// so this is expected to hold — but AAASM-5854 was exactly this kind of gap
+/// between "should hold by design" and "does hold," so it is checked here
+/// rather than assumed.
+#[test]
+#[ignore]
+fn a_symlink_inside_the_grant_pointing_at_the_forbidden_half_is_still_confined() {
+    let scenario = "macos-vm adversarial: a symlink inside the grant pointing at the forbidden half is still confined";
+    let Some(backend) = require_confining_backend(scenario) else {
+        return;
+    };
+    let scratch = Scratch::new("macos-vm-symlink");
+    std::fs::write(scratch.forbidden().join("secret"), SECRET).expect("write secret fixture");
+    // Relative, not the host-absolute form `Scratch::forbidden()` returns:
+    // the guest mounts this tree at `/mnt/share`, not at its host path, so a
+    // symlink written with the host-absolute target would dangle in the
+    // guest (both attack and control would read nothing, and the shared
+    // harness's own `not_measured` check exists precisely to catch that
+    // rather than let it read as false containment).
+    std::os::unix::fs::symlink("../forbidden/secret", scratch.permitted().join("escape-link"))
+        .expect("create the escape symlink inside the granted half");
+
+    let target = MacosVmTarget(backend);
+    // The escape attempt never names `forbidden/` directly — only the
+    // symlink under the granted `permitted/` directory — so a
+    // path-string-matching confinement (as opposed to a real-path one)
+    // would be fooled by this and this scenario would catch it.
+    let script = format!("{PROGRAM} cat permitted/escape-link");
+
+    let attack = attempt(
+        &target,
+        "read the forbidden secret through a symlink inside the permitted half, granted only the permitted half",
+        &busybox_spec(
+            &scratch.root,
+            &script,
+            vec![read_requirement(scratch.permitted_selector())],
+        ),
+        SECRET,
+    );
+    let control = attempt(
+        &target,
+        "read the forbidden secret through the same symlink, granted the whole tree",
+        &busybox_spec(
+            &scratch.root,
+            &script,
+            vec![read_requirement(scratch.whole_tree_selector())],
+        ),
+        SECRET,
+    );
+
+    let detail = assert_prevented(
+        scenario,
+        &ControlledPair::new(AttackFamily::ForbiddenFilesystemRead, attack, control),
+    );
+    adversarial::measured(scenario, AttackFamily::ForbiddenFilesystemRead, &detail);
+}
