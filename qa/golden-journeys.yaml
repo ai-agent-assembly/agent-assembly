@@ -449,6 +449,7 @@ journeys:
   - main
   - release
   fidelity: real_local_process
+  negative_control: 'aa-gateway/tests/cross_layer_policy_consistency_test.rs::artificial_divergence_is_detected — drops one deny rule from the lowered kernel ruleset and asserts the gap is observably absent (AAASM-5877)'
 - id: J25
   jira: AAASM-4599
   name: Verify human-in-the-loop approval workflow (requires_approval_if -> approve / reject / timeout)
@@ -745,6 +746,7 @@ journeys:
   fidelity: real_local_process
   platforms:
   - linux
+  negative_control: 'aa-integration-tests/tests/e2e_ebpf.rs::ebpf_catches_traffic_that_bypasses_proxy — simulates the SDK/proxy layers being absent and asserts the eBPF layer independently observes the traffic they would otherwise have caught (AAASM-5877)'
 - id: J42
   jira: AAASM-4611
   name: Govern agent egress with the sidecar proxy — no code change
@@ -796,6 +798,7 @@ journeys:
   browser_required: false
   outcome: See AAASM-4619 for the full acceptance contract; this row is a selection index only.
   lifecycle_state: automated
+  negative_control: 'aa-gateway/tests/audit_seq_recovery_test.rs::without_recovery_seq_would_duplicate — asserts that WITHOUT the sequence-recovery mechanism a gateway restart would produce duplicate audit sequence numbers, proving the cross-process (restart-spanning) evidence-continuity property is actually load-bearing (AAASM-5877)'
 - id: J45
   jira: AAASM-4609
   name: Operator observability — alerts, topology, cost
