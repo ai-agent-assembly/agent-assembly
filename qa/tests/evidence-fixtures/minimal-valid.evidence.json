@@ -1,0 +1,47 @@
+{
+  "artifacts": {},
+  "candidate": {
+    "candidate_sha": "0000000000000000000000000000000000dead",
+    "repo": "ai-agent-assembly/agent-assembly"
+  },
+  "catalog": {
+    "catalog_version": "1",
+    "path": "qa/tests/evidence-fixtures/catalog-minimal.yaml",
+    "requirements_digest": "sha256:6c38251de512e5c09cf92ea641c76606fd3d795b9535314b5ff053f3b805f7de"
+  },
+  "evidence_version": "1",
+  "generated_at": "2026-08-24T15:05:19Z",
+  "harness": {
+    "scripts/qa/build-release-evidence.py": "git-blob:784d21a7801c7130f9679ba2247457b3e5823c73",
+    "scripts/qa/registry_digest.py": "git-blob:ec56fce1497743a7fce684ca54991e3da67da880",
+    "scripts/qa/validate-golden-journeys.py": "git-blob:bd5c5ad6dbdf3fc5ea5506f3af94b3d3262553c1"
+  },
+  "journeys": [
+    {
+      "digest": "sha256:366e3a4a3e0a45cf6a7e4483be58e6b60a4859612825b1594b965093578e6dda",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "pr"
+      ],
+      "fidelity": "mock",
+      "id": "J90",
+      "lifecycle_state": "automated",
+      "negative_control": null,
+      "platforms": [],
+      "status": "PASS"
+    }
+  ],
+  "published": null,
+  "signoffs": {
+    "qa": {
+      "path": "qa/tests/evidence-fixtures/qa-signoff-minimal.md",
+      "verdict": "PASS"
+    },
+    "security": {
+      "path": "qa/tests/evidence-fixtures/security-signoff-minimal.md",
+      "verdict": "PASS"
+    }
+  },
+  "verdict": "PASS",
+  "version": "0.0.0-test-minimal"
+}

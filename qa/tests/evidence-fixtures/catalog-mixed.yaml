@@ -1,0 +1,81 @@
+# Synthetic, test-only catalog fixture (AAASM-5898) — not a real journey
+# catalog. Four release-blocking entries whose sign-off results deliberately
+# span the status vocabulary: PASS, FAIL, a re-verified arrow row, and one
+# entry entirely absent from the sign-off table (-> NOT_RUN). Used to
+# regenerate qa/tests/evidence-fixtures/mixed-status.evidence.json and by
+# later subtasks' checker tests.
+catalog_version: '1'
+journeys:
+- id: J90
+  jira: AAASM-0000
+  name: Synthetic journey — clean PASS
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-mixed.yaml::t1"
+  execution_lanes: [pr]
+  fidelity: mock
+- id: J91
+  jira: AAASM-0001
+  name: Synthetic journey — confirmed FAIL
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-mixed.yaml::t2"
+  execution_lanes: [pr]
+  fidelity: mock
+- id: J92
+  jira: AAASM-0002
+  name: Synthetic journey — struck-through original finding, re-verified PASS
+  priority: P1
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [security]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-mixed.yaml::t3"
+  execution_lanes: [pr, main]
+  fidelity: real_local_process
+  negative_control: "qa/tests/evidence-fixtures/catalog-mixed.yaml (synthetic fail-closed control)"
+- id: J93
+  jira: AAASM-0003
+  name: Synthetic journey — required but absent from the sign-off table
+  priority: P1
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only — deliberately not mentioned in the sign-off, to exercise NOT_RUN.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-mixed.yaml::t4"
+  execution_lanes: [pr]
+  fidelity: mock

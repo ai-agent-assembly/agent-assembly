@@ -25,7 +25,7 @@
 ```jsonc
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "manifest_version": "1",
+  "manifest_version": "2",
   "generated_at_ref": "<git describe or sha of the state this manifest describes>",
   "repos": [
     {
@@ -33,7 +33,7 @@
       "default_branch": "main",          // resolved dynamically, never hard-coded
       "head_sha": "<40-char sha>",
       "baseline": {
-        "source": "qa-signoff | deep-sweep-epic | released-tag | unknown",
+        "source": "qa-evidence | qa-signoff | deep-sweep-epic | released-tag | unknown",
         "sha": "<40-char sha, or null if source == unknown>",
         "reference": "docs/release/qa-signoff/v0.0.1-rc.6.md"  // or Jira key / tag
       },
@@ -61,13 +61,22 @@
 ## Field notes
 
 - **`baseline.source` precedence** (first that resolves wins):
-  1. latest committed QA sign-off for the applicable release lineage with
+  1. **`qa-evidence`** (AAASM-5878/5898) — the latest committed QA sign-off's
+     companion `v<version>.evidence.json` (see
+     [Evidence record](#evidence-record-aaasm-58785898) below), when it
+     exists and its own `verdict` is `"PASS"`. `candidate.candidate_sha` is a
+     structured field read directly — no prose parsing;
+  2. **`qa-signoff`** — fallback when no evidence JSON exists yet: the latest
+     committed QA sign-off for the applicable release lineage with
      `Verdict: PASS` (`docs/release/qa-signoff/v*.md`, matched to the current
-     release series);
-  2. latest completed release-verification/deep-sweep Epic with exact SHAs
+     release series). This path parses a `**Verified HEAD SHA:**` prose line
+     and is known to 0-match every real sign-off's actual line shape (see the
+     evidence-record section) — kept only as a documented legacy fallback,
+     not fixed further, since `qa-evidence` is the intended long-term source;
+  3. latest completed release-verification/deep-sweep Epic with exact SHAs
      recorded (AAASM-3198/4522/4651/4690 lineage);
-  3. latest trusted released tag/sign-off, where applicable;
-  4. otherwise `"unknown"` with `baseline.sha: null` — the risk mapper must
+  4. latest trusted released tag/sign-off, where applicable;
+  5. otherwise `"unknown"` with `baseline.sha: null` — the risk mapper must
      treat this as "verify broadly," not "assume unchanged."
 - **`affected_surfaces`** are path prefixes, not individual files — kept small
   enough to pass to workers cheaply. The full file list is not embedded; a
@@ -94,7 +103,7 @@ comment for exact discovery logic. `.qa/` is git-ignored — see the repo
 
 ```json
 {
-  "manifest_version": "1",
+  "manifest_version": "2",
   "generated_at_ref": "1f322d59af8750e40caa1d0a612b6948f9bf59f0",
   "repos": [
     {
@@ -125,4 +134,107 @@ comment for exact discovery logic. `.qa/` is git-ignored — see the repo
   ],
   "escalations": []
 }
+```
+
+## Evidence record (AAASM-5878/5898)
+
+> Not the per-run manifest above — a **committed, release-scoped** sibling
+> artifact: `docs/release/qa-signoff/v<version>.evidence.json`, alongside
+> that version's `v<version>.md` sign-off. Where the per-run manifest is a
+> git-ignored discovery cache regenerated every `/release-qa-gate` run, the
+> evidence record is the durable, machine-readable half of one specific
+> release's QA authorization — it binds the exact candidate SHA, the exact
+> `qa/golden-journeys.yaml` requirements set and each required journey's
+> result together, so a later gate consumes structured facts instead of
+> parsing sign-off prose. Emitted by
+> [`scripts/qa/build-release-evidence.py`](../../scripts/qa/build-release-evidence.py),
+> using digest logic shared with the (not-yet-built) checker via
+> [`scripts/qa/registry_digest.py`](../../scripts/qa/registry_digest.py) so
+> the two can never independently drift apart on what a digest means.
+
+This subtask (AAASM-5898) ships the format and the emitter only — nothing
+here gates a release yet. A checker that validates an evidence record
+against `release-readiness.sh` (candidate-binding rules R1-R8 from the
+AAASM-5878 design) is separate, later work.
+
+### Schema (JSON)
+
+```jsonc
+{
+  "evidence_version": "1",              // record shape identity — distinct from manifest_version above
+  "version": "0.0.1-rc.7",
+  "generated_at": "2026-08-24T15:00:00Z",
+  "candidate": {
+    "repo": "ai-agent-assembly/agent-assembly",
+    "candidate_sha": "<40-char sha>"    // git rev-parse HEAD at generation time, or --candidate-sha override
+  },
+  "catalog": {
+    "path": "qa/golden-journeys.yaml",
+    "catalog_version": "1",             // qa/golden-journeys.yaml's own catalog_version field
+    "requirements_digest": "sha256:<hex>"  // registry_digest.catalog_requirements_digest() over
+                                            // every release_blocking:true, non-retired entry
+  },
+  "harness": {
+    // git blob SHA ("git-blob:<hex>") of each script this record's truth
+    // depends on, at candidate_sha. null if the path can't be resolved
+    // (e.g. the script isn't committed yet).
+    "scripts/qa/registry_digest.py": "git-blob:<hex>",
+    "scripts/qa/build-release-evidence.py": "git-blob:<hex>",
+    "scripts/qa/validate-golden-journeys.py": "git-blob:<hex>"
+  },
+  "journeys": [
+    {
+      "id": "J19",
+      "status": "PASS",                 // one of the 8-token status vocabulary — see release-qa-policy.md
+      "digest": "sha256:<hex>",         // registry_digest.per_journey_digest() for this entry
+      "lifecycle_state": "automated",
+      "execution_lanes": ["main", "pr", "release"],
+      "fidelity": "real_local_process",
+      "platforms": [],
+      "negative_control": "aa-cli/tests/run_policy_fail_closed.rs (fail-closed regression)",
+      "evidence_ref": "**PASS**"        // the raw "Result" cell text this status was parsed from
+    }
+  ],
+  "signoffs": {
+    "qa": {"path": "docs/release/qa-signoff/v0.0.1-rc.7.md", "verdict": "BLOCK"},
+    "security": {"path": "docs/release/security-signoff/v0.0.1-rc.7.md", "verdict": "PASS"}
+  },
+  "artifacts": {},                      // pre-publish build artifact digests — populated by later subtasks
+  "published": null,                    // post-publish artifact/channel identity — populated by later subtasks
+  "verdict": "PASS"                     // "PASS" iff every journeys[] entry is "PASS"; else "BLOCK"
+}
+```
+
+### Field notes
+
+- **`journeys`** lists only *required* entries — `release_blocking: true` and
+  `lifecycle_state != "retired"` in `qa/golden-journeys.yaml` — the same
+  scope `catalog.requirements_digest` is computed over. A required journey
+  with no matching row in the sign-off's "Selected journeys" table is
+  recorded `"NOT_RUN"`, never silently omitted.
+- **Per-journey status parsing** reads the sign-off `.md`'s "Selected
+  journeys" table `Result` cell and maps it to the 8-token vocabulary (see
+  [the release QA policy's mapping table](../src/qa/release-qa-policy.md)).
+  A re-verified row's cell is prose, not a clean enum (e.g.
+  `~~UNTESTED_OR_BLOCKED~~ → **PASS (re-verified)**`) — only the text after
+  the last arrow is the row's final call; struck-through text is a
+  superseded finding, not the current status.
+- **`verdict`** in this record reflects only whether every required journey
+  is `PASS` — it does not independently re-derive or override the sign-off's
+  own `Verdict:` line (`signoffs.qa.verdict`), which is read as-is and can
+  legitimately disagree in future subtasks' reconciliation rules (e.g. a
+  waived exception). This subtask records both plainly; reconciling them is
+  a checker (later subtask) concern.
+- **Never a fudged instance**: this format faithfully records whatever the
+  input sign-off says, including `verdict: BLOCK` — a real release whose
+  actual QA sign-off is BLOCK must produce a BLOCK evidence record, not a
+  hand-adjusted PASS. See `qa/tests/evidence-fixtures/` for synthetic,
+  clearly-test-only fixtures; this subtask deliberately does not commit a
+  real per-release instance (see AAASM-5898's ticket description for why).
+
+### Generation
+
+```bash
+python3 scripts/qa/build-release-evidence.py --version 0.0.1-rc.7
+# writes docs/release/qa-signoff/v0.0.1-rc.7.evidence.json
 ```

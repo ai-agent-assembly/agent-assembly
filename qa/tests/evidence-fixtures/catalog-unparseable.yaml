@@ -1,0 +1,26 @@
+# Synthetic, test-only catalog fixture (AAASM-5898) — one required journey
+# whose sign-off Result cell (see qa-signoff-unparseable.md) contains none
+# of the status vocabulary's tokens. Proves build-release-evidence.py fails
+# loudly on an unparseable-but-present row instead of silently collapsing it
+# into NOT_RUN (which is reserved for a journey genuinely absent from the
+# table).
+catalog_version: '1'
+journeys:
+- id: J94
+  jira: AAASM-0004
+  name: Synthetic journey — unparseable Result cell
+  priority: P1
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-unparseable.yaml::t94"
+  execution_lanes: [pr]
+  fidelity: mock
