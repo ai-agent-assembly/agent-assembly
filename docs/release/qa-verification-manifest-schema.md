@@ -103,7 +103,7 @@ comment for exact discovery logic. `.qa/` is git-ignored — see the repo
 
 ```json
 {
-  "manifest_version": "1",
+  "manifest_version": "2",
   "generated_at_ref": "1f322d59af8750e40caa1d0a612b6948f9bf59f0",
   "repos": [
     {
