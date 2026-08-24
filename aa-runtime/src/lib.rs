@@ -14,6 +14,7 @@ pub mod devint;
 pub mod ebpf_bridge;
 pub mod ebpf_control;
 pub mod gateway_client;
+pub mod redaction_telemetry_client;
 pub mod health;
 pub mod invalidation_client;
 pub mod ipc;
