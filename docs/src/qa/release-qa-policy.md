@@ -160,6 +160,47 @@ budget.** If a run cannot complete P0 + changed-HIGH coverage, it must record
 those as `UNTESTED_OR_BLOCKED` and the sign-off must reflect that (see Gate
 policy) rather than silently shrinking scope.
 
+## Negative-control policy (AAASM-5877)
+
+A passing test is only useful assurance if it would reliably fail when the
+protected property is actually broken. This policy makes "does this journey
+need a demonstrated negative control" a deterministic lookup rather than a
+per-ticket judgment call, mirroring how [Risk tiers](#risk-tiers) already
+does this for depth.
+
+**Mandatory class**: a `release_blocking: true` + `lifecycle_state:
+automated` [registry](../../../qa/golden-journeys.yaml) entry on the
+`security` lane must declare a non-empty `negative_control` field — enforced
+mechanically by `scripts/qa/validate-golden-journeys.py`
+(`AAASM-5877`). A security-blocking claim with no evidence it fails when
+broken is not release-blocking evidence, regardless of how green its
+positive path is.
+
+**What counts as a negative control**: a reference to executable evidence
+that (1) exercises the protected invariant in a genuinely broken state
+(a real fault/mutation, not a hypothetical), (2) asserts the expected
+non-PASS outcome, and (3) — where the test doesn't already restore state
+itself — leaves no weakened production/default state behind. A one-line
+free-text pointer (e.g. `aa-cli/tests/run_policy_fail_closed.rs
+(fail-closed regression)`) is sufficient; the policy does not require a
+structured schema beyond "this is real, resolvable, and demonstrates
+failure," matching this catalog's existing "thin index, not a test-plan"
+design (see `qa/README.md`).
+
+**Freshness**: a negative control's *presence* is validated on every
+registry-health run (AAASM-5876); a negative control's own *pass/fail
+result* follows the same execution-lane/freshness rules as the journey's
+positive evidence — it does not need re-execution on every PR merely
+because the field is required, only when its declared `execution_lanes`
+say so.
+
+**Beyond the mandatory class**: P1/P2 or non-security journeys are not
+required to declare a negative control by this policy, but adding one when
+a real fault/mutation is cheap and specific to that journey is always
+encouraged — see `qa/README.md`'s negative-control section for the
+currently demonstrated examples across the security-enforcement,
+cross-process-evidence, and registry/CI-execution-integrity classes.
+
 ## Gate policy — BLOCK / waiver rules
 
 `Verdict: BLOCK` on any of:
