@@ -338,8 +338,19 @@ def cmd_run(rest: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="resource-lock.py run")
     parser.add_argument("--class", dest="cls", required=True)
     parser.add_argument("--wait", type=float, default=None)
-    parser.add_argument("--log", default=None)
-    parser.add_argument("--retry", action="store_true")
+    # --log / --retry: accepted and recorded in the job record now so
+    # AAASM-5894's watchdog (which owns log redirection and actual retry
+    # behavior) has a stable CLI surface to build on, but this subtask does
+    # not act on either — no output redirection happens, retry_count is
+    # always written as 0. Forward-compat groundwork, not a capability.
+    parser.add_argument(
+        "--log", default=None, help="recorded in the job record; not yet acted on (AAASM-5894)"
+    )
+    parser.add_argument(
+        "--retry",
+        action="store_true",
+        help="accepted; retry behavior is not yet implemented (AAASM-5894)",
+    )
     args = parser.parse_args(opts)
 
     if not cmd:
@@ -420,10 +431,17 @@ def cmd_run(rest: list[str]) -> int:
     os.set_inheritable(fd, True)
 
     # Own process group so a future watchdog (AAASM-5894) can signal only
-    # this job's tree, never the caller's.
-    os.setsid()
+    # this job's tree, never the caller's. os.setsid() raises EPERM if the
+    # caller is already a process-group leader (e.g. an interactive shell
+    # backgrounding this wrapper with `&`, where job control already made it
+    # one) — that's not a failure, the pgid is already ours either way.
+    try:
+        os.setsid()
+    except OSError:
+        pass
 
     pid = os.getpid()
+    pgid = os.getpgid(0)
     now = time.time()
     job_id = f"{args.cls}-{pid}-{int(now)}"
     record = {
@@ -431,7 +449,7 @@ def cmd_run(rest: list[str]) -> int:
         "class": args.cls,
         "pool": pool_name,
         "pid": pid,
-        "pgid": pid,
+        "pgid": pgid,
         "proc_start_token": ps_start_token(pid),
         "repo": os.getcwd(),
         "git_common_dir": gcd,
