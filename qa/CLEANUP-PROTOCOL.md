@@ -54,7 +54,12 @@ physical folder is gone -> verify no stale worktree metadata remains
   uncommitted changes.
 - **Stop dependent campaign-started processes** — any gateway, API server,
   or CI-poller process the campaign started for this ticket's work is
-  terminated before the worktree is removed.
+  terminated before the worktree is removed. Any machine-heavy job run
+  through `qa/scheduler/aa-sched` (AAASM-5891 — `git push`/`cargo build`/
+  `cargo nextest`/`cargo doc`/macOS security ops) is torn down with
+  `aa-sched cleanup --campaign <id>`, which terminates every still-live
+  owned process group and reclaims its self-reported ports/temp
+  directories — see `qa/SCHEDULING.md`.
 - **Remove and prune** — `git worktree remove <path>`, then
   `git worktree prune` to clear any registration left behind by a path that
   no longer exists.
@@ -90,6 +95,8 @@ hold:
 - **0** unnecessary campaign background processes.
 - **0** leftover test listeners/servers.
 - **0** leftover campaign temp folders, where safe to remove.
+- **0** stale `aa-sched` job/pool/fingerprint state for this campaign
+  (`aa-sched cleanup --campaign <id>`, then `aa-sched reap`).
 
 This is a literal exit condition, not a target to approximate — a campaign
 that reports completion while any of the above is nonzero has not actually

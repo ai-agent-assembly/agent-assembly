@@ -98,6 +98,25 @@ port-collision confusion and wasted setup/teardown time.
   still with verifier capacity reserved, never filling every slot with
   investigators.
 
+## Resource-aware scheduling for machine-heavy background jobs
+
+The worker/wave ceiling above governs **agent/reasoning** concurrency. It
+does not, by itself, bound **machine-resource** concurrency — a
+`git push` (which can trigger a 50-minute `cargo doc --workspace`), a
+`cargo build`, a `cargo nextest run`, and a macOS security-sensitive
+operation are not equally parallelizable just because they might each be
+issued by a worker running within the ceiling above. AAASM-5891 (triggered
+by 3 duplicate pushes each spawning their own contending `cargo doc`
+build) added `qa/scheduler/aa-sched` for exactly that axis.
+
+**Every machine-heavy shell command a worker or the coordinator would
+otherwise run directly goes through `aa-sched run` instead** — see
+`qa/SCHEDULING.md` for the full policy (resource-class table, the
+coordinator call pattern, the exit-code contract, dedupe/watchdog/breaker
+behavior). This does not change the worker ceiling or wave sizing above;
+it governs what a worker's own shell commands are allowed to contend for
+once that worker is already running.
+
 ## Demonstration (AAASM-5826 AC)
 
 `qa/orchestration-demo.md` records one concrete run showing two independent

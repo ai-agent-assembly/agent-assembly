@@ -1,0 +1,775 @@
+#!/usr/bin/env bash
+#
+# aa-sched — resource-aware scheduling for QA-campaign background jobs
+# (AAASM-5891).
+#
+# Why bash, not a new aa-* crate or a Python script: this tool must keep
+# working when the thing it is guarding (the cargo toolchain) is wedged, so
+# it cannot itself be a cargo-built binary — a 33rd workspace crate would be
+# compiled by the very `cargo doc --workspace` / `cargo nextest run
+# --workspace` this exists to bound, and would be unavailable exactly when
+# the build is stuck. Python adds an interpreter dependency for a job that
+# is natively `kill -0` / `ps` / `lsof` / `mkdir` — shell's own vocabulary.
+# This machine has no `flock(1)` or `setsid(1)` (verified during design;
+# BSD/macOS ships neither), so `mkdir(2)` is the atomic test-and-set this
+# script uses for both slots and job ids, and `perl -e 'setpgrp; exec
+# @ARGV'` stands in for `setsid` to give every job its own process group.
+#
+# What this is not: a daemon. Every subcommand is one-shot. `run` blocks
+# for the job's entire lifetime (queue wait -> execute -> supervise ->
+# cleanup) inside the caller's own process — there is nothing left running
+# after it returns, and nothing to leak if the caller itself is killed
+# (the job's own process group is what would need to be reaped, and `reap`
+# exists for exactly that recovery case).
+#
+# See qa/SCHEDULING.md for the policy this implements and the coordinator
+# call pattern; qa/scheduler/classes.conf for the resource-class table.
+
+set -u
+set -o pipefail
+
+# ── configuration ────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLASSES_CONF="${AA_SCHED_CLASSES_CONF:-$SCRIPT_DIR/classes.conf}"
+# Machine-scoped, not repo-scoped: the contended resources (the shared
+# CARGO_TARGET_DIR, the login keychain, the shared rootfs.img) are all
+# machine-level, and a repo-local semaphore is structurally unable to
+# prevent the cross-worktree recurrence this exists to fix.
+AA_SCHED_HOME="${AA_SCHED_HOME:-$HOME/.aa-sched}"
+
+die() {
+    echo "aa-sched: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat >&2 <<'EOF'
+usage:
+  aa-sched run --class ID --campaign ID --id JOB_ID [--worktree PATH] -- CMD...
+  aa-sched status [--campaign ID]
+  aa-sched reap
+  aa-sched cleanup [--campaign ID]
+  aa-sched breaker <show|reset> CLASS
+  aa-sched classify -- CMD...
+EOF
+    exit 2
+}
+
+# ── class table ──────────────────────────────────────────────────────────
+
+# Populates CLASS_LIMIT, CLASS_POOL_KIND, CLASS_RETRY_SAFE, CLASS_POLL_S,
+# CLASS_STALL_POLLS, CLASS_GRACE_S, CLASS_BREAKER_THRESHOLD for $1, or dies
+# if the class is unknown. `classes.conf` is re-read on every call rather
+# than cached — this is a rarely-hot path (once per `run` invocation) and
+# re-reading means an edited table takes effect without restarting anything,
+# which matters because there is nothing long-running to restart.
+load_class() {
+    local want="$1" line id limit pool retry poll stall grace thresh
+    [[ -f "$CLASSES_CONF" ]] || die "no classes.conf at $CLASSES_CONF"
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        read -r id limit pool retry poll stall grace thresh <<<"$line"
+        if [[ "$id" == "$want" ]]; then
+            CLASS_LIMIT="$limit"
+            CLASS_POOL_KIND="$pool"
+            CLASS_RETRY_SAFE="$retry"
+            CLASS_POLL_S="$poll"
+            CLASS_STALL_POLLS="$stall"
+            CLASS_GRACE_S="$grace"
+            CLASS_BREAKER_THRESHOLD="$thresh"
+            return 0
+        fi
+    done <"$CLASSES_CONF"
+    die "unknown resource class '$want' (see $CLASSES_CONF)"
+}
+
+# ── pool key resolution ──────────────────────────────────────────────────
+
+sha1_of() {
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1
+    else
+        printf '%s' "$1" | sha1sum | cut -d' ' -f1
+    fi
+}
+
+# $1 = pool_kind, $2 = worktree path (may be empty), $3 = class id.
+# Echoes the resolved pool key. CARGO_TARGET resolves the same way cargo
+# itself does — honoring CARGO_TARGET_DIR when set, falling back to
+# <worktree>/target — so two jobs against the same effective target
+# directory always share one pool even if one set the env var explicitly
+# and the other relied on the default (this is how cargo_build and
+# heavy_test intentionally end up sharing one pool: same kind, same
+# resolved target dir).
+#
+# GLOBAL is scoped by class id ("global:<class>"), not one bare "global"
+# key shared by every GLOBAL-kind class — lint_fast (limit 4),
+# cargo_doc_workspace (limit 1) and macos_security (limit 1) must not
+# collide in the same numbered-slot namespace merely because they are all
+# machine-scoped rather than worktree/target-scoped.
+resolve_pool_key() {
+    local kind="$1" worktree="$2" class="$3"
+    case "$kind" in
+    GLOBAL) echo "global:$class" ;;
+    WORKTREE)
+        [[ -n "$worktree" ]] || die "pool kind WORKTREE requires --worktree"
+        echo "worktree:$(sha1_of "$worktree")"
+        ;;
+    CARGO_TARGET)
+        local td="${CARGO_TARGET_DIR:-$worktree/target}"
+        echo "cargo:$(sha1_of "$td")"
+        ;;
+    *) die "unknown pool_kind '$kind'" ;;
+    esac
+}
+
+# ── process helpers ──────────────────────────────────────────────────────
+
+pid_alive() {
+    kill -0 "$1" >/dev/null 2>&1
+}
+
+# `lstart=` is stable for the life of a pid and changes on reuse — this is
+# the ownership proof used before any kill or slot reclaim: "pid exists"
+# alone is not enough, since a recycled pid could belong to something this
+# scheduler never started.
+pid_lstart() {
+    ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'
+}
+
+pgid_cpu_seconds() {
+    ps -o time= -g "$1" 2>/dev/null | awk -F: '{s=0; for(i=1;i<=NF;i++) s=s*60+$i} {t+=s} END{print t+0}'
+}
+
+pgid_children_signature() {
+    ps -o comm= -g "$1" 2>/dev/null | sort | tr '\n' '|'
+}
+
+pgid_alive() {
+    # A process group is "alive" if `ps -g` still lists at least one member.
+    [[ -n "$(ps -o pid= -g "$1" 2>/dev/null)" ]]
+}
+
+# ── slot (semaphore) primitives ─────────────────────────────────────────
+#
+# A pool's capacity is expressed as N numbered slot directories,
+# pools/<key>/slots/1..N. `mkdir` on a specific number is the atomic
+# test-and-set: exactly one process can create pools/<key>/slots/3, so
+# racing for a number IS racing for the slot. This is what "no flock(1) on
+# this machine" resolves to.
+
+reap_pool() {
+    local pool_dir="$1"
+    local slot holder pid lstart now_lstart
+    [[ -d "$pool_dir/slots" ]] || return 0
+    for slot in "$pool_dir"/slots/*/; do
+        [[ -d "$slot" ]] || continue
+        holder="$slot/holder"
+        [[ -f "$holder" ]] || {
+            rmdir "$slot" 2>/dev/null
+            continue
+        }
+        pid=$(grep -m1 '^pid=' "$holder" | cut -d= -f2-)
+        lstart=$(grep -m1 '^lstart=' "$holder" | cut -d= -f2-)
+        if [[ -z "$pid" ]] || ! pid_alive "$pid"; then
+            rm -rf "$slot"
+            continue
+        fi
+        now_lstart=$(pid_lstart "$pid")
+        if [[ "$now_lstart" != "$lstart" ]]; then
+            # Same pid number, different process (recycled) — reclaim the
+            # slot, never signal the pid: it is not ours.
+            rm -rf "$slot"
+        fi
+    done
+}
+
+# $1 = class id, $2 = pool_key, $3 = job_id, $4 = effective_limit.
+# Blocks until a slot is acquired; echoes the acquired slot path on stdout.
+acquire_slot() {
+    local class="$1" pool_key="$2" job_id="$3" limit="$4"
+    local pool_dir="$AA_SCHED_HOME/pools/$pool_key"
+    mkdir -p "$pool_dir/slots"
+    local n slot
+    while true; do
+        reap_pool "$pool_dir"
+        for ((n = 1; n <= limit; n++)); do
+            slot="$pool_dir/slots/$n"
+            if mkdir "$slot" 2>/dev/null; then
+                {
+                    echo "pid=$$"
+                    echo "lstart=$(pid_lstart $$)"
+                    echo "job_id=$job_id"
+                    echo "class=$class"
+                    echo "acquired_at=$(date +%s)"
+                } >"$slot/holder"
+                echo "$slot"
+                return 0
+            fi
+        done
+        sleep 0.3
+    done
+}
+
+release_slot() {
+    [[ -n "${1:-}" ]] && rm -rf "$1"
+}
+
+# ── circuit breaker ──────────────────────────────────────────────────────
+
+breaker_file() { echo "$AA_SCHED_HOME/breakers/$1"; }
+
+breaker_read() {
+    local class="$1" f
+    f=$(breaker_file "$class")
+    BREAKER_STATE="closed"
+    BREAKER_CONSECUTIVE=0
+    BREAKER_EFFECTIVE_LIMIT="$CLASS_LIMIT"
+    BREAKER_OPENED_AT=0
+    if [[ -f "$f" ]]; then
+        BREAKER_STATE=$(grep -m1 '^state=' "$f" | cut -d= -f2-)
+        BREAKER_CONSECUTIVE=$(grep -m1 '^consecutive_stalls=' "$f" | cut -d= -f2-)
+        BREAKER_EFFECTIVE_LIMIT=$(grep -m1 '^effective_limit=' "$f" | cut -d= -f2-)
+        BREAKER_OPENED_AT=$(grep -m1 '^opened_at=' "$f" | cut -d= -f2-)
+        [[ -n "$BREAKER_STATE" ]] || BREAKER_STATE="closed"
+        [[ -n "$BREAKER_CONSECUTIVE" ]] || BREAKER_CONSECUTIVE=0
+        [[ -n "$BREAKER_EFFECTIVE_LIMIT" ]] || BREAKER_EFFECTIVE_LIMIT="$CLASS_LIMIT"
+        [[ -n "$BREAKER_OPENED_AT" ]] || BREAKER_OPENED_AT=0
+    fi
+}
+
+breaker_write() {
+    local class="$1" state="$2" consecutive="$3" effective="$4" opened="$5"
+    mkdir -p "$AA_SCHED_HOME/breakers"
+    {
+        echo "state=$state"
+        echo "consecutive_stalls=$consecutive"
+        echo "effective_limit=$effective"
+        echo "default_limit=$CLASS_LIMIT"
+        echo "opened_at=$opened"
+        echo "last_updated_at=$(date +%s)"
+    } >"$(breaker_file "$class").tmp"
+    mv "$(breaker_file "$class").tmp" "$(breaker_file "$class")"
+}
+
+# 900s half-open cooldown: one success after this long since the breaker
+# opened raises the effective limit by one step; reaching the class default
+# closes it. Chosen relative to this class of job's own multi-minute
+# timescale — a shorter cooldown would half-open into the same contention
+# that tripped it.
+BREAKER_COOLDOWN_S=900
+
+breaker_record_success() {
+    local class="$1"
+    breaker_read "$class"
+    if [[ "$BREAKER_STATE" == "open" ]]; then
+        local now
+        now=$(date +%s)
+        if ((now - BREAKER_OPENED_AT >= BREAKER_COOLDOWN_S)); then
+            local new_limit=$((BREAKER_EFFECTIVE_LIMIT + 1))
+            if ((new_limit >= CLASS_LIMIT)); then
+                breaker_write "$class" "closed" 0 "$CLASS_LIMIT" 0
+            else
+                breaker_write "$class" "open" 0 "$new_limit" "$BREAKER_OPENED_AT"
+            fi
+            return 0
+        fi
+    fi
+    breaker_write "$class" "closed" 0 "$CLASS_LIMIT" 0
+}
+
+breaker_record_stall() {
+    local class="$1"
+    breaker_read "$class"
+    local consecutive=$((BREAKER_CONSECUTIVE + 1))
+    if ((consecutive >= CLASS_BREAKER_THRESHOLD)); then
+        local new_limit=$((BREAKER_EFFECTIVE_LIMIT - 1))
+        ((new_limit < 1)) && new_limit=1
+        breaker_write "$class" "open" 0 "$new_limit" "$(date +%s)"
+    else
+        breaker_write "$class" "$BREAKER_STATE" "$consecutive" "$BREAKER_EFFECTIVE_LIMIT" "$BREAKER_OPENED_AT"
+    fi
+}
+
+# ── job metadata ─────────────────────────────────────────────────────────
+
+job_dir() { echo "$AA_SCHED_HOME/jobs/$1"; }
+
+write_progress() {
+    local job_id="$1" token="$2"
+    echo "$token" >"$(job_dir "$job_id")/progress"
+}
+
+# ── foreign-lock discrimination ──────────────────────────────────────────
+#
+# A job that is genuinely blocked on cargo's own OS lock, held by a process
+# THIS SCHEDULER DID NOT START, has an identical mechanical signature
+# (flat CPU, flat log, flat child set) to a wedged job — that signature IS
+# the incident. Without this check, the watchdog would kill healthy work
+# blocked on a foreign holder, which is worse than doing nothing.
+foreign_lock_holder() {
+    local pgid="$1" pool_key="$2"
+    case "$pool_key" in
+    cargo:*) ;;
+    *) return 1 ;;
+    esac
+    local td_hint="$AA_SCHED_HOME/pools/$pool_key/target_dir"
+    [[ -f "$td_hint" ]] || return 1
+    local td
+    td=$(cat "$td_hint")
+    local lockfiles=("$td/debug/.cargo-lock" "$td/release/.cargo-lock")
+    local f holders h
+    for f in "${lockfiles[@]}"; do
+        [[ -f "$f" ]] || continue
+        holders=$(command -v lsof >/dev/null 2>&1 && lsof -t "$f" 2>/dev/null)
+        for h in $holders; do
+            # A holder inside our own job's process group is not "foreign".
+            if ! ps -o pgid= -p "$h" 2>/dev/null | grep -qx " *$pgid"; then
+                echo "$h"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+# ── supervision ───────────────────────────────────────────────────────────
+
+# $1=job_id $2=class $3=pgid $4=pool_key. Runs until the job's process
+# group exits or a stall is confirmed and handled. Exit code: 0 = finished
+# on its own, 77 = stalled and terminated, 78 = lost ownership (do not
+# touch, caller treats as unknown).
+supervise() {
+    local job_id="$1" class="$2" pgid="$3" pool_key="$4"
+    local jdir
+    jdir=$(job_dir "$job_id")
+    local log="$jdir/log"
+    ((CLASS_POLL_S == 0)) && {
+        wait "$MAIN_CHILD_PID" 2>/dev/null
+        return $?
+    }
+
+    local prev_token="" flat=0
+    while true; do
+        if ! pgid_alive "$pgid"; then
+            return 0
+        fi
+        sleep "$CLASS_POLL_S"
+        if ! pgid_alive "$pgid"; then
+            return 0
+        fi
+        local cpu logsz kids token
+        cpu=$(pgid_cpu_seconds "$pgid")
+        logsz="0"
+        [[ -f "$log" ]] && logsz=$(wc -c <"$log" 2>/dev/null | tr -d ' ')
+        kids=$(pgid_children_signature "$pgid")
+        token="$cpu|$logsz|$kids"
+        if [[ "$token" != "$prev_token" ]]; then
+            prev_token="$token"
+            flat=0
+            write_progress "$job_id" "$token"
+            continue
+        fi
+        flat=$((flat + 1))
+        ((flat < CLASS_STALL_POLLS)) && continue
+
+        # Candidate stall — discriminate before touching anything.
+        local holder
+        if holder=$(foreign_lock_holder "$pgid" "$pool_key"); then
+            echo "status=WAITING_ON_FOREIGN_LOCK" >>"$jdir/status"
+            echo "foreign_holder_pid=$holder" >>"$jdir/status"
+            return 76
+        fi
+
+        local held_pid held_lstart now_lstart
+        held_pid=$(grep -m1 '^pid=' "$jdir/meta" | cut -d= -f2-)
+        held_lstart=$(grep -m1 '^lstart=' "$jdir/meta" | cut -d= -f2-)
+        now_lstart=$(pid_lstart "$held_pid")
+        if [[ "$now_lstart" != "$held_lstart" ]]; then
+            return 78
+        fi
+
+        kill -TERM "-$pgid" >/dev/null 2>&1
+        local grace_deadline=$((SECONDS + CLASS_GRACE_S))
+        while pgid_alive "$pgid" && ((SECONDS < grace_deadline)); do
+            sleep 1
+        done
+        pgid_alive "$pgid" && kill -KILL "-$pgid" >/dev/null 2>&1
+        return 77
+    done
+}
+
+# ── cleanup ──────────────────────────────────────────────────────────────
+
+cleanup_job_owned_state() {
+    local job_id="$1" jdir port pdir
+    jdir=$(job_dir "$job_id")
+    if [[ -f "$jdir/meta" ]]; then
+        while IFS= read -r port; do
+            [[ -n "$port" ]] || continue
+            # Best-effort: find and kill whatever is listening on a port
+            # this job itself recorded as its own.
+            local holder_pid
+            holder_pid=$(lsof -t -i ":$port" -sTCP:LISTEN 2>/dev/null)
+            [[ -n "$holder_pid" ]] && kill -TERM "$holder_pid" >/dev/null 2>&1
+        done < <(grep '^port=' "$jdir/meta" 2>/dev/null | cut -d= -f2-)
+        while IFS= read -r pdir; do
+            [[ -n "$pdir" ]] || continue
+            rm -rf "$pdir"
+        done < <(grep '^temp_dir=' "$jdir/meta" 2>/dev/null | cut -d= -f2-)
+    fi
+}
+
+# ── run ──────────────────────────────────────────────────────────────────
+
+cmd_run() {
+    local class="" campaign="" job_id="" worktree=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --class)
+            class="$2"
+            shift 2
+            ;;
+        --campaign)
+            campaign="$2"
+            shift 2
+            ;;
+        --id)
+            job_id="$2"
+            shift 2
+            ;;
+        --worktree)
+            worktree="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *) die "run: unexpected argument '$1'" ;;
+        esac
+    done
+    [[ -n "$class" ]] || die "run: --class is required"
+    [[ -n "$job_id" ]] || die "run: --id is required"
+    [[ $# -gt 0 ]] || die "run: no command given after --"
+    [[ -n "$worktree" ]] || worktree="$(pwd)"
+
+    load_class "$class"
+    local pool_key
+    pool_key=$(resolve_pool_key "$CLASS_POOL_KIND" "$worktree" "$class")
+    if [[ "$CLASS_POOL_KIND" == "CARGO_TARGET" ]]; then
+        mkdir -p "$AA_SCHED_HOME/pools/$pool_key"
+        echo "${CARGO_TARGET_DIR:-$worktree/target}" >"$AA_SCHED_HOME/pools/$pool_key/target_dir"
+    fi
+
+    # ── fingerprint dedupe ────────────────────────────────────────────
+    #
+    # The incident this Story exists to fix was 3 duplicate `git push`
+    # invocations for the *same branch at the same commit*, not a
+    # scheduling-order failure — the semaphore below is the safety net,
+    # this is the actual fix.
+    #
+    # Deliberately scoped to `git push` only, not every command: a
+    # coordinator legitimately running several distinct jobs that happen to
+    # share identical argv (e.g. the same test binary invoked with the same
+    # flags as two logically-different campaign steps) must never be
+    # silently collapsed into one. `git push`'s fingerprint additionally
+    # includes the resolved HEAD sha, deliberately: a legitimate re-push
+    # after a new commit must never be suppressed just because the rest of
+    # the command line looks the same.
+    local is_git_push=0
+    [[ "${1:-}" == "git" && "${2:-}" == "push" ]] && is_git_push=1
+
+    if ((is_git_push)); then
+        local head_sha=""
+        git -C "$worktree" rev-parse HEAD >/dev/null 2>&1 &&
+            head_sha=$(git -C "$worktree" rev-parse HEAD 2>/dev/null)
+        local cmd_fp
+        cmd_fp=$(sha1_of "$class|$*|$pool_key|$head_sha")
+        mkdir -p "$AA_SCHED_HOME/fingerprints"
+        local fp_dir="$AA_SCHED_HOME/fingerprints/$cmd_fp"
+    fi
+    if ((is_git_push)) && mkdir "$fp_dir" 2>/dev/null; then
+        echo "$job_id" >"$fp_dir/job_id"
+        FP_DIR_TO_CLEAR="$fp_dir"
+        # Cleared on every exit from this point on, including the
+        # DIAGNOSE_REQUIRED early-return below — a claimed-but-never-run
+        # fingerprint must not hang a later, genuinely new invocation
+        # waiting on a status file that will never appear.
+        trap 'rm -rf "${FP_DIR_TO_CLEAR:-}" 2>/dev/null' EXIT
+    elif ((is_git_push)); then
+        # A twin is either currently running or has just finished. Find
+        # its job id (written by the winner immediately after it creates
+        # $fp_dir — brief poll covers the narrow window before that
+        # write lands) and either attach to it live or replay its result.
+        local twin_job="" tries=0
+        while [[ -z "$twin_job" ]] && ((tries < 50)); do
+            [[ -f "$fp_dir/job_id" ]] && twin_job=$(cat "$fp_dir/job_id")
+            [[ -n "$twin_job" ]] || {
+                sleep 0.1
+                tries=$((tries + 1))
+            }
+        done
+        if [[ -n "$twin_job" ]]; then
+            local twin_jdir
+            twin_jdir=$(job_dir "$twin_job")
+            echo "DEDUPED:$twin_job" >&2
+            local waited=0
+            while [[ ! -f "$twin_jdir/status" ]] && ((waited < 3600)); do
+                sleep 1
+                waited=$((waited + 1))
+            done
+            local twin_exit
+            twin_exit=$(grep -m1 '^exit_code=' "$twin_jdir/status" 2>/dev/null | cut -d= -f2-)
+            [[ -n "$twin_exit" ]] || twin_exit=1
+            exit "$twin_exit"
+        fi
+        # No pointer ever appeared (winner crashed before writing it) —
+        # fail safe by proceeding as our own un-deduped run rather than
+        # hanging forever on a fingerprint nobody will ever fulfill.
+    fi
+
+    breaker_read "$class"
+    if [[ "$BREAKER_STATE" == "open" && "$BREAKER_EFFECTIVE_LIMIT" -le 1 && "$CLASS_LIMIT" -le 1 ]]; then
+        echo "DIAGNOSE_REQUIRED:$class" >&2
+        exit 75
+    fi
+    local effective_limit="$BREAKER_EFFECTIVE_LIMIT"
+    ((effective_limit < 1)) && effective_limit=1
+
+    local jdir
+    jdir=$(job_dir "$job_id")
+    if [[ -d "$jdir" ]]; then
+        die "job id '$job_id' already exists — job ids must be unique per invocation"
+    fi
+    mkdir -p "$jdir"
+    if [[ -n "$campaign" ]]; then
+        mkdir -p "$AA_SCHED_HOME/campaigns/$campaign"
+        echo "$job_id" >>"$AA_SCHED_HOME/campaigns/$campaign/jobs"
+    fi
+
+    local attempt=1
+    local max_attempts=1
+    [[ "$CLASS_RETRY_SAFE" == "yes" ]] && max_attempts=2
+
+    while true; do
+        local slot
+        slot=$(acquire_slot "$class" "$pool_key" "$job_id" "$effective_limit")
+
+        {
+            echo "job_id=$job_id"
+            echo "class=$class"
+            echo "pool_key=$pool_key"
+            echo "campaign=$campaign"
+            echo "worktree=$worktree"
+            echo "attempt=$attempt"
+            echo "max_attempts=$max_attempts"
+            echo "started_at=$(date +%s)"
+        } >"$jdir/meta"
+
+        # `perl -e 'setpgrp; exec @ARGV'` is this machine's `setsid`
+        # substitute — no such binary exists here (verified during
+        # design). Without a fresh process group, "kill -TERM -$pgid"
+        # would also reach this script's own ancestors.
+        #
+        # AA_SCHED_JOB_META lets the wrapped command self-report resources
+        # it owns (a listen port, a temp directory) by appending
+        # `port=<n>` / `temp_dir=<path>` lines — `cleanup_job_owned_state`
+        # reads them back. There is no other way for the scheduler to learn
+        # what an arbitrary command allocated.
+        export AA_SCHED_JOB_META="$jdir/meta"
+        perl -e 'setpgrp; exec @ARGV' -- "$@" >"$jdir/log" 2>&1 &
+        local child_pid=$!
+        MAIN_CHILD_PID=$child_pid
+        # The child's own pgid equals its pid once `setpgrp` has run;
+        # briefly wait for that to be observable before recording it.
+        local pgid="" tries=0
+        while ((tries < 50)); do
+            pgid=$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')
+            [[ "$pgid" == "$child_pid" ]] && break
+            sleep 0.05
+            tries=$((tries + 1))
+        done
+        [[ -n "$pgid" ]] || pgid="$child_pid"
+
+        {
+            echo "pid=$child_pid"
+            echo "pgid=$pgid"
+            echo "lstart=$(pid_lstart "$child_pid")"
+        } >>"$jdir/meta"
+
+        local rc
+        supervise "$job_id" "$class" "$pgid" "$pool_key"
+        rc=$?
+
+        if ((rc == 0)); then
+            wait "$child_pid" 2>/dev/null
+            local exit_code=$?
+            release_slot "$slot"
+            {
+                echo "exit_code=$exit_code"
+                echo "outcome=finished"
+                echo "ended_at=$(date +%s)"
+            } >>"$jdir/status"
+            ((CLASS_POLL_S > 0)) && breaker_record_success "$class"
+            cleanup_job_owned_state "$job_id"
+            exit "$exit_code"
+        fi
+
+        release_slot "$slot"
+        cleanup_job_owned_state "$job_id"
+
+        if ((rc == 76)); then
+            echo "outcome=blocked_foreign_lock" >>"$jdir/status"
+            exit 76
+        fi
+        if ((rc == 78)); then
+            echo "outcome=lost_ownership" >>"$jdir/status"
+            exit 78
+        fi
+
+        # rc == 77: confirmed stall, already terminated by supervise().
+        breaker_record_stall "$class"
+        breaker_read "$class"
+        if [[ "$CLASS_RETRY_SAFE" == "yes" && $attempt -lt $max_attempts && "$BREAKER_STATE" != "open" ]]; then
+            attempt=$((attempt + 1))
+            effective_limit="$BREAKER_EFFECTIVE_LIMIT"
+            ((effective_limit < 1)) && effective_limit=1
+            echo "outcome=retrying" >>"$jdir/status"
+            continue
+        fi
+
+        echo "ended_at=$(date +%s)" >>"$jdir/status"
+        echo "outcome=stalled" >>"$jdir/status"
+        exit 77
+    done
+}
+
+# ── status / reap / cleanup / breaker / classify ─────────────────────────
+
+cmd_status() {
+    local campaign=""
+    [[ "${1:-}" == "--campaign" ]] && campaign="$2"
+    local job_ids
+    if [[ -n "$campaign" ]]; then
+        job_ids=$(cat "$AA_SCHED_HOME/campaigns/$campaign/jobs" 2>/dev/null)
+    else
+        job_ids=$(ls "$AA_SCHED_HOME/jobs" 2>/dev/null)
+    fi
+    local jid
+    for jid in $job_ids; do
+        local jdir
+        jdir=$(job_dir "$jid")
+        [[ -d "$jdir" ]] || continue
+        echo "== $jid =="
+        cat "$jdir/meta" 2>/dev/null
+        cat "$jdir/status" 2>/dev/null
+        echo
+    done
+}
+
+cmd_reap() {
+    local p
+    for p in "$AA_SCHED_HOME"/pools/*/; do
+        [[ -d "$p" ]] || continue
+        reap_pool "${p%/}"
+    done
+}
+
+cmd_cleanup() {
+    local campaign=""
+    [[ "${1:-}" == "--campaign" ]] && campaign="$2"
+    local job_ids
+    if [[ -n "$campaign" ]]; then
+        job_ids=$(cat "$AA_SCHED_HOME/campaigns/$campaign/jobs" 2>/dev/null)
+    else
+        job_ids=$(ls "$AA_SCHED_HOME/jobs" 2>/dev/null)
+    fi
+    local jid
+    for jid in $job_ids; do
+        local jdir pgid
+        jdir=$(job_dir "$jid")
+        [[ -d "$jdir" ]] || continue
+        pgid=$(grep -m1 '^pgid=' "$jdir/meta" 2>/dev/null | cut -d= -f2-)
+        if [[ -n "$pgid" ]] && pgid_alive "$pgid"; then
+            kill -TERM "-$pgid" >/dev/null 2>&1
+            sleep 1
+            pgid_alive "$pgid" && kill -KILL "-$pgid" >/dev/null 2>&1
+        fi
+        cleanup_job_owned_state "$jid"
+    done
+    cmd_reap
+}
+
+cmd_breaker() {
+    local action="${1:-}" class="${2:-}"
+    [[ -n "$action" && -n "$class" ]] || usage
+    load_class "$class"
+    case "$action" in
+    show)
+        breaker_read "$class"
+        echo "state=$BREAKER_STATE"
+        echo "consecutive_stalls=$BREAKER_CONSECUTIVE"
+        echo "effective_limit=$BREAKER_EFFECTIVE_LIMIT"
+        echo "default_limit=$CLASS_LIMIT"
+        ;;
+    reset)
+        breaker_write "$class" "closed" 0 "$CLASS_LIMIT" 0
+        ;;
+    *) usage ;;
+    esac
+}
+
+# Mirrors lefthook.toml's own [pre-push.commands.doc] glob — a bats test
+# asserts these stay equal, so classification cannot silently diverge from
+# the file that actually decides. See qa/SCHEDULING.md's "Known gaps"
+# section: this only classifies invocations that go *through* aa-sched.
+DOC_GATE_GLOB_PATTERNS='*.rs *Cargo.toml *Cargo.lock'
+
+cmd_classify() {
+    [[ "${1:-}" == "--" ]] && shift
+    [[ $# -gt 0 ]] || die "classify: no command given"
+    if [[ "$1" == "git" && "${2:-}" == "push" ]]; then
+        local diff_files
+        diff_files=$(git diff --name-only --merge-base "@{u}" HEAD 2>/dev/null ||
+            git diff --name-only --merge-base remote/main HEAD 2>/dev/null ||
+            git diff --name-only --merge-base origin/main HEAD 2>/dev/null ||
+            git ls-files)
+        local f pat
+        for f in $diff_files; do
+            for pat in $DOC_GATE_GLOB_PATTERNS; do
+                # Intentional glob match, not a literal string compare.
+                # shellcheck disable=SC2053
+                if [[ "$f" == $pat ]]; then
+                    echo "cargo_doc_workspace"
+                    return 0
+                fi
+            done
+        done
+        echo "write_repo"
+        return 0
+    fi
+    echo "write_repo"
+}
+
+# ── entrypoint ─────────────────────────────────────────────────────────
+
+main() {
+    [[ $# -gt 0 ]] || usage
+    local sub="$1"
+    shift
+    mkdir -p "$AA_SCHED_HOME"/{pools,jobs,breakers,campaigns}
+    case "$sub" in
+    run) cmd_run "$@" ;;
+    status) cmd_status "$@" ;;
+    reap) cmd_reap "$@" ;;
+    cleanup) cmd_cleanup "$@" ;;
+    breaker) cmd_breaker "$@" ;;
+    classify) cmd_classify "$@" ;;
+    *) usage ;;
+    esac
+}
+
+main "$@"

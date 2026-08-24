@@ -12,7 +12,7 @@ independently of (and additively to) the existing security sign-off. A
 release with `UNTESTED_OR_BLOCKED` mandatory P0/HIGH-risk coverage, or an
 unresolved release-blocking finding, **cannot** proceed with `Verdict: PASS`.
 
-This gate composes eight pieces built for AAASM-5819 rather than reinventing
+This gate composes nine pieces built for AAASM-5819 (plus AAASM-5891) rather than reinventing
 QA orchestration in a single giant prompt every run:
 
 | Piece | Ticket | What it provides |
@@ -26,6 +26,7 @@ QA orchestration in a single giant prompt every run:
 | [Evidence contract + worker result schema](../../../docs/src/qa/evidence-and-worker-result-contract.md) | AAASM-5828 | What counts as evidence; the compact result shape every worker returns |
 | [Risk mapper](../../../qa/risk-rules.yaml) + [`scripts/qa/map-risk.py`](../../../scripts/qa/map-risk.py) | AAASM-5829 | Deterministic changed-path -> risk/lane/journey selection |
 | [Runtime recipes](../../../qa/runtime-recipes/) | AAASM-5830 | Persisted install/build/verify/cleanup for repeated QA entry points |
+| [Resource-aware scheduler](../../../qa/SCHEDULING.md) | AAASM-5891 | `qa/scheduler/aa-sched` — bounds machine-heavy background jobs (build/doc/push/security) independently of the agent ceiling above |
 
 This SKILL.md is a lean overview; the run procedure detail lives in
 [REFERENCE.md](REFERENCE.md).
@@ -110,7 +111,12 @@ full adversarial pass + docs/examples/design audit.
    run's depth.
 5. **Bounded parallel verification** — launch up to 10 `qa-*` sub-agents (see
    `qa/ORCHESTRATION.md`), each scoped to a manifest/journey slice, each
-   returning the AAASM-5828 compact result schema.
+   returning the AAASM-5828 compact result schema. Any machine-heavy shell
+   command a worker issues (`git push`, `cargo build`/`nextest`, `cargo doc`,
+   a macOS security-sensitive op) goes through `qa/scheduler/aa-sched`
+   (AAASM-5891, `qa/SCHEDULING.md`) rather than being run directly — this is
+   what keeps the 10-worker ceiling from also meaning 10-way contention on a
+   single shared build lock.
 6. **Finding verification** — for each `SUSPECTED_FINDINGS` entry, run the
    AAASM-5827 protocol (dedup -> independent verification by
    `qa-finding-verifier` for High/Critical/P0 -> confirm/reject).

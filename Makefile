@@ -3,7 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 .PHONY: help dev-setup install-tools clone-sdks install-hooks build-workspace \
-        build-baseline test dev-verify smoke-python smoke-node smoke-go \
+        build-baseline test test-scheduler dev-verify smoke-python smoke-node smoke-go \
         standalone-smoke gateway-health demo-record
 
 ## dev-setup: Bootstrap the full local development environment (install tools, clone SDKs, install hooks, build)
@@ -29,6 +29,10 @@ clone-sdks:
 ## test: Run the full test suite across all workspace crates
 test:
 	@cargo nextest run --workspace --exclude aa-ebpf
+
+## test-scheduler: Run the qa/scheduler/aa-sched bats test suite (AAASM-5891)
+test-scheduler:
+	@bats qa/tests/scheduler/
 
 ## smoke-python: Run Python SDK smoke tests against the sibling python-sdk directory
 smoke-python:
