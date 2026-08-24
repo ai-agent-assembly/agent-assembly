@@ -184,12 +184,19 @@ impl BootAttemptError {
 /// confirmed by temporarily un-suppressing the helper's stderr during
 /// diagnosis — not a test-fixture artifact, and not hidden here: a host
 /// whose *every* retry fails this way still surfaces the real error,
-/// verbatim, in [`BootAttemptError::HelperExitedEarly`]'s message. Bounded
-/// retry, with a short backoff, is the same shape a transient-attach failure
-/// gets in any VM orchestration layer — it does not paper over a
-/// persistently broken host, and every other failure in [`boot_attempt`]
-/// (bind failure, timeout waiting for the guest, a malformed `GuestReady`)
-/// is [`BootAttemptError::Other`] and is never retried.
+/// verbatim, in [`BootAttemptError::HelperExitedEarly`]'s message.
+///
+/// **Measured effect: none, on the one failure this pass could reproduce.**
+/// `tests/adversarial_boundary_macos_vm_guest.rs`'s boundary suite hit this
+/// same storage-attach error 4/5 runs, and neither 3 attempts at 300ms
+/// backoff nor 5 attempts at 2s backoff resolved it there — see that file's
+/// module docs for the full investigation. This retry is kept anyway as
+/// defense-in-depth for a genuinely transient attach failure, a failure mode
+/// this pass could not characterize well enough to say whether it exists;
+/// it is not a fix for the boundary suite's instability, and every other
+/// failure in [`boot_attempt`] (bind failure, timeout waiting for the guest,
+/// a malformed `GuestReady`) is [`BootAttemptError::Other`] and is never
+/// retried.
 ///
 /// # Errors
 ///
