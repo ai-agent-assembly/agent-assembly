@@ -18,6 +18,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use aa_runtime::gateway_client::GatewayClient;
 use aa_runtime::pipeline::PipelineEvent;
+use aa_runtime::redaction_telemetry_client::{new_redaction_event, RedactionTelemetryClient};
 
 use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry, RefusalRule};
 use crate::config::ProxyConfig;
@@ -323,6 +324,18 @@ pub struct ProxyServer {
     /// The outer `OnceCell` lets the connect step run inside `run()`'s
     /// async context without requiring an async constructor.
     gateway_client: OnceCell<Arc<Mutex<GatewayClient>>>,
+    /// Lazily-initialised best-effort telemetry client for `aa-api`'s redaction
+    /// ingest (AAASM-5871). Populated at startup by [`ProxyServer::run`] when
+    /// `AA_PROXY_TELEMETRY_ENDPOINT` is set; stays empty otherwise, disabling
+    /// cross-process redaction telemetry.
+    ///
+    /// The inner `Mutex` serialises concurrent `report_redaction` RPCs (the
+    /// tonic client is `&mut self`-keyed); the outer `OnceCell` lets the connect
+    /// step run inside `run()`'s async context. Read via env at construction
+    /// rather than through [`ProxyConfig`], mirroring the `CredentialStore`
+    /// egress-key sink, so this operational observability knob adds no field to
+    /// the enforcement config surface.
+    telemetry_client: OnceCell<Arc<Mutex<RedactionTelemetryClient>>>,
     /// Per-host real provider credentials, injected at egress (AAASM-3578).
     /// Loaded from operator configuration at construction; the agent runtime
     /// never sees these. Empty by default — when no key is configured for a
@@ -353,6 +366,7 @@ impl ProxyServer {
             interceptor: Interceptor::new(event_tx),
             audit_jsonl_tx,
             gateway_client: OnceCell::new(),
+            telemetry_client: OnceCell::new(),
             credentials: Arc::new(CredentialStore::from_env()),
         })
     }
@@ -413,6 +427,27 @@ impl ProxyServer {
                     return Err(ProxyError::Config(format!(
                         "aa-gateway unreachable at {endpoint}: {e} (fail-closed; set AA_PROXY_MCP_FAIL_OPEN=1 to override)"
                     )));
+                }
+            }
+        }
+
+        // AAASM-5871: connect the cross-process redaction telemetry client when
+        // an ingest endpoint is configured. Best-effort and opt-in: a lazy
+        // channel means an unreachable ingest never blocks startup (unlike the
+        // gateway connect above, which is a governance path). Read from env,
+        // mirroring the `CredentialStore` egress-key sink, so telemetry stays
+        // off the enforcement config surface.
+        if let Some(endpoint) = std::env::var("AA_PROXY_TELEMETRY_ENDPOINT").ok().filter(|e| !e.is_empty()) {
+            match RedactionTelemetryClient::connect_lazy_owned(&endpoint) {
+                Some(client) => {
+                    let _ = self.telemetry_client.set(Arc::new(Mutex::new(client)));
+                    tracing::info!(%endpoint, "redaction telemetry enabled; reporting REDACT events to aa-api");
+                }
+                None => {
+                    tracing::warn!(
+                        %endpoint,
+                        "AA_PROXY_TELEMETRY_ENDPOINT is not a valid URI; redaction telemetry disabled"
+                    );
                 }
             }
         }
@@ -593,9 +628,69 @@ impl ProxyServer {
         decision: Option<ProxyAuditDecision>,
         probe_correlation: Option<String>,
     ) -> ForwardAuthorized {
+        // AAASM-5871: surface a pre-transmission redaction to the dashboard via
+        // aa-api's telemetry ingest. Done here — the single choke point shared by
+        // all three forwarding paths — so no path can drift out of coverage.
+        // Best-effort: emitted before the audit record is built and never gates
+        // the dial or the persist below.
+        if decision == Some(ProxyAuditDecision::ForwardedRedacted) {
+            self.emit_redaction_telemetry(&id, verdict);
+        }
+
         let record = decision
             .map(|decision| self.decision_record(id, verdict, decision, observation.evidence(), probe_correlation));
         observation.persist(self.audit_jsonl_tx.as_ref(), record)
+    }
+
+    /// Report a pre-transmission redaction to `aa-api`'s telemetry ingest, when
+    /// one is configured (AAASM-5871).
+    ///
+    /// Non-blocking and best-effort: the RPC runs in a detached task so a slow
+    /// or unreachable ingest never stalls the forwarding hot path, and a failed
+    /// send is logged, not propagated — it cannot change the enforcement outcome
+    /// the proxy has already applied. Only finding *kinds* (as stable string
+    /// tags), a count, and the destination host cross the wire; no byte of any
+    /// matched secret is included.
+    fn emit_redaction_telemetry(self: &Arc<Self>, id: &RequestIdentity<'_>, verdict: &InterceptVerdict) {
+        let Some(client) = self.telemetry_client.get().cloned() else {
+            return;
+        };
+        // Distinct kinds, in first-seen order, as stable `CredentialKind::as_str`
+        // tags. A kind tag is never a matched value.
+        let mut kinds: Vec<String> = Vec::new();
+        for finding in &verdict.findings {
+            let tag = finding.kind.as_str().to_string();
+            if !kinds.contains(&tag) {
+                kinds.push(tag);
+            }
+        }
+        if kinds.is_empty() {
+            return;
+        }
+        let finding_count = verdict.findings.len() as u32;
+        let destination_host = id.host.to_owned();
+
+        tokio::spawn(async move {
+            // team_id is left unset: the proxy redaction path carries no team
+            // attribution today. agent_id is intentionally not populated from
+            // `config.agent_id` — that is an agent tag, not a team, and the
+            // ingest records unattributed proxy events under a sentinel.
+            let event = new_redaction_event(destination_host, None, kinds, finding_count);
+            let event_id = event.event_id.clone();
+            let mut guard = client.lock().await;
+            match guard.report_redaction(event).await {
+                Ok(resp) => tracing::debug!(
+                    %event_id,
+                    recorded = resp.recorded,
+                    "reported redaction telemetry to aa-api"
+                ),
+                Err(status) => tracing::debug!(
+                    %event_id,
+                    error = %status,
+                    "redaction telemetry report failed (best-effort, ignored)"
+                ),
+            }
+        });
     }
 
     /// The probe correlation id on an in-tunnel request, when it carries a
