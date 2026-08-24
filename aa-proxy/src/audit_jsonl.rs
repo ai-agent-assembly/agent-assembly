@@ -3158,6 +3158,7 @@ mod retention_tests {
 
     fn dropped_record(host: &str) -> DecisionRecord {
         DecisionRecord {
+            agent_id: None,
             host: host.into(),
             method: "POST".into(),
             path: "/v1/do".into(),

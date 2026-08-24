@@ -96,6 +96,9 @@ struct Fixture {
     /// Turn the SSRF guard back on. Every other fixture dials a loopback mock,
     /// which the guard would (correctly) refuse.
     block_private_targets: bool,
+    /// AAASM-5855: the value read from this proxy process's own `AA_AGENT_ID`
+    /// env var (`ProxyConfig::agent_id`). `None` reproduces the pre-fix default.
+    agent_id: Option<String>,
 }
 
 /// Start a proxy with a live audit sink; hand back its address and the sink's
@@ -125,6 +128,7 @@ async fn start_proxy(fixture: Fixture, ca_dir: &std::path::Path) -> (SocketAddr,
         gateway_endpoint: fixture.gateway_endpoint,
         mcp_fail_open: false,
         network_fail_open: false,
+        agent_id: fixture.agent_id,
         // The mock upstreams are on loopback, which the SSRF guard would
         // (correctly) refuse in production.
         allow_private_connect_targets: !fixture.block_private_targets,
@@ -328,6 +332,52 @@ async fn a_connect_denylist_refusal_persists_non_transmission_evidence() {
     assert!(
         entry.probe_correlation.is_none(),
         "ordinary traffic must not look synthetic"
+    );
+    // AAASM-5855: this is the negative control for
+    // `a_refusal_is_persisted_with_the_configured_agent_id` below — this
+    // fixture's `agent_id` is `Fixture::default()`'s `None`, so the persisted
+    // record must say so explicitly. Without this assertion the sibling test
+    // cannot prove anything: `agent_id: self.agent_id.or(Some("x".into()))`
+    // would pass every test in this file undetected.
+    assert_eq!(
+        entry.agent_id, None,
+        "an unset agent_id must not be defaulted to a value"
+    );
+}
+
+/// AAASM-5855: reproduction and regression for the `agent_id="<unknown>"`
+/// audit-attribution gap. Before the fix, `DecisionRecord::send` hardcoded
+/// `agent_id: None` regardless of what the proxy was configured with — this
+/// asserts the persisted record carries the real configured identity instead.
+///
+/// The negative control is the sibling test right above: it runs the same
+/// refusal through a proxy configured with `agent_id: None` (the `Fixture`
+/// default) and would have caught a regression that made `agent_id` `Some`
+/// unconditionally.
+#[tokio::test]
+async fn a_refusal_is_persisted_with_the_configured_agent_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proxy, mut audit) = start_proxy(
+        Fixture {
+            denied_hosts: vec![DENIED_HOST.to_string()],
+            agent_id: Some("did:key:z6MkAAASM5855".to_string()),
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+
+    let refused = open_tunnel(proxy, DENIED_HOST).await;
+    assert!(
+        refused.is_err(),
+        "the denylisted CONNECT must be refused, not tunnelled"
+    );
+
+    let entry = sole_refusal_record(&mut audit, RefusalRule::EgressDenylist).await;
+    assert_eq!(
+        entry.agent_id,
+        Some("did:key:z6MkAAASM5855".to_string()),
+        "the persisted record must carry the registered agent's identity, not <unknown>: {entry:#?}"
     );
 }
 
