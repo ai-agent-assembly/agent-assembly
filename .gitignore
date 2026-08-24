@@ -60,3 +60,4 @@ verification-reports/__pycache__/
 # context and cannot be used there (AAASM-5326).
 /.conformance-outcomes/
 .qa/
+scripts/qa/__pycache__/
