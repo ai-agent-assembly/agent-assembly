@@ -183,14 +183,19 @@ report as governed while being unconfined, which is the failure this mode exists
 Install the backend, or re-run with `--isolation none` to launch unconfined deliberately.
 ```
 
-**Cause.** Execution isolation is Linux-only, and even on Linux it requires a
-separate backend executable that Agent Assembly does not bundle, download, or
-build on your behalf. `--isolation auto` / `--isolation process` never falls
-back to running unconfined — there is no silent degrade.
+**Cause.** On Linux this requires a separate backend executable that Agent
+Assembly does not bundle, download, or build on your behalf. `--isolation
+auto` / `--isolation process` never falls back to running unconfined — there
+is no silent degrade.
 
-**Fix.** On macOS or Windows there is no fix; no backend targets those
-platforms today. On Linux, install the backend and put it on `PATH`, or set
-`AA_SANDLOCK_BIN` to its path. If you just want to see what a run would do
+**Fix.** On Linux, install the backend and put it on `PATH`, or set
+`AA_SANDLOCK_BIN` to its path. On Apple Silicon macOS, pass
+`--isolation-backend aasm-macos-vm` explicitly (not selected by `auto`) and
+set `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` — see
+[Execution isolation](../security/execution-isolation.md#platform-and-backend-support-matrix)
+for the full prerequisites and its named limitations. On Intel macOS or
+Windows there is no fix; no backend targets those platforms today. If you
+just want to see what a run would do
 without the backend installed, `--dry-run` reports the same refusal without
 stopping. Full detail, including every refusal message and the per-capability
 troubleshooting table, is in
@@ -215,4 +220,4 @@ than requested. Check the per-capability table in `aasm run --dry-run`'s
 | `gateway status` "not running" | Local mode ≠ legacy gRPC; use `status` / `/healthz` |
 | Empty dashboard tables | `--mode local` serves no data routes — run `aa-api-server` |
 | `validate` warnings | Unknown keys ignored — move into a supported section |
-| `aasm run --isolation` refuses to launch | Linux + backend on `PATH`/`AA_SANDLOCK_BIN`? macOS/Windows have no backend at all |
+| `aasm run --isolation` refuses to launch | Linux + backend on `PATH`/`AA_SANDLOCK_BIN`? Apple Silicon macOS needs `--isolation-backend aasm-macos-vm` explicitly. Intel macOS/Windows have no backend at all |
