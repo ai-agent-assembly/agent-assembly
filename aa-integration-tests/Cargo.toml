@@ -89,11 +89,14 @@ libc        = { workspace = true }
 moka        = { workspace = true, features = ["future"] }
 portpicker  = "0.1"
 prost       = { workspace = true }
-reqwest     = { workspace = true, features = ["json", "rustls"] }
+reqwest     = { workspace = true, features = ["json", "rustls", "blocking"] }
 rustls      = { workspace = true, features = ["ring"] }
 tokio-rustls = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 rstest      = { workspace = true }
 serde       = { workspace = true, features = ["derive"] }
+url         = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json  = { workspace = true }
 serde_yaml  = { workspace = true }
