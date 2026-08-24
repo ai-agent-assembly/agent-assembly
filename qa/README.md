@@ -142,6 +142,30 @@ assertions, mirrors `scripts/tests/release-readiness-qa-negative-control.sh`):
 bash scripts/qa/validate-golden-journeys-negative-control.sh
 ```
 
+## Negative controls (AAASM-5877)
+
+A `release_blocking` + `automated` journey on the `security` lane must
+declare a non-empty `negative_control` — enforced by the validator (see
+`docs/src/qa/release-qa-policy.md`'s "Negative-control policy"). This is
+what's actually declared today, spanning the 3 required classes from
+AAASM-5877's own scope:
+
+| Class | Journey | Negative control | What it proves |
+|---|---|---|---|
+| Security enforcement | `J24` (allow/deny) | `cross_layer_policy_consistency_test.rs::artificial_divergence_is_detected` | Drops one deny rule from the lowered kernel ruleset and asserts the gap is observably absent — a real regression in policy-lowering would be caught, not silently pass. |
+| Security enforcement | `J41` (three-layer interception) | `e2e_ebpf.rs::ebpf_catches_traffic_that_bypasses_proxy` | Simulates the SDK/proxy layers being absent and asserts eBPF independently observes the traffic they'd otherwise catch — proves the "three layers, each independently authoritative" claim isn't just three tests of the same path. |
+| Cross-process evidence/observability | `J44` (audit trail) | `audit_seq_recovery_test.rs::without_recovery_seq_would_duplicate` | Asserts that *without* the sequence-recovery mechanism, a gateway restart would produce duplicate audit sequence numbers — proves restart-spanning evidence continuity is load-bearing, not assumed. |
+| Registry/CI execution-integrity | (the registry-health gate itself) | `scripts/qa/validate-golden-journeys-negative-control.sh` cases 9-13 (AAASM-5876) | Removes/breaks a required execution path (dead trigger, `#[ignore]`d evidence, unsupported platform) in an isolated fixture and asserts the gate goes non-zero — this Story's own required demonstration that "tests exist but nothing runs them" is caught, not silently green. |
+
+All four were pre-existing, real tests (not written for this Story) —
+AAASM-5877's contribution was finding them, verifying they demonstrate the
+5-step positive→fault→FAIL→restore→PASS pattern, and linking them into the
+registry so the property they prove has a stable, discoverable identity
+rather than living only as an unreferenced test in a `tests/` directory.
+None weaken production/default state: each mutates a local, in-test copy of
+data or process topology, asserts on it, and the process exits — nothing
+persists outside the test's own process.
+
 ## Selection demonstration
 
 ```bash
