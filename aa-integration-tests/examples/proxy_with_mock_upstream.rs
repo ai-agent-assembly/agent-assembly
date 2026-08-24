@@ -69,6 +69,14 @@ const UPSTREAM_ENV: &str = "AA_TEST_PROXY_UPSTREAM";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // AAASM-5902: without this the binary emitted no logs at all, which blocks
+    // any test that needs to correlate this process's behaviour (e.g. redaction
+    // decisions) against captured stdout/stderr, and blocks a `LogLine`
+    // readiness condition on this binary entirely.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     // rustls 0.23 refuses to pick a provider implicitly when more than one
     // resolves, as it does in this workspace.
     let _ = rustls::crypto::ring::default_provider().install_default();
