@@ -108,6 +108,45 @@ impl std::fmt::Display for ProxyGuardError {
 
 impl std::error::Error for ProxyGuardError {}
 
+/// Build the (unspawned) command for a dedicated proxy from `opts`.
+///
+/// Separated from [`ProxyGuard::spawn`] so the env-var wiring is unit-testable
+/// on its own — asserting over `Command::get_envs()` needs no real binary, no
+/// PATH, and no timeout, unlike `spawn()` itself, which review found had *no*
+/// coverage proving any of this wiring actually happens (a deleted line here
+/// would pass every existing test silently).
+fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::process::Command {
+    let mut cmd = std::process::Command::new(binary);
+    cmd.env("AA_PROXY_ADDR", "127.0.0.1:0");
+    cmd.env("AA_PROXY_READY_FILE", &opts.ready_file);
+    cmd.env("AA_CA_DIR", &opts.ca_dir);
+    cmd.env("AA_PROXY_PARENT_PID", std::process::id().to_string());
+    if let Some(agent_id) = &opts.agent_id {
+        cmd.env("AA_AGENT_ID", agent_id);
+    }
+    if let Some(endpoint) = &opts.gateway_endpoint {
+        cmd.env("AA_PROXY_GATEWAY_ENDPOINT", endpoint);
+        // Same reasoning as standalone start's proxy_child_env: a
+        // gateway-managed launch needs non-LLM MCP hosts intercepted and
+        // routed to the gateway's PolicyService, not transparently
+        // tunnelled past enforcement.
+        cmd.env("AA_PROXY_LLM_ONLY", "false");
+    }
+    if let Some(audit_path) = &opts.audit_jsonl_path {
+        cmd.env("AA_PROXY_AUDIT_JSONL_PATH", audit_path);
+    }
+    // No log file wired up in this increment (unlike standalone start's
+    // --log-file): this proxy's stdout/stderr have no operator watching a
+    // terminal for them the way `aasm proxy start` does. Discarding rather
+    // than inheriting keeps a governed tool's own stdout/stderr clean of
+    // interleaved proxy log lines. Structured log capture for a per-launch
+    // proxy, if wanted, is separate scope from spawning it.
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null());
+    cmd
+}
+
 /// A per-launch dedicated `aa-proxy`, alive for as long as this value is.
 ///
 /// No `Clone`, no `Copy`: exactly one `ProxyGuard` owns exactly one spawned
@@ -137,35 +176,7 @@ impl ProxyGuard {
         let binary = super::start::resolve_binary().ok_or(ProxyGuardError::BinaryNotFound)?;
         let binary = super::start::canonical_binary(binary);
 
-        let mut cmd = std::process::Command::new(&binary);
-        cmd.env("AA_PROXY_ADDR", "127.0.0.1:0");
-        cmd.env("AA_PROXY_READY_FILE", &opts.ready_file);
-        cmd.env("AA_CA_DIR", &opts.ca_dir);
-        cmd.env("AA_PROXY_PARENT_PID", std::process::id().to_string());
-        if let Some(agent_id) = &opts.agent_id {
-            cmd.env("AA_AGENT_ID", agent_id);
-        }
-        if let Some(endpoint) = &opts.gateway_endpoint {
-            cmd.env("AA_PROXY_GATEWAY_ENDPOINT", endpoint);
-            // Same reasoning as standalone start's proxy_child_env: a
-            // gateway-managed launch needs non-LLM MCP hosts intercepted and
-            // routed to the gateway's PolicyService, not transparently
-            // tunnelled past enforcement.
-            cmd.env("AA_PROXY_LLM_ONLY", "false");
-        }
-        if let Some(audit_path) = &opts.audit_jsonl_path {
-            cmd.env("AA_PROXY_AUDIT_JSONL_PATH", audit_path);
-        }
-        // No log file wired up in this increment (unlike standalone start's
-        // --log-file): this proxy's stdout/stderr have no operator watching
-        // a terminal for them the way `aasm proxy start` does. Discarding
-        // rather than inheriting keeps a governed tool's own stdout/stderr
-        // clean of interleaved proxy log lines. Structured log capture for a
-        // per-launch proxy, if wanted, is separate scope from spawning it.
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        cmd.stdin(std::process::Stdio::null());
-
+        let mut cmd = build_command(&binary, &opts);
         let mut child = cmd.spawn().map_err(ProxyGuardError::SpawnFailed)?;
 
         match wait_for_ready_file(&opts.ready_file, READINESS_TIMEOUT, &mut child) {
@@ -238,8 +249,16 @@ fn terminate_gracefully(child: &mut Child) {
 
     let deadline = Instant::now() + GRACEFUL_SHUTDOWN_TIMEOUT;
     loop {
-        if let Ok(Some(_)) = child.try_wait() {
-            return;
+        // `Err` (e.g. `ECHILD`, meaning something else already reaped this
+        // child) must end the wait the same as `Ok(Some(_))` — treating it
+        // as "still running" would poll out the full timeout and then
+        // SIGKILL a pid this process no longer owns. Nothing today reaps a
+        // ProxyGuard's child except this function, so this is currently
+        // unreachable, but it is cheap to close now rather than leave a
+        // TOCTOU waiting for a future caller that does add another reaper.
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {}
         }
         if Instant::now() >= deadline {
             break;
@@ -268,8 +287,34 @@ mod tests {
     /// "exited because it handled SIGTERM" from "exited because SIGKILL
     /// killed it" is exactly what the graceful-vs-forceful assertion below
     /// needs, and a plain `sleep` cannot provide that signal.
-    fn trap_term_script() -> &'static str {
-        "trap 'exit 0' TERM; while true; do sleep 0.05; done"
+    /// A shell script that installs a SIGTERM trap, signals that the trap is
+    /// actually installed by touching `marker` (so a caller can wait on a
+    /// real event instead of a fixed sleep — a fixed sleep either pads every
+    /// run with dead time or, if too short, races the shell's own startup
+    /// and lets SIGTERM arrive before `trap` has executed, silently taking
+    /// the default disposition instead of the handler), then loops.
+    fn trap_term_script(marker: &std::path::Path) -> String {
+        format!(
+            "trap 'exit 0' TERM; touch {}; while true; do sleep 0.05; done",
+            marker.display()
+        )
+    }
+
+    /// Poll for `marker` to exist, for up to 2s. Used only to synchronize a
+    /// test with a spawned shell's own startup — never a substitute for the
+    /// production readiness protocol (`wait_for_ready_file`), which has its
+    /// own, stronger guarantee (an atomic rename, not a bare file-exists
+    /// check racing a partial write from a shell `touch`).
+    fn wait_for_marker(marker: &std::path::Path) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !marker.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "marker file never appeared: {}",
+                marker.display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// Proves `terminate_gracefully` takes the SIGTERM path when the child
@@ -278,18 +323,14 @@ mod tests {
     /// only checked "the process is gone afterward".
     #[test]
     fn terminate_gracefully_uses_sigterm_when_the_child_cooperates() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("trap-installed");
         let mut child = std::process::Command::new("sh")
             .arg("-c")
-            .arg(trap_term_script())
+            .arg(trap_term_script(&marker))
             .spawn()
             .expect("spawn sh");
-        // Give the shell time to actually execute its `trap` builtin before
-        // signaling — without this, SIGTERM can race the shell's own
-        // startup and arrive before the trap is installed, in which case
-        // the default (terminate, not the handler) disposition applies and
-        // this test would flakily fail for a reason unrelated to what it
-        // means to prove.
-        std::thread::sleep(Duration::from_millis(200));
+        wait_for_marker(&marker);
 
         let start = Instant::now();
         terminate_gracefully(&mut child);
@@ -315,12 +356,17 @@ mod tests {
     fn terminate_gracefully_escalates_to_sigkill_when_the_child_ignores_sigterm() {
         use std::os::unix::process::ExitStatusExt;
 
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("trap-installed");
         let mut child = std::process::Command::new("sh")
             .arg("-c")
-            .arg("trap '' TERM; while true; do sleep 0.05; done")
+            .arg(format!(
+                "trap '' TERM; touch {}; while true; do sleep 0.05; done",
+                marker.display()
+            ))
             .spawn()
             .expect("spawn sh");
-        std::thread::sleep(Duration::from_millis(200));
+        wait_for_marker(&marker);
 
         terminate_gracefully(&mut child);
 
@@ -333,6 +379,94 @@ mod tests {
             Some(libc::SIGKILL),
             "an uncooperative child must be killed by SIGKILL, got: {status:?}"
         );
+    }
+
+    /// Machine-checks the env-var wiring `ProxyGuard::spawn` depends on,
+    /// without spawning anything: review found `spawn()` had no coverage
+    /// proving this wiring happens at all, so a deleted `cmd.env(...)` line
+    /// — including `AA_PROXY_PARENT_PID`, which the parent-watch shutdown
+    /// path (`aa-proxy/src/proxy/mod.rs`) depends on entirely — would have
+    /// passed every existing test silently.
+    #[test]
+    fn build_command_sets_every_env_var_it_promises() {
+        let opts = ProxyGuardOptions {
+            ready_file: PathBuf::from("/tmp/ready"),
+            ca_dir: PathBuf::from("/tmp/ca"),
+            agent_id: Some("did:key:test".to_string()),
+            gateway_endpoint: Some("http://127.0.0.1:50051".to_string()),
+            audit_jsonl_path: Some(PathBuf::from("/tmp/audit.jsonl")),
+        };
+        let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_ADDR")).copied().flatten(),
+            Some(std::ffi::OsStr::new("127.0.0.1:0"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_READY_FILE")).copied().flatten(),
+            Some(std::ffi::OsStr::new("/tmp/ready"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_CA_DIR")).copied().flatten(),
+            Some(std::ffi::OsStr::new("/tmp/ca"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_PARENT_PID")).copied().flatten(),
+            Some(std::process::id().to_string())
+                .as_deref()
+                .map(std::ffi::OsStr::new)
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_AGENT_ID")).copied().flatten(),
+            Some(std::ffi::OsStr::new("did:key:test"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_GATEWAY_ENDPOINT"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("http://127.0.0.1:50051"))
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_LLM_ONLY")).copied().flatten(),
+            Some(std::ffi::OsStr::new("false")),
+            "a gateway-managed launch must intercept non-LLM MCP hosts too"
+        );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_AUDIT_JSONL_PATH"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("/tmp/audit.jsonl"))
+        );
+    }
+
+    /// The `None` half of the optional fields: nothing gateway/agent/audit-
+    /// shaped should appear at all, not even as an empty string — an absent
+    /// `AA_AGENT_ID` and an `AA_AGENT_ID=""` mean different things to
+    /// `ProxyConfig::from_env`'s `env_optional`.
+    #[test]
+    fn build_command_omits_unset_optional_env_vars_entirely() {
+        let opts = ProxyGuardOptions {
+            ready_file: PathBuf::from("/tmp/ready"),
+            ca_dir: PathBuf::from("/tmp/ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        for key in [
+            "AA_AGENT_ID",
+            "AA_PROXY_GATEWAY_ENDPOINT",
+            "AA_PROXY_LLM_ONLY",
+            "AA_PROXY_AUDIT_JSONL_PATH",
+        ] {
+            assert!(
+                !env.contains_key(std::ffi::OsStr::new(key)),
+                "{key} must not be set when its opt is None"
+            );
+        }
     }
 
     /// `ProxyGuard::spawn` failing at the readiness stage must not leak the
