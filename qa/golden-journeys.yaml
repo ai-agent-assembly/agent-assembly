@@ -1188,3 +1188,62 @@ journeys:
   # AAASM-5853 for the acceptance contract this journey is not yet meeting.
   lifecycle_state: partial
   gap_owner: AAASM-5853
+- id: J64
+  jira: AAASM-5889
+  feature_refs:
+  - AAASM-5811
+  - AAASM-5812
+  - AAASM-5813
+  - AAASM-5814
+  - AAASM-5840
+  - AAASM-5854
+  name: Verify aasm run's execution-isolation runtime confines a real launch on macOS (Apple Silicon, aasm-macos-vm)
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-isolation
+  - aa-isolation-macos-vm
+  - aa-isolation-macos-vm-poc
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: See AAASM-5889 for the full acceptance contract; this row is a selection index only.
+  # Added 2026-08-24: AAASM-5811's macOS-hosted Linux isolation MVP (Done,
+  # hardware-qualified) shipped with zero catalog representation — J62's own
+  # comment explicitly excluded it because AAASM-5811 was still In Progress
+  # at the time J62 was written. Deliberately a separate journey from J62,
+  # not an extension of it: Linux is CI-automated (lifecycle_state:
+  # automated); macOS is real but #[ignore]d, hand-run-on-hardware evidence
+  # per AAASM-5811's own hardware-qualification policy (continuous CI is a
+  # future improvement, not an MVP requirement) — one journey row cannot
+  # honestly carry both lifecycle_states. fidelity: real_local_process is
+  # reused rather than adding a new enum value: the launched process inside
+  # the guest is real, not mocked — the VM is how it's confined, not a
+  # fidelity degradation of whether it runs for real. platforms names
+  # macos-apple-silicon specifically, not bare macos: Intel is explicitly
+  # unverified per verification-report-AAASM-5811-hardware-qualification.md
+  # and must not be implied as covered.
+  release_blocking: true
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-macos-vm/tests/adversarial_boundary_macos_vm_guest.rs::a_forbidden_read_produces_no_effect_while_the_same_read_with_the_grant_does
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-macos-vm/tests/real_hardware.rs::discover_measures_real_capability_rows
+  - repo: agent-assembly
+    kind: manual_record
+    selector: verification-reports/verification-report-AAASM-5811-hardware-qualification.md
+  execution_lanes:
+  - release
+  fidelity: real_local_process
+  platforms:
+  - macos-apple-silicon
+  negative_control: aa-isolation-macos-vm/tests/adversarial_boundary_macos_vm_guest.rs::a_symlink_inside_the_grant_pointing_at_the_forbidden_half_is_still_confined
+    (real hardware, 2026-08-24 independent QA pass — proves the guest's Landlock
+    ruleset resolves symlinks before applying the rule rather than being fooled
+    by one)
