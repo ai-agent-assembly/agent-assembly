@@ -271,8 +271,18 @@ exit 0
         let proc_a = child_a.spawn().expect("aasm run claude (A) should execute");
         let proc_b = child_b.spawn().expect("aasm run claude (B) should execute");
 
-        let out_a = tokio::task::spawn_blocking(move || proc_a.wait_with_output()).await??;
-        let out_b = tokio::task::spawn_blocking(move || proc_b.wait_with_output()).await??;
+        // Both `spawn_blocking` handles are created before either is
+        // awaited, and both are awaited via `try_join!` rather than two
+        // sequential `?`s — the earlier sequential form let A's error
+        // short-circuit the function before B's `Child` was ever `wait()`ed
+        // on, which `clippy::zombie_processes` correctly flagged: a B that
+        // failed to `spawn()` at all would leave A's freshly-spawned
+        // `aasm run` reaped, but a mid-run panic or error propagating from
+        // A would strand B unreaped for the rest of the test process's life.
+        let wait_a = tokio::task::spawn_blocking(move || proc_a.wait_with_output());
+        let wait_b = tokio::task::spawn_blocking(move || proc_b.wait_with_output());
+        let (out_a, out_b) = tokio::try_join!(wait_a, wait_b)?;
+        let (out_a, out_b) = (out_a?, out_b?);
 
         for (label, out) in [("A", &out_a), ("B", &out_b)] {
             assert!(
