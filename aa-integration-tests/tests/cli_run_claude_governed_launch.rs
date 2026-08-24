@@ -221,14 +221,22 @@ exit 0
 
         // `PATH` is prefixed rather than replaced: `build_launch_command`'s
         // `which` probe must find our stub first, while the child `aasm` keeps
-        // whatever else it needs from the host.
+        // whatever else it needs from the host. `proxy.proxy_bin_dir()` is
+        // included too (AAASM-5863): the child `aasm run` now resolves and
+        // spawns its own dedicated `aa-proxy` rather than trusting the
+        // already-running one `TrustedProxy::start()` stood up, so the same
+        // binary directory that command used must also be on *this* PATH, not
+        // just the harness process's own.
         let path_var = match std::env::var_os("PATH") {
             Some(existing) => {
-                let mut parts = vec![stub.parent().expect("stub has a parent").to_path_buf()];
+                let mut parts = vec![
+                    stub.parent().expect("stub has a parent").to_path_buf(),
+                    proxy.proxy_bin_dir().to_path_buf(),
+                ];
                 parts.extend(std::env::split_paths(&existing));
                 std::env::join_paths(parts)?
             }
-            None => std::env::join_paths([stub.parent().expect("stub has a parent")])?,
+            None => std::env::join_paths([stub.parent().expect("stub has a parent"), proxy.proxy_bin_dir()])?,
         };
 
         // ── the run ────────────────────────────────────────────────────────

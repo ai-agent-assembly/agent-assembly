@@ -252,13 +252,22 @@ exit 0
         /// Run `aasm run claude` against `gateway`, routed through `proxy`, and
         /// return the child stub's self-reported environment.
         fn run(&self, gateway: &GrpcGateway, proxy: &TrustedProxy) -> anyhow::Result<BTreeMap<String, String>> {
+            // `proxy.proxy_bin_dir()` is prefixed onto `self.path_var` here,
+            // not baked in at `create()` time (AAASM-5863): the child `aasm
+            // run` now resolves and spawns its own dedicated `aa-proxy`
+            // rather than trusting the already-running one `proxy` stood up,
+            // so that binary's directory must be on *this* launch's PATH too.
+            let mut path_parts = vec![proxy.proxy_bin_dir().to_path_buf()];
+            path_parts.extend(std::env::split_paths(&self.path_var));
+            let path_var = std::env::join_paths(path_parts)?;
+
             let out = std::process::Command::new(aasm_binary())
                 .current_dir(&self.project)
                 // Where the verified proxy's state record lives. Without it the
                 // launch refuses and nothing is measured.
                 .env("AA_DATA_DIR", proxy.data_dir())
                 .env("HOME", &self.home)
-                .env("PATH", &self.path_var)
+                .env("PATH", &path_var)
                 .env("CLAUDE_CONFIG_DIR", self.home.join(".claude"))
                 .env("AASM_STATE_DIR", &self.state_dir)
                 .env("AA_CA_DIR", self.root.join("ca"))
