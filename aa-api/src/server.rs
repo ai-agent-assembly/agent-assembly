@@ -44,12 +44,24 @@ pub const LOCAL_TELEMETRY_GRPC_ADDR: &str = "127.0.0.1:50052";
 /// misconfiguration the operator should see, so it propagates as an error
 /// rather than silently reverting to the default.
 fn resolve_telemetry_addr() -> Result<std::net::SocketAddr, Box<dyn std::error::Error>> {
-    match std::env::var("AA_API_TELEMETRY_ADDR") {
-        Ok(raw) => Ok(raw.parse()?),
-        Err(_) => Ok(LOCAL_TELEMETRY_GRPC_ADDR
+    let addr: std::net::SocketAddr = match std::env::var("AA_API_TELEMETRY_ADDR") {
+        Ok(raw) => raw.parse()?,
+        Err(_) => LOCAL_TELEMETRY_GRPC_ADDR
             .parse()
-            .expect("LOCAL_TELEMETRY_GRPC_ADDR is a valid loopback address")),
+            .expect("LOCAL_TELEMETRY_GRPC_ADDR is a valid loopback address"),
+    };
+    // Enforce the loopback-only invariant in code, not just in docs. The ingest
+    // is unauthenticated; off-host exposure would let any reachable host inject
+    // fabricated secret alerts into the dashboard. A non-loopback override is a
+    // misconfiguration, so it is rejected rather than silently bound.
+    if !addr.ip().is_loopback() {
+        return Err(format!(
+            "AA_API_TELEMETRY_ADDR must be a loopback address (the redaction telemetry ingest is \
+             unauthenticated and must never be reachable off-host); got {addr}"
+        )
+        .into());
     }
+    Ok(addr)
 }
 
 /// Max accepted gRPC decode size (4 MiB). Parity with `aa-gateway`'s legacy-grpc
@@ -466,4 +478,43 @@ pub async fn run_server_with_spa(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The telemetry ingest is unauthenticated, so its bind address must stay
+    /// loopback: the default is loopback, a loopback override is honored, and a
+    /// non-loopback override is rejected rather than silently exposed off-host.
+    ///
+    /// Single test on purpose — it is the only one touching the process-global
+    /// `AA_API_TELEMETRY_ADDR`, so it cannot race another test on that var.
+    #[test]
+    fn resolve_telemetry_addr_enforces_loopback() {
+        let saved = std::env::var("AA_API_TELEMETRY_ADDR").ok();
+
+        std::env::remove_var("AA_API_TELEMETRY_ADDR");
+        assert!(
+            resolve_telemetry_addr().unwrap().ip().is_loopback(),
+            "default must be loopback"
+        );
+
+        std::env::set_var("AA_API_TELEMETRY_ADDR", "127.0.0.1:0");
+        assert!(
+            resolve_telemetry_addr().unwrap().ip().is_loopback(),
+            "a loopback override must be honored"
+        );
+
+        std::env::set_var("AA_API_TELEMETRY_ADDR", "0.0.0.0:50052");
+        assert!(
+            resolve_telemetry_addr().is_err(),
+            "a non-loopback override must be rejected, not bound off-host"
+        );
+
+        match saved {
+            Some(v) => std::env::set_var("AA_API_TELEMETRY_ADDR", v),
+            None => std::env::remove_var("AA_API_TELEMETRY_ADDR"),
+        }
+    }
 }
