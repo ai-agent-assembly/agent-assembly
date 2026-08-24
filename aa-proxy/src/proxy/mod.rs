@@ -418,6 +418,7 @@ impl ProxyServer {
     /// same line.
     fn emit_rule_refusal(&self, id: RequestIdentity<'_>, rule: RefusalRule, probe_correlation: Option<String>) {
         DecisionRecord {
+            agent_id: self.config.agent_id.clone(),
             host: id.host.to_owned(),
             method: id.method.to_owned(),
             path: self.interceptor.redact_target(id.target),
@@ -454,6 +455,7 @@ impl ProxyServer {
                 .and_then(|b| std::str::from_utf8(b).ok().map(|s| bound_persisted_body(s.to_owned())))
         };
         DecisionRecord {
+            agent_id: self.config.agent_id.clone(),
             host: id.host.to_owned(),
             method: id.method.to_owned(),
             // The target can carry a secret in its query string (`?key=…`,
@@ -1298,7 +1300,11 @@ impl ProxyServer {
         // Emit the legacy ProxyEvent for the audit broadcast — keeps
         // existing subscribers wired up unchanged.
         let event = ProxyEvent {
-            agent_id: None,
+            // AAASM-5855: attribute the intercepted event to the real
+            // registered agent (read back from `AA_AGENT_ID`, the same env var
+            // `aasm run` exports into the launched tool) instead of hardcoding
+            // an unattributed event.
+            agent_id: self.config.agent_id.clone(),
             pattern,
             method: req.method.clone(),
             path: req.target.clone(),
@@ -2185,6 +2191,7 @@ mod tests {
             mcp_fail_open: false,
             network_fail_open: false,
             // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
+            agent_id: None,
             allow_private_connect_targets: false,
         };
         config.bind_addr = ([127, 0, 0, 1], 0).into();
@@ -2213,6 +2220,7 @@ mod tests {
             gateway_endpoint: Some("http://127.0.0.1:1".to_string()),
             mcp_fail_open: false,
             network_fail_open,
+            agent_id: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2627,6 +2635,7 @@ mod tests {
             gateway_endpoint: None,
             mcp_fail_open: false,
             network_fail_open: false,
+            agent_id: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2760,6 +2769,7 @@ mod tests {
             gateway_endpoint: None,
             mcp_fail_open: false,
             network_fail_open: false,
+            agent_id: None,
             allow_private_connect_targets: false,
         };
 
@@ -2844,6 +2854,7 @@ mod tests {
             gateway_endpoint: None,
             mcp_fail_open: false,
             network_fail_open: false,
+            agent_id: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);

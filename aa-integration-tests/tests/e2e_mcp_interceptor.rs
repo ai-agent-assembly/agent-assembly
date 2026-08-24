@@ -815,6 +815,7 @@ mod proxy_e2e {
             network_fail_open: false,
             // CONNECT host is a public name redirected via `upstream_override`,
             // so the SSRF guard stays fully active.
+            agent_id: None,
             allow_private_connect_targets: false,
         };
         let bind_addr = config.bind_addr;

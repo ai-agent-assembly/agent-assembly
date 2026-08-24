@@ -188,6 +188,19 @@ pub struct ProxyConfig {
     /// reaching internal address space. The guard's protection is unchanged in
     /// every non-test build.
     pub allow_private_connect_targets: bool,
+
+    /// AAASM-5855 — the registered identity of the agent this proxy instance is
+    /// running on behalf of, if any.
+    ///
+    /// `aasm run` registers a real `did:key`/`agent_id` and exports it into the
+    /// launched tool's process env as `AA_AGENT_ID` (`aa-cli/src/commands/run.rs`);
+    /// this is the proxy reading that same env var back so intercepted-traffic
+    /// audit records (`ProxyEvent`, `DecisionRecord`) can be attributed to the
+    /// actual agent instead of rendering as `<unknown>`. `None` in standalone
+    /// mode (no `aasm run` launch) or when the launcher never set it.
+    ///
+    /// Env: `AA_AGENT_ID` — no default, absent unless set.
+    pub agent_id: Option<String>,
 }
 
 impl ProxyConfig {
@@ -213,6 +226,8 @@ impl ProxyConfig {
             network_fail_open: env_truthy("AA_PROXY_NETWORK_FAIL_OPEN"),
             // No env var: production binaries can never relax the SSRF guard.
             allow_private_connect_targets: false,
+            // AAASM-5855: read back what `aasm run` exported for this launch.
+            agent_id: env_optional("AA_AGENT_ID"),
         })
     }
 }

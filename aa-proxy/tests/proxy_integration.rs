@@ -33,6 +33,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         // loopback — so the test-only escape hatch must be enabled here, exactly
         // as the CONNECT/tunnel paths already require for their loopback mocks.
         // Production `from_env` keeps this false.
+        agent_id: None,
         allow_private_connect_targets: true,
     }
 }
@@ -526,6 +527,7 @@ mod attacker {
             gateway_endpoint: None,
             mcp_fail_open: false,
             network_fail_open: false,
+            agent_id: None,
             allow_private_connect_targets: true,
         }
     }

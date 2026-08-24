@@ -91,6 +91,11 @@ pub struct ForwardAuthorized(());
 /// persists the record, so no caller is in a position to pair one observation's
 /// authorization with another observation's evidence.
 pub struct DecisionRecord {
+    /// The registered agent this record is attributed to, if any (AAASM-5855).
+    /// Supplied by the caller from [`crate::config::ProxyConfig::agent_id`]
+    /// rather than hardcoded, so the persisted entry matches the same identity
+    /// `aasm run` registered — not the literal string `<unknown>`.
+    pub agent_id: Option<String>,
     /// Target host, no port.
     pub host: String,
     /// HTTP method of the intercepted request.
@@ -132,7 +137,7 @@ impl DecisionRecord {
         let (credential_findings, findings_omitted) = bound_persisted_findings(&self.findings);
         let entry = ProxyAuditEntry {
             ts_ms,
-            agent_id: None,
+            agent_id: self.agent_id,
             host: self.host,
             method: self.method,
             path: self.path,
@@ -324,6 +329,7 @@ mod tests {
 
     fn record(host: &str) -> DecisionRecord {
         DecisionRecord {
+            agent_id: None,
             host: host.to_owned(),
             method: "POST".to_owned(),
             path: "/v1/do".to_owned(),

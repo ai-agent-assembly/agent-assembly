@@ -117,6 +117,7 @@ fn proxy_config_with_gateway(ca_dir: &Path, gateway_addr: SocketAddr, network_fa
         gateway_endpoint: Some(format!("http://{gateway_addr}")),
         mcp_fail_open: true, // startup soft-degrades; the per-decision knob under test is network_fail_open
         network_fail_open,
+        agent_id: None,
         allow_private_connect_targets: true,
     }
 }
