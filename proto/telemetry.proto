@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package assembly.telemetry.v1;
+
+// RedactionTelemetryService — a private, loopback-only ingest surface that
+// lets the out-of-process `aa-proxy` report a pre-transmission credential
+// REDACT decision to `aa-api`, so the real Scrub/Alerts dashboard can observe
+// a redaction that happened in a different process (AAASM-5871).
+//
+// Why this exists: `aa-proxy` redacts outbound credentials locally, before the
+// payload leaves the machine. The dashboard's secret-alert path lives in
+// `aa-api` behind an in-process `tokio::broadcast` channel. Those are three
+// separate OS processes, so the proxy cannot reach that channel without a
+// network hop. This service is that hop — and nothing more.
+//
+// Security invariant: this surface carries ONLY non-sensitive evidence —
+// finding *kinds*, a count, a redact action (implicit: this service is only
+// ever called for a redaction), correlation/identity tags, and the
+// destination host. No byte of any matched secret ever crosses it, and none
+// may be added to any field. The redaction has already happened upstream of
+// this call; this channel surfaces *that* it happened, it never moves the
+// data that was redacted.
+//
+// Served by:  `aa-api` on a dedicated 127.0.0.1 loopback port — never the
+//             gateway lifecycle port (:50051), which a co-located gateway
+//             owns in the standard deployment.
+// Consumed by: `aa-proxy`'s best-effort telemetry client, once per
+//             `ForwardedRedacted` decision.
+service RedactionTelemetryService {
+  // ReportRedaction ingests one pre-transmission redaction event.
+  //
+  // Idempotent on `RedactionEvent.event_id`: a duplicate id is acknowledged
+  // without recording a second alert, so a client retry after an ambiguous
+  // network failure never double-counts. The proxy treats this call as
+  // best-effort — a failure here must never change the enforcement outcome
+  // the proxy already applied.
+  rpc ReportRedaction(ReportRedactionRequest) returns (ReportRedactionResponse);
+}
+
+message ReportRedactionRequest {
+  RedactionEvent event = 1;
+}
+
+// One pre-transmission redaction, described entirely in non-sensitive terms.
+message RedactionEvent {
+  // Client-generated unique id for this event, used as the idempotency key:
+  // the server records at most one alert per distinct id.
+  string event_id = 1;
+
+  // When the redaction happened, epoch milliseconds UTC. The server uses this
+  // as the alert timestamp so the dashboard reflects when the payload was
+  // actually redacted, not when this report was received.
+  int64 occurred_at_ms = 2;
+
+  // Raw UUID bytes (16) of the agent whose payload was redacted, when the
+  // proxy path had an attributed identity. Empty means unattributed — the
+  // server records the event under a well-known sentinel identity rather than
+  // fabricating a plausible-looking one.
+  bytes agent_id = 3;
+
+  // Team attribution propagated from the request context, when known. Empty
+  // means none.
+  string team_id = 4;
+
+  // Destination host the redacted payload was bound for (e.g.
+  // "api.anthropic.com"). Non-sensitive routing / provider metadata.
+  string destination_host = 5;
+
+  // Distinct credential kinds detected, as stable `CredentialKind::as_str()`
+  // tags (e.g. "AwsAccessKey"). Kinds only — never a matched value. Always
+  // non-empty when this service is called.
+  repeated string finding_kinds = 6;
+
+  // Total findings produced by the scanner pass. May exceed
+  // `finding_kinds.len()` when the same kind matched more than once.
+  uint32 finding_count = 7;
+}
+
+message ReportRedactionResponse {
+  // True when this call recorded a new alert; false when `event_id` was
+  // already seen and the call was an idempotent replay.
+  bool recorded = 1;
+}
