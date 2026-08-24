@@ -17,7 +17,7 @@
 # scripts/qa/validate-golden-journeys-negative-control.sh.
 #
 # Covers AAASM-5878's design doc test list, cases owned by AAASM-5899
-# (Subtask B): T1, T2a-d, T3a-c, T4a-d, T5, T8, T9, T10. T6/T7 (post-publish
+# (Subtask B): T1, T2a-d, T3a-c, T4a-e, T5, T8, T9, T10. T6/T7 (post-publish
 # artifact binding) belong to AAASM-5900 (Subtask C) and are not covered here.
 #
 # Usage: bash scripts/tests/release-evidence-negative-control.sh
@@ -477,6 +477,61 @@ patch_evidence "$dir" "doc['journeys'][0]['status'] = 'UNTESTED'; doc['journeys'
 commit_all "$dir" "record evidence (registry_gap on a release-blocking journey)" >/dev/null
 assert_exit "T4d" 1 "$dir" "$A"
 assert_output_contains "T4d names registry_gap as inadmissible" "does not waive a release-blocking requirement"
+
+# ---------------------------------------------------------------------------
+# T4e: waiver ref resolves only via substring collision on a DIFFERENT
+# journey's block -> BLOCK, not the false-PASS a bare `in` containment check
+# on journey_id would produce (journey J1 is a substring of journey J15, and
+# a well-formed Waivers block genuinely about J15 can share the same ref
+# text as an unrelated release-blocking journey J1).
+# ---------------------------------------------------------------------------
+echo "== T4e: waiver ref matches a block about a DIFFERENT journey via substring collision (J1 vs J15) -> BLOCK =="
+CATALOG_J1='catalog_version: "1"
+journeys:
+- id: J1
+  jira: AAASM-0000
+  name: Fixture journey
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "src/lib.rs::test_thing"
+  execution_lanes: [pr]
+  fidelity: mock'
+QA_SIGNOFF_J15_COLLISION='# QA sign-off fixture
+
+## Selected journeys
+
+| Journey ID | Priority | Result | Evidence |
+|---|---|---|---|
+| J1 | P0 | UNTESTED | fixture — see Waivers |
+
+## Waivers
+
+- **Waived by:** QA Lead
+- **Condition waived:** J15 UNTESTED pending live env (WAIVER-999)
+- **Justification:** this waiver covers only the journey named above, no other.
+
+## Verdict
+
+Verdict: PASS'
+dir=$(new_repo t4e)
+write_common_files "$dir"
+write_catalog "$dir" "$CATALOG_J1"
+write_signoffs "$dir" "$QA_SIGNOFF_J15_COLLISION" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+patch_evidence "$dir" "doc['journeys'][0]['status'] = 'UNTESTED'; doc['journeys'][0]['exception'] = {'kind': 'waiver', 'approved_by': 'qa-lead', 'ref': 'WAIVER-999'}; doc['verdict'] = 'PASS'; doc['signoffs']['qa']['verdict'] = 'PASS'"
+commit_all "$dir" "record evidence (J1 waiver ref collides with unrelated J15 block)" >/dev/null
+assert_exit "T4e" 1 "$dir" "$A"
 
 # ---------------------------------------------------------------------------
 # T5: changed path in range is a required journey's own evidence-selector file -> BLOCK, names it
