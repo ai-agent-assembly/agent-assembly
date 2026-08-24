@@ -1,0 +1,11 @@
+# Malformed registry fixture (AAASM-5893 case 12): a pool with a non-positive
+# `limit`. Must fail validate_registry() — a zero/negative limit can never be
+# acquired, which would make `run` hang or fail confusingly instead of
+# failing fast at validation time.
+version: 1
+pools:
+  only-pool:
+    limit: 0
+classes:
+  only-class:
+    pool: only-pool

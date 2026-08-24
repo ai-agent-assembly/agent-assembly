@@ -1,0 +1,13 @@
+# Malformed registry fixture (AAASM-5893 case 12): the same class name
+# defined twice under `classes`. Plain yaml.safe_load would silently let the
+# second definition win; resource-lock.py's loader must reject this outright
+# rather than validate a class the author never actually reviewed.
+version: 1
+pools:
+  only-pool:
+    limit: 1
+classes:
+  only-class:
+    pool: only-pool
+  only-class:
+    pool: only-pool
