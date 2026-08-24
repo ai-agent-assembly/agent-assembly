@@ -1,0 +1,24 @@
+# Test-only registry fixture (AAASM-5893 case 11 — the os.set_inheritable
+# regression). A dedicated limit-1 pool so a second `run` attempt against the
+# same class is guaranteed to contend, independent of the real registry's
+# `lightweight` pool (limit 6, which case 11 must NOT use — 6-way capacity
+# would let the second acquire succeed even with a broken lock, hiding the
+# exact bug this case exists to catch).
+version: 1
+defaults:
+  wait_secs: 0
+  soft_timeout_secs: 600
+  hard_timeout_secs: 1800
+  max_wallclock_secs: 21600
+  grace_secs: 20
+  breaker_open_threshold: 3
+  degraded_limit: 0
+  duplicate_policy: suppress
+pools:
+  test-single:
+    limit: 1
+    root: null
+classes:
+  test-class:
+    pool: test-single
+    progress_signals: [cpu]

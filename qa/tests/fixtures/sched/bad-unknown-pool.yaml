@@ -1,0 +1,9 @@
+# Malformed registry fixture (AAASM-5893 case 12): a class references a pool
+# that is not defined anywhere in `pools`. Must fail validate_registry().
+version: 1
+pools:
+  only-pool:
+    limit: 1
+classes:
+  only-class:
+    pool: nonexistent-pool

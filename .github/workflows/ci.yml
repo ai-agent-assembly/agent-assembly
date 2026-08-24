@@ -161,6 +161,14 @@ on:
       - "qa/tests/fixtures/**"
       - "scripts/qa/validate-golden-journeys.py"
       - "scripts/qa/validate-golden-journeys-negative-control.sh"
+      # AAASM-5893: the resource-lock slot mechanism (Subtask 1 of AAASM-5891's
+      # resource-aware QA-campaign scheduler). Paired with the `qa_registry`
+      # router filter below — `qa/tests/fixtures/**` above already covers the
+      # new `qa/tests/fixtures/sched/**` fixtures, so only the new script
+      # files need their own entries here.
+      - "qa/resource-classes.yaml"
+      - "scripts/qa/resource-lock.py"
+      - "scripts/qa/resource-scheduler-negative-control.sh"
       # AAASM-5878/5899: the release-evidence freshness checker and its
       # digest module. Same ADR 0028 pairing rule as above — every path here
       # has a matching `qa_registry` router filter entry below.
@@ -450,6 +458,14 @@ jobs:
               - 'qa/tests/fixtures/**'
               - 'scripts/qa/validate-golden-journeys.py'
               - 'scripts/qa/validate-golden-journeys-negative-control.sh'
+              # AAASM-5893: resource-lock slot mechanism. Every path here has
+              # a matching `on.push.paths` entry above (live trigger, ADR
+              # 0028) — shares this router flag with the golden-journeys
+              # registry above rather than a new one, since both gates key
+              # off the same `qa/**` + `scripts/qa/**` surface.
+              - 'qa/resource-classes.yaml'
+              - 'scripts/qa/resource-lock.py'
+              - 'scripts/qa/resource-scheduler-negative-control.sh'
               # AAASM-5878/5899: the release-evidence freshness checker.
               - 'scripts/qa/registry_digest.py'
               - 'scripts/qa/build-release-evidence.py'
@@ -1214,6 +1230,48 @@ jobs:
       # produces one.
       - name: Self-test the release-evidence checker (negative control)
         run: bash scripts/tests/release-evidence-negative-control.sh
+
+  resource-lock-health-gate:
+    needs: [changes]
+    # AAASM-5893 (Subtask 1 of AAASM-5891's resource-aware QA-campaign
+    # scheduler). Its own job rather than folded into `registry-health-gate`
+    # above: that job validates a *data* registry (`qa/golden-journeys.yaml`)
+    # against static rules, while this one exercises live process/fcntl
+    # behavior (real concurrent subprocesses, real slot contention, a real
+    # execvp) — different failure surface, worth isolating in its own check
+    # run.
+    #
+    # ubuntu-latest only, deliberately NOT matrixed onto macos-latest despite
+    # the incident this Story fixes (AAASM-5877) being measured on macOS:
+    # adding a macos-latest runner to *this* workflow file changes what
+    # `scripts/qa/validate-golden-journeys.py` sees as a "platform with a
+    # matching ci.yml runner" (it scans ci.yml's `runs-on` values), which
+    # flips `qa/tests/fixtures/11-unsupported-platform.yaml` — a fixture that
+    # asserts a declared-but-unsupported platform fails validation — from
+    # exit 1 to exit 0, breaking registry-health-gate's own negative control.
+    # Confirmed by trying it and watching that case turn red. A macOS leg for
+    # this job would need to land together with a fix to that scan (or the
+    # fixture), which is out of this subtask's scope; AAASM-5811 already
+    # tracks the broader "no macOS runner in this repo's CI" gap.
+    if: needs.changes.outputs.qa_registry == 'true'
+    name: Resource-lock health gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+
+      - name: Validate qa/resource-classes.yaml
+        run: python3 scripts/qa/resource-lock.py validate qa/resource-classes.yaml
+
+      # Runs the fixture-driven concurrency/duplicate-suppression/sweep/
+      # exec-lock-survival cases (see the harness's own header comment) —
+      # including case 11, the dedicated regression for `os.set_inheritable`
+      # silently being dropped before `execvp`.
+      - name: Self-test resource-lock.py (negative control)
+        run: bash scripts/qa/resource-scheduler-negative-control.sh
 
   detection-egress-closure:
     needs: [changes]
@@ -3521,6 +3579,12 @@ jobs:
       # not a metric — an advisory version would be exactly the "false PASS"
       # this Epic exists to prevent.
       - registry-health-gate
+      # AAASM-5893: blocks, like `registry-health-gate` above and for the
+      # same reason — a resource-lock mechanism that validates against a
+      # broken registry, or whose exec-lock-survival regression case (11)
+      # silently fails, is a false PASS on the exact incident (AAASM-5877)
+      # this Story exists to prevent.
+      - resource-lock-health-gate
       # AAASM-5738: blocks. AAASM-5270 exit criterion 6 asks for behaviour
       # *verified* under egress-denied testing, and an advisory version of this
       # would be a dependency-tree argument again — which is what the criterion

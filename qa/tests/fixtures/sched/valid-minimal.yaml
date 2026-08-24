@@ -1,0 +1,10 @@
+# Minimal structurally-valid registry (AAASM-5893 case 12).
+version: 1
+defaults:
+  wait_secs: 0
+pools:
+  only-pool:
+    limit: 1
+classes:
+  only-class:
+    pool: only-pool
