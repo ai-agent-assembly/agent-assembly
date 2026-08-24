@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use clap::Args;
 
@@ -134,21 +134,6 @@ fn proxy_child_env(listen: &str, gateway: Option<&str>) -> Vec<(&'static str, St
         env.push(("AA_PROXY_LLM_ONLY", "false".to_string()));
     }
     env
-}
-
-/// Poll TCP connect on `addr` until the socket accepts or `timeout` elapses.
-fn wait_for_port(addr: &str, timeout: Duration) -> bool {
-    let Ok(sock_addr) = addr.parse::<SocketAddr>() else {
-        return false;
-    };
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(100)).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    false
 }
 
 /// Build the state record for a proxy just spawned as `child_pid` from `binary`.
@@ -320,7 +305,7 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
 
     println!("Starting aa-proxy on {} (PID {child_pid})...", args.listen);
 
-    if wait_for_port(&args.listen, Duration::from_secs(5)) {
+    if super::readiness::wait_for_port(&args.listen, Duration::from_secs(5)) {
         println!("Proxy started on http://{}", args.listen);
         println!("Logs: {}", log_file.display());
         ExitCode::SUCCESS
@@ -499,16 +484,5 @@ mod tests {
     fn the_record_names_the_path_that_was_spawned() {
         let state = state_for_child(std::process::id(), Path::new("/opt/aa/aa-proxy"), "127.0.0.1:8899");
         assert_eq!(state.exe_path, PathBuf::from("/opt/aa/aa-proxy"));
-    }
-
-    #[test]
-    fn wait_for_port_returns_false_on_unbound_addr() {
-        // Port 1 is privileged and never listening in test environments.
-        assert!(!wait_for_port("127.0.0.1:1", Duration::from_millis(200)));
-    }
-
-    #[test]
-    fn wait_for_port_returns_false_on_invalid_addr() {
-        assert!(!wait_for_port("not-an-address", Duration::from_millis(100)));
     }
 }

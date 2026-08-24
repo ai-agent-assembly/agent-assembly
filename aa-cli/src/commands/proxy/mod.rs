@@ -4,6 +4,7 @@ pub mod ca;
 pub mod identity;
 pub mod logs;
 pub mod pid;
+pub mod readiness;
 pub mod start;
 pub mod status;
 pub mod stop;
