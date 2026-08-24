@@ -709,7 +709,7 @@ mod real_binary_governed_launch {
         drop(ca);
 
         // ── the proxy `aasm run` will vouch for ────────────────────────────
-        let proxy = TrustedProxy::start_intercepting(&ca_dir, upstream.addr, &state)?;
+        let proxy = TrustedProxy::start_intercepting(&ca_dir, upstream.addr, &state, &[])?;
         let proxy_url = proxy.expected_proxy_url();
 
         // ── the gateway ────────────────────────────────────────────────────

@@ -136,6 +136,8 @@ pub struct TrustedProxy {
     data_dir: PathBuf,
     proxy_bin_dir: PathBuf,
     addr: String,
+    log_path: PathBuf,
+    stopped: bool,
 }
 
 impl TrustedProxy {
@@ -162,6 +164,7 @@ impl TrustedProxy {
             listener.local_addr()?.port()
         };
         let addr = format!("127.0.0.1:{port}");
+        let log_path = root.join("proxy.log");
 
         let out = std::process::Command::new(&aasm)
             .env("AA_DATA_DIR", &data_dir)
@@ -174,7 +177,7 @@ impl TrustedProxy {
                 "--ca-dir",
                 root.join("ca").to_str().expect("temp path is utf-8"),
                 "--log-file",
-                root.join("proxy.log").to_str().expect("temp path is utf-8"),
+                log_path.to_str().expect("temp path is utf-8"),
             ])
             .output()?;
         anyhow::ensure!(
@@ -192,6 +195,8 @@ impl TrustedProxy {
             data_dir,
             proxy_bin_dir,
             addr,
+            log_path,
+            stopped: false,
         })
     }
 
@@ -221,7 +226,17 @@ impl TrustedProxy {
     /// integration install copies into the launch environment are all one CA. A
     /// harness holding three of them would pass or fail for reasons that have
     /// nothing to do with the product.
-    pub fn start_intercepting(ca_dir: &Path, upstream: std::net::SocketAddr, state_dir: &Path) -> anyhow::Result<Self> {
+    ///
+    /// `extra_env` is passed through to the `aasm proxy start` child on top of
+    /// the fixed set below (AAASM-5902: e.g. `AA_PROXY_TELEMETRY_ENDPOINT` for a
+    /// journey that needs the proxy to report redaction telemetry to a specific
+    /// address rather than the production default).
+    pub fn start_intercepting(
+        ca_dir: &Path,
+        upstream: std::net::SocketAddr,
+        state_dir: &Path,
+        extra_env: &[(&str, &str)],
+    ) -> anyhow::Result<Self> {
         use std::os::unix::fs::PermissionsExt;
 
         let aasm = aasm_binary();
@@ -243,9 +258,10 @@ impl TrustedProxy {
             listener.local_addr()?.port()
         };
         let addr = format!("127.0.0.1:{port}");
+        let log_path = root.join("proxy.log");
 
-        let out = std::process::Command::new(&aasm)
-            .env("AA_DATA_DIR", &data_dir)
+        let mut cmd = std::process::Command::new(&aasm);
+        cmd.env("AA_DATA_DIR", &data_dir)
             .env("PATH", prefixed_path(&proxy_bin_dir)?)
             // Inherited by the spawned proxy: `aasm proxy start` sets a handful
             // of variables on the child and passes the rest of its own
@@ -259,7 +275,11 @@ impl TrustedProxy {
             // The mock's leaf is signed by the throwaway CA above, which no
             // public root store knows. Debug-only; ignored in release builds.
             .env("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY", "1")
-            .env("AASM_STATE_DIR", state_dir)
+            .env("AASM_STATE_DIR", state_dir);
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        let out = cmd
             .args([
                 "proxy",
                 "start",
@@ -268,7 +288,7 @@ impl TrustedProxy {
                 "--ca-dir",
                 ca_dir.to_str().expect("temp path is utf-8"),
                 "--log-file",
-                root.join("proxy.log").to_str().expect("temp path is utf-8"),
+                log_path.to_str().expect("temp path is utf-8"),
             ])
             .output()?;
         anyhow::ensure!(
@@ -286,6 +306,8 @@ impl TrustedProxy {
             data_dir,
             proxy_bin_dir,
             addr,
+            log_path,
+            stopped: false,
         })
     }
 
@@ -309,12 +331,51 @@ impl TrustedProxy {
     pub fn proxy_bin_dir(&self) -> &Path {
         &self.proxy_bin_dir
     }
+
+    /// Path to the `--log-file` this proxy was started with (AAASM-5902; needed
+    /// for cross-process log correlation).
+    pub fn log_path(&self) -> &Path {
+        &self.log_path
+    }
+
+    /// OS process id of the running proxy, read from its state file
+    /// (`$AA_DATA_DIR/proxy.pid`, first line — see `aa-cli/src/commands/proxy/pid.rs`).
+    ///
+    /// `None` if the state file cannot be read/parsed, e.g. the proxy has
+    /// already been stopped.
+    pub fn pid(&self) -> Option<u32> {
+        let content = std::fs::read_to_string(self.data_dir.join("proxy.pid")).ok()?;
+        content.lines().next()?.trim().parse().ok()
+    }
+
+    /// Explicitly stop the proxy via `aasm proxy stop` (SIGTERM, then SIGKILL
+    /// after 5s — see `aa-cli/src/commands/proxy/stop.rs`), rather than relying
+    /// on `Drop`. Idempotent: a proxy already stopped is reported as such by
+    /// `aasm proxy stop` itself and this still returns `Ok`.
+    pub fn stop(&mut self) -> anyhow::Result<()> {
+        let out = std::process::Command::new(&self.aasm)
+            .env("AA_DATA_DIR", &self.data_dir)
+            .args(["proxy", "stop"])
+            .output()?;
+        self.stopped = true;
+        anyhow::ensure!(
+            out.status.success(),
+            "`aasm proxy stop` failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        Ok(())
+    }
 }
 
 impl Drop for TrustedProxy {
     fn drop(&mut self) {
-        // Best effort: the temp dir goes away regardless, but the proxy is in
-        // its own process group and would outlive the test run.
+        // Best-effort safety net: skip if `stop()` was already called
+        // explicitly. The temp dir goes away regardless, but the proxy is in
+        // its own process group and would outlive the test run otherwise.
+        if self.stopped {
+            return;
+        }
         let _ = std::process::Command::new(&self.aasm)
             .env("AA_DATA_DIR", &self.data_dir)
             .args(["proxy", "stop"])
