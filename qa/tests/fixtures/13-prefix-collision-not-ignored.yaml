@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T13
+  jira: AAASM-0015
+  name: Fixture — shorter name is a prefix of an ignored sibling but is itself NOT ignored (AAASM-5876 regression)
+  priority: P1
+  persona_track: Fixture
+  surfaces: [qa/tests]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'qa/tests/fixtures/sample-prefix-collision.rs::a_prefix_collision_target'
+  execution_lanes: [pr]
+  fidelity: real_local_process

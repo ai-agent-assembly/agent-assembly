@@ -2,16 +2,18 @@
 # AAASM-5874/5876 negative-control harness for scripts/qa/validate-golden-journeys.py.
 #
 # Proves the registry validation is genuinely load-bearing — not merely
-# present — by asserting the validator's real exit code against 12 small,
+# present — by asserting the validator's real exit code against 14 small,
 # self-contained fixtures in qa/tests/fixtures/. Cases 1-8 cover the 8 cases
 # AAASM-5874's Testing/Verification section requires (case 7, the rename
-# scenario, is 2 fixtures: before/after); cases 9-11 cover AAASM-5876's
+# scenario, is 2 fixtures: before/after); cases 9-13 cover AAASM-5876's
 # CI-execution-integrity requirements — case 9 is this Story's own required
 # demonstration of the historical "tests exist but no workflow executes
 # them" failure mode (AC bullet 8), case 10 proves a deterministic
 # `#[ignore]` skip cannot count as automated evidence, case 11 proves a
-# declared-but-unsupported platform (no matching ci.yml runner) fails.
-# Mirrors the pattern
+# declared-but-unsupported platform (no matching ci.yml runner) fails; cases
+# 12-13 are regressions for two bugs an independent reviewer found in the
+# first cut of 9/10 (a globstar false-negative on crate-root files, a
+# prefix-substring false-positive in the #[ignore] scan). Mirrors the pattern
 # already established by scripts/tests/release-readiness-qa-negative-control.sh
 # (AAASM-5823) — assert on exit codes, not narrative.
 #
@@ -73,6 +75,12 @@ assert_exit "10-ignored-test.yaml" 1
 echo "== Case 11 (AAASM-5876): declared platform has no matching ci.yml runner =="
 assert_exit "11-unsupported-platform.yaml" 1
 
+echo "== Case 12 (AAASM-5876 regression): crate-root file (0 subdirs) must resolve via ** globstar =="
+assert_exit "12-globstar-zero-dir.yaml" 0
+
+echo "== Case 13 (AAASM-5876 regression): prefix-of-an-ignored-sibling must not itself be flagged =="
+assert_exit "13-prefix-collision-not-ignored.yaml" 0
+
 if [ "$FAILED" -ne 0 ]; then
   echo ""
   echo "validate-golden-journeys-negative-control: FAILED — the validator is not load-bearing for one or more cases"
@@ -80,4 +88,4 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 echo ""
-echo "validate-golden-journeys-negative-control: all 12 assertions passed"
+echo "validate-golden-journeys-negative-control: all 14 assertions passed"
