@@ -708,6 +708,11 @@ git -C "$dir" push -q t6a-remote HEAD:main
 # no history with the candidate the evidence was generated for.
 unrelated_dir="$WORKDIR/t6a-unrelated"
 git -C "$dir" clone -q "$dir" "$unrelated_dir" 2>/dev/null || true
+# `clone` does not carry over $dir's local user.email/user.name (those are
+# per-repo config, not inherited) — a bare-identity CI runner has no global
+# fallback either, so the commit below needs its own local identity here.
+git -C "$unrelated_dir" config user.email "test-harness@example.com"
+git -C "$unrelated_dir" config user.name "Release Evidence Test Harness"
 git -C "$unrelated_dir" checkout -q --orphan unrelated
 git -C "$unrelated_dir" rm -rf -q . >/dev/null 2>&1 || true
 echo "unrelated" > "$unrelated_dir/unrelated.txt"
