@@ -170,6 +170,36 @@ impl std::fmt::Display for EgressDenyReason {
     }
 }
 
+/// Write the proxy's actual bound address to `ready_file` (AAASM-5859), so a
+/// caller that requested port 0 can discover the real port without a
+/// bind-probe-and-release race (which would be TOCTOU under concurrent
+/// `aasm run` launches — a `wait_for_port`-style connect succeeding proves
+/// *something* is listening there, not that it is this proxy).
+///
+/// Written as `<ip>:<port>\n<pid>\n` — the pid lets a reader confirm the file
+/// still describes the process it expects, not a stale leftover from a prior
+/// launch that reused the path. Atomic (temp file + rename) so a reader never
+/// observes a partial write, and `0600` so the address/pid pair — which
+/// identifies an interception endpoint holding CA material — isn't
+/// world-readable.
+fn write_ready_file(ready_file: &std::path::Path, addr: std::net::SocketAddr) -> Result<(), std::io::Error> {
+    use std::io::Write;
+
+    let tmp = ready_file.with_extension("tmp");
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        writeln!(file, "{addr}")?;
+        writeln!(file, "{}", std::process::id())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, ready_file)
+}
+
 /// Build a JSON-RPC 2.0 error response body carrying the policy reason.
 ///
 /// `id` is fixed at `null` because the proxy denies before parsing the
@@ -343,7 +373,15 @@ impl ProxyServer {
         }
 
         let listener = TcpListener::bind(self.config.bind_addr).await?;
-        tracing::info!(addr = %self.config.bind_addr, "proxy listening");
+        let bound_addr = listener.local_addr()?;
+        tracing::info!(addr = %bound_addr, "proxy listening");
+
+        // AAASM-5859: report the real bound address back (needed when
+        // `bind_addr` was port 0 — see `ProxyConfig::ready_file`'s doc for why
+        // that is legitimate only when this is configured).
+        if let Some(ready_file) = &self.config.ready_file {
+            write_ready_file(ready_file, bound_addr)?;
+        }
 
         let mut sigint =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(ProxyError::Io)?;
@@ -2192,6 +2230,7 @@ mod tests {
             network_fail_open: false,
             // These unit tests assert the SSRF guard blocks loopback/RFC-1918.
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: false,
         };
         config.bind_addr = ([127, 0, 0, 1], 0).into();
@@ -2221,6 +2260,7 @@ mod tests {
             mcp_fail_open: false,
             network_fail_open,
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2636,6 +2676,7 @@ mod tests {
             mcp_fail_open: false,
             network_fail_open: false,
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);
@@ -2770,6 +2811,7 @@ mod tests {
             mcp_fail_open: false,
             network_fail_open: false,
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: false,
         };
 
@@ -2855,6 +2897,7 @@ mod tests {
             mcp_fail_open: false,
             network_fail_open: false,
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: false,
         };
         let (tx, _rx) = broadcast::channel(8);

@@ -96,6 +96,7 @@ impl ProxyHarness {
             mcp_fail_open: false,
             network_fail_open: false,
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: false,
         };
         let (tx, events) = broadcast::channel(256);

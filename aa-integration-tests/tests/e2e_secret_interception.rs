@@ -576,6 +576,7 @@ mod proxy_data_path {
             // Dials are redirected via `upstream_override` to a loopback mock,
             // so the SSRF guard stays fully active for the public CONNECT host.
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: false,
         };
         let bind_addr = config.bind_addr;

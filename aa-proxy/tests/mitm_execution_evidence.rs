@@ -207,6 +207,7 @@ async fn start_proxy(
         // The mock/dead upstreams are on loopback, which the SSRF guard would
         // (correctly) refuse in production.
         agent_id: None,
+        ready_file: None,
         allow_private_connect_targets: true,
     };
 

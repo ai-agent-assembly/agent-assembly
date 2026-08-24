@@ -55,6 +55,7 @@ fn proxy_config(ca_dir: &std::path::Path, network_allowlist: Vec<String>) -> Pro
         // These tests allowlist `127.0.0.1` as a loopback stand-in upstream,
         // which the AAASM-3130 SSRF guard blocks in production.
         agent_id: None,
+        ready_file: None,
         allow_private_connect_targets: true,
     }
 }
