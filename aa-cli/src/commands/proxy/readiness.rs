@@ -170,6 +170,35 @@ mod tests {
         }
     }
 
+    /// The fourth cell the module's own doc comment argues for but the two
+    /// tests above don't exercise: a child that wrote the ready file and
+    /// *then* exited (a proxy that reports readiness and is killed
+    /// immediately after) must still be reported `Ready` — deleting the
+    /// post-`try_wait` file check would silently turn this into
+    /// `ChildExited` and this is the only test that would catch it.
+    #[test]
+    fn wait_for_ready_file_returns_ready_even_when_the_child_has_already_exited() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready_file = dir.path().join("ready");
+        std::fs::write(&ready_file, "127.0.0.1:8123\n1\n").unwrap();
+
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn sh");
+        // Ensure the child has actually exited before calling, not merely
+        // started exiting — otherwise this could accidentally exercise the
+        // same interleaving as the all-alive positive-path test instead of
+        // the one this test is for.
+        let _ = child.wait();
+
+        match wait_for_ready_file(&ready_file, Duration::from_secs(5), &mut child) {
+            ReadyFileOutcome::Ready(addr) => assert_eq!(addr, "127.0.0.1:8123".parse().unwrap()),
+            other => panic!("expected Ready even though the child already exited, got {other:?}"),
+        }
+    }
+
     /// Neither the file nor a dead child — the honest "nothing happened" case.
     #[test]
     fn wait_for_ready_file_times_out_when_nothing_happens() {
