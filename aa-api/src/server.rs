@@ -305,7 +305,11 @@ pub async fn serve_telemetry_grpc(
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     Server::builder()
-        .add_service(ingest.into_server().max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE))
+        .add_service(
+            ingest
+                .into_server()
+                .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
+        )
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await?;
     Ok(())

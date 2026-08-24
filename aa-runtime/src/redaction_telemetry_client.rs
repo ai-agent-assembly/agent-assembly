@@ -39,10 +39,7 @@ impl RedactionTelemetryClient {
 
     /// Report one redaction event. Errors are the caller's to swallow — this
     /// path is best-effort and must never propagate into enforcement.
-    pub async fn report_redaction(
-        &mut self,
-        event: RedactionEvent,
-    ) -> Result<ReportRedactionResponse, tonic::Status> {
+    pub async fn report_redaction(&mut self, event: RedactionEvent) -> Result<ReportRedactionResponse, tonic::Status> {
         let resp = self
             .client
             .report_redaction(ReportRedactionRequest { event: Some(event) })

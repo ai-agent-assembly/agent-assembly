@@ -102,9 +102,7 @@ impl RedactionTelemetryService for RedactionTelemetryIngest {
             .ok_or_else(|| Status::invalid_argument("missing redaction event"))?;
 
         if event.event_id.is_empty() {
-            return Err(Status::invalid_argument(
-                "event_id is required as the idempotency key",
-            ));
+            return Err(Status::invalid_argument("event_id is required as the idempotency key"));
         }
         if event.finding_kinds.is_empty() {
             return Err(Status::invalid_argument(

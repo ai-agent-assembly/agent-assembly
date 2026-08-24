@@ -126,7 +126,9 @@ impl TlsCapturingUpstream {
                         .lines()
                         .find_map(|line| {
                             let lower = line.to_ascii_lowercase();
-                            lower.strip_prefix("content-length:").and_then(|v| v.trim().parse().ok())
+                            lower
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse().ok())
                         })
                         .unwrap_or(0);
                     let body_start = head_end + 4;
@@ -167,7 +169,9 @@ async fn client_trust_proxy_ca(ca_dir: &std::path::Path) -> ClientConfig {
     roots
         .add(CertificateDer::from(der_bytes))
         .expect("add ca cert to root store");
-    ClientConfig::builder().with_root_certificates(roots).with_no_client_auth()
+    ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
 }
 
 /// Spin up a `ProxyServer` with `RedactOnly` credential action pointed at the
@@ -285,7 +289,8 @@ async fn real_proxy_redaction_reaches_dashboard_api() {
     let (proxy_addr, _rx, abort) = start_proxy(dir.path(), ca, upstream.addr).await;
 
     // ── Act: send a synthetic AWS key through the proxy ───────────────────────
-    let body = format!(r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"my key is {FAKE_AWS_ACCESS_KEY}"}}]}}"#);
+    let body =
+        format!(r#"{{"model":"gpt-4","messages":[{{"role":"user","content":"my key is {FAKE_AWS_ACCESS_KEY}"}}]}}"#);
     send_through_proxy(proxy_addr, client_config, &body).await;
 
     // ── Assert (4): enforcement did not regress — the forwarded bytes are
@@ -296,7 +301,11 @@ async fn real_proxy_redaction_reaches_dashboard_api() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(upstream.request_count(), 1, "upstream must receive exactly one forwarded request");
+    assert_eq!(
+        upstream.request_count(),
+        1,
+        "upstream must receive exactly one forwarded request"
+    );
     let forwarded = upstream.last_body().expect("upstream captured body");
     assert!(
         forwarded.contains("[REDACTED:AwsAccessKey]"),

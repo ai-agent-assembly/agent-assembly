@@ -437,7 +437,10 @@ impl ProxyServer {
         // gateway connect above, which is a governance path). Read from env,
         // mirroring the `CredentialStore` egress-key sink, so telemetry stays
         // off the enforcement config surface.
-        if let Some(endpoint) = std::env::var("AA_PROXY_TELEMETRY_ENDPOINT").ok().filter(|e| !e.is_empty()) {
+        if let Some(endpoint) = std::env::var("AA_PROXY_TELEMETRY_ENDPOINT")
+            .ok()
+            .filter(|e| !e.is_empty())
+        {
             match RedactionTelemetryClient::connect_lazy_owned(&endpoint) {
                 Some(client) => {
                     let _ = self.telemetry_client.set(Arc::new(Mutex::new(client)));
