@@ -127,3 +127,35 @@ spec:
         "a dropped deny must be observably absent (the test would catch a real lowering regression)"
     );
 }
+
+/// AAASM-5877 negative control: `lower_to_ebpf` genuinely depends on its
+/// policy input, not a hardcoded deny. Two structurally different real
+/// documents through the same real production function — the guard-clause
+/// document (above) must produce the `/etc` deny; this one, which omits
+/// `requires_approval_if` entirely, must not. Unlike
+/// `artificial_divergence_is_detected` (which simulates the broken case by
+/// manipulating this test's own local data, not `lower_to_ebpf`'s output),
+/// this is a real differential: if `lower_to_ebpf` were rewritten to emit
+/// `/etc` unconditionally, this assertion — not a test-local copy — would
+/// catch it.
+#[test]
+fn policy_without_the_guard_clause_produces_no_deny() {
+    let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: divergence-probe-negative
+spec:
+  tools:
+    write_file:
+      allow: true
+"#;
+    let gw_doc = PolicyValidator::from_yaml(yaml).unwrap().document;
+    let rules = lower_to_ebpf(&gw_doc.to_canonical());
+    let deny: Vec<&str> = rules.deny_paths().collect();
+    assert!(
+        !deny.contains(&"/etc"),
+        "a policy with no requires_approval_if guard produced a /etc deny — \
+         lower_to_ebpf is not actually deriving denies from policy input"
+    );
+}
