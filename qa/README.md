@@ -152,19 +152,30 @@ AAASM-5877's own scope:
 
 | Class | Journey | Negative control | What it proves |
 |---|---|---|---|
-| Security enforcement | `J24` (allow/deny) | `cross_layer_policy_consistency_test.rs::artificial_divergence_is_detected` | Drops one deny rule from the lowered kernel ruleset and asserts the gap is observably absent — a real regression in policy-lowering would be caught, not silently pass. |
+| Security enforcement | `J24` (allow/deny) | `cross_layer_policy_consistency_test.rs::policy_without_the_guard_clause_produces_no_deny` | A real differential: two structurally different policy documents through the same real `lower_to_ebpf`, asserting the `/etc` deny is present for the guard-clause document and absent for the one that omits it — proves the lowering genuinely derives denies from policy input, not a hardcoded emit. |
 | Security enforcement | `J41` (three-layer interception) | `e2e_ebpf.rs::ebpf_catches_traffic_that_bypasses_proxy` | Simulates the SDK/proxy layers being absent and asserts eBPF independently observes the traffic they'd otherwise catch — proves the "three layers, each independently authoritative" claim isn't just three tests of the same path. |
-| Cross-process evidence/observability | `J44` (audit trail) | `audit_seq_recovery_test.rs::without_recovery_seq_would_duplicate` | Asserts that *without* the sequence-recovery mechanism, a gateway restart would produce duplicate audit sequence numbers — proves restart-spanning evidence continuity is load-bearing, not assumed. |
+| Cross-process evidence/observability | `J27` (data protection) | `sensitive_data_producer_test.rs::primary_seam_writes_the_event_and_its_finding_rows` | A real seam test that kills the `evaluate_primary` wiring mutation (per that file's own module doc) — proves the alert-producing path is actually wired to the detection engine, not a hardcoded emit. |
 | Registry/CI execution-integrity | (the registry-health gate itself) | `scripts/qa/validate-golden-journeys-negative-control.sh` cases 9-13 (AAASM-5876) | Removes/breaks a required execution path (dead trigger, `#[ignore]`d evidence, unsupported platform) in an isolated fixture and asserts the gate goes non-zero — this Story's own required demonstration that "tests exist but nothing runs them" is caught, not silently green. |
 
-All four were pre-existing, real tests (not written for this Story) —
-AAASM-5877's contribution was finding them, verifying they demonstrate the
-5-step positive→fault→FAIL→restore→PASS pattern, and linking them into the
-registry so the property they prove has a stable, discoverable identity
-rather than living only as an unreferenced test in a `tests/` directory.
-None weaken production/default state: each mutates a local, in-test copy of
-data or process topology, asserts on it, and the process exits — nothing
-persists outside the test's own process.
+All four were pre-existing, real tests, except `J24`'s: this Story's first
+candidate for `J24` (`artificial_divergence_is_detected`) and its original
+`J44` candidate (`audit_seq_recovery_test.rs::without_recovery_seq_would_duplicate`)
+were both found by independent adversarial review to be tautological — each
+simulated the broken state by mutating a local copy of the test's own data
+rather than re-invoking the real production function with genuinely broken
+input, so neither actually proved the property it claimed to. `J24` was
+repointed to a newly-written, genuinely differential test in the same file;
+`J44`'s claim was removed rather than left standing on disproven evidence,
+and the "cross-process evidence" class is now demonstrated by `J27` using an
+already-real, already-mutation-tested function instead. `J41`'s evidence
+selector (`aa-integration-tests/tests/e2e_ebpf.rs`) also had a real CI dead-
+trigger gap — `ci.yml`'s `ebpf` path filter only matched `aa-ebpf*/**`, so a
+change to that test file alone would not retrigger `e2e-ebpf-linux` on PR
+(schedule/`workflow_dispatch` only); fixed by adding the file to the filter
+in the same PR (AAASM-5877), per this doc's own dead-trigger policy above.
+None of the surviving controls weaken production/default state: each
+mutates a local, in-test copy of data or process topology, asserts on it,
+and the process exits — nothing persists outside the test's own process.
 
 ## Selection demonstration
 
