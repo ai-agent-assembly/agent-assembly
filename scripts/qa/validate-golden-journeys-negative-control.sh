@@ -66,7 +66,7 @@ assert_exit "07b-rename-after.yaml" 0
 echo "== Case 8: backward migration without fabricating automation =="
 assert_exit "08-migrated-legacy-gap.yaml" 0
 
-echo "== Case 9 (AAASM-5876): evidence path not covered by any CI trigger (dead trigger, ADR 0028) =="
+echo "== Case 9 (AAASM-5876): evidence path not covered by any CI trigger (dead trigger, Core ADR 028) =="
 assert_exit "09-dead-trigger.yaml" 1
 
 echo "== Case 10 (AAASM-5876): evidence references a test marked #[ignore] =="

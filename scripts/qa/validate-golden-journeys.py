@@ -299,7 +299,7 @@ def validate(path: str, check_p0_bounds: bool = True, check_ci_wiring: bool = Tr
                                     problems.append(
                                         f"{jid}: evidence path '{ev_path}' is not covered by any "
                                         f"ci.yml on.push.paths trigger — a real dead trigger "
-                                        f"(ADR 0028): the test may exist but no workflow runs it"
+                                        f"(Core ADR 028): the test may exist but no workflow runs it"
                                     )
                                 if _is_ignored_test(repo_root, root, ev_path, ev_name):
                                     problems.append(

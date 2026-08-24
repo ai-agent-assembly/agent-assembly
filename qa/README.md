@@ -106,7 +106,7 @@ build/test runner.
 kind evidence entry on a `release_blocking` + `automated` journey:
 
 - the evidence file's path is not covered by **any** `ci.yml`
-  `on.push.paths` trigger glob — a real dead trigger (ADR 0028): a
+  `on.push.paths` trigger glob — a real dead trigger (Core ADR 028): a
   release-blocking claim can point at a real test file that no workflow on
   `main` actually runs. This is the exact "tests exist but CI never
   executes them" failure mode that motivated this Story (a real Dashboard
@@ -131,7 +131,7 @@ this validator's.
 **When adding/changing/removing a journey**, to avoid registry/workflow
 drift: if the evidence file's directory isn't already covered by an
 existing `ci.yml` filter, add both the `on.push.paths` entry and the
-`dorny/paths-filter` glob in the same PR (ADR 0028) — the validator will
+`dorny/paths-filter` glob in the same PR (Core ADR 028) — the validator will
 catch a missed one for any `automated` + `release_blocking` entry, but P1/P2
 entries aren't strictly checked, so don't rely on the gate alone for those.
 
