@@ -1,0 +1,23 @@
+# Synthetic, test-only catalog fixture (AAASM-5898) — not a real journey
+# catalog. Used to regenerate qa/tests/evidence-fixtures/minimal-valid.evidence.json
+# and by later subtasks' checker tests.
+catalog_version: '1'
+journeys:
+- id: J90
+  jira: AAASM-0000
+  name: Synthetic single-journey fixture
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only — not a real acceptance contract.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-minimal.yaml::fixture"
+  execution_lanes: [pr]
+  fidelity: mock
