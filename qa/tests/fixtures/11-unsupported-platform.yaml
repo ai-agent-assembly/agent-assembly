@@ -1,0 +1,22 @@
+catalog_version: '1'
+journeys:
+- id: J-T11
+  jira: AAASM-0013
+  name: Fixture — declared platform has no matching ci.yml runner (AAASM-5876)
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'scripts/qa/validate-golden-journeys.py::def validate'
+  execution_lanes: [pr]
+  fidelity: real_local_process
+  platforms:
+  - windows

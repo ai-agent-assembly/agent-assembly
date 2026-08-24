@@ -1,0 +1,20 @@
+catalog_version: '1'
+journeys:
+- id: J-T9
+  jira: AAASM-0011
+  name: Fixture — evidence path is real but not covered by any CI trigger (AAASM-5876)
+  priority: P1
+  persona_track: Fixture
+  surfaces: [LICENSE]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'LICENSE::Apache License'
+  execution_lanes: [pr]
+  fidelity: real_local_process
