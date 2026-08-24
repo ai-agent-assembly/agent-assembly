@@ -192,7 +192,13 @@ AAASM-5878 design) is separate, later work.
       "fidelity": "real_local_process",
       "platforms": [],
       "negative_control": "aa-cli/tests/run_policy_fail_closed.rs (fail-closed regression)",
-      "evidence_ref": "**PASS**"        // the raw "Result" cell text this status was parsed from
+      "evidence_ref": "**PASS**",       // the raw "Result" cell text this status was parsed from
+      "priority": "P0",                 // AAASM-5900 (R8): sign-off table's own "Priority" cell,
+                                         // falling back to the catalog entry's `priority` field
+                                         // only when the table has no Priority column at all
+      "evidence_cell": "Real Homebrew install: ..." // AAASM-5900 (R8): the raw "Evidence" cell
+                                         // text, carried through verbatim (null if the table has
+                                         // no Evidence column)
     }
   ],
   "signoffs": {
@@ -225,6 +231,13 @@ AAASM-5878 design) is separate, later work.
   legitimately disagree in future subtasks' reconciliation rules (e.g. a
   waived exception). This subtask records both plainly; reconciling them is
   a checker (later subtask) concern.
+- **`priority` and `evidence_cell`** (AAASM-5900) exist so
+  `scripts/qa/render-signoff-journeys.py` can reproduce the sign-off's
+  "Selected journeys" table byte-for-byte from this JSON record alone, with
+  no catalog or `.md` re-read at render time — `check-release-evidence.py`'s
+  R8 rule diffs that render against the real sign-off's generated block
+  (see TEMPLATE.md). Both are carried through verbatim, the same way
+  `evidence_ref` already is; neither is re-derived or reformatted.
 - **Never a fudged instance**: this format faithfully records whatever the
   input sign-off says, including `verdict: BLOCK` — a real release whose
   actual QA sign-off is BLOCK must produce a BLOCK evidence record, not a

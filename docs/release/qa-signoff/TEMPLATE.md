@@ -41,14 +41,30 @@
 
 ## Selected journeys
 
-| Journey ID | Priority | Reason selected | Result |
+<!-- BEGIN GENERATED JOURNEYS TABLE -->
+| Journey ID | Priority | Result | Evidence |
 |---|---|---|---|
-| <e.g. J-CLI-QUICKSTART> | P0 | always run | PASS |
-| <id> | P1 | impacted by <surface> | PASS |
+| <e.g. J-CLI-QUICKSTART> | P0 | **PASS** | <one-line evidence reference> |
+| <id> | P1 | **PASS** | <one-line evidence reference> |
+<!-- END GENERATED JOURNEYS TABLE -->
 
 > Full journey catalog: AAASM-5824's machine-readable catalog. This table lists
 > only the journeys actually selected and run for this release, not the whole
 > catalog.
+>
+> **Generated block (AAASM-5900):** the table between the
+> `<!-- BEGIN/END GENERATED JOURNEYS TABLE -->` markers above is re-derived
+> from `v<version>.evidence.json` by `scripts/qa/render-signoff-journeys.py`
+> and checked byte-for-byte by `scripts/qa/check-release-evidence.py`'s R8
+> rule — edit the evidence JSON (via `build-release-evidence.py`), not this
+> table directly; a manual hand-edit that isn't reflected in the evidence
+> JSON will BLOCK the next readiness run. A sign-off file copied from this
+> TEMPLATE carries the markers and is R8-gated from the moment it's created.
+> Sign-off files committed before AAASM-5900 (e.g. `v0.0.1-rc.7.md`) predate
+> this convention and have no markers — R8 reports those as **SKIPPED**
+> (printed distinctly from OK/PASS, never silently treated as
+> checked-and-passed) and does not retrofit markers into an already-published
+> historical record.
 
 ## Feature → Coverage ledger
 

@@ -108,18 +108,23 @@ def _load_catalog(catalog_path: str) -> list[dict[str, Any]]:
     return doc.get("journeys", [])
 
 
-def _extract_selected_journeys_table(md_text: str) -> dict[str, str]:
-    """Map journey id -> raw "Result" markdown cell text from the sign-off's
-    "Selected journeys" table.
+def _extract_selected_journeys_table(md_text: str) -> dict[str, dict[str, str | None]]:
+    """Map journey id -> raw markdown cell text for the "Result" and
+    "Evidence" columns of the sign-off's "Selected journeys" table (plus the
+    "Priority" column when present, so `render-signoff-journeys.py`,
+    AAASM-5900's R8, can reproduce the whole table from the evidence JSON
+    alone without re-reading the catalog).
 
-    The Result column is located by its header text, not by a hardcoded cell
-    index — a reordered or inserted column (e.g. Evidence moving ahead of
-    Result) would otherwise make this silently start reading the wrong
-    cell, and the real sign-off's Evidence prose routinely contains the word
-    "PASS" for journeys whose actual Result is something else. Only that one
-    column is returned raw; `_map_journey_status` below turns it into the
-    8-token vocabulary. Rows outside a `| J<n> | ... |` shape (the header
-    row, the `|---|---|` separator) are skipped.
+    Every column is located by its header text, not by a hardcoded cell
+    index — a reordered column would otherwise make this silently start
+    reading the wrong cell, and the real sign-off's Evidence prose routinely
+    contains the word "PASS" for journeys whose actual Result is something
+    else. `_map_journey_status` below turns the raw Result text into the
+    8-token vocabulary; Priority/Evidence are carried through verbatim for
+    R8's byte-for-byte re-render, not interpreted. Rows outside a
+    `| J<n> | ... |` shape (the header row, the `|---|---|` separator) are
+    skipped. Priority/Evidence are optional — a table missing either column
+    (e.g. a hand-written fixture) still yields a Result-only entry.
     """
     section = re.search(r"^## Selected journeys\n(.*?)(?=\n## |\Z)", md_text, re.S | re.M)
     if not section:
@@ -130,15 +135,27 @@ def _extract_selected_journeys_table(md_text: str) -> dict[str, str]:
     if not table_lines:
         return {}
     header_cells = [c.strip() for c in table_lines[0].strip("|").split("|")]
-    result_idx = next(
-        (i for i, c in enumerate(header_cells) if c.strip().lower() == "result"), None
-    )
+
+    def _col_idx(name: str) -> int | None:
+        return next(
+            (i for i, c in enumerate(header_cells) if c.strip().lower() == name), None
+        )
+
+    result_idx = _col_idx("result")
     if result_idx is None:
         raise ValueError(
             "Selected journeys table has no 'Result' column header — found "
             f"columns {header_cells!r}"
         )
-    results: dict[str, str] = {}
+    priority_idx = _col_idx("priority")
+    evidence_idx = _col_idx("evidence")
+
+    def _cell(cells: list[str], idx: int | None) -> str | None:
+        if idx is None or len(cells) <= idx:
+            return None
+        return cells[idx]
+
+    rows: dict[str, dict[str, str | None]] = {}
     for line in table_lines[1:]:
         cells = [c.strip() for c in line.strip("|").split("|")]
         if len(cells) <= result_idx:
@@ -146,8 +163,12 @@ def _extract_selected_journeys_table(md_text: str) -> dict[str, str]:
         jid = cells[0]
         if not re.match(r"^J\d+[A-Za-z]?$", jid):
             continue  # not a data row (header, separator, malformed row)
-        results[jid] = cells[result_idx]
-    return results
+        rows[jid] = {
+            "result": _cell(cells, result_idx),
+            "priority": _cell(cells, priority_idx),
+            "evidence": _cell(cells, evidence_idx),
+        }
+    return rows
 
 
 def _map_journey_status(jid: str, raw_cell: str) -> str:
@@ -224,7 +245,8 @@ def build_evidence(
     journeys = []
     for entry in required:
         jid = entry["id"]
-        raw_cell = table.get(jid)
+        row = table.get(jid)
+        raw_cell = row["result"] if row is not None else None
         status = _map_journey_status(jid, raw_cell) if raw_cell is not None else "NOT_RUN"
         assert status in VALID_STATUSES, f"{jid}: mapped to invalid status {status!r}"
         journeys.append({
@@ -237,6 +259,15 @@ def build_evidence(
             "platforms": sorted(entry.get("platforms") or []),
             "negative_control": entry.get("negative_control") or None,
             "evidence_ref": raw_cell,
+            # AAASM-5900 (R8): carried through verbatim, not re-derived, so
+            # `render-signoff-journeys.py` can reproduce the sign-off's
+            # "Selected journeys" table byte-for-byte from this JSON alone.
+            # `priority` prefers the sign-off table's own cell (what was
+            # actually published) and falls back to the catalog's field only
+            # when the table has no Priority column at all — the catalog is
+            # not re-read at render time.
+            "priority": (row.get("priority") if row is not None else None) or entry.get("priority"),
+            "evidence_cell": row.get("evidence") if row is not None else None,
         })
 
     if candidate_sha is None:

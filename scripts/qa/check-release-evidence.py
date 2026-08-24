@@ -35,8 +35,27 @@ is Subtask C's scope, R9/R10 are post-publish and also Subtask C's scope):
   R6  temporal sanity — evidence must not predate the candidate commit.
   R7  sign-off consistency — evidence verdict/sign-off verdicts vs. the real
       sign-off .md files.
-  R8  NOT IMPLEMENTED here — see AAASM-5900 (Subtask C ships the renderer
-      this rule needs).
+  R8  derived-table consistency (AAASM-5900) — re-render the "Selected
+      journeys" table from the evidence JSON and diff it byte-for-byte
+      against the real sign-off .md's generated block (between the
+      `<!-- BEGIN/END GENERATED JOURNEYS TABLE -->` markers). A sign-off
+      file with no markers yet (every file committed before AAASM-5900)
+      is SKIPPED, not silently passed — see TEMPLATE.md's own note on the
+      transition.
+
+`--post-publish` runs two further rules against the *actually published*
+tag/release, not just `--tag-target`:
+
+  R9  post-publish tag binding — resolve `v<version>` on the configured
+      remote to a real commit, confirm it descends from the evidence's
+      candidate, re-run R1/R1b against it, and confirm the published tree's
+      evidence JSON blob is byte-identical to the local file.
+  R10 post-publish artifact identity — `cosign verify-blob` the published
+      release's `SHA256SUMS` against its `SHA256SUMS.cosign.bundle`, reusing
+      (not duplicating) `scripts/install-cli.sh`'s own
+      `COSIGN_IDENTITY_RE`/`COSIGN_OIDC_ISSUER` constants. Out of scope:
+      channel/version propagation, which stays `/release-validate-channels`'s
+      job.
 
 AC deviation (see AAASM-5878/5899 comment trail): the ticket's literal
 "candidate SHA must equal tag target" would make every release un-taggable
@@ -54,17 +73,35 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import registry_digest  # noqa: E402  (sys.path must be set first)
+
+
+def _load_render_signoff_journeys():
+    """`render-signoff-journeys.py` is hyphenated (a CLI entry point, matching
+    this directory's other hyphenated scripts — see registry_digest.py's own
+    docstring for why import targets in this directory are underscored
+    instead), so it can't be `import`ed by name; load it from its file path
+    directly."""
+    module_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "render-signoff-journeys.py")
+    spec = importlib.util.spec_from_file_location("render_signoff_journeys", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+render_signoff_journeys = _load_render_signoff_journeys()
 
 
 class GitRepo:
@@ -561,6 +598,248 @@ def rule_r7_signoff_consistency(
 
 
 # ---------------------------------------------------------------------------
+# R8 — derived-table consistency (AAASM-5900)
+# ---------------------------------------------------------------------------
+
+_GENERATED_BLOCK_RE = re.compile(
+    r"<!-- BEGIN GENERATED JOURNEYS TABLE -->\n(.*?)\n<!-- END GENERATED JOURNEYS TABLE -->",
+    re.S,
+)
+
+
+def rule_r8_derived_table(
+    evidence: dict[str, Any], qa_signoff_text: str, qa_signoff_path: str,
+) -> list[str]:
+    """Re-render the "Selected journeys" table from `evidence` and diff it
+    byte-for-byte against the real sign-off .md's generated block.
+
+    Every sign-off file committed before AAASM-5900 has no
+    `<!-- BEGIN/END GENERATED JOURNEYS TABLE -->` markers — retrofitting
+    markers into an already-published historical record was rejected (see
+    TEMPLATE.md's own note), so an unmarked file is SKIPPED here rather than
+    treated as passing. SKIPPED is printed as its own distinct line — never
+    folded into "OK" — so it cannot be mistaken for "checked and passed".
+    New sign-off files copied from TEMPLATE.md carry the markers from the
+    moment they're created and are gated from then on.
+    """
+    match = _GENERATED_BLOCK_RE.search(qa_signoff_text)
+    if match is None:
+        print(
+            "R8 derived-table consistency: SKIPPED — "
+            f"{qa_signoff_path} has no <!-- BEGIN/END GENERATED JOURNEYS TABLE --> "
+            "markers (pre-AAASM-5900 sign-off file). Not gated; not a pass — copy a "
+            "new sign-off from TEMPLATE.md to get R8 coverage."
+        )
+        return []
+
+    actual_block = match.group(1).strip("\n")
+    rendered_block = render_signoff_journeys.render_journeys_table(evidence).strip("\n")
+
+    if actual_block != rendered_block:
+        print("R8 derived-table consistency: BLOCK — generated block differs from the "
+              "evidence-derived render")
+        print("  --- rendered from evidence ---")
+        for line in rendered_block.splitlines():
+            print(f"  {line}")
+        print("  --- actual in sign-off .md ---")
+        for line in actual_block.splitlines():
+            print(f"  {line}")
+        return [
+            f"R8: {qa_signoff_path}'s generated journeys table does not byte-match the "
+            "table re-rendered from the evidence JSON — the sign-off .md and the evidence "
+            "record have drifted apart"
+        ]
+
+    print("R8 derived-table consistency: OK — generated block matches the evidence-derived "
+          "render byte-for-byte")
+    return []
+
+
+# ---------------------------------------------------------------------------
+# R9 — post-publish tag binding
+# ---------------------------------------------------------------------------
+
+def rule_r9_post_publish_tag_binding(
+    git: GitRepo, evidence: dict[str, Any], remote: str, publish_tag: str,
+    evidence_relpath: str, catalog_relpath: str, required_t: list[dict[str, Any]],
+    repo_root: str,
+) -> list[str]:
+    blocks: list[str] = []
+    candidate_sha = evidence["candidate"]["candidate_sha"]
+
+    fetch = git.run("fetch", remote, "tag", publish_tag, "--force", check=False)
+    if fetch.returncode != 0:
+        blocks.append(
+            f"R9: could not fetch tag {publish_tag!r} from remote {remote!r}: "
+            f"{fetch.stderr.strip()}"
+        )
+        return blocks
+    ls = git.run("ls-remote", "--tags", remote, publish_tag, check=False)
+    if not ls.stdout.strip():
+        blocks.append(f"R9: tag {publish_tag!r} does not exist on remote {remote!r}")
+        return blocks
+
+    tag_commit = git.rev_parse(f"{publish_tag}^{{commit}}")
+    if not git.is_ancestor(candidate_sha, tag_commit):
+        blocks.append(
+            f"R9: published tag {publish_tag} resolves to {tag_commit}, which is not a "
+            f"descendant of the evidence's candidate {candidate_sha} — this release cannot "
+            "be authorized by this evidence record"
+        )
+        return blocks
+
+    # Re-run the candidate-binding rules against the commit that was
+    # ACTUALLY published, not just whatever --tag-target this invocation
+    # happened to be given — the two can differ (a re-tag, a force-pushed
+    # tag, a hand-run `--tag-target` against the wrong ref).
+    r1_blocks, _reuse_class = rule_r1_candidate_binding(
+        git, evidence, tag_commit, evidence_relpath, catalog_relpath, required_t,
+    )
+    blocks += [f"R9(via R1 at published tag): {b}" for b in r1_blocks]
+    r1b_blocks = rule_r1b_self_protection(git, evidence, tag_commit, evidence_relpath)
+    blocks += [f"R9(via R1b at published tag): {b}" for b in r1b_blocks]
+
+    blob_at_tag = git.run("rev-parse", f"{tag_commit}:{evidence_relpath}", check=False)
+    if blob_at_tag.returncode != 0 or not blob_at_tag.stdout.strip():
+        blocks.append(
+            f"R9: published tree {tag_commit} does not contain {evidence_relpath} — "
+            "published tree does not contain the authorization it claims"
+        )
+        return blocks
+    tag_blob_hash = blob_at_tag.stdout.strip()
+
+    local_evidence_path = os.path.join(repo_root, evidence_relpath)
+    local_hash = git.run("hash-object", local_evidence_path).stdout.strip()
+    if local_hash != tag_blob_hash:
+        blocks.append(
+            f"R9: published tree's {evidence_relpath} blob ({tag_blob_hash}) is not "
+            f"byte-identical to the local evidence file ({local_hash}) — published tree does "
+            "not contain the authorization it claims"
+        )
+        return blocks
+
+    print(
+        f"R9 post-publish tag binding: OK — {publish_tag} -> {tag_commit} descends from "
+        f"candidate {candidate_sha}; published evidence blob matches the local file "
+        "byte-for-byte"
+    )
+    return blocks
+
+
+# ---------------------------------------------------------------------------
+# R10 — post-publish artifact identity
+# ---------------------------------------------------------------------------
+
+_COSIGN_IDENTITY_RE_LINE = re.compile(r"^COSIGN_IDENTITY_RE='(.*)'$", re.M)
+_COSIGN_OIDC_ISSUER_LINE = re.compile(r"^COSIGN_OIDC_ISSUER='(.*)'$", re.M)
+
+
+def _load_cosign_constants(repo_root: str) -> tuple[str, str]:
+    """Read `COSIGN_IDENTITY_RE`/`COSIGN_OIDC_ISSUER` out of
+    `scripts/install-cli.sh` at runtime — R10 must verify the SAME identity
+    real installers already trust, not a second hand-rolled regex that could
+    silently drift from it. Fails loudly (not a fabricated default) if the
+    constants move or are renamed in that script."""
+    install_cli_path = os.path.join(repo_root, "scripts", "install-cli.sh")
+    with open(install_cli_path) as f:
+        text = f.read()
+    identity_match = _COSIGN_IDENTITY_RE_LINE.search(text)
+    issuer_match = _COSIGN_OIDC_ISSUER_LINE.search(text)
+    if not identity_match or not issuer_match:
+        raise SystemExit(
+            f"error: could not find COSIGN_IDENTITY_RE/COSIGN_OIDC_ISSUER in "
+            f"{install_cli_path} — R10 refuses to fabricate a substitute identity"
+        )
+    return identity_match.group(1), issuer_match.group(1)
+
+
+def rule_r10_artifact_identity(
+    repo_root: str, github_repo: str, publish_tag: str,
+    sha256sums_override: str | None, cosign_bundle_override: str | None,
+    cosign_bin: str, work_dir: str | None,
+) -> list[str]:
+    blocks: list[str] = []
+    identity_re, oidc_issuer = _load_cosign_constants(repo_root)
+
+    sums_path = sha256sums_override
+    bundle_path = cosign_bundle_override
+
+    if sums_path is None or bundle_path is None:
+        tmp_dir = work_dir or tempfile.mkdtemp(prefix="aa-release-evidence-r10-")
+        view = subprocess.run(
+            ["gh", "release", "view", publish_tag, "--repo", github_repo, "--json", "assets"],
+            capture_output=True, text=True,
+        )
+        if view.returncode != 0:
+            blocks.append(
+                f"R10: could not fetch GitHub release {publish_tag!r} assets "
+                f"({github_repo}): {view.stderr.strip()}"
+            )
+            return blocks
+        try:
+            asset_names = {a["name"] for a in json.loads(view.stdout).get("assets", [])}
+        except json.JSONDecodeError as e:
+            blocks.append(f"R10: could not parse 'gh release view' JSON output: {e}")
+            return blocks
+        if "SHA256SUMS" not in asset_names or "SHA256SUMS.cosign.bundle" not in asset_names:
+            blocks.append(
+                f"R10: release {publish_tag} is missing the SHA256SUMS and/or "
+                "SHA256SUMS.cosign.bundle asset needed for artifact-identity verification"
+            )
+            return blocks
+        download = subprocess.run(
+            ["gh", "release", "download", publish_tag, "--repo", github_repo,
+             "--pattern", "SHA256SUMS*", "--dir", tmp_dir, "--clobber"],
+            capture_output=True, text=True,
+        )
+        if download.returncode != 0:
+            blocks.append(
+                f"R10: failed to download SHA256SUMS/SHA256SUMS.cosign.bundle from release "
+                f"{publish_tag}: {download.stderr.strip()}"
+            )
+            return blocks
+        sums_path = sums_path or os.path.join(tmp_dir, "SHA256SUMS")
+        bundle_path = bundle_path or os.path.join(tmp_dir, "SHA256SUMS.cosign.bundle")
+
+    if not os.path.isfile(sums_path):
+        blocks.append(f"R10: SHA256SUMS not found at {sums_path}")
+        return blocks
+    if not os.path.isfile(bundle_path):
+        blocks.append(f"R10: cosign bundle not found at {bundle_path}")
+        return blocks
+
+    try:
+        verify = subprocess.run(
+            [cosign_bin, "verify-blob",
+             "--bundle", bundle_path,
+             "--certificate-identity-regexp", identity_re,
+             "--certificate-oidc-issuer", oidc_issuer,
+             sums_path],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        blocks.append(
+            f"R10: cosign binary not found ({cosign_bin!r}) — cannot verify artifact identity, "
+            "refusing to treat an unverifiable release as admissible"
+        )
+        return blocks
+
+    if verify.returncode != 0:
+        blocks.append(
+            f"R10: cosign verify-blob FAILED for {publish_tag}'s SHA256SUMS against identity "
+            f"{identity_re!r} / issuer {oidc_issuer!r} — "
+            f"{(verify.stderr or verify.stdout).strip()}"
+        )
+        return blocks
+
+    print(
+        f"R10 artifact identity: OK — cosign verify-blob succeeded for {publish_tag}'s "
+        f"SHA256SUMS against identity {identity_re!r} / issuer {oidc_issuer!r}"
+    )
+    return blocks
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -577,6 +856,27 @@ def main() -> int:
                          help="default: <repo-root>/docs/release/qa-signoff/v<version>.md")
     parser.add_argument("--security-signoff", default=None,
                          help="default: <repo-root>/docs/release/security-signoff/v<version>.md")
+    parser.add_argument("--post-publish", action="store_true",
+                         help="also run R9 (post-publish tag binding) and R10 (post-publish "
+                              "artifact identity) against the actually-published tag/release")
+    parser.add_argument("--publish-tag", default=None,
+                         help="default: v<version> (--post-publish only)")
+    parser.add_argument("--remote", default="remote",
+                         help="git remote name that hosts the published tag (--post-publish "
+                              "only, default: remote)")
+    parser.add_argument("--github-repo", default="ai-agent-assembly/agent-assembly",
+                         help="owner/repo for 'gh release view/download' (--post-publish only)")
+    parser.add_argument("--sha256sums", default=None,
+                         help="local path to SHA256SUMS, bypassing 'gh release download' "
+                              "(--post-publish/R10 only; primarily for tests)")
+    parser.add_argument("--cosign-bundle", default=None,
+                         help="local path to SHA256SUMS.cosign.bundle, bypassing 'gh release "
+                              "download' (--post-publish/R10 only; primarily for tests)")
+    parser.add_argument("--cosign-bin", default="cosign",
+                         help="cosign binary to invoke (--post-publish/R10 only, default: cosign)")
+    parser.add_argument("--work-dir", default=None,
+                         help="scratch dir for downloaded release assets (--post-publish/R10 "
+                              "only; default: a fresh tempfile.mkdtemp())")
     args = parser.parse_args()
 
     repo_root = os.path.abspath(args.repo_root)
@@ -655,8 +955,22 @@ def main() -> int:
     )
     all_blocks += r7_blocks
 
-    print("R8 derived-table consistency: not yet implemented — see AAASM-5900 "
-          "(the renderer this rule needs does not exist yet)")
+    r8_blocks = rule_r8_derived_table(evidence, qa_signoff_text, qa_signoff_path)
+    all_blocks += r8_blocks
+
+    if args.post_publish:
+        publish_tag = args.publish_tag or f"v{args.version}"
+        r9_blocks = rule_r9_post_publish_tag_binding(
+            git, evidence, args.remote, publish_tag, evidence_relpath, catalog_relpath,
+            required_t_for_r1, repo_root,
+        )
+        all_blocks += r9_blocks
+
+        r10_blocks = rule_r10_artifact_identity(
+            repo_root, args.github_repo, publish_tag, args.sha256sums, args.cosign_bundle,
+            args.cosign_bin, args.work_dir,
+        )
+        all_blocks += r10_blocks
 
     print()
     if all_blocks:

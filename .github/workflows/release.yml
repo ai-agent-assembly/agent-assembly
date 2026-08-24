@@ -338,10 +338,45 @@ jobs:
             --to "${GITHUB_REF_NAME}" \
             --check
 
+  release-evidence-gate:
+    # AAASM-5878/5900. Mirrors governance-gate's own shape and rationale
+    # above: a prerequisite INSIDE this workflow, not a separate required
+    # status check that could strand a tag forever if it never attaches.
+    # `needs: [..., release-evidence-gate]` on `publish` below means a
+    # failing gate mechanically skips publish in the SAME workflow run.
+    name: Release-assurance evidence gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history + tags so the evidence's recorded candidate_sha —
+          # which may be several commits behind this tag (see
+          # check-release-evidence.py's R1 doc comment: version bump,
+          # Cargo.lock, release notes land after the verified HEAD) — is
+          # actually reachable from this checkout to prove ancestry, and so
+          # ${{ github.sha }} (the commit this tag points at) resolves.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml
+
+      - name: Check release-assurance evidence binds this tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 scripts/qa/check-release-evidence.py \
+            --version "$VERSION" \
+            --tag-target "${{ github.sha }}"
+
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [build, governance-gate]
+    needs: [build, governance-gate, release-evidence-gate]
     permissions:
       contents: write
       id-token: write  # keyless cosign signing via GitHub OIDC
