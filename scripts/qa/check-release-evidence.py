@@ -330,8 +330,13 @@ def _resolve_waiver_ref(qa_signoff_text: str, ref: str, journey_id: str) -> bool
     # checked independently instead of letting a match anywhere in the whole
     # section (which could straddle two unrelated waivers) count.
     blocks = re.split(r"(?=^- \*\*Waived by:\*\*)", body, flags=re.M)
+    journey_pattern = re.compile(rf"\b{re.escape(journey_id)}\b")
     for block in blocks:
-        if ref in block and journey_id in block:
+        # journey_id must match as a whole token, not a bare substring — a
+        # release-blocking journey like J1 must not be resolved by a block
+        # that is actually about a different, textually-related journey
+        # like J15 just because "J1" is a substring of "J15".
+        if ref in block and journey_pattern.search(block):
             return True
     return False
 
