@@ -96,8 +96,8 @@ struct Fixture {
     /// Turn the SSRF guard back on. Every other fixture dials a loopback mock,
     /// which the guard would (correctly) refuse.
     block_private_targets: bool,
-    /// AAASM-5855: the identity `aasm run` would have exported as `AA_AGENT_ID`
-    /// for this launch. `None` reproduces the pre-fix default.
+    /// AAASM-5855: the value read from this proxy process's own `AA_AGENT_ID`
+    /// env var (`ProxyConfig::agent_id`). `None` reproduces the pre-fix default.
     agent_id: Option<String>,
 }
 
