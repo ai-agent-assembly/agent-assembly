@@ -24,6 +24,7 @@ pub mod op_control;
 pub mod pipeline;
 pub mod policy;
 pub mod privilege;
+pub mod redaction_telemetry_client;
 pub mod runtime;
 
 pub use runtime::run;

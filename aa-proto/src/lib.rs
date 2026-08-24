@@ -19,6 +19,7 @@
 //! assembly::gateway::v1  — L1 cache push-invalidation channel
 //! assembly::ipc::v1      — local SDK ↔ runtime UDS handshake (AAASM-3569)
 //! assembly::devint::v1   — local Developer Integration API (AAASM-5279)
+//! assembly::telemetry::v1 — cross-process redaction telemetry (AAASM-5871)
 //! ```
 
 pub mod assembly {
@@ -84,6 +85,16 @@ pub mod assembly {
         // prost payloads behind the hand-rolled IPC codec's wire tags, not gRPC.
         pub mod v1 {
             tonic::include_proto!("assembly.ipc.v1");
+        }
+    }
+
+    pub mod telemetry {
+        // Cross-process redaction telemetry (AAASM-5871). A private,
+        // loopback-only ingest surface that carries aa-proxy's
+        // pre-transmission REDACT events to aa-api's dashboard alert path.
+        // Non-sensitive evidence only — never a matched secret value.
+        pub mod v1 {
+            tonic::include_proto!("assembly.telemetry.v1");
         }
     }
 
