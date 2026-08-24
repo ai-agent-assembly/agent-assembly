@@ -201,6 +201,53 @@ encouraged — see `qa/README.md`'s negative-control section for the
 currently demonstrated examples across the security-enforcement,
 cross-process-evidence, and registry/CI-execution-integrity classes.
 
+## Release-evidence status vocabulary (AAASM-5878/5898)
+
+`docs/release/qa-signoff/v<version>.evidence.json` (see [the evidence
+record schema](../../release/qa-verification-manifest-schema.md#evidence-record-aaasm-58785898))
+records each required journey's result in one fixed 8-token vocabulary:
+`PASS | FAIL | BLOCKED | SKIPPED | XFAIL | NOT_RUN | UNTESTED | STALE`. It
+exists because this repo already has two other, narrower result
+vocabularies — one from the AAASM-5828 QA-worker result schema, one from the
+sign-off's own lane-results table — and neither maps 1:1 onto the other or
+covers every case the evidence record needs to distinguish (a required
+journey a worker never touched must not read the same as one that failed).
+This table is the one place the mapping is defined; `scripts/qa/build-release-evidence.py`
+implements it (see `_map_journey_status`).
+
+**From the [AAASM-5828 worker result schema](evidence-and-worker-result-contract.md#worker-result-schema)**
+(`STATUS: COMPLETE | PARTIAL | BLOCKED`, plus each `VERIFIED`/`SUSPECTED_FINDINGS`/`UNTESTED_OR_BLOCKED` line):
+
+| Worker-schema state | Evidence-record status |
+|---|---|
+| `COMPLETE` + the journey's checks all passed | `PASS` |
+| `COMPLETE` + a checked property actually failed | `FAIL` |
+| `PARTIAL` | `UNTESTED` |
+| `BLOCKED` | `BLOCKED` |
+| Listed in `UNTESTED_OR_BLOCKED` | `UNTESTED` |
+| Required journey never mentioned by any worker | `NOT_RUN` |
+| Evidence selector is a `#[ignore]`d test / nextest skip (AAASM-5876) | `SKIPPED` |
+| A known, accepted, currently-failing case with a tracked reason | `XFAIL` |
+| Evidence a later checker (not this subtask) proves invalidated by a post-PASS change | `STALE` |
+
+**From the sign-off's own tables** — the ["Selected journeys" table](qa-signoff/TEMPLATE.md#selected-journeys)
+`Result` column (per-journey, what `build-release-evidence.py` actually
+parses) and the ["Lane results" table](qa-signoff/TEMPLATE.md#lane-results)
+(per-lane, six lanes, summary only — not itself parsed into a journey
+status):
+
+| Sign-off vocabulary | Evidence-record status |
+|---|---|
+| `PASS` | `PASS` |
+| `FAIL` / "fails" / "still fails" | `FAIL` |
+| `PARTIAL` | `UNTESTED` |
+| `UNTESTED` / `UNTESTED_OR_BLOCKED` | `UNTESTED` |
+
+A struck-through original finding followed by an arrow and a final call
+(e.g. `~~PARTIAL~~ → **PASS (re-verified)**`, real text from
+`docs/release/qa-signoff/v0.0.1-rc.7.md`) maps by its **final** call only —
+the struck-through text is a superseded finding, not the current status.
+
 ## Gate policy — BLOCK / waiver rules
 
 `Verdict: BLOCK` on any of:
