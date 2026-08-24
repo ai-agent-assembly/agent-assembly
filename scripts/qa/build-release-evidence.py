@@ -112,25 +112,41 @@ def _extract_selected_journeys_table(md_text: str) -> dict[str, str]:
     """Map journey id -> raw "Result" markdown cell text from the sign-off's
     "Selected journeys" table.
 
-    Only that one column is returned raw; `_map_journey_status` below turns
-    it into the 8-token vocabulary. Rows outside a `| J<n> | ... |` shape
-    (the header row, the `|---|---|` separator) are skipped.
+    The Result column is located by its header text, not by a hardcoded cell
+    index — a reordered or inserted column (e.g. Evidence moving ahead of
+    Result) would otherwise make this silently start reading the wrong
+    cell, and the real sign-off's Evidence prose routinely contains the word
+    "PASS" for journeys whose actual Result is something else. Only that one
+    column is returned raw; `_map_journey_status` below turns it into the
+    8-token vocabulary. Rows outside a `| J<n> | ... |` shape (the header
+    row, the `|---|---|` separator) are skipped.
     """
     section = re.search(r"^## Selected journeys\n(.*?)(?=\n## |\Z)", md_text, re.S | re.M)
     if not section:
         return {}
+    table_lines = [
+        line.strip() for line in section.group(1).splitlines() if line.strip().startswith("|")
+    ]
+    if not table_lines:
+        return {}
+    header_cells = [c.strip() for c in table_lines[0].strip("|").split("|")]
+    result_idx = next(
+        (i for i, c in enumerate(header_cells) if c.strip().lower() == "result"), None
+    )
+    if result_idx is None:
+        raise ValueError(
+            "Selected journeys table has no 'Result' column header — found "
+            f"columns {header_cells!r}"
+        )
     results: dict[str, str] = {}
-    for line in section.group(1).splitlines():
-        line = line.strip()
-        if not line.startswith("|"):
-            continue
+    for line in table_lines[1:]:
         cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) < 3:
+        if len(cells) <= result_idx:
             continue
         jid = cells[0]
         if not re.match(r"^J\d+[A-Za-z]?$", jid):
             continue  # not a data row (header, separator, malformed row)
-        results[jid] = cells[2]
+        results[jid] = cells[result_idx]
     return results
 
 

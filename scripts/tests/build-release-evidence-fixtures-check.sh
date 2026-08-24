@@ -124,6 +124,17 @@ python3 scripts/qa/build-release-evidence.py --version 0.0.0-test-ambiguous-pass
 check "J95 (FAIL cell containing 'PASS' substring)" "$(jq -r '.journeys[0].status' "$TMP_AMBIG")" "FAIL"
 rm -f "$TMP_AMBIG"
 
+echo "== reordered-columns fixture: Result column located by header, not fixed index =="
+TMP_REORDER="$(mktemp)"
+python3 scripts/qa/build-release-evidence.py --version 0.0.0-test-header-reorder \
+  --repo-root . --candidate-sha "$SYNTH_SHA" \
+  --catalog "$FIX/catalog-header-reorder.yaml" \
+  --qa-signoff "$FIX/qa-signoff-header-reorder.md" \
+  --security-signoff "$FIX/security-signoff-minimal.md" \
+  --out "$TMP_REORDER" > /dev/null
+check "J96 (Result found by header despite reordered columns)" "$(jq -r '.journeys[0].status' "$TMP_REORDER")" "BLOCKED"
+rm -f "$TMP_REORDER"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "build-release-evidence fixtures check: PASS"
 else
