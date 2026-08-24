@@ -1,0 +1,87 @@
+{
+  "artifacts": {},
+  "candidate": {
+    "candidate_sha": "0000000000000000000000000000000000dead",
+    "repo": "ai-agent-assembly/agent-assembly"
+  },
+  "catalog": {
+    "catalog_version": "1",
+    "path": "qa/tests/evidence-fixtures/catalog-mixed.yaml",
+    "requirements_digest": "sha256:e4df88302cc0abf5830b43ce57a8326266265fd6fa9d78aef0e2d98ee3869277"
+  },
+  "evidence_version": "1",
+  "generated_at": "2026-08-24T15:05:19Z",
+  "harness": {
+    "scripts/qa/build-release-evidence.py": "git-blob:784d21a7801c7130f9679ba2247457b3e5823c73",
+    "scripts/qa/registry_digest.py": "git-blob:ec56fce1497743a7fce684ca54991e3da67da880",
+    "scripts/qa/validate-golden-journeys.py": "git-blob:bd5c5ad6dbdf3fc5ea5506f3af94b3d3262553c1"
+  },
+  "journeys": [
+    {
+      "digest": "sha256:6a7644390148e19f2f173b8561179cb94fd041cc0acbaa329815040f43f0c494",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "pr"
+      ],
+      "fidelity": "mock",
+      "id": "J90",
+      "lifecycle_state": "automated",
+      "negative_control": null,
+      "platforms": [],
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:b0be5c00a5241e1eefb16ee16b841eab20bc26493c0990552bcaf30b0c06c667",
+      "evidence_ref": "**FAILS for a synthetic reason**",
+      "execution_lanes": [
+        "pr"
+      ],
+      "fidelity": "mock",
+      "id": "J91",
+      "lifecycle_state": "automated",
+      "negative_control": null,
+      "platforms": [],
+      "status": "FAIL"
+    },
+    {
+      "digest": "sha256:dd00257f50b3c5f6e082f94365afb3130712c526d70f0fc0486325f277963e4b",
+      "evidence_ref": "~~UNTESTED_OR_BLOCKED~~ \u2192 **PASS (re-verified)**",
+      "execution_lanes": [
+        "main",
+        "pr"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J92",
+      "lifecycle_state": "automated",
+      "negative_control": "qa/tests/evidence-fixtures/catalog-mixed.yaml (synthetic fail-closed control)",
+      "platforms": [],
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:bc4f38dbc91eaac4c6a988fba11bbb3c921e3ab927212b1d1eca1a987b568109",
+      "evidence_ref": null,
+      "execution_lanes": [
+        "pr"
+      ],
+      "fidelity": "mock",
+      "id": "J93",
+      "lifecycle_state": "automated",
+      "negative_control": null,
+      "platforms": [],
+      "status": "NOT_RUN"
+    }
+  ],
+  "published": null,
+  "signoffs": {
+    "qa": {
+      "path": "qa/tests/evidence-fixtures/qa-signoff-mixed.md",
+      "verdict": "BLOCK"
+    },
+    "security": {
+      "path": "qa/tests/evidence-fixtures/security-signoff-mixed.md",
+      "verdict": "PASS"
+    }
+  },
+  "verdict": "BLOCK",
+  "version": "0.0.0-test-mixed"
+}

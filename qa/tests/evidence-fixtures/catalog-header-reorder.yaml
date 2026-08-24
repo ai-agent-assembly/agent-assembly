@@ -1,0 +1,26 @@
+# Synthetic, test-only catalog fixture (AAASM-5898) — one required journey
+# whose sign-off table (see qa-signoff-header-reorder.md) has its columns
+# reordered (Result before Priority). Proves build-release-evidence.py
+# locates the Result column by its header text, not by a hardcoded cell
+# index — a hardcoded cells[2] would read this table's Priority cell
+# ("P1") instead, which classifies as unparseable.
+catalog_version: '1'
+journeys:
+- id: J96
+  jira: AAASM-0006
+  name: Synthetic journey — reordered table columns
+  priority: P1
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-header-reorder.yaml::t96"
+  execution_lanes: [pr]
+  fidelity: mock

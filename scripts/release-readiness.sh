@@ -5,7 +5,7 @@
 # Usage: bash scripts/release-readiness.sh <version>
 #   e.g. bash scripts/release-readiness.sh 0.0.1-alpha.5
 #
-# Runs 13 local checks that must all pass before pushing a release tag.
+# Runs 14 local checks that must all pass before pushing a release tag.
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
@@ -186,6 +186,35 @@ else
   for CRATE in $MISSING_READMES; do
     fail "$CRATE has no README.md" "add $CRATE/README.md"
   done
+fi
+
+# 14. Release-assurance evidence still binds HEAD (AAASM-5878/5900).
+# check-release-evidence.py re-verifies the *committed* release-evidence
+# record (candidate binding, catalog drift, admissibility, platforms,
+# negative controls, temporal sanity, sign-off consistency, and the
+# generated-table cross-check) against the commit actually about to be
+# tagged. A green check 12 above only means the QA sign-off .md says PASS —
+# it does not, by itself, prove that sign-off is still trustworthy for HEAD
+# (a later commit, a catalog edit, or a tampered evidence file can each
+# invalidate it independently of the sign-off's own Verdict line). This
+# check is independent of checks 11/12 in both directions.
+EVIDENCE_CHECK_OUT="$(python3 scripts/qa/check-release-evidence.py --version "$VERSION" --tag-target HEAD 2>&1)"
+EVIDENCE_CHECK_STATUS=$?
+if [ "$EVIDENCE_CHECK_STATUS" -eq 0 ]; then
+  # A green exit here does NOT by itself mean every rule the checker owns
+  # ran — R8 (derived-table consistency) prints its own SKIPPED line,
+  # rather than failing, for a sign-off .md written before AAASM-5900 added
+  # generated-block markers (see TEMPLATE.md). Surfacing that distinction
+  # here, not just inside the checker's own stdout that this check
+  # otherwise discards, is what keeps "PASS" from silently meaning
+  # "PASS, except one rule that was never actually checked".
+  if printf '%s\n' "$EVIDENCE_CHECK_OUT" | grep -qE '^R8 derived-table consistency: SKIPPED'; then
+    pass "Release-assurance evidence binds HEAD (candidate/catalog/journeys fresh; R8 derived-table check SKIPPED — sign-off has no generated-block markers yet)"
+  else
+    pass "Release-assurance evidence binds HEAD (candidate/catalog/journeys fresh)"
+  fi
+else
+  fail "Release-assurance evidence missing/stale/inadmissible for $VERSION" "run /release-qa-gate $VERSION and re-check — see the printed classification table from 'python3 scripts/qa/check-release-evidence.py --version $VERSION --tag-target HEAD'"
 fi
 
 echo
