@@ -71,7 +71,9 @@ fn checked_listen(listen: &str, allow_remote_clients: bool) -> Result<(), String
     let addr: SocketAddr = listen
         .parse()
         .map_err(|_| format!("invalid --listen {listen:?}: it is not an `ip:port` literal"))?;
-    aa_proxy::config::check_bind_addr(addr, allow_remote_clients).map_err(|refusal| refusal.to_string())
+    // Standalone `aasm proxy start` never sets AA_PROXY_READY_FILE, so a
+    // port-0 --listen stays refused here exactly as before (AAASM-5859).
+    aa_proxy::config::check_bind_addr(addr, allow_remote_clients, false).map_err(|refusal| refusal.to_string())
 }
 
 fn default_log_path() -> PathBuf {

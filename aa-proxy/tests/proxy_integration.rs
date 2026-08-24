@@ -34,6 +34,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         // as the CONNECT/tunnel paths already require for their loopback mocks.
         // Production `from_env` keeps this false.
         agent_id: None,
+        ready_file: None,
         allow_private_connect_targets: true,
     }
 }
@@ -528,6 +529,7 @@ mod attacker {
             mcp_fail_open: false,
             network_fail_open: false,
             agent_id: None,
+            ready_file: None,
             allow_private_connect_targets: true,
         }
     }
@@ -790,4 +792,90 @@ mod attacker {
             "the blocked secret must never reach upstream"
         );
     }
+}
+
+/// AAASM-5859: a `bind_addr` of port 0 with a `ready_file` configured must
+/// bind successfully and report the *real* bound port back — the point of
+/// this feature, and the thing that lets a caller avoid a bind-probe-and-
+/// release race to discover an ephemeral port.
+#[tokio::test]
+async fn a_ready_file_reports_the_real_bound_port_for_an_ephemeral_bind() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+    let ready_file = dir.path().join("ready");
+
+    let config = ProxyConfig {
+        ready_file: Some(ready_file.clone()),
+        ..test_config(dir.path())
+    };
+    assert_eq!(
+        config.bind_addr.port(),
+        0,
+        "this test only proves something if the requested port is actually 0"
+    );
+
+    let (tx, _rx) = broadcast::channel::<PipelineEvent>(16);
+    let server = aa_proxy::proxy::ProxyServer::new(config, ca, tx);
+    let _handle = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+
+    // Poll rather than a fixed sleep: the file is written the instant the
+    // listener binds, which should be near-immediate, but a fixed sleep would
+    // either be flaky under load or pad every run with dead time.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let contents = loop {
+        if let Ok(body) = std::fs::read_to_string(&ready_file) {
+            if !body.is_empty() {
+                break body;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "ready file never appeared");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+
+    let mut lines = contents.lines();
+    let addr: SocketAddr = lines
+        .next()
+        .expect("ready file must have an address line")
+        .parse()
+        .expect("the address line must be a valid SocketAddr");
+    assert_ne!(addr.port(), 0, "the reported port must be the real bound port, not 0");
+    assert_eq!(addr.ip(), std::net::Ipv4Addr::LOCALHOST);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&ready_file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the ready file names an interception endpoint's address/pid and must not be world-readable"
+        );
+    }
+
+    let pid: u32 = lines
+        .next()
+        .expect("ready file must have a pid line")
+        .parse()
+        .expect("the pid line must be a valid u32");
+    assert_eq!(
+        pid,
+        std::process::id(),
+        "the in-process server shares this test process's pid"
+    );
+
+    // Non-vacuity: the address in the file really is the listening proxy —
+    // not just some parseable text — by driving a real CONNECT through it.
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut response_line = String::new();
+    reader.read_line(&mut response_line).await.unwrap();
+    assert!(
+        response_line.contains("200"),
+        "the address in the ready file must be the real listening proxy, got: {response_line}"
+    );
 }

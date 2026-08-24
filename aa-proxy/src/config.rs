@@ -189,6 +189,24 @@ pub struct ProxyConfig {
     /// every non-test build.
     pub allow_private_connect_targets: bool,
 
+    /// AAASM-5859 — where to report the socket address this proxy actually
+    /// bound, once bound.
+    ///
+    /// Exists so [`Self::bind_addr`] can legitimately be port `0` ("any free
+    /// port"): a caller that reads this file back afterward has the real
+    /// port, so `check_bind_addr`'s port-0 refusal is *not* about port 0
+    /// being unsafe — it is about a port 0 nothing reports back being
+    /// unnameable (see that function's doc). A per-launch dedicated proxy
+    /// (AAASM-5857) sets this so the CLI that spawned it can discover its
+    /// ephemeral port without a bind-probe-and-release race.
+    ///
+    /// Written atomically (temp file + rename) after a successful bind, as
+    /// `<ip>:<port>\n<pid>\n`, permissions `0600`. Absent (`None`) preserves
+    /// today's behavior: `bind_addr` must be a nameable, non-zero port.
+    ///
+    /// Env: `AA_PROXY_READY_FILE` — a path, or absent.
+    pub ready_file: Option<PathBuf>,
+
     /// AAASM-5855 — the registered identity to attribute this proxy's audit
     /// records to, read from `AA_AGENT_ID` in **this process's own
     /// environment**, if set.
@@ -239,6 +257,7 @@ impl ProxyConfig {
             // AAASM-5855: read back whatever started this proxy process set —
             // not necessarily `aasm run`, see the field doc above.
             agent_id: env_optional("AA_AGENT_ID"),
+            ready_file: env_optional("AA_PROXY_READY_FILE").map(PathBuf::from),
         })
     }
 }
@@ -348,11 +367,12 @@ impl std::fmt::Display for BindRefusal {
             ),
             Self::EphemeralPort(addr) => write!(
                 f,
-                "refusing to listen on {addr}: port 0 asks the OS for any free port, but the \
-                 recorded endpoint would still say port 0. The proxy would bind a real port that \
-                 nothing can name: `aasm run` refuses a port-0 endpoint, `aasm proxy stop` could \
-                 not reach the process, and the start itself would be reported as failed while \
-                 the proxy kept running. Name the port you want (for example 127.0.0.1:8899).",
+                "refusing to listen on {addr}: port 0 asks the OS for any free port, but with no \
+                 AA_PROXY_READY_FILE configured the real port the OS assigns is written down \
+                 nowhere. The proxy would bind a real port that nothing can name: `aasm run` \
+                 refuses a port-0 endpoint, `aasm proxy stop` could not reach the process, and \
+                 the start itself would be reported as failed while the proxy kept running. Name \
+                 the port you want (for example 127.0.0.1:8899).",
             ),
         }
     }
@@ -369,13 +389,21 @@ impl std::fmt::Display for BindRefusal {
 /// The loopback test is the same one `aasm run` applies before it will route a
 /// governed tool at a recorded proxy endpoint, so the two commands cannot
 /// disagree about which endpoints are usable (AAASM-5348).
-pub fn check_bind_addr(addr: SocketAddr, allow_remote_clients: bool) -> Result<(), BindRefusal> {
-    // Checked before the loopback branch because it disqualifies every address:
-    // the recorded endpoint keeps the literal `:0` the operator typed, so the
-    // real port the OS assigns is written down nowhere. `verify_endpoint`
-    // already rejects a port-0 endpoint, and refusing here is what keeps the
-    // two from disagreeing — the same reason the loopback test is shared.
-    if addr.port() == 0 {
+///
+/// `report_back` states whether the caller has configured
+/// [`ProxyConfig::ready_file`] (AAASM-5859): when it has, a port-0 request is
+/// legitimate — the real bound port gets written down, so nothing is
+/// unnameable — and this function does not refuse it. Standalone `aasm proxy
+/// start` (`aa-cli/src/commands/proxy/start.rs`) never sets a ready file and
+/// always passes `false`, so its port-0 refusal is unchanged; the per-launch
+/// dedicated proxy (AAASM-5857) always sets one and passes `true`.
+pub fn check_bind_addr(addr: SocketAddr, allow_remote_clients: bool, report_back: bool) -> Result<(), BindRefusal> {
+    // Checked before the loopback branch because it disqualifies every
+    // address when nothing reports the real port back: the recorded endpoint
+    // keeps the literal `:0` the operator typed, so `verify_endpoint` would
+    // reject a port-0 endpoint later anyway, and refusing here is what keeps
+    // the two from disagreeing — the same reason the loopback test is shared.
+    if addr.port() == 0 && !report_back {
         return Err(BindRefusal::EphemeralPort(addr));
     }
     if addr.ip().is_loopback() {
@@ -786,7 +814,7 @@ mod tests {
     fn a_loopback_listen_address_is_accepted() {
         for literal in ["127.0.0.1:8899", "[::1]:8899", "127.9.9.9:8899"] {
             assert_eq!(
-                check_bind_addr(addr(literal), false),
+                check_bind_addr(addr(literal), false, false),
                 Ok(()),
                 "{literal} is loopback and must be accepted without any opt-in"
             );
@@ -800,10 +828,13 @@ mod tests {
     /// five-second wait on port 0 fails, the pid file is removed, and an
     /// interception process holding CA material and provider credentials keeps
     /// running with nothing able to name or stop it.
+    ///
+    /// `report_back: false` here is the point — this is the case with no
+    /// `AA_PROXY_READY_FILE`, where port 0 really is unnameable.
     #[test]
-    fn port_zero_is_refused_on_every_address() {
+    fn port_zero_is_refused_on_every_address_without_a_ready_file() {
         for literal in ["127.0.0.1:0", "[::1]:0", "0.0.0.0:0"] {
-            let refusal = check_bind_addr(addr(literal), false)
+            let refusal = check_bind_addr(addr(literal), false, false)
                 .expect_err("{literal}: a port the endpoint cannot record must not be bound");
             assert_eq!(refusal, BindRefusal::EphemeralPort(addr(literal)));
             assert!(
@@ -813,12 +844,28 @@ mod tests {
         }
     }
 
-    /// The opt-in states an intent about *reachability*; it says nothing about
-    /// the port being recordable, so it must not carry port 0 past the check.
+    /// AAASM-5859: the sibling of the test above — the same port-0 addresses,
+    /// but with a ready file configured, so the real bound port does get
+    /// written down and port 0 is no longer unnameable. This is what lets the
+    /// per-launch dedicated proxy (AAASM-5857) ask the OS for any free port.
     #[test]
-    fn the_remote_opt_in_does_not_permit_port_zero() {
+    fn port_zero_is_accepted_on_loopback_when_a_ready_file_is_configured() {
+        for literal in ["127.0.0.1:0", "[::1]:0"] {
+            assert_eq!(
+                check_bind_addr(addr(literal), false, true),
+                Ok(()),
+                "{literal} with a ready file configured must not be refused"
+            );
+        }
+    }
+
+    /// The opt-in states an intent about *reachability*; it says nothing about
+    /// the port being recordable, so it must not carry port 0 past the check
+    /// when no ready file is configured.
+    #[test]
+    fn the_remote_opt_in_does_not_permit_port_zero_without_a_ready_file() {
         assert_eq!(
-            check_bind_addr(addr("0.0.0.0:0"), true),
+            check_bind_addr(addr("0.0.0.0:0"), true, false),
             Err(BindRefusal::EphemeralPort(addr("0.0.0.0:0")))
         );
     }
@@ -830,7 +877,7 @@ mod tests {
     #[test]
     fn a_non_loopback_listen_address_is_refused_without_the_opt_in() {
         for literal in ["0.0.0.0:8899", "192.168.1.7:8899", "[::]:8899"] {
-            let refusal = check_bind_addr(addr(literal), false).expect_err(&format!(
+            let refusal = check_bind_addr(addr(literal), false, false).expect_err(&format!(
                 "{literal} is reachable from other hosts and must not be accepted by default"
             ));
             assert_eq!(refusal, BindRefusal::RemoteNotRequested(addr(literal)));
@@ -855,7 +902,7 @@ mod tests {
     #[test]
     fn the_opt_in_alone_does_not_make_a_remote_listen_address_acceptable() {
         let requested = addr("0.0.0.0:8899");
-        let refusal = check_bind_addr(requested, true)
+        let refusal = check_bind_addr(requested, true, false)
             .expect_err("--allow-remote-clients must not by itself authorize an unprotected listener");
 
         let BindRefusal::Unprotected { addr: refused, missing } = &refusal else {

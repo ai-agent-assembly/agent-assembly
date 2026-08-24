@@ -129,6 +129,7 @@ async fn start_proxy(fixture: Fixture, ca_dir: &std::path::Path) -> (SocketAddr,
         mcp_fail_open: false,
         network_fail_open: false,
         agent_id: fixture.agent_id,
+        ready_file: None,
         // The mock upstreams are on loopback, which the SSRF guard would
         // (correctly) refuse in production.
         allow_private_connect_targets: !fixture.block_private_targets,
