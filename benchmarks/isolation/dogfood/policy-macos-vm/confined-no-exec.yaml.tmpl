@@ -1,0 +1,26 @@
+# AAASM-5814 macOS-VM dogfood driver — `confined.yaml.tmpl`'s opposite for the
+# "capability denied" scenario: `terminal_exec` is omitted from
+# `capabilities.allow`, which — per the same allow-list asymmetry that
+# template's own header explains — is itself an in-force whole-domain deny of
+# `process_creation`, not merely an unstated one.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-5814-dogfood-macos-vm-confined-no-exec
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "__SCRATCH_ROOT__"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__/permitted"
+  capabilities:
+    allow:
+      - file_read
+      - file_write
+      - file_delete
+      - network_outbound

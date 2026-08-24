@@ -1,0 +1,30 @@
+# AAASM-5814 macOS-VM dogfood driver — the negative-control policy: grants
+# write on both `permitted/` and `forbidden/`, so a denial scenario's paired
+# control run can prove the identical command succeeds when the boundary
+# actually grants it, the same discipline `../policy/permissive.yaml.tmpl`
+# documents for the native/sandlock arms. See `confined.yaml.tmpl` in this
+# same directory for why `network_outbound` and a scratch-root-only read
+# grant are this backend's own requirements, unchanged here.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-5814-dogfood-macos-vm-permissive
+spec:
+  tools:
+    "*":
+      allow: true
+  filesystem:
+    read:
+      allow:
+        - "__SCRATCH_ROOT__"
+    write:
+      allow:
+        - "__SCRATCH_ROOT__/permitted"
+        - "__SCRATCH_ROOT__/forbidden"
+  capabilities:
+    allow:
+      - terminal_exec
+      - file_read
+      - file_write
+      - file_delete
+      - network_outbound

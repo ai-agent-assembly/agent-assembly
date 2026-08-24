@@ -1,0 +1,30 @@
+# AAASM-5814 — the aasm-macos-vm cold/warm-start launcher's own policy
+# (`launchers/macos-vm.sh`). Not templated (unlike `dogfood/policy-macos-vm/
+# confined.yaml.tmpl`) because `/usr/local/bin/busybox true` — what that
+# launcher actually runs, for exactly the one family it supports
+# (`startup_nop`) — touches no filesystem path at all, so there is nothing to
+# grant per repetition even though `--workdir` still varies per repetition
+# (the harness's own `runner.py::run_family` scratch directory).
+#
+# `network_outbound` is granted for the same structural reason
+# `dogfood/policy-macos-vm/confined.yaml.tmpl`'s header explains: an
+# allow-list that omits it is itself a whole-domain-deny `network_egress`
+# requirement, and this backend has no network device in the guest to
+# satisfy any network requirement with, granted or not.
+#
+# `terminal_exec` is required for ANY exec to succeed under this backend at
+# all — confirmed empirically this pass via the dogfood driver's own
+# `capability-denied-spawn` scenario, which denies even the launch itself
+# when `terminal_exec` is absent from `capabilities.allow`.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-5814-benchmark-macos-vm-startup-nop
+spec:
+  tools:
+    "*":
+      allow: true
+  capabilities:
+    allow:
+      - terminal_exec
+      - network_outbound
