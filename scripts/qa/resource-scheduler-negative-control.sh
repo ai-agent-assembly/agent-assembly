@@ -76,6 +76,21 @@ print(best)
 PY
 }
 
+# Polls a quick.sh marker file for its first START line, up to ~5s. Used
+# wherever a case needs to know a job has genuinely started (acquired its
+# slot, written its job record, execed) before acting — a bare `sleep` is a
+# race: a cold interpreter start (python startup + `import yaml` + two `git
+# rev-parse` subprocesses + a `ps` call, all before the job record lands)
+# can outlast a fixed sleep on a loaded CI runner.
+wait_for_start() {
+  local marker="$1" waited=0
+  while [ ! -s "$marker" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  grep -q '^START' "$marker" 2>/dev/null
+}
+
 echo "== Case 1: 6 concurrent lightweight-pool jobs genuinely overlap =="
 marker1="$(mktemp)"
 pids=()
@@ -99,18 +114,17 @@ rm -f "$marker1"
 
 echo "== Case 2: 5 concurrent cargo-shared-target-pool (limit 1) jobs, --wait 0 =="
 marker2="$(mktemp)"
-codes2=()
 pids=()
 for i in 1 2 3 4 5; do
-  (python3 "$LOCK_PY" run --class cargo-doc --wait 0 -- bash "$QUICK" "$marker2" 1 "job$i"; echo $? >"/tmp/aa-qa-case2-$i.code") &
+  (python3 "$LOCK_PY" run --class cargo-doc --wait 0 -- bash "$QUICK" "$marker2" 1 "job$i"; echo $? >"$AA_QA_LOCK_DIR/case2-$i.code") &
   pids+=("$!")
 done
 for p in "${pids[@]}"; do wait "$p"; done
 success2=0
 saturated2=0
 for i in 1 2 3 4 5; do
-  code="$(cat "/tmp/aa-qa-case2-$i.code")"
-  rm -f "/tmp/aa-qa-case2-$i.code"
+  code="$(cat "$AA_QA_LOCK_DIR/case2-$i.code")"
+  rm -f "$AA_QA_LOCK_DIR/case2-$i.code"
   if [ "$code" = "0" ]; then success2=$((success2 + 1)); fi
   if [ "$code" = "75" ]; then saturated2=$((saturated2 + 1)); fi
 done
@@ -124,14 +138,17 @@ echo "== Case 2b: identical-argv duplicate suppressed before exec (exit 76) =="
 marker2b="$(mktemp)"
 python3 "$LOCK_PY" run --class cargo-doc -- bash "$QUICK" "$marker2b" 2 &
 first_pid=$!
-sleep 0.5
-python3 "$LOCK_PY" run --class cargo-doc -- bash "$QUICK" "$marker2b" 2 >/tmp/aa-qa-case2b.out 2>&1
+if ! wait_for_start "$marker2b"; then
+  echo "  ✗ first invocation never started — cannot exercise case 2b"
+  FAILED=1
+fi
+python3 "$LOCK_PY" run --class cargo-doc -- bash "$QUICK" "$marker2b" 2 >"$AA_QA_LOCK_DIR/case2b.out" 2>&1
 dup_code=$?
 wait "$first_pid"
 assert_eq "duplicate invocation exits 76" "$dup_code" "76"
 starts2b="$(grep -c '^START' "$marker2b" || true)"
 assert_eq "only the first invocation ever started (1 START line)" "$starts2b" "1"
-rm -f "$marker2b" /tmp/aa-qa-case2b.out
+rm -f "$marker2b" "$AA_QA_LOCK_DIR/case2b.out"
 
 echo "== Case 8: stale job record (dead pid) is swept, freeing its slot =="
 ( sleep 0.1 ) &
@@ -160,7 +177,7 @@ cat >"$AA_QA_LOCK_DIR/jobs/${job_id}.json" <<JSON
   "retry_count": 0
 }
 JSON
-AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" sweep >/tmp/aa-qa-case8.out
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" sweep >"$AA_QA_LOCK_DIR/case8.out"
 sweep8_code=$?
 assert_eq "sweep of stale record exits 0" "$sweep8_code" "0"
 if [ -f "$AA_QA_LOCK_DIR/jobs/${job_id}.json" ]; then
@@ -172,7 +189,7 @@ fi
 marker8="$(mktemp)"
 AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class --wait 0 -- bash "$QUICK" "$marker8" 0
 assert_eq "test-single slot re-acquirable after sweep" "$?" "0"
-rm -f "$marker8" /tmp/aa-qa-case8.out
+rm -f "$marker8" "$AA_QA_LOCK_DIR/case8.out"
 
 echo "== Case 10: cleanup leaves no state =="
 marker10="$(mktemp)"
@@ -180,9 +197,8 @@ for i in 1 2 3; do
   python3 "$LOCK_PY" run --class lint-unit -- bash "$QUICK" "$marker10" 0 "c10-$i"
 done
 python3 "$LOCK_PY" sweep >/dev/null  # normal post-job cleanup pass
-strict10_out="$(python3 "$LOCK_PY" sweep --strict 2>&1)"
-strict10_code=$?
-assert_eq "second sweep --strict exits 0 (nothing left to sweep)" "$strict10_code" "0"
+python3 "$LOCK_PY" sweep --strict >/dev/null 2>&1
+assert_eq "second sweep --strict exits 0 (nothing left to sweep)" "$?" "0"
 if [ -z "$(ls -A "$AA_QA_LOCK_DIR/jobs" 2>/dev/null)" ]; then
   echo "  ✓ jobs/ is empty"
 else
@@ -197,23 +213,18 @@ echo "   it and this case is the one that turns red."
 marker11="$(mktemp)"
 AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class -- bash "$QUICK" "$marker11" 3 &
 holder_pid=$!
-waited=0
-while [ ! -s "$marker11" ] && [ "$waited" -lt 50 ]; do
-  sleep 0.1
-  waited=$((waited + 1))
-done
-if ! grep -q '^START' "$marker11"; then
+if ! wait_for_start "$marker11"; then
   echo "  ✗ holder never started — cannot exercise case 11"
   FAILED=1
 else
   marker11b="$(mktemp)"
-  AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class --wait 0 -- bash "$QUICK" "$marker11b" 0 >/tmp/aa-qa-case11.out 2>&1
+  AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class --wait 0 -- bash "$QUICK" "$marker11b" 0 >"$AA_QA_LOCK_DIR/case11.out" 2>&1
   second_code=$?
   still_running=1
   grep -q '^END' "$marker11" && still_running=0
   assert_eq "second acquire on saturated single-slot pool exits 75" "$second_code" "75"
   assert_eq "first holder was STILL running (no END yet) when checked" "$still_running" "1"
-  rm -f "$marker11b" /tmp/aa-qa-case11.out
+  rm -f "$marker11b" "$AA_QA_LOCK_DIR/case11.out"
 fi
 wait "$holder_pid"
 rm -f "$marker11"
