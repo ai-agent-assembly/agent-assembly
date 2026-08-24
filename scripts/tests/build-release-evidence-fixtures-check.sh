@@ -94,6 +94,25 @@ else
   FAILED=1
 fi
 
+echo "== unparseable Result cell: emitter fails loudly, does not collapse to NOT_RUN =="
+TMP_UNPARSEABLE="$(mktemp)"
+set +e
+ERR_OUT="$(python3 scripts/qa/build-release-evidence.py --version 0.0.0-test-unparseable \
+  --repo-root . --candidate-sha "$SYNTH_SHA" \
+  --catalog "$FIX/catalog-unparseable.yaml" \
+  --qa-signoff "$FIX/qa-signoff-unparseable.md" \
+  --security-signoff "$FIX/security-signoff-minimal.md" \
+  --out "$TMP_UNPARSEABLE" 2>&1)"
+UNPARSEABLE_EXIT=$?
+set -e
+rm -f "$TMP_UNPARSEABLE"
+if [ "$UNPARSEABLE_EXIT" -ne 0 ] && printf '%s' "$ERR_OUT" | grep -q "J94"; then
+  echo "  ✓ exited non-zero ($UNPARSEABLE_EXIT) naming the offending journey"
+else
+  echo "  ✗ expected non-zero exit naming J94, got exit=$UNPARSEABLE_EXIT output=$ERR_OUT"
+  FAILED=1
+fi
+
 if [ "$FAILED" -eq 0 ]; then
   echo "build-release-evidence fixtures check: PASS"
 else
