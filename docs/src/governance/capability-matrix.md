@@ -97,7 +97,7 @@ A cell answers: *"At this tier, is this capability available?"*
 | MCP server allowlist | **L3** | AAASM writes the Codex sandbox `allowed_mcp_servers` list at startup and on policy change |
 | Terminal-exec block | **L3** | Codex sandbox natively restricts exec; AAASM syncs the allowed-commands list from policy |
 | File-write block | **L3** | Codex sandbox file restrictions synced from AAASM policy (`allowed_paths`, `denied_paths`) |
-| Network-egress block | **L3** | `generate_managed_settings`/`apply_settings` writes `allowed_domains`/`blocked_domains` into the Codex sandbox config (`network_allow_list`/`network_block_list`), the same native-sandbox-sync mechanism that earns Terminal-exec block and File-write block their L3 above. The `aa-proxy` leg of this row does **not** currently work — see honest boundaries below — so this L3 rests entirely on the sandbox-native path, not on belt-and-suspenders proxy coverage. |
+| Network-egress block | **L3** | `generate_managed_settings`/`apply_settings` (`aa-devtool-codex/src/lib.rs:219-279`) computes `allowed_domains`/`blocked_domains` (via the `network_allow_list`/`network_block_list` helper functions in `sandbox.rs`) and writes them into the same JSON blob as `sandbox_mode`/`approval_policy`, atomically, to `~/.codex/config.json`. The `aa-proxy` leg of this row does **not** currently work — see honest boundaries below — so this L3 rests entirely on that sandbox-native write, not on belt-and-suspenders proxy coverage. |
 | Sub-agent governance | **L2** | Sub-processes spawned by Codex register with AAASM via wrapper; inherit parent team policy |
 
 **Honest boundaries for Codex:**
@@ -156,7 +156,7 @@ A cell answers: *"At this tier, is this capability available?"*
 
 **Honest boundaries for Windsurf Cascade:**
 - Windsurf does not expose a sandbox mode. L2 enforcement for exec and file operations requires `aa-proxy` running at the system level.
-- `aa-proxy` interception of Windsurf's own traffic additionally requires the process to trust the Agent Assembly CA. Windsurf is Electron: `NODE_EXTRA_CA_CERTS` scopes to Node's own TLS stack per Node's docs, not to Electron's separate Chromium net stack that carries the majority of Windsurf's own HTTPS traffic, and Windsurf exposes no CA-trust setting of its own — so no launch-time mechanism establishes this (AAASM-5644, resolved as documented-unmediated rather than fixed — see `docs/src/devtools/governance-limits/windsurf.md`). The OS-trust-store CA install `aa-proxy` performs at startup is the only path unaffected by this.
+- `aa-proxy` interception of Windsurf's own traffic additionally requires the process to trust the Agent Assembly CA. Windsurf is Electron: `NODE_EXTRA_CA_CERTS` scopes to Node's own TLS stack per Node's docs, not to Electron's separate Chromium net stack, and `aa-devtool-windsurf` injects no CA-trust variable of any kind — so no launch-time mechanism establishes this regardless of which stack carries Windsurf's own HTTPS traffic (AAASM-5644, resolved as documented-unmediated rather than fixed — see `docs/src/devtools/governance-limits/windsurf.md`). The OS-trust-store CA install `aa-proxy` performs at startup is the only path unaffected by this.
 - Admin settings sync requires Windsurf's config directory to be writable by the AAASM process. In multi-user environments, this requires elevated permissions or a per-user deployment.
 - MCP registry control only governs MCP servers loaded by Windsurf at startup. A user can manually add servers to a workspace-level config that overrides the registry.
 
