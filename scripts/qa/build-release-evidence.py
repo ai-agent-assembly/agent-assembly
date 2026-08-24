@@ -120,7 +120,7 @@ def _extract_selected_journeys_table(md_text: str) -> dict[str, str]:
     return results
 
 
-def _map_journey_status(raw_cell: str) -> str:
+def _map_journey_status(jid: str, raw_cell: str) -> str:
     """Map one sign-off table "Result" cell to the 8-token status vocabulary.
 
     The sign-off table is prose written for humans, not a clean enum — a
@@ -131,6 +131,15 @@ def _map_journey_status(raw_cell: str) -> str:
     finding and must not leak into the status. See
     docs/src/qa/release-qa-policy.md's status-vocabulary mapping table for
     the full 5828-worker-schema -> evidence-enum mapping this mirrors.
+
+    `NOT_RUN` is reserved for a journey genuinely absent from the table (the
+    "selected-but-absent -> NOT_RUN" rule) — a row that IS present but whose
+    text this parser cannot classify must fail loudly instead of silently
+    collapsing into `NOT_RUN`. Otherwise a reworded result, a new vocabulary
+    token, or a reordered column would be indistinguishable from "this
+    journey was never run at all," which a later checker's exception
+    handling could launder into an admissible non-result — exactly the
+    failure this campaign exists to prevent, inverted.
     """
     text = raw_cell
     for arrow in ("→", "->"):
@@ -141,7 +150,10 @@ def _map_journey_status(raw_cell: str) -> str:
     for pattern, status in _STATUS_TOKEN_RULES:
         if re.search(pattern, upper):
             return status
-    return "NOT_RUN"
+    raise ValueError(
+        f"{jid}: could not classify sign-off Result cell into the status "
+        f"vocabulary — raw cell: {raw_cell!r}"
+    )
 
 
 def _extract_verdict_line(md_text: str) -> str | None:
@@ -183,7 +195,8 @@ def build_evidence(
     for entry in required:
         jid = entry["id"]
         raw_cell = table.get(jid)
-        status = _map_journey_status(raw_cell) if raw_cell is not None else "NOT_RUN"
+        status = _map_journey_status(jid, raw_cell) if raw_cell is not None else "NOT_RUN"
+        assert status in VALID_STATUSES, f"{jid}: mapped to invalid status {status!r}"
         journeys.append({
             "id": jid,
             "status": status,
@@ -249,7 +262,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, help="e.g. 0.0.1-rc.7")
     parser.add_argument("--candidate-sha", default=None,
-                         help="override 'git rev-parse HEAD' (testing only)")
+                         help="override 'git rev-parse HEAD' (testing / fixture generation)")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--catalog", default=None,
                          help="default: <repo-root>/qa/golden-journeys.yaml")
@@ -273,14 +286,18 @@ def main() -> int:
         repo_root, "docs", "release", "qa-signoff", f"v{args.version}.evidence.json"
     )
 
-    evidence = build_evidence(
-        version=args.version,
-        repo_root=repo_root,
-        candidate_sha=args.candidate_sha,
-        catalog_path=catalog_path,
-        qa_signoff_path=qa_signoff_path,
-        security_signoff_path=security_signoff_path,
-    )
+    try:
+        evidence = build_evidence(
+            version=args.version,
+            repo_root=repo_root,
+            candidate_sha=args.candidate_sha,
+            catalog_path=catalog_path,
+            qa_signoff_path=qa_signoff_path,
+            security_signoff_path=security_signoff_path,
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
     with open(out_path, "w") as f:
         json.dump(evidence, f, indent=2, sort_keys=True)
