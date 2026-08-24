@@ -577,6 +577,7 @@ mod proxy_data_path {
             // so the SSRF guard stays fully active for the public CONNECT host.
             agent_id: None,
             ready_file: None,
+            parent_pid: None,
             allow_private_connect_targets: false,
         };
         let bind_addr = config.bind_addr;

@@ -44,6 +44,7 @@ fn proxy_config(ca_dir: &std::path::Path, denied_hosts: Vec<String>) -> ProxyCon
         // stand-in, which the AAASM-3130 SSRF guard blocks in production.
         agent_id: None,
         ready_file: None,
+        parent_pid: None,
         allow_private_connect_targets: true,
     }
 }
