@@ -3,6 +3,7 @@
 pub mod ca;
 pub mod guard;
 pub mod identity;
+pub mod launch_state;
 pub mod logs;
 pub mod pid;
 pub mod readiness;

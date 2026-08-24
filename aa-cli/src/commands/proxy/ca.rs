@@ -16,7 +16,7 @@ pub struct CaArgs {
     pub yes: bool,
 }
 
-fn default_ca_dir() -> PathBuf {
+pub(super) fn default_ca_dir() -> PathBuf {
     dirs::home_dir()
         .expect("cannot determine home directory")
         .join(".aa")

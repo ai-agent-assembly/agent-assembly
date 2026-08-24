@@ -127,6 +127,9 @@ comfy-table    = "8"
 console        = "0.16"
 crossterm      = "0.29"
 dirs           = { workspace = true }
+# AAASM-5862: launch_state::allocate() needs mkdtemp-style unique-dir
+# generation in production code (per-launch proxy state dirs), not just tests.
+tempfile       = { workspace = true }
 futures-util   = "0.3"
 hex            = { workspace = true }
 include_dir    = "0.7"
@@ -154,7 +157,6 @@ uuid           = { workspace = true, features = ["serde", "v4"] }
 aa-runtime     = { path = "../aa-runtime", features = ["test-fixtures"] }
 assert_cmd     = { workspace = true }
 tokio-util     = { workspace = true, features = ["rt"] }
-tempfile       = { workspace = true }
 wiremock       = "0.6"
 # strip-for-publish:begin sdkclient
 # AAASM-5323: `aasm run`'s registration tests stand up the *real*
