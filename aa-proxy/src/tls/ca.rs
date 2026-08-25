@@ -134,6 +134,20 @@ impl CaStore {
         let key_path = ca_dir.join("ca-key.pem");
         let lock_path = ca_dir.join(".ca-lock");
 
+        // AAASM-5928 CI regression: `ca_dir` is a fresh, never-created Docker
+        // volume mount on a container's first-ever start — every existing test
+        // here used `TempDir::new()`, which always pre-exists, so this path was
+        // never exercised locally. Without this, the O_EXCL lock-file
+        // `create_new` below is the first filesystem operation against a
+        // missing parent directory and fails with `ErrorKind::NotFound`, which
+        // isn't handled by the `AlreadyExists` retry arm and falls through to
+        // the generic `Err` arm that returns immediately — so `run()` errors
+        // out before the TCP listener ever binds. The container's restart
+        // policy then crash-loops on the same immediate failure forever, which
+        // from outside the container looks identical to "the proxy is hanging
+        // and never accepts connections."
+        tokio::fs::create_dir_all(ca_dir).await?;
+
         // Bounds on how long a caller will wait for another process's
         // in-flight generation before giving up, and how old an unreleased
         // lock file must be before it's treated as abandoned by a crashed
@@ -439,6 +453,27 @@ mod tests {
             std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
             0o600,
             "load must re-assert 0600 on an existing loose key"
+        );
+    }
+
+    /// AAASM-5928 CI regression repro: the real proxy's `ca_dir` is a fresh,
+    /// never-created Docker volume mount on first-ever container start — unlike
+    /// every other test here, which uses `TempDir::new()` (always pre-existing).
+    /// Reproduces against a `ca_dir` path that does not exist yet.
+    #[tokio::test]
+    async fn load_or_create_succeeds_when_ca_dir_does_not_exist_yet() {
+        let parent = TempDir::new().unwrap();
+        let ca_dir = parent.path().join("does").join("not").join("exist");
+        assert!(!ca_dir.exists(), "test fixture must start absent");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), CaStore::load_or_create(&ca_dir)).await;
+
+        let ca = result
+            .expect("load_or_create must not hang when ca_dir does not exist yet")
+            .expect("load_or_create must succeed when ca_dir does not exist yet");
+        assert!(
+            ca_pair_matches(&ca.ca_cert_pem, &ca.ca_key_pem).unwrap(),
+            "must return a matched pair even on a first-ever cold start"
         );
     }
 
