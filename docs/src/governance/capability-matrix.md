@@ -36,6 +36,16 @@ proceeds, but only one of them is an enforcement point:
 | SDK / wrapper seam (**advisory**) | Framework tool calls the SDK wraps, after its initializer runs | Wherever the SDK runs (macOS, Linux) | Synchronous — the language wrapper raises before the wrapped body executes. But `aa-sdk-client` has no in-tree caller that refuses (`decision.rs:32-33`) and the call is voluntary, so this is defense-in-depth, not the gate (ADR 0002) |
 | `aa-proxy` | Outbound HTTP/1.1 **routed to the proxy**, on a host under MitM | macOS and Linux; Windows unsupported. On macOS the CA install is *attempted* at proxy start and shells out to `security add-trusted-cert`, which requires admin authorization — macOS prompts, and a refusal fails proxy startup. On Linux run `sudo aasm proxy install-ca` | Synchronous — a denial returns 403 (or a JSON-RPC error for MCP `tools/call`) without dialling upstream |
 
+**Two `aa-proxy` modes — do not conflate them.** Since AAASM-5857, `aasm run <tool>`
+always spawns its own **dedicated per-launch proxy** (`ProxyGuard`, default, not
+opt-in) — one governed launch, one proxy instance, torn down with the launch. This
+is what every row and measurement on this page describes. `aasm proxy start` /
+`status` / `stop` is a **separate, standalone shared-proxy mode**: an operator can
+run one long-lived `aa-proxy` for other use cases, but a managed `aasm run` launch
+never uses it, and `aasm proxy status`/`stop` cannot see a per-launch instance —
+they only track the standalone singleton's PID/state file. See ADR 0033 §3.2 for
+the full rationale.
+
 **What is outside the boundary.** These are not enforced at any tier on this
 page, and each needs a separate control:
 
