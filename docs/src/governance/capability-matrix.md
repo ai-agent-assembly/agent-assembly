@@ -43,7 +43,8 @@ is what every row and measurement on this page describes. `aasm proxy start` /
 `status` / `stop` is a **separate, standalone shared-proxy mode**: an operator can
 run one long-lived `aa-proxy` for other use cases, but a managed `aasm run` launch
 never uses it, and `aasm proxy status`/`stop` cannot see a per-launch instance —
-they only track the standalone singleton's PID/state file. See ADR 0033 §3.2 for
+they only track the standalone singleton's PID/state file. See agent-assembly
+ADR 0033 §3.2 for
 the full rationale.
 
 **What is outside the boundary.** These are not enforced at any tier on this

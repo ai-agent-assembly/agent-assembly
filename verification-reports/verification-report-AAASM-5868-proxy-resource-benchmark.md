@@ -20,7 +20,7 @@ dedicated proxy.
 | | |
 |---|---|
 | Branch | `v0.0.1/AAASM-5868/test/proxy_resource_benchmark` |
-| Base | `remote/main` @ `672b65059` (`[AAASM-5867] 📝 (docs): ADR 0033 update for per-launch dedicated proxy`) |
+| Base | `remote/main` @ `672b65059` (AAASM-5867's agent-assembly ADR 0033 update for per-launch dedicated proxy, PR #2200) |
 | Binaries measured | `aasm` and `aa-proxy`, built `--release` from this branch |
 | Harness | `aa-integration-tests/examples/proxy_resource_overhead.rs` + `aa-integration-tests/examples/aa_proxy_no_keychain.rs` |
 
