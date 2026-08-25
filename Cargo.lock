@@ -400,6 +400,7 @@ dependencies = [
  "aa-core",
  "aa-devtool",
  "aa-devtool-claude-code",
+ "aa-devtool-codex",
  "aa-devtool-contract",
  "aa-ebpf",
  "aa-ebpf-common",
