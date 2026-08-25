@@ -41,6 +41,7 @@ pub const TELEMETRY_READY_LOG_LINE: &str = "aa-api redaction telemetry ingest li
 pub struct ApiServerProcess {
     process: ManagedProcess,
     base_url: String,
+    telemetry_addr: String,
     _tmp: tempfile::TempDir,
 }
 
@@ -101,8 +102,18 @@ impl ApiServerProcess {
         Ok(Self {
             process,
             base_url,
+            telemetry_addr: format!("127.0.0.1:{telemetry_port}"),
             _tmp: tmp,
         })
+    }
+
+    /// Loopback `host:port` this server's redaction telemetry gRPC ingest is
+    /// bound to (AAASM-5903) — what a cross-process journey points
+    /// `AA_PROXY_TELEMETRY_ENDPOINT` at to route a real `aa-proxy`'s redaction
+    /// reports here, exactly as `TrustedProxy::start_intercepting`'s
+    /// `extra_env` is designed to carry.
+    pub fn telemetry_addr(&self) -> &str {
+        &self.telemetry_addr
     }
 
     /// Base URL of the REST surface, e.g. `http://127.0.0.1:54321`.

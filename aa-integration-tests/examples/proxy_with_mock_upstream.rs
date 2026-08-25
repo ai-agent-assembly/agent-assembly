@@ -95,7 +95,24 @@ async fn main() -> anyhow::Result<()> {
     // no receiver exists, and a proxy whose event sends fail is not the proxy
     // production runs.
     let (event_tx, _event_rx) = tokio::sync::broadcast::channel(256);
-    let server = aa_proxy::proxy::ProxyServer::new(config, ca, event_tx);
+
+    // AAASM-5903: mirrors aa_proxy::run()'s own audit-sink construction,
+    // gated on the same AA_PROXY_AUDIT_JSONL_PATH env var production reads.
+    // `ProxyServer::new` (plain, no audit sink) previously left a journey
+    // measuring "the proxy's own audit JSONL" with nothing to check — this
+    // is the shipped ProxyServer wired identically to how aa_proxy::run()
+    // wires it, minus the macOS keychain install this binary already
+    // deliberately skips (see module docs above).
+    let audit_rotation = aa_proxy::config::audit_rotation_policy_from_env()?;
+    let audit_export = aa_proxy::config::audit_export_target_from_env();
+    let audit_jsonl_tx = aa_proxy::audit_jsonl::build_audit_sink(
+        aa_proxy::config::audit_jsonl_path_from_env().as_deref(),
+        audit_rotation,
+        audit_export,
+    )
+    .await?;
+
+    let server = aa_proxy::proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
     server.run().await?;
     Ok(())
 }
