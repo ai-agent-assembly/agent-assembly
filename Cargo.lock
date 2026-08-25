@@ -588,6 +588,7 @@ dependencies = [
  "aa-core",
  "aa-devtool",
  "aa-devtool-claude-code",
+ "aa-devtool-codex",
  "aa-ebpf",
  "aa-ebpf-common",
  "aa-policy",

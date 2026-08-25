@@ -9,10 +9,10 @@
 //! there is still exactly one place that decides which implementation backs a
 //! tool (AAASM-5274).
 //!
-//! **Claude Code is native from AAASM-5281**; every other built-in adapter is
-//! still wrapped in [`LegacyAdapterShim`], which makes it satisfy the lifecycle
-//! contract while declaring honestly that it cannot substantiate the mechanisms
-//! it was never designed to expose (§7).
+//! **Claude Code (AAASM-5281) and Codex (AAASM-5918) are native**; every other
+//! built-in adapter is still wrapped in [`LegacyAdapterShim`], which makes it
+//! satisfy the lifecycle contract while declaring honestly that it cannot
+//! substantiate the mechanisms it was never designed to expose (§7).
 //!
 //! # What a shimmed adapter can and cannot do
 //!
@@ -25,13 +25,14 @@
 //! no prior state for a receipt to record. The executor refuses that step with
 //! a reason rather than reporting a success nothing performed.
 //!
-//! # Why Claude Code brings its own executor as well as its own content
+//! # Why a native adapter brings its own executor as well as its own content
 //!
-//! Its plan does more than write files: it injects `NODE_EXTRA_CA_CERTS` and the
-//! proxy variables into the launch environment, which `FilesystemExecutor`
-//! deliberately refuses. The registration therefore carries a
-//! [`StepExecutorFactory`] alongside its [`StepContentSource`], and both come
-//! from the adapter crate that knows the tool. The service keeps
+//! Its plan does more than write files: it injects a launch-environment
+//! variable (`NODE_EXTRA_CA_CERTS` for Claude Code, `CODEX_CA_CERTIFICATE` for
+//! Codex) and the proxy variables into the launch environment, which
+//! `FilesystemExecutor` deliberately refuses. The registration therefore
+//! carries a [`StepExecutorFactory`] alongside its [`StepContentSource`], and
+//! both come from the adapter crate that knows the tool. The service keeps
 //! transactionality, the journal, the receipt and rollback.
 //!
 //! # This module is stripped before publishing
@@ -68,6 +69,9 @@ pub fn built_in_integrations(policy: PolicyDocument) -> Vec<RegisteredIntegratio
             if kind == DevToolKind::ClaudeCode {
                 return Some(claude_code_integration());
             }
+            if kind == DevToolKind::Codex {
+                return Some(codex_integration());
+            }
             let adapter = aa_devtool::registry::adapter_for(token)?;
             let shim = LegacyAdapterShim::new(kind.clone(), BoxedAdapter(adapter), policy.clone());
             Some(RegisteredIntegration::new(kind, Arc::new(shim)))
@@ -96,6 +100,43 @@ pub fn claude_code_registration(
     RegisteredIntegration::new(DevToolKind::ClaudeCode, integration.clone())
         .with_content(Arc::new(ClaudeCodeSteps(integration.clone())))
         .with_executor(Arc::new(ClaudeCodeSteps(integration)))
+}
+
+/// The native Codex registration (AAASM-5918).
+///
+/// One `Arc` answers for all three roles, for the same reason as
+/// [`claude_code_integration`].
+pub fn codex_integration() -> RegisteredIntegration {
+    codex_registration(Arc::new(aa_devtool_codex::CodexIntegration::new()))
+}
+
+/// Register a Codex integration that was built elsewhere.
+///
+/// Public so an end-to-end test can register one pinned to temp roots and a
+/// live proxy, and still exercise **this** wiring rather than a second copy of
+/// it — the bridge below is where a mistake would hide.
+pub fn codex_registration(integration: Arc<aa_devtool_codex::CodexIntegration>) -> RegisteredIntegration {
+    RegisteredIntegration::new(DevToolKind::Codex, integration.clone())
+        .with_content(Arc::new(CodexSteps(integration.clone())))
+        .with_executor(Arc::new(CodexSteps(integration)))
+}
+
+/// Adapts the Codex integration's rendering and execution surfaces onto the
+/// service's seams. Mirrors [`ClaudeCodeSteps`] — see its docs for why the
+/// bridge exists at all.
+struct CodexSteps(Arc<aa_devtool_codex::CodexIntegration>);
+
+#[async_trait]
+impl StepContentSource for CodexSteps {
+    async fn render(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, String> {
+        self.0.step_content(plan).map_err(|e| e.to_string())
+    }
+}
+
+impl StepExecutorFactory for CodexSteps {
+    fn executor(&self, rendered: BTreeMap<String, String>) -> Box<dyn StepExecutor + Send> {
+        Box::new(self.0.scoped_executor(rendered))
+    }
 }
 
 /// Adapts the Claude Code integration's rendering and execution surfaces onto
