@@ -21,7 +21,13 @@
 //! policy enforcement. Module-level docs in [`mock_llm`] cover usage.
 
 #[allow(dead_code)]
+pub mod api_server;
+#[allow(dead_code)]
 pub mod binary_gateway;
+#[allow(dead_code)]
+pub mod canary;
+#[allow(dead_code)]
+pub mod capturing_upstream;
 #[allow(dead_code)]
 pub mod cli;
 #[allow(dead_code)]
@@ -30,6 +36,8 @@ pub mod format;
 pub mod hook_layer;
 #[allow(dead_code)]
 pub mod live_gateway;
+#[allow(dead_code)]
+pub mod managed_process;
 #[allow(dead_code)]
 pub mod mock_llm;
 #[allow(dead_code)]

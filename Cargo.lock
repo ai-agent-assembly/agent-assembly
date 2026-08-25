@@ -449,6 +449,9 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tokio-util",
  "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "url",
  "uuid",
  "wat",
 ]
