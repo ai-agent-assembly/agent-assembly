@@ -2285,6 +2285,23 @@ jobs:
         # locally, where protoc happened to be installed.
         run: sudo apt-get install -y protobuf-compiler
 
+      - name: Pre-build aasm binary (AAASM-5904)
+        # AAASM-5904's fixture harness (`proxy_trust_support::mod.rs`,
+        # `build_target`) builds `aasm` (`cargo build -p aa-cli --bin aasm`)
+        # unconditionally the first time `TrustedProxy::start_intercepting`
+        # runs, with no path-override env var to skip it (unlike
+        # `ApiServerProcess::resolve_binary`'s `AA_API_SERVER_BIN_PATH`).
+        # `aa-cli` pulls in `wasmtime` via `aa-sandbox` — the same cold-build
+        # cost `integration-tests.yml`'s own AAASM-2340 pre-build step exists
+        # to move out of a fixture's READY-wait window, in a job that had no
+        # equivalent step before this fixture existed to need one. Almost
+        # certainly the dominant, previously-unaccounted-for cost behind the
+        # ~5-6 minute fixture stalls measured on CI (runs 32840166399,
+        # 32842166884, 32844163717) — the earlier feature-unification and
+        # binary-path fixes addressed real, separately-measured costs, but
+        # none of them touch this one.
+        run: cargo build --quiet -p aa-cli --bin aasm
+
       - name: Pre-build the hitl-approval fixture
         # `hitl-approval` spawns its own gateway via `cargo test --test
         # e2e_hitl_approval`, and `hitl-fixture.ts` waits up to 4 minutes for it
@@ -2319,14 +2336,16 @@ jobs:
 
       - name: Pre-build the sensitive-data-reference-journey fixture
         # Same rationale as the hitl pre-build step above: `sensitive-data-
-        # fixture.ts` waits up to 4 minutes for `e2e_fixture_main`'s READY line,
-        # and this fixture's cold path also builds `aasm proxy start`'s
-        # dependencies plus drives a real cross-process request before
-        # printing it — compiling inside that window would spend most of the
-        # budget on rustc rather than on the actual boot.
+        # fixture.ts` waits for `e2e_fixture_main`'s READY line, and this
+        # fixture's cold path also builds `aasm proxy start`'s dependencies
+        # plus drives a real cross-process request before printing it —
+        # compiling inside that window would spend most of the budget on
+        # rustc rather than on the actual boot.
         #
-        # Command must match `sensitive-data-fixture.ts`'s spawn EXACTLY, for
-        # the same cargo-artifact-hash reason the hitl step above documents.
+        # `--message-format=json` here (not plain `--no-run`, which the hitl
+        # step above uses) so the next step can capture the exact executable
+        # path this produces — see that step for why the fixture execs it
+        # directly instead of going through `cargo test` again at runtime.
         #
         # Placed AFTER `Build aa-api-server`, unlike the hitl step above,
         # because — unlike hitl's claim that step order doesn't matter here —
@@ -2337,11 +2356,42 @@ jobs:
         # invocation runs second recompiles several shared crates from
         # scratch. Observed on CI (run 32840166399, job 97778509532): with
         # this step running *before* `Build aa-api-server`, Playwright's own
-        # `cargo test` invocation for this fixture recompiled from scratch
-        # moments after this step had already built the identical target in
-        # 35s, and blew the 4-minute READY budget. Running last means nothing
-        # runs after it to invalidate its result before Playwright starts.
-        run: cargo test --no-run --test e2e_sensitive_data_reference_journey
+        # invocation for this fixture recompiled from scratch moments after
+        # this step had already built the identical target in 35s. Running
+        # last means nothing runs after it to invalidate its result — kept
+        # this way even though the next step's fix (exec the binary directly)
+        # makes the specific failure mode this ordering addressed moot on its
+        # own; it's still the right order for the same underlying reason.
+        run: |
+          cargo test --no-run --test e2e_sensitive_data_reference_journey --message-format=json \
+            > /tmp/sensitive-data-journey-build.json
+
+      - name: Locate the sensitive-data-reference-journey fixture binary
+        # AAASM-5904: even with the ordering fix above and `AA_API_SERVER_
+        # BIN_PATH` (further below) removing the fixture's own runtime
+        # rebuild, CI still measured the fixture's `cargo test --test
+        # e2e_sensitive_data_reference_journey e2e_fixture_main -- ...`
+        # invocation recompiling several shared crates every time regardless
+        # of step ordering (the test-name-filtered shape genuinely resolves a
+        # different unit graph than the unfiltered `--no-run` pre-build), and
+        # separately, one run measured that same invocation spending ~327s
+        # producing zero stderr output before a single "Compiling" line
+        # appeared — genuinely blocked on something inside cargo's own
+        # invocation-time behaviour, not slow compilation. Neither is fully
+        # root-caused. Rather than keep guessing at cargo's behaviour, this
+        # sidesteps invoking `cargo test` a second time entirely: parse the
+        # exact executable path the pre-build step already produced, and pass
+        # it to `sensitive-data-fixture.ts` (SENSITIVE_DATA_JOURNEY_BIN_PATH)
+        # so it execs the binary directly with libtest's own CLI instead.
+        run: |
+          set -euo pipefail
+          bin_path=$(jq -r 'select(.reason=="compiler-artifact" and .executable != null) | .executable' \
+            /tmp/sensitive-data-journey-build.json | tail -1)
+          if [ -z "$bin_path" ] || [ ! -x "$bin_path" ]; then
+            echo "::error::could not locate the e2e_sensitive_data_reference_journey test executable in the pre-build's JSON output" >&2
+            exit 1
+          fi
+          echo "SENSITIVE_DATA_JOURNEY_BIN_PATH=$bin_path" >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
