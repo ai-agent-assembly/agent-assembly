@@ -708,6 +708,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inject_auth_x_api_key_writes_that_header_not_authorization() {
+        // AAASM-5926: an Anthropic-classified credential is handed to the
+        // serializer as an ("x-api-key", <key>) pair; the wire header name
+        // must follow that pair, not default to Authorization.
+        let raw = b"POST /v1/messages HTTP/1.1\r\n\
+                    Host: api.anthropic.com\r\n\
+                    x-api-key: agent-bogus-key\r\n\
+                    Content-Length: 2\r\n\
+                    \r\n\
+                    hi";
+        let mut reader = make_reader(raw);
+        let req = read_http_request(&mut reader).await.unwrap().unwrap();
+
+        let wire = serialize_http_request_with_auth(&req, &req.body, Some(("x-api-key", b"sk-ant-REAL-KEY")));
+        let text = std::str::from_utf8(&wire).unwrap();
+
+        assert!(
+            !text.contains("agent-bogus-key"),
+            "agent x-api-key must be stripped: {text}"
+        );
+        assert_eq!(
+            text.matches("x-api-key: sk-ant-REAL-KEY\r\n").count(),
+            1,
+            "injected x-api-key must appear exactly once: {text}"
+        );
+        assert!(
+            !text.to_ascii_lowercase().contains("authorization:"),
+            "no Authorization header should be emitted for x-api-key injection: {text}"
+        );
+    }
+
+    #[tokio::test]
     async fn inject_auth_none_forwards_agent_header_verbatim() {
         // Backward compatibility: with no injected key the agent's own
         // Authorization passes through unchanged (historical behaviour).

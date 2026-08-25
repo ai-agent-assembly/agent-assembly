@@ -357,6 +357,31 @@ mod tests {
     }
 
     #[test]
+    fn authorization_for_anthropic_uses_x_api_key_not_bearer() {
+        // AC1 (AAASM-5926): Anthropic's Messages API authenticates via a raw
+        // x-api-key header, not Authorization: Bearer.
+        let store = CredentialStore::from_pairs([("api.anthropic.com".to_string(), b"sk-ant-secret".to_vec())]);
+        assert_eq!(
+            store.authorization_for("api.anthropic.com"),
+            Some(("x-api-key", b"sk-ant-secret".to_vec()))
+        );
+    }
+
+    #[test]
+    fn authorization_for_unrecognized_host_with_credential_defaults_to_bearer() {
+        // AC3 (AAASM-5926): a credential configured for a host with no
+        // recognised provider classification still injects — using the
+        // pre-existing Authorization: Bearer default (see the doc comment on
+        // `authorization_for` for why Bearer, not a refusal, is the safe
+        // choice here) rather than silently dropping a configured credential.
+        let store = CredentialStore::from_pairs([("llm.internal-gateway.example".to_string(), b"sk-custom".to_vec())]);
+        assert_eq!(
+            store.authorization_for("llm.internal-gateway.example"),
+            Some(("Authorization", b"Bearer sk-custom".to_vec()))
+        );
+    }
+
+    #[test]
     fn authorization_for_unknown_host_is_none() {
         let store = CredentialStore::from_pairs([("api.openai.com".to_string(), b"sk-secret".to_vec())]);
         assert!(store.authorization_for("evil.attacker.com").is_none());
