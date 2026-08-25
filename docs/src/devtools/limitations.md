@@ -126,6 +126,21 @@ This is why the lifecycle contract keeps `ModelPathInterception` and
 opposites: the first is a protection capability, the second is routing that
 *removes* protection.
 
+## A governed launch always replaces an ambient `HTTPS_PROXY`/`HTTP_PROXY`
+
+`aasm run` overwrites, rather than merges with, any `HTTPS_PROXY`/`HTTP_PROXY`
+already present in the operator's shell — including one set by a corporate
+proxy configuration or a provider-switching tool (AAASM-5892). This is
+deliberate: an ambient proxy address is environment-supplied input, and trusting
+it would let anything that can set an env var redirect governed traffic away
+from Agent Assembly's enforcement point.
+
+Since AAASM-5897, a governed launch prints a warning (naming that an ambient
+proxy was detected and replaced, never its value) whenever this override is
+about to happen. If your environment's proxy also performs authentication,
+overriding it can produce a downstream auth failure from the tool itself — use
+`--no-proxy` to keep your own proxy and launch unprotected instead.
+
 ## What `verify` adjudicates, and when it still exits `6`
 
 `aasm integrations verify claude-code` **passes on a correctly installed

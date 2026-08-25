@@ -1385,6 +1385,21 @@ mod plan {
                     "warning: --no-proxy — launching WITHOUT interception. This session's traffic is \
                      not inspected and no egress policy applies to it."
                 );
+            } else if super::ambient_proxy_is_set() {
+                // AAASM-5892: `build_child_env` always replaces an ambient
+                // `HTTPS_PROXY`/`HTTP_PROXY` with the trusted governed endpoint
+                // (correctly — an ambient value is not authoritative, see that
+                // function's doc comment). That override was previously silent,
+                // so an operator whose pre-existing proxy also performed
+                // authentication saw only a downstream auth failure with no clue
+                // AASM had touched their routing. Name-only: the value itself is
+                // never printed.
+                eprintln!(
+                    "warning: an ambient HTTPS_PROXY/HTTP_PROXY is set and will be replaced by this \
+                     launch's governed proxy endpoint. If that proxy also performs authentication for \
+                     your environment, this session may fail to authenticate; re-run with --no-proxy \
+                     to keep your own proxy instead."
+                );
             }
 
             // 3. AAASM-5350 AC 1: `--no-proxy` is refused where a party other
@@ -1977,6 +1992,16 @@ fn emit_observe_banner() {
     eprintln!("⚠️  [AAASM] Running in sandbox/observe mode.");
     eprintln!("    Policy decisions are recorded but NOT enforced.");
     eprintln!("    Review captured events: aasm audit list --dry-run-only");
+}
+
+/// Whether a non-empty `HTTPS_PROXY`/`HTTP_PROXY` is already set in this
+/// process's environment — i.e. what a governed launch is about to override.
+/// Presence-only, by design: callers warn that an ambient proxy exists, never
+/// what it points at (AAASM-5892/5897).
+fn ambient_proxy_is_set() -> bool {
+    ["HTTPS_PROXY", "HTTP_PROXY"]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|v| !v.is_empty()))
 }
 
 /// Build the environment map to be inherited by the child process.
@@ -3462,6 +3487,19 @@ mod tests {
             }
             Self { _lock: lock, prior }
         }
+
+        /// Removes both vars for the duration of the guard, so a test that
+        /// asserts "no ambient proxy" is not just inheriting whatever happened
+        /// to be unset in this process already.
+        fn clear() -> Self {
+            let lock = crate::test_support::env_guard();
+            let mut prior = Vec::new();
+            for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
+                prior.push((key, std::env::var(key).ok()));
+                std::env::remove_var(key);
+            }
+            Self { _lock: lock, prior }
+        }
     }
 
     impl Drop for AmbientProxy {
@@ -3600,6 +3638,43 @@ mod tests {
         assert!(
             !env.contains_key("HTTP_PROXY"),
             "an unvouched-for ambient HTTP_PROXY must not reach the child"
+        );
+    }
+
+    // --- ambient_proxy_is_set tests (AAASM-5892/5897) ---
+
+    /// Vanilla launch, no ambient proxy: the AAASM-5897 warning must not fire.
+    #[test]
+    fn ambient_proxy_is_set_is_false_with_no_ambient_proxy() {
+        let _ambient = AmbientProxy::clear();
+        assert!(
+            !ambient_proxy_is_set(),
+            "no ambient HTTPS_PROXY/HTTP_PROXY was set; the warning's precondition must not fire"
+        );
+    }
+
+    /// The AAASM-5892 incident shape: an operator (or CC-Switch, or a corporate
+    /// shell profile) already has a proxy configured. This is exactly the case
+    /// the new warning exists to surface before `build_child_env` silently
+    /// overrides it.
+    #[test]
+    fn ambient_proxy_is_set_is_true_with_a_real_ambient_proxy() {
+        let _ambient = AmbientProxy::set("http://corporate:3128");
+        assert!(
+            ambient_proxy_is_set(),
+            "a real ambient HTTPS_PROXY/HTTP_PROXY was set; the warning's precondition must fire"
+        );
+    }
+
+    /// An empty-string env var is not a configured proxy. Some shells/CI carry
+    /// `HTTPS_PROXY=` unset-but-present; treating that as "ambient" would warn
+    /// on every such launch for nothing to report.
+    #[test]
+    fn ambient_proxy_is_set_is_false_for_an_empty_value() {
+        let _ambient = AmbientProxy::set("");
+        assert!(
+            !ambient_proxy_is_set(),
+            "an empty-string HTTPS_PROXY/HTTP_PROXY is not a configured ambient proxy"
         );
     }
 
