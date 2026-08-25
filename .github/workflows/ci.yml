@@ -2309,6 +2309,18 @@ jobs:
         # by a hash that includes the feature set, so the two builds coexist.
         run: cargo test --no-run --test e2e_hitl_approval
 
+      - name: Pre-build the sensitive-data-reference-journey fixture
+        # Same rationale as the hitl pre-build step above: `sensitive-data-
+        # fixture.ts` waits up to 4 minutes for `e2e_fixture_main`'s READY line,
+        # and this fixture's cold path also builds `aasm proxy start`'s
+        # dependencies plus drives a real cross-process request before
+        # printing it — compiling inside that window would spend most of the
+        # budget on rustc rather than on the actual boot.
+        #
+        # Command must match `sensitive-data-fixture.ts`'s spawn EXACTLY, for
+        # the same cargo-artifact-hash reason the hitl step above documents.
+        run: cargo test --no-run --test e2e_sensitive_data_reference_journey
+
       - name: Build aa-api-server
         # `aa-gateway --mode local` deliberately does not construct
         # `aa_api::AppState`, so every /api/v1/* path returns the SPA fallback as
@@ -2395,7 +2407,9 @@ jobs:
       - name: Assert the real-backend specs actually ran
         if: always()
         working-directory: dashboard
-        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 12
+        # AAASM-5904 bumped this from 12 to 13: `sensitive-data-reference-
+        # journey.spec.ts` added one test to `REAL_BACKEND_SPECS`.
+        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 13
 
       - name: Upload real-backend report
         if: always()
@@ -2405,6 +2419,49 @@ jobs:
           path: dashboard/test-results/
           retention-days: 14
           if-no-files-found: ignore
+
+  sensitive-data-reference-journey-evidence:
+    # AAASM-5904 (registry row J65) — the Subtask B Rust journey test is the
+    # release-blocking evidence selector for this row; this lane exists to
+    # take that measurement on every PR, not just prove it can pass once.
+    #
+    # Separate from `dashboard-e2e-real-backend`: that job proves the
+    # browser-visible leg (AAASM-5904's own spec); this one proves the
+    # cross-process chain up through the live `aa-api-server` REST surface
+    # that spec depends on already having something to show.
+    name: Sensitive-data reference journey evidence
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: sensitive-data-reference-journey-evidence
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Run the journey's evidence-selector test
+        # `--retries 0`, deliberately, unlike `[profile.evidence]`'s inherited
+        # default of 2: a retry after a partial teardown (a leaked proxy
+        # process, a stale port) would mask exactly the kind of leak
+        # `ManagedProcess::assert_no_leaks` (AAASM-5902) exists to catch by
+        # quietly passing on the second attempt. A real failure here must
+        # stay a real failure, not a flake statistic.
+        run: |
+          cargo nextest run --profile evidence --retries 0 \
+            -p aa-integration-tests --test e2e_sensitive_data_reference_journey \
+            -E 'test(full_chain_redaction_reaches_operator_visible_api)'
+      - name: Report what this lane measured
+        if: always()
+        run: |
+          .ci/test-evidence-summary.sh \
+            --lane "sensitive-data reference journey (AAASM-5904, J65)" \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${{ github.workspace }}/.sensitive-data-journey-outcomes" \
+            --require-evidence
 
   dashboard-codegen-drift:
     name: Dashboard codegen drift check
@@ -3637,6 +3694,11 @@ jobs:
       # all. Left advisory it would reproduce the defect it was built to fix: a
       # real-backend signal that exists, is green, and gates nothing.
       - dashboard-e2e-real-backend
+      # AAASM-5904: blocks, with the same caveat as `isolation-backend-linux`
+      # above — this aggregator counts a *skipped* need as a pass, so the
+      # lane carries `--require-evidence` and fails itself when it measured
+      # nothing, rather than relying on a green here to mean anything.
+      - sensitive-data-reference-journey-evidence
       - dashboard-codegen-drift
       - aa-cli-compat
       - devint-reference-client
