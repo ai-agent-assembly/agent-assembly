@@ -2445,16 +2445,31 @@ jobs:
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run the journey's evidence-selector test
         # `--retries 0`, deliberately, unlike `[profile.evidence]`'s inherited
-        # default of 2: a retry after a partial teardown (a leaked proxy
-        # process, a stale port) would mask exactly the kind of leak
-        # `ManagedProcess::assert_no_leaks` (AAASM-5902) exists to catch by
-        # quietly passing on the second attempt. A real failure here must
-        # stay a real failure, not a flake statistic.
+        # default of 2: this is the ticket's own release-blocking evidence
+        # selector for J65, and a retry could launder genuine flakiness in
+        # the real cross-process timing it measures (proxy MitM, redaction,
+        # the telemetry hop) into a green result — a real intermittent
+        # regression must stay visible, not get statistically absorbed.
+        #
+        # Note this specific test does not call
+        # `ManagedProcess::assert_no_leaks` (that's `e2e_api_server_
+        # graceful_shutdown.rs` and `harness_primitives.rs`'s job, not this
+        # one's) — independent review, AAASM-5904, correcting an earlier,
+        # inaccurate version of this comment.
         run: |
           cargo nextest run --profile evidence --retries 0 \
             -p aa-integration-tests --test e2e_sensitive_data_reference_journey \
             -E 'test(full_chain_redaction_reaches_operator_visible_api)'
       - name: Report what this lane measured
+        # `--evidence-dir` is required by `test-evidence-summary.sh`'s own
+        # usage contract, but unlike the isolation-backend lanes' jobs above,
+        # nothing sets `AA_CONFORMANCE_OUTCOME_DIR` for the step above — this
+        # test doesn't participate in the evidence-ledger mechanism, so the
+        # dir stays empty and the summary's "no scenario wrote a record"
+        # warning is the *expected*, not a broken, outcome here. What
+        # `--require-evidence` still catches: the `-E` filter above matching
+        # zero tests (e.g. the test gets renamed and this job silently stops
+        # measuring anything) — independent review, AAASM-5904.
         if: always()
         run: |
           .ci/test-evidence-summary.sh \
