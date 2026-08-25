@@ -57,6 +57,34 @@ on; the faster linker is opt-in.
   The linker is left disabled by default so the workspace builds even without
   it installed.
 
+## Targeted test runs (recommended when several worktrees are active)
+
+`cargo nextest run -p <pkg> <filter>` with no target restriction discovers
+*every* nextest target in that package before filtering — for `aa-cli` that is
+34 separate binaries (1 `--lib` plus 33 files under `aa-cli/tests/`), even to
+run one test. On a machine with concurrent git worktrees of this repo sharing
+one Cargo `target-dir` (AAASM-5910), a target's binary can get relinked by
+another worktree's activity between runs, and each freshly linked binary pays
+a one-time OS first-launch validation cost the moment nextest lists its tests
+— multiplied by however many of those 34 targets happen to need it. A test
+that itself runs in under a second can appear to take well over an hour for
+reasons that have nothing to do with the test (AAASM-5907's incident: ~0.00s
+test execution, ~1h40m total command time).
+
+Restrict discovery to the one target the test actually lives in:
+
+```bash
+# A test in the crate's own lib unit tests (src/**, #[cfg(test)] mod tests):
+cargo nextest run -p aa-cli --lib -- exact_test_name --exact
+
+# A test in one specific tests/*.rs integration file:
+cargo nextest run -p aa-cli --test the_file_stem -- exact_test_name --exact
+```
+
+Either form narrows discovery from 34 targets down to 1. This can't be baked
+into `.config/nextest.toml` — nextest profiles control retries/reporting, not
+target selection — so it has to be an invocation habit, not a config default.
+
 ## Branch Naming
 
 Use the four-part format:
