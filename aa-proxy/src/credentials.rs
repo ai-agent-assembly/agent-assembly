@@ -141,12 +141,36 @@ impl Entry {
     }
 }
 
+/// Classify the LLM provider for an egress `host`, to pick the correct
+/// injected auth-header shape (AAASM-5926).
+///
+/// Reuses [`aa_core::llm::Provider`] rather than a parallel enum — the
+/// header-shape question ("is this Anthropic?") is exactly the provider
+/// question `aa_core::llm` already models, even though its only prior
+/// consumer (`Model::infer_from_name`) classifies from a model name string,
+/// not a hostname. A plain hostname substring match is enough here: the set
+/// of upstream LLM hosts a credential is ever configured for is small and
+/// operator-controlled (`AA_PROXY_PROVIDER_KEYS`), not attacker-influenced.
+fn classify_provider_for_host(host: &str) -> Option<aa_core::llm::Provider> {
+    let host = host.to_ascii_lowercase();
+    if host.contains("anthropic") {
+        Some(aa_core::llm::Provider::Anthropic)
+    } else if host.contains("openai") {
+        Some(aa_core::llm::Provider::OpenAi)
+    } else if host.contains("cohere") {
+        Some(aa_core::llm::Provider::Cohere)
+    } else {
+        None
+    }
+}
+
 /// A per-host map of real provider credentials.
 ///
 /// Construct with [`CredentialStore::from_env`] (operator configuration) or
 /// [`CredentialStore::from_pairs`] (tests / programmatic). The injection step
 /// (AAASM-3578) calls [`CredentialStore::authorization_for`] to build the real
-/// `Authorization` header value at egress.
+/// auth header at egress — `Authorization: Bearer <key>` or, for Anthropic
+/// hosts, `x-api-key: <key>` (AAASM-5926).
 ///
 /// Entries carry an optional TTL (AAASM-3586): an expired entry is never
 /// injected. [`CredentialStore::rotate`] swaps a credential in place — zeroizing
@@ -226,16 +250,25 @@ impl CredentialStore {
         }
     }
 
-    /// Build the egress `Authorization` header value (`Bearer <key>`) for
-    /// `host` (case-insensitive). Returns `None` when no credential is
-    /// configured for the host, or when the configured credential has expired
-    /// (AAASM-3586) — in both cases the injection step forwards the agent's
-    /// request unchanged.
+    /// Build the egress auth header `(name, value)` for `host`
+    /// (case-insensitive). Returns `None` when no credential is configured for
+    /// the host, or when the configured credential has expired (AAASM-3586) —
+    /// in both cases the injection step forwards the agent's request unchanged.
+    ///
+    /// The header shape is provider-aware (AAASM-5926): Anthropic hosts get
+    /// `x-api-key: <key>` (the Messages API's raw-key scheme), everything else
+    /// gets `Authorization: Bearer <key>`. That "everything else" default also
+    /// covers a host with a credential configured but no recognised provider
+    /// classification — we intentionally do not fail the injection in that
+    /// case, because `Authorization: Bearer` was the sole existing behaviour
+    /// (AAASM-3578) and is the de facto standard for OpenAI-compatible and
+    /// self-hosted gateway APIs, so defaulting to it preserves every existing
+    /// deployment rather than silently breaking a working custom endpoint.
     ///
     /// The secret bytes are expanded only into the returned owned buffer; they
     /// are never logged or copied into a `String`. This is the single accessor
     /// the data path uses, so TTL and rotation are honoured uniformly.
-    pub fn authorization_for(&self, host: &str) -> Option<Vec<u8>> {
+    pub fn authorization_for(&self, host: &str) -> Option<(&'static str, Vec<u8>)> {
         let guard = self.entries.read().ok()?;
         let entry = guard.get(&host.to_ascii_lowercase())?;
         if entry.is_expired() {
@@ -243,10 +276,15 @@ impl CredentialStore {
             return None;
         }
         let key = entry.secret.expose();
-        let mut buf = Vec::with_capacity(key.len() + 7);
-        buf.extend_from_slice(b"Bearer ");
-        buf.extend_from_slice(key);
-        Some(buf)
+        match classify_provider_for_host(host) {
+            Some(aa_core::llm::Provider::Anthropic) => Some(("x-api-key", key.to_vec())),
+            _ => {
+                let mut buf = Vec::with_capacity(key.len() + 7);
+                buf.extend_from_slice(b"Bearer ");
+                buf.extend_from_slice(key);
+                Some(("Authorization", buf))
+            }
+        }
     }
 
     /// Atomically replace the credential for `host` (AAASM-3586).
@@ -304,15 +342,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn authorization_for_is_case_insensitive_and_bearer_prefixed() {
+    fn authorization_for_openai_is_case_insensitive_and_bearer_prefixed() {
+        // AC2 (AAASM-5926): OpenAI-classified hosts keep the existing
+        // Authorization: Bearer semantics — no regression.
         let store = CredentialStore::from_pairs([("API.OpenAI.com".to_string(), b"sk-secret".to_vec())]);
         assert_eq!(
-            store.authorization_for("api.openai.com").as_deref(),
-            Some(&b"Bearer sk-secret"[..])
+            store.authorization_for("api.openai.com"),
+            Some(("Authorization", b"Bearer sk-secret".to_vec()))
         );
         assert_eq!(
-            store.authorization_for("API.OPENAI.COM").as_deref(),
-            Some(&b"Bearer sk-secret"[..])
+            store.authorization_for("API.OPENAI.COM"),
+            Some(("Authorization", b"Bearer sk-secret".to_vec()))
         );
     }
 
@@ -414,14 +454,14 @@ mod tests {
         // served and the old one is gone.
         let store = CredentialStore::from_pairs([("api.openai.com".to_string(), b"sk-old".to_vec())]);
         assert_eq!(
-            store.authorization_for("api.openai.com").as_deref(),
-            Some(&b"Bearer sk-old"[..])
+            store.authorization_for("api.openai.com"),
+            Some(("Authorization", b"Bearer sk-old".to_vec()))
         );
 
         store.rotate("api.openai.com", b"sk-new".to_vec(), None);
         assert_eq!(
-            store.authorization_for("api.openai.com").as_deref(),
-            Some(&b"Bearer sk-new"[..]),
+            store.authorization_for("api.openai.com"),
+            Some(("Authorization", b"Bearer sk-new".to_vec())),
             "rotate must serve the new secret"
         );
         // Exactly one entry remains for the host (the old one was overwritten).
@@ -439,8 +479,9 @@ mod tests {
             Some(std::time::Duration::from_secs(60)),
         );
         assert_eq!(
-            store.authorization_for("api.anthropic.com").as_deref(),
-            Some(&b"Bearer sk-ant-leased"[..])
+            store.authorization_for("api.anthropic.com"),
+            Some(("x-api-key", b"sk-ant-leased".to_vec())),
+            "rotated Anthropic credential must still use x-api-key semantics"
         );
     }
 
@@ -497,12 +538,12 @@ mod tests {
         assert_eq!(store.len(), 2);
         // Hosts are stored lowercased and trimmed; keys keep their exact bytes.
         assert_eq!(
-            store.authorization_for("api.openai.com").as_deref(),
-            Some(&b"Bearer sk-openai"[..])
+            store.authorization_for("api.openai.com"),
+            Some(("Authorization", b"Bearer sk-openai".to_vec()))
         );
         assert_eq!(
-            store.authorization_for("api.anthropic.com").as_deref(),
-            Some(&b"Bearer sk-ant"[..])
+            store.authorization_for("api.anthropic.com"),
+            Some(("x-api-key", b"sk-ant".to_vec()))
         );
         std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
     }
@@ -519,8 +560,8 @@ mod tests {
         let store = CredentialStore::from_env();
         assert_eq!(store.len(), 1, "only the well-formed entry should load");
         assert_eq!(
-            store.authorization_for("api.openai.com").as_deref(),
-            Some(&b"Bearer sk-ok"[..])
+            store.authorization_for("api.openai.com"),
+            Some(("Authorization", b"Bearer sk-ok".to_vec()))
         );
         std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
     }

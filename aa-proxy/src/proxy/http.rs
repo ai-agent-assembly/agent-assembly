@@ -326,17 +326,20 @@ pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
 }
 
 /// Re-serialise an [`HttpRequest`] with a replacement body, optionally
-/// **injecting** the real provider `Authorization` header at egress.
+/// **injecting** the real provider auth header at egress.
 ///
 /// Behaves exactly like [`serialize_http_request`] for the request line,
 /// `Content-Length`, and `Transfer-Encoding` handling. In addition, when
-/// `injected_auth` is `Some(bytes)` (AAASM-3578):
+/// `injected_auth` is `Some((name, value))` (AAASM-3578, header shape made
+/// provider-aware in AAASM-5926):
 ///
 /// * every inbound `Authorization` and `x-api-key` header (case-insensitive)
 ///   the agent supplied is **dropped**, so the agent can never smuggle its own
 ///   key upstream, and
-/// * a single `Authorization: <bytes>` header carrying the real provider
-///   credential is appended.
+/// * a single `<name>: <value>` header carrying the real provider credential
+///   is appended — `name` is `"Authorization"` for Bearer-style providers or
+///   `"x-api-key"` for Anthropic's Messages API, chosen by
+///   [`crate::credentials::CredentialStore::authorization_for`].
 ///
 /// The secret bytes are written directly into the outbound buffer and are never
 /// copied into an owned `String` or logged — the agent runtime therefore never
@@ -350,7 +353,11 @@ pub fn serialize_http_request(req: &HttpRequest, new_body: &[u8]) -> Vec<u8> {
 /// after one request/response. Combined with the proxy's single-exchange
 /// relay this prevents a second request being pipelined onto the same tunnel
 /// and reaching upstream un-inspected.
-pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], injected_auth: Option<&[u8]>) -> Vec<u8> {
+pub fn serialize_http_request_with_auth(
+    req: &HttpRequest,
+    new_body: &[u8],
+    injected_auth: Option<(&str, &[u8])>,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(req.body.len() + new_body.len() + 256);
     out.extend_from_slice(req.method.as_bytes());
     out.push(b' ');
@@ -376,9 +383,10 @@ pub fn serialize_http_request_with_auth(req: &HttpRequest, new_body: &[u8], inje
         out.extend_from_slice(v.as_bytes());
         out.extend_from_slice(b"\r\n");
     }
-    if let Some(auth) = injected_auth {
-        out.extend_from_slice(b"Authorization: ");
-        out.extend_from_slice(auth);
+    if let Some((name, value)) = injected_auth {
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(value);
         out.extend_from_slice(b"\r\n");
     }
     // AAASM-3864 (a): force a single request/response per upstream connection so
@@ -676,7 +684,8 @@ mod tests {
         let mut reader = make_reader(raw);
         let req = read_http_request(&mut reader).await.unwrap().unwrap();
 
-        let wire = serialize_http_request_with_auth(&req, &req.body, Some(b"Bearer sk-REAL-PROVIDER-KEY"));
+        let wire =
+            serialize_http_request_with_auth(&req, &req.body, Some(("Authorization", b"Bearer sk-REAL-PROVIDER-KEY")));
         let text = std::str::from_utf8(&wire).unwrap();
 
         assert!(
