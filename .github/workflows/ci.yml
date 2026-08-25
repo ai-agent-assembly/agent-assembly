@@ -2393,6 +2393,44 @@ jobs:
           fi
           echo "SENSITIVE_DATA_JOURNEY_BIN_PATH=$bin_path" >> "$GITHUB_ENV"
 
+      - name: Pre-build the proxy_with_mock_upstream example (AAASM-5904)
+        # A THIRD unconditional runtime cargo build in this fixture's chain,
+        # found after the aasm gap above: `TrustedProxy::start_intercepting`
+        # (`proxy_trust_support/mod.rs::proxy_with_mock_upstream_binary`)
+        # builds this example (`cargo build --quiet -p aa-integration-tests
+        # --example proxy_with_mock_upstream`) unconditionally too, with no
+        # path-override env var, every time the fixture spawns a proxy —
+        # which is every run, dashboard fixture or Rust-only evidence test
+        # alike.
+        #
+        # Root-caused after 3 consecutive CI failures with an identical
+        # `dashmap v6.2.1` compile error (E0309/E0282, lifetime bounds in its
+        # iterator code) inside exactly this example's build, at exactly this
+        # runtime call site: the sibling `sensitive-data-reference-journey-
+        # evidence` job's own run (same commit, same pinned `dashmap` version,
+        # same `stable` toolchain — confirmed from its own log showing an
+        # identical `rustc 1.97.1 → 1.98.0` update) compiled `dashmap`
+        # successfully building the SAME example via the SAME code path. Two
+        # jobs, same command, same dependency version, same compiler — one
+        # fails deterministically and reproducibly (3/3), the other doesn't.
+        # That rules out a genuine `dashmap`/rustc incompatibility (which
+        # would fail identically everywhere) and points at this job's target
+        # directory specifically: by the time this runtime call fires, this
+        # job (unlike the evidence job) has already run `aa-cli`, `aa-api`,
+        # and `aa-integration-tests` builds under three different
+        # feature-unification shapes in the same shared target dir — the
+        # same churn already shown (in this file's own history) to
+        # invalidate shared-crate fingerprints between invocations. A stale
+        # or partially-invalidated fingerprint for one of `dashmap`'s own
+        # dependencies is a plausible way for a *build*, not just build
+        # *time*, to come out wrong. Building it explicitly here — last,
+        # after every other invocation-shape change this job makes — is the
+        # same fix that already worked for `aasm` and the sensitive-data
+        # fixture itself: if this step goes red, the compile error is
+        # reported here, clearly, as a build failure, not disguised as a
+        # fixture timeout three jobs steps later.
+        run: cargo build --quiet -p aa-integration-tests --example proxy_with_mock_upstream
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10.9.0
