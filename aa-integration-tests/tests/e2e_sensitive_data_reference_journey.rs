@@ -41,7 +41,9 @@
 //!    vacuously true regardless of what the proxy actually does.
 //! 4. [`e2e_fixture_main`] (`#[ignore]`) — a long-running fixture entry
 //!    point, modeled on `e2e_hitl_approval.rs`'s pattern, for AAASM-5904's
-//!    Playwright spec to spawn.
+//!    Playwright spec to spawn. Sends the same canary request test 1 does
+//!    before printing READY, so the alert already exists by the time the
+//!    browser spec navigates to it — all orchestration stays in Rust.
 //!
 //! # Why the proxy audit JSONL destination needs an extra env var here
 //!
@@ -623,19 +625,16 @@ async fn alert_only_forwards_the_canary_and_produces_no_alert() {
 
 // =============================================================================
 // External fixture: long-running process that boots the real out-of-process
-// chain and idles. Invoked by AAASM-5904's Playwright globalSetup to give the
-// browser spec a live proxy + live aa-api-server to drive a request through.
+// chain, drives one real canary request through it so an alert already
+// exists, and idles. Invoked by AAASM-5904's Playwright globalSetup to give
+// the browser spec a live dashboard-visible alert with nothing left to
+// orchestrate — the spec only navigates and asserts.
 // Marked `#[ignore]` so `cargo nextest run` skips it by default.
 //
-// KNOWN LIMITATION (independent review, AAASM-5903): under AAASM-5908's
-// unfixed defect, the api-server this fixture starts self-terminates ~30s
-// after boot regardless of traffic — reordering `spawn_journey` (as the other
-// three tests rely on) only narrows the window for a request sent
-// immediately; it does nothing for a fixture meant to idle for up to an hour
-// waiting on a browser. AAASM-5904 must account for this explicitly (e.g. by
-// not depending on this fixture staying up past ~30s, or by resolving
-// AAASM-5908 first) — not solved here, since this function is not exercised
-// by any test in this file today.
+// AAASM-5908 (the api-server's unconditional ~30s self-terminate this
+// fixture's original independent review flagged as a blocking gap) is now
+// fixed, so this fixture's up-to-an-hour idle wait is no longer bounded by
+// that defect.
 // =============================================================================
 
 #[tokio::test(flavor = "multi_thread")]
@@ -647,12 +646,55 @@ async fn e2e_fixture_main() {
         .await
         .expect("fixture: journey harness should start");
 
-    // Single READY line on stdout, flushed immediately, naming the two
-    // addresses the Node-side globalSetup needs: the api-server's REST base
-    // URL (what the dashboard's Playwright config proxies to) and the
-    // proxy's own address (in case the spec wants to drive a request
-    // through it directly rather than relying on a pre-seeded alert).
-    println!("READY {} {}", journey.api.base_url(), journey.proxy.addr());
+    // Same request test 1 sends: a synthetic canary in an outbound LLM
+    // payload, through the real proxy. Sent here (not left to the browser
+    // spec) so the AC's "all orchestration stays in Rust" holds — by the
+    // time READY prints, the dashboard's Alerts view has something to show.
+    let body = format!(
+        r#"{{"model":"claude-sonnet-4-5","messages":[{{"role":"user","content":"my key is {}"}}]}}"#,
+        journey.canary.value()
+    );
+    let status = send_through_proxy(
+        journey.proxy.addr().parse().expect("proxy addr is a socket address"),
+        std::sync::Arc::new(
+            client_trust_proxy_ca(journey.tmp.path().join("ca").as_path())
+                .await
+                .expect("client trusts proxy ca"),
+        ),
+        &body,
+    )
+    .await
+    .expect("request through proxy");
+    assert!(status.contains("200"), "CONNECT must succeed, got: {status}");
+
+    // Confirm the alert actually landed before handing control to the
+    // browser spec — a fixture that prints READY before the seed alert
+    // exists would make the spec's own wait race the fixture instead of
+    // testing the dashboard.
+    let poll = wait_for_secret_alert(&journey.api, Duration::from_secs(10)).await;
+    assert!(
+        poll.observed
+            && poll.json["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|a| a["category"] == "secret_detected")),
+        "fixture: seed alert did not land on the live aa-api-server; api log:\n{}",
+        journey.api.logs(),
+    );
+
+    // Single READY line on stdout, flushed immediately: the api-server's
+    // REST base URL (what the dashboard's Playwright config proxies to),
+    // the proxy's own address (unused by the current spec, kept for parity
+    // with the harness's own request-through-proxy helper signature), and
+    // the raw canary value itself — a synthetic, run-unique fake credential
+    // ([`Canary`] docs), safe to print, that the Node-side spec needs
+    // verbatim to assert its own *absence* from the rendered DOM and every
+    // captured network response.
+    println!(
+        "READY {} {} {}",
+        journey.api.base_url(),
+        journey.proxy.addr(),
+        journey.canary.value(),
+    );
     std::io::stdout().flush().expect("flush stdout");
 
     // Idle until killed by the Playwright globalSetup teardown.
