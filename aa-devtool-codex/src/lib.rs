@@ -22,8 +22,11 @@ use async_trait::async_trait;
 
 mod approval;
 mod sandbox;
+pub mod scope;
 use approval::map_policy_to_approval;
 use sandbox::{map_policy_to_sandbox_mode, network_allow_list, network_block_list};
+
+pub use scope::{CodexPaths, ScopeError};
 
 /// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
 /// version.
