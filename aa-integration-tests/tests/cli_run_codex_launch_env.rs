@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use aa_core::integration::{IntegrationRequest, ProtectionProfile, ReceiptStore, SettingsScope};
 use aa_core::DevToolKind;
-use aa_devtool_codex::{CodexAdapter, CodexIntegration, CodexPaths};
+use aa_devtool_codex::{BinaryLocator, CodexAdapter, CodexIntegration, CodexPaths, VersionProbe};
 use aa_devtool_contract::LaunchEnvStore;
 use aa_proxy::tls::CaStore;
 use aa_runtime::devint::adapters::codex_registration;
@@ -87,6 +87,13 @@ struct Fixture {
     ca_dir: std::path::PathBuf,
     outcome_path: std::path::PathBuf,
     codex_paths: CodexPaths,
+    /// A `codex_tls_client` copy named `codex`, so both the in-process
+    /// `install()` (via `FixedLocator`) and `run_codex_stand_in`'s spawned
+    /// `aasm run` (via a `PATH` prefix) resolve the same stand-in binary —
+    /// a CI runner has no real `codex` on `$PATH`, and `CodexAdapter::default`
+    /// would otherwise make `install()` fail with "codex is not installed on
+    /// this host" wherever a real one happens not to be present.
+    stub_bin: std::path::PathBuf,
 }
 
 impl Fixture {
@@ -99,6 +106,16 @@ impl Fixture {
         std::fs::create_dir_all(&home)?;
         std::fs::create_dir_all(&ca_dir)?;
         let outcome_path = root.join("outcome.txt");
+
+        let stub_dir = root.join("bin");
+        std::fs::create_dir_all(&stub_dir)?;
+        let stub_bin = stub_dir.join("codex");
+        std::fs::copy(codex_tls_client_binary(), &stub_bin)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub_bin, std::fs::Permissions::from_mode(0o755))?;
+        }
 
         let integrations = state.join("integrations");
         let codex_paths = CodexPaths::default()
@@ -114,11 +131,40 @@ impl Fixture {
             ca_dir,
             outcome_path,
             codex_paths,
+            stub_bin,
         })
     }
 
     fn integrations_state(&self) -> std::path::PathBuf {
         self.state.join("integrations")
+    }
+}
+
+/// `BinaryLocator`/`VersionProbe` for `install()`: points `CodexAdapter`'s
+/// `detect()` at `fixture.stub_bin` directly instead of shelling out to
+/// `which codex`/`npm root -g`, mirroring `aa-devtool-codex/tests/wrapper.rs`'s
+/// `FixedLocator`/`FixedProbe` (private to that crate, so restated here
+/// rather than imported).
+struct FixedLocator(std::path::PathBuf);
+
+impl BinaryLocator for FixedLocator {
+    fn locate_via_path(&self) -> Option<std::path::PathBuf> {
+        Some(self.0.clone())
+    }
+
+    fn locate_via_npm_global(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+}
+
+struct FixedProbe;
+
+impl VersionProbe for FixedProbe {
+    fn probe_version(&self, _bin: &Path) -> Option<String> {
+        // Matches CODEX_MIN_VERSION exactly so `plan_integration`'s version
+        // gate passes without depending on the stand-in understanding a real
+        // `--version` flag.
+        Some("0.129.0".to_string())
     }
 }
 
@@ -139,7 +185,10 @@ fn read_outcome(path: &Path) -> Option<std::collections::BTreeMap<String, String
 async fn install(fixture: &Fixture, proxy_url: &str) -> anyhow::Result<()> {
     let integration = std::sync::Arc::new(
         CodexIntegration::with_paths(fixture.codex_paths.clone())
-            .with_adapter(CodexAdapter::default().with_home_dir(fixture.home.clone()))
+            .with_adapter(
+                CodexAdapter::new(Box::new(FixedLocator(fixture.stub_bin.clone())), Box::new(FixedProbe))
+                    .with_home_dir(fixture.home.clone()),
+            )
             .through_proxy(proxy_url),
     );
     let service = EngineLifecycle::new(
@@ -180,18 +229,9 @@ fn run_codex_stand_in(
     proxy: &TrustedProxy,
     upstream_addr: std::net::SocketAddr,
 ) -> anyhow::Result<i32> {
-    let stub_dir = fixture.root.join("bin");
-    std::fs::create_dir_all(&stub_dir)?;
-    let stub = stub_dir.join("codex");
-    std::fs::copy(codex_tls_client_binary(), &stub)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))?;
-    }
-
     let path_var = {
-        let mut parts = vec![stub_dir.clone(), proxy.proxy_bin_dir().to_path_buf()];
+        let stub_dir = fixture.stub_bin.parent().expect("stub_bin has a parent").to_path_buf();
+        let mut parts = vec![stub_dir, proxy.proxy_bin_dir().to_path_buf()];
         parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         std::env::join_paths(parts)?
     };
