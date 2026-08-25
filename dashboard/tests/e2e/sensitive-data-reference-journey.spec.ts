@@ -112,16 +112,33 @@ test.describe('Alerts — AAASM-5904: sensitive-data reference journey via real 
     await expect(alertRow).toHaveCount(1, { timeout: 15_000 })
     await expect(alertRow.getByTestId('severity-badge-CRITICAL')).toBeVisible()
 
-    // Destination 6 (DOM leak check): the raw canary must not be anywhere
-    // in the rendered page, even outside the table (e.g. a stray tooltip or
-    // an unescaped error message).
-    const pageText = await page.locator('body').innerText()
-    expect(pageText).not.toContain(canaryValue)
+    // Destination 6 (DOM leak check): the raw canary must not be anywhere in
+    // the rendered page, even outside the table (e.g. a stray tooltip or an
+    // unescaped error message). `page.content()` (full serialized HTML), not
+    // `locator('body').innerText()` — independent review, AAASM-5904:
+    // `innerText()` returns only rendered *visible text*, so it cannot see a
+    // leak carried in an attribute (`title=`, `aria-label=`, `data-*`) or a
+    // `display:none` subtree, exactly the "stray tooltip" case this check
+    // claims to cover.
+    const pageHtml = await page.content()
+    expect(pageHtml).not.toContain(canaryValue)
 
     // Destination 7: no response body captured during this navigation may
     // carry the raw canary either — the API's own redaction, not just the
     // dashboard's rendering, is what is under test here.
+    //
+    // Positive control before trusting the absence — independent review,
+    // AAASM-5904: every body read above swallows its own failure to `''`, so
+    // a broad read failure across every captured response would leave
+    // `bodies` all-empty and the loop below would assert nothing while still
+    // going green. Confirms at least one body was genuinely read and carries
+    // real content from this journey before trusting that none carry the
+    // canary.
     const bodies = await Promise.all(pendingBodies)
+    expect(
+      bodies.some((body) => body.includes('secret_detected')),
+      'no captured response body contained real alert content — response reading failed silently, so the absence check below would prove nothing',
+    ).toBe(true)
     for (const body of bodies) {
       expect(body).not.toContain(canaryValue)
     }
