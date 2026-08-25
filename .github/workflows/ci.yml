@@ -2554,6 +2554,28 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Pre-build aa-api-server (AAASM-5904)
+        # `full_chain_redaction_reaches_operator_visible_api`'s `spawn_journey`
+        # calls `ApiServerProcess::spawn_with(.., Duration::from_secs(30))`
+        # (`aa-integration-tests/tests/common/api_server.rs:241`) — but that
+        # 30s `ready_timeout` only bounds the HTTP-health/log-line poll
+        # *after* the process is spawned. `resolve_binary()` (same file,
+        # line 66, called before the timeout clock starts at all) builds
+        # `aa-api-server` unconditionally with `--quiet` when
+        # `AA_API_SERVER_BIN_PATH` is unset, and this job never set it — so
+        # every run paid a silent, unbounded cargo build with zero output on
+        # the test's own stdout to explain the delay. Root-caused via this
+        # PR's own CI history: three separate real attempts each showed the
+        # identical two-connection proxy log pattern (a benign first
+        # connection right after the proxy binds, then a 30-540s+ silent
+        # gap, then the real canary request) — a build-time cost, not test
+        # flakiness. `--retries` on the step below doesn't fix this; a
+        # bounded, already-built binary does. Filed as AAASM-5929 for the
+        # underlying harness contract gap (`ready_timeout` doesn't actually
+        # bound total spawn time) — this step is the in-scope CI-wiring fix
+        # for this job specifically, same pattern already applied to
+        # `dashboard-e2e-real-backend` above.
+        run: cargo build -p aa-api --bin aa-api-server
       - name: Run the journey's evidence-selector test
         # No `--retries 0` override — inherits `[profile.evidence]`'s
         # `retries = 2`. An earlier version of this step forced `--retries 0`
@@ -2577,6 +2599,8 @@ jobs:
         # test is already treated everywhere else it runs in this repo
         # (the `Test` job's own default profile carries the same
         # `retries = 2`).
+        env:
+          AA_API_SERVER_BIN_PATH: ${{ github.workspace }}/target/debug/aa-api-server
         run: |
           cargo nextest run --profile evidence \
             -p aa-integration-tests --test e2e_sensitive_data_reference_journey \
