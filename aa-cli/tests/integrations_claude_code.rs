@@ -530,3 +530,64 @@ fn a_managed_install_without_confirmation_changes_nothing() {
         "{message}"
     );
 }
+
+/// AAASM-5906/5907, Isolation test F: a `--scope project` install must leave
+/// no trace at User scope (would-be machine-wide `$HOME/.claude/settings.json`)
+/// or Managed scope — the whole point of the scope existing.
+///
+/// `ClaudeCodePaths::from_env()`'s `project` field is resolved once, at
+/// `claude_code_integration()` construction time inside [`Harness::start`] —
+/// from *this test process's* cwd, not from any `--current-dir` given to the
+/// spawned `aasm` subprocess (real deployments autostart a fresh engine per
+/// invocation, using that invocation's own cwd; this harness deliberately
+/// reuses one long-lived engine across `--no-autostart` calls for test speed,
+/// so it has to be told the project root the same way a fresh autostart
+/// would learn it: by being *launched from* that directory). So the project
+/// root is set by changing this process's cwd **before** constructing the
+/// harness, not by passing a path to `aasm_in`.
+///
+/// The positive control is the same install run at `--scope user` in the same
+/// test, on the same harness: it proves this assertion machinery can actually
+/// see a settings file that *was* written, not merely that nothing exists on a
+/// harness that never writes anything (the grep-for-absence trap this repo's
+/// own review conventions warn against).
+#[test]
+fn project_scope_install_stays_out_of_home_and_managed_scope() {
+    if !require_claude("project_scope_install_stays_out_of_home_and_managed_scope") {
+        return;
+    }
+    let project = tempfile::tempdir().expect("project tempdir");
+    std::env::set_current_dir(project.path()).expect("chdir into project root");
+
+    let h = Harness::start();
+    let install = h.aasm(&["install", "claude-code", "--scope", "project", "--yes"]);
+    assert!(install.status.success(), "{}", stderr(&install));
+
+    assert!(
+        project.path().join(".claude").join("settings.json").is_file(),
+        "the project-scope install must write into the project root:\n{}",
+        stdout(&install)
+    );
+    assert!(
+        !h.dir.path().join(".claude").join("settings.json").exists(),
+        "a project-scope install must not also write $HOME/.claude/settings.json — that write would \
+         make every unrelated Claude Code session on this machine see AASM's managed keys"
+    );
+    assert!(
+        !h.dir.path().join("ClaudeCode").join("managed-settings.json").exists(),
+        "a project-scope install must never touch the managed-settings surface"
+    );
+
+    // Positive control: the *same* install, at the machine-wide default scope,
+    // on a fresh harness (installs are not idempotent-across-scope on one
+    // receipt store in a way this test needs to reason about) — proves the
+    // "$HOME/.claude/settings.json exists" check above is capable of failing.
+    let h_user = Harness::start();
+    let user_install = h_user.aasm(&["install", "claude-code", "--scope", "user", "--yes"]);
+    assert!(user_install.status.success(), "{}", stderr(&user_install));
+    assert!(
+        h_user.dir.path().join(".claude").join("settings.json").is_file(),
+        "control failed: a --scope user install must write $HOME/.claude/settings.json, or the \
+         negative assertions above are not proving anything"
+    );
+}
