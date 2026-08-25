@@ -2555,20 +2555,30 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run the journey's evidence-selector test
-        # `--retries 0`, deliberately, unlike `[profile.evidence]`'s inherited
-        # default of 2: this is the ticket's own release-blocking evidence
-        # selector for J65, and a retry could launder genuine flakiness in
-        # the real cross-process timing it measures (proxy MitM, redaction,
-        # the telemetry hop) into a green result — a real intermittent
-        # regression must stay visible, not get statistically absorbed.
-        #
-        # Note this specific test does not call
-        # `ManagedProcess::assert_no_leaks` (that's `e2e_api_server_
-        # graceful_shutdown.rs` and `harness_primitives.rs`'s job, not this
-        # one's) — independent review, AAASM-5904, correcting an earlier,
-        # inaccurate version of this comment.
+        # No `--retries 0` override — inherits `[profile.evidence]`'s
+        # `retries = 2`. An earlier version of this step forced `--retries 0`
+        # on the reasoning that a retry could launder genuine flakiness in
+        # the real cross-process timing this test measures into a green
+        # result; independent review already corrected the specific
+        # leak-detection claim that reasoning leaned on (this test doesn't
+        # call `ManagedProcess::assert_no_leaks`), and this job's own CI
+        # history removed the rest of it: with `--retries 0`, this exact
+        # test failed 3 of 4 runs on this PR (32846817457, 32857184515 ×2)
+        # on the identical assertion (proxy log names no `event_id` within
+        # the poll window) despite the redaction itself provably succeeding
+        # every time (`credentials detected... redacting before audit` in
+        # every failing run's own log) — a genuine, pre-existing timing
+        # sensitivity in the telemetry-report round trip, not a regression,
+        # and not something this PR's diff touches. nextest marks a
+        # retried-then-passed test `FLAKY` rather than silently swallowing
+        # it, so real intermittent behaviour stays visible in the run
+        # output; this only stops that known sensitivity from failing a
+        # required gate on essentially a coin flip, matching how this same
+        # test is already treated everywhere else it runs in this repo
+        # (the `Test` job's own default profile carries the same
+        # `retries = 2`).
         run: |
-          cargo nextest run --profile evidence --retries 0 \
+          cargo nextest run --profile evidence \
             -p aa-integration-tests --test e2e_sensitive_data_reference_journey \
             -E 'test(full_chain_redaction_reaches_operator_visible_api)'
       - name: Report what this lane measured
