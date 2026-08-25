@@ -26,11 +26,24 @@ import { resolve } from 'node:path'
 /** Workspace root (the agent-assembly Cargo workspace root) — see `hitl-fixture.ts`. */
 const REPO_ROOT = resolve(process.cwd(), '..')
 
-/** How long to wait for `READY` after spawn. This fixture's cold path also
- * builds `aa-api-server` and `aasm proxy start`'s dependencies, plus sends a
- * real cross-process request — 4 min mirrors `hitl-fixture.ts`'s observed
- * CI-cold worst case. */
-const READY_TIMEOUT_MS = 4 * 60 * 1000
+/** How long to wait for `READY` after spawn.
+ *
+ * 6 min, not `hitl-fixture.ts`'s 4 — observed directly on CI (runs
+ * 32840166399/32842166884) and reproduced locally: `cargo test --test
+ * e2e_sensitive_data_reference_journey e2e_fixture_main -- ...` recompiles
+ * several shared crates (`aa-gateway`, `aa-proxy`, `aa-api`,
+ * `aa-integration-tests`) even immediately after a same-shape pre-build step
+ * in the same job — the test-name-filtered invocation genuinely resolves a
+ * different unit graph than the unfiltered `--no-run` pre-build, and (also
+ * reproduced locally, under the job's own `CARGO_INCREMENTAL=0`) repeating
+ * the *identical* filtered command back-to-back is not reliably a no-op
+ * either. The CI job's pre-build step + `AA_API_SERVER_BIN_PATH` env var
+ * remove the two largest, well-understood costs (the fixture's own cold
+ * build and its runtime `aa-api-server` rebuild), but real variance on a
+ * shared CI runner still costs meaningfully more than a single local
+ * best-case measurement suggested — this budget carries real headroom
+ * instead of being tuned tight to that best case. */
+const READY_TIMEOUT_MS = 6 * 60 * 1000
 
 export interface FixtureHandle {
   /** Base URL the fixture's `aa-api-server` is listening on, e.g. `http://127.0.0.1:54321`. */

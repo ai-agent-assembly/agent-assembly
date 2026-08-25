@@ -63,22 +63,21 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
 
-  // NOTE: this budget is deliberately config-wide even though only
-  // `hitl-approval` needs it. A per-spec `test.setTimeout` would be tighter, but
-  // it lives in a file this PR does not own; revisit together.
+  // NOTE: this budget is deliberately config-wide even though only the two
+  // fixture-spawning specs need it. A per-spec `test.setTimeout` would be
+  // tighter, but `hitl-approval.spec.ts` is a file this PR does not own;
+  // revisit together.
   //
-  // `hitl-approval` spawns its own gateway through `cargo test`, and
-  // `hitl-fixture.ts` budgets `READY_TIMEOUT_MS = 4 minutes` for a cold build.
-  // A Playwright hook inherits the *test* timeout, so under the inherited 30s
-  // the `beforeAll` was killed at 30s — three and a half minutes before the
-  // fixture itself would have given up. Measured locally: the spec failed with
-  // "beforeAll hook timeout of 30000ms exceeded" while every other spec passed.
-  //
-  // That is why simply listing the spec in this config was not enough to make
-  // it run: it executed and went red, which the AC ("both execute rather than
-  // skip") would have been satisfied by while the lane stayed permanently
-  // broken. The budget here is the fixture's own, plus room for the assertions.
-  timeout: 5 * 60 * 1000,
+  // `hitl-approval` and `sensitive-data-reference-journey` each spawn their
+  // own gateway through `cargo test`. A Playwright hook inherits the *test*
+  // timeout, so this must exceed the slower of the two fixtures'
+  // `READY_TIMEOUT_MS` (`sensitive-data-fixture.ts`'s 6 min, AAASM-5904 —
+  // see that file for why it's longer than `hitl-fixture.ts`'s 4) plus room
+  // for the assertions after READY. Originally 5 min for hitl alone;
+  // measured locally without headroom: the spec failed with "beforeAll hook
+  // timeout exceeded" while every other spec passed, which is why this is
+  // sized to the fixture's own budget, not guessed short.
+  timeout: 7 * 60 * 1000,
 
   reporter: [
     ['list'],
