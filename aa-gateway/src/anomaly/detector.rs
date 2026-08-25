@@ -89,12 +89,16 @@ impl AnomalyDetector {
     /// Detect unknown external connection: host not in the network allowlist.
     ///
     /// Returns `Some(AnomalyEvent)` with [`AnomalyResponse::Block`] when the
-    /// URL's host is not present in the provided allowlist. An empty allowlist
-    /// means all hosts are allowed (open policy).
+    /// URL's host does not match the provided allowlist. Delegates to
+    /// [`aa_core::policy::is_host_allowed_by_egress_allowlist`] (AAASM-5927) —
+    /// the same wildcard-aware matcher the primary policy stage
+    /// (`engine/decision.rs::network_request_url_allowed`) uses — so this
+    /// anomaly check and the primary policy stage evaluate the same
+    /// `network.allowlist` input identically. An empty allowlist means all
+    /// hosts are allowed (open policy), matching that matcher's semantics
+    /// (the non-fail-closed variant is used deliberately to preserve this
+    /// function's pre-existing empty-allowlist behavior).
     pub fn check_unknown_connection(&self, agent_id: AgentId, url: &str, allowlist: &[String]) -> Option<AnomalyEvent> {
-        if allowlist.is_empty() {
-            return None;
-        }
         let host_port = url
             .split_once("://")
             .map(|x| x.1)
@@ -111,7 +115,7 @@ impl AnomalyDetector {
             Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
             _ => host_port,
         };
-        if allowlist.iter().any(|entry| entry == host) {
+        if aa_core::policy::is_host_allowed_by_egress_allowlist(host, allowlist) {
             return None;
         }
         Some(AnomalyEvent {
