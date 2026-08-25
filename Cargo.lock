@@ -229,6 +229,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "which",
 ]
@@ -399,6 +400,7 @@ dependencies = [
  "aa-core",
  "aa-devtool",
  "aa-devtool-claude-code",
+ "aa-devtool-codex",
  "aa-devtool-contract",
  "aa-ebpf",
  "aa-ebpf-common",
@@ -587,6 +589,7 @@ dependencies = [
  "aa-core",
  "aa-devtool",
  "aa-devtool-claude-code",
+ "aa-devtool-codex",
  "aa-ebpf",
  "aa-ebpf-common",
  "aa-policy",

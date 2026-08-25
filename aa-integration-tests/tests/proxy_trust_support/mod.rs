@@ -123,6 +123,14 @@ pub fn proxy_with_mock_upstream_binary() -> PathBuf {
     build_example("aa-integration-tests", "proxy_with_mock_upstream")
 }
 
+/// Absolute path to a freshly built `examples/codex_tls_client` — the `codex`
+/// stand-in AAASM-5920 launches through `aasm run codex` to measure the
+/// CA-trust launch environment. See [`proxy_with_mock_upstream_binary`] for
+/// why there is no `*_BIN_PATH` escape hatch.
+pub fn codex_tls_client_binary() -> PathBuf {
+    build_example("aa-integration-tests", "codex_tls_client")
+}
+
 fn explicit_binary(var: &str) -> Option<PathBuf> {
     let explicit = std::env::var_os(var)?;
     Some(std::fs::canonicalize(&explicit).unwrap_or_else(|e| panic!("{var}={explicit:?} could not be resolved: {e}")))
