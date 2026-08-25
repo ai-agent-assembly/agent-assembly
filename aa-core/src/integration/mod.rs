@@ -47,6 +47,7 @@ pub mod drift;
 pub mod engine;
 pub mod fingerprint;
 pub mod journal;
+pub mod launch_env;
 pub mod plan;
 pub mod policy_posture;
 pub mod receipt;
@@ -77,6 +78,7 @@ pub use fingerprint::{
     sha256_hex, FingerprintError, FINGERPRINT_PREFIX,
 };
 pub use journal::{recovery_action, JournalEntry, JournalOperation, OperationJournal, RecoveryAction, StepProgress};
+pub use launch_env::{installed_environment, is_valid_var_name, LaunchEnvStore};
 pub use plan::{
     IntegrationPlan, IntegrationRequest, PlanError, PolicyProfileRef, ProtectionProfile, RemovalPlan,
     UnsupportedMechanism,
