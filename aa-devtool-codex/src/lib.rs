@@ -21,6 +21,7 @@ use aa_devtool_contract::{
 use async_trait::async_trait;
 
 mod approval;
+pub mod launch_env;
 mod sandbox;
 pub mod scope;
 use approval::map_policy_to_approval;
@@ -155,6 +156,12 @@ pub struct CodexAdapter {
     /// Overrides `$HOME` for config-path resolution. `None` → read `$HOME`.
     /// Set via [`Self::with_home_dir`]; intended for integration tests only.
     home_dir_override: Option<PathBuf>,
+    /// Overrides `AASM_STATE_DIR` for launch-environment resolution. `None` →
+    /// read the environment. Set via [`Self::with_state_dir`]; without it a
+    /// unit test would resolve `CodexPaths::from_env`'s state root from the
+    /// real process environment, and either mutate it (unsafe across
+    /// parallel tests) or read whatever happens to be there.
+    state_dir_override: Option<PathBuf>,
 }
 
 impl CodexAdapter {
@@ -165,6 +172,7 @@ impl CodexAdapter {
             locator,
             probe,
             home_dir_override: None,
+            state_dir_override: None,
         }
     }
 
@@ -176,10 +184,37 @@ impl CodexAdapter {
         self
     }
 
+    /// Override the Agent Assembly state root used to locate the launch
+    /// environment an install owns. Intended for integration tests;
+    /// production code uses `AASM_STATE_DIR`.
+    #[doc(hidden)]
+    pub fn with_state_dir(mut self, path: PathBuf) -> Self {
+        self.state_dir_override = Some(path);
+        self
+    }
+
     fn home_dir(&self) -> Option<PathBuf> {
         self.home_dir_override
             .clone()
             .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+    }
+
+    /// The paths this adapter's own launch environment is resolved from.
+    ///
+    /// Resolved from the environment, with this adapter's overrides applied
+    /// so a test never reaches the developer's real state directory (mirrors
+    /// `ClaudeCodeAdapter::launch_paths`, plus a state override Claude's does
+    /// not need because its unit tests exercise `installed_environment`
+    /// directly rather than through `build_launch_command`).
+    fn launch_paths(&self) -> crate::scope::CodexPaths {
+        let mut paths = crate::scope::CodexPaths::from_env();
+        if let Some(home) = &self.home_dir_override {
+            paths = paths.with_home(home.clone());
+        }
+        if let Some(state) = &self.state_dir_override {
+            paths = paths.with_state(state.clone());
+        }
+        paths
     }
 }
 
@@ -189,6 +224,7 @@ impl Default for CodexAdapter {
             locator: Box::new(DefaultBinaryLocator),
             probe: Box::new(CommandVersionProbe),
             home_dir_override: None,
+            state_dir_override: None,
         }
     }
 }
@@ -300,8 +336,26 @@ impl DevToolAdapter for CodexAdapter {
         if let Some(tid) = team_id {
             cmd.env("AA_TEAM_ID", tid);
         }
+        // The launch environment an installed integration owns —
+        // CODEX_CA_CERTIFICATE and the proxy variables an install materialised
+        // (AAASM-5917) — applied before `proxy_addr` so a caller-pinned proxy
+        // for this one run still wins (AAASM-5916, mirroring
+        // ClaudeCodeAdapter::build_launch_command).
+        for (name, value) in launch_env::installed_environment(&self.launch_paths()) {
+            cmd.env(name, value);
+        }
         if let Some(proxy) = proxy_addr {
-            cmd.env("HTTPS_PROXY", proxy);
+            // AAASM-5324: `aasm run` passes a bare `host:port` authority, which
+            // is not a proxy URL any HTTP client accepts. This adapter used to
+            // set only HTTPS_PROXY with the bare authority — both bugs fixed
+            // here to match ClaudeCodeAdapter's normalization (AAASM-5916).
+            let url = if proxy.starts_with("http") {
+                proxy.to_string()
+            } else {
+                format!("http://{proxy}")
+            };
+            cmd.env("HTTPS_PROXY", &url);
+            cmd.env("HTTP_PROXY", &url);
         }
         Ok(cmd)
     }
