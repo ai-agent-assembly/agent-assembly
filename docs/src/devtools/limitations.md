@@ -141,6 +141,13 @@ about to happen. If your environment's proxy also performs authentication,
 overriding it can produce a downstream auth failure from the tool itself — use
 `--no-proxy` to keep your own proxy and launch unprotected instead.
 
+`--no-proxy` itself is refused when the installed integration requires managed
+operation (a `Strict`-profile receipt, or an endpoint-managed install). Since
+AAASM-5907, that check honours a `--scope project` install for the exact
+project root it was installed into, not only the machine-wide `--scope user`
+default — a Project-scope install elsewhere on the host is never mistaken for
+this one.
+
 ## What `verify` adjudicates, and when it still exits `6`
 
 `aasm integrations verify claude-code` **passes on a correctly installed
