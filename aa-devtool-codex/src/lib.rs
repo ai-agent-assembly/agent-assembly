@@ -21,12 +21,15 @@ use aa_devtool_contract::{
 use async_trait::async_trait;
 
 mod approval;
+pub mod executor;
 pub mod launch_env;
+pub mod lifecycle;
 mod sandbox;
 pub mod scope;
 use approval::map_policy_to_approval;
 use sandbox::{map_policy_to_sandbox_mode, network_allow_list, network_block_list};
 
+pub use lifecycle::CodexIntegration;
 pub use scope::{CodexPaths, ScopeError};
 
 /// Hook a [`CodexAdapter`] uses to read the Codex binary's reported
