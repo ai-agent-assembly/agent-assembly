@@ -12,8 +12,8 @@
 
 | Capability | Status | Reason |
 |---|---|---|
-| network deny | Yes — sandbox | `generate_managed_settings`/`apply_settings` (`aa-devtool-codex/src/lib.rs:219-279`) writes `blocked_domains` (via `sandbox.rs::network_block_list`) into `~/.codex/config.json` alongside `sandbox_mode`/`approval_policy`. The proxy leg is separately broken (see Notes) but does not affect this row — the sandbox enforces on its own. |
-| network allowlist | Yes — sandbox | Same mechanism as network deny — `allowed_domains` synced to the sandbox config |
+| network deny | Partial — proxy | Corrected by AAASM-5856's security review: `generate_managed_settings`'s `blocked_domains` write has never been reachable through the install executor (`StepAction::ApplyLegacyManagedSettings` is `Unsupported`) and the native lifecycle deliberately omits the key — see the rendered matrix's Codex row for why. Enforcement is `aa-proxy`-only, limited to `llm_only`-classified hosts. |
+| network allowlist | Partial — proxy | Same correction and mechanism as network deny. |
 | file read | Partial — eBPF | No SDK integration; eBPF kprobes on `openat` are the only path |
 | file write | Partial — eBPF | Same as file read — eBPF only |
 | process spawn | Partial — eBPF | eBPF `sched_process_exec` tracepoint detects spawned processes |
