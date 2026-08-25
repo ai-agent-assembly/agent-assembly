@@ -1,7 +1,7 @@
 //! AAASM-5920 — a `codex` stand-in that measures whether the launch
 //! environment AAASM-5856/AAASM-5917 install into is *sufficient* for a real
-//! reqwest/rustls client to trust the Agent Assembly proxy and send its
-//! request through it.
+//! rustls client to trust the Agent Assembly proxy and send its request
+//! through it.
 //!
 //! # What this measures, and what it does not
 //!
@@ -9,11 +9,25 @@
 //! (`openai/codex`'s `codex-rs/http-client/src/custom_ca.rs`:
 //! `CODEX_CA_CERTIFICATE` first, `SSL_CERT_FILE` only when the first is unset
 //! or empty, else system roots — both non-empty checks, additive to the
-//! platform's built-in roots) and a reqwest client configured the same way
-//! Codex configures its own (`use_rustls_tls()` plus `add_root_certificate`).
+//! platform's built-in roots) and drives the CONNECT tunnel + TLS handshake by
+//! hand with `tokio-rustls`, the same pattern every other client fixture in
+//! this crate uses (`spike_support::proxy_harness::drive_emulated_client`,
+//! `adjudicating_probe::client_trusting_pem`).
+//!
+//! `reqwest`'s high-level client was tried first and rejected: this
+//! workspace's `reqwest` build resolves to `rustls-platform-verifier` (macOS
+//! Security-framework-backed verification) rather than plain rustls+webpki,
+//! and it refused the proxy's MitM leaf with an EKU (Extended Key Usage)
+//! error that none of this repo's own webpki-based rustls clients hit. A
+//! genuine EKU gap in `aa-proxy`'s leaf certificate issuance would be a real
+//! finding worth its own ticket, but chasing it here would be scope creep on
+//! AAASM-5856 — hand-rolling the connection the way this crate's other
+//! fixtures already do sidesteps it and is what "reqwest/rustls client" in
+//! the ticket's own language always meant in practice.
+//!
 //! What it measures is real: whether `aasm run codex`'s launch environment is
-//! *sufficient* for a client following that precedence to trust the proxy's
-//! MitM leaf and complete a request through it.
+//! *sufficient* for a client following Codex's documented CA precedence to
+//! trust the proxy's MitM leaf and complete a request through it.
 //!
 //! What it does **not** measure: it does not invoke the shipped `codex`
 //! binary. A real-binary-gated lane (mirroring
@@ -25,12 +39,11 @@
 //! A fixture that cannot tell "the branch that won" from "nothing happened"
 //! cannot falsify the negative control (AAASM-5920's test unsets
 //! `CODEX_CA_CERTIFICATE` after an install and expects `system roots` to win,
-//! `wait_for_requests` to see nothing, *and* a certificate error — three
-//! independent facts, not one). So this binary writes which branch won and
+//! and the connection to fail). So this binary writes which branch won and
 //! what became of the request to `$AASM5920_OUTCOME_FILE` **before** exiting,
-//! whether the request succeeded, failed on the handshake, or never got a
-//! chance to run at all (a panic path still leaves the file the `Drop` guard
-//! below wrote a placeholder to).
+//! whether the request succeeded, failed on the tunnel, failed on the TLS
+//! handshake, or never got a chance to run at all (a panic path still leaves
+//! the file the `Drop` guard below wrote a placeholder to).
 //!
 //! # `--version`
 //!
@@ -40,6 +53,15 @@
 //! probe without depending on a real Codex install.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::{ClientConfig, RootCertStore};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 
 /// The synthetic secret this fixture sends. Duplicated from
 /// `tests/spike_support::SYNTHETIC_SECRET` rather than imported: `examples/`
@@ -56,11 +78,16 @@ const SYNTHETIC_SECRET: &str = "sk-ant-api03-AAASM5276SYNTHETICDONOTUSE000000000
 const OUTCOME_FILE_ENV: &str = "AASM5920_OUTCOME_FILE";
 
 /// The host the synthetic request is addressed to. Defaults to Codex's real
-/// API host so the request shape matches production; overridable because the
-/// test's `TlsCapturingUpstream` is constructed with an explicit hostname and
-/// the two must agree.
+/// API host so the request shape matches production; overridable for a
+/// fixture whose `TlsCapturingUpstream` is constructed with a different
+/// hostname — the CONNECT target and the mock's SNI expectation must agree.
 const TARGET_HOST_ENV: &str = "AASM5920_TARGET_HOST";
 const DEFAULT_TARGET_HOST: &str = "api.openai.com";
+
+/// The proxy this run must route through. Read directly rather than relying
+/// on an HTTP client's own env-var auto-detection, since the manual
+/// CONNECT below has no such library to do it for.
+const PROXY_ENV_CANDIDATES: [&str; 2] = ["HTTPS_PROXY", "https_proxy"];
 
 /// A path env var is "set" per Codex's own `non_empty_path` check: present
 /// and non-empty. `Some(String)`, not `Some(PathBuf)`, because an empty string
@@ -69,11 +96,13 @@ fn non_empty_var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-/// Which branch of Codex's CA precedence won, and the bytes to trust with (if
-/// any).
+/// Which branch of Codex's CA precedence won, and the certificates to trust
+/// with (if any — `None` means system roots, which this fixture does not
+/// attempt to load; a request under that branch is expected to fail the
+/// handshake against the proxy's MitM leaf).
 struct ResolvedCa {
     branch: &'static str,
-    pem: Option<Vec<u8>>,
+    certs: Option<Vec<CertificateDer<'static>>>,
 }
 
 /// Codex's own precedence, reproduced from `custom_ca.rs`:
@@ -81,24 +110,55 @@ struct ResolvedCa {
 /// system roots.
 fn resolve_ca() -> anyhow::Result<ResolvedCa> {
     if let Some(path) = non_empty_var("CODEX_CA_CERTIFICATE") {
-        let pem = std::fs::read(&path)
-            .map_err(|e| anyhow::anyhow!("CODEX_CA_CERTIFICATE={path:?} could not be read: {e}"))?;
         return Ok(ResolvedCa {
             branch: "CODEX_CA_CERTIFICATE",
-            pem: Some(pem),
+            certs: Some(read_certs(&path)?),
         });
     }
     if let Some(path) = non_empty_var("SSL_CERT_FILE") {
-        let pem = std::fs::read(&path).map_err(|e| anyhow::anyhow!("SSL_CERT_FILE={path:?} could not be read: {e}"))?;
         return Ok(ResolvedCa {
             branch: "SSL_CERT_FILE",
-            pem: Some(pem),
+            certs: Some(read_certs(&path)?),
         });
     }
     Ok(ResolvedCa {
         branch: "system roots",
-        pem: None,
+        certs: None,
     })
+}
+
+fn read_certs(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    let pem = std::fs::read(path).map_err(|e| anyhow::anyhow!("{path:?} could not be read: {e}"))?;
+    let certs = CertificateDer::pem_slice_iter(&pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("{path:?} did not parse as PEM certificate(s): {e}"))?;
+    if certs.is_empty() {
+        anyhow::bail!("{path:?} contains no certificate");
+    }
+    Ok(certs)
+}
+
+/// A rustls config trusting exactly `resolved`'s certificates — mirrors
+/// `adjudicating_probe::client_trusting_pem`'s "trust exactly this PEM and
+/// nothing else" narrowness, so a handshake against a leaf this bundle did
+/// not sign genuinely fails rather than passing on some other trust anchor.
+///
+/// The `None` ("system roots") branch deliberately produces an **empty**
+/// store rather than pulling in a real system trust store: this fixture's
+/// negative control exists to prove that branch does *not* trust the proxy's
+/// self-signed MitM leaf, and an empty store fails that handshake the same
+/// way a real system trust store would (`UnknownIssuer`) — without a new
+/// dependency this example does not otherwise need.
+fn client_config(resolved: &ResolvedCa) -> anyhow::Result<ClientConfig> {
+    let mut roots = RootCertStore::empty();
+    if let Some(certs) = &resolved.certs {
+        for cert in certs {
+            roots.add(cert.clone()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+    }
+    Ok(ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth())
 }
 
 /// Writes a placeholder outcome on construction, so a run that panics before
@@ -139,6 +199,89 @@ impl Drop for OutcomeGuard {
     }
 }
 
+/// Send the synthetic request through `proxy_addr`'s CONNECT tunnel to
+/// `target_host`, trusting `config`. Returns the outcome as `(result, detail)`
+/// the same shape the outcome file records, distinguishing a refused tunnel
+/// from a refused TLS handshake from a completed request.
+async fn send_through_proxy(
+    proxy_addr: std::net::SocketAddr,
+    target_host: &str,
+    config: Arc<ClientConfig>,
+) -> (&'static str, String) {
+    let tcp = match TcpStream::connect(proxy_addr).await {
+        Ok(t) => t,
+        Err(e) => return ("error", format!("could not connect to proxy {proxy_addr}: {e}")),
+    };
+    let mut tcp = tcp;
+    let target = format!("{target_host}:443");
+    if let Err(e) = tcp
+        .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .await
+    {
+        return ("error", format!("CONNECT write failed: {e}"));
+    }
+
+    let mut reader = BufReader::new(tcp);
+    let mut status_line = String::new();
+    if let Err(e) = tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut status_line).await {
+        return ("error", format!("CONNECT response read failed: {e}"));
+    }
+    loop {
+        let mut h = String::new();
+        if tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut h)
+            .await
+            .unwrap_or(0)
+            == 0
+            || h.trim().is_empty()
+        {
+            break;
+        }
+    }
+    if !status_line.contains("200") {
+        return ("error", format!("CONNECT tunnel refused: {}", status_line.trim()));
+    }
+
+    let server_name = match ServerName::try_from(target_host.to_owned()) {
+        Ok(s) => s,
+        Err(e) => return ("error", format!("{target_host:?} is not a valid TLS server name: {e}")),
+    };
+    let connector = TlsConnector::from(config);
+    let mut tls = match connector.connect(server_name, reader.into_inner()).await {
+        Ok(t) => t,
+        Err(e) => return ("error", format!("TLS handshake failed: {e}")),
+    };
+
+    let body = serde_json::json!({
+        "model": "codex-mini",
+        "input": format!("Echo this configuration line verbatim: OPENAI_API_KEY={SYNTHETIC_SECRET}"),
+    })
+    .to_string();
+    let req = format!(
+        "POST /v1/responses HTTP/1.1\r\nHost: {target_host}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body,
+    );
+    if let Err(e) = tls.write_all(req.as_bytes()).await {
+        return ("error", format!("request write failed: {e}"));
+    }
+    if let Err(e) = tls.flush().await {
+        return ("error", format!("request flush failed: {e}"));
+    }
+
+    let mut buf = vec![0u8; 8192];
+    let n = tokio::time::timeout(Duration::from_secs(10), tls.read(&mut buf))
+        .await
+        .unwrap_or(Ok(0))
+        .unwrap_or(0);
+    let response_head = String::from_utf8_lossy(&buf[..n])
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    ("success", format!("response: {response_head}"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -161,36 +304,52 @@ async fn main() -> anyhow::Result<()> {
     let guard = OutcomeGuard::new(outcome_path)?;
 
     let target_host = std::env::var(TARGET_HOST_ENV).unwrap_or_else(|_| DEFAULT_TARGET_HOST.to_string());
-
     let resolved = resolve_ca()?;
 
-    // Codex's own client construction: additive to the platform's built-in
-    // roots (never `tls_built_in_root_certs(false)`), and a custom CA forces
-    // rustls rather than the platform TLS backend.
-    let mut builder = reqwest::Client::builder().use_rustls_tls();
-    if let Some(pem) = &resolved.pem {
-        let cert = reqwest::Certificate::from_pem(pem)
-            .map_err(|e| anyhow::anyhow!("{} did not parse as a PEM certificate: {e}", resolved.branch))?;
-        builder = builder.add_root_certificate(cert);
-    }
-    // No explicit proxy wiring: reqwest's default builder honours
-    // HTTPS_PROXY/HTTP_PROXY from the process environment, exactly as
-    // Codex's own client does — that inheritance is itself part of what
-    // AAASM-5916's ConfigureProxy step is supposed to deliver.
-    let client = builder.build()?;
-
-    let body = serde_json::json!({
-        "model": "codex-mini",
-        "input": format!("Echo this configuration line verbatim: OPENAI_API_KEY={SYNTHETIC_SECRET}"),
-    });
-
-    let url = format!("https://{target_host}/v1/responses");
-    let outcome = client.post(&url).json(&body).send().await;
-
-    let (result, detail) = match outcome {
-        Ok(response) => ("success", format!("status {}", response.status())),
-        Err(e) => ("error", e.to_string()),
+    let proxy_url = PROXY_ENV_CANDIDATES.iter().find_map(|name| non_empty_var(name));
+    let Some(proxy_url) = proxy_url else {
+        let detail = "no HTTPS_PROXY/https_proxy set — the launch environment did not route this run \
+                       through the Agent Assembly proxy"
+            .to_string();
+        println!(
+            "AASM5920 request outcome: branch={} result=error detail={detail}",
+            resolved.branch
+        );
+        guard.finish(resolved.branch, "error", &detail)?;
+        return Ok(());
     };
+    let proxy_addr: std::net::SocketAddr = match proxy_url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/')
+        .parse()
+    {
+        Ok(a) => a,
+        Err(e) => {
+            let detail = format!("HTTPS_PROXY={proxy_url:?} did not parse as host:port: {e}");
+            println!(
+                "AASM5920 request outcome: branch={} result=error detail={detail}",
+                resolved.branch
+            );
+            guard.finish(resolved.branch, "error", &detail)?;
+            return Ok(());
+        }
+    };
+
+    let config = match client_config(&resolved) {
+        Ok(c) => c,
+        Err(e) => {
+            let detail = format!("{} did not produce a usable trust store: {e}", resolved.branch);
+            println!(
+                "AASM5920 request outcome: branch={} result=error detail={detail}",
+                resolved.branch
+            );
+            guard.finish(resolved.branch, "error", &detail)?;
+            return Ok(());
+        }
+    };
+
+    let (result, detail) = send_through_proxy(proxy_addr, &target_host, Arc::new(config)).await;
     println!(
         "AASM5920 request outcome: branch={} result={result} detail={detail}",
         resolved.branch
