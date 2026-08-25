@@ -56,6 +56,11 @@ bytes = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+# AAASM-5931: parses a minted leaf's DER to assert the serverAuth EKU extension
+# is actually present, not just that signing didn't error. Already resolved in
+# the workspace lock (aa-gateway pins the same version), so this adds no new
+# crate to the tree — same version pin for consistency.
+x509-parser = "0.18"
 # AAASM-5449: the MCP `tools/call` refusal is only reachable through a real
 # gateway — `GatewayClient::connect` performs the h2 handshake eagerly and
 # `mcp_fail_open = false` makes the proxy refuse to start otherwise — so the
