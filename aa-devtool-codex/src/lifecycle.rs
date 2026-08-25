@@ -64,7 +64,19 @@ const STEP_PROTECTION_TEST: &str = "protection-test";
 /// module docs for why this is the only variable written.
 const CA_ENV_VAR: &str = "CODEX_CA_CERTIFICATE";
 
-const MANAGED_KEYS: [&str; 4] = ["sandbox_mode", "allowed_domains", "blocked_domains", "approval_policy"];
+// `allowed_domains`/`blocked_domains` are deliberately absent (AAASM-5856
+// security review): `IntegrationRequest` carries a policy only by reference
+// (ADR 0030 §5.5), so `managed_settings_json` has no `PolicyDocument` to
+// derive a real list from — and `MergeManagedKeys` overwrites whatever is
+// on disk with whatever key is present, so writing `[]` here would silently
+// erase a real list a human (or a future policy-aware mechanism) had set.
+// Codex's `Network-egress block` capability was already `L3`-in-name-only:
+// the legacy `ApplyLegacyManagedSettings` step that used to derive these
+// from the real policy has never been reachable through `FilesystemExecutor`
+// (`aa-core/src/integration/engine.rs`'s `StepExecutor::apply` reports
+// `Unsupported` for it), so this drops a key nothing was actually writing
+// on the production install path — not a functional regression.
+const MANAGED_KEYS: [&str; 2] = ["sandbox_mode", "approval_policy"];
 
 const MODEL_HOST: &str = "api.openai.com";
 
@@ -345,10 +357,11 @@ impl DevToolIntegration for CodexIntegration {
             GovernanceLevel::L2Enforce,
         );
 
-        // 1. Managed settings — sandbox_mode / allowed_domains / blocked_domains
-        //    / approval_policy in $HOME/.codex/config.json. Unlike Claude Code
-        //    there is no privileged endpoint-managed variant: Codex has one
-        //    configuration surface, and it is always the developer's own file.
+        // 1. Managed settings — sandbox_mode / approval_policy in
+        //    $HOME/.codex/config.json. Unlike Claude Code there is no
+        //    privileged endpoint-managed variant: Codex has one configuration
+        //    surface, and it is always the developer's own file. Domain
+        //    lists are not written here — see the `MANAGED_KEYS` comment.
         let settings = managed_settings_json(request.profile)?;
         plan = plan.with_step(IntegrationStep::new(
             STEP_MANAGED_SETTINGS,
@@ -706,7 +719,10 @@ impl LaunchableTool for CodexIntegration {
 ///
 /// Derived from the **profile**, not from a full policy document: a plan
 /// carries a policy only by reference (ADR 0030 §5.5), mirroring
-/// `aa_devtool_claude_code::lifecycle::managed_settings_json`.
+/// `aa_devtool_claude_code::lifecycle::managed_settings_json`. Deliberately
+/// omits `allowed_domains`/`blocked_domains` — see the `MANAGED_KEYS`
+/// comment for why a policy-derived list can't be produced here, and why
+/// writing an empty one would be worse than omitting the key.
 pub fn managed_settings_json(profile: ProtectionProfile) -> Result<String, AdapterError> {
     let (sandbox_mode, approval) = match profile {
         ProtectionProfile::Strict => (
@@ -730,8 +746,6 @@ pub fn managed_settings_json(profile: ProtectionProfile) -> Result<String, Adapt
     };
     let doc = serde_json::json!({
         "sandbox_mode": sandbox_mode,
-        "allowed_domains": Vec::<String>::new(),
-        "blocked_domains": Vec::<String>::new(),
         "approval_policy": approval,
     });
     serde_json::to_string(&doc).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
