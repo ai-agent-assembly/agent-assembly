@@ -2309,6 +2309,14 @@ jobs:
         # by a hash that includes the feature set, so the two builds coexist.
         run: cargo test --no-run --test e2e_hitl_approval
 
+      - name: Build aa-api-server
+        # `aa-gateway --mode local` deliberately does not construct
+        # `aa_api::AppState`, so every /api/v1/* path returns the SPA fallback as
+        # text/html. The REST surface comes from this binary, and that is not
+        # discoverable from the gateway's own output — AAASM-5694 records it
+        # because it is the first wall anyone hits trying to "run the app".
+        run: cargo build -p aa-api --bin aa-api-server
+
       - name: Pre-build the sensitive-data-reference-journey fixture
         # Same rationale as the hitl pre-build step above: `sensitive-data-
         # fixture.ts` waits up to 4 minutes for `e2e_fixture_main`'s READY line,
@@ -2319,15 +2327,21 @@ jobs:
         #
         # Command must match `sensitive-data-fixture.ts`'s spawn EXACTLY, for
         # the same cargo-artifact-hash reason the hitl step above documents.
+        #
+        # Placed AFTER `Build aa-api-server`, unlike the hitl step above,
+        # because — unlike hitl's claim that step order doesn't matter here —
+        # it measurably does for this fixture: `aa-integration-tests`' test
+        # target depends on both `aa_proxy` and `aa_api` as library crates, and
+        # its unified feature set genuinely differs from `cargo build -p
+        # aa-api --bin aa-api-server`'s standalone one enough that whichever
+        # invocation runs second recompiles several shared crates from
+        # scratch. Observed on CI (run 32840166399, job 97778509532): with
+        # this step running *before* `Build aa-api-server`, Playwright's own
+        # `cargo test` invocation for this fixture recompiled from scratch
+        # moments after this step had already built the identical target in
+        # 35s, and blew the 4-minute READY budget. Running last means nothing
+        # runs after it to invalidate its result before Playwright starts.
         run: cargo test --no-run --test e2e_sensitive_data_reference_journey
-
-      - name: Build aa-api-server
-        # `aa-gateway --mode local` deliberately does not construct
-        # `aa_api::AppState`, so every /api/v1/* path returns the SPA fallback as
-        # text/html. The REST surface comes from this binary, and that is not
-        # discoverable from the gateway's own output — AAASM-5694 records it
-        # because it is the first wall anyone hits trying to "run the app".
-        run: cargo build -p aa-api --bin aa-api-server
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
@@ -2398,6 +2412,15 @@ jobs:
         working-directory: dashboard
         env:
           AA_API_BASE: http://127.0.0.1:7700
+          # `sensitive-data-fixture.ts`'s spawned `e2e_fixture_main` calls
+          # `ApiServerProcess::spawn()`, whose `resolve_binary()` invokes
+          # `cargo build -p aa-api --bin aa-api-server` itself unless this is
+          # set — a THIRD invocation of the same command the `Build
+          # aa-api-server` step above already ran, which would thrash the
+          # same shared-crate feature-unification mismatch that step's
+          # reordering above exists to avoid, just one layer deeper. Points
+          # at the binary that step already built.
+          AA_API_SERVER_BIN_PATH: ${{ github.workspace }}/target/debug/aa-api-server
         run: pnpm exec playwright test --config=playwright.realbackend.config.ts
 
       # The step that makes this lane mean something. Playwright exits 0 on a run

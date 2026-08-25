@@ -36,6 +36,23 @@ export default defineConfig({
   // report rather than paper over.
   retries: 0,
 
+  // AAASM-5904: two specs in this lane now spawn their own `cargo test`
+  // process in `beforeAll` (hitl-approval, sensitive-data-reference-journey),
+  // and CI defaults to running this lane's tests across multiple workers.
+  // With more than one worker, both fixture-spawning specs' `beforeAll`
+  // hooks fire concurrently, each launching its own `cargo test` against the
+  // SAME shared `target/` directory — observed on CI (run 32840166399,
+  // job 97778509532) causing a already-warm, already-pre-built test binary
+  // to recompile from scratch mid-run and blow the 4-minute READY budget,
+  // where it had built in 35s moments earlier in the same job. Concurrent
+  // cargo invocations against one target dir are a known source of exactly
+  // this kind of fingerprint thrashing. `workers: 1` serialises this lane
+  // instead of chasing per-fixture target-dir isolation, which would also
+  // lose this job's `Swatinem/rust-cache` warm-cache benefit for both
+  // fixtures on every run. This lane's own stated premise (see the module
+  // doc above) is reliability over speed.
+  workers: 1,
+
   use: {
     ...base.use,
     // The base config uses `on-first-retry`, and with `retries: 0` there is
