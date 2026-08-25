@@ -451,9 +451,33 @@ pub async fn run_server_with_spa(
     let listener = TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "aa-api server listening");
 
-    let serve = axum::serve(listener, app).with_graceful_shutdown(crate::shutdown::shutdown_signal());
+    // AAASM-5908: `DRAIN_TIMEOUT` must bound only the drain phase — the time
+    // between the shutdown signal firing and in-flight connections
+    // finishing — not the server's entire healthy lifetime. See
+    // `shutdown::bound_drain_after_signal`'s docs for the full story: the
+    // previous shape wrapped the whole `serve` future in
+    // `tokio::time::timeout(DRAIN_TIMEOUT, serve)`, so a server that never
+    // received a signal — the normal case for every real deployment —
+    // force-exited exactly `DRAIN_TIMEOUT` after starting, regardless of
+    // traffic.
+    //
+    // `signaled_rx` resolves once `shutdown_signal()` does, independently of
+    // the copy `with_graceful_shutdown` consumes below.
+    let (signaled_tx, signaled_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = async move {
+        crate::shutdown::shutdown_signal().await;
+        let _ = signaled_tx.send(());
+    };
+    let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown);
 
-    let serve_result = tokio::time::timeout(crate::shutdown::DRAIN_TIMEOUT, serve).await;
+    let serve_result = crate::shutdown::bound_drain_after_signal(
+        async {
+            let _ = signaled_rx.await;
+        },
+        std::future::IntoFuture::into_future(serve),
+        crate::shutdown::DRAIN_TIMEOUT,
+    )
+    .await;
 
     // Signal the retention loop to exit and let it finish its current tick
     // before the process tears down storage (AAASM-3383).
@@ -463,13 +487,13 @@ pub async fn run_server_with_spa(
     }
 
     match serve_result {
-        Ok(Ok(())) => {
+        Some(Ok(())) => {
             tracing::info!("aa-api server shut down gracefully");
         }
-        Ok(Err(e)) => {
+        Some(Err(e)) => {
             return Err(e.into());
         }
-        Err(_elapsed) => {
+        None => {
             tracing::warn!(
                 timeout_secs = crate::shutdown::DRAIN_TIMEOUT.as_secs(),
                 "drain timeout exceeded, forcing shutdown"
