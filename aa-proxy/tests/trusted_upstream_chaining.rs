@@ -840,14 +840,9 @@ async fn an_unreachable_trusted_proxy_fails_closed_with_no_direct_dial_fallback(
     // handshake succeeds) and the corp-proxy CONNECT then hangs until the
     // proxy's own dial timeout.
     tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((sock, _)) => {
-                    // Accept but never speak.
-                    std::mem::forget(sock);
-                }
-                Err(_) => break,
-            }
+        while let Ok((sock, _)) = listener.accept().await {
+            // Accept but never speak.
+            std::mem::forget(sock);
         }
     });
 
@@ -949,11 +944,8 @@ async fn network_fail_open_bypasses_only_the_gateway_stage_not_the_chained_dial(
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let unreachable_addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((sock, _)) => std::mem::forget(sock),
-                Err(_) => break,
-            }
+        while let Ok((sock, _)) = listener.accept().await {
+            std::mem::forget(sock);
         }
     });
     let artifact_dir = tempfile::tempdir().unwrap();
