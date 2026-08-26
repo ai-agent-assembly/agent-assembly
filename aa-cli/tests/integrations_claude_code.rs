@@ -900,20 +900,60 @@ fn two_project_roots_against_one_service_do_not_cross_contaminate() {
         None,
         "two project-scope installs, neither of them in A, wrote A"
     );
+
+    // The read path, on the state those two installs leave behind. There is
+    // exactly one project-scope receipt slot per tool per host, so C's install
+    // took the slot B's had — this host can hold two project *installs* but only
+    // one project *receipt*, which is a capacity limitation and not this fix.
+    //
+    // What this fix owns is which of the two answers get. C, whose receipt is the
+    // stored one, is answered. B is **refused**, and that is the point: with the
+    // caller's project unstated, B was told the protection C had installed was
+    // its own, and `repair`/`remove` from B would have acted on C's files. A
+    // refusal is the honest answer available to a host that can only remember
+    // one, and it is the answer that does not write to the wrong repository.
+    let c_status = h.aasm_in(c.path(), &["status", "claude-code"]);
+    assert!(
+        c_status.status.success(),
+        "the project whose receipt is stored must be answered:\n{}",
+        stderr(&c_status)
+    );
+    let b_status = h.aasm_in(b.path(), &["status", "claude-code"]);
+    assert!(
+        !b_status.status.success(),
+        "B was told C's project-scope install was its own:\n{}",
+        stdout(&b_status)
+    );
 }
 
-/// Matrix cases 4 and 5. A service restart re-reads nothing about the project,
-/// and `repair` — which reconnects to an install it did not author, holding no
-/// request from the caller — restores the project the receipt names.
+/// Matrix cases 4, 5 and 7, on the **read** path: `status`, `verify`, `repair`
+/// and `remove`.
+///
+/// The install writes B while the service is booted in A. The service is then
+/// restarted in C, so the process that answers every read below is not the one
+/// that authored the install and holds no memory of it. From then on the only
+/// thing that varies is the directory the *caller* is in:
+///
+/// | caller | expected |
+/// |---|---|
+/// | B — the project that was installed | answers about B, drift included |
+/// | D — an unrelated project | refuses, and writes nothing |
+///
+/// That pair is each other's control. Same service, same receipt, same verb,
+/// same moment; one answers and one refuses, which is only possible if the
+/// caller's own project is what decides. Pre-fix both came from the daemon's
+/// working directory, so both would have answered about B — and `repair` and
+/// `remove`, run by a developer standing in D, would have written to and
+/// deleted from a *different* repository's checked-in configuration.
 #[test]
-fn a_service_restart_and_a_repair_keep_the_original_project_binding() {
-    if !require_claude("a_service_restart_and_a_repair_keep_the_original_project_binding") {
+fn a_restarted_service_answers_the_callers_project_and_refuses_a_strangers() {
+    if !require_claude("a_restarted_service_answers_the_callers_project_and_refuses_a_strangers") {
         return;
     }
     let a = project("service-boot-project-a");
     let b = project("caller-project-b");
     let c = project("service-reboot-project-c");
-    let d = project("later-caller-project-d");
+    let d = project("unrelated-project-d");
 
     let _cwd = Cwd::set(a.path());
     let mut h = Harness::start();
@@ -923,37 +963,88 @@ fn a_service_restart_and_a_repair_keep_the_original_project_binding() {
     let installed = project_settings(b.path()).expect("B was written");
 
     // The daemon goes away and comes back somewhere else entirely — the ordinary
-    // consequence of a machine reboot or an `aasm daemon restart`.
+    // consequence of a machine reboot or an `aasm daemon restart`. Nothing about
+    // which project B's install is for may move with it.
     h.restart_service_from(c.path());
 
-    // Drift B's file, then repair from a *fourth* directory that is nobody's
-    // project. Repair carries no project from the caller: if it resolved one from
-    // a working directory, this is where a stale or wrong one would surface.
     let mut drifted = installed.clone();
     drifted["permissions"]["defaultMode"] = serde_json::json!("bypassPermissions");
-    std::fs::write(
-        b.path().join(".claude").join("settings.json"),
-        serde_json::to_string_pretty(&drifted).expect("json"),
-    )
-    .expect("tamper with B");
+    let tamper = || {
+        std::fs::write(
+            b.path().join(".claude").join("settings.json"),
+            serde_json::to_string_pretty(&drifted).expect("json"),
+        )
+        .expect("tamper with B");
+    };
+    tamper();
 
-    let status = h.aasm_in(d.path(), &["status", "claude-code"]);
+    // The caller in B reaches B, across the restart, and sees the drift in it.
+    let from_b = h.aasm_in(b.path(), &["status", "claude-code"]);
     assert_eq!(
-        status.status.code(),
+        from_b.status.code(),
         Some(5),
-        "the restarted service must still be reading B's file, and so must see the drift:\n{}{}",
-        stdout(&status),
-        stderr(&status)
+        "the restarted service must still be reading B's file for a caller in B, and so must see \
+         the drift:\n{}{}",
+        stdout(&from_b),
+        stderr(&from_b)
     );
 
-    let repair = h.aasm_in(d.path(), &["repair", "claude-code", "--yes"]);
+    // The caller in D is somewhere else, and is told so rather than told about B.
+    // Reporting B here is the disclosure half of the defect: it tells a developer
+    // that the repository they are standing in is protected when it is not.
+    let from_d = h.aasm_in(d.path(), &["status", "claude-code"]);
     println!(
-        "--- aasm integrations repair (caller in D, service booted in C) ---\n{}{}",
-        stdout(&repair),
-        stderr(&repair)
+        "--- aasm integrations status (caller in D, install is B's) ---\n{}{}",
+        stdout(&from_d),
+        stderr(&from_d)
     );
-    assert!(repair.status.success(), "{}", stderr(&repair));
+    assert!(
+        !from_d.status.success(),
+        "a caller in an unrelated project was answered about somebody else's:\n{}",
+        stdout(&from_d)
+    );
+    let refusal = format!("{}{}", stdout(&from_d), stderr(&from_d));
+    assert!(
+        refusal.contains("belongs to another project"),
+        "the refusal must say what is wrong:\n{refusal}"
+    );
+    assert!(
+        !refusal.contains(&b.path().display().to_string()),
+        "the refusal disclosed the other project's path, which this caller did not ask about and is \
+         not owed:\n{refusal}"
+    );
 
+    // And the two mutating read-path verbs refuse *before* touching anything.
+    // These are the assertions the severity rests on: B's file is checked in.
+    for verb in ["repair", "remove"] {
+        let out = h.aasm_in(d.path(), &[verb, "claude-code", "--yes"]);
+        println!(
+            "--- aasm integrations {verb} (caller in D) ---\n{}{}",
+            stdout(&out),
+            stderr(&out)
+        );
+        assert!(
+            !out.status.success(),
+            "`{verb}` run from an unrelated project acted on somebody else's:\n{}",
+            stdout(&out)
+        );
+        assert_eq!(
+            project_settings(b.path()).as_ref(),
+            Some(&drifted),
+            "`{verb}` from D changed B — the refusal was reported but not enforced"
+        );
+    }
+    // A refusal that also deleted the file would satisfy the equality above by
+    // way of `None == None`; assert the file itself is still there.
+    assert!(
+        b.path().join(".claude").join("settings.json").is_file(),
+        "a refused `remove` deleted another project's settings file"
+    );
+
+    // `repair` from B, the project it is for, does the work.
+    let repair = h.aasm_in(b.path(), &["repair", "claude-code", "--yes"]);
+    println!("--- aasm integrations repair (caller in B) ---\n{}", stdout(&repair));
+    assert!(repair.status.success(), "{}", stderr(&repair));
     assert_eq!(
         project_settings(b.path()).expect("B still exists"),
         installed,
@@ -971,15 +1062,98 @@ fn a_service_restart_and_a_repair_keep_the_original_project_binding() {
         "the repair fell back to the machine-wide user surface"
     );
 
-    // `verify` reads the same binding, and reads it off the receipt rather than
-    // any directory: it must reach a real file and report on it.
-    let verify = h.aasm_in(d.path(), &["verify", "claude-code", "--output", "json"]);
+    // `verify` reads the same binding: from B it reaches a real file and reports
+    // on it, and from D it refuses like the rest.
+    let verify = h.aasm_in(b.path(), &["verify", "claude-code", "--output", "json"]);
     let report: serde_json::Value = serde_json::from_str(&stdout(&verify)).expect("json verify report");
-    println!("--- aasm integrations verify (caller in D) ---\n{report:#}");
+    println!("--- aasm integrations verify (caller in B) ---\n{report:#}");
     assert_ne!(
         report["outcome"],
         serde_json::json!("failed"),
         "verify reported the receipted artifacts as mismatched, which is what reading the wrong \
          project's file looks like:\n{report:#}"
+    );
+    assert!(
+        !h.aasm_in(d.path(), &["verify", "claude-code"]).status.success(),
+        "verify answered a caller in an unrelated project"
+    );
+}
+
+/// Matrix case 7, stated on its own: the project a read verb is about comes from
+/// the request, and a service that has *just* been asked about one project does
+/// not carry it into the next caller's answer.
+///
+/// The interleaving is what makes this more than a repeat of the test above.
+/// B is asked, then D, then B again: if anything about the first answer were
+/// retained — a cached root, a last-seen project, a lazily-initialised field —
+/// the third call is where it would show, and the second is where a stale one
+/// would be handed to the wrong caller.
+///
+/// The `remove` at the end is the reason this matters beyond disclosure. A
+/// project-scope receipt records the settings file it wrote; `remove` restores
+/// and deletes exactly those paths. Getting the project wrong here is a write to
+/// another repository's checked-in configuration, so `remove` is only allowed
+/// from the project it is for — and after it, that project's own file is back to
+/// what it was before the install.
+#[test]
+fn interleaved_callers_each_get_their_own_project_and_no_stale_one() {
+    if !require_claude("interleaved_callers_each_get_their_own_project_and_no_stale_one") {
+        return;
+    }
+    let a = project("service-boot-project-a");
+    let b = project("caller-project-b");
+    let d = project("unrelated-project-d");
+
+    let _cwd = Cwd::set(a.path());
+    let h = Harness::start();
+
+    // B's project has configuration of its own, so removal has something to
+    // restore *to* — an empty file proves nothing about what was preserved.
+    std::fs::write(b.path().join(".claude").join("settings.json"), r#"{"theme":"gruvbox"}"#)
+        .expect("seed B's settings");
+
+    let install = h.aasm_in(b.path(), &["install", "claude-code", "--scope", "project", "--yes"]);
+    assert!(install.status.success(), "{}", stderr(&install));
+
+    let answered = |out: &Output| out.status.success();
+    let first = h.aasm_in(b.path(), &["status", "claude-code"]);
+    let stranger = h.aasm_in(d.path(), &["status", "claude-code"]);
+    let again = h.aasm_in(b.path(), &["status", "claude-code"]);
+    assert!(answered(&first), "B was refused its own project:\n{}", stderr(&first));
+    assert!(
+        !answered(&stranger),
+        "D was answered about B's project:\n{}",
+        stdout(&stranger)
+    );
+    assert!(
+        answered(&again),
+        "B's own project became unreachable because D had asked in between:\n{}",
+        stderr(&again)
+    );
+
+    // The reverse direction: a refused caller must not leave its project behind
+    // either. D asked last, and B is still the project that gets removed.
+    let remove = h.aasm_in(b.path(), &["remove", "claude-code", "--yes"]);
+    println!("--- aasm integrations remove (caller in B) ---\n{}", stdout(&remove));
+    assert!(remove.status.success(), "{}", stderr(&remove));
+    let restored = project_settings(b.path()).expect("B's own settings file survives removal");
+    assert_eq!(
+        restored["theme"],
+        serde_json::json!("gruvbox"),
+        "removal did not restore what B had before the install: {restored}"
+    );
+    assert!(
+        restored.get("permissions").is_none(),
+        "removal left AASM's managed keys in B: {restored}"
+    );
+    assert_eq!(
+        project_settings(d.path()),
+        None,
+        "the removal wrote D — the project of the caller that was refused"
+    );
+    assert_eq!(
+        project_settings(a.path()),
+        None,
+        "the removal wrote the service's project"
     );
 }
