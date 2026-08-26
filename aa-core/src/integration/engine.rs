@@ -2111,9 +2111,16 @@ mod tests {
     /// `Integrated` receipt is stored is a different answer to the only question
     /// an operator asks.
     ///
-    /// The change is downward because `validate` refuses a plan that claims a
-    /// level its steps do not substantiate, so the upward case is unreachable
-    /// here by construction rather than by omission.
+    /// The change tested here is downward. The upward case is constructible —
+    /// `IntegrationPlan::validate` rejects duplicate step ids, per-step scope and
+    /// privilege problems, a `planned_level` above the profile's
+    /// `max_reportable_level`, and `GatewayProtected` without an interception
+    /// probe, but it does not require the steps to substantiate the level, so a
+    /// plan claiming `Integrated` with no required step validates. It is omitted
+    /// because `planned_level` is compared symmetrically and the downward case
+    /// already falsifies that clause; the sibling case below covers the
+    /// `requirement` axis, which is the one that actually let an unsubstantiated
+    /// level survive.
     #[test]
     fn a_reapply_that_plans_a_different_level_is_a_different_installation() {
         let f = fixture();
