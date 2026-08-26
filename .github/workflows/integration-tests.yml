@@ -149,7 +149,29 @@ jobs:
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         run: pnpm install --frozen-lockfile
 
+      # AAASM-5943: every long step below carries its own `timeout-minutes`, and
+      # that is load-bearing rather than decorative.
+      #
+      # A job killed by the *job* ceiling reports `cancelled`. GitHub does not
+      # treat `cancelled` as a failure: branch protection accepts it, the checks
+      # page shows no red, and — verified in run 32946949070 — even the
+      # `if: failure()` log-upload step is `skipped`, so no diagnostic escapes
+      # and no `if: always()` guard step can help. That is how this workflow ran
+      # 13 consecutive main merges without validating any of them while looking
+      # untroubled. A step that exceeds its own `timeout-minutes` is killed and
+      # marked `failure`, which fails the job, goes red, and blocks the merge.
+      #
+      # So: the step ceilings are the real gate, and the job ceiling is only a
+      # backstop that should never fire. Keep the job ceiling above their sum.
+      #
+      # Each ceiling is set from measured durations at roughly 1.5x the worst
+      # observed value. The job's healthy runs sat at 77-90% of budget (3-7 min
+      # of slack) and that is precisely why it tipped over as soon as anything
+      # was added, so these are deliberately looser than that.
       - name: Pre-build aasm binary (AAASM-2340)
+        # Worst measured 12.0 min (244458b7f, cold cache under the ratchet);
+        # 2.7 min warm. 18 = 1.5x worst.
+        timeout-minutes: 18
         # Compiling aa-cli (which pulls wasmtime via aa-sandbox) once serially
         # before nextest skips per-test `cargo run -p aa-cli` overhead — under
         # --test-threads=1 every test paid that overhead in sequence, which is
@@ -157,6 +179,8 @@ jobs:
         run: cargo build --quiet -p aa-cli --bin aasm
 
       - name: Pre-build aa-api-server binary (AAASM-5908)
+        # Worst measured 5.4 min (244458b7f). 9 = 1.67x worst.
+        timeout-minutes: 9
         # Same rationale as the aasm pre-build above, for the same reason:
         # `common::api_server::ApiServerProcess::resolve_binary` invokes
         # `cargo build -p aa-api --bin aa-api-server` the first time any test
@@ -170,6 +194,12 @@ jobs:
         run: cargo build --quiet -p aa-api --bin aa-api-server
 
       - name: Run integration tests
+        # Only clean measurement is 18.9 min (34a274da6, the last green run);
+        # under the ratchet it was truncated at 11.9-16.4 min and never
+        # finished. 28 = 1.48x the green figure. If this ceiling ever fires the
+        # suite is genuinely too slow — that is a real red failure to
+        # investigate, not a number to raise.
+        timeout-minutes: 28
         env:
           PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk
           GO_SDK_PATH: ${{ github.workspace }}/go-sdk
