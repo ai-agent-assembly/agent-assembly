@@ -95,10 +95,16 @@ minutes without a fresh query being re-verified against it.
   Re-querying the checks/runs API for the current PR is what makes a status
   claim current — a prior poll result, however recently it looked "still
   pending," is not evidence of the present state on its own.
-* **Terminal GitHub state immediately cancels local wait state.** `success`,
-  `failure`, `cancelled`, `skipped`, `timed_out`, `action_required`, and
-  `startup_failure` are all terminal. The moment a fresh query returns one
-  for a required check, stop waiting on it — do not keep a background
+* **Terminal GitHub state immediately cancels local wait state.** A
+  check-run's `status` field, not just its `conclusion`, is what's
+  authoritative here — a `conclusion` only exists once `status:
+  "completed"`. The Checks API's completed-conclusion values are `success`,
+  `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`,
+  and `stale`; all of them are terminal. (`startup_failure` is a
+  workflow-*run*-level conclusion, not a check-run conclusion — don't
+  conflate the two API shapes when scripting a query.) The moment a fresh
+  query returns a completed status for a required check, stop waiting on it
+  — do not keep a background
   poller alive "just in case," and do not wait for every non-required job
   to also finish.
 * **The watcher's identity must include the current PR HEAD SHA**, not just
