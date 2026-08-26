@@ -3421,6 +3421,50 @@ mod tests {
     }
 
     #[test]
+    fn schedule_wide_active_hours_window_allows_through_the_full_pipeline() {
+        // Independent review of AAASM-5933 (PR #2218) flagged that the fix
+        // above removed the only `engine::evaluate()`-level test exercising a
+        // *real* (non-`None`) `active_hours` window through the production
+        // live-clock path and asserting Allow — every remaining
+        // `ActiveHours { .. }` case in this file asserts Deny. `evaluate()`
+        // has no seam to inject a fixed instant (unlike `stage_schedule_at`
+        // in `decision.rs`, added by the same PR, which only covers the
+        // stage-level comparison, not dispatch/caching — the thing AAASM-3893
+        // cares about: a cached verdict computed inside active-hours must not
+        // outlive the window).
+        //
+        // A live-clock window test necessarily keeps *some* wall-clock
+        // dependence, which is exactly what AAASM-5933 exists to eliminate —
+        // so this deliberately follows `schedule_denies_outside_active_hours`
+        // above's already-established, already-accepted pattern for that
+        // trade-off (tolerate the near-certain case, name the rare one)
+        // rather than inventing a new one. Unlike the original bug, this
+        // window's excluded minutes (`23:58`, `23:59`) are far from its
+        // `start` and stated purpose is "wide", so an `Allow` failure here
+        // names the actual gap instead of masking it as "flaky".
+        let mut doc = empty_doc();
+        doc.schedule = Some(SchedulePolicy {
+            active_hours: Some(ActiveHours {
+                start: "00:00".to_string(),
+                end: "23:58".to_string(),
+                timezone: "UTC".to_string(),
+            }),
+        });
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "");
+        let result = engine.evaluate(&ctx, &action);
+        match result.decision {
+            PolicyResult::Allow => {}
+            PolicyResult::Deny { reason } => {
+                // Only expected in the 2 minutes/day this window excludes.
+                assert_eq!(reason, "outside active hours");
+            }
+            other => panic!("unexpected result: {:?}", other),
+        }
+    }
+
+    #[test]
     fn schedule_invalid_timezone_fails_closed() {
         // AAASM-3847: an unparseable tz on the single-policy `evaluate_primary`
         // path must DENY, not silently fall back to UTC. The window is the full
