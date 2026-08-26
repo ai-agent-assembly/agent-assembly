@@ -62,8 +62,8 @@ use aa_core::integration::{
 
 use super::apply_outcome::ApplyMutation;
 use super::lifecycle::{
-    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport,
-    ScopedSecurityEvent, ToolDescriptor,
+    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, LifecycleTarget,
+    RepairReport, ScopedSecurityEvent, ToolDescriptor,
 };
 use super::projection::tool_id;
 
@@ -526,17 +526,15 @@ impl IntegrationLifecycle for EngineLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, _target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         let registered = self.registered(tool)?;
         let scope = self.scope_or_default(tool);
-        let receipt = match self.store.load_receipt(tool, scope) {
-            Ok(receipt) => receipt,
-            Err(e) => {
-                return Err(LifecycleError::Failed {
-                    detail: format!("the integration receipt could not be read: {e}"),
-                })
-            }
-        };
+        let receipt = self
+            .store
+            .load_receipt(tool, scope)
+            .map_err(|e| LifecycleError::Failed {
+                detail: format!("the integration receipt could not be read: {e}"),
+            })?;
 
         let mut status = registered
             .integration
@@ -557,7 +555,11 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(status)
     }
 
-    async fn verify(&self, tool: &DevToolKind) -> Result<VerificationResult, LifecycleError> {
+    async fn verify(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+    ) -> Result<VerificationResult, LifecycleError> {
         let registered = self.registered(tool)?;
         let scope = self.scope_or_default(tool);
         let receipt = self.receipt(tool, scope)?;
@@ -580,7 +582,11 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(result)
     }
 
-    async fn repair(&self, tool: &DevToolKind) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
+    async fn repair(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+    ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         let registered = self.registered(tool)?;
         let scope = self.scope_or_default(tool);
         let receipt = self.receipt(tool, scope)?;
@@ -611,11 +617,16 @@ impl IntegrationLifecycle for EngineLifecycle {
                 .map(|f| (finding_mechanism(f.kind), f.detail.clone()))
                 .collect(),
         };
-        let status = self.status(tool).await?;
+        let status = self.status(tool, target).await?;
         Ok((repaired, status))
     }
 
-    async fn remove(&self, tool: &DevToolKind, plan_id: Option<&str>) -> Result<RemovalPlan, LifecycleError> {
+    async fn remove(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+        plan_id: Option<&str>,
+    ) -> Result<RemovalPlan, LifecycleError> {
         let registered = self.registered(tool)?;
         let scope = self.scope_or_default(tool);
         let receipt = self.receipt(tool, scope)?;
@@ -831,7 +842,11 @@ mod tests {
             .await
             .expect("apply");
 
-        let result = h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
+        let result = h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
         assert!(!exercised_the_protected_path(&result));
         assert!(
             justified_level(&result, result.verified_at_unix_secs, DEFAULT_FRESHNESS_WINDOW_SECS)
@@ -839,7 +854,11 @@ mod tests {
             "read-back evidence justified a traffic-level claim"
         );
 
-        let status = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
         assert!(status.achieved_level() < ProtectionLevel::GatewayProtected);
     }
 
@@ -851,7 +870,11 @@ mod tests {
             .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
             .await
             .expect("apply");
-        let result = h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
+        let result = h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
         assert!(exercised_the_protected_path(&result));
     }
 
@@ -865,15 +888,26 @@ mod tests {
             .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
             .await
             .expect("apply");
-        h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
-        let status = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
+        h.service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
         assert!(status.achieved_level() < ProtectionLevel::GatewayProtected);
     }
 
     #[tokio::test]
     async fn verifying_without_an_installation_is_refused_rather_than_passing() {
         let h = harness(|f| f);
-        match h.service.verify(&DevToolKind::ClaudeCode).await {
+        match h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+        {
             Err(LifecycleError::Refused { detail }) => assert!(detail.contains("install"), "{detail}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -890,11 +924,19 @@ mod tests {
             .expect("apply");
         let before = std::fs::read_to_string(&h.settings).expect("read");
 
-        let removal = h.service.remove(&DevToolKind::ClaudeCode, None).await.expect("preview");
+        let removal = h
+            .service
+            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .await
+            .expect("preview");
         assert!(!removal.steps.is_empty());
         assert_eq!(std::fs::read_to_string(&h.settings).expect("read"), before);
         assert!(
-            h.service.status(&DevToolKind::ClaudeCode).await.expect("status").phase
+            h.service
+                .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+                .await
+                .expect("status")
+                .phase
                 == aa_core::integration::LifecyclePhase::Installed,
             "a preview removed the integration"
         );
@@ -910,9 +952,17 @@ mod tests {
             .await
             .expect("apply");
 
-        let preview = h.service.remove(&DevToolKind::ClaudeCode, None).await.expect("preview");
+        let preview = h
+            .service
+            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .await
+            .expect("preview");
         h.service
-            .remove(&DevToolKind::ClaudeCode, Some(&preview.plan_id))
+            .remove(
+                &DevToolKind::ClaudeCode,
+                &LifecycleTarget::unspecified(),
+                Some(&preview.plan_id),
+            )
             .await
             .expect("remove");
 
@@ -929,7 +979,15 @@ mod tests {
             .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
             .await
             .expect("apply");
-        match h.service.remove(&DevToolKind::ClaudeCode, Some("removal-nope")).await {
+        match h
+            .service
+            .remove(
+                &DevToolKind::ClaudeCode,
+                &LifecycleTarget::unspecified(),
+                Some("removal-nope"),
+            )
+            .await
+        {
             Err(LifecycleError::UnknownPlan { plan_id }) => assert_eq!(plan_id, "removal-nope"),
             other => panic!("expected UnknownPlan, got {other:?}"),
         }
@@ -945,20 +1003,32 @@ mod tests {
             .expect("apply");
 
         std::fs::write(&h.settings, r#"{"aasmManaged":false,"theme":"solarized"}"#).expect("tamper");
-        let drifted = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
+        let drifted = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
         assert!(
             matches!(drifted.state, ProtectionState::Drifted { .. }),
             "tampering with a managed key must report drift, got {:?}",
             drifted.state
         );
 
-        let (report, _) = h.service.repair(&DevToolKind::ClaudeCode).await.expect("repair");
+        let (report, _) = h
+            .service
+            .repair(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("repair");
         assert_eq!(report.repaired, vec!["settings".to_string()]);
         let repaired = std::fs::read_to_string(&h.settings).expect("read");
         assert!(repaired.contains("solarized"), "repair discarded the user's own key");
         assert!(
             !matches!(
-                h.service.status(&DevToolKind::ClaudeCode).await.expect("status").state,
+                h.service
+                    .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+                    .await
+                    .expect("status")
+                    .state,
                 ProtectionState::Drifted { .. }
             ),
             "repair did not clear the drift"
@@ -968,7 +1038,11 @@ mod tests {
     #[tokio::test]
     async fn a_tool_no_adapter_knows_is_an_unknown_tool_not_a_crash() {
         let h = harness(|f| f);
-        match h.service.status(&DevToolKind::Codex).await {
+        match h
+            .service
+            .status(&DevToolKind::Codex, &LifecycleTarget::unspecified())
+            .await
+        {
             Err(LifecycleError::UnknownTool { tool_id }) => assert_eq!(tool_id, "codex"),
             other => panic!("expected UnknownTool, got {other:?}"),
         }
@@ -985,9 +1059,21 @@ mod tests {
             .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
             .await
             .expect("apply");
-        let status = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
-        let verification = h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
-        let removal = h.service.remove(&DevToolKind::ClaudeCode, None).await.expect("preview");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
+        let verification = h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
+        let removal = h
+            .service
+            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .await
+            .expect("preview");
 
         let sentinel = crate::devint::fixture::LEAK_SENTINEL;
         for (what, rendered) in [

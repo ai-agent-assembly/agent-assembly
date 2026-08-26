@@ -93,7 +93,7 @@ pub use apply_outcome::{ApplyMutation, MutationUnknown};
 pub use audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 pub use client::{ClientError, DevIntClient, Negotiated, PlanRequest};
 pub use enrolment::{enrol_local_client, enrolment_path, read_local_token, EnrolmentError};
-pub use lifecycle::{AppliedIntegration, IntegrationLifecycle, LifecycleError};
+pub use lifecycle::{AppliedIntegration, IntegrationLifecycle, LifecycleError, LifecycleTarget};
 pub use negotiate::{
     Negotiation, NegotiationError, DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED,
     DI_API_PROVENANCE_SINCE,

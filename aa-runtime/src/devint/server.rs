@@ -49,7 +49,7 @@ use aa_proto::assembly::devint::v1 as wire;
 
 use super::audit::{DevIntAuditEvent, DevIntAuditKind, DevIntAuditSink};
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
-use super::lifecycle::{ApprovalInput, IntegrationLifecycle, LifecycleError};
+use super::lifecycle::{ApprovalInput, IntegrationLifecycle, LifecycleError, LifecycleTarget};
 use super::negotiate::{self, verb_available_at};
 use super::projection as project;
 use super::provenance::RuntimeProvenance;
@@ -506,27 +506,31 @@ impl Connection {
                 response.apply = Some(project::apply_view(&applied, self.version));
             }
             DiVerb::Status => {
-                let status = lifecycle.status(&tool).await?;
+                let target = build_target(request)?;
+                let status = lifecycle.status(&tool, &target).await?;
                 response.status = Some(project::status_view(&status));
             }
             DiVerb::Verify => {
-                let result = lifecycle.verify(&tool).await?;
+                let target = build_target(request)?;
+                let result = lifecycle.verify(&tool, &target).await?;
                 response.verification = Some(project::verification_view(
                     &result,
                     &crate::devint::service::resolve_host_policy(),
                 ));
             }
             DiVerb::Repair => {
-                let (report, status) = lifecycle.repair(&tool).await?;
+                let target = build_target(request)?;
+                let (report, status) = lifecycle.repair(&tool, &target).await?;
                 response.repair = Some(project::repair_view(&tool, &report, &status));
             }
             DiVerb::Remove => {
+                let target = build_target(request)?;
                 let plan_id = request
                     .remove
                     .as_ref()
                     .map(|r| r.plan_id.as_str())
                     .filter(|p| !p.is_empty());
-                let plan = lifecycle.remove(&tool, plan_id).await?;
+                let plan = lifecycle.remove(&tool, &target, plan_id).await?;
                 response.removal = Some(project::removal_view(&plan));
             }
             DiVerb::ScopedEvents => {
@@ -593,6 +597,42 @@ fn build_plan_request(
         });
     }
     Ok(request)
+}
+
+/// Translate `TargetArgs` into the installation a read-or-reverse verb acts on.
+///
+/// The same vetting as [`build_plan_request`], through the same
+/// [`parse_project_root`], so "which project" cannot come to mean one thing when
+/// a plan is authored and another when it is later reported on.
+///
+/// An absent `target` is an unspecified one rather than a refusal: it is what a
+/// pre-DI-API-6 client sends, and on a host with a single user-scope
+/// installation that request is answerable. What it cannot reach is a
+/// project-scope receipt — the service refuses there, because an unspecified
+/// target names no project and this daemon's own directory is not a substitute.
+fn build_target(request: &wire::Request) -> Result<LifecycleTarget, LifecycleError> {
+    let args = request.target.clone().unwrap_or_default();
+    let scope = if args.settings_scope.is_empty() {
+        None
+    } else {
+        Some(
+            project::parse_scope(&args.settings_scope).ok_or_else(|| LifecycleError::Refused {
+                detail: format!("unknown settings scope {:?}", args.settings_scope),
+            })?,
+        )
+    };
+    // `parse_project_root` reads the scope only to decide whether an empty root
+    // is a refusal, and for an unnamed scope it is not one — the caller has not
+    // yet said they mean a project. Standing in for that with `User` here is
+    // therefore a statement about emptiness, not a scope decision: the actual
+    // scope stays `None` below, and the service still refuses a project-scope
+    // receipt that this target cannot name.
+    let empty_is_allowed = scope.unwrap_or(aa_core::integration::SettingsScope::User);
+    let project_root = parse_project_root(empty_is_allowed, &args.project_root)?;
+    Ok(LifecycleTarget {
+        settings_scope: scope,
+        project_root,
+    })
 }
 
 /// Resolve `PlanArgs::project_root` for `scope`, refusing rather than defaulting.

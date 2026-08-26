@@ -37,8 +37,8 @@ use super::apply_outcome::ApplyMutation;
 use super::audit::RecordingAuditSink;
 use super::codec::{self, DiFrame, DiResponseFrame};
 use super::lifecycle::{
-    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport,
-    ScopedSecurityEvent, ToolDescriptor, VerdictKind,
+    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, LifecycleTarget,
+    RepairReport, ScopedSecurityEvent, ToolDescriptor, VerdictKind,
 };
 use super::projection::tool_id;
 use super::provenance::RuntimeProvenance;
@@ -261,12 +261,16 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, _target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         self.enter()?;
         Ok(fake_status(tool))
     }
 
-    async fn verify(&self, _tool: &DevToolKind) -> Result<VerificationResult, LifecycleError> {
+    async fn verify(
+        &self,
+        _tool: &DevToolKind,
+        _target: &LifecycleTarget,
+    ) -> Result<VerificationResult, LifecycleError> {
         self.enter()?;
         Ok(VerificationResult {
             verified_at_unix_secs: 1_700_000_000,
@@ -275,7 +279,11 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn repair(&self, tool: &DevToolKind) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
+    async fn repair(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+    ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         self.enter()?;
         Ok((
             RepairReport {
@@ -286,7 +294,12 @@ impl IntegrationLifecycle for FakeLifecycle {
         ))
     }
 
-    async fn remove(&self, tool: &DevToolKind, _plan_id: Option<&str>) -> Result<RemovalPlan, LifecycleError> {
+    async fn remove(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+        _plan_id: Option<&str>,
+    ) -> Result<RemovalPlan, LifecycleError> {
         self.enter()?;
         Ok(RemovalPlan::new("removal-1", tool.clone()))
     }

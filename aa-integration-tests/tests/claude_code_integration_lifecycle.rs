@@ -53,7 +53,7 @@ use aa_devtool_contract::ExerciseOutcome;
 use aa_proxy::config::CredentialAction;
 use aa_proxy::tls::CaStore;
 use aa_runtime::devint::adapters::claude_code_registration;
-use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle};
+use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle, LifecycleTarget};
 use async_trait::async_trait;
 use base64::Engine as _;
 use rustls::pki_types::CertificateDer;
@@ -375,7 +375,11 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     assert_eq!(std::fs::read(h.settings_path())?, before);
 
     // ── status ─────────────────────────────────────────────────────────────
-    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     // The plan aimed at GatewayProtected and configuration alone cannot get
     // there, so the honest reading is Degraded with the gap named — not a
     // quietly smaller ladder rung.
@@ -401,7 +405,11 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     assert!(status.next_level.is_some(), "the next rung up is always reported");
 
     // ── verify ─────────────────────────────────────────────────────────────
-    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let verification = h
+        .service
+        .verify(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
         verification.outcome,
         VerificationOutcome::Passed,
@@ -413,7 +421,11 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
         "the mock provider must have recorded a request — otherwise 'no secret arrived' proves nothing"
     );
 
-    let after_verify = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let after_verify = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
         after_verify.achieved_level(),
         ProtectionLevel::GatewayProtected,
@@ -428,7 +440,11 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     doc["editor"] = serde_json::json!("nvim");
     std::fs::write(h.settings_path(), serde_json::to_string_pretty(&doc)?)?;
 
-    let drifted = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let drifted = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         matches!(drifted.state, ProtectionState::Drifted { .. }),
         "a change to an Agent Assembly-owned key must be detected: {:?}",
@@ -436,7 +452,11 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     );
 
     // ── repair ─────────────────────────────────────────────────────────────
-    let (report, repaired) = h.service.repair(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (report, repaired) = h
+        .service
+        .repair(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(!report.repaired.is_empty(), "repair must name what it restored");
     assert!(
         !matches!(repaired.state, ProtectionState::Drifted { .. }),
@@ -455,7 +475,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── remove ─────────────────────────────────────────────────────────────
     let preview = h
         .service
-        .remove(&tool, None)
+        .remove(&tool, &LifecycleTarget::unspecified(), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(!preview.steps.is_empty(), "the preview must show what will be undone");
@@ -463,7 +483,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
 
     let removal = h
         .service
-        .remove(&tool, Some(&preview.plan_id))
+        .remove(&tool, &LifecycleTarget::unspecified(), Some(&preview.plan_id))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -485,7 +505,11 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     );
 
     // Removing twice is idempotent from the client's point of view.
-    assert!(h.service.remove(&tool, None).await.is_err());
+    assert!(h
+        .service
+        .remove(&tool, &LifecycleTarget::unspecified(), None)
+        .await
+        .is_err());
 
     h.finish();
     Ok(())
@@ -504,13 +528,21 @@ async fn without_the_injected_ca_the_protection_test_cannot_pass() -> anyhow::Re
     h.write_user_settings("{}");
     h.install().await?;
 
-    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let verification = h
+        .service
+        .verify(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         !matches!(verification.outcome, VerificationOutcome::Passed),
         "a failed TLS handshake must not read as a pass: {:?}",
         verification.outcome
     );
-    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         status.achieved_level() < ProtectionLevel::GatewayProtected,
         "with the CA untrusted the model path is not intercepted, so protection must not be claimed: {:?}",
@@ -565,13 +597,19 @@ async fn verify_cannot_pass_on_configuration_alone() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let verification = service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let verification = service
+        .verify(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         !matches!(verification.outcome, VerificationOutcome::Passed),
         "an unadjudicated probe must not pass: {:?}",
         verification.outcome
     );
-    let status = service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
         status.achieved_level(),
         ProtectionLevel::Integrated,
@@ -590,8 +628,16 @@ async fn the_raw_secret_is_absent_from_every_artifact_while_the_finding_survives
     h.write_user_settings("{}");
     h.install().await?;
 
-    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let verification = h
+        .service
+        .verify(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut surfaces: Vec<(String, String)> = vec![
         ("verification".to_string(), serde_json::to_string(&verification)?),
@@ -644,14 +690,22 @@ async fn a_bypass_condition_is_detected_and_surfaced_in_status() -> anyhow::Resu
     doc["permissions"]["defaultMode"] = serde_json::json!("bypassPermissions");
     std::fs::write(h.settings_path(), serde_json::to_string_pretty(&doc)?)?;
 
-    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let rendered = serde_json::to_string(&status)?;
     assert!(
         rendered.contains("bypassPermissions"),
         "a detected bypass must reach the status a user reads: {rendered}"
     );
 
-    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let verification = h
+        .service
+        .verify(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         !matches!(verification.outcome, VerificationOutcome::Passed),
         "verification must not pass while a known bypass is active: {:?}",
@@ -689,7 +743,7 @@ async fn the_removal_preview_names_the_trust_material_and_the_variable() -> anyh
 
     let preview = h
         .service
-        .remove(&DevToolKind::ClaudeCode, None)
+        .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let rendered = preview.render_dry_run();
@@ -715,10 +769,18 @@ async fn a_successful_normal_install_cannot_reach_host_enforced() -> anyhow::Res
     let tool = DevToolKind::ClaudeCode;
 
     h.install().await?;
-    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let verification = h
+        .service
+        .verify(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
-    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
         status.achieved_level(),
         ProtectionLevel::GatewayProtected,
@@ -761,13 +823,25 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
     assert!(installed.contains("disableBypassPermissionsMode"), "{installed}");
 
     // Configuration alone still does not raise the ladder past Integrated.
-    let after_install = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let after_install = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(after_install.achieved_level() <= ProtectionLevel::Integrated);
 
-    let verification = h.service.verify(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let verification = h
+        .service
+        .verify(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
-    let status = h.service.status(&tool).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = h
+        .service
+        .status(&tool, &LifecycleTarget::unspecified())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
         status.achieved_level(),
         ProtectionLevel::HostEnforced,
@@ -788,7 +862,11 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
     // ── removal is symmetric, including the no-prior-file case ─────────────
     let removal = h
         .service
-        .remove(&tool, Some(&format!("remove-{}", receipt.receipt_id)))
+        .remove(
+            &tool,
+            &LifecycleTarget::unspecified(),
+            Some(&format!("remove-{}", receipt.receipt_id)),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(removal.residual.is_empty(), "{:?}", removal.residual);
@@ -834,7 +912,7 @@ async fn denied_authorization_fails_the_install_rather_than_downgrading_it() -> 
     // And nothing claims host enforcement afterwards.
     let status = h
         .service
-        .status(&DevToolKind::ClaudeCode)
+        .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(

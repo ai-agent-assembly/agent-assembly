@@ -366,7 +366,7 @@ async fn removal_restores_the_pre_install_state_and_leaves_no_artifact() -> anyh
     // A second removal has nothing to act on and says so, rather than
     // half-performing a reversal against a receipt that no longer exists.
     assert!(
-        h.service().remove(&h.tool(), None).await.is_err(),
+        h.service().remove(&h.tool(), &h.target(), None).await.is_err(),
         "a repeated removal must be refused, not silently repeated"
     );
 
@@ -877,7 +877,10 @@ async fn a_tool_upgrade_is_a_migration_and_an_unsupported_version_is_refused() -
 
     // ── migration ──────────────────────────────────────────────────────────
     let upgraded = h.service_reporting_version("3.4.5");
-    let status = upgraded.status(&h.tool()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = upgraded
+        .status(&h.tool(), &h.target())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         status.compatibility.is_compatible(),
         "a newer tool inside the supported range must stay compatible: {:?}",
@@ -902,7 +905,10 @@ async fn a_tool_upgrade_is_a_migration_and_an_unsupported_version_is_refused() -
         refused.is_err(),
         "a version below the adapter's floor must not produce an appliable plan"
     );
-    let unsupported_status = too_old.status(&h.tool()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let unsupported_status = too_old
+        .status(&h.tool(), &h.target())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         !unsupported_status.compatibility.is_compatible(),
         "an undetectable version must never resolve upward to compatible: {:?}",
