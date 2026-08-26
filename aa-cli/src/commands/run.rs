@@ -1840,7 +1840,19 @@ fn dev_tool_kind_str(kind: &DevToolKind) -> String {
 ///   plainly is the point: a value the gateway never saw must not be presented
 ///   as one it issued.
 struct RegistrationHandle {
-    /// The operator-facing identifier the session's keypair is derived from.
+    /// The operator-facing identifier that *selects* the session's identity key.
+    ///
+    /// It is not key material and nothing is derived from it. Until AAASM-5332 the
+    /// private key was `SHA-256(agent_id)`, which is exactly why that changed: the
+    /// agent id is published in audit records and on the dashboard, so anyone who
+    /// had read one could reconstruct the key. The key is now generated randomly
+    /// and stored owner-only by `aa-sdk-client`'s `identity_store`, and this id
+    /// only names which stored identity to register under.
+    ///
+    /// Both halves of that matter here. Nothing may reintroduce derivation from
+    /// this field; and because the id is public by design and bears no authority,
+    /// it is sound for `VALUE_VISIBLE_ENV_VARS` to preview `AA_AGENT_ID`'s value —
+    /// a reader of the stale wording would have concluded the opposite.
     agent_id: String,
     /// The `did:key` the gateway registered this session under — the identity
     /// audit attributes the session's actions to.

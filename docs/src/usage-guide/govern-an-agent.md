@@ -163,21 +163,25 @@ detail: enforced — 2 rule(s) from /Users/you/.aasm/policy.yaml
 claude
 
 --- environment ---
+# values are withheld unless the variable is on the preview allowlist: <set> = present, value withheld; <set:empty> = present and empty; ***MASKED*** = present, name says credential
 AA_AGENT_ID=research-bot-01
 AA_REGISTRATION_ID=dry-run-2b00ef56-3f35-4ef9-8164-ea899dfe90aa
 AA_SESSION_ID=dry-run-0d7a0c16-25b2-456b-84e8-b7907fa963d1
 AA_TEAM_ID=research
 AA_TRACE_ID=dry-run-daa9d73a-f2fc-4977-9d00-50f4c4025fa9
-AI_AGENT=claude-code_2-1-165_agent
-CLAUDECODE=1
+AI_AGENT=<set>
+ANTHROPIC_BASE_URL=https://gateway.internal<path:1 segment>
+CLAUDECODE=<set>
 CLICKUP_API_TOKEN=***MASKED***
 GITHUB_TOKEN=***MASKED***
+HTTPS_PROXY=http://127.0.0.1:8080
 JIRA_API_TOKEN=***MASKED***
+NODE_EXTRA_CA_CERTS=/Users/you/.aasm/ca.pem
 SLACK_BOT_TOKEN=***MASKED***
 ...
 ```
 
-Notice three things that are doing real work:
+Notice five things that are doing real work:
 
 - The `--- policy ---` receipt names which of the four effective-policy states
   this launch resolved to, and from which file. It is printed for all four,
@@ -188,9 +192,27 @@ Notice three things that are doing real work:
 - The `AA_*` environment variables (`AA_AGENT_ID`, `AA_TEAM_ID`, `AA_TRACE_ID`,
   `AA_REGISTRATION_ID`, `AA_SESSION_ID`) are injected so the launched tool's
   events carry identity and lineage back to the gateway.
-- Secret-looking environment variables in your shell — API tokens, PATs — are
-  **masked** (`***MASKED***`) in the launch environment that gets logged, so
-  credentials never leak into the audit trail.
+- Environment **values are withheld by default**. The preview lists every
+  variable the child will inherit, but prints a value only for the small
+  reviewed set an operator needs in order to verify a governed launch — the
+  `AA_*` identity and lineage variables, the proxy route, the CA, and the model
+  selection. Everything else shows as `<set>` (present, value withheld) or
+  `<set:empty>` (present and empty). The legend is printed in the output itself.
+
+  This is deliberately deny-by-default rather than "mask the ones that look
+  secret". Masking by *name* cannot see a secret in a blandly-named variable:
+  a variable whose value is an encoded snapshot of your whole environment
+  matches no credential pattern, so it used to be printed in full — including
+  the tokens the same output had masked by name. Withholding unless a name was
+  reviewed has no such gap.
+- Variables whose **name** says credential — API tokens, PATs — additionally
+  show as `***MASKED***` rather than a bare `<set>`, so the receipt still tells
+  you that Agent Assembly recognised the variable as secret-bearing.
+- URL values are shown as **scheme, host and port only**, with the path
+  reported as a segment count (`<path:1 segment>`). A URL can carry a
+  credential in its userinfo, path, query or fragment — proxy URLs in
+  particular often do — so the preview keeps the part that answers "where does
+  this traffic go" and discards the rest.
 
 When you drop `--dry-run`, the same wiring is applied for real and the tool
 starts. Useful flags:
