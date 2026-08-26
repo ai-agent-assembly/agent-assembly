@@ -610,6 +610,37 @@ fn build_plan_request(
 /// A relative path is refused for the same reason: relative to *what* would be
 /// this process's working directory again, so accepting one reintroduces the
 /// defect through the back door.
+///
+/// # Why absolute is not enough, and what canonicalisation buys
+///
+/// `Path::starts_with` — which is what
+/// [`IntegrationPlan::validate`](aa_core::integration::IntegrationPlan::validate)
+/// uses to hold a project-scope write inside the project — compares components
+/// and does not normalise anything. `/a/b/../../..` "starts with" `/a/b`, so an
+/// unnormalised root turns the containment check into a formality. Every root is
+/// therefore resolved through the filesystem here, once, at the boundary, and
+/// what travels onward on the request is the canonical form. A symlinked project
+/// root resolves to its target rather than to the name the caller used, which is
+/// also what makes the path the plan discloses the path that will actually be
+/// written.
+///
+/// Requiring the directory to already exist is part of the same argument.
+/// [`write_preserving_mode`](aa_core::integration) creates missing parents, so a
+/// root that does not exist yet would have the service *materialise* a directory
+/// tree of the caller's choosing — a caller-named destination, which ADR 0030
+/// matrix row 6 forbids. A project you are working in exists.
+///
+/// # The surfaces a project root may not be
+///
+/// A root that contains a configuration surface makes project scope an alias for
+/// a different scope. The sharpest case: with `CLAUDE_CONFIG_DIR` unset,
+/// `cd ~ && … --scope project` derives `$HOME/.claude/settings.json`, which is
+/// byte-identical to the user-scope destination — and the containment check
+/// passes trivially, because the destination was derived *from* the root it is
+/// being checked against. It would then file a project-scope receipt describing
+/// the user surface, leaving user-scope and project-scope `remove` contending for
+/// the same bytes with different recorded prior state. `/` fails the same way for
+/// every surface at once.
 fn parse_project_root(
     scope: aa_core::integration::SettingsScope,
     raw: &str,
@@ -637,7 +668,71 @@ fn parse_project_root(
             ),
         });
     }
-    Ok(Some(path))
+    if !path.is_dir() {
+        return Err(LifecycleError::Refused {
+            detail: format!(
+                "the project root {raw:?} is not an existing directory. It is not created here: a \
+                 service that materialised a directory a caller named would be taking its \
+                 destination from the caller"
+            ),
+        });
+    }
+    let canonical = path.canonicalize().map_err(|e| LifecycleError::Refused {
+        detail: format!("the project root {raw:?} could not be resolved on this host: {e}"),
+    })?;
+    if let Some(surface) = owned_surface_within(&canonical, &surfaces_not_owned_by_a_project()) {
+        return Err(LifecycleError::Refused {
+            detail: format!(
+                "the project root {} contains {}, so a project-scoped write there would land on a \
+                 surface that belongs to another scope and be recorded as if it did not",
+                canonical.display(),
+                surface.display()
+            ),
+        });
+    }
+    Ok(Some(canonical))
+}
+
+/// A configuration surface `root` would swallow, if it swallows one.
+///
+/// The test is containment rather than equality, and in this direction: `root` is
+/// rejected when a surface lies *at or under* it. Equality alone would let `$HOME`
+/// through while rejecting `$HOME/.claude`, and `$HOME` is the case that actually
+/// happens — a user with a dotfiles repository checked out at their home
+/// directory, running `--scope project` from it.
+///
+/// `surfaces` is a parameter so the rule can be tested against synthetic paths
+/// instead of against the running process's own environment.
+fn owned_surface_within(root: &std::path::Path, surfaces: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    surfaces.iter().find(|surface| surface.starts_with(root)).cloned()
+}
+
+/// The directories this host keeps configuration and integration state in.
+///
+/// Resolved from the environment here rather than taken from an adapter's
+/// `ClaudeCodePaths`, because this refusal has to hold for *every* adapter,
+/// including one added later that never consults these variables. Canonicalised
+/// where they exist so the comparison is against the same form the project root
+/// was resolved to; a path that does not exist cannot be an alias for anything
+/// and is compared as written.
+fn surfaces_not_owned_by_a_project() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = var("HOME");
+
+    let claude_config = var("CLAUDE_CONFIG_DIR").or_else(|| home.as_ref().map(|h| h.join(".claude")));
+    let codex_config = home.as_ref().map(|h| h.join(".codex"));
+    let state = var("AASM_STATE_DIR").or_else(|| home.as_ref().map(|h| h.join(".aasm")));
+    let ca = var("AA_CA_DIR").or_else(|| home.as_ref().map(|h| h.join(".aa")));
+    let managed = var("AASM_CLAUDE_MANAGED_ROOT")
+        .unwrap_or_else(|| PathBuf::from(aa_devtool_claude_code::scope::MANAGED_SETTINGS_DIR));
+
+    [claude_config, codex_config, state, ca, Some(managed)]
+        .into_iter()
+        .flatten()
+        .map(|p| p.canonicalize().unwrap_or(p))
+        .collect()
 }
 
 fn denied(request_id: u64, code: wire::DenyCode, message: &str, remediation: &str) -> DiResponseFrame {
@@ -692,6 +787,102 @@ mod tests {
     use crate::devint::audit::RecordingAuditSink;
     use crate::devint::scope::{TokenScope, ToolScope};
     use crate::devint::testkit::{connect_and_negotiate, hello_offering, FakeLifecycle, TestServer};
+
+    use aa_core::integration::SettingsScope;
+
+    /// Every adversarial project root the AAASM-5913 review put through the
+    /// production logic, and what each one is an attempt at.
+    ///
+    /// The point of the table is that before canonicalisation *all* of these were
+    /// accepted and *all* of them then passed the containment check in
+    /// `IntegrationPlan::validate`, because the destination is derived from the
+    /// root it is checked against. A containment check with no reachable trigger
+    /// is not a check.
+    #[test]
+    fn a_project_root_that_is_not_a_project_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("repo");
+        std::fs::create_dir_all(&real).unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, "not a directory").unwrap();
+
+        for (raw, why) in [
+            ("", "an unnamed project at project scope"),
+            ("relative/path", "a path resolved against this service's directory"),
+            (
+                dir.path().join("nope").to_str().unwrap(),
+                "a directory the service would have had to create",
+            ),
+            (file.to_str().unwrap(), "a file standing in for a directory"),
+        ] {
+            let refusal = parse_project_root(SettingsScope::Project, raw).expect_err(why);
+            assert!(
+                matches!(refusal, LifecycleError::Refused { .. }),
+                "{why}: {raw:?} produced {refusal:?}"
+            );
+        }
+
+        // The positive control, so the refusals above are not vacuous.
+        let accepted = parse_project_root(SettingsScope::Project, real.to_str().unwrap())
+            .expect("a real directory is a usable project root")
+            .expect("project scope resolves a root");
+        assert_eq!(accepted, real.canonicalize().unwrap());
+    }
+
+    /// `..` is why absolute is not the same claim as normalised.
+    #[test]
+    fn a_project_root_is_normalised_before_anything_is_derived_from_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("nested")).unwrap();
+
+        let traversal = repo.join("nested").join("..");
+        let resolved = parse_project_root(SettingsScope::Project, traversal.to_str().unwrap())
+            .expect("the path resolves")
+            .expect("project scope resolves a root");
+
+        assert_eq!(resolved, repo.canonicalize().unwrap());
+        // `Path::starts_with` is component-wise: unnormalised, this "starts with"
+        // the nested directory it actually escapes.
+        assert!(traversal.starts_with(repo.join("nested")));
+        assert!(!resolved.starts_with(repo.join("nested")));
+    }
+
+    #[test]
+    fn a_project_root_holding_another_scopes_surface_is_refused() {
+        let home = std::path::PathBuf::from("/synthetic/home");
+        let surfaces = vec![
+            home.join(".claude"),
+            home.join(".aasm"),
+            std::path::PathBuf::from("/Library/Application Support/ClaudeCode"),
+        ];
+
+        // `$HOME` itself: `--scope project` from a dotfiles repository checked out
+        // at the home directory derives the *user*-scope settings file, and then
+        // files a project receipt describing it.
+        assert_eq!(
+            owned_surface_within(&home, &surfaces),
+            Some(home.join(".claude")),
+            "a root containing the user surface must be refused"
+        );
+        // `/` swallows every surface at once.
+        assert!(owned_surface_within(std::path::Path::new("/"), &surfaces).is_some());
+        // The managed surface's own parent is no better than the managed surface.
+        assert!(owned_surface_within(std::path::Path::new("/Library"), &surfaces).is_some());
+        // An ordinary project holds none of them.
+        assert!(owned_surface_within(&home.join("code").join("repo"), &surfaces).is_none());
+        // Nor does a sibling that merely shares a prefix with one.
+        assert!(owned_surface_within(&home.join(".claude-notes"), &surfaces).is_none());
+    }
+
+    #[test]
+    fn a_root_is_only_required_where_a_destination_is_derived_from_it() {
+        // User and managed scope use the root for disclosure only, so not knowing
+        // it costs a warning rather than correctness.
+        for scope in [SettingsScope::User, SettingsScope::Managed] {
+            assert_eq!(parse_project_root(scope, "").expect("optional here"), None);
+        }
+    }
 
     #[tokio::test]
     async fn a_negotiated_client_with_a_scoped_token_can_read_status() {
