@@ -196,7 +196,7 @@ whenever it cannot measure:
 Read exit `6` on an otherwise-clean install as **"not measured"**, not as
 **"measured and failed"** — and read `status` for which it is.
 
-## `AASM_STATE_DIR` can redirect the Claude Code launch-env store — a named, un-closed gap (ADR 0036 D6, gap #3)
+## `AASM_STATE_DIR` can redirect the Claude Code launch-env store — a named, un-closed gap (Core ADR 036 D6, gap #3)
 
 A governed `aasm run` launch strips ambient `HTTP_PROXY`/`HTTPS_PROXY`/
 `ALL_PROXY`/`NO_PROXY` (and their lowercase forms) from the child it spawns,
@@ -246,8 +246,8 @@ an operator-facing `--state-dir` flag that takes precedence over
 verification (the executor already computes one per `ConfigureProxy` step, so
 this is buildable) — both are materially larger changes than adding a spawn-
 boundary env-sanitization invariant, touching every existing `AASM_STATE_DIR`
-consumer, not just the two new artifacts ADR 0036 introduces. Closing this is
-tracked as separate, not-yet-approved follow-up scope (ADR 0036, "named
+consumer, not just the two new artifacts Core ADR 036 introduces. Closing this is
+tracked as separate, not-yet-approved follow-up scope (Core ADR 036, "named
 un-closed gaps" #3, alongside gap #1's identical `mitm_hosts`-widening
 channel).
 
