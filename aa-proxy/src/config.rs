@@ -256,6 +256,28 @@ pub struct ProxyConfig {
     ///
     /// Env: `AA_AGENT_ID` — no default, absent unless set.
     pub agent_id: Option<String>,
+
+    /// AAASM-5922 — path to the operator-authored trusted-configuration
+    /// artifact declaring a [`crate::trusted_upstream::TrustedUpstreamProxyEndpoint`]
+    /// and the [`crate::trusted_upstream::DeclaredEnterpriseDestination`]s
+    /// authorized to chain through it (ADR 0036, D-C).
+    ///
+    /// This crate never re-derives the artifact's location from its own
+    /// inherited environment beyond reading this one explicit variable — the
+    /// resolved, absolute path is what `aasm run`/`ProxyGuard` is expected to
+    /// pass at spawn time, following the same pattern as
+    /// [`Self::gateway_endpoint`]/[`crate::audit_jsonl_path_from_env`]. The
+    /// path is read here; the file's *contents* are parsed, DNS-resolved and
+    /// validated later, once, by [`crate::proxy::ProxyServer::run`] — not in
+    /// this constructor — because D-C's own DNS pin and D7's loop-prevention
+    /// check both require an async context, and D7's check additionally
+    /// requires the proxy's real bound listen address, which does not exist
+    /// yet when `ProxyConfig` is built.
+    ///
+    /// Env: `AA_PROXY_TRUSTED_CONFIG_PATH` — a path, or absent (chaining
+    /// disabled; every destination uses the existing, unmodified direct-dial
+    /// path).
+    pub trusted_config_path: Option<PathBuf>,
 }
 
 impl ProxyConfig {
@@ -286,6 +308,7 @@ impl ProxyConfig {
             agent_id: env_optional("AA_AGENT_ID"),
             ready_file: env_optional("AA_PROXY_READY_FILE").map(PathBuf::from),
             parent_pid: env_optional("AA_PROXY_PARENT_PID").and_then(|s| s.parse().ok()),
+            trusted_config_path: env_optional("AA_PROXY_TRUSTED_CONFIG_PATH").map(PathBuf::from),
         })
     }
 }
@@ -737,6 +760,7 @@ mod tests {
         std::env::remove_var("AA_PROXY_AUDIT_RETENTION_DAYS");
         std::env::remove_var("AA_PROXY_AUDIT_EXPORT_DIR");
         std::env::remove_var("AASM_STATE_DIR");
+        std::env::remove_var("AA_PROXY_TRUSTED_CONFIG_PATH");
     }
 
     /// Audit persistence is opt-in. An unset variable must reproduce the
@@ -1033,6 +1057,22 @@ mod tests {
         assert!(!cfg.skip_upstream_tls_verify);
         // AAASM-3357: MCP enforcement defaults to fail-closed.
         assert!(!cfg.mcp_fail_open);
+        // AAASM-5922: no trusted config artifact means chaining stays disabled.
+        assert_eq!(cfg.trusted_config_path, None);
+    }
+
+    #[test]
+    fn from_env_reads_trusted_config_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_env_vars();
+        std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", "/etc/aasm/trusted-upstream.json");
+
+        let cfg = ProxyConfig::from_env().unwrap();
+        assert_eq!(
+            cfg.trusted_config_path,
+            Some(PathBuf::from("/etc/aasm/trusted-upstream.json"))
+        );
+        clear_env_vars();
     }
 
     #[test]

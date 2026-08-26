@@ -46,6 +46,7 @@ fn proxy_config(ca_dir: &std::path::Path, denied_hosts: Vec<String>) -> ProxyCon
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: true,
+        trusted_config_path: None,
     }
 }
 

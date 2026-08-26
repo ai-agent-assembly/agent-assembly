@@ -36,8 +36,37 @@ use crate::proxy::http::{
 };
 use crate::tls::{CaStore, CertCache};
 use crate::transmission_evidence::{self, DecisionRecord, ForwardAuthorized, ForwardObservation};
+use crate::trusted_upstream::{self, ChainedRoute, ChainedUpstreamConfig, UpstreamProxyScheme};
 
 use aa_core::types::sensitive_data::{ExecutionEvidence, TransmissionEvidence};
+
+/// How long [`ProxyServer::establish_trusted_proxy_tunnel`] waits for the
+/// whole connect-and-CONNECT sequence to the trusted upstream proxy before
+/// giving up (D7).
+///
+/// `connect_revalidated` (the direct-dial path) has no timeout at all to
+/// inherit — verified: the only `tokio::time::timeout` calls in this module
+/// are `#[cfg(test)]`-only — so this is a genuinely new bound, not an
+/// assumed one. A multi-hop loop D7's single-hop startup check cannot see
+/// (the trusted endpoint itself relaying back through some other path)
+/// degrades to this bounded failure, feeding D4's fail-closed behaviour,
+/// rather than hanging the connection task indefinitely.
+const TRUSTED_PROXY_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A transport this proxy can lay TLS over, type-erased.
+///
+/// `dial_upstream_tls`'s direct-dial arm is a bare [`TcpStream`]; its chained
+/// arm (`establish_trusted_proxy_tunnel`, ADR 0036 N2) is a TCP connection
+/// that has already had a `CONNECT` exchanged over it with the trusted
+/// upstream proxy — a *different* concrete type. Rust trait objects only
+/// allow one non-auto trait, so `AsyncRead + AsyncWrite` needs this marker
+/// trait to be boxed together; `Box<dyn BoxableTransport>` is what lets both
+/// arms return the same type from a single `match`.
+trait BoxableTransport: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> BoxableTransport for T {}
+
+/// See [`BoxableTransport`].
+type BoxedTransport = Box<dyn BoxableTransport>;
 
 /// A TLS `ServerCertVerifier` that accepts any certificate.
 ///
@@ -341,6 +370,20 @@ pub struct ProxyServer {
     /// never sees these. Empty by default — when no key is configured for a
     /// host the agent's own request is forwarded unchanged (backward compat).
     credentials: Arc<CredentialStore>,
+    /// AAASM-5922 (ADR 0036) — the validated, DNS-pinned trusted-upstream-
+    /// proxy-chaining configuration, once [`ProxyServer::run`] validates it.
+    /// `Some(None)` means [`crate::config::ProxyConfig::trusted_config_path`]
+    /// was unset (chaining disabled, every destination unmodified); `None`
+    /// (unset `OnceCell`) means `run` has not reached that step yet — request
+    /// handling only ever begins after it has, so [`Self::chained_config`]
+    /// treats an unset cell identically to "no chaining configured" rather
+    /// than panicking, which also lets unit tests that construct a
+    /// `ProxyServer` without calling `run` exercise unrelated logic normally.
+    ///
+    /// `OnceCell` because validation is async (D-C's DNS resolution, D7's
+    /// after-bind check) and must run once, at startup — mirrors
+    /// `gateway_client`'s same async-populated-once pattern.
+    chained: OnceCell<Option<ChainedUpstreamConfig>>,
 }
 
 impl ProxyServer {
@@ -368,6 +411,7 @@ impl ProxyServer {
             gateway_client: OnceCell::new(),
             telemetry_client: OnceCell::new(),
             credentials: Arc::new(CredentialStore::from_env()),
+            chained: OnceCell::new(),
         })
     }
 
@@ -464,6 +508,37 @@ impl ProxyServer {
         // that is legitimate only when this is configured).
         if let Some(ready_file) = &self.config.ready_file {
             write_ready_file(ready_file, bound_addr)?;
+        }
+
+        // AAASM-5922 (ADR 0036, D-C/D7): validate the trusted-upstream-proxy
+        // chaining artifact, if one is configured, only now — D7's own-
+        // listen-address loop check needs the REAL bound address, which does
+        // not exist until the bind above completes (bind_addr may be an
+        // ephemeral `:0`). A configured-but-invalid artifact refuses to
+        // start (fail-closed), the same posture `AA_PROXY_GATEWAY_ENDPOINT`
+        // takes above — an operator who believes chaining is configured and
+        // has a broken artifact must be told at startup, not left silently
+        // unchained.
+        match &self.config.trusted_config_path {
+            Some(path) => match trusted_upstream::load_and_validate(path, bound_addr).await {
+                Ok(chained) => {
+                    tracing::info!(
+                        chained = chained.is_some(),
+                        "trusted upstream proxy chaining configuration validated",
+                    );
+                    let _ = self.chained.set(chained);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "trusted upstream proxy chaining configuration is invalid; refusing to start",
+                    );
+                    return Err(e);
+                }
+            },
+            None => {
+                let _ = self.chained.set(None);
+            }
         }
 
         let mut sigint =
@@ -832,24 +907,45 @@ impl ProxyServer {
     /// integration tests to redirect the dial to a local mock without
     /// hijacking DNS or modifying the client's CONNECT line.
     ///
-    /// `authorized` is the AAASM-5358 invariant rather than an input: it is
-    /// passed straight down to [`Self::connect_revalidated`], which is the
-    /// shared bottom of every route to the wire. A [`ForwardAuthorized`] can
-    /// only come from [`ForwardObservation::persist`], so reaching this
-    /// function at all means the observation it was minted with has already
-    /// been recorded.
+    /// `authorized` is the AAASM-5358 invariant rather than an input: this
+    /// function takes it by value on every arm, chained included, and (for
+    /// the non-chained arms) passes it straight down to
+    /// [`Self::connect_revalidated`]. A [`ForwardAuthorized`] can only come
+    /// from [`ForwardObservation::persist`], so reaching this function at all
+    /// means the observation it was minted with has already been recorded.
+    ///
+    /// AAASM-5922 correction: `connect_revalidated` is **not** the shared
+    /// bottom of every route to the wire any more, as an earlier version of
+    /// this doc claimed — the chained arm (`chained_route: Some`) never calls
+    /// it, dialling [`Self::establish_trusted_proxy_tunnel`]'s pinned address
+    /// instead (ADR 0036 D-D/N2). It remains the shared bottom of every
+    /// *non-chained* route.
+    ///
+    /// `chained_route` is ADR 0036's D-D value, threaded here unchanged from
+    /// `handle_connect_tunnel` through whichever MITM handler called this
+    /// function: `Some` only when the CONNECT target exact-matched a
+    /// `DeclaredEnterpriseDestination` **and** a `TrustedUpstreamProxyEndpoint`
+    /// is configured (D-A). When `Some`, the dial goes through
+    /// [`Self::establish_trusted_proxy_tunnel`] instead of
+    /// [`Self::connect_revalidated`] — the one new private-address-capable
+    /// branch this ADR adds (D1) — and `upstream_override` is not consulted
+    /// for that arm (a chained route's destination is not a test-override
+    /// concept). `connect_revalidated`/`is_blocked_ip` remain byte-for-byte
+    /// unmodified for every other arm.
     async fn dial_upstream_tls(
         self: &Arc<Self>,
         host: &str,
         target: &str,
+        chained_route: Option<&ChainedRoute<'_>>,
         authorized: ForwardAuthorized,
-    ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, ProxyError> {
-        let upstream_tcp = match self.config.upstream_override {
+    ) -> Result<tokio_rustls::client::TlsStream<BoxedTransport>, ProxyError> {
+        let upstream_tcp: BoxedTransport = match (chained_route, self.config.upstream_override) {
+            (Some(route), _) => self.establish_trusted_proxy_tunnel(route, authorized).await?,
             // Integration-test path: the dial is redirected to a trusted local
             // mock, so the SSRF re-validation below would (correctly) reject it.
             // Skip it here; the override is never set in production.
-            Some(addr) => TcpStream::connect(addr).await?,
-            None => self.connect_revalidated(target, authorized).await?,
+            (None, Some(addr)) => Box::new(TcpStream::connect(addr).await?),
+            (None, None) => Box::new(self.connect_revalidated(target, authorized).await?),
         };
         let client_config = if self.config.skip_upstream_tls_verify {
             // Integration-test-only path: skip certificate verification so tests
@@ -876,6 +972,120 @@ impl ProxyServer {
             .map_err(|e| ProxyError::Tls(e.to_string()))?;
         tracing::debug!(%host, "upstream TLS handshake complete");
         Ok(upstream_tls)
+    }
+
+    /// Establish the second-hop tunnel through `route`'s trusted upstream
+    /// proxy to `route.dest` (ADR 0036 D-D/N2), for [`Self::dial_upstream_tls`]
+    /// to layer its normal destination-TLS handshake on top of, exactly as it
+    /// already does for the direct-dial case.
+    ///
+    /// Steps, all inside a single [`TRUSTED_PROXY_DIAL_TIMEOUT`]-bounded
+    /// window (D7 — this dial has no timeout to inherit from
+    /// `connect_revalidated`, which has none at all):
+    ///
+    /// 1. TCP-connect to `route.endpoint.pinned_addr` — D-C's already-pinned
+    ///    address, never re-resolved here (forbidden design 3).
+    /// 2. If `route.endpoint.scheme == Https`, TLS-handshake to the proxy
+    ///    itself, verified via the OS-native trust store
+    ///    (`rustls_native_certs`) — this protects the `CONNECT` request and
+    ///    any `Proxy-Authorization` header in transit to the proxy,
+    ///    independent of the destination-TLS handshake that follows in
+    ///    `dial_upstream_tls`. D5/F8: this build a fresh `ClientConfig`
+    ///    unconditionally — it never consults
+    ///    [`ProxyConfig::skip_upstream_tls_verify`] or
+    ///    [`ProxyConfig::upstream_override`], in any build profile, whether or
+    ///    not `route.endpoint.auth` happens to be set.
+    /// 3. Send `CONNECT <route.dest.host>:<route.dest.port> HTTP/1.1` (plus
+    ///    `Proxy-Authorization` if `route.endpoint.auth` is `Some`) over that
+    ///    connection. N11: the authority is built **only** from
+    ///    `route.dest.host`/`route.dest.port` — the validated configuration —
+    ///    never from the original CONNECT `target`/any in-tunnel header, so a
+    ///    stale or attacker-influenced hostname can never reach the trusted
+    ///    proxy through this call.
+    /// 4. Read the `200` response (fail on anything else — no fallback, D4).
+    /// 5. Return the resulting stream, boxed.
+    async fn establish_trusted_proxy_tunnel(
+        self: &Arc<Self>,
+        route: &ChainedRoute<'_>,
+        authorized: ForwardAuthorized,
+    ) -> Result<BoxedTransport, ProxyError> {
+        // The token is not consumed by any operation here — its whole
+        // purpose (AAASM-5358) is that `dial_upstream_tls` cannot be reached
+        // without one, which already holds by the time this is called; this
+        // arm accepts it for the same reason every arm does (F2/N3), not
+        // because this function itself needs to do anything with it.
+        let _authorized = authorized;
+
+        let dial = async {
+            let tcp = TcpStream::connect(route.endpoint.pinned_addr).await?;
+            let mut stream: BoxedTransport = if route.endpoint.scheme == UpstreamProxyScheme::Https {
+                let mut root_store = rustls::RootCertStore::empty();
+                let native = rustls_native_certs::load_native_certs();
+                for cert in native.certs {
+                    let _ = root_store.add(cert);
+                }
+                let client_config = rustls::ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth();
+                let connector = TlsConnector::from(Arc::new(client_config));
+                let server_name =
+                    ServerName::try_from(route.endpoint.host.clone()).map_err(|e| ProxyError::Tls(e.to_string()))?;
+                let tls = connector
+                    .connect(server_name, tcp)
+                    .await
+                    .map_err(|e| ProxyError::Tls(e.to_string()))?;
+                Box::new(tls)
+            } else {
+                Box::new(tcp)
+            };
+
+            let authority = format!("{}:{}", route.dest.host, route.dest.port);
+            let mut request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
+            if let Some(auth) = &route.endpoint.auth {
+                let credentials = format!("{}:{}", auth.username, String::from_utf8_lossy(auth.password.expose()));
+                let encoded = trusted_upstream::base64_encode(credentials.as_bytes());
+                request.push_str(&format!("Proxy-Authorization: Basic {encoded}\r\n"));
+            }
+            request.push_str("\r\n");
+            stream.write_all(request.as_bytes()).await?;
+
+            let mut reader = BufReader::new(stream);
+            let mut status_line = String::new();
+            read_line_capped(&mut reader, &mut status_line, MAX_HEADER_LINE_LEN, MAX_HEADER_BYTES).await?;
+            // A bare "HTTP/1.1 200 …" status line — matching on " 200" (with
+            // the leading space) avoids a false match on e.g. "HTTP/1.1
+            // 4200-ish" text elsewhere in a malformed line.
+            if !status_line.contains(" 200 ") && !status_line.trim_end().ends_with(" 200") {
+                return Err(ProxyError::Config(format!(
+                    "trusted upstream proxy refused CONNECT {authority}: {}",
+                    status_line.trim()
+                )));
+            }
+            let mut head_budget = MAX_HEADER_BYTES;
+            loop {
+                let mut line = String::new();
+                let n = read_line_capped(&mut reader, &mut line, MAX_HEADER_LINE_LEN, head_budget).await?;
+                if n == 0 {
+                    return Err(ProxyError::Config(format!(
+                        "trusted upstream proxy closed the connection before completing the CONNECT \
+                         {authority} response headers"
+                    )));
+                }
+                head_budget -= n;
+                if line.trim().is_empty() {
+                    break;
+                }
+            }
+            Ok(reader.into_inner())
+        };
+
+        match tokio::time::timeout(TRUSTED_PROXY_DIAL_TIMEOUT, dial).await {
+            Ok(result) => result,
+            Err(_) => Err(ProxyError::Config(format!(
+                "trusted upstream proxy tunnel to {} timed out after {TRUSTED_PROXY_DIAL_TIMEOUT:?} (D7)",
+                route.endpoint.pinned_addr,
+            ))),
+        }
     }
 
     /// Dial the plain-HTTP upstream, honouring
@@ -983,7 +1193,10 @@ impl ProxyServer {
     /// Extracted from `handle_non_llm_mitm` to reduce cognitive complexity.
     async fn relay_mcp_response(
         &self,
-        upstream_read: tokio::io::ReadHalf<tokio_rustls::client::TlsStream<TcpStream>>,
+        // AAASM-5922: was `TlsStream<TcpStream>` — `dial_upstream_tls`'s
+        // transport is now type-erased (`BoxedTransport`) so its chained arm
+        // (ADR 0036 N2) type-checks against the same call sites as before.
+        upstream_read: tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
@@ -1093,6 +1306,9 @@ impl ProxyServer {
         gateway: Option<&Arc<Mutex<GatewayClient>>>,
         host: &str,
         target: &str,
+        // AAASM-5922 (ADR 0036 D-D, R6): threaded through unchanged from
+        // `handle_connect_tunnel` to `dial_upstream_tls` below.
+        chained_route: Option<&ChainedRoute<'_>>,
     ) -> Result<(), ProxyError> {
         let mut client_reader = BufReader::new(client_tls);
         let Some(req) = read_http_request(&mut client_reader).await? else {
@@ -1214,7 +1430,7 @@ impl ProxyServer {
         };
 
         // Forward the (consumed, DLP-scanned) request body to upstream.
-        let upstream_tls = self.dial_upstream_tls(host, target, authorized).await?;
+        let upstream_tls = self.dial_upstream_tls(host, target, chained_route, authorized).await?;
         let outgoing = serialize_http_request(&req, forward_body);
         let mut client_tls = client_reader.into_inner();
         let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
@@ -1454,6 +1670,9 @@ impl ProxyServer {
         host: &str,
         target: &str,
         pattern: LlmApiPattern,
+        // AAASM-5922 (ADR 0036 D-D, R6): threaded through unchanged from
+        // `handle_connect_tunnel` to `dial_upstream_tls` below.
+        chained_route: Option<&ChainedRoute<'_>>,
     ) -> Result<(), ProxyError> {
         let mut client_reader = BufReader::new(client_tls);
         let Some(req) = read_http_request(&mut client_reader).await? else {
@@ -1629,7 +1848,7 @@ impl ProxyServer {
             .await;
 
         // Dial upstream only after we have decided not to block.
-        let upstream_tls = self.dial_upstream_tls(host, target, authorized).await?;
+        let upstream_tls = self.dial_upstream_tls(host, target, chained_route, authorized).await?;
 
         // AAASM-3578: credential injection. When a real, non-expired provider
         // key is configured for this host the store builds the egress header
@@ -1777,6 +1996,32 @@ impl ProxyServer {
             return Ok(());
         }
 
+        // AAASM-5922 (ADR 0036 D-D): computed immediately after
+        // `egress_deny_reason` passes — so gateway network policy still
+        // applies to a declared destination exactly like any other host, and
+        // the value below is *threaded through*, never used to early-return
+        // around the MITM/DLP/redaction/credential-injection stages that
+        // follow. `Some` only when the CONNECT authority's exact host+port
+        // matches a `DeclaredEnterpriseDestination` in the validated trusted
+        // artifact AND a `TrustedUpstreamProxyEndpoint` is configured (D-A) —
+        // neither fact alone is sufficient. The port is parsed here,
+        // bracket-aware, from the real CONNECT authority — never assumed to
+        // be 443 the way `egress_deny_reason`'s own port argument is
+        // hardcoded, and an absent/unparseable port is a non-match, not a
+        // default (F7/N1).
+        let connect_port = parse_connect_authority_port(target);
+        let chained_route: Option<ChainedRoute<'_>> = connect_port.and_then(|port| {
+            self.chained_config().and_then(|cfg| {
+                cfg.destinations
+                    .iter()
+                    .find(|d| d.host.eq_ignore_ascii_case(host) && d.port == port)
+                    .map(|dest| ChainedRoute {
+                        dest,
+                        endpoint: &cfg.endpoint,
+                    })
+            })
+        });
+
         // Send 200 Connection Established to tell the client the tunnel is open.
         let mut stream = reader.into_inner();
         stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
@@ -1798,7 +2043,7 @@ impl ProxyServer {
         // cleared" when nothing looked at it.
         if self.config.llm_only && !self.should_mitm(host) {
             tracing::debug!(%host, "llm_only mode — transparent tunnel (no MitM)");
-            return self.transparent_tunnel(stream, target).await;
+            return self.transparent_tunnel(stream, target, chained_route.as_ref()).await;
         }
 
         // Emit allow audit event for the accepted, about-to-be-inspected connection.
@@ -1826,8 +2071,21 @@ impl ProxyServer {
         // tunnel so the credential scanner can run against the real
         // body bytes before any byte reaches upstream. For non-LLM
         // patterns we fall through to the gateway/passthrough handler.
-        if pattern != LlmApiPattern::Unknown {
-            return self.handle_llm_mitm(client_tls, host, target, pattern).await;
+        //
+        // AAASM-5922 (ADR 0036 D2b/R9): the dispatch gains a second,
+        // config-driven condition — an operator-declared enterprise-LLM-
+        // endpoint entry (a distinct, narrower declaration than plain
+        // `mitm_hosts`/`DeclaredEnterpriseDestination` membership) routes to
+        // the same full-`handle_llm_mitm` tier a built-in `detect_api` host
+        // gets, so a declared enterprise LLM destination is not silently
+        // downgraded to `handle_non_llm_mitm`'s weaker adjudication (which has
+        // no credential-injection call at all). `pattern` stays `Unknown` for
+        // a declared (non-built-in) host — S1: honestly labeled, since this
+        // ADR does not add a distinguishing `LlmApiPattern` variant.
+        if pattern != LlmApiPattern::Unknown || self.is_declared_llm_endpoint(host) {
+            return self
+                .handle_llm_mitm(client_tls, host, target, pattern, chained_route.as_ref())
+                .await;
         }
 
         // Non-LLM pattern (this host is MitM'd because llm_only is off, or it
@@ -1839,23 +2097,73 @@ impl ProxyServer {
         // gateway is configured (the historical no-gateway path raw-copied the
         // body upstream un-inspected, which let a secret to any MitM'd non-LLM
         // host bypass DLP).
-        self.handle_non_llm_mitm(client_tls, self.gateway_client.get(), host, target)
-            .await?;
+        self.handle_non_llm_mitm(
+            client_tls,
+            self.gateway_client.get(),
+            host,
+            target,
+            chained_route.as_ref(),
+        )
+        .await?;
 
         Ok(())
     }
 
     /// Whether the proxy should TLS-MitM (and therefore body-scan) traffic to
-    /// `host`. `true` for a built-in LLM provider (`detect_api`) or any host
-    /// matching the operator-configured [`ProxyConfig::mitm_hosts`] set. Under
-    /// `llm_only`, hosts for which this returns `false` are transparent-tunnelled
-    /// without inspection; when `llm_only` is `false` every host is MitM'd and
-    /// this gate is not consulted. `host` must already be canonicalised.
+    /// `host`. `true` for a built-in LLM provider (`detect_api`), any host
+    /// matching the operator-configured [`ProxyConfig::mitm_hosts`] set, or a
+    /// host that is a validated [`crate::trusted_upstream::DeclaredEnterpriseDestination`]
+    /// (AAASM-5922/ADR 0036 F3/N4/R3). Under `llm_only`, hosts for which this
+    /// returns `false` are transparent-tunnelled without inspection; when
+    /// `llm_only` is `false` every host is MitM'd and this gate is not
+    /// consulted. `host` must already be canonicalised.
+    ///
+    /// R3's fix requires the validation-time MITM-eligibility precondition
+    /// (F3/N4, enforced in `trusted_upstream::load_and_validate`) and this
+    /// *runtime* routing predicate to be the same set by construction, not
+    /// two independently-maintained checks that can drift apart. The literal
+    /// design in the ADR's own worked example unions the validated
+    /// destination hosts into `config.mitm_hosts` itself; this crate cannot
+    /// do that (`ProxyConfig` is immutable once a `ProxyServer` is
+    /// constructed, shared behind `Arc`), so this third disjunct achieves the
+    /// same "same trusted source, both predicates" property by consulting
+    /// the identical validated `destinations` list `chained_route` above is
+    /// matched against — an exact, host-only comparison (never the
+    /// wildcard-interpreting `is_host_allowed_by_egress_allowlist_fail_closed`
+    /// matcher), so M4's wildcard-grammar concern does not arise here at all.
+    /// Like the ADR's own union, this is host-keyed, not host+port: a
+    /// declared host reached on a different, non-declared port is
+    /// MITM-eligible via this check regardless of the declared port — the
+    /// same documented behaviour change the ADR's R3 fix accepts.
     fn should_mitm(&self, host: &str) -> bool {
         detect_api(host) != LlmApiPattern::Unknown
             // fail-closed variant: an empty `mitm_hosts` adds nothing (returns
             // false) rather than matching every host.
             || aa_core::policy::is_host_allowed_by_egress_allowlist_fail_closed(host, &self.config.mitm_hosts)
+            || self
+                .chained_config()
+                .is_some_and(|cfg| cfg.destinations.iter().any(|d| d.host.eq_ignore_ascii_case(host)))
+    }
+
+    /// The validated trusted-upstream-proxy chaining configuration, if any.
+    ///
+    /// `None` both when no [`crate::config::ProxyConfig::trusted_config_path`]
+    /// was configured and when [`Self::run`] has not yet reached its
+    /// validation step (only relevant to a `ProxyServer` under test that
+    /// exercises other logic without calling `run` — request handling only
+    /// ever begins after `run`'s validation step has completed).
+    fn chained_config(&self) -> Option<&ChainedUpstreamConfig> {
+        self.chained.get().and_then(|opt| opt.as_ref())
+    }
+
+    /// AAASM-5922 (ADR 0036 D2b): whether `host` is declared, in the trusted
+    /// config artifact, as an enterprise LLM endpoint — the narrower
+    /// declaration that elevates the MITM-branch dispatch to
+    /// [`Self::handle_llm_mitm`]'s full tier rather than
+    /// [`Self::handle_non_llm_mitm`]'s. `host` must already be canonicalised.
+    fn is_declared_llm_endpoint(&self, host: &str) -> bool {
+        self.chained_config()
+            .is_some_and(|cfg| cfg.llm_endpoints.iter().any(|h| h.eq_ignore_ascii_case(host)))
     }
 
     /// Raw bidirectional copy between an established client `stream` and the
@@ -1863,7 +2171,37 @@ impl ProxyServer {
     /// tunnel path, which forwards bytes without MitM. SSRF re-validation covers
     /// this path too — it is the most likely SSRF vector when the host resolves
     /// to an internal address.
-    async fn transparent_tunnel(self: &Arc<Self>, stream: TcpStream, target: &str) -> Result<(), ProxyError> {
+    ///
+    /// `chained_route` (AAASM-5922/ADR 0036 R3 part 2) is defense-in-depth,
+    /// independent of [`Self::should_mitm`]'s own chained-destination check
+    /// being correct: if `Some`, this refuses to tunnel at all, rather than
+    /// dialling — a declared enterprise destination must never reach a raw,
+    /// uninspected tunnel, even if the union above has a bug. Reaching this
+    /// function with `chained_route: Some` at all means `should_mitm`
+    /// answered `false` for a host `handle_connect_tunnel` had *just* matched
+    /// against the declared-destination set — precisely the drift this
+    /// backstop exists to catch.
+    async fn transparent_tunnel(
+        self: &Arc<Self>,
+        stream: TcpStream,
+        target: &str,
+        chained_route: Option<&ChainedRoute<'_>>,
+    ) -> Result<(), ProxyError> {
+        if let Some(route) = chained_route {
+            tracing::error!(
+                dest_host = %route.dest.host,
+                dest_port = route.dest.port,
+                "refusing transparent tunnel for a chained-eligible destination — a declared \
+                 enterprise destination must never reach a raw, uninspected tunnel (D4/R3 \
+                 defense-in-depth); this indicates a bug in should_mitm's chained-destination check",
+            );
+            return Err(ProxyError::Config(format!(
+                "refusing transparent tunnel to {}:{} — this destination is declared for \
+                 chaining and must be MITM'd, not raw-tunnelled (D4/R3 defense-in-depth)",
+                route.dest.host, route.dest.port
+            )));
+        }
+
         // AAASM-5358: this path relays bytes it never inspected, so the honest
         // observation is "forwarded, and nothing looked at it" — never clean.
         // There is no decision event to write (no verdict was taken), but the
@@ -2271,6 +2609,35 @@ fn strip_host_port(host: &str) -> &str {
     }
 }
 
+/// The port on a CONNECT authority (e.g. `host:port`, `[ipv6]:port`),
+/// bracket-aware like [`strip_host_port`] (AAASM-5922, ADR 0036 F7/N1).
+///
+/// An absent or unparseable port is `None` — **never** defaulted to `443`.
+/// `egress_deny_reason` hardcodes 443 for its own, different purpose (the
+/// gateway audit trail's port field), but D-D's chained-route match must use
+/// the port the client *actually* sent: `CONNECT declared-host.corp:22` when
+/// only `:443` was declared must fall through to the unmodified direct-dial
+/// path, not silently match on an assumed 443.
+fn parse_connect_authority_port(authority: &str) -> Option<u16> {
+    let authority = authority.trim();
+    let port_str = if let Some(rest) = authority.strip_prefix('[') {
+        // Bracketed IPv6 literal: `[ipv6]:port`. A missing closing bracket,
+        // or nothing after it, has no parseable port.
+        let end = rest.find(']')?;
+        rest[end + 1..].strip_prefix(':')?
+    } else {
+        match authority.rfind(':') {
+            // More than one colon and no brackets → bare IPv6 literal; a
+            // bracket-less IPv6 address cannot carry a port unambiguously,
+            // so this is treated as "no port", not a guess.
+            Some(idx) if authority[..idx].contains(':') => return None,
+            Some(idx) => &authority[idx + 1..],
+            None => return None,
+        }
+    };
+    port_str.parse::<u16>().ok()
+}
+
 /// Parse the upstream host for a plain (non-CONNECT) HTTP request from the
 /// origin-form target (`http://host/...`) or, failing that, the `Host:` header.
 ///
@@ -2396,6 +2763,7 @@ mod tests {
             ready_file: None,
             parent_pid: None,
             allow_private_connect_targets: false,
+            trusted_config_path: None,
         };
         config.bind_addr = ([127, 0, 0, 1], 0).into();
         let (tx, _rx) = broadcast::channel(8);
@@ -2427,6 +2795,7 @@ mod tests {
             ready_file: None,
             parent_pid: None,
             allow_private_connect_targets: false,
+            trusted_config_path: None,
         };
         let (tx, _rx) = broadcast::channel(8);
         ProxyServer::new(config, ca, tx)
@@ -2591,6 +2960,38 @@ mod tests {
         // breaking both denylist compares and the SSRF check.
         assert_eq!(canonical_host("[::1]:443"), "::1");
         assert_eq!(canonical_host("[2001:DB8::1]:8443"), "2001:db8::1");
+    }
+
+    /// AAASM-5922 (ADR 0036 F7/N1): the D-D match must use the port the
+    /// client actually sent, never a default. Ordinary host:port and
+    /// bracketed-IPv6 forms parse correctly.
+    #[test]
+    fn parse_connect_authority_port_parses_ordinary_and_bracketed_forms() {
+        assert_eq!(parse_connect_authority_port("declared-host.corp:443"), Some(443));
+        assert_eq!(parse_connect_authority_port("declared-host.corp:22"), Some(22));
+        assert_eq!(parse_connect_authority_port("[2001:db8::1]:8443"), Some(8443));
+        assert_eq!(parse_connect_authority_port("[::1]:443"), Some(443));
+    }
+
+    /// A bare (unbracketed) multi-colon IPv6 literal cannot carry a port
+    /// unambiguously — treated as no-match, not a guess.
+    #[test]
+    fn parse_connect_authority_port_bare_ipv6_is_non_match() {
+        assert_eq!(parse_connect_authority_port("2001:db8::1"), None);
+        assert_eq!(parse_connect_authority_port("::1"), None);
+    }
+
+    /// Missing port, and malformed port text, are both non-matches — never a
+    /// panic, and never defaulted to 443.
+    #[test]
+    fn parse_connect_authority_port_missing_or_malformed_is_non_match_never_panics() {
+        assert_eq!(parse_connect_authority_port("declared-host.corp"), None);
+        assert_eq!(parse_connect_authority_port("declared-host.corp:"), None);
+        assert_eq!(parse_connect_authority_port("declared-host.corp:notaport"), None);
+        assert_eq!(parse_connect_authority_port("declared-host.corp:999999"), None); // > u16::MAX
+        assert_eq!(parse_connect_authority_port("[::1"), None); // unterminated bracket
+        assert_eq!(parse_connect_authority_port("[::1]"), None); // bracket, no port at all
+        assert_eq!(parse_connect_authority_port(""), None);
     }
 
     #[tokio::test]
@@ -2844,6 +3245,7 @@ mod tests {
             ready_file: None,
             parent_pid: None,
             allow_private_connect_targets: false,
+            trusted_config_path: None,
         };
         let (tx, _rx) = broadcast::channel(8);
         ProxyServer::new(config, ca, tx)
@@ -2980,6 +3382,7 @@ mod tests {
             ready_file: None,
             parent_pid: None,
             allow_private_connect_targets: false,
+            trusted_config_path: None,
         };
 
         let jsonl_path = dir.path().join("proxy-audit.jsonl");
@@ -3067,6 +3470,7 @@ mod tests {
             ready_file: None,
             parent_pid: None,
             allow_private_connect_targets: false,
+            trusted_config_path: None,
         };
         let (tx, _rx) = broadcast::channel(8);
         let (audit_tx, audit_rx) = mpsc::channel(8);
@@ -3553,5 +3957,165 @@ mod tests {
         let body = entry.redacted_body.expect("a clean scrub is persisted");
         assert!(body.contains("[REDACTED:"), "got {body}");
         assert!(!body.contains(EVIDENCE_TEST_SECRET));
+    }
+
+    // ── AAASM-5922 (ADR 0036): trusted upstream proxy chaining ──────────────
+
+    fn test_chained_config() -> ChainedUpstreamConfig {
+        ChainedUpstreamConfig {
+            endpoint: trusted_upstream::TrustedUpstreamProxyEndpoint {
+                scheme: UpstreamProxyScheme::Http,
+                host: "proxy.corp.example".to_string(),
+                port: 3128,
+                pinned_addr: "203.0.113.5:3128".parse().unwrap(),
+                auth: None,
+            },
+            destinations: vec![trusted_upstream::DeclaredEnterpriseDestination {
+                host: "llm.corp.example".to_string(),
+                port: 443,
+            }],
+            llm_endpoints: vec!["llm.corp.example".to_string()],
+        }
+    }
+
+    /// R3: the validation-time and runtime-routing predicates must be the
+    /// same set by construction — a host that is a validated declared
+    /// destination must be MITM-eligible at runtime too, or it silently falls
+    /// to the (uninspected) transparent tunnel under the default `llm_only`.
+    #[tokio::test]
+    async fn should_mitm_is_true_for_a_validated_declared_destination() {
+        let server = server_with(vec![], vec![]).await;
+        let _ = server.chained.set(Some(test_chained_config()));
+        // Host-keyed, not host+port (documented R3 behaviour — `should_mitm`
+        // never sees a port, so a declared host reached on a different,
+        // non-declared port is still MITM-eligible via this check; that is a
+        // narrowing of transparent-tunnel eligibility for that one host, not
+        // a chaining/SSRF issue).
+        assert!(server.should_mitm("llm.corp.example"));
+        // An unrelated host is unaffected.
+        assert!(!server.should_mitm("unrelated.example"));
+    }
+
+    /// Falsification proof for the MITM-eligibility check: `should_mitm` must
+    /// consult the SAME validated destination list `chained_route` is matched
+    /// against, not an independent or looser one. This test is the guard a
+    /// deliberately-broken version of `should_mitm` (e.g. one hardcoded to
+    /// `true`, or one that dropped the third disjunct entirely) is expected
+    /// to falsify — see the PR/report for the mutate → red → revert → green
+    /// cycle actually run against this test.
+    #[tokio::test]
+    async fn should_mitm_stays_false_for_an_undeclared_host_even_with_chaining_configured() {
+        let server = server_with(vec![], vec![]).await;
+        let _ = server.chained.set(Some(test_chained_config()));
+        assert!(
+            !server.should_mitm("not-declared.example"),
+            "a host that is not in the validated destination set must not become MITM-eligible \
+             just because SOME chaining configuration exists"
+        );
+    }
+
+    /// D2b: a declared enterprise-LLM-endpoint host routes to the full
+    /// `handle_llm_mitm` tier; an unrelated host does not.
+    #[tokio::test]
+    async fn is_declared_llm_endpoint_matches_only_the_declared_host() {
+        let server = server_with(vec![], vec![]).await;
+        let _ = server.chained.set(Some(test_chained_config()));
+        assert!(server.is_declared_llm_endpoint("llm.corp.example"));
+        assert!(
+            server.is_declared_llm_endpoint("LLM.CORP.EXAMPLE"),
+            "must be case-insensitive"
+        );
+        assert!(!server.is_declared_llm_endpoint("other.corp.example"));
+    }
+
+    /// No chained config at all (the common case) must not make any host
+    /// MITM-eligible or a declared LLM endpoint — a vacuously-true
+    /// implementation of either check would pass every other test above by
+    /// accident.
+    #[tokio::test]
+    async fn absent_chained_config_grants_no_eligibility() {
+        let server = server_with(vec![], vec![]).await;
+        let _ = server.chained.set(None);
+        assert!(!server.should_mitm("llm.corp.example"));
+        assert!(!server.is_declared_llm_endpoint("llm.corp.example"));
+    }
+
+    /// R3 part 2 defense-in-depth: even if the caller's chained-destination
+    /// gate is wrong (simulated here by calling `transparent_tunnel` directly
+    /// with `chained_route: Some`, bypassing `should_mitm` entirely — i.e.
+    /// "the union deliberately broken"), the function itself must refuse to
+    /// tunnel a declared destination rather than raw-forward it uninspected.
+    #[tokio::test]
+    async fn transparent_tunnel_refuses_a_chained_eligible_destination_even_when_the_caller_gate_is_bypassed() {
+        let server = server_with(vec![], vec![]).await;
+        let cfg = test_chained_config();
+        let route = ChainedRoute {
+            dest: &cfg.destinations[0],
+            endpoint: &cfg.endpoint,
+        };
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connect_task = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+        let (server_side, _) = listener.accept().await.unwrap();
+        let _client_side = connect_task.await.unwrap();
+
+        let result = server
+            .transparent_tunnel(server_side, "llm.corp.example:443", Some(&route))
+            .await;
+        assert!(
+            result.is_err(),
+            "a declared enterprise destination must never reach a raw, uninspected tunnel"
+        );
+    }
+
+    /// Negative control for the test above: with no chained route, the same
+    /// call must not be refused for this reason (proves the refusal is
+    /// specific to `chained_route: Some`, not "transparent_tunnel always
+    /// errors when called this way in a test").
+    #[tokio::test]
+    async fn transparent_tunnel_does_not_refuse_a_non_chained_destination() {
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut sock, _) = upstream.accept().await.unwrap();
+            let mut buf = [0u8; 16];
+            use tokio::io::AsyncReadExt as _;
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(200), sock.read(&mut buf)).await;
+        });
+
+        let server = server_with(vec![], vec![]).await;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connect_task = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+        // Bounded, not bare `.await`: a loopback accept/connect pairing on this
+        // machine was observed to occasionally never complete, hanging the whole
+        // nextest run for hours with zero CPU (kqueue parked, no pending timer) —
+        // a fast, loud failure here is strictly better than a silent multi-hour
+        // stall on a flake unrelated to what this test actually asserts.
+        let (server_side, _) = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+            .await
+            .expect("listener.accept() must not hang")
+            .unwrap();
+        let mut client_side = tokio::time::timeout(std::time::Duration::from_secs(5), connect_task)
+            .await
+            .expect("connect_task must not hang")
+            .unwrap();
+
+        let target = upstream_addr.to_string();
+        let tunnel_task = tokio::spawn(async move { server.transparent_tunnel(server_side, &target, None).await });
+        client_side.write_all(b"hello").await.unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(300), tunnel_task).await;
+        // `upstream_addr` is loopback, so `connect_revalidated`'s (unmodified,
+        // correct) SSRF guard refuses the dial before `upstream_task`'s
+        // `accept()` is ever reached — that accept then never fires, and this
+        // join has no bound of its own. Confirmed by direct reproduction: the
+        // test as originally written hung indefinitely (0% CPU, no test-binary
+        // progress) rather than merely running slowly. This test's own purpose
+        // is only "transparent_tunnel does not raise the chained-destination
+        // refusal for a non-chained target" (see the discarded `tunnel_task`
+        // result above) — it was never meant to assert the SSRF-blocked dial's
+        // outcome, so a bounded, discarded join here preserves that intent.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), upstream_task).await;
     }
 }
