@@ -178,6 +178,9 @@ on:
       # AAASM-5950: the watchdog's remaining progress-classification signals
       # (children, artifact_mtime, log_growth) — same qa_registry router.
       - "scripts/qa/qa-watchdog-progress-signals-test.sh"
+      # AAASM-5951: soft-timeout classification + hard-stall termination
+      # (`enforce`) — same qa_registry router.
+      - "scripts/qa/qa-watchdog-stall-termination-test.sh"
       # AAASM-5878/5899: the release-evidence freshness checker and its
       # digest module. Same ADR 0028 pairing rule as above — every path here
       # has a matching `qa_registry` router filter entry below.
@@ -480,6 +483,8 @@ jobs:
               - 'scripts/qa/qa-watchdog-cpu-parser-test.sh'
               # AAASM-5950: watchdog progress-classification signals.
               - 'scripts/qa/qa-watchdog-progress-signals-test.sh'
+              # AAASM-5951: watchdog soft-timeout/hard-stall termination.
+              - 'scripts/qa/qa-watchdog-stall-termination-test.sh'
               # AAASM-5878/5899: the release-evidence freshness checker.
               - 'scripts/qa/registry_digest.py'
               - 'scripts/qa/build-release-evidence.py'
@@ -1319,6 +1324,14 @@ jobs:
       # time, live children) classifies as progressing, not stalled.
       - name: Self-test qa-watchdog.py progress-classification signals
         run: bash scripts/qa/qa-watchdog-progress-signals-test.sh
+
+      # AAASM-5951: negative-control tests for soft/hard stall
+      # classification and hard-stall termination (`enforce`), including
+      # the ownership re-verification guards (PID reuse, degenerate/foreign
+      # pgid) that must never signal a process the campaign doesn't
+      # provably own.
+      - name: Self-test qa-watchdog.py soft/hard-stall termination
+        run: bash scripts/qa/qa-watchdog-stall-termination-test.sh
 
   detection-egress-closure:
     needs: [changes]
