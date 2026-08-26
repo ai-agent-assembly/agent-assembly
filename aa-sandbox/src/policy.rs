@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 /// Least-privilege access level granted to a single preopened directory.
 ///
-/// `FsPerms::ReadWrite` is an over-grant: a tool that only
-/// needs to read a mounted directory would also get write/create/delete,
+/// `FsPerms::ReadWrite` is an over-grant: a tool that only needs to read a
+/// mounted directory would also get write/create/delete,
 /// widening both intra-sandbox impact (overwrite host files in the mount) and
 /// post-escape blast radius. This enum makes every grant explicit and defaults
 /// to the most-restrictive [`PreopenAccess::ReadOnly`]; write access is opt-in

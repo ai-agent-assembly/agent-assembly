@@ -510,6 +510,65 @@ mod tests {
         );
     }
 
+    /// Same shape as [`PREOPEN_WRITE_PROBE_WAT`], but the opened fd is read
+    /// instead of written: `fs_rights_base` asks only for `FD_READ` (2), and the
+    /// probe calls `fd_read` rather than `fd_write`.
+    const PREOPEN_READ_PROBE_WAT: &str = r#"
+        (module
+          (import "wasi_snapshot_preview1" "path_open"
+            (func $path_open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "fd_read"
+            (func $fd_read (param i32 i32 i32 i32) (result i32)))
+          (import "wasi_snapshot_preview1" "proc_exit"
+            (func $proc_exit (param i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "f.txt")
+          (func (export "_start")
+            (local $err i32)
+            ;; path_open(dirfd=3, dirflags=0, path=0, path_len=5, oflags=0,
+            ;;   fs_rights_base=FD_READ=2, fs_rights_inheriting=2,
+            ;;   fdflags=0, opened_fd_out=16)
+            (local.set $err
+              (call $path_open
+                (i32.const 3) (i32.const 0) (i32.const 0) (i32.const 5)
+                (i32.const 0) (i64.const 2) (i64.const 2) (i32.const 0)
+                (i32.const 16)))
+            (if (i32.ne (local.get $err) (i32.const 0))
+              (then (call $proc_exit (local.get $err))))
+            ;; build iovec at 32: base=64, len=4 (the seed file is "seed")
+            (i32.store (i32.const 32) (i32.const 64))
+            (i32.store (i32.const 36) (i32.const 4))
+            ;; fd_read(opened_fd, iovs=32, iovs_len=1, nread=48)
+            (local.set $err
+              (call $fd_read
+                (i32.load (i32.const 16)) (i32.const 32) (i32.const 1) (i32.const 48)))
+            (if (i32.ne (local.get $err) (i32.const 0))
+              (then (call $proc_exit (local.get $err))))
+            ;; A read-only mount must actually yield the bytes, not just avoid an
+            ;; errno: exit non-zero if nread != 4.
+            (if (i32.ne (i32.load (i32.const 48)) (i32.const 4))
+              (then (call $proc_exit (i32.const 100))))
+            (call $proc_exit (i32.const 0))
+          )
+        )
+    "#;
+
+    /// The other half of the [`PreopenAccess::ReadOnly`] contract, and the half
+    /// `read_only_preopen_denies_write` cannot see: it asserts only that the
+    /// write is refused, so a regression that revoked *read* as well would leave
+    /// it green for the wrong reason. Read-only must still mean readable.
+    #[test]
+    fn read_only_preopen_allows_read() {
+        let (runtime, _dir) = write_probe_runtime(PreopenAccess::ReadOnly);
+        let wasm = wat::parse_str(PREOPEN_READ_PROBE_WAT).expect("read-probe WAT must parse");
+        let result = runtime.run_tool(&wasm, &[]);
+        assert!(
+            matches!(result, Ok(SandboxOutput { exit_code: 0 })),
+            "read-only preopen must still allow reads, got {:?}",
+            result,
+        );
+    }
+
     #[test]
     fn read_write_preopen_allows_write() {
         let (runtime, _dir) = write_probe_runtime(PreopenAccess::ReadWrite);
