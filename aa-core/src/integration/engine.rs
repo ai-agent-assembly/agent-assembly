@@ -45,7 +45,8 @@ use super::receipt::{IntegrationReceipt, PriorSettingsState, StepReceipt};
 use super::state::ProtectionLevel;
 use super::status::VerificationResult;
 use super::step::{
-    ArtifactOperation, IntegrationStep, SettingsMerge, SettingsScope, StepAction, StepRequirement, TrustMaterialKind,
+    ArtifactOperation, DocumentFormat, IntegrationStep, SettingsMerge, SettingsScope, StepAction, StepRequirement,
+    TrustMaterialKind,
 };
 use super::store::{ReceiptStore, StoreError};
 use super::version::{ComponentVersions, ToolVersion, VersionCompatibility};
@@ -799,7 +800,12 @@ impl FilesystemExecutor {
         self
     }
 
-    fn content_for(&self, step_id: &str, expected_sha256: &str) -> Result<&str, ExecutionError> {
+    fn content_for(
+        &self,
+        step_id: &str,
+        expected_sha256: &str,
+        format: DocumentFormat,
+    ) -> Result<&str, ExecutionError> {
         let content = self
             .rendered
             .get(step_id)
@@ -812,7 +818,7 @@ impl FilesystemExecutor {
         // an adapter hashes what it produced, and the C3 constraint means the
         // canonical form is what actually survives the write.
         let matches = fingerprint::sha256_hex(content) == expected_sha256
-            || fingerprint::canonicalize(content).is_ok_and(|c| fingerprint::sha256_hex(&c) == expected_sha256);
+            || fingerprint::canonicalize(format, content).is_ok_and(|c| fingerprint::sha256_hex(&c) == expected_sha256);
         if !matches {
             return Err(ExecutionError::ContentMismatch {
                 step_id: step_id.to_string(),
@@ -828,39 +834,40 @@ impl FilesystemExecutor {
         managed_keys: &[String],
         content: &str,
         merge: SettingsMerge,
+        format: DocumentFormat,
     ) -> Result<StepOutcome, ExecutionError> {
         let label = path.display().to_string();
-        let current = read_document(path)?;
+        let current = read_document(path, format)?;
 
         let fp = |source| ExecutionError::Fingerprint {
             artifact: label.clone(),
             source,
         };
 
-        let prior_values = fingerprint::managed_projection(&current, managed_keys).map_err(fp)?;
-        let (safe_values, withheld_keys) = fingerprint::screen_managed_values(&prior_values).map_err(fp)?;
+        let prior_values = fingerprint::managed_projection(format, &current, managed_keys).map_err(fp)?;
+        let (safe_values, withheld_keys) = fingerprint::screen_managed_values(format, &prior_values).map_err(fp)?;
         let prior_state = PriorSettingsState {
             managed_values_json: safe_values,
-            absent_keys: fingerprint::absent_managed_keys(&current, managed_keys).map_err(fp)?,
+            absent_keys: fingerprint::absent_managed_keys(format, &current, managed_keys).map_err(fp)?,
             withheld_keys,
-            document_fingerprint: fingerprint::document_fingerprint(&current).map_err(fp)?,
+            document_fingerprint: fingerprint::document_fingerprint(format, &current).map_err(fp)?,
         };
 
         let next = match merge {
             SettingsMerge::MergeManagedKeys => {
-                fingerprint::merge_managed_keys(&current, content, managed_keys).map_err(fp)?
+                fingerprint::merge_managed_keys(format, &current, content, managed_keys).map_err(fp)?
             }
-            SettingsMerge::Replace => fingerprint::canonicalize(content).map_err(fp)?,
+            SettingsMerge::Replace => fingerprint::canonicalize(format, content).map_err(fp)?,
         };
 
-        let unchanged = fingerprint::canonicalize(&current).map_err(fp)? == next && path.exists();
+        let unchanged = fingerprint::canonicalize(format, &current).map_err(fp)? == next && path.exists();
         if !unchanged {
             write_preserving_mode(path, &next, step_id)?;
         }
 
         Ok(StepOutcome {
-            fingerprint: Some(fingerprint::managed_fingerprint(&next, managed_keys).map_err(fp)?),
-            document_fingerprint: Some(fingerprint::document_fingerprint(&next).map_err(fp)?),
+            fingerprint: Some(fingerprint::managed_fingerprint(format, &next, managed_keys).map_err(fp)?),
+            document_fingerprint: Some(fingerprint::document_fingerprint(format, &next).map_err(fp)?),
             prior_state: Some(prior_state),
             mutated: !unchanged,
         })
@@ -888,10 +895,11 @@ impl StepExecutor for FilesystemExecutor {
                 managed_keys,
                 content_sha256,
                 merge,
+                format,
                 ..
             } => {
-                let content = self.content_for(&step.id, content_sha256)?.to_string();
-                self.apply_settings(&step.id, path, managed_keys, &content, *merge)
+                let content = self.content_for(&step.id, content_sha256, *format)?.to_string();
+                self.apply_settings(&step.id, path, managed_keys, &content, *merge, *format)
             }
             StepAction::MaterialiseTrustMaterial {
                 kind,
@@ -907,7 +915,16 @@ impl StepExecutor for FilesystemExecutor {
                         kind: "trust-store-anchor",
                     });
                 }
-                let content = self.content_for(&step.id, content_sha256)?.to_string();
+                // Trust material (a PEM certificate) is never a settings
+                // document, so there is no `DocumentFormat` to draw from here.
+                // `DocumentFormat::Json` reproduces the pre-format behaviour
+                // exactly: the canonicalize fallback below fails to parse PEM
+                // as JSON either way, leaving the exact-hash comparison as the
+                // only path that can match, same as before this module learned
+                // about TOML.
+                let content = self
+                    .content_for(&step.id, content_sha256, DocumentFormat::Json)?
+                    .to_string();
                 self.write_blob(&step.id, path, &content)
             }
             StepAction::ManageArtifact { operation, path } => match operation {
@@ -941,7 +958,8 @@ impl StepExecutor for FilesystemExecutor {
     }
 
     fn reverse(&mut self, step: &StepReceipt) -> Result<(), ExecutionError> {
-        if let (Some(prior), StepAction::WriteManagedSettings { path, .. }) = (&step.prior_state, &step.action) {
+        if let (Some(prior), StepAction::WriteManagedSettings { path, format, .. }) = (&step.prior_state, &step.action)
+        {
             let label = path.display().to_string();
             let fp = |source| ExecutionError::Fingerprint {
                 artifact: label.clone(),
@@ -952,14 +970,16 @@ impl StepExecutor for FilesystemExecutor {
                 // Already gone. Removal has to be safe to run twice.
                 return Ok(());
             }
-            let current = read_document(path)?;
-            let restored = fingerprint::restore_managed_keys(&current, &prior.managed_values_json, &prior.absent_keys)
-                .map_err(fp)?;
+            let current = read_document(path, *format)?;
+            let restored =
+                fingerprint::restore_managed_keys(*format, &current, &prior.managed_values_json, &prior.absent_keys)
+                    .map_err(fp)?;
 
             // A document left holding nothing but what AASM added is a file AASM
-            // created; leaving an empty `{}` behind would be an artifact the
+            // created; leaving an empty document behind would be an artifact the
             // user never had.
-            if restored == "{}" && prior.document_fingerprint == fingerprint::fingerprint_raw("{}") {
+            let empty = fingerprint::empty_document(*format);
+            if restored == empty && prior.document_fingerprint == fingerprint::fingerprint_raw(empty) {
                 return remove_file(path);
             }
             write_preserving_mode(path, &restored, &step.step_id)?;
@@ -985,7 +1005,12 @@ impl StepExecutor for FilesystemExecutor {
 
     fn observe(&self, step: &StepReceipt) -> ArtifactObservation {
         match &step.action {
-            StepAction::WriteManagedSettings { path, managed_keys, .. } => {
+            StepAction::WriteManagedSettings {
+                path,
+                managed_keys,
+                format,
+                ..
+            } => {
                 if !path.exists() {
                     return ArtifactObservation::Missing;
                 }
@@ -994,8 +1019,8 @@ impl StepExecutor for FilesystemExecutor {
                     Err(e) => return ArtifactObservation::Unreadable { reason: e.to_string() },
                 };
                 match (
-                    fingerprint::managed_fingerprint(&raw, managed_keys),
-                    fingerprint::document_fingerprint(&raw),
+                    fingerprint::managed_fingerprint(*format, &raw, managed_keys),
+                    fingerprint::document_fingerprint(*format, &raw),
                 ) {
                     (Ok(managed_fingerprint), Ok(document)) => ArtifactObservation::Present {
                         managed_fingerprint,
@@ -1021,16 +1046,17 @@ impl StepExecutor for FilesystemExecutor {
     }
 }
 
-/// Read a JSON document, treating an absent file as an empty object.
+/// Read a document, treating an absent or blank file as `format`'s empty
+/// document.
 ///
 /// An absent settings file and an empty one mean the same thing to a merge, and
 /// collapsing them here is what makes the first install and every reinstall take
 /// the same code path.
-fn read_document(path: &Path) -> Result<String, ExecutionError> {
+fn read_document(path: &Path, format: DocumentFormat) -> Result<String, ExecutionError> {
     match std::fs::read_to_string(path) {
-        Ok(raw) if raw.trim().is_empty() => Ok("{}".to_string()),
+        Ok(raw) if raw.trim().is_empty() => Ok(fingerprint::empty_document(format).to_string()),
         Ok(raw) => Ok(raw),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(fingerprint::empty_document(format).to_string()),
         Err(e) => Err(ExecutionError::Io {
             artifact: path.display().to_string(),
             detail: e.to_string(),
@@ -1132,6 +1158,7 @@ mod tests {
                 managed_keys: managed_keys(),
                 content_sha256: fingerprint::sha256_hex(MANAGED_CONTENT),
                 merge: SettingsMerge::MergeManagedKeys,
+                format: DocumentFormat::Json,
             },
             "write the managed settings block",
         )
@@ -2018,6 +2045,90 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "the journal survives so recovery can resume the removal"
+        );
+    }
+
+    const TOML_MANAGED_CONTENT: &str = "sandbox_mode = \"read-only\"\napproval_policy = \"untrusted\"\n";
+
+    fn toml_managed_keys() -> Vec<String> {
+        vec!["sandbox_mode".to_string(), "approval_policy".to_string()]
+    }
+
+    fn toml_settings_step(path: &Path) -> IntegrationStep {
+        IntegrationStep::new(
+            "settings",
+            StepAction::WriteManagedSettings {
+                scope: SettingsScope::User,
+                path: path.to_path_buf(),
+                managed_keys: toml_managed_keys(),
+                content_sha256: fingerprint::sha256_hex(TOML_MANAGED_CONTENT),
+                merge: SettingsMerge::MergeManagedKeys,
+                format: DocumentFormat::Toml,
+            },
+            "write the managed settings block",
+        )
+    }
+
+    #[test]
+    fn apply_settings_on_a_first_install_toml_step_writes_valid_toml() {
+        let f = fixture();
+        let toml_path = f.settings.with_extension("toml");
+        let plan = IntegrationPlan::new(
+            "plan-toml",
+            &IntegrationRequest::new(
+                DevToolKind::ClaudeCode,
+                ProtectionProfile::Recommended,
+                SettingsScope::User,
+            ),
+            ProtectionLevel::Integrated,
+            GovernanceLevel::L2Enforce,
+        )
+        .with_step(toml_settings_step(&toml_path));
+
+        let executor = FilesystemExecutor::new().with_content("settings", TOML_MANAGED_CONTENT);
+        let mut e = IntegrationEngine::new(executor, f.store.clone());
+
+        let outcome = e.apply(&plan, &context(1_000)).unwrap();
+        assert!(outcome.mutated);
+
+        let written = std::fs::read_to_string(&toml_path).unwrap();
+        let parsed: toml::Table = written.parse().expect("apply must write valid TOML");
+        assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+        assert_eq!(parsed["approval_policy"].as_str(), Some("untrusted"));
+    }
+
+    #[test]
+    fn reverse_on_a_first_install_toml_step_removes_the_file_it_created() {
+        let f = fixture();
+        let toml_path = f.settings.with_extension("toml");
+        let plan = IntegrationPlan::new(
+            "plan-toml",
+            &IntegrationRequest::new(
+                DevToolKind::ClaudeCode,
+                ProtectionProfile::Recommended,
+                SettingsScope::User,
+            ),
+            ProtectionLevel::Integrated,
+            GovernanceLevel::L2Enforce,
+        )
+        .with_step(
+            toml_settings_step(&toml_path).with_reversal(StepAction::ManageArtifact {
+                operation: ArtifactOperation::Remove,
+                path: toml_path.clone(),
+            }),
+        );
+
+        let executor = FilesystemExecutor::new().with_content("settings", TOML_MANAGED_CONTENT);
+        let mut e = IntegrationEngine::new(executor, f.store.clone());
+        e.apply(&plan, &context(1_000)).unwrap();
+        assert!(toml_path.exists());
+
+        let outcome = e.remove(&DevToolKind::ClaudeCode, SettingsScope::User).unwrap();
+        assert!(outcome.residual.is_empty(), "{:?}", outcome.residual);
+        assert!(
+            !toml_path.exists(),
+            "a TOML file that held nothing but AASM's keys is AASM's to remove, via the \
+             format-aware empty-document branch"
         );
     }
 }

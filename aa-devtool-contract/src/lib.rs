@@ -96,8 +96,8 @@ pub use aa_core::integration::{
 // these, so an adapter cannot describe a mutation the plan model cannot render
 // for review or record for removal.
 pub use aa_core::integration::{
-    ArtifactOperation, EnvValue, IntegrationStep, ProbeDescriptor, SettingsMerge, SettingsScope, StepAction,
-    StepPrivilege, StepRequirement, TrustMaterialKind,
+    ArtifactOperation, DocumentFormat, EnvValue, IntegrationStep, ProbeDescriptor, SettingsMerge, SettingsScope,
+    StepAction, StepPrivilege, StepRequirement, TrustMaterialKind,
 };
 
 // Receipts are read by adapters (status, verify, plan_removal) and written
