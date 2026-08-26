@@ -359,6 +359,55 @@ impl EngineLifecycle {
         })
     }
 
+    /// Refuse a cached plan the caller cannot claim as this project's
+    /// (AAASM-5913).
+    ///
+    /// [`Self::confirm_project`]'s question asked on the write path, where it is
+    /// a different question with a different source of truth. There a stored
+    /// receipt says which project the installation is in; here nothing is
+    /// installed yet, and the *plan* says which project it was authored for.
+    ///
+    /// The plan cache is process-global and keyed only by the plan id, so an
+    /// authored plan outlives the invocation that asked for it: a client can hold
+    /// the id, the developer can move to another repository, and applying it from
+    /// there would still write the project it was authored for. Agent Assembly's
+    /// managed keys would land in a checked-in `.claude/settings.json` the caller
+    /// never named, under a receipt claiming a project they are not in.
+    ///
+    /// A plan id now names its project, which is what makes a stale one
+    /// diagnosable in a log — but a label nobody compares is decoration. This is
+    /// the comparison, and it is made against the full canonical paths rather
+    /// than the truncated digest in the id.
+    ///
+    /// As with [`Self::confirm_project`], no refusal names the other project's
+    /// path: these details reach a client verbatim, and which other repository a
+    /// developer has on disk is not what the caller asked about.
+    fn confirm_plan_project(plan: &IntegrationPlan, target: &LifecycleTarget) -> Result<(), LifecycleError> {
+        // A user- or managed-scope plan is about the host, not a project, so
+        // there is nothing for the caller's directory to disagree with.
+        let Some(authored_for) = plan.project_root.as_deref() else {
+            return Ok(());
+        };
+        let Some(requested) = target.project_root.as_deref() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "this plan was authored for a project, and this request does not say which project it \
+                     is being applied from; re-run the install from that project's directory with a \
+                     client that speaks DI-API {}",
+                    crate::devint::negotiate::DI_API_PROJECT_ROOT_SINCE
+                ),
+            });
+        };
+        if same_project(authored_for, requested) {
+            return Ok(());
+        }
+        Err(LifecycleError::Refused {
+            detail: "this plan was authored for another project, not this one; re-run the install from \
+                     the project you mean to change"
+                .to_string(),
+        })
+    }
+
     /// An engine whose executor holds the content `plan` describes.
     async fn engine_for(
         &self,
@@ -593,7 +642,12 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(plan)
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
+    async fn apply(
+        &self,
+        tool: &DevToolKind,
+        plan_id: &str,
+        target: &LifecycleTarget,
+    ) -> Result<AppliedIntegration, LifecycleError> {
         let registered = self.registered(tool)?;
         let authored = self
             .plans
@@ -606,6 +660,9 @@ impl IntegrationLifecycle for EngineLifecycle {
                 plan_id: plan_id.to_string(),
             })?;
         let plan = authored.plan;
+        // Which project, before what it may do in it: a plan belonging to
+        // somewhere else is not a consent question, so it is settled first.
+        Self::confirm_plan_project(&plan, target)?;
 
         // §6.6: a privileged host step is never implied by a profile. The
         // request that authored the plan is the record of what was consented
@@ -882,7 +939,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("plan");
         let first = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         let after_first = std::fs::read_to_string(&h.settings).expect("read");
@@ -892,7 +949,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("re-plan");
         let second = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("re-apply");
         assert_eq!(
@@ -921,7 +978,11 @@ mod tests {
         let h = harness(|f| f);
         match h
             .service
-            .apply(&DevToolKind::ClaudeCode, "plan-someone-else-made")
+            .apply(
+                &DevToolKind::ClaudeCode,
+                "plan-someone-else-made",
+                &LifecycleTarget::unspecified(),
+            )
             .await
         {
             Err(LifecycleError::UnknownPlan { plan_id }) => assert_eq!(plan_id, "plan-someone-else-made"),
@@ -935,7 +996,11 @@ mod tests {
     async fn a_privileged_step_without_consent_is_refused() {
         let h = harness(|f| f.requiring_privilege());
         let plan = h.service.plan(request()).await.expect("plan");
-        match h.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id).await {
+        match h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .await
+        {
             Err(LifecycleError::Refused { detail }) => assert!(detail.contains("host state"), "{detail}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -958,7 +1023,7 @@ mod tests {
         let h = harness(|f| f.verifying(FixtureVerification::ReadBackOnly));
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
 
@@ -987,7 +1052,7 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         let result = h
@@ -1005,7 +1070,7 @@ mod tests {
         let h = harness(|f| f.verifying(FixtureVerification::Leaked));
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         h.service
@@ -1039,7 +1104,7 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         let before = std::fs::read_to_string(&h.settings).expect("read");
@@ -1068,7 +1133,7 @@ mod tests {
         std::fs::write(&h.settings, r#"{"theme":"solarized"}"#).expect("seed");
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
 
@@ -1096,7 +1161,7 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         match h
@@ -1118,7 +1183,7 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
 
@@ -1213,7 +1278,7 @@ mod tests {
         let plan = h.service.plan(request).await.expect("plan");
         let applied = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(&project))
             .await
             .expect("apply");
         assert_eq!(
@@ -1302,6 +1367,123 @@ mod tests {
         assert!(h.settings.exists(), "a refused verb touched the other project's files");
     }
 
+    /// AAASM-5913, the write path: a plan authored for one project cannot be
+    /// executed from another.
+    ///
+    /// The read verbs compare the caller's project against a *receipt*, which
+    /// only exists once something is installed. An apply has no receipt yet, so
+    /// the comparison is against the plan — and it has to happen, because the
+    /// plan cache is process-global and keyed on the plan id alone. Any client
+    /// on the host that holds an id can present it later, from anywhere, and
+    /// before this check the service would have written the project the plan was
+    /// authored for while the caller was standing somewhere else entirely.
+    ///
+    /// The refusal is asserted to *not* name the authoring project. A detail
+    /// string reaches a client verbatim, and which other repository a developer
+    /// has on disk is not what this caller asked about.
+    #[tokio::test]
+    async fn a_plan_authored_for_one_project_is_not_applyable_from_another() {
+        let (h, project) = project_harness();
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        .with_project_root(&project);
+        let plan = h.service.plan(request).await.expect("plan");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        match h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(elsewhere.path()))
+            .await
+        {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("another project"),
+                    "the refusal must say the plan belongs elsewhere: {detail}"
+                );
+                assert!(
+                    !detail.contains(&project.display().to_string()),
+                    "the refusal disclosed the authoring project's path: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(
+            !h.settings.exists(),
+            "the refused apply wrote the authoring project's settings anyway"
+        );
+        assert!(
+            !h.store_root.exists(),
+            "the refused apply recorded a receipt for an install that did not happen"
+        );
+
+        // Refused, not consumed: the developer who authored it can still apply
+        // it from the project it is about. A check that invalidated the plan
+        // would turn one client's mistake into another client's failure.
+        let applied = h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(&project))
+            .await
+            .expect("the authoring project may still apply its own plan");
+        assert_eq!(applied.receipt.project_root(), Some(project.as_path()));
+    }
+
+    /// A caller that names no project cannot execute a plan that is about one.
+    ///
+    /// Distinct from the case above, and it is the one a pre-DI-API-6 client
+    /// produces: not "the wrong project" but "no project at all". Answering it
+    /// from the daemon's own directory is the defect, so the only sound answer is
+    /// to refuse — and to say which version carries the field, since a client too
+    /// old to send it cannot discover that from the wire.
+    #[tokio::test]
+    async fn a_project_scope_plan_is_not_applyable_by_a_request_that_names_no_project() {
+        let (h, project) = project_harness();
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        .with_project_root(&project);
+        let plan = h.service.plan(request).await.expect("plan");
+
+        match h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .await
+        {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("does not say which project"),
+                    "the refusal must say what is missing: {detail}"
+                );
+                assert!(
+                    detail.contains(&crate::devint::negotiate::DI_API_PROJECT_ROOT_SINCE.to_string()),
+                    "the refusal must name the version that carries the field: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(!h.settings.exists(), "the refused apply wrote settings anyway");
+    }
+
+    /// A user-scope plan is about the host, not a project, so a caller's
+    /// directory has nothing to disagree with — including a caller that names
+    /// one. This is what keeps the check fail-open exactly where it should be:
+    /// every pre-v6 client's plans are user or managed scope, so none of them
+    /// starts being refused.
+    #[tokio::test]
+    async fn a_host_wide_plan_is_applyable_from_any_directory() {
+        let h = harness(|f| f);
+        let plan = h.service.plan(request()).await.expect("plan");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(elsewhere.path()))
+            .await
+            .expect("a host-wide plan is not about the caller's directory");
+    }
+
     /// Two spellings of one directory are one project. A receipt written before
     /// this fix recorded whatever path the daemon's own directory was spelled
     /// as, and on macOS `/tmp` and `/private/tmp` are the same place.
@@ -1331,7 +1513,7 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         let status = h
@@ -1350,7 +1532,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("plan");
         let receipt = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         let status = h

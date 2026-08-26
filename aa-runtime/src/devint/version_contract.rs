@@ -247,7 +247,10 @@ async fn v5_adds_the_apply_outcome_and_nothing_below_it_receives_one() {
     let server = TestServer::start(FakeLifecycle::default()).await;
     for version in DI_API_MIN_SUPPORTED..=DI_API_MAX_SUPPORTED {
         let mut client = connect_offering(&server, &[version]).await;
-        let applied = client.apply(&claude_code_id(), "plan-1").await.expect("apply");
+        let applied = client
+            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
+            .await
+            .expect("apply");
         if version >= DI_API_APPLY_OUTCOME_SINCE {
             assert!(
                 applied.outcome.is_some(),
@@ -281,7 +284,10 @@ async fn a_new_client_reading_an_older_peer_concludes_unknown_not_unchanged() {
     let server = TestServer::start(FakeLifecycle::default()).await;
     for version in DI_API_MIN_SUPPORTED..DI_API_APPLY_OUTCOME_SINCE {
         let mut client = connect_offering(&server, &[version]).await;
-        let applied = client.apply(&claude_code_id(), "plan-1").await.expect("apply");
+        let applied = client
+            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
+            .await
+            .expect("apply");
         let mutation = client.negotiated().apply_mutation(&applied);
 
         assert_eq!(
@@ -330,7 +336,10 @@ async fn every_stated_outcome_crosses_the_socket_as_itself() {
     ] {
         let server = TestServer::start(FakeLifecycle::reporting(stated.clone())).await;
         let mut client = connect_offering(&server, &[DI_API_APPLY_OUTCOME_SINCE]).await;
-        let applied = client.apply(&claude_code_id(), "plan-1").await.expect("apply");
+        let applied = client
+            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
+            .await
+            .expect("apply");
         let read = client.negotiated().apply_mutation(&applied);
         assert_eq!(read, stated, "{stated:?} did not survive the socket");
         // The two non-answers are non-answers on arrival, not merely on paper.

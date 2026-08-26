@@ -271,7 +271,7 @@ impl ConformanceHarness {
     pub async fn install_reporting(&self, profile: ProtectionProfile) -> anyhow::Result<AppliedIntegration> {
         let plan = self.plan(profile).await?;
         self.service
-            .apply(&self.tool(), &plan.plan_id)
+            .apply(&self.tool(), &plan.plan_id, &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }

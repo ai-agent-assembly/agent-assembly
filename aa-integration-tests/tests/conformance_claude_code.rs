@@ -95,7 +95,7 @@ use aa_core::integration::{
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
 use aa_devtool_claude_code::probe::ProtectionProbe as _;
 use aa_devtool_claude_code::ProxyAdjudicatedProbe;
-use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle};
+use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle, LifecycleTarget};
 use conformance_support::{ConformanceHarness, Measurement, SYNTHETIC_SECRET};
 use spike_support::proxy_harness::{drive_direct, drive_emulated_client};
 use spike_support::{assert_recorded_and_secret_absent, assert_recorded_and_secret_present, AnthropicMock};
@@ -153,7 +153,7 @@ async fn install_is_idempotent_and_records_a_receipt() -> anyhow::Result<()> {
     // ── install ────────────────────────────────────────────────────────────
     let applied = h
         .service()
-        .apply(&h.tool(), &plan.plan_id)
+        .apply(&h.tool(), &plan.plan_id, &LifecycleTarget::unspecified())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let receipt = applied.receipt;
@@ -821,7 +821,7 @@ async fn an_unmanaged_launch_is_unprotected_and_reported_as_a_bypass() -> anyhow
     h.write_settings("{}");
     let plan = h.plan(ProtectionProfile::Recommended).await?;
     h.service()
-        .apply(&h.tool(), &plan.plan_id)
+        .apply(&h.tool(), &plan.plan_id, &LifecycleTarget::unspecified())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -1177,7 +1177,13 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
                     .await
                     .err(),
             ),
-            ("apply", client.apply("claude-code", "any-plan").await.err()),
+            (
+                "apply",
+                client
+                    .apply("claude-code", "any-plan", TargetRequest::default())
+                    .await
+                    .err(),
+            ),
             (
                 "repair",
                 client.repair("claude-code", TargetRequest::default()).await.err(),

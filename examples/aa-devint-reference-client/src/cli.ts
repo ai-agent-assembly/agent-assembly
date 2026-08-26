@@ -14,7 +14,7 @@
  * consumer of the same API and copy its shape rather than reverse-engineering
  * the first.
  */
-import { DevIntClient, type ClientIdentity, type PlanOptions } from './client.js';
+import { DevIntClient, type ClientIdentity, type PlanOptions, type TargetOptions } from './client.js';
 import { CapabilityToken } from './credential.js';
 import { discover } from './discovery.js';
 import { DeniedError, DevIntError, IncompatibleError, actionable } from './errors.js';
@@ -143,7 +143,7 @@ async function run(client: DevIntClient, command: string, args: string[]): Promi
     }
     case 'status': {
       requireTool(tool);
-      write(renderStatus(await client.status(tool)));
+      write(renderStatus(await client.status(tool, targetOptions())));
       return 0;
     }
     case 'plan': {
@@ -159,7 +159,11 @@ async function run(client: DevIntClient, command: string, args: string[]): Promi
       // A real UI puts a confirmation between these two calls. The point of the
       // split is that the client asks the runtime to apply a plan the runtime
       // authored — it never writes the tool's configuration itself.
-      const applied = await client.apply(tool, plan.planId);
+      // The same directory the plan named a moment ago, resolved again here
+      // rather than carried forward: the point of the field is that *this*
+      // invocation says where it is. The service compares the two and refuses a
+      // plan authored for another project.
+      const applied = await client.apply(tool, plan.planId, targetOptions());
       process.stdout.write(
         `\nApplied. Receipt ${applied.receiptId}.\n` +
           `  Planned:  ${applied.plannedLevel}\n` +
@@ -171,7 +175,7 @@ async function run(client: DevIntClient, command: string, args: string[]): Promi
     }
     case 'verify': {
       requireTool(tool);
-      const result = await client.verify(tool);
+      const result = await client.verify(tool, targetOptions());
       process.stdout.write(`Verification: ${result.outcome}\n`);
       if (result.reason !== '') process.stdout.write(`  Reason: ${result.reason}\n`);
       if (result.missing.length > 0) process.stdout.write(`  Not established: ${result.missing.join(', ')}\n`);
@@ -180,7 +184,7 @@ async function run(client: DevIntClient, command: string, args: string[]): Promi
     }
     case 'repair': {
       requireTool(tool);
-      const repaired = await client.repair(tool);
+      const repaired = await client.repair(tool, targetOptions());
       process.stdout.write(`Repaired: ${repaired.repaired.join(', ') || 'nothing'}\n`);
       write(repaired.unrepairable.map((u) => `  Unrepairable ${u.capability}: ${u.reason}`));
       if (repaired.status !== undefined) write(renderStatus(repaired.status));
@@ -188,7 +192,7 @@ async function run(client: DevIntClient, command: string, args: string[]): Promi
     }
     case 'remove': {
       requireTool(tool);
-      const removal = await client.remove(tool, args[1] ?? '');
+      const removal = await client.remove(tool, args[1] ?? '', targetOptions());
       process.stdout.write(`Removal plan ${removal.planId}\n`);
       write(renderSteps(removal.steps));
       if (removal.residual.length > 0) process.stdout.write(`Left behind: ${removal.residual.join(', ')}\n`);
@@ -225,6 +229,23 @@ async function run(client: DevIntClient, command: string, args: string[]): Promi
       process.stderr.write(USAGE);
       return 2;
   }
+}
+
+/**
+ * Which installation a read-or-reverse verb — or an apply — is about.
+ *
+ * The scope is deliberately left unstated. These commands act on whatever is
+ * installed, and there is one installation of a tool per scope on a host, so
+ * naming the surface would tell the service something it can already see and
+ * naming it *wrongly* would turn "here is your integration" into "nothing is
+ * installed". The project, by contrast, only this process knows.
+ *
+ * `projectRoot` is called with the unstated scope, so an undeterminable
+ * directory yields `""` rather than throwing: a user-scope integration is
+ * answerable without one, and the service says precisely when it is not.
+ */
+function targetOptions(): TargetOptions {
+  return { settingsScope: '', projectRoot: projectRoot('') };
 }
 
 function planOptions(args: string[]): PlanOptions {

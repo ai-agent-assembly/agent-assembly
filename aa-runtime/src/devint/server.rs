@@ -500,7 +500,11 @@ impl Connection {
             }
             DiVerb::Apply => {
                 let plan_id = request.apply.as_ref().map(|a| a.plan_id.as_str()).unwrap_or_default();
-                let applied = lifecycle.apply(&tool, plan_id).await?;
+                // The same target the read verbs use, vetted the same way: the
+                // project a plan is executed from has to mean what the project a
+                // plan was authored for meant, or comparing them proves nothing.
+                let target = build_target(request)?;
+                let applied = lifecycle.apply(&tool, plan_id, &target).await?;
                 // The negotiated version, not this runtime's maximum: a peer is
                 // sent the frame its own version promised (AAASM-5674).
                 response.apply = Some(project::apply_view(&applied, self.version));

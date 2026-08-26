@@ -26,7 +26,7 @@ import {
   renderTools,
   splitEvidence,
 } from '../../src/render.js';
-import { startHarness, type Harness } from '../harness.js';
+import { HOST_WIDE, startHarness, type Harness } from '../harness.js';
 
 const CLAUDE = 'claude-code';
 const IDENTITY = { name: 'contract-test', version: '0.0.1' } as const;
@@ -112,16 +112,16 @@ describe('the lifecycle flows', () => {
       expect(plan.policyProfile?.id).toBe('team-default');
       expect(plan.policyProfile?.digest).toBe('sha256:abcd');
 
-      const applied = await client.apply(CLAUDE, plan.planId);
+      const applied = await client.apply(CLAUDE, plan.planId, HOST_WIDE);
       expect(applied.receiptId).toBe('receipt-1');
       // The service downgraded planned → achieved. The client reports that gap
       // rather than smoothing it over.
       expect(applied.plannedLevel).toBe('gateway_protected');
       expect(applied.achievedLevel).toBe('integrated');
 
-      expect((await client.verify(CLAUDE)).outcome).toBe('passed');
-      expect((await client.repair(CLAUDE)).repaired).toEqual(['settings']);
-      expect((await client.remove(CLAUDE, plan.planId)).planId).toBe('removal-1');
+      expect((await client.verify(CLAUDE, HOST_WIDE)).outcome).toBe('passed');
+      expect((await client.repair(CLAUDE, HOST_WIDE)).repaired).toEqual(['settings']);
+      expect((await client.remove(CLAUDE, plan.planId, HOST_WIDE)).planId).toBe('removal-1');
     } finally {
       client.close();
     }
@@ -205,7 +205,7 @@ describe('protection-level display', () => {
   it('renders the level the service computed, never one derived from evidence', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       // The fixture is deliberately tempting: it carries protective *exercised*
       // evidence (a blocked probe) while the service's own answer is only
       // `integrated`. A client that ranked evidence would show
@@ -228,7 +228,7 @@ describe('protection-level display', () => {
   it('shows exercised evidence separately from read-back evidence', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       const split = splitEvidence(status.evidence);
       expect(split.exercised).toHaveLength(1);
       expect(split.readBack).toHaveLength(1);
@@ -248,7 +248,7 @@ describe('protection-level display', () => {
   it('names Host Enforced as unavailable rather than omitting it', async () => {
     const client = await connect();
     try {
-      const rendered = renderStatus(await client.status(CLAUDE)).join('\n');
+      const rendered = renderStatus(await client.status(CLAUDE, HOST_WIDE)).join('\n');
       // Silence here reads as "there is nothing above what I have", which is the
       // over-claim §7.3 exists to prevent.
       expect(rendered).toContain(HOST_ENFORCED_UNAVAILABLE);
@@ -260,7 +260,7 @@ describe('protection-level display', () => {
   it('carries the observation timestamp, so the claim is "verified at T"', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       expect(status.observedAtUnixSecs).toBeGreaterThan(0n);
       expect(renderStatus(status).join('\n')).toContain('Observed at:');
     } finally {
@@ -271,7 +271,7 @@ describe('protection-level display', () => {
   it('shows the next level up and why it is not active', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       expect(status.nextLevel?.level).toBe('gateway_protected');
       expect(renderStatus(status).join('\n')).toContain('no core-side probe observation');
     } finally {

@@ -301,7 +301,19 @@ pub trait IntegrationLifecycle: Send + Sync {
     /// Returns whether the host changed alongside the receipt. An
     /// implementation states what it knows and never guesses: the answer is a
     /// public contract, and a wrong `unchanged` is worse than an absent one.
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError>;
+    ///
+    /// `target` says which project the caller is applying *from*, so a plan
+    /// authored for another one is refused instead of executed. An authored plan
+    /// outlives the invocation that asked for it — the service caches it and any
+    /// client holding the id can present it later, from anywhere — so "the plan
+    /// exists" and "this caller may execute it here" are two questions, and only
+    /// the first one is answered by the id.
+    async fn apply(
+        &self,
+        tool: &DevToolKind,
+        plan_id: &str,
+        target: &LifecycleTarget,
+    ) -> Result<AppliedIntegration, LifecycleError>;
 
     /// Derive the protection state from current evidence.
     ///

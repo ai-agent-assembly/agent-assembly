@@ -270,6 +270,19 @@ impl Negotiated {
 /// that row (AAASM-5913) would be indistinguishable at the call site from the
 /// policy profile beside it. Named fields make the caller state which of them it
 /// is leaving empty.
+///
+/// # `Default` is kept, deliberately, and it does undercut the paragraph above
+///
+/// `..PlanRequest::default()` lets a caller *not* state a field, which is the
+/// placeholder row again in another spelling — and for `project_root` it spells
+/// `""`, the value that is a refusal at project scope. That is a real cost and it
+/// is accepted rather than unnoticed: every `..default()` site is a test, both
+/// production callers name every field, and the invariant does not rest on the
+/// type either way. Empty is refused twice — client-side before the send, and at
+/// the service boundary — because `""` is a *legitimate* root at user and managed
+/// scope, so no type-level default could distinguish "none to state" from
+/// "forgot", and something had to check the scope. Dropping the derive would move
+/// seven test callsites and buy no invariant that is not already enforced.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlanRequest<'a> {
     /// Which tool to author a plan for.
@@ -318,8 +331,10 @@ pub struct TargetRequest<'a> {
     /// The absolute path of the project the **caller** is in, resolved by the
     /// caller at invocation time, or `""` when it has none to state.
     ///
-    /// Compared against the receipt, never resolved into a destination. A
-    /// project-scope installation the caller cannot name is refused.
+    /// Compared, never resolved into a destination — against the receipt for a
+    /// read or reverse verb, and against the plan's authoring project for an
+    /// apply, where nothing is installed yet. Either way a project-scope
+    /// operation the caller cannot name is refused.
     pub project_root: &'a str,
 }
 
@@ -511,8 +526,23 @@ impl DevIntClient {
     }
 
     /// Apply a plan the user has reviewed and approved.
-    pub async fn apply(&mut self, tool_id: &str, plan_id: &str) -> Result<wire::ApplyView, ClientError> {
-        let mut request = self.request(DiVerb::Apply, tool_id);
+    ///
+    /// `target` says which project the caller is applying *from*. A plan id is
+    /// handed out by the service and can be presented later, from anywhere, so
+    /// the id alone does not establish that this caller may execute this plan
+    /// here; the service compares the two projects and refuses when they
+    /// disagree (AAASM-5913).
+    ///
+    /// The scope is left to the target as it is for the read verbs. A plan
+    /// already carries the scope it was authored at, and a second, client-stated
+    /// one could only contradict it.
+    pub async fn apply(
+        &mut self,
+        tool_id: &str,
+        plan_id: &str,
+        target: TargetRequest<'_>,
+    ) -> Result<wire::ApplyView, ClientError> {
+        let mut request = self.targeted(DiVerb::Apply, tool_id, target)?;
         request.apply = Some(wire::ApplyArgs {
             plan_id: plan_id.to_string(),
         });
@@ -750,7 +780,11 @@ mod tests {
             .expect("plan");
         assert_eq!(plan.plan_id, "plan-1");
         assert_eq!(
-            client.apply(&tool, &plan.plan_id).await.expect("apply").receipt_id,
+            client
+                .apply(&tool, &plan.plan_id, TargetRequest::default())
+                .await
+                .expect("apply")
+                .receipt_id,
             "receipt-1"
         );
         assert_eq!(

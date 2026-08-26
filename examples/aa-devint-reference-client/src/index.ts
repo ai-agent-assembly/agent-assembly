@@ -20,7 +20,7 @@ export {
   projectRootRequiresNewerRuntime,
   VERB_NAMES,
 } from './client.js';
-export type { ClientIdentity, Negotiated, PlanOptions } from './client.js';
+export type { ClientIdentity, Negotiated, PlanOptions, TargetOptions } from './client.js';
 export { CapabilityToken, TOKEN_ENV } from './credential.js';
 export { discover, socketPath, SOCKET_PATH_ENV } from './discovery.js';
 export type { Discovery } from './discovery.js';

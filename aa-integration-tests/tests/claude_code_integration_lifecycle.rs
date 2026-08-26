@@ -275,7 +275,7 @@ impl Harness {
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .receipt)
@@ -295,7 +295,7 @@ impl Harness {
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .receipt)
@@ -310,7 +310,11 @@ impl Harness {
         )
         .requesting_level(ProtectionLevel::HostEnforced);
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        match self.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id).await {
+        match self
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .await
+        {
             Ok(_) => anyhow::bail!("an unconsented privileged step must not be applied"),
             Err(e) => Ok(e.to_string()),
         }
@@ -593,7 +597,7 @@ async fn verify_cannot_pass_on_configuration_alone() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     service
-        .apply(&tool, &plan.plan_id)
+        .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 

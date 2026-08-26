@@ -221,7 +221,12 @@ impl IntegrationLifecycle for FakeLifecycle {
         Ok(poisoned_plan(&request.tool))
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
+    async fn apply(
+        &self,
+        tool: &DevToolKind,
+        plan_id: &str,
+        _target: &LifecycleTarget,
+    ) -> Result<AppliedIntegration, LifecycleError> {
         Self::known(tool)?;
         let plan = poisoned_plan(tool);
         let receipt = IntegrationReceipt {

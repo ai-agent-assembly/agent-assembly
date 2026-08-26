@@ -44,6 +44,7 @@ import {
   RemoveArgsSchema,
   RequestSchema,
   ScopedEventsArgsSchema,
+  TargetArgsSchema,
   Verb,
   type ApplyArgs,
   type ApplyView,
@@ -54,6 +55,7 @@ import {
   type RemoveArgs,
   type ScopedEventsArgs,
   type RemovalView,
+  type TargetArgs,
   type RepairView,
   type Response,
   type ScopedEventList,
@@ -197,11 +199,42 @@ export interface PlanOptions {
 }
 
 /**
+ * Which project a call is about, as the caller resolved it.
+ *
+ * Both fields are required for the reason {@link PlanOptions.projectRoot} is:
+ * an optional field is one a call site reaches by forgetting, and forgetting is
+ * the defect. `""` says "nothing to state" explicitly.
+ */
+export interface TargetOptions {
+  /**
+   * `user`, `project`, `managed`, or `""` to let the service act on whichever
+   * installation exists.
+   *
+   * Naming a scope tells the service something it can already see; naming it
+   * *wrongly* turns "here is your integration" into "nothing is installed". `""`
+   * is the right answer for a client that only knows where it is.
+   */
+  readonly settingsScope: string;
+  /**
+   * The absolute path of the project this invocation is in, or `""`.
+   *
+   * Compared by the service against what is on record — a receipt for a read or
+   * reverse verb, the authoring project for an apply — and never resolved into a
+   * destination.
+   */
+  readonly projectRoot: string;
+}
+
+/**
  * The typed per-verb arguments a request may carry.
  *
- * Exactly the five sub-messages `Request` declares, and nothing shaped like an
+ * Exactly the six sub-messages `Request` declares, and nothing shaped like an
  * opaque blob. There is no `extra`, no `metadata` and no string map here on
  * purpose: a passthrough field is how a closed verb space stops being closed.
+ *
+ * `target` is request-level rather than per-verb because it answers one question
+ * — *which project* — for the five verbs that ask it, and five copies of one
+ * question are five places for the answer to drift.
  */
 interface VerbArgs {
   plan?: PlanArgs;
@@ -209,6 +242,7 @@ interface VerbArgs {
   remove?: RemoveArgs;
   events?: ScopedEventsArgs;
   approval?: ApprovalRelayArgs;
+  target?: TargetArgs;
 }
 
 /** A connected, negotiated DI-API client. */
@@ -318,9 +352,19 @@ export class DevIntClient {
     return required(response.plan, 'plan');
   }
 
-  /** Execute a plan the user reviewed. The runtime writes; this client does not. */
-  async apply(toolId: string, planId: string): Promise<ApplyView> {
-    const response = await this.call(Verb.APPLY, toolId, { apply: create(ApplyArgsSchema, { planId }) });
+  /**
+   * Execute a plan the user reviewed. The runtime writes; this client does not.
+   *
+   * `target` says which project this invocation is applying *from*. A plan id is
+   * handed out by the service and can be presented later, from anywhere, so it
+   * is not on its own an answer to "may this caller execute this here" — the
+   * service compares the two projects and refuses when they disagree.
+   */
+  async apply(toolId: string, planId: string, target: TargetOptions): Promise<ApplyView> {
+    const response = await this.call(Verb.APPLY, toolId, {
+      apply: create(ApplyArgsSchema, { planId }),
+      ...this.targeting(target),
+    });
     return required(response.apply, 'apply');
   }
 
@@ -331,26 +375,29 @@ export class DevIntClient {
    * upgrades or infers a level, because a locally derived state is a claim
    * wearing a measurement's clothes (ADR 0030 forbidden design 10).
    */
-  async status(toolId: string): Promise<StatusView> {
-    const response = await this.call(Verb.STATUS, toolId);
+  async status(toolId: string, target: TargetOptions): Promise<StatusView> {
+    const response = await this.call(Verb.STATUS, toolId, this.targeting(target));
     return required(response.status, 'status');
   }
 
   /** Run the protection test. The runtime adjudicates it; the client never self-certifies. */
-  async verify(toolId: string): Promise<VerificationView> {
-    const response = await this.call(Verb.VERIFY, toolId);
+  async verify(toolId: string, target: TargetOptions): Promise<VerificationView> {
+    const response = await this.call(Verb.VERIFY, toolId, this.targeting(target));
     return required(response.verification, 'verification');
   }
 
   /** Restore AASM-owned keys that drifted. */
-  async repair(toolId: string): Promise<RepairView> {
-    const response = await this.call(Verb.REPAIR, toolId);
+  async repair(toolId: string, target: TargetOptions): Promise<RepairView> {
+    const response = await this.call(Verb.REPAIR, toolId, this.targeting(target));
     return required(response.repair, 'repair');
   }
 
   /** Author and execute the reversal. */
-  async remove(toolId: string, planId = ''): Promise<RemovalView> {
-    const response = await this.call(Verb.REMOVE, toolId, { remove: create(RemoveArgsSchema, { planId }) });
+  async remove(toolId: string, planId: string, target: TargetOptions): Promise<RemovalView> {
+    const response = await this.call(Verb.REMOVE, toolId, {
+      remove: create(RemoveArgsSchema, { planId }),
+      ...this.targeting(target),
+    });
     return required(response.removal, 'removal');
   }
 
@@ -383,6 +430,31 @@ export class DevIntClient {
   /** Close the connection. */
   close(): void {
     this.socket.destroy();
+  }
+
+  /**
+   * `target` as the wire carries it, refusing first if this connection cannot.
+   *
+   * One helper for all five targeted verbs rather than five copies of the same
+   * two lines: the version refusal is the part that must not be forgotten, and a
+   * verb that forgot it would send a project root into a peer that discards it
+   * undetectably ({@link ProjectRootUnsupportedError}).
+   *
+   * The target is attached unconditionally, empty fields included. An absent
+   * `TargetArgs` and one saying "no scope, no project" decode identically on a
+   * v6 peer, so there is nothing to gain by omitting it and one fewer branch by
+   * not trying.
+   */
+  private targeting(target: TargetOptions): VerbArgs {
+    if (projectRootRequiresNewerRuntime(this.negotiated.diApiVersion, target.settingsScope)) {
+      throw new ProjectRootUnsupportedError(this.negotiated.diApiVersion, DI_API_PROJECT_ROOT_SINCE);
+    }
+    return {
+      target: create(TargetArgsSchema, {
+        settingsScope: target.settingsScope,
+        projectRoot: target.projectRoot,
+      }),
+    };
   }
 
   private async call(

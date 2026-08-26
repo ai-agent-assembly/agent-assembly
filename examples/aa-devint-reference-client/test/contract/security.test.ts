@@ -25,7 +25,7 @@ import { CapabilityToken } from '../../src/credential.js';
 import { DeniedError, IncompatibleError } from '../../src/errors.js';
 import { DenyCode, NegotiationOutcome, RequestSchema, Verb } from '../../src/generated/devint_pb.js';
 import { renderEvents, renderStatus, renderSteps } from '../../src/render.js';
-import { startHarness, type Harness } from '../harness.js';
+import { HOST_WIDE, startHarness, type Harness } from '../harness.js';
 import { RawClient, TOOL_SCOPED_VERBS } from '../raw.js';
 
 const CLAUDE = 'claude-code';
@@ -69,9 +69,9 @@ describe('a token scoped to tool A cannot act on tool B', () => {
   it('the same token works on its own tool, so the denial is about scope', async () => {
     const client = await connected(harness.tokens.claudeOnly);
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       expect(status.toolId).toBe(CLAUDE);
-      await expect(client.status(CODEX)).rejects.toBeInstanceOf(DeniedError);
+      await expect(client.status(CODEX, HOST_WIDE)).rejects.toBeInstanceOf(DeniedError);
     } finally {
       client.close();
     }
@@ -80,11 +80,11 @@ describe('a token scoped to tool A cannot act on tool B', () => {
   it('a read-only token cannot mutate any tool', async () => {
     const client = await connected(harness.tokens.readOnly);
     try {
-      await expect(client.apply(CLAUDE, 'plan-1')).rejects.toMatchObject({ code: DenyCode.OUT_OF_SCOPE });
-      await expect(client.repair(CLAUDE)).rejects.toMatchObject({ code: DenyCode.OUT_OF_SCOPE });
-      await expect(client.remove(CLAUDE, 'plan-1')).rejects.toMatchObject({ code: DenyCode.OUT_OF_SCOPE });
+      await expect(client.apply(CLAUDE, 'plan-1', HOST_WIDE)).rejects.toMatchObject({ code: DenyCode.OUT_OF_SCOPE });
+      await expect(client.repair(CLAUDE, HOST_WIDE)).rejects.toMatchObject({ code: DenyCode.OUT_OF_SCOPE });
+      await expect(client.remove(CLAUDE, 'plan-1', HOST_WIDE)).rejects.toMatchObject({ code: DenyCode.OUT_OF_SCOPE });
       // …and can still read, so the scope is a boundary rather than a lockout.
-      expect((await client.status(CLAUDE)).toolId).toBe(CLAUDE);
+      expect((await client.status(CLAUDE, HOST_WIDE)).toolId).toBe(CLAUDE);
     } finally {
       client.close();
     }
@@ -140,13 +140,13 @@ describe('no response the client receives carries a secret', () => {
     try {
       const collected = [
         JSON.stringify(await client.listTools(), replaceBigInt),
-        JSON.stringify(await client.apply(CLAUDE, 'plan-1'), replaceBigInt),
-        JSON.stringify(await client.status(CLAUDE), replaceBigInt),
-        JSON.stringify(await client.verify(CLAUDE), replaceBigInt),
-        JSON.stringify(await client.repair(CLAUDE), replaceBigInt),
-        JSON.stringify(await client.remove(CLAUDE, 'plan-1'), replaceBigInt),
+        JSON.stringify(await client.apply(CLAUDE, 'plan-1', HOST_WIDE), replaceBigInt),
+        JSON.stringify(await client.status(CLAUDE, HOST_WIDE), replaceBigInt),
+        JSON.stringify(await client.verify(CLAUDE, HOST_WIDE), replaceBigInt),
+        JSON.stringify(await client.repair(CLAUDE, HOST_WIDE), replaceBigInt),
+        JSON.stringify(await client.remove(CLAUDE, 'plan-1', HOST_WIDE), replaceBigInt),
         JSON.stringify(await client.scopedEvents(CLAUDE), replaceBigInt),
-        renderStatus(await client.status(CLAUDE)).join('\n'),
+        renderStatus(await client.status(CLAUDE, HOST_WIDE)).join('\n'),
         renderEvents((await client.scopedEvents(CLAUDE)).events).join('\n'),
       ].join('\n');
 
@@ -212,9 +212,27 @@ describe('unrelated core operations are unreachable', () => {
     // proto/devint.proto rather than a transcription of it. A new field named
     // `method`, `path`, `filter` or `payload` fails here at the moment it is
     // generated, not at the moment someone exploits it.
+    //
+    // `target` was added by AAASM-5913 and is listed here deliberately. It says
+    // *which project* a verb is about — a value the service compares against
+    // what is on record and never resolves a destination from — so it widens no
+    // operation. Adding it to this list is the review this assertion exists to
+    // force; a field that could not be justified in a sentence does not belong
+    // in the line above.
     const fields = RequestSchema.fields.map((f) => f.name).sort();
     expect(fields).toEqual(
-      ['approval', 'apply', 'capability_token', 'events', 'plan', 'remove', 'request_id', 'tool_id', 'verb'].sort(),
+      [
+        'approval',
+        'apply',
+        'capability_token',
+        'events',
+        'plan',
+        'remove',
+        'request_id',
+        'target',
+        'tool_id',
+        'verb',
+      ].sort(),
     );
     for (const forbidden of ['method', 'path', 'url', 'query', 'filter', 'payload', 'body', 'metadata', 'extra']) {
       expect(fields).not.toContain(forbidden);
@@ -240,7 +258,7 @@ describe('unrelated core operations are unreachable', () => {
       expect(client.negotiated.diApiVersion).toBeGreaterThan(0);
       expect(client.enrolled).toBe(false);
       await expect(client.listTools()).rejects.toMatchObject({ code: DenyCode.UNAUTHENTICATED });
-      await expect(client.status(CLAUDE)).rejects.toMatchObject({ code: DenyCode.UNAUTHENTICATED });
+      await expect(client.status(CLAUDE, HOST_WIDE)).rejects.toMatchObject({ code: DenyCode.UNAUTHENTICATED });
     } finally {
       client.close();
     }
@@ -249,7 +267,7 @@ describe('unrelated core operations are unreachable', () => {
   it('an expired credential is refused, with re-enrolment as the remedy', async () => {
     const client = await connected(harness.tokens.expired);
     try {
-      await expect(client.status(CLAUDE)).rejects.toMatchObject({ code: DenyCode.TOKEN_EXPIRED });
+      await expect(client.status(CLAUDE, HOST_WIDE)).rejects.toMatchObject({ code: DenyCode.TOKEN_EXPIRED });
     } finally {
       client.close();
     }
@@ -258,7 +276,7 @@ describe('unrelated core operations are unreachable', () => {
   it('a forged credential is indistinguishable from an absent one', async () => {
     const client = await connected('f'.repeat(64));
     try {
-      await expect(client.status(CLAUDE)).rejects.toMatchObject({ code: DenyCode.UNAUTHENTICATED });
+      await expect(client.status(CLAUDE, HOST_WIDE)).rejects.toMatchObject({ code: DenyCode.UNAUTHENTICATED });
     } finally {
       client.close();
     }
