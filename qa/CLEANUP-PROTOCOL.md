@@ -70,9 +70,11 @@ than guessing.
 Never state "monitoring" or "watching" CI without a real, checkable
 mechanism behind the claim. Only two mechanisms count:
 
-1. **A harness-tracked background task** — a `run_in_background` command, or
-   a blocking watch command (e.g. `gh pr checks --watch`) moved to
-   background by the harness, whose process/task ID is recorded.
+1. **A scheduled wakeup that re-queries on each firing** — the wakeup's
+   identity (PR number *and* HEAD SHA) is recorded, and every firing runs a
+   fresh query. A harness-tracked background task also counts, provided it
+   is not merely sleeping; see the freshness invariant below, which rules
+   out `gh pr checks --watch` and `sleep`-loop shells as the mechanism.
 2. **Continued active re-polling within the same turn** — repeated,
    observable polling calls, not a single check followed by a claim of
    ongoing monitoring.
@@ -112,15 +114,45 @@ minutes without a fresh query being re-verified against it.
   mid-wait invalidates observations bound to the old SHA — a query that
   does not name the SHA it's asking about can't tell an in-progress old run
   from a completed new one. Re-derive the HEAD SHA before trusting a result.
-* **Prefer short, bounded, re-query polling over one long blocking wait.**
-  A single `run_in_background` command that blocks until some condition
-  becomes true is fine as a mechanism (see above), but the condition it
-  blocks on must itself be "did a fresh query just now return terminal,"
-  checked on a short cadence (low single-digit minutes) — not a one-shot
-  check taken once and then trusted for the command's entire runtime.
+* **Do not use a long blocking wait shell.** An earlier version of this
+  section said a `run_in_background` command that blocks until a condition
+  becomes true was "fine as a mechanism" provided the condition was a fresh
+  query. In practice that permission is what got used: campaign sessions ran
+  `sleep 110` loops and 10-minute command timeouts, and a shell that is
+  asleep cannot notice a terminal state or be corrected by anything the
+  session learns while it sleeps. The shape that works is
+  query → act if terminal → otherwise schedule a short wakeup → query
+  again, each wakeup performing its own query. First ~10 minutes at a
+  ~2–3 minute cadence, then ~5 minutes; never go more than ~10 minutes
+  without a fresh authoritative state.
 * **A failed required check ends the wait immediately and starts
   triage** (`qa/FINDING-VERIFICATION-PROTOCOL.md` classifies and drives the
   fix) — it is never a reason to keep polling in case it changes back.
+* **A terminal state that is not `success` is still not a failure to
+  triage blindly.** `stale` means the result no longer applies to the
+  current head; `neutral` is non-blocking without being a pass. Stop
+  waiting is one conclusion; treat as passed is a different one.
+* **Only the repository's actual required contexts gate a merge.** On this
+  repo `required_status_checks.contexts` for `main` is exactly
+  `["CI Success"]`. Every other job — including
+  `Integration tests (macos-latest)` — is a non-required evidence job, and a
+  non-required job still in flight or `cancelled` (AAASM-5943) is not a
+  reason to keep waiting. Read the protection rules; do not infer required
+  status from a job's name or apparent importance.
+
+**Enforcement (AAASM-5960).** Everything above is executable, not just
+written down: `scripts/qa/ci-watch.py poll` performs exactly one fresh
+observation and exits with a verdict the caller has to act on — `0` pass,
+`20` fail, `21` running, `22` head-changed, `23` query-error. It holds no
+observation state across invocations at all, which is the freshness
+invariant expressed as an absence rather than as a rule someone has to
+remember. `scripts/qa/ci-watch-negative-control.sh` runs each rule against
+both the real implementation and a deliberately wrong watcher in
+`qa/tests/fixtures/ci-watch/`, and fails any case where the two agree — so
+a rule that stopped being load-bearing reddens `CI-watcher freshness gate`
+instead of quietly becoming prose again. Prefer the tool over hand-rolled
+`gh` calls; if this section and the tool ever disagree, the negative
+control is the tiebreaker.
 
 ## Final-completion bar
 
