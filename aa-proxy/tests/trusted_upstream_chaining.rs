@@ -675,22 +675,12 @@ async fn chaining_configured_and_not_produce_identical_outcomes_for_non_declared
         chained_outcomes, unchained_outcomes,
         "chaining being configured must not change the outcome for non-declared traffic"
     );
-
-    // Positive control: add the declared destination itself — it must be the
-    // ONLY element that now differs (chained → not-403 at the tunnel-open
-    // stage; unchained → still direct-dials it, also not blocked here, since
-    // `DEST_HOST` is not RFC1918 — so instead assert the corp proxy's own
-    // record is what differs).
-    let (_addr2, authorities2) = mock_corporate_proxy(dest_addr).await;
-    let _ = connect_status_line(chained_proxy, &format!("{DEST_HOST}:{DEST_PORT}")).await;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    // `authorities2` belongs to a proxy nobody is configured to use, so it
-    // staying empty just confirms it is not spuriously receiving traffic;
-    // the real positive control is that `chained_proxy`'s own configured
-    // corp proxy (asserted in row 1) DOES see this destination while this
-    // comparison's population above never triggers it — i.e. the comparison
-    // above is capable of being unequal, demonstrated by row 1's own result.
-    assert!(authorities2.lock().unwrap().is_empty());
+    // Positive control that this comparison is capable of detecting a delta
+    // (not just trivially equal because nothing was ever exercised): row 1's
+    // own result IS that positive control — `chained_proxy`'s configured
+    // corp proxy DOES see the declared destination there, under the same
+    // `start_proxy`/`connect_status_line` machinery this test uses. No
+    // separate assertion needed here.
 }
 
 // ── Row 5 ─────────────────────────────────────────────────────────────────
@@ -756,17 +746,16 @@ async fn auth_over_an_http_scheme_endpoint_is_refused_at_startup() {
 }
 
 /// Row 9's sibling: the identical auth configuration under `scheme: Https`
-/// is not refused for this reason — the corp proxy DOES receive the
-/// `Proxy-Authorization` header, proving row 9's refusal is scheme-specific,
-/// not "any auth is refused".
+/// is not refused at startup for the plaintext reason, proving row 9's
+/// refusal is scheme-specific, not "any auth is refused". This does NOT
+/// prove the corp proxy actually receives `Proxy-Authorization` over the
+/// https leg — `establish_trusted_proxy_tunnel`'s Https leg verifies via
+/// `rustls_native_certs` unconditionally, so a self-signed local mock
+/// cannot serve as that leg here. Only `load_and_validate`'s startup check
+/// is exercised (through `run()`); header delivery itself is untested by
+/// this row.
 #[tokio::test]
-async fn auth_over_an_https_scheme_endpoint_reaches_the_corp_proxy() {
-    // `establish_trusted_proxy_tunnel`'s Https leg verifies via
-    // `rustls_native_certs` unconditionally, so a self-signed local mock
-    // cannot serve as the Https leg here. This sibling instead asserts the
-    // narrower, still-meaningful claim directly against `load_and_validate`'s
-    // own behaviour is exercised through `run()`: startup does NOT fail with
-    // the "plaintext" refusal when scheme is https.
+async fn auth_over_an_https_scheme_endpoint_is_not_refused_at_startup() {
     let dir = tempfile::tempdir().unwrap();
     let ca = aa_proxy::tls::CaStore::load_or_create(dir.path()).await.unwrap();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
