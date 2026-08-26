@@ -3,9 +3,11 @@
 AAASM-5891's resource-aware QA-campaign scheduler).
 
 Subcommands:
-  run       Acquire a pool slot for a resource class, then os.execvp() the
-            given command — never parent/supervise it. See "Why execvp, not
-            fork+wait" below.
+  run       Acquire a pool slot for a resource class, fork a thin relay
+            supervisor (AAASM-5948), then os.execvp() the given command in
+            the forked child — the supervisor never parents/babysits the
+            job's actual logic. See "Why execvp for the job, and why a
+            fork around it" below.
   status    List live jobs (liveness re-verified, never trusted from a
             stale record alone).
   sweep     GC job records whose pid is dead or whose proc_start_token no
@@ -19,18 +21,40 @@ class) is AAASM-5894's scope, not this file's — the job-record schema below
 is written to be forward-compatible with it (retry_count is already
 tracked), not to implement it.
 
-Why execvp, not fork+wait: a supervising parent that gets killed (e.g. by a
-tool-call timeout) releases its fcntl.flock while the real child keeps
-running — recreating the exact AAASM-5877 incident (3 duplicate `cargo doc`
-invocations silently deadlocked on the shared CARGO_TARGET_DIR lock for
-~50 minutes) this Story exists to fix. `fcntl.flock` IS retained across
-execvp and released by the kernel on process death — but ONLY if
-os.set_inheritable(fd, True) is called on the lock fd first: os.open() sets
-FD_CLOEXEC=1 by default, which silently disables the whole locking
-mechanism at exec time if that line is omitted, while everything else still
-appears to work. Case 11 in resource-scheduler-negative-control.sh is the
-dedicated regression test for this — don't trust this docstring, trust that
-fixture.
+Why execvp for the job, and why a fork around it: a naive supervising
+parent that gets killed (e.g. by a tool-call timeout) while its child was
+launched via a fresh `subprocess.Popen`-style spawn (no shared fd) releases
+its own fcntl.flock while the real child keeps running unaware — recreating
+the exact AAASM-5877 incident (3 duplicate `cargo doc` invocations silently
+deadlocked on the shared CARGO_TARGET_DIR lock for ~50 minutes) this Story
+exists to fix. The original AAASM-5893 design avoided any supervisor for
+that reason: this process os.execvp()s directly into the job, so the lock
+fd and the running job are the same process, guaranteed.
+
+AAASM-5948 reintroduces a thin supervisor — but safely, because it's a
+plain os.fork(), not a fresh spawn: the child inherits the PARENT's own
+open lock fd via the duplicated fd table, and independently keeps that
+open file description (and its flock) held for as long as the child itself
+is alive, regardless of what happens to the parent. If the parent is
+SIGKILLed, the AAASM-5877 failure mode does NOT recur — the child's own fd
+copy keeps the slot correctly marked held. What the parent supervisor adds:
+Ctrl-C containment. The job child calls os.setsid() (own process group, so
+a future watchdog — AAASM-5951 — can killpg() just this job's tree without
+touching siblings), which as a side effect moves it out of the terminal's
+foreground process group and therefore out of reach of a directly-typed
+Ctrl-C. The parent stays in the original group, relays SIGINT/SIGTERM into
+the child's new group, and waits — otherwise Ctrl-C on `git push` would
+leave the wrapped build running orphaned in the background for its full
+duration, still holding the slot. Case 15 in
+resource-scheduler-negative-control.sh is the dedicated regression test.
+
+Either way, `fcntl.flock` IS retained across execvp and released by the
+kernel on process death — but ONLY if os.set_inheritable(fd, True) is
+called on the lock fd first: os.open() sets FD_CLOEXEC=1 by default, which
+silently disables the whole locking mechanism at exec time if that line is
+omitted, while everything else still appears to work. Case 11 in
+resource-scheduler-negative-control.sh is the dedicated regression test for
+this — don't trust this docstring, trust that fixture.
 
 State layout, rooted at $AA_QA_LOCK_DIR (default ~/.cache/aa-qa — deliberately
 machine-global, not per-worktree: the bounded resource, e.g. the shared
@@ -52,6 +76,7 @@ import fcntl
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -447,49 +472,116 @@ def cmd_run(rest: list[str]) -> int:
     # MANDATORY — see the module docstring. os.open() defaults to
     # FD_CLOEXEC, which silently drops this flock at execvp() below if this
     # line is skipped; case 11 in resource-scheduler-negative-control.sh is
-    # the dedicated regression test for exactly that regression.
+    # the dedicated regression test for exactly that regression. Set before
+    # the fork below so BOTH the parent's and the child's copy of the fd
+    # (fork duplicates the whole fd table) are inheritable — only the
+    # child actually execs, but see the fork rationale for why the
+    # parent's copy matters too.
     os.set_inheritable(fd, True)
 
-    # Own process group so a future watchdog (AAASM-5894) can signal only
-    # this job's tree, never the caller's. os.setsid() raises EPERM if the
-    # caller is already a process-group leader (e.g. an interactive shell
-    # backgrounding this wrapper with `&`, where job control already made it
-    # one) — that's not a failure, the pgid is already ours either way.
-    try:
-        os.setsid()
-    except OSError:
-        pass
+    # AAASM-5948: fork a supervisor instead of setsid()+execvp() in this
+    # same process. The child gets its own process group (so a future
+    # watchdog, AAASM-5951, can killpg() just this job's tree without
+    # touching siblings — same reason AAASM-5893 originally called
+    # os.setsid() directly here). The PARENT stays in the ORIGINAL process
+    # group — the one the caller's shell/lefthook actually attached to the
+    # controlling terminal — so it keeps receiving Ctrl-C. Its only job is
+    # to relay SIGINT/SIGTERM into the child's new group and wait.
+    #
+    # This does NOT reintroduce the AAASM-5877 problem the module docstring
+    # warns about (a killed supervisor silently releasing the flock while
+    # an unaware child keeps running): fork() duplicates the whole fd
+    # table, so the child holds its OWN reference to the same locked open
+    # file description. If the parent is SIGKILLed, the kernel closes only
+    # the PARENT's copy — the child's copy keeps the lock held, so a third
+    # invocation still correctly sees the pool as saturated. The only
+    # thing lost when the parent dies is the SIGINT relay itself (no
+    # supervisor left to forward Ctrl-C) — strictly better than today,
+    # where nothing ever relays it.
+    child_pid = os.fork()
 
-    pid = os.getpid()
-    pgid = os.getpgid(0)
-    now = time.time()
-    job_id = f"{args.cls}-{pid}-{int(now)}"
-    record = {
-        "job_id": job_id,
-        "class": args.cls,
-        "pool": pool_name,
-        "pid": pid,
-        "pgid": pgid,
-        "proc_start_token": ps_start_token(pid),
-        "repo": os.getcwd(),
-        "git_common_dir": gcd,
-        "git_toplevel": toplevel,
-        "branch": git_branch(),
-        "fingerprint": fingerprint,
-        "argv": cmd,
-        "slot": slot_index,
-        "slot_path": os.path.abspath(slot_path),
-        "started_at": now,
-        "started_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-        "log": args.log,
-        "retry_count": 0,
-    }
-    # Written BEFORE exec — if execvp fails, that's fine: the pid this
-    # record names will simply be gone on the next liveness check.
-    write_job_record(base, record)
+    if child_pid == 0:
+        # Child: becomes the actual job. Own process group first (must
+        # happen before exec, and before any signal could plausibly race
+        # in) — os.setsid() raises EPERM if this process is already a
+        # group leader (e.g. backgrounded with `&` under job control
+        # already making it one); that's not a failure, the pgid is ours
+        # either way.
+        try:
+            os.setsid()
+        except OSError:
+            pass
 
-    os.execvp(cmd[0], cmd)
-    return EXIT_OK  # unreachable — execvp replaces this process on success
+        pid = os.getpid()
+        pgid = os.getpgid(0)
+        now = time.time()
+        job_id = f"{args.cls}-{pid}-{int(now)}"
+        record = {
+            "job_id": job_id,
+            "class": args.cls,
+            "pool": pool_name,
+            "pid": pid,
+            "pgid": pgid,
+            "proc_start_token": ps_start_token(pid),
+            "repo": os.getcwd(),
+            "git_common_dir": gcd,
+            "git_toplevel": toplevel,
+            "branch": git_branch(),
+            "fingerprint": fingerprint,
+            "argv": cmd,
+            "slot": slot_index,
+            "slot_path": os.path.abspath(slot_path),
+            "started_at": now,
+            "started_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            "log": args.log,
+            "retry_count": 0,
+        }
+        # Written BEFORE exec — if execvp fails, that's fine: the pid this
+        # record names will simply be gone on the next liveness check.
+        write_job_record(base, record)
+
+        os.execvp(cmd[0], cmd)
+        os._exit(127)  # unreachable — execvp replaces this process on success
+
+    # Parent (relay supervisor): does not need its own copy of the lock fd
+    # — the child's copy is what matters — close it to avoid holding it
+    # open for this process's own lifetime for no reason.
+    os.close(fd)
+
+    def _relay(_signum: int, _frame) -> None:
+        # Always relay as SIGTERM, regardless of which signal we ourselves
+        # received. Verified empirically: a shell (e.g. `bash -c ...`) that
+        # becomes a session/process-group leader via the child's setsid()
+        # above puts itself into job-control mode and sets SIGINT to
+        # SIG_IGN for itself — killpg(..., SIGINT) into that group is
+        # silently swallowed, while killpg(..., SIGTERM) is not (bash does
+        # not similarly special-case SIGTERM). A plain non-shell command
+        # (e.g. `cargo`, `rustdoc`) reacts to SIGTERM the same as SIGINT —
+        # there is no correctness downside to normalizing here.
+        try:
+            os.killpg(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    signal.signal(signal.SIGINT, _relay)
+    signal.signal(signal.SIGTERM, _relay)
+
+    while True:
+        try:
+            _, status = os.waitpid(child_pid, 0)
+            break
+        except InterruptedError:
+            continue  # a relayed signal's own delivery can interrupt waitpid
+
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        # Conventional shell exit-code-on-signal-death encoding (128+n) —
+        # matches what an interactive terminal would show if the wrapped
+        # command had received the signal directly, pre-AAASM-5948.
+        return 128 + os.WTERMSIG(status)
+    return EXIT_OK  # pragma: no cover — neither exited nor signaled is not
+    # a real waitpid outcome for a plain (non-WUNTRACED/WCONTINUED) wait
 
 
 def cmd_status(rest: list[str]) -> int:

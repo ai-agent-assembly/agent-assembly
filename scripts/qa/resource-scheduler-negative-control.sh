@@ -34,6 +34,17 @@
 #           class+argv, discovered by design review before AAASM-5895
 #           landed. Same worktree, same class/argv must still collide
 #           (that's case 2b, unchanged).
+#   Case 15 (AAASM-5948) SIGINT sent to the wrapper's own PID (as an
+#           interactive terminal's Ctrl-C would deliver to a foreground
+#           `git push`) is relayed into the execvp'd job's process group —
+#           the job actually dies (no natural completion), instead of
+#           running orphaned in the background for its full duration. The
+#           regression this proves against: a bare os.setsid() + execvp()
+#           in the SAME process moves the job out of the terminal's
+#           foreground process group with nothing left to relay signals
+#           into it — this case is the one that turns red if the
+#           fork+relay supervisor in AAASM-5948's fix is reverted back to
+#           that shape.
 #
 # Usage: bash scripts/qa/resource-scheduler-negative-control.sh
 # Run from the repo root (fixtures reference real repo-relative paths).
@@ -303,6 +314,46 @@ print(m.compute_fingerprint('cargo-doc', gcd, top, ['cargo', 'doc', '--workspace
 assert_eq "same worktree, same class/argv, still hashes identically (AAASM-5877 fix intact)" "$fp_a_again" "$fp_a"
 git -C "$scratch_repo" worktree remove --force "$worktree_b" >/dev/null 2>&1
 rm -rf "$scratch_repo" "$worktree_b"
+
+echo "== Case 15 (AAASM-5948): SIGINT to the wrapper relays into the job, no orphan =="
+marker15="$(mktemp)"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class -- bash "$QUICK" "$marker15" 30 >"$AA_QA_LOCK_DIR/case15.out" 2>&1 &
+wrapper_pid=$!
+if ! wait_for_start "$marker15"; then
+  echo "  ✗ job never started — cannot exercise case 15"
+  FAILED=1
+else
+  child_pid="$(awk '/^START/ {print $2; exit}' "$marker15")"
+  kill -INT "$wrapper_pid"
+  # Bounded wait for the relay to take effect and the child to actually
+  # die — not a fixed sleep guessing at timing; poll liveness directly.
+  waited=0
+  while kill -0 "$child_pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$child_pid" 2>/dev/null; then
+    echo "  ✗ child pid $child_pid still alive ~5s after SIGINT — orphaned, not relayed"
+    FAILED=1
+    kill -KILL "$child_pid" 2>/dev/null || true  # don't leak it into the rest of the suite
+  else
+    echo "  ✓ child pid $child_pid is gone shortly after SIGINT to the wrapper"
+  fi
+  if grep -q '^END' "$marker15"; then
+    echo "  ✗ job ran to natural completion (END line present) — SIGINT had no effect"
+    FAILED=1
+  else
+    echo "  ✓ job never reached natural completion — genuinely terminated, not just outlived the poll"
+  fi
+  wait "$wrapper_pid"
+  wrapper_code=$?
+  # The relay always forwards SIGTERM regardless of which signal the
+  # wrapper itself received (see resource-lock.py's _relay docstring —
+  # a shell job-control leader silently swallows a relayed SIGINT), so
+  # the child dies of SIGTERM (128+15) even though we sent SIGINT here.
+  assert_eq "wrapper's own exit code reflects the child's SIGTERM death (128+15)" "$wrapper_code" "143"
+fi
+rm -f "$marker15" "$AA_QA_LOCK_DIR/case15.out"
 
 echo
 if [ "$FAILED" -eq 0 ]; then
