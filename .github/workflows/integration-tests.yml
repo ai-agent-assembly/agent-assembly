@@ -17,6 +17,30 @@ permissions:
 # Node.js SDK E2E fixtures (AAASM-1514 / F116 ST-B): TypeScript fixture scripts
 # are installed via pnpm and run in AA_SELFTEST=1 mode inside the Rust harness;
 # no running gateway or native bindings are required for the hermetic tests.
+#
+# ---------------------------------------------------------------------------
+# BEFORE YOU ADD ANOTHER PRE-BUILD STEP — read this. (AAASM-5943)
+#
+# Pre-build steps spend the *job's* wall-clock budget, and this job has now
+# been pushed past its ceiling twice by exactly that: AAASM-2340 broke the
+# 20-minute ceiling, AAASM-5908 broke the 30-minute one. Both times the
+# reflex was to raise the ceiling. Raising it a third time is not a fix.
+#
+# What made the second one expensive was not the added 5 minutes. It was that
+# a truncated job saved no cargo cache (see `cache-on-failure` below), so the
+# *pre-existing* `aasm` pre-build silently inflated 2.7 -> 12 min and the job
+# could never get back under the ceiling on its own. It stayed broken for 13
+# consecutive main merges, reporting `cancelled` rather than `failure`, which
+# nothing alerts on.
+#
+# So if you are about to add a step here:
+#   1. Budget it against the step ceilings below, not against the job ceiling.
+#   2. Prefer removing work over adding time. The two pre-builds and the test
+#      step already recompile overlapping graphs; consolidating them is
+#      tracked separately rather than adding a third copy.
+#   3. Never let this job's only failure mode be the job ceiling — a job
+#      ceiling firing is invisible, a step ceiling firing is red.
+# ---------------------------------------------------------------------------
 
 on:
   push:
