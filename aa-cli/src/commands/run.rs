@@ -5176,29 +5176,47 @@ mod tests {
     /// blandly-named variable. The test asserts the encoded blob is absent, not
     /// just its plaintext — a blob in the output is recoverable content, and the
     /// fix must hold *without* the product having decoded anything to find out.
+    ///
+    /// Each payload form is paired with the sentinels whose presence would mean
+    /// recovery **of that form**. Searching a base64 payload's output for the
+    /// plaintext token cannot fail — the plaintext is not in the blob — so that
+    /// pairing is what keeps every assertion here discriminating rather than
+    /// decorative. The exact-line assertion is the strongest of the three: the
+    /// rendered value is `<set>` and nothing else, so no transform of the payload
+    /// is present in any form.
     #[test]
     fn an_encoded_container_cannot_bypass_masking_through_an_unrecognised_name() {
-        let encoded = base64_encode(synthetic_env_snapshot().as_bytes());
+        let snapshot = synthetic_env_snapshot();
+        let encoded = base64_encode(snapshot.as_bytes());
+
+        // (payload, the strings whose presence would mean the payload was recovered)
+        let forms: [(&str, Vec<&str>); 2] = [
+            ("plaintext", vec![snapshot.as_str(), SYNTH_TOKEN, SYNTH_TOKEN_2]),
+            ("base64", vec![encoded.as_str()]),
+        ];
 
         // Names carrying no credential signal whatsoever — the class, not one
         // vendor's spelling. `_WATCHES` and `_STATE` are included because fixing
         // only the one variable that happened to leak would leave the class open.
         for name in ["AA_5935_DIFF", "TOOLING_WATCHES", "SHELL_HOOK_STATE", "XYZZY"] {
-            let output = preview_for(name, &encoded);
-            assert!(
-                !output.contains(&encoded),
-                "{name}: the encoded container reached the preview verbatim: {output}"
-            );
-            for token in [SYNTH_TOKEN, SYNTH_TOKEN_2] {
+            for (form, sentinels) in &forms {
+                let payload = if *form == "base64" { &encoded } else { &snapshot };
+                let output = preview_for(name, payload);
+
+                for sentinel in sentinels {
+                    assert!(
+                        !output.contains(sentinel),
+                        "{name} ({form}): the container is recoverable from the preview: {output}"
+                    );
+                }
+                // Nothing derived from the payload is present, in any encoding:
+                // the whole rendered value is the presence marker.
                 assert!(
-                    !output.contains(token),
-                    "{name}: a contained token reached the preview: {output}"
+                    output.contains(&format!("\n{name}={PRESENCE_SET}\n")),
+                    "{name} ({form}): the rendered value must be exactly the presence marker: \
+                     {output}"
                 );
             }
-            assert!(
-                output.contains(&format!("{name}=<set>")),
-                "{name}: presence must still be reported: {output}"
-            );
         }
     }
 
@@ -5463,18 +5481,27 @@ mod tests {
     /// The allowlist is the reviewed surface, so its contents are asserted rather
     /// than left to whoever edits the array next.
     ///
-    /// Two properties: nothing on it may carry a credential-shaped name — which
-    /// would mean a reviewer allowlisted a value the masker then has to catch —
-    /// and it stays small, because "small and reviewed" is the whole security
-    /// argument. `ANTHROPIC_BASE_URL` is the one deliberate exception: it is a
-    /// `_URL`, it is a route rather than a credential, and [`mask_value`] still
-    /// strips userinfo from it.
+    /// Nothing on it may carry a credential-shaped name — which would mean a
+    /// reviewer allowlisted a value the masker then has to catch — and it stays
+    /// **exactly** its reviewed size, because "small and reviewed" is the whole
+    /// security argument and a `<=` bound lets entries accumulate under it.
+    ///
+    /// `ANTHROPIC_BASE_URL` is the one entry that is `looks_like_credential_name`-
+    /// positive, and only by the `_URL` connection-string suffix rather than by any
+    /// secret substring. The suffix is not waved away: an entry allowed to be
+    /// credential-named that way must also be [`URL_VALUED_ENV_VARS`], so the very
+    /// shape that flags it is what gets its value projected to an origin — every
+    /// credential-capable position discarded rather than trusted.
     #[test]
     fn the_preview_value_allowlist_stays_small_and_carries_no_credential_names() {
-        assert!(
-            VALUE_VISIBLE_ENV_VARS.len() <= 20,
-            "the allowlist has grown past the point where 'explicit and reviewed' is \
-             a meaningful claim: {VALUE_VISIBLE_ENV_VARS:?}"
+        // Exact, not a ceiling: adding an entry must be a deliberate edit to this
+        // number, in the same diff, rather than something that slips in under a
+        // bound nobody is watching.
+        assert_eq!(
+            VALUE_VISIBLE_ENV_VARS.len(),
+            17,
+            "the allowlist changed size — widening the value-visible set is a trust \
+             decision and has to be reviewed as one: {VALUE_VISIBLE_ENV_VARS:?}"
         );
         for name in VALUE_VISIBLE_ENV_VARS {
             assert!(
@@ -5486,11 +5513,34 @@ mod tests {
                 value_may_be_previewed(name) && value_may_be_previewed(&name.to_lowercase()),
                 "{name} must match case-insensitively"
             );
+            // An entry may be `looks_like_credential_name`-positive only by the
+            // connection-string *suffix*, never by a secret substring — and if it
+            // is, its value must be origin-projected rather than trusted, so the
+            // suffix that flagged it is also what strips its credential positions.
+            if looks_like_credential_name(name) {
+                assert!(
+                    is_connection_string_name(name),
+                    "{name} is credential-named by something other than a URL/DSN/URI suffix"
+                );
+                assert!(
+                    is_url_valued_name(name),
+                    "{name} is connection-string-shaped, so its value must be projected to an \
+                     origin rather than previewed as-is"
+                );
+            }
         }
         assert!(
             !value_may_be_previewed("ANTHROPIC_API_KEY"),
             "a credential must never be on the allowlist"
         );
+        // Every URL-valued entry is on the allowlist it qualifies: a name here
+        // that nothing previews would be a projection with no subject.
+        for name in URL_VALUED_ENV_VARS {
+            assert!(
+                VALUE_VISIBLE_ENV_VARS.contains(&name),
+                "{name} is URL-valued but not value-visible"
+            );
+        }
     }
 
     /// **Regression G** — a name that merely *folds* onto an allowlist entry is
