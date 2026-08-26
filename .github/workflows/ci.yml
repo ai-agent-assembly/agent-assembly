@@ -169,6 +169,12 @@ on:
       - "qa/resource-classes.yaml"
       - "scripts/qa/resource-lock.py"
       - "scripts/qa/resource-scheduler-negative-control.sh"
+      # AAASM-5949: the watchdog's liveness/ownership tracking + CPU-time
+      # parser (first slice of AAASM-5894, split by design review). Same
+      # `qa_registry` router as the resource-lock mechanism above — it
+      # consumes `resource-lock.py status --json`, not a separate registry.
+      - "scripts/qa/qa-watchdog.py"
+      - "scripts/qa/qa-watchdog-cpu-parser-test.sh"
       # AAASM-5878/5899: the release-evidence freshness checker and its
       # digest module. Same ADR 0028 pairing rule as above — every path here
       # has a matching `qa_registry` router filter entry below.
@@ -466,6 +472,9 @@ jobs:
               - 'qa/resource-classes.yaml'
               - 'scripts/qa/resource-lock.py'
               - 'scripts/qa/resource-scheduler-negative-control.sh'
+              # AAASM-5949: watchdog liveness/ownership + CPU-time parser.
+              - 'scripts/qa/qa-watchdog.py'
+              - 'scripts/qa/qa-watchdog-cpu-parser-test.sh'
               # AAASM-5878/5899: the release-evidence freshness checker.
               - 'scripts/qa/registry_digest.py'
               - 'scripts/qa/build-release-evidence.py'
@@ -1291,6 +1300,13 @@ jobs:
       # silently being dropped before `execvp`.
       - name: Self-test resource-lock.py (negative control)
         run: bash scripts/qa/resource-scheduler-negative-control.sh
+
+      # AAASM-5949: string-fixture tests for qa-watchdog.py's parse_ps_time()
+      # — pure-function CPU-time-string parsing plus a live-process smoke
+      # check for get_cpu_time(). No live process needs hours of real CPU
+      # time; the multi-hour/multi-day shapes are exercised as fixtures.
+      - name: Self-test qa-watchdog.py CPU-time parser
+        run: bash scripts/qa/qa-watchdog-cpu-parser-test.sh
 
   detection-egress-closure:
     needs: [changes]
