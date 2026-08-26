@@ -63,7 +63,7 @@
 //! unmeasured — see `docs/src/devtools/limitations.md`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aa_devtool_contract::{
@@ -469,11 +469,56 @@ impl ClaudeCodeIntegration {
             .classify(self.detected_version().as_ref())
     }
 
-    /// Every bypass condition currently observable on this host.
-    fn bypasses(&self, scope: SettingsScope) -> Vec<BypassFinding> {
+    /// The paths this call operates over.
+    ///
+    /// # Why this is per call and not the constructed `self.paths` (AAASM-5913)
+    ///
+    /// This integration is constructed once, at daemon boot. Every root it
+    /// resolves then is a property of the host and stays true — except the project
+    /// root, which is a property of *the caller of this particular request*. Two
+    /// clients in two repositories share one instance of this struct, so reading a
+    /// construction-time project root gave both of them whichever repository the
+    /// daemon was launched in.
+    ///
+    /// `project_root` is threaded from
+    /// [`IntegrationRequest::project_root`](aa_devtool_contract::IntegrationRequest::project_root)
+    /// for the authoring verbs and from
+    /// [`IntegrationReceipt::project_root`] for the receipt-driven ones. `None` at
+    /// [`Project`](SettingsScope::Project) scope is an error and not a fallback:
+    /// there is no working directory in this process that could honestly stand in
+    /// for the caller's.
+    fn effective_paths(
+        &self,
+        scope: SettingsScope,
+        project_root: Option<&Path>,
+    ) -> Result<ClaudeCodePaths, AdapterError> {
+        match project_root {
+            Some(root) => Ok(self.paths.clone().with_project(root)),
+            // At user and managed scope the project root is only used to disclose
+            // that a project configuration exists nearby; not knowing it costs one
+            // warning, not correctness.
+            None if scope != SettingsScope::Project => Ok(self.paths.clone()),
+            None => Err(AdapterError::SettingsGenerationFailed(
+                "this request writes the project settings scope but names no project. The \
+                 developer-integration service is shared by every client on this host, so the \
+                 project a change lands in is taken from the request and never from the service's \
+                 own working directory"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Every bypass condition observable in `settings_path`, plus the ambient ones.
+    ///
+    /// The settings file is passed in rather than re-resolved from a scope: during
+    /// `status` and `verify` the honest answer is the file the receipt records
+    /// having written, and re-resolving a `Project` scope against this process's
+    /// roots is how a bypass reading ended up describing a different repository's
+    /// file (AAASM-5913).
+    fn bypasses_at(&self, settings_path: Option<&Path>) -> Vec<BypassFinding> {
         let mut found = Vec::new();
-        if let Ok(path) = self.paths.settings_path(scope) {
-            if let Ok(raw) = std::fs::read_to_string(&path) {
+        if let Some(path) = settings_path {
+            if let Ok(raw) = std::fs::read_to_string(path) {
                 found.extend(bypass::settings_bypasses(&path.display().to_string(), &raw));
             }
         }
@@ -487,9 +532,9 @@ impl ClaudeCodeIntegration {
     /// configuration, it makes the configuration unable to prove anything. An
     /// `Absent` reading only ever lowers the reported state, which is the whole
     /// behaviour needed here.
-    fn limitation_evidence(&self, scope: SettingsScope, now: u64) -> Vec<ProtectionEvidence> {
+    fn limitation_evidence(&self, settings_path: Option<&Path>, now: u64) -> Vec<ProtectionEvidence> {
         let mut evidence: Vec<ProtectionEvidence> = self
-            .bypasses(scope)
+            .bypasses_at(settings_path)
             .into_iter()
             .map(|finding| {
                 ProtectionEvidence::new(
@@ -827,10 +872,14 @@ impl DevToolIntegration for ClaudeCodeIntegration {
 
     async fn plan_integration(&self, request: &IntegrationRequest) -> Result<IntegrationPlan, AdapterError> {
         let scope = request.settings_scope;
-        let settings_path = self.paths.settings_path(scope).map_err(scope_error)?;
-        let launch_env = self.paths.launch_env_dir(scope).map_err(scope_error)?;
-        let ca_pem = self.paths.proxy_ca_pem(scope).map_err(scope_error)?;
-        let hosts_file = self.paths.mitm_hosts_file(scope).map_err(scope_error)?;
+        // Resolved from *this request*, not from the roots this adapter was
+        // constructed over: the project a project-scoped plan writes into belongs
+        // to the caller, and this adapter is shared (AAASM-5913).
+        let paths = self.effective_paths(scope, request.project_root.as_deref())?;
+        let settings_path = paths.settings_path(scope).map_err(scope_error)?;
+        let launch_env = paths.launch_env_dir(scope).map_err(scope_error)?;
+        let ca_pem = paths.proxy_ca_pem(scope).map_err(scope_error)?;
+        let hosts_file = paths.mitm_hosts_file(scope).map_err(scope_error)?;
         let capabilities = self.capabilities();
 
         let interception_available = capabilities.can_intercept_model_path();
@@ -1020,7 +1069,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             )
             .warn("restart any running Claude Code session for the managed settings to take effect".to_string());
 
-        for surface in self.paths.detected_surfaces() {
+        for surface in paths.detected_surfaces() {
             if surface.scope != scope {
                 plan = plan.warn(format!(
                     "a {} configuration also exists at {} and this plan does not touch it",
@@ -1030,7 +1079,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             }
         }
 
-        for finding in self.bypasses(scope) {
+        for finding in self.bypasses_at(Some(&settings_path)) {
             plan = plan.warn(format!(
                 "bypass detected — {}. {}",
                 finding.detail(),
@@ -1048,7 +1097,18 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         let now = now_unix_secs();
         let detected = self.detect();
         let compatibility = self.compatibility();
-        let scope = receipt.map_or(SettingsScope::User, |r| r.settings_scope);
+        // The file the receipt records having written, not the file a scope would
+        // resolve to in this process. `status` carries no request, so a
+        // project-scoped receipt's own record is the only thing here that names
+        // the right repository (AAASM-5913).
+        //
+        // With no receipt at all there is nothing installed to read bypasses out
+        // of beyond the user surface, which is what an uninstalled host looks
+        // like.
+        let settings_path = match receipt.and_then(IntegrationReceipt::settings_file_path) {
+            Some(path) => Some(path.to_path_buf()),
+            None => self.paths.settings_path(SettingsScope::User).ok(),
+        };
 
         let mut evidence: Vec<ProtectionEvidence> = Vec::new();
         if let Some(receipt) = receipt {
@@ -1083,7 +1143,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                 ));
             }
         }
-        evidence.extend(self.limitation_evidence(scope, now));
+        evidence.extend(self.limitation_evidence(settings_path.as_deref(), now));
 
         let planned_level = receipt.map_or(ProtectionLevel::NotInstalled, |r| r.planned_level);
         let derivation = StateDerivation {
@@ -1174,11 +1234,15 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             ),
         }
 
-        let bypasses = self.bypasses(receipt.settings_scope);
+        // The file this integration recorded having written, so a project-scoped
+        // verify reads the caller's repository and not whichever one this shared
+        // process was started in (AAASM-5913).
+        let settings_path = receipt.settings_file_path();
+        let bypasses = self.bypasses_at(settings_path);
         for finding in &bypasses {
             missing.push(finding.detail());
         }
-        evidence.extend(self.limitation_evidence(receipt.settings_scope, now));
+        evidence.extend(self.limitation_evidence(settings_path, now));
 
         let outcome = if !mismatched.is_empty() {
             VerificationOutcome::Failed {
