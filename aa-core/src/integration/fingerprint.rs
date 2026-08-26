@@ -52,7 +52,7 @@
 //!
 //! # One document type, two backends
 //!
-//! The private [`Doc`] enum is deliberately the *only* place JSON and TOML
+//! The private `Doc` enum is deliberately the *only* place JSON and TOML
 //! diverge. Every public function (`project`, `merge_from`, `absent`,
 //! `restore`, `screen`) is written once against `Doc` and branches on the
 //! variant only in `parse`/`render` — duplicating the credential screen or the
@@ -304,7 +304,7 @@ pub fn empty_document(format: DocumentFormat) -> &'static str {
 /// function of the document's *meaning*.
 ///
 /// TOML is always rendered with plain [`toml::to_string`], never
-/// `toml::to_string_pretty` — see [`Doc::render`]'s doc comment for why that
+/// `toml::to_string_pretty` — see `Doc::render`'s doc comment for why that
 /// choice must never move once fingerprints exist.
 pub fn canonicalize(format: DocumentFormat, raw: &str) -> Result<String, FingerprintError> {
     Ok(Doc::parse(format, raw)?.render())
