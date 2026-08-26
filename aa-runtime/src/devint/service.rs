@@ -280,13 +280,22 @@ impl EngineLifecycle {
     /// receipt's own profile and scope is what keeps a repair a *repair*: it
     /// restores the integration the user chose, not the one today's defaults
     /// would produce.
+    ///
+    /// The project a project-scoped install went into is part of "the integration
+    /// the user chose", and `repair` carries no request from the caller — so it
+    /// comes from the receipt's own record of the file it wrote, never from this
+    /// process's working directory (AAASM-5913). A receipt that cannot name its
+    /// project produces a request with none, and the adapter refuses; that is the
+    /// intended outcome, because there is nothing here that could honestly stand
+    /// in for it.
     async fn plan_from_receipt(
         &self,
         registered: &RegisteredIntegration,
         receipt: &IntegrationReceipt,
     ) -> Result<IntegrationPlan, LifecycleError> {
-        let request = IntegrationRequest::new(receipt.tool.clone(), receipt.profile, receipt.settings_scope)
+        let mut request = IntegrationRequest::new(receipt.tool.clone(), receipt.profile, receipt.settings_scope)
             .requesting_level(receipt.planned_level);
+        request.project_root = receipt.project_root().map(std::path::Path::to_path_buf);
         registered
             .integration
             .plan_integration(&request)
