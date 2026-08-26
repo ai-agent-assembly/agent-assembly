@@ -1,0 +1,28 @@
+{
+  "description": "TEST C - PR HEAD changes mid-wait. The old run's states must be discarded and the verdict must be head-changed, so the watcher rebinds rather than waiting on an obsolete run.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "in_progress",
+          "conclusion": null
+        }
+      ]
+    },
+    {
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "in_progress",
+          "conclusion": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "description": "TEST E - a transient GitHub outage must surface as query-error, never decay into 'probably still pending'. A later wakeup recovers and sees the real terminal state.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "query_error": true,
+      "query_error_message": "simulated 502 from GitHub",
+      "check_runs": []
+    },
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "failure"
+        }
+      ]
+    }
+  ]
+}
