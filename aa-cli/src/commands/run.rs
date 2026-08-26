@@ -2348,6 +2348,59 @@ fn is_url_valued_name(key: &str) -> bool {
     URL_VALUED_ENV_VARS.iter().any(|name| key.eq_ignore_ascii_case(name))
 }
 
+/// Whether an optional trailing `:port` is a port and nothing else.
+///
+/// An empty string is fine — the port is optional. A `:` must be followed by at
+/// least one digit and only digits.
+fn is_port_suffix(suffix: &str) -> bool {
+    match suffix.strip_prefix(':') {
+        Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+        None => suffix.is_empty(),
+    }
+}
+
+/// Whether the host position of an authority is actually shaped like a host.
+///
+/// This is a **shape** gate, not a resolution or validity check: it answers "can
+/// this text be a host at all", so that [`project_url_origin`] never prints an
+/// authority position on the assumption that a host is what landed there.
+///
+/// Accepts exactly two forms, both ASCII-only:
+///
+/// - a bracketed IPv6 literal — `[`, then hex digits, `:` and `.`, then `]`,
+///   optionally followed by `:port`;
+/// - a reg-name or dotted-quad IPv4 — ASCII alphanumerics, `-`, `.` and `_`,
+///   optionally followed by `:port`.
+///
+/// Everything else is rejected and the caller withholds the value. That includes
+/// shapes which are arguably legal URLs, notably an IPv6 zone id
+/// (`[fe80::1%25eth0]`) and any internationalised host that has not been
+/// punycoded. Rejecting them costs a `<set>` in place of an origin; accepting
+/// anything unrecognised costs a credential printed into a security artifact, so
+/// the trade only runs one way.
+fn is_host_shaped(host_port: &str) -> bool {
+    if let Some(rest) = host_port.strip_prefix('[') {
+        let Some((inner, after)) = rest.split_once(']') else {
+            return false;
+        };
+        return !inner.is_empty()
+            && inner.bytes().all(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.'))
+            && is_port_suffix(after);
+    }
+
+    // A reg-name cannot contain `:`, so the first one begins the port and any
+    // second one is disqualifying — `is_port_suffix` rejects it as a non-digit.
+    let (host, port_suffix) = match host_port.find(':') {
+        Some(colon) => (&host_port[..colon], &host_port[colon..]),
+        None => (host_port, ""),
+    };
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+        && is_port_suffix(port_suffix)
+}
+
 /// Project a URL onto the part of it that answers "where does this traffic go",
 /// discarding every part that can carry a credential.
 ///
@@ -2385,8 +2438,9 @@ fn is_url_valued_name(key: &str) -> bool {
 /// mislead in the same way a mask over a printed value does. A count is
 /// metadata: producing it requires no inspection of what the segments contain.
 ///
-/// Returns [`None`] for anything without a parseable scheme and non-empty host,
-/// so the caller withholds rather than printing an unrecognised value raw.
+/// Returns [`None`] unless the scheme is one this preview recognises *and* the
+/// host position is [`is_host_shaped`], so the caller withholds rather than
+/// printing an unrecognised value raw.
 fn project_url_origin(value: &str) -> Option<String> {
     let scheme_end = value.find("://")?;
     let scheme = &value[..scheme_end];
@@ -2408,7 +2462,14 @@ fn project_url_origin(value: &str) -> Option<String> {
         Some(at) => &authority[at + 1..],
         None => authority,
     };
-    if host_port.is_empty() || host_port.contains(char::is_whitespace) {
+    // Finding the host *position* is not the same as knowing a host is in it, and
+    // printing the position on faith is what made this projection leak. `/`, `?`
+    // and `#` end the authority, so any one of them appearing inside the userinfo
+    // moves the boundary into the middle of the credential: `rfind('@')` then
+    // finds nothing and the userinfo *becomes* the host position. Requiring the
+    // position to be host-shaped is what makes the userinfo's removal a fact
+    // rather than an assumption.
+    if !is_host_shaped(host_port) {
         return None;
     }
 
@@ -5658,6 +5719,44 @@ mod tests {
                 );
             }
         }
+
+        // Authority-boundary shapes: a `/`, `?` or `#` *inside the userinfo* ends
+        // the authority early, so the rightmost `@` is no longer in it and the
+        // userinfo lands in the host position. These must be withheld, not
+        // printed as though the userinfo were a host — printing one both leaks the
+        // credential prefix and states a false routing fact, asserting a host that
+        // is not where the traffic goes.
+        let malformed = [
+            // `?` ends the authority mid-userinfo.
+            format!("https://user:{SENTINEL}?tail@gw.example.invalid/v1"),
+            // `/` does the same, and is ordinary in a base64-shaped password.
+            format!("http://user:{SENTINEL}/tail@corp-proxy.invalid:3128"),
+            // `#` likewise.
+            format!("http://user:{SENTINEL}#tail@corp-proxy.invalid:3128"),
+            // A NUL is not `char::is_whitespace`, so the old whitespace-only guard
+            // admitted it; `sanitize_terminal` then strips it and splices the tail
+            // onto the host.
+            format!("https://gw.example.invalid\0{SENTINEL}"),
+            // An `@` inside an IPv6 literal leaves a `]` with no opening bracket.
+            format!("https://[::1@{SENTINEL}]/x"),
+        ];
+
+        for name in URL_VALUED_ENV_VARS {
+            for shape in &malformed {
+                let output = preview_for(name, shape);
+                assert!(
+                    !output.contains(SENTINEL),
+                    "{name}: a credential in a malformed authority is recoverable from the \
+                     receipt ({shape} rendered into): {output}"
+                );
+                // Fail closed: presence only. Anything unparseable is withheld,
+                // never printed raw and never guessed at.
+                assert!(
+                    output.contains(&format!("{name}={PRESENCE_SET}")),
+                    "{name}: an unparseable URL must fall back to presence-only: {output}"
+                );
+            }
+        }
     }
 
     /// The projection keeps the origin and reports path depth as metadata.
@@ -5692,6 +5791,24 @@ mod tests {
             ("http://127.0.0.1:8899", "http://127.0.0.1:8899"),
             // A bare `/` is zero segments, not one empty one.
             ("http://127.0.0.1:8899/", "http://127.0.0.1:8899"),
+            // B2's core case. The host-shape gate added for the authority-boundary
+            // leak must not cost the ordinary `user:pass@host:port/path` form.
+            (
+                "https://svc:s3cr3t@proxy.internal:8443/v1",
+                "https://proxy.internal:8443<path:1 segment>",
+            ),
+            // Host forms the shape gate has to keep accepting.
+            ("https://api.example.com", "https://api.example.com"),
+            (
+                "http://proxy_internal-1.example.com:8080",
+                "http://proxy_internal-1.example.com:8080",
+            ),
+            // A bracketed IPv6 literal, with and without a port.
+            ("http://[::1]:8080/v1", "http://[::1]:8080<path:1 segment>"),
+            ("http://[2001:db8::1]", "http://[2001:db8::1]"),
+            // Proxy variables legitimately carry socks schemes.
+            ("socks5://127.0.0.1:1080", "socks5://127.0.0.1:1080"),
+            ("socks5h://corp-proxy.invalid:1080", "socks5h://corp-proxy.invalid:1080"),
         ];
         for (value, expected) in cases {
             assert_eq!(
@@ -5709,6 +5826,23 @@ mod tests {
             "://host/v1",
             "https:///v1",
             "https://@/v1",
+            // Host position that is not host-shaped: a non-numeric port is the
+            // signature of a `user:password` pair sitting where a host belongs.
+            "https://user:secret",
+            "https://host:80:80",
+            "https://host:",
+            // Characters no reg-name admits.
+            "https://ho st",
+            "https://host\0tail",
+            "https://ho%73t",
+            // A closing bracket with no opening one — what an `@` inside an IPv6
+            // literal leaves behind after the userinfo split.
+            "https://2]",
+            "https://[::1",
+            "https://[]",
+            "https://[::1]:80x",
+            // Not a hex/colon/dot IPv6 body.
+            "https://[gw.example.invalid]",
         ] {
             assert_eq!(
                 project_url_origin(value),
