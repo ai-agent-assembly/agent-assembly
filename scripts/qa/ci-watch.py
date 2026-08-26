@@ -608,8 +608,25 @@ def main(argv: list[str]) -> int:
             "Needed when the token cannot read branch protection."
         ),
     )
-    poll.add_argument("--retries", type=int, default=2)
-    poll.add_argument("--retry-backoff", type=float, default=1.0)
+    poll.add_argument(
+        "--retries",
+        type=int,
+        default=2,
+        help=(
+            "how many times to re-attempt a failed `gh` query within this one "
+            "wakeup. This is not a wait for CI: it covers a transport blip, and "
+            "0 means a single attempt."
+        ),
+    )
+    poll.add_argument(
+        "--retry-backoff",
+        type=float,
+        default=1.0,
+        help=(
+            "seconds before the first retry, doubling per attempt and capped at "
+            "30s. Only ever consumed on the retry path above."
+        ),
+    )
     poll.add_argument("--json", action="store_true")
     poll.set_defaults(func=cmd_poll)
 

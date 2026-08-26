@@ -136,8 +136,12 @@ minutes without a fresh query being re-verified against it.
   short wakeup → query again, each wakeup performing its own query and each
   ending. First ~10 minutes at a ~2–3 minute cadence, then ~5 minutes; never
   go more than ~10 minutes without a fresh authoritative state. One
-  `scripts/qa/ci-watch.py poll` per wakeup satisfies this by construction —
-  it cannot sleep, because it exits.
+  `scripts/qa/ci-watch.py poll` per wakeup satisfies this by construction: it
+  observes once and exits, so it holds no state between wakeups and cannot
+  wait for CI. It does sleep in one place — between retry attempts at a failed
+  `gh` query, bounded by `--retries`/`--retry-backoff` and under 3s at the
+  defaults — but that is a bounded retry inside a single observation, not
+  waiting between observations, which is the thing this rule forbids.
 * **A failed required check ends the wait immediately and starts
   triage** (`qa/FINDING-VERIFICATION-PROTOCOL.md` classifies and drives the
   fix) — it is never a reason to keep polling in case it changes back.

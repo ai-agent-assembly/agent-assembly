@@ -291,6 +291,34 @@ then
   FAILED=1
 fi
 
+echo "== Guard: cmd_poll refuses the empty required set in its own right =="
+echo "   Case M and the guard above both exit 23, and so does this, which is"
+echo "   exactly the problem: deleting cmd_poll's refusal changes no exit code,"
+echo "   because classify()'s guard then raises and is caught into the same 23."
+echo "   The two guards are meant to be complementary — cmd_poll declines to"
+echo "   GUESS the gate, classify() declines to PASS over nothing — so the only"
+echo "   thing that can tell them apart is which sentence comes out. Assert on"
+echo "   that, or cmd_poll's guard is covered by nothing."
+cursor="$(mktemp -d)"
+out="$(AA_QA_CI_WATCH_SELFTEST=1 \
+  AA_QA_CI_WATCH_FIXTURE="$FIXTURES/case-m-no-required-contexts.json" \
+  AA_QA_CI_WATCH_CURSOR_DIR="$cursor" \
+  python3 "$WATCH" poll --retries 0 2>&1)"
+code=$?
+rm -rf "$cursor"
+if [ "$code" -ne 23 ]; then
+  echo "  ✗ expected exit 23 (query-error), got $code:"
+  printf '    %s\n' "$out"
+  FAILED=1
+elif printf '%s' "$out" | grep -q -- "could not determine required contexts"; then
+  echo "  ✓ cmd_poll cites its own refusal, not classify()'s fallback"
+else
+  echo "  ✗ exited 23 but not via cmd_poll's refusal — classify()'s guard caught"
+  echo "    it instead, so cmd_poll's refusal is unreachable or deleted:"
+  printf '    %s\n' "$out"
+  FAILED=1
+fi
+
 echo "== Case A (TEST A): pending at wakeup 1, success at wakeup 2 =="
 echo "   Proves the watcher RE-QUERIES. A cached first observation reports"
 echo "   running forever — that is the AAASM-5930/5945 behaviour."
