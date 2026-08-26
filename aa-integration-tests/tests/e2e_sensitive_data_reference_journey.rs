@@ -460,20 +460,30 @@ async fn full_chain_redaction_reaches_operator_visible_api() {
     //     store, so this is not reachable through the API — it is the fact
     //     this journey exists partly to make visible) ──────────────────────
     //
-    // Both log lines are written asynchronously, so neither may exist yet at
-    // the instant Destination 2 observed the alert. `emit_redaction_telemetry`
-    // (aa-proxy/src/proxy/mod.rs) reports on a *detached* `tokio::spawn` task
-    // and logs the `event_id` only after the RPC resolves, while aa-api stores
-    // the alert *before* it responds. So the guaranteed ordering is
+    // Nothing orders either log line against the alert Destination 2 observed.
+    // `emit_redaction_telemetry` (aa-proxy/src/proxy/mod.rs) reports on a
+    // *detached* `tokio::spawn` task and logs the `event_id` only after the RPC
+    // resolves. On the aa-api side (aa-api/src/redaction_telemetry.rs) the
+    // ingest line is logged and the alert republished onto the in-process
+    // channel, and only then is the response sent — while the alert reaches the
+    // store Destination 2 reads from in a *separate* capture task. So the two
+    // lines this section needs and the alert it already saw all fan out from
+    // one point:
     //
-    //     alert stored → response sent → proxy logs event_id
+    //     api logs ingest line → alert republished ─┬→ response → proxy logs event_id
+    //                                              └→ capture task → alert visible
     //
-    // and the Destination 2 poll above can legitimately succeed while both
-    // log lines are still unwritten. Reading either log once and requiring
-    // the line to be present is therefore a race, which is what AAASM-5934
-    // recorded after it reddened four unrelated Dependabot PRs. Poll for the
-    // correlated pair the same way Destination 3 polls for the audit JSONL,
-    // re-reading both logs each iteration because they grow after this point.
+    // The two branches race, so observing the alert says nothing about whether
+    // the proxy has logged yet; and the api line, though earlier in program
+    // order than both, still has to reach this process's captured output.
+    // Reading either log once and requiring the line to be present is therefore
+    // a race, which is what AAASM-5934 recorded after it reddened four unrelated
+    // Dependabot PRs. Poll for the correlated pair, re-reading both logs each
+    // iteration because they grow after this point.
+    //
+    // Bounded by a deadline rather than an iteration count: each iteration does
+    // two file reads and a sleep, so `for _ in 0..200` bounds the iterations and
+    // not the time, and what needs bounding here is the wait.
     let mut proxy_log = String::new();
     let mut api_log = String::new();
     let mut correlated: Option<String> = None;
