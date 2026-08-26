@@ -17,6 +17,30 @@ permissions:
 # Node.js SDK E2E fixtures (AAASM-1514 / F116 ST-B): TypeScript fixture scripts
 # are installed via pnpm and run in AA_SELFTEST=1 mode inside the Rust harness;
 # no running gateway or native bindings are required for the hermetic tests.
+#
+# ---------------------------------------------------------------------------
+# BEFORE YOU ADD ANOTHER PRE-BUILD STEP — read this. (AAASM-5943)
+#
+# Pre-build steps spend the *job's* wall-clock budget, and this job has now
+# been pushed past its ceiling twice by exactly that: AAASM-2340 broke the
+# 20-minute ceiling, AAASM-5908 broke the 30-minute one. Both times the
+# reflex was to raise the ceiling. Raising it a third time is not a fix.
+#
+# What made the second one expensive was not the added 5 minutes. It was that
+# a truncated job saved no cargo cache (see `cache-on-failure` below), so the
+# *pre-existing* `aasm` pre-build silently inflated 2.7 -> 12 min and the job
+# could never get back under the ceiling on its own. It stayed broken for 13
+# consecutive main merges, reporting `cancelled` rather than `failure`, which
+# nothing alerts on.
+#
+# So if you are about to add a step here:
+#   1. Budget it against the step ceilings below, not against the job ceiling.
+#   2. Prefer removing work over adding time. The two pre-builds and the test
+#      step already recompile overlapping graphs; consolidating them is
+#      tracked separately rather than adding a third copy.
+#   3. Never let this job's only failure mode be the job ceiling — a job
+#      ceiling firing is invisible, a step ceiling firing is red.
+# ---------------------------------------------------------------------------
 
 on:
   push:
@@ -46,7 +70,57 @@ jobs:
   integration-tests:
     name: Integration tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # AAASM-5943: raised from 30. This is a ceiling that lets a cold-cache run
+    # *finish and be measured*; it is deliberately not the fix, and it is not a
+    # budget anyone should plan against. See the note above `Pre-build aasm`.
+    #
+    # Derived, not chosen. The job ceiling must stay strictly above the sum of
+    # every step ceiling plus everything that cannot carry one, because that sum
+    # is the longest run in which each step still fires its own ceiling first. If
+    # the job ceiling fires first the run reports `cancelled`, which is the
+    # invisible state this ticket exists to eliminate; a step ceiling firing
+    # reports `failure`, which is red and blocks.
+    #
+    #   step ceilings          71  = 6 protobuf + 6 cache restore + 4 pnpm
+    #                               + 18 pre-build aasm + 9 pre-build api + 28 tests
+    #   un-ceilinged steps      2  = 4 checkouts, 6 toolchain/setup actions, a
+    #                               symlink, and the non-cache post steps.
+    #                               Measured at 58s total in run 32946949070; 2
+    #                               min is that doubled. None of these does work
+    #                               proportional to the repository, so a ceiling
+    #                               on each would cost more noise than it buys.
+    #   cold cache save         2  = measured 44s, rounded up. See below.
+    #                          ---
+    #   worst bounded run      75  = the longest run in which every step still
+    #                               fires its own ceiling first
+    #   strictness margin       1  = the ceiling must be strictly ABOVE that sum,
+    #                               not equal to it. At equality the two fire in
+    #                               the same minute and the job ceiling wins the
+    #                               tie, which is the `cancelled` outcome this
+    #                               whole file exists to make impossible.
+    #                          ---
+    #                           76
+    #
+    # The cache save is the one contributor that *cannot* be ceilinged: it is a
+    # post step, and post steps do not accept `timeout-minutes`. It is therefore
+    # the only remaining way the job ceiling could still fire before a step
+    # ceiling, which is why it is budgeted explicitly rather than absorbed into
+    # the line above.
+    #
+    # It was an estimate of 6 min when this ceiling was first derived, because
+    # the step had never once executed here — that is the ratchet
+    # `cache-on-failure` below breaks. It has now executed: run 33000991684 step
+    # 32 `Post Run Swatinem/rust-cache`, 44s, saving a cold macOS target dir.
+    # So the 6 is replaced by its measurement, and the ceiling comes down with
+    # it rather than keeping slack that stood in for a number nobody had.
+    #
+    # 2 min is 44s with ~2.7x headroom, kept because one observation of a save
+    # is not a distribution and a cache that grows will take longer. If a later
+    # run measures materially more, raise this line and the job ceiling together.
+    #
+    # Do not lower this below the sum above without lowering the step ceilings
+    # too, and do not add an un-ceilinged step that can do unbounded work.
+    timeout-minutes: 76
     strategy:
       fail-fast: false
       matrix:
@@ -75,6 +149,12 @@ jobs:
           path: node-sdk
 
       - name: Install protobuf compiler
+        # Ceilinged for the same reason as the long steps below: this is a
+        # network install that can trigger a full Homebrew tap update, so it is
+        # capable of eating minutes rather than the 12s a warm runner takes. Six
+        # minutes is far above any healthy run; past that it is wedged, and a red
+        # step here is worth more than a `cancelled` job later.
+        timeout-minutes: 6
         run: brew install protobuf
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -89,8 +169,47 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        # Restoring a multi-GB macOS target dir is a network transfer, so it is
+        # ceilinged like the other steps that can run long. This bounds only the
+        # *restore*; the save is a post step and cannot be bounded (see the job
+        # ceiling note).
+        timeout-minutes: 6
         with:
           key: integration-tests-${{ matrix.os }}
+          # AAASM-5943: without this, a job killed by `timeout-minutes` saves no
+          # cache at all, which latched this workflow into a loop it could not
+          # recover from on its own. At this exact pin, the `runs:` stanza of
+          # action.yml ends with
+          #   post-if: "success() || env.CACHE_ON_FAILURE == 'true'"
+          # and `cache-on-failure` is declared with no default, i.e. falsy. (Its
+          # description says "Defaults to false", but that is prose: there is no
+          # `default:` key, so `core.getInput` returns "" and restore.ts
+          # normalises it.) So every cancelled run skipped
+          # `Post Run Swatinem/rust-cache` outright (observed directly: step 32 =
+          # `skipped` in run 32946949070). Each later run then restored the last
+          # cache a *green* run had written, so `Pre-build aasm` compiled from
+          # progressively colder state — 2.7 min when green, 8.6-12 min
+          # afterwards — which kept the job over the ceiling, which kept the
+          # cache unwritten. Setting this makes src/restore.ts export
+          # CACHE_ON_FAILURE=true, so the post step runs and a truncated run
+          # still contributes its cache.
+          #
+          # Confirmed at this pin rather than argued from the source: in run
+          # 33000991684 step 32 ran to `success` in 44s, where the same step was
+          # `skipped` in every run that preceded it.
+          #
+          # `save-if: always()` is NOT a substitute at this pin: `save-if` is
+          # read inside dist/save.js, which never executes when post-if is false.
+          #
+          # The failure mode this introduces, so it is not a surprise later: a
+          # run killed at a step ceiling saves a `target/` that a compiler was
+          # writing into. `cleanTargetDir` prunes much of it but guarantees
+          # nothing about a half-written object, so a later run can fail with a
+          # confusing compile or link error instead of a timeout. The remedy is
+          # always the same — bump the `key` above to bust the cache — and it is
+          # a strictly better position than the ratchet this replaces, where no
+          # cache was written at all.
+          cache-on-failure: true
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
@@ -116,9 +235,36 @@ jobs:
 
       - name: Install TypeScript fixture dependencies
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
+        # Ceilinged as a network install: 4s against a warm pnpm store, minutes
+        # against a cold one, and unbounded if the registry stalls.
+        timeout-minutes: 4
         run: pnpm install --frozen-lockfile
 
+      # AAASM-5943: every step that can do unbounded work carries its own
+      # `timeout-minutes` — the three below, and `Install protobuf compiler`,
+      # the cache restore and the pnpm install above. That is load-bearing
+      # rather than decorative.
+      #
+      # A job killed by the *job* ceiling reports `cancelled`. GitHub does not
+      # treat `cancelled` as a failure: branch protection accepts it, the checks
+      # page shows no red, and — verified in run 32946949070 — even the
+      # `if: failure()` log-upload step is `skipped`, so no diagnostic escapes
+      # and no `if: always()` guard step can help. That is how this workflow ran
+      # 13 consecutive main merges without validating any of them while looking
+      # untroubled. A step that exceeds its own `timeout-minutes` is killed and
+      # marked `failure`, which fails the job, goes red, and blocks the merge.
+      #
+      # So: the step ceilings are the real gate, and the job ceiling is only a
+      # backstop that should never fire. Keep the job ceiling above their sum.
+      #
+      # Each ceiling is set from measured durations at roughly 1.5x the worst
+      # observed value. The job's healthy runs sat at 77-90% of budget (3-7 min
+      # of slack) and that is precisely why it tipped over as soon as anything
+      # was added, so these are deliberately looser than that.
       - name: Pre-build aasm binary (AAASM-2340)
+        # Worst measured 12.0 min (244458b7f, cold cache under the ratchet);
+        # 2.7 min warm. 18 = 1.5x worst.
+        timeout-minutes: 18
         # Compiling aa-cli (which pulls wasmtime via aa-sandbox) once serially
         # before nextest skips per-test `cargo run -p aa-cli` overhead — under
         # --test-threads=1 every test paid that overhead in sequence, which is
@@ -126,6 +272,8 @@ jobs:
         run: cargo build --quiet -p aa-cli --bin aasm
 
       - name: Pre-build aa-api-server binary (AAASM-5908)
+        # Worst measured 5.4 min (244458b7f). 9 = 1.67x worst.
+        timeout-minutes: 9
         # Same rationale as the aasm pre-build above, for the same reason:
         # `common::api_server::ApiServerProcess::resolve_binary` invokes
         # `cargo build -p aa-api --bin aa-api-server` the first time any test
@@ -139,6 +287,22 @@ jobs:
         run: cargo build --quiet -p aa-api --bin aa-api-server
 
       - name: Run integration tests
+        # 28 = 1.48x the 18.9 min of the last green warm run (34a274da6); under
+        # the ratchet the step was truncated at 11.9-16.4 min and never finished.
+        #
+        # Then measured at 24.5 min in run 33000991684 — 87% of this ceiling,
+        # which is the same thin-slack condition that let the *job* ceiling tip
+        # over in the first place, so it is recorded here rather than left for
+        # someone to rediscover. It is not a reason to raise the 28: that run
+        # restored a cache written by a green run several weeks of main earlier
+        # (the ratchet is why), so it compiled the test crate close to cold, and
+        # the 44s save this PR unblocks is what brings later runs back toward the
+        # warm figure. Re-measure once a run has restored a cache this workflow
+        # actually wrote.
+        #
+        # If this ceiling ever fires the suite is genuinely too slow — that is a
+        # real red failure to investigate, not a number to raise.
+        timeout-minutes: 28
         env:
           PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk
           GO_SDK_PATH: ${{ github.workspace }}/go-sdk
