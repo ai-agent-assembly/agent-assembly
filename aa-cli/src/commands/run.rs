@@ -15,7 +15,7 @@ use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel};
 
 use crate::commands::proxy::guard::{ProxyGuard, ProxyGuardOptions};
 use crate::commands::proxy::launch_state;
-use crate::commands::run_env_sanitize::{PROXY_EXCLUSION_VARS, PROXY_ROUTING_VARS};
+use crate::commands::run_env_sanitize::{self, PROXY_EXCLUSION_VARS, PROXY_ROUTING_VARS};
 // AAASM-5349: resolution is shared with the devint service, so it lives in
 // `aa-policy` rather than here. Aliased so the call sites read unchanged.
 use crate::commands::run_registration::{self, GovernedRegistration};
@@ -1181,8 +1181,10 @@ mod plan {
             // Derived through the same merge `spawn_and_wait` applies, so the
             // spec describes the environment the child actually receives —
             // including the names the adapter removes, which a naive union of the
-            // two sources would still show as present.
-            let (effective, removed) = super::effective_child_env(&command, &child_env);
+            // two sources would still show as present. `no_proxy` is threaded
+            // through so the isolation-boundary path (which never touches
+            // `spawn_and_wait`) gets the same D6 sanitization (AAASM-5923/F1).
+            let (effective, removed) = super::effective_child_env(&command, &child_env, self.network.no_proxy());
             let credentials = credential_posture(&effective, &removed);
 
             // The spec, the canonical projection and the execution decision are
@@ -2325,7 +2327,7 @@ fn format_dry_run_output(
     // Derived through the same merge `spawn_and_wait` applies, so the preview
     // cannot claim a variable the launch would not have — including one the
     // adapter removes, which a naive union of the two sources would still show.
-    let (effective, removed) = effective_child_env(cmd, env);
+    let (effective, removed) = effective_child_env(cmd, env, no_proxy);
     let mut env_lines: String = effective
         .iter()
         .map(|(k, v)| format!("{}={}\n", k, mask_value(k, v)))
@@ -2508,6 +2510,7 @@ async fn deregister_with_gateway(registration: &GovernedRegistration) {
 fn effective_child_env(
     cmd: &std::process::Command,
     child_env: &HashMap<String, String>,
+    no_proxy: bool,
 ) -> (BTreeMap<String, String>, Vec<String>) {
     let mut env: BTreeMap<String, String> = child_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let mut removed = Vec::new();
@@ -2521,6 +2524,46 @@ fn effective_child_env(
                 env.remove(&key);
                 removed.push(key);
             }
+        }
+    }
+    // AAASM-5923/F1: this is the one merge point every caller of this
+    // function shares — `spawn_and_wait`'s non-isolated real spawn, AND
+    // `RunPlan::bind`'s isolation-boundary path (`resolve_boundary` /
+    // `backend.set_child_environment`), which does not go through
+    // `spawn_and_wait` at all. Sanitizing only inside `spawn_and_wait`, as
+    // this function's own doc comment already warned, left the isolation
+    // boundary leaking ambient `ALL_PROXY`/`NO_PROXY`/lowercase-form values
+    // straight into a sandboxed child (an independent review of this exact
+    // Story caught it — every isolation backend treats this map as the
+    // child's *entire* environment, `env_clear()`-equivalent, so a name
+    // merely absent from `child_env`'s ambient copy is not enough; it must
+    // be actively removed here). `spawn_and_wait`'s own Command-level
+    // `env_remove` calls stay in place on top of this — that Command
+    // inherits the real ambient process environment unless explicitly
+    // stripped, which this map-level pass alone cannot reach.
+    if !no_proxy {
+        // Captured from `env` — the already-merged map, adapter values
+        // already overlaid on top of `child_env` above — not re-derived
+        // separately from `child_env`/`cmd.get_envs()`: those two sources
+        // disagree by design whenever the adapter normalises a bare
+        // `host:port` into a URL (`the adapter's normalised URL must win
+        // over the bare host:port`), and re-deriving from the un-merged
+        // sources inverted that precedence (independent-review regression,
+        // caught by `the_preview_environment_is_the_launch_environment`).
+        let trusted_https_proxy = env.get("HTTPS_PROXY").cloned();
+        let trusted_http_proxy = env.get("HTTP_PROXY").cloned();
+        for name in run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+            env.remove(name);
+        }
+        // Whatever `HTTPS_PROXY`/`HTTP_PROXY` was present before the removal
+        // above — a `build_child_env`-vouched endpoint, or a receipted value
+        // the adapter injected onto `cmd` — is the only value trusted enough
+        // to survive it, and only under those two exact uppercase names.
+        if let Some(v) = trusted_https_proxy {
+            env.insert("HTTPS_PROXY".to_string(), v);
+        }
+        if let Some(v) = trusted_http_proxy {
+            env.insert("HTTP_PROXY".to_string(), v);
         }
     }
     (env, removed)
@@ -2583,7 +2626,7 @@ async fn spawn_and_wait(
     child_env: &HashMap<String, String>,
     no_proxy: bool,
 ) -> Result<i32> {
-    let (effective, removed) = effective_child_env(&cmd, child_env);
+    let (effective, removed) = effective_child_env(&cmd, child_env, no_proxy);
     let trusted_https_proxy = effective.get("HTTPS_PROXY").cloned();
     let trusted_http_proxy = effective.get("HTTP_PROXY").cloned();
 
@@ -4569,7 +4612,7 @@ mod tests {
         let cmd = adapter
             .build_launch_command(&[], "agent-1", None, Some("127.0.0.1:8080"))
             .expect("command");
-        let (effective, removed) = effective_child_env(&cmd, &child_env);
+        let (effective, removed) = effective_child_env(&cmd, &child_env, false);
 
         assert_eq!(
             effective.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
@@ -4586,6 +4629,71 @@ mod tests {
             "a variable the adapter removes must not be present: {effective:?}"
         );
         assert_eq!(removed, vec!["ANTHROPIC_API_KEY".to_string()]);
+    }
+
+    /// AAASM-5923/F1 (independent review): `effective_child_env` is the one
+    /// merge point `RunPlan::bind`'s isolation-boundary path shares with
+    /// `spawn_and_wait` — `resolve_boundary`/`backend.set_child_environment`
+    /// never goes through `spawn_and_wait`'s own Command-level `env_remove`
+    /// calls at all, and every isolation backend treats this returned map as
+    /// the child's *entire* environment (`env_clear()`-equivalent), so a
+    /// leak here is a leak straight into a sandboxed child. Proves the
+    /// ambient `ALL_PROXY`/`NO_PROXY` and all four lowercase forms — not
+    /// just `HTTPS_PROXY`/`HTTP_PROXY` — are stripped from the returned map
+    /// itself, independent of any Command-level step a caller may or may not
+    /// also apply.
+    #[test]
+    fn effective_child_env_strips_all_eight_proxy_variants_for_every_caller() {
+        let adapter = StubEnvContributing;
+        let mut child_env: HashMap<String, String> = HashMap::new();
+        for key in run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+            child_env.insert(key.to_string(), "attacker-controlled".to_string());
+        }
+        let cmd = adapter
+            .build_launch_command(&[], "agent-1", None, None)
+            .expect("command");
+        let (effective, _removed) = effective_child_env(&cmd, &child_env, false);
+        // ALL_PROXY/NO_PROXY (and lowercase forms of all four names) are never
+        // a legitimate injection target — always gone, unconditionally.
+        // HTTPS_PROXY/HTTP_PROXY (uppercase) are the one pair step 3 may
+        // reinject, so — unlike the six below — a value already present in
+        // `child_env` for them is by this layer's own contract a vouched-for
+        // one (whatever populated `child_env` decided that, e.g.
+        // `build_child_env`'s own SSRF-style trust check), not an ambient
+        // leak this function can distinguish; excluded from this assertion
+        // for that reason, not because they are exempt from D6.
+        for key in [
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+            "https_proxy",
+            "http_proxy",
+        ] {
+            assert!(
+                !effective.contains_key(key),
+                "{key} must not survive into the map every isolation backend treats as authoritative: {effective:?}"
+            );
+        }
+    }
+
+    /// Negative control for the test above: `--no-proxy` leaves this map
+    /// exactly as untouched as it leaves `spawn_and_wait`'s Command — proves
+    /// the strip above is conditional on `no_proxy`, not unconditional.
+    #[test]
+    fn effective_child_env_leaves_ambient_proxy_vars_alone_under_no_proxy() {
+        let adapter = StubEnvContributing;
+        let mut child_env: HashMap<String, String> = HashMap::new();
+        child_env.insert("ALL_PROXY".to_string(), "operators-own-value".to_string());
+        let cmd = adapter
+            .build_launch_command(&[], "agent-1", None, None)
+            .expect("command");
+        let (effective, _removed) = effective_child_env(&cmd, &child_env, true);
+        assert_eq!(
+            effective.get("ALL_PROXY").map(String::as_str),
+            Some("operators-own-value"),
+            "--no-proxy must leave even this shared-merge-point map untouched"
+        );
     }
 
     /// AC 2: the two variables that decide whether a session is protected are
@@ -5384,7 +5492,7 @@ mod tests {
         let handle = stub_handle(Some("team-a"));
 
         let bound = resolved.bind(&handle);
-        let (effective, removed) = effective_child_env(bound.command(), bound.child_env());
+        let (effective, removed) = effective_child_env(bound.command(), bound.child_env(), false);
 
         assert_eq!(
             effective.get("AA_AGENT_DID").map(String::as_str),
