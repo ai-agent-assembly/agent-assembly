@@ -2358,13 +2358,30 @@ fn render_env_value(key: &str, value: &str) -> String {
             // no proxy), and rendering it as a bare `KEY=` said nothing at all.
             return PRESENCE_EMPTY.into();
         }
-        if is_url_valued_name(key) {
-            // Fail closed: a value that does not parse as an origin is withheld,
-            // never printed raw.
-            return project_url_origin(value).unwrap_or_else(|| PRESENCE_SET.into());
+        // Projected on the *value's* shape, not on the variable's name. Gating
+        // this on `is_url_valued_name` reintroduced name-based trust one layer
+        // down: 14 of the 17 allowlisted names fell through to `mask_value`,
+        // which has no URL awareness, so a credential in a query parameter or a
+        // path segment printed in full under any of them. Two of those 14 are
+        // not even operator-set — `AA_ENFORCEMENT_MODE` is injected in Enforce
+        // mode and `NO_PROXY` survives ambiently under `--no-proxy` — and the
+        // reason `project_url_origin` exists at all is that a credential can sit
+        // in any URL position. Whether it can is a property of the value.
+        if let Some(origin) = project_url_origin(value) {
+            return origin;
         }
-        // Allowlisted. The name-based masking still runs on top: it is now a
-        // backstop over a reviewed set of names rather than the whole rule.
+        if is_url_valued_name(key) {
+            // Fail closed: this name is *expected* to hold a URL, so a value
+            // that does not parse as one is withheld rather than printed raw.
+            // The other allowlisted names have non-URL values legitimately
+            // (`ANTHROPIC_MODEL`, `AA_ENFORCEMENT_MODE`), so the same rule
+            // cannot apply to them without withholding everything they exist to
+            // show.
+            return PRESENCE_SET.into();
+        }
+        // Allowlisted and not a URL. The name-based masking still runs on top:
+        // it is now a backstop over a reviewed set of names rather than the
+        // whole rule.
         return mask_value(key, value);
     }
     if looks_like_credential_name(key) {
