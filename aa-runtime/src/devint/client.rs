@@ -35,11 +35,12 @@ use aa_proto::assembly::devint::v1 as wire;
 
 use super::apply_outcome::ApplyMutation;
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
-use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
+use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE};
+use super::projection::parse_scope;
 use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
 use super::socket::{self, SocketDiscovery};
 use super::verb::DiVerb;
-use aa_core::integration::LIFECYCLE_SCHEMA_VERSION;
+use aa_core::integration::{SettingsScope, LIFECYCLE_SCHEMA_VERSION};
 
 /// How long the DI-API handshake may take before the runtime is treated as
 /// non-responsive (AAASM-5667).
@@ -75,6 +76,57 @@ fn handshake_timed_out(path: &Path, timeout: Duration) -> ClientError {
             timeout
         ),
     )))
+}
+
+/// Refuse `project` scope on a connection whose peer cannot carry a project
+/// root (AAASM-5913).
+///
+/// The check is *before the send*, and that is the whole point. `project_root`
+/// is `PlanArgs` field 6, added at
+/// [`DI_API_PROJECT_ROOT_SINCE`](super::negotiate::DI_API_PROJECT_ROOT_SINCE);
+/// proto3 discards an unknown field during decode, so a pre-v6 runtime never
+/// learns one was sent. It does not deny the request, does not report a
+/// degraded connection, and does not leave the field visibly empty on the
+/// caller's side either — the plan simply comes back authored under the
+/// daemon's own working directory, which is the original defect wearing a
+/// successful response. No amount of inspecting the reply recovers this,
+/// because the two cases are byte-identical: a v5 runtime that ignored the root
+/// and a v5 runtime that was never sent one produce the same `PlanView`.
+///
+/// The scope token is parsed with [`parse_scope`] rather than compared as a
+/// string, so "is this project scope" means exactly what the server will decide
+/// it means. A token this client cannot parse is passed through untouched: the
+/// server owns rejecting it, and guessing here would turn one clear refusal
+/// into two competing ones.
+///
+/// Reported as [`ClientError::Incompatible`] built locally — not sent by the
+/// peer — for the reason [`handshake_timed_out`] does the same thing: that enum
+/// is `pub` and exhaustively matchable, so a new variant would be a source
+/// break (AAASM-5669), and a version-shaped refusal carrying reason,
+/// remediation and the supported window is precisely what `Incompatible`
+/// already models. The reason names the negotiated version, so nothing is lost
+/// by the origin being local.
+fn refuse_project_scope_below_v6(negotiated_version: u32, settings_scope: &str) -> Result<(), ClientError> {
+    if negotiated_version >= DI_API_PROJECT_ROOT_SINCE {
+        return Ok(());
+    }
+    if parse_scope(settings_scope) != Some(SettingsScope::Project) {
+        return Ok(());
+    }
+    Err(ClientError::Incompatible(wire::Incompatible {
+        reason: format!(
+            "this connection negotiated DI-API {negotiated_version}; a caller-chosen project root \
+             arrived in DI-API {DI_API_PROJECT_ROOT_SINCE}, so a project-scope plan authored over \
+             it would be resolved against the runtime's own working directory rather than yours"
+        ),
+        remediation: format!(
+            "upgrade the running AASM runtime to one speaking DI-API \
+             {DI_API_PROJECT_ROOT_SINCE} or later, then retry; user and managed scope are \
+             unaffected and work against this runtime as-is"
+        ),
+        min_supported: DI_API_MIN_SUPPORTED,
+        max_supported: DI_API_MAX_SUPPORTED,
+    }))
 }
 
 /// Why a client call did not produce a response.
@@ -407,7 +459,12 @@ impl DevIntClient {
     }
 
     /// Author a dry run for [`PlanRequest::tool_id`].
+    ///
+    /// Refuses before sending if this connection negotiated a version that
+    /// cannot carry [`PlanRequest::project_root`] and the scope needs one — see
+    /// [`refuse_project_scope_below_v6`].
     pub async fn plan(&mut self, args: PlanRequest<'_>) -> Result<wire::PlanView, ClientError> {
+        refuse_project_scope_below_v6(self.negotiated.di_api_version, args.settings_scope)?;
         let mut request = self.request(DiVerb::Plan, args.tool_id);
         request.plan = Some(wire::PlanArgs {
             profile: args.profile.to_string(),
