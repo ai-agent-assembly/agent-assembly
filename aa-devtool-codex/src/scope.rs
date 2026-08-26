@@ -284,6 +284,100 @@ mod tests {
         assert_eq!(p.ca_source(), Some(ca.as_path()));
     }
 
+    /// Neither root helper may invent a root when it has none (AAASM-5956).
+    ///
+    /// This is the load-bearing test of the pair. `an_unresolvable_root_is_an_error_not_a_guess`
+    /// above already proves that a `None` root *produces* `ScopeError::Unresolvable` —
+    /// but before this fix `from_env` could never hand it a `None`, so that branch
+    /// was unreachable and the assertion proved nothing about the shipped path.
+    /// What was missing is the half asserted here: that the resolution rule
+    /// itself yields nothing rather than `.`.
+    ///
+    /// Reverting either helper to `unwrap_or_else(|| PathBuf::from("."))` reddens
+    /// exactly this test.
+    #[test]
+    fn neither_root_rule_synthesises_a_relative_root_when_nothing_is_set() {
+        assert_eq!(
+            state_root_from(None, None),
+            None,
+            "an unset AASM_STATE_DIR and HOME must yield no state root, not ./.aasm/integrations"
+        );
+        assert_eq!(
+            ca_source_from(None, None),
+            None,
+            "an unset AA_CA_DIR and HOME must yield no CA path, not ./.aa/ca/ca-cert.pem"
+        );
+    }
+
+    /// The resolution order and its results are unchanged whenever anything is
+    /// set, which is every ordinary invocation (AC2 — no behaviour change).
+    #[test]
+    fn both_root_rules_are_unchanged_when_an_override_or_home_is_set() {
+        let over = PathBuf::from("/o");
+        let home = PathBuf::from("/h");
+
+        // Override wins over HOME, for both.
+        assert_eq!(
+            state_root_from(Some(over.clone()), Some(home.clone())),
+            Some(PathBuf::from("/o/integrations"))
+        );
+        assert_eq!(
+            ca_source_from(Some(over.clone()), Some(home.clone())),
+            Some(PathBuf::from("/o/ca-cert.pem"))
+        );
+
+        // HOME alone gives the documented default layout.
+        assert_eq!(
+            state_root_from(None, Some(home.clone())),
+            Some(PathBuf::from("/h/.aasm/integrations"))
+        );
+        assert_eq!(
+            ca_source_from(None, Some(home)),
+            Some(PathBuf::from("/h/.aa/ca/ca-cert.pem"))
+        );
+
+        // An override alone works with no HOME at all.
+        assert_eq!(
+            state_root_from(Some(over.clone()), None),
+            Some(PathBuf::from("/o/integrations"))
+        );
+        assert_eq!(ca_source_from(Some(over), None), Some(PathBuf::from("/o/ca-cert.pem")));
+    }
+
+    /// A CA certificate planted at the *old* guessed location cannot be selected
+    /// as trust material (AAASM-5956 AC6).
+    ///
+    /// The substitution vector needed one specific input — no `AA_CA_DIR` and no
+    /// `HOME` — to make the resolver name a cwd-relative path. A real file is
+    /// planted at exactly the layout the old code would have produced, and the
+    /// assertion is that the resolver names nothing at all, so the plant cannot
+    /// be reached however the daemon's working directory is arranged.
+    ///
+    /// The plant is deliberately a file that *exists*: [`CodexPaths::ca_source`]
+    /// filters on `is_file()`, which meant an absent plant reported the
+    /// capability unsupported while a present one reported Supported and was
+    /// read. Testing with an absent file would therefore have tested the case
+    /// that was never the problem.
+    #[test]
+    fn a_certificate_planted_at_the_old_guessed_location_cannot_be_selected() {
+        let dir = tempfile::tempdir().unwrap();
+        let planted = dir.path().join(".aa").join("ca").join("ca-cert.pem");
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        std::fs::write(&planted, "-----BEGIN CERTIFICATE-----\nattacker\n").unwrap();
+        assert!(planted.is_file(), "the plant must exist for this test to mean anything");
+
+        assert_eq!(
+            ca_source_from(None, None),
+            None,
+            "with no AA_CA_DIR and no HOME the resolver must name no CA path, so no \
+             relative plant is reachable from any working directory"
+        );
+
+        // And the same for the state root, whose guessed form was the sibling
+        // `./.aasm/integrations` under that same directory.
+        assert_eq!(state_root_from(None, None), None);
+    }
+
     #[test]
     fn settings_path_does_not_vary_by_scope() {
         // Codex has one configuration surface, unlike Claude's three.
