@@ -303,11 +303,15 @@ echo "   become another reason to poll."
 assert_discriminating "exiting wait mode on failure" \
   case-b-pending-then-failure.json 2 20
 
-echo "== Case C (TEST C): PR HEAD moves mid-wait =="
+echo "== Case C (TEST C): the PR HEAD has already moved =="
 echo "   The watcher's identity includes the SHA. Observations bound to the"
 echo "   old SHA are void, not merely lower-priority."
+echo "   ONE wakeup, so --expect-head is the only thing that can produce the"
+echo "   verdict. The earlier two-wakeup version was over-determined: the"
+echo "   naive watcher's cache made it disagree on its own, so the case stayed"
+echo "   green with the SHA comparison deleted and flaw 2 had NO cover at all."
 assert_discriminating "SHA-bound watcher identity" \
-  case-c-head-changed.json 2 22 \
+  case-c-head-changed.json 1 22 \
   --expect-head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 echo "== Case D (TEST D): GitHub already terminal; local waiter is stale =="

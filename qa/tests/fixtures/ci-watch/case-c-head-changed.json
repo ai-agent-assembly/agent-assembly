@@ -1,26 +1,19 @@
 {
-  "description": "TEST C - PR HEAD changes mid-wait. The old run's states must be discarded and the verdict must be head-changed, so the watcher rebinds rather than waiting on an obsolete run.",
+  "description": "TEST C - the PR HEAD has ALREADY moved at the first look. One wakeup, one observation, so the only way to reach the wrong verdict is to ignore --expect-head: the case tests flaw 2 and nothing else. The earlier two-step version was over-determined — the naive watcher's cache alone made it disagree, so the case would have stayed green with the SHA check deleted.",
   "required_contexts": [
     "CI Success"
   ],
   "steps": [
-    {
-      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "check_runs": [
-        {
-          "name": "CI Success",
-          "status": "in_progress",
-          "conclusion": null
-        }
-      ]
-    },
     {
       "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "check_runs": [
         {
           "name": "CI Success",
           "status": "in_progress",
-          "conclusion": null
+          "conclusion": null,
+          "id": 900001,
+          "started_at": "2026-08-26T09:20:00Z",
+          "completed_at": null
         }
       ]
     }
