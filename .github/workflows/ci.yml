@@ -870,6 +870,22 @@ jobs:
         # re-walks the build graph and blocks on the lock under contention.
         # Tests then spawn the pre-built binary directly via AASM_BIN_PATH.
         run: cargo build --quiet -p aa-cli --bin aasm
+      - name: Pre-build aa-api-server (AAASM-5929)
+        # Same defect class as the AAASM-2340 step above, different binary:
+        # ApiServerProcess::resolve_binary() (aa-integration-tests/tests/common/
+        # api_server.rs) unconditionally runs `cargo build -p aa-api --bin
+        # aa-api-server` unless AA_API_SERVER_BIN_PATH is set. Left unset here,
+        # every real-process integration test (e.g.
+        # full_chain_redaction_reaches_operator_visible_api) paid a synchronous
+        # cargo build-graph-walk + target-dir-lock cost on every TRY, even once
+        # the binary was already correctly built — ~30-34s of wall time under
+        # this job's concurrent nextest load, confirmed via job 98053543951's
+        # proxy-vs-canary-request timeline (proxy up in <100ms; the real
+        # request that depends on ApiServerProcess didn't arrive until 34.3s
+        # later). Pre-building once and pinning AA_API_SERVER_BIN_PATH below
+        # removes that per-test cost the same way AASM_BIN_PATH already does
+        # for aasm.
+        run: cargo build --quiet -p aa-api --bin aa-api-server
       - name: Run tests
         # aa-ebpf requires nightly (aya-build invokes rustup run nightly) and has no
         # unit tests. Validated by the dedicated ebpf-build job.
@@ -887,6 +903,9 @@ jobs:
           # in-test command builders honour AASM_BIN_PATH; absent it they
           # fall back to cargo run for local dev.
           AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
+          # AAASM-5929: same purpose as AASM_BIN_PATH above, for
+          # ApiServerProcess (aa-integration-tests/tests/common/api_server.rs).
+          AA_API_SERVER_BIN_PATH: ${{ github.workspace }}/target/debug/aa-api-server
         # AAASM-5334: `--no-fail-fast` so a red run reports EVERY failing test,
         # not just the ones that happened to be dispatched before nextest
         # cancelled. Without it the reported blast radius is arbitrary and
