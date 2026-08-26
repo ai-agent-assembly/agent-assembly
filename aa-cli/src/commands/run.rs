@@ -4238,6 +4238,47 @@ mod tests {
         assert_eq!(env.get("AA_REGISTRATION_ID").map(String::as_str), Some("test-reg"));
     }
 
+    /// A non-UTF-8 environment *value* must not reach any output, and must not
+    /// take the launch down (AAASM-5935).
+    ///
+    /// `std::env::vars()` panics on such a variable and `Debug`-prints the
+    /// offending string in the panic message, so the value was disclosed to
+    /// stderr before `render_env_value`'s allowlist was consulted — the same
+    /// defect class as the one this module was hardened against, reached by a
+    /// route that bypassed the hardening completely.
+    ///
+    /// Unix-only because this is where a non-UTF-8 environment value is
+    /// constructible: `OsStr::from_bytes` has no portable equivalent, and on
+    /// Windows the environment block is UTF-16 with a different failure mode.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_environment_value_is_dropped_rather_than_panicked_over() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let _guard = crate::test_support::env_guard();
+        let name = "AA_TEST_NON_UTF8_VALUE";
+        // A lone 0x80 continuation byte: not valid UTF-8 in any position, and
+        // not a credential or a fragment of one.
+        std::env::set_var(name, std::ffi::OsStr::from_bytes(&[0x80]));
+        std::env::set_var("AA_TEST_UTF8_NEIGHBOUR", "plain");
+
+        // Would panic before the fix, which is the disclosure.
+        let env = inheritable_ambient_env();
+
+        std::env::remove_var(name);
+        std::env::remove_var("AA_TEST_UTF8_NEIGHBOUR");
+
+        assert!(
+            !env.contains_key(name),
+            "a value with no `String` representation cannot be carried, so it must be dropped"
+        );
+        assert_eq!(
+            env.get("AA_TEST_UTF8_NEIGHBOUR").map(String::as_str),
+            Some("plain"),
+            "dropping one unrepresentable variable must not drop the rest of the environment"
+        );
+    }
+
     /// `--no-proxy` is an opt-out of *our* injection, not a scrub of the
     /// operator's own configuration: a developer behind a corporate proxy who
     /// asks for an unproxied launch still needs their own proxy to reach the
