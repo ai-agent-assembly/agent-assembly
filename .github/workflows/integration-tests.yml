@@ -91,7 +91,15 @@ jobs:
     #                               on each would cost more noise than it buys.
     #   cold cache save         2  = measured 44s, rounded up. See below.
     #                          ---
-    #                           75
+    #   worst bounded run      75  = the longest run in which every step still
+    #                               fires its own ceiling first
+    #   strictness margin       1  = the ceiling must be strictly ABOVE that sum,
+    #                               not equal to it. At equality the two fire in
+    #                               the same minute and the job ceiling wins the
+    #                               tie, which is the `cancelled` outcome this
+    #                               whole file exists to make impossible.
+    #                          ---
+    #                           76
     #
     # The cache save is the one contributor that *cannot* be ceilinged: it is a
     # post step, and post steps do not accept `timeout-minutes`. It is therefore
@@ -112,7 +120,7 @@ jobs:
     #
     # Do not lower this below the sum above without lowering the step ceilings
     # too, and do not add an un-ceilinged step that can do unbounded work.
-    timeout-minutes: 75
+    timeout-minutes: 76
     strategy:
       fail-fast: false
       matrix:
