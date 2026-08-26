@@ -2046,13 +2046,54 @@ fn ambient_proxy_is_set() -> bool {
 /// default (`Enforce`) so tools that branch on the env var see the operator's
 /// explicit choice; the variable is omitted in plain enforce-mode launches to
 /// avoid surprising any tool that does best-effort env sniffing.
+/// The ambient environment, as the UTF-8 pairs a child env can actually hold.
+///
+/// [`std::env::vars`] **panics** on a variable whose name or value is not valid
+/// Unicode, and its panic message `Debug`-prints the offending string — so a
+/// single non-UTF-8 *value* in the operator's environment printed that value to
+/// stderr, before the allowlist in [`render_env_value`] was ever consulted. That
+/// is the AAASM-5935 shape exactly (an unrecognised variable emitting its own
+/// bytes) reached by a route that bypasses the fix entirely, and it applied to a
+/// real launch as well as to `--dry-run`.
+///
+/// [`std::env::vars_os`] does not panic, so the decision moves to this function:
+/// a pair that is not valid UTF-8 is **dropped**, because the child environment
+/// is `HashMap<String, String>` and there is no representation for it to be
+/// carried in. The drop is reported by name and never by value — and only when
+/// the name itself is valid UTF-8, since a name that is not is exactly as
+/// unprintable as a value and gets a count instead.
+///
+/// Dropping is a behaviour change, and the better one: the previous behaviour
+/// was to abort the launch with the value in the panic message.
+fn inheritable_ambient_env() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    let mut unnameable = 0usize;
+    for (name, value) in std::env::vars_os() {
+        match (name.into_string(), value.into_string()) {
+            (Ok(name), Ok(value)) => {
+                env.insert(name, value);
+            }
+            (Ok(name), Err(_)) => {
+                eprintln!("warning: {name} is not valid UTF-8 and was not passed to the child; its value is not shown");
+            }
+            (Err(_), _) => unnameable += 1,
+        }
+    }
+    if unnameable > 0 {
+        eprintln!(
+            "warning: {unnameable} environment variable(s) have names that are not valid UTF-8 and were not passed to the child"
+        );
+    }
+    env
+}
+
 fn build_child_env(
     handle: &RegistrationHandle,
     proxy: Option<&str>,
     no_proxy: bool,
     mode: aa_core::EnforcementMode,
 ) -> HashMap<String, String> {
-    let mut env: HashMap<String, String> = std::env::vars().collect();
+    let mut env: HashMap<String, String> = inheritable_ambient_env();
     env.insert("AA_AGENT_ID".into(), handle.agent_id.clone());
     // The identity the gateway actually registered and audit attributes actions
     // to. Exported so anything downstream — an SDK inside the launched tool, a
