@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use rcgen::PKCS_ECDSA_P256_SHA256;
 use rcgen::{
-    BasicConstraints, CertificateParams, CidrSubnet, DnType, GeneralSubtree, IsCa, Issuer, KeyPair, KeyUsagePurpose,
-    NameConstraints,
+    BasicConstraints, CertificateParams, CidrSubnet, DnType, ExtendedKeyUsagePurpose, GeneralSubtree, IsCa, Issuer,
+    KeyPair, KeyUsagePurpose, NameConstraints,
 };
 use time::{Duration, OffsetDateTime};
 
@@ -193,6 +193,16 @@ impl CaStore {
             KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| ProxyError::CertGen(e.to_string()))?;
         let mut leaf_params =
             CertificateParams::new(vec![domain.to_string()]).map_err(|e| ProxyError::CertGen(e.to_string()))?;
+        // AAASM-5931: without an explicit serverAuth EKU, a strict/platform-backed
+        // TLS verifier (e.g. `rustls-platform-verifier` on macOS, which a plain
+        // `reqwest` client in this workspace resolves to) rejects this leaf outright
+        // — silently failing closed, or worse, driving the caller to bypass the
+        // proxy entirely, for any agent whose HTTP stack enforces EKU. The
+        // webpki-based rustls clients elsewhere in this repo never hit this because
+        // webpki does not enforce EKU by default; that is a client-strictness
+        // difference the proxy cannot rely on.
+        leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature, KeyUsagePurpose::KeyEncipherment];
+        leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         let now = OffsetDateTime::now_utc();
         leaf_params.not_before = now;
         leaf_params.not_after = now
@@ -322,6 +332,26 @@ mod tests {
         let ck = ca.sign_cert("api.openai.com").unwrap();
         assert!(!ck.cert_der.is_empty(), "cert DER must not be empty");
         assert!(!ck.key_der.is_empty(), "key DER must not be empty");
+    }
+
+    #[tokio::test]
+    async fn sign_cert_carries_server_auth_extended_key_usage() {
+        // AAASM-5931: a leaf missing this extension is rejected outright by a
+        // strict/platform-backed TLS verifier (`rustls-platform-verifier` on
+        // macOS, which this workspace's own `reqwest` resolves to) — asserting
+        // "signing didn't error" is not sufficient evidence the leaf is usable.
+        let dir = TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let ck = ca.sign_cert("api.anthropic.com").unwrap();
+        let (_, cert) = x509_parser::parse_x509_certificate(&ck.cert_der).expect("leaf DER must parse as X.509");
+        let eku = cert
+            .extended_key_usage()
+            .expect("parsing the EKU extension must not error")
+            .expect("leaf must carry an Extended Key Usage extension");
+        assert!(
+            eku.value.server_auth,
+            "leaf must be marked valid for TLS server authentication"
+        );
     }
 
     #[tokio::test]
