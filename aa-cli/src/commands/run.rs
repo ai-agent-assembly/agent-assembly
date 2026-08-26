@@ -15,6 +15,7 @@ use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel};
 
 use crate::commands::proxy::guard::{ProxyGuard, ProxyGuardOptions};
 use crate::commands::proxy::launch_state;
+use crate::commands::run_env_sanitize::{self, PROXY_EXCLUSION_VARS, PROXY_ROUTING_VARS};
 // AAASM-5349: resolution is shared with the devint service, so it lives in
 // `aa-policy` rather than here. Aliased so the call sites read unchanged.
 use crate::commands::run_registration::{self, GovernedRegistration};
@@ -1180,8 +1181,10 @@ mod plan {
             // Derived through the same merge `spawn_and_wait` applies, so the
             // spec describes the environment the child actually receives —
             // including the names the adapter removes, which a naive union of the
-            // two sources would still show as present.
-            let (effective, removed) = super::effective_child_env(&command, &child_env);
+            // two sources would still show as present. `no_proxy` is threaded
+            // through so the isolation-boundary path (which never touches
+            // `spawn_and_wait`) gets the same D6 sanitization (AAASM-5923/F1).
+            let (effective, removed) = super::effective_child_env(&command, &child_env, self.network.no_proxy());
             let credentials = credential_posture(&effective, &removed);
 
             // The spec, the canonical projection and the execution decision are
@@ -2324,7 +2327,7 @@ fn format_dry_run_output(
     // Derived through the same merge `spawn_and_wait` applies, so the preview
     // cannot claim a variable the launch would not have — including one the
     // adapter removes, which a naive union of the two sources would still show.
-    let (effective, removed) = effective_child_env(cmd, env);
+    let (effective, removed) = effective_child_env(cmd, env, no_proxy);
     let mut env_lines: String = effective
         .iter()
         .map(|(k, v)| format!("{}={}\n", k, mask_value(k, v)))
@@ -2507,6 +2510,7 @@ async fn deregister_with_gateway(registration: &GovernedRegistration) {
 fn effective_child_env(
     cmd: &std::process::Command,
     child_env: &HashMap<String, String>,
+    no_proxy: bool,
 ) -> (BTreeMap<String, String>, Vec<String>) {
     let mut env: BTreeMap<String, String> = child_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let mut removed = Vec::new();
@@ -2520,6 +2524,46 @@ fn effective_child_env(
                 env.remove(&key);
                 removed.push(key);
             }
+        }
+    }
+    // AAASM-5923/F1: this is the one merge point every caller of this
+    // function shares — `spawn_and_wait`'s non-isolated real spawn, AND
+    // `RunPlan::bind`'s isolation-boundary path (`resolve_boundary` /
+    // `backend.set_child_environment`), which does not go through
+    // `spawn_and_wait` at all. Sanitizing only inside `spawn_and_wait`, as
+    // this function's own doc comment already warned, left the isolation
+    // boundary leaking ambient `ALL_PROXY`/`NO_PROXY`/lowercase-form values
+    // straight into a sandboxed child (an independent review of this exact
+    // Story caught it — every isolation backend treats this map as the
+    // child's *entire* environment, `env_clear()`-equivalent, so a name
+    // merely absent from `child_env`'s ambient copy is not enough; it must
+    // be actively removed here). `spawn_and_wait`'s own Command-level
+    // `env_remove` calls stay in place on top of this — that Command
+    // inherits the real ambient process environment unless explicitly
+    // stripped, which this map-level pass alone cannot reach.
+    if !no_proxy {
+        // Captured from `env` — the already-merged map, adapter values
+        // already overlaid on top of `child_env` above — not re-derived
+        // separately from `child_env`/`cmd.get_envs()`: those two sources
+        // disagree by design whenever the adapter normalises a bare
+        // `host:port` into a URL (`the adapter's normalised URL must win
+        // over the bare host:port`), and re-deriving from the un-merged
+        // sources inverted that precedence (independent-review regression,
+        // caught by `the_preview_environment_is_the_launch_environment`).
+        let trusted_https_proxy = env.get("HTTPS_PROXY").cloned();
+        let trusted_http_proxy = env.get("HTTP_PROXY").cloned();
+        for name in run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+            env.remove(name);
+        }
+        // Whatever `HTTPS_PROXY`/`HTTP_PROXY` was present before the removal
+        // above — a `build_child_env`-vouched endpoint, or a receipted value
+        // the adapter injected onto `cmd` — is the only value trusted enough
+        // to survive it, and only under those two exact uppercase names.
+        if let Some(v) = trusted_https_proxy {
+            env.insert("HTTPS_PROXY".to_string(), v);
+        }
+        if let Some(v) = trusted_http_proxy {
+            env.insert("HTTP_PROXY".to_string(), v);
         }
     }
     (env, removed)
@@ -2539,6 +2583,35 @@ fn effective_child_env(
 /// accepts (AAASM-5324). Dropping the adapter's environment, as this function
 /// did before AAASM-5327, silently defeated both.
 ///
+/// # Env sanitization (ADR 0036 D6)
+///
+/// `--no-proxy` (`no_proxy`) leaves the ambient environment completely
+/// untouched — no removal, no injection — which is the existing, documented
+/// opt-out (`build_child_env_leaves_the_ambient_proxy_alone_under_no_proxy`).
+/// Otherwise, immediately before spawn: (1) `ALL_PROXY`/`NO_PROXY` and their
+/// lowercase forms are removed unconditionally; (2) `HTTPS_PROXY`/`HTTP_PROXY`
+/// and their lowercase forms are removed; (3) if a value for `HTTPS_PROXY`/
+/// `HTTP_PROXY` survived into `effective` — a vouched-for endpoint from
+/// `build_child_env`, or a receipted value the adapter injected onto `cmd`
+/// (e.g. the Claude Code launch-env store) — it is set back, uppercase only,
+/// **last**, so nothing after it can reintroduce an ambient value. This must
+/// happen on the `Command` itself, not only on the `effective`/`child_env`
+/// maps: those maps feed `tokio_cmd.envs(...)`, but a name absent from them is
+/// still inherited from this process's real environment unless explicitly
+/// `env_remove`d (AAASM-5923/F4 — the pre-existing defect this closes).
+///
+/// Step 3's "value survived into `effective`" check is only a legitimate
+/// "supervisor-owned trusted value" predicate because `child_env` reaching
+/// this function has, in production, always already been through
+/// `build_child_env`'s proxy arms (the sole call site is `RunPlan::bind`,
+/// which passes `build_child_env`'s own return value straight through) — an
+/// ambient value with no vouched-for endpoint is *removed* from that map
+/// before it ever reaches here (`None if !no_proxy` arm), so what remains is
+/// either the vouched-for endpoint or nothing, plus whatever the adapter set
+/// directly on `cmd`. A future `child_env` built by any other path (e.g. a
+/// raw `std::env::vars()` copy) would break this invariant silently; if one
+/// is ever introduced, it must go through `build_child_env` too.
+///
 /// # Why the working directory is copied across explicitly
 ///
 /// `cmd` is a `std::process::Command` and this spawns a `tokio` one, so every
@@ -2548,14 +2621,31 @@ fn effective_child_env(
 /// regardless (AAASM-5706, caught by
 /// `exec_starts_the_child_in_the_requested_working_directory`). Anything added to
 /// the bound command in future has to be added here too.
-async fn spawn_and_wait(cmd: std::process::Command, child_env: &HashMap<String, String>) -> Result<i32> {
-    let (effective, removed) = effective_child_env(&cmd, child_env);
+async fn spawn_and_wait(
+    cmd: std::process::Command,
+    child_env: &HashMap<String, String>,
+    no_proxy: bool,
+) -> Result<i32> {
+    let (effective, removed) = effective_child_env(&cmd, child_env, no_proxy);
+    let trusted_https_proxy = effective.get("HTTPS_PROXY").cloned();
+    let trusted_http_proxy = effective.get("HTTP_PROXY").cloned();
 
     let mut tokio_cmd = tokio::process::Command::new(cmd.get_program());
     tokio_cmd.args(cmd.get_args());
     tokio_cmd.envs(&effective);
     for name in &removed {
         tokio_cmd.env_remove(name);
+    }
+    if !no_proxy {
+        for name in PROXY_EXCLUSION_VARS.iter().chain(PROXY_ROUTING_VARS.iter()) {
+            tokio_cmd.env_remove(name);
+        }
+        if let Some(v) = trusted_https_proxy {
+            tokio_cmd.env("HTTPS_PROXY", v);
+        }
+        if let Some(v) = trusted_http_proxy {
+            tokio_cmd.env("HTTP_PROXY", v);
+        }
     }
     if let Some(dir) = cmd.get_current_dir() {
         tokio_cmd.current_dir(dir);
@@ -3003,7 +3093,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             run_confined(backend.into_arc(), *plan, isolation).await?
         }
         // Unchanged from every `aasm run` before `--isolation` existed.
-        plan::Boundary::Absent => spawn_and_wait(cmd, &child_env).await?,
+        plan::Boundary::Absent => spawn_and_wait(cmd, &child_env, args.no_proxy).await?,
         // Refused above, before the managed settings were written.
         plan::Boundary::Refused(why) => anyhow::bail!("refusing to launch: {why}"),
     };
@@ -3562,6 +3652,89 @@ mod tests {
         }
     }
 
+    /// Sets an arbitrary list of env vars on this process for the duration of
+    /// the guard, restoring whatever was there before on drop. Used by the
+    /// `spawn_and_wait` Command-level tests (AAASM-5923) to set the full
+    /// 8-variant ambient proxy set (`ALL_PROXY`/`NO_PROXY` and lowercase
+    /// forms) that `AmbientProxy` above, predating this ticket, does not
+    /// cover.
+    struct AmbientEnvVars {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl AmbientEnvVars {
+        fn set(pairs: &[(&'static str, &str)]) -> Self {
+            let lock = crate::test_support::env_guard();
+            let mut prior = Vec::new();
+            for (key, value) in pairs {
+                prior.push((*key, std::env::var(key).ok()));
+                std::env::set_var(key, value);
+            }
+            Self { _lock: lock, prior }
+        }
+    }
+
+    impl Drop for AmbientEnvVars {
+        fn drop(&mut self) {
+            for (key, prior) in self.prior.drain(..) {
+                match prior {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    /// Spawns `cmd` via `spawn_and_wait`, having it dump its real received
+    /// environment to a file (`sh -c 'env > <path>'`), and returns that
+    /// file's contents. This is the "probe the spawned child's actual
+    /// environment, not the pre-spawn map" assertion ADR 0036's test strategy
+    /// (Test 6/6b/6c/7/8) requires — a map-level assertion would have missed
+    /// F4's defect entirely.
+    ///
+    /// The real child inherits this *test process's* full ambient
+    /// environment (this machine's real shell env, not a synthetic one), so
+    /// the captured dump can contain values (credentials, tokens) unrelated
+    /// to what this test cares about. Callers must never format the full
+    /// return value into an assertion message — use [`proxy_var_lines`] to
+    /// extract only the proxy-related lines being asserted on.
+    async fn spawn_and_capture_real_env(child_env: &HashMap<String, String>, no_proxy: bool) -> String {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tmp.path().join("env.txt");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(format!("env > {}", out.display()));
+        let code = spawn_and_wait(cmd, child_env, no_proxy)
+            .await
+            .expect("spawn_and_wait must succeed");
+        assert_eq!(code, 0, "the env-dumping child must exit successfully");
+        std::fs::read_to_string(&out).expect("read captured env")
+    }
+
+    /// Extracts only the lines of a captured env dump whose key is one of
+    /// `names`, for use in assertion failure messages — never the whole
+    /// dump, which can carry this machine's real ambient credentials
+    /// (unrelated to the proxy vars under test) inherited by the spawned
+    /// child.
+    fn proxy_var_lines(real_env: &str, names: &[&str]) -> String {
+        real_env
+            .lines()
+            .filter(|line| names.iter().any(|n| line.starts_with(&format!("{n}="))))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    const ALL_PROXY_VAR_NAMES: [&str; 8] = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ];
+
     /// Constraint: the identity that registered must be the identity the launch
     /// runs under. `AA_AGENT_ID` is the seed the DID is derived from, so anything
     /// downstream that derives from it — an SDK inside the launched tool, a later
@@ -3687,6 +3860,192 @@ mod tests {
         assert!(
             !env.contains_key("HTTP_PROXY"),
             "an unvouched-for ambient HTTP_PROXY must not reach the child"
+        );
+    }
+
+    // --- spawn_and_wait Command-level env sanitization tests (ADR 0036 D6, AAASM-5923) ---
+    //
+    // These probe the *real child's actual environment*, not the pre-spawn
+    // `HashMap`, per the ADR's Test 6 note: F4 found the map-level removal in
+    // `build_child_env` never reached the spawned process at all, because
+    // nothing called `Command::env_remove` on the real `Command`. A test that
+    // only inspected `build_child_env`'s return value would have kept passing
+    // throughout that defect's lifetime.
+
+    /// Test 6 (ADR 0036): ambient uppercase `HTTP_PROXY`/`HTTPS_PROXY`/
+    /// `ALL_PROXY`/`NO_PROXY`, `--no-proxy` not passed, no trusted endpoint —
+    /// none of the four must reach the real child environment.
+    #[tokio::test]
+    async fn spawn_and_wait_strips_ambient_uppercase_proxy_vars_from_the_real_child() {
+        let _ambient = AmbientEnvVars::set(&[
+            ("HTTPS_PROXY", "http://attacker.example:8080"),
+            ("HTTP_PROXY", "http://attacker.example:8080"),
+            ("ALL_PROXY", "http://attacker.example:8080"),
+            ("NO_PROXY", "internal.example"),
+        ]);
+        let handle = stub_handle(None);
+        let child_env = build_child_env(&handle, None, false, aa_core::EnforcementMode::Enforce);
+
+        let real_env = spawn_and_capture_real_env(&child_env, false).await;
+
+        for var in ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"] {
+            assert!(
+                !real_env.contains(&format!("{var}=")),
+                "`{var}` leaked into the real spawned child's environment; got:\n{}",
+                proxy_var_lines(&real_env, &ALL_PROXY_VAR_NAMES)
+            );
+        }
+    }
+
+    /// Test 7 (ADR 0036): the lowercase equivalents of the same four names,
+    /// which several HTTP client stacks prefer over the uppercase form and
+    /// which no code path touched before this ADR (review #2).
+    #[tokio::test]
+    async fn spawn_and_wait_strips_ambient_lowercase_proxy_vars_from_the_real_child() {
+        let _ambient = AmbientEnvVars::set(&[
+            ("https_proxy", "http://attacker.example:8080"),
+            ("http_proxy", "http://attacker.example:8080"),
+            ("all_proxy", "http://attacker.example:8080"),
+            ("no_proxy", "internal.example"),
+        ]);
+        let handle = stub_handle(None);
+        let child_env = build_child_env(&handle, None, false, aa_core::EnforcementMode::Enforce);
+
+        let real_env = spawn_and_capture_real_env(&child_env, false).await;
+
+        for var in ["https_proxy", "http_proxy", "all_proxy", "no_proxy"] {
+            assert!(
+                !real_env.contains(&format!("{var}=")),
+                "`{var}` leaked into the real spawned child's environment; got:\n{}",
+                proxy_var_lines(&real_env, &ALL_PROXY_VAR_NAMES)
+            );
+        }
+    }
+
+    /// Test 6c (ADR 0036, review #8): `--no-proxy` must leave the ambient
+    /// environment *completely* untouched — not just the pre-existing 2
+    /// variables (`HTTPS_PROXY`/`HTTP_PROXY`) this opt-out predates, but the 6
+    /// this ADR adds too. Asserted at the real child, the one place F4-style
+    /// regressions actually show up.
+    #[tokio::test]
+    async fn spawn_and_wait_leaves_ambient_env_completely_untouched_under_no_proxy() {
+        let _ambient = AmbientEnvVars::set(&[
+            ("HTTPS_PROXY", "http://corporate:3128"),
+            ("HTTP_PROXY", "http://corporate:3128"),
+            ("ALL_PROXY", "http://corporate:3128"),
+            ("NO_PROXY", "internal.example"),
+            ("https_proxy", "http://corporate:3128"),
+            ("http_proxy", "http://corporate:3128"),
+            ("all_proxy", "http://corporate:3128"),
+            ("no_proxy", "internal.example"),
+        ]);
+        let handle = stub_handle(None);
+        let child_env = build_child_env(&handle, None, true, aa_core::EnforcementMode::Enforce);
+
+        let real_env = spawn_and_capture_real_env(&child_env, true).await;
+        let got = || proxy_var_lines(&real_env, &ALL_PROXY_VAR_NAMES);
+
+        assert!(
+            real_env.contains("HTTPS_PROXY=http://corporate:3128"),
+            "got:\n{}",
+            got()
+        );
+        assert!(real_env.contains("HTTP_PROXY=http://corporate:3128"), "got:\n{}", got());
+        assert!(real_env.contains("ALL_PROXY=http://corporate:3128"), "got:\n{}", got());
+        assert!(real_env.contains("NO_PROXY=internal.example"), "got:\n{}", got());
+        assert!(
+            real_env.contains("https_proxy=http://corporate:3128"),
+            "got:\n{}",
+            got()
+        );
+        assert!(real_env.contains("http_proxy=http://corporate:3128"), "got:\n{}", got());
+        assert!(real_env.contains("all_proxy=http://corporate:3128"), "got:\n{}", got());
+        assert!(real_env.contains("no_proxy=internal.example"), "got:\n{}", got());
+    }
+
+    /// Positive control: a legitimately vouched-for endpoint must still reach
+    /// the real child, proving the strip tests above are not passing
+    /// vacuously (e.g. because nothing ever sets `HTTPS_PROXY` at all). Also
+    /// proves step 3's injection is uppercase-only and does not resurrect
+    /// `ALL_PROXY`/`NO_PROXY`.
+    #[tokio::test]
+    async fn spawn_and_wait_injects_the_trusted_endpoint_into_the_real_child_last() {
+        let _ambient = AmbientEnvVars::set(&[
+            ("HTTPS_PROXY", "http://attacker.example:8080"),
+            ("ALL_PROXY", "http://attacker.example:8080"),
+            ("NO_PROXY", "internal.example"),
+        ]);
+        let handle = stub_handle(None);
+        let child_env = build_child_env(
+            &handle,
+            Some("http://127.0.0.1:8899"),
+            false,
+            aa_core::EnforcementMode::Enforce,
+        );
+
+        let real_env = spawn_and_capture_real_env(&child_env, false).await;
+        let got = || proxy_var_lines(&real_env, &ALL_PROXY_VAR_NAMES);
+
+        assert!(
+            real_env.contains("HTTPS_PROXY=http://127.0.0.1:8899"),
+            "the trusted endpoint must reach the real child; got:\n{}",
+            got()
+        );
+        assert!(real_env.contains("HTTP_PROXY=http://127.0.0.1:8899"), "got:\n{}", got());
+        assert!(
+            !real_env.contains("ALL_PROXY="),
+            "step 3 must never inject/preserve ALL_PROXY; got:\n{}",
+            got()
+        );
+        assert!(
+            !real_env.contains("NO_PROXY="),
+            "step 3 must never inject/preserve NO_PROXY; got:\n{}",
+            got()
+        );
+    }
+
+    /// Test 6b (ADR 0036, review #8): the Claude Code launch-env store's
+    /// receipted value is applied onto `cmd` by the adapter (simulated here —
+    /// this test lives at the `spawn_and_wait` boundary, not inside the
+    /// adapter, because the adapter's env is what `cmd.get_envs()` carries
+    /// into `effective_child_env` per the one-spawn correction), with no
+    /// runtime `proxy_addr` pinned and `--no-proxy` not passed. Step 3 must
+    /// preserve it rather than strip it — the exact mistake M1's original
+    /// name-filter design made.
+    #[tokio::test]
+    async fn spawn_and_wait_preserves_a_receipted_value_the_adapter_already_set_on_cmd() {
+        let handle = stub_handle(None);
+        // proxy_addr = None: no runtime endpoint pinned for this launch.
+        let child_env = build_child_env(&handle, None, false, aa_core::EnforcementMode::Enforce);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tmp.path().join("env.txt");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(format!("env > {}", out.display()));
+        // The adapter's own `build_launch_command` applies the receipted
+        // value onto `cmd` directly (`launch_env::installed_environment`
+        // loop) — simulated here since this test targets the outer spawn
+        // site's handling of it, not the adapter's own read.
+        cmd.env("HTTPS_PROXY", "http://receipted-proxy:9000");
+        cmd.env("HTTP_PROXY", "http://receipted-proxy:9000");
+
+        let code = spawn_and_wait(cmd, &child_env, false)
+            .await
+            .expect("spawn_and_wait must succeed");
+        assert_eq!(code, 0);
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        let got = || proxy_var_lines(&real_env, &ALL_PROXY_VAR_NAMES);
+
+        assert!(
+            real_env.contains("HTTPS_PROXY=http://receipted-proxy:9000"),
+            "a legitimately receipted value must reach the real child when no runtime override \
+             exists and --no-proxy was not passed; got:\n{}",
+            got()
+        );
+        assert!(
+            real_env.contains("HTTP_PROXY=http://receipted-proxy:9000"),
+            "got:\n{}",
+            got()
         );
     }
 
@@ -4253,7 +4612,7 @@ mod tests {
         let cmd = adapter
             .build_launch_command(&[], "agent-1", None, Some("127.0.0.1:8080"))
             .expect("command");
-        let (effective, removed) = effective_child_env(&cmd, &child_env);
+        let (effective, removed) = effective_child_env(&cmd, &child_env, false);
 
         assert_eq!(
             effective.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
@@ -4270,6 +4629,71 @@ mod tests {
             "a variable the adapter removes must not be present: {effective:?}"
         );
         assert_eq!(removed, vec!["ANTHROPIC_API_KEY".to_string()]);
+    }
+
+    /// AAASM-5923/F1 (independent review): `effective_child_env` is the one
+    /// merge point `RunPlan::bind`'s isolation-boundary path shares with
+    /// `spawn_and_wait` — `resolve_boundary`/`backend.set_child_environment`
+    /// never goes through `spawn_and_wait`'s own Command-level `env_remove`
+    /// calls at all, and every isolation backend treats this returned map as
+    /// the child's *entire* environment (`env_clear()`-equivalent), so a
+    /// leak here is a leak straight into a sandboxed child. Proves the
+    /// ambient `ALL_PROXY`/`NO_PROXY` and all four lowercase forms — not
+    /// just `HTTPS_PROXY`/`HTTP_PROXY` — are stripped from the returned map
+    /// itself, independent of any Command-level step a caller may or may not
+    /// also apply.
+    #[test]
+    fn effective_child_env_strips_all_eight_proxy_variants_for_every_caller() {
+        let adapter = StubEnvContributing;
+        let mut child_env: HashMap<String, String> = HashMap::new();
+        for key in run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+            child_env.insert(key.to_string(), "attacker-controlled".to_string());
+        }
+        let cmd = adapter
+            .build_launch_command(&[], "agent-1", None, None)
+            .expect("command");
+        let (effective, _removed) = effective_child_env(&cmd, &child_env, false);
+        // ALL_PROXY/NO_PROXY (and lowercase forms of all four names) are never
+        // a legitimate injection target — always gone, unconditionally.
+        // HTTPS_PROXY/HTTP_PROXY (uppercase) are the one pair step 3 may
+        // reinject, so — unlike the six below — a value already present in
+        // `child_env` for them is by this layer's own contract a vouched-for
+        // one (whatever populated `child_env` decided that, e.g.
+        // `build_child_env`'s own SSRF-style trust check), not an ambient
+        // leak this function can distinguish; excluded from this assertion
+        // for that reason, not because they are exempt from D6.
+        for key in [
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+            "https_proxy",
+            "http_proxy",
+        ] {
+            assert!(
+                !effective.contains_key(key),
+                "{key} must not survive into the map every isolation backend treats as authoritative: {effective:?}"
+            );
+        }
+    }
+
+    /// Negative control for the test above: `--no-proxy` leaves this map
+    /// exactly as untouched as it leaves `spawn_and_wait`'s Command — proves
+    /// the strip above is conditional on `no_proxy`, not unconditional.
+    #[test]
+    fn effective_child_env_leaves_ambient_proxy_vars_alone_under_no_proxy() {
+        let adapter = StubEnvContributing;
+        let mut child_env: HashMap<String, String> = HashMap::new();
+        child_env.insert("ALL_PROXY".to_string(), "operators-own-value".to_string());
+        let cmd = adapter
+            .build_launch_command(&[], "agent-1", None, None)
+            .expect("command");
+        let (effective, _removed) = effective_child_env(&cmd, &child_env, true);
+        assert_eq!(
+            effective.get("ALL_PROXY").map(String::as_str),
+            Some("operators-own-value"),
+            "--no-proxy must leave even this shared-merge-point map untouched"
+        );
     }
 
     /// AC 2: the two variables that decide whether a session is protected are
@@ -5068,7 +5492,7 @@ mod tests {
         let handle = stub_handle(Some("team-a"));
 
         let bound = resolved.bind(&handle);
-        let (effective, removed) = effective_child_env(bound.command(), bound.child_env());
+        let (effective, removed) = effective_child_env(bound.command(), bound.child_env(), false);
 
         assert_eq!(
             effective.get("AA_AGENT_DID").map(String::as_str),

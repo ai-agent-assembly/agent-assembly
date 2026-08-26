@@ -167,7 +167,14 @@ struct RawTrustedConfig {
 /// (`chained_dest_is_mitm_eligible` in `crate::proxy`) does exact-string
 /// comparison and would not itself be fooled by `*`, but D-B's policy is
 /// "no wildcards, ever" independent of that implementation detail).
-fn reject_wildcard_host(host: &str) -> Result<(), ProxyError> {
+///
+/// `pub` (AAASM-5923): `aasm integrations install`'s trusted-upstream-proxy
+/// install flags call this directly to refuse a wildcarded entry before ever
+/// writing the artifact, rather than duplicating the check — `aa-proxy`
+/// itself can't be reused wholesale for this (`load_and_validate` needs a
+/// live `bound_addr` for D7's loop check, which doesn't exist at install
+/// time), but this one exact-string check has no such dependency.
+pub fn reject_wildcard_host(host: &str) -> Result<(), ProxyError> {
     if host.contains('*') {
         return Err(ProxyError::Config(format!(
             "declared host {host:?} contains a wildcard metacharacter ('*'); \

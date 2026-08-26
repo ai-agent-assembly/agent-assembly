@@ -37,6 +37,7 @@ use super::model::InstallReport;
 use super::plan::PlanArgs;
 use super::render::{emit, Report};
 use super::session::SessionOptions;
+use super::trusted_upstream::{write_trusted_upstream_config, TrustedUpstreamArgs};
 use super::{confirm, exit::Outcome, open, run_blocking, verb_failure, ProfileArg, ScopeArg};
 
 /// `aasm integrations install` arguments.
@@ -78,10 +79,32 @@ pub struct InstallArgs {
     /// Show the plan and stop, exactly as `aasm integrations plan` does.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// ADR 0036 enterprise-proxy-chaining flags (AAASM-5923) — written
+    /// directly, outside the plan/apply engine above; see
+    /// `trusted_upstream`'s module doc for why.
+    #[command(flatten)]
+    pub trusted_upstream: TrustedUpstreamArgs,
 }
 
 /// Run `aasm integrations install`.
 pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> ExitCode {
+    // Validated and written before the plan/apply engine runs below, and
+    // skipped entirely under --dry-run (a dry run must not mutate anything —
+    // see this command's own idempotence doc comment for why that principle
+    // matters here too). A malformed or wildcarded entry is refused here,
+    // synchronously, rather than left for aa-proxy to discover and fail
+    // closed on at its own next startup.
+    if !args.trusted_upstream.is_empty() && !args.dry_run {
+        match write_trusted_upstream_config(&args.trusted_upstream) {
+            Ok(path) => eprintln!("wrote trusted-upstream-proxy config: {}", path.display()),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     run_blocking(async move {
         let mut session = open(options).await?;
         let plan_args = PlanArgs {

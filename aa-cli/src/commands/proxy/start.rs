@@ -133,6 +133,14 @@ fn proxy_child_env(listen: &str, gateway: Option<&str>) -> Vec<(&'static str, St
         env.push(("AA_PROXY_GATEWAY_ENDPOINT", gw.to_string()));
         env.push(("AA_PROXY_LLM_ONLY", "false".to_string()));
     }
+    // AAASM-5923/F2: same wiring as `ProxyGuard::build_command` — see that
+    // function's doc comment for why this is unconditional on the
+    // artifact's existence rather than a new opt-in flag.
+    if let Some(path) = crate::commands::trusted_upstream_path::trusted_upstream_config_path() {
+        if path.exists() {
+            env.push(("AA_PROXY_TRUSTED_CONFIG_PATH", path.display().to_string()));
+        }
+    }
     env
 }
 
@@ -197,13 +205,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     };
     let binary = canonical_binary(binary);
 
-    let mut cmd = std::process::Command::new(&binary);
-    for (key, value) in proxy_child_env(&args.listen, args.gateway.as_deref()) {
-        cmd.env(key, value);
-    }
-    if let Some(ref ca_dir) = args.ca_dir {
-        cmd.env("AA_CA_DIR", ca_dir);
-    }
+    let mut cmd = build_start_command(&binary, &args);
 
     if args.no_detach {
         // Foreground: inherit stdio, block until the process exits.
@@ -211,6 +213,35 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     }
 
     run_background(cmd, args, &binary)
+}
+
+/// Build the (unspawned) command for standalone `aasm proxy start`.
+///
+/// Separated from [`dispatch`] so the env-var wiring, including the ADR 0036
+/// D6 removal, is unit-testable without resolving a real binary or spawning
+/// anything — mirroring [`super::guard::build_command`]'s reasoning for the
+/// per-launch dedicated proxy.
+///
+/// # ADR 0036 D6
+///
+/// [`proxy_child_env`] returns a `Vec` and cannot express removal, so the D6
+/// invariant's removal step is applied here, immediately before the
+/// `Command` is handed back to `dispatch` for spawn. This boundary has no
+/// `--no-proxy` concept and never injects a trusted `HTTPS_PROXY`/
+/// `HTTP_PROXY` value, so unconditional removal of all 8 case variants is
+/// the whole rule for this spawn.
+fn build_start_command(binary: &Path, args: &StartArgs) -> std::process::Command {
+    let mut cmd = std::process::Command::new(binary);
+    for (key, value) in proxy_child_env(&args.listen, args.gateway.as_deref()) {
+        cmd.env(key, value);
+    }
+    if let Some(ref ca_dir) = args.ca_dir {
+        cmd.env("AA_CA_DIR", ca_dir);
+    }
+    for name in crate::commands::run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+        cmd.env_remove(name);
+    }
+    cmd
 }
 
 /// Foreground start: inherit stdio and block until the process exits.
@@ -455,6 +486,118 @@ mod tests {
         assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_LLM_ONLY"));
         // The listen address is always exported.
         assert!(env.contains(&("AA_PROXY_ADDR", "127.0.0.1:8899".to_string())));
+    }
+
+    /// AAASM-5923/F2 (independent review): same wiring/rationale as
+    /// `ProxyGuard::build_command`'s equivalent test — see that test for why
+    /// this is unconditional on the artifact's existence.
+    #[test]
+    fn proxy_child_env_sets_trusted_config_path_when_the_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let expected = crate::commands::trusted_upstream_path::trusted_upstream_config_path().unwrap();
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, "{}").unwrap();
+
+        let env = proxy_child_env("127.0.0.1:8899", None);
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert!(
+            env.contains(&("AA_PROXY_TRUSTED_CONFIG_PATH", expected.display().to_string())),
+            "got: {env:?}"
+        );
+    }
+
+    /// Negative control: no artifact on disk means no env var.
+    #[test]
+    fn proxy_child_env_omits_trusted_config_path_when_no_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+
+        let env = proxy_child_env("127.0.0.1:8899", None);
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_TRUSTED_CONFIG_PATH"));
+    }
+
+    /// ADR 0036 D6 (map level): `build_start_command`'s `env_remove` calls
+    /// must be present in the returned `Command`'s own `get_envs()` — the
+    /// `Command` here *is* the object that gets spawned, so this is not a
+    /// pre-spawn-map-vs-real-child gap the way `aa-cli/src/commands/run.rs`'s
+    /// `spawn_and_wait` had (AAASM-5923/F4).
+    #[test]
+    fn build_start_command_removes_all_eight_ambient_proxy_variants() {
+        let args = Wrapper::parse_from(["test"]).inner;
+        let cmd = build_start_command(std::path::Path::new("/usr/bin/aa-proxy"), &args);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        for name in crate::commands::run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+            assert_eq!(
+                env.get(std::ffi::OsStr::new(name)),
+                Some(&None),
+                "`{name}` must be explicitly removed (env_remove), not merely absent from the map"
+            );
+        }
+    }
+
+    /// The same guarantee, proven at the real spawned child (not the
+    /// pre-spawn `Command`) — the discipline ADR 0036's Test 6/7 requires,
+    /// applied here even though `build_start_command_removes_all_eight_ambient_proxy_variants`
+    /// above already covers the map-level case, so a future refactor that
+    /// stops building `Command` directly (e.g. via an intermediate `Vec`)
+    /// cannot silently regress this boundary the way F4 did for `run.rs`.
+    #[test]
+    fn build_start_command_strips_ambient_proxy_vars_from_the_real_child() {
+        let _lock = crate::test_support::env_guard();
+        let ambient = [
+            ("HTTPS_PROXY", "http://attacker.example:8080"),
+            ("HTTP_PROXY", "http://attacker.example:8080"),
+            ("ALL_PROXY", "http://attacker.example:8080"),
+            ("NO_PROXY", "internal.example"),
+            ("https_proxy", "http://attacker.example:8080"),
+            ("http_proxy", "http://attacker.example:8080"),
+            ("all_proxy", "http://attacker.example:8080"),
+            ("no_proxy", "internal.example"),
+        ];
+        let mut prior = Vec::new();
+        for (key, value) in ambient {
+            prior.push((key, std::env::var(key).ok()));
+            std::env::set_var(key, value);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("aa-proxy");
+        let out = dir.path().join("env.txt");
+        std::fs::write(&stub, format!("#!/bin/sh\nenv > {}\n", out.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let args = Wrapper::parse_from(["test"]).inner;
+        let mut cmd = build_start_command(&stub, &args);
+        let status = cmd.status().expect("stub must spawn and exit");
+
+        for (key, prior) in prior {
+            match prior {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        assert!(status.success(), "stub exited non-zero: {status:?}");
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        for (key, _) in ambient {
+            assert!(
+                !real_env.contains(&format!("{key}=")),
+                "`{key}` leaked into the real spawned aa-proxy child's environment"
+            );
+        }
     }
 
     /// The record's executable field and the child's `argv[0]` have to be the

@@ -309,7 +309,19 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
             cmd.env("AA_TEAM_ID", team);
         }
         if let Some(proxy) = proxy_addr {
-            cmd.env("HTTPS_PROXY", proxy);
+            // ADR 0036 D6/N5-N6: `aasm run` passes a bare `host:port`
+            // authority, not a proxy URL any HTTP client accepts, and a tool
+            // that only reads `HTTPS_PROXY` still needs `HTTP_PROXY` for
+            // plain-HTTP requests — this previously set only `HTTPS_PROXY`
+            // with the bare authority, unlike `ClaudeCodeAdapter`/
+            // `CodexAdapter`'s normalization (AAASM-5324/5916).
+            let url = if proxy.starts_with("http") {
+                proxy.to_string()
+            } else {
+                format!("http://{proxy}")
+            };
+            cmd.env("HTTPS_PROXY", &url);
+            cmd.env("HTTP_PROXY", &url);
         }
         Ok(cmd)
     }
@@ -712,6 +724,39 @@ mod tests {
             );
             assert_eq!(
                 envs.get(std::ffi::OsStr::new("HTTPS_PROXY")).unwrap(),
+                std::ffi::OsStr::new("http://127.0.0.1:8888")
+            );
+            // AAASM-5923: HTTP_PROXY must be set alongside HTTPS_PROXY — a
+            // tool that only reads the former was still ungoverned for
+            // plain-HTTP requests when only HTTPS_PROXY was set.
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new("HTTP_PROXY")).unwrap(),
+                std::ffi::OsStr::new("http://127.0.0.1:8888")
+            );
+        });
+    }
+
+    /// AAASM-5923: `aasm run` passes a bare `host:port` authority, not a URL
+    /// — this must be normalized to `http://host:port`, matching
+    /// `ClaudeCodeAdapter`/`CodexAdapter` (AAASM-5324/5916).
+    #[test]
+    fn build_launch_command_normalizes_a_bare_authority_proxy_addr() {
+        with_env(WINDSURF_BIN_ENV, FAKE_BIN, || {
+            let adapter = WindsurfCascadeAdapter::new();
+            let cmd = adapter
+                .build_launch_command(&[], "agent-7", None, Some("127.0.0.1:8888"))
+                .expect("env hook supplies the binary path");
+
+            let envs: std::collections::HashMap<_, _> = cmd
+                .get_envs()
+                .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
+                .collect();
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new("HTTPS_PROXY")).unwrap(),
+                std::ffi::OsStr::new("http://127.0.0.1:8888")
+            );
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new("HTTP_PROXY")).unwrap(),
                 std::ffi::OsStr::new("http://127.0.0.1:8888")
             );
         });
