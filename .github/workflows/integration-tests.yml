@@ -46,7 +46,21 @@ jobs:
   integration-tests:
     name: Integration tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # AAASM-5943: raised from 30. This is a ceiling that lets a cold-cache run
+    # *finish and be measured*; it is deliberately not the fix, and it is not a
+    # budget anyone should plan against. See the note above `Pre-build aasm`.
+    #
+    # Derived, not chosen: the per-step ceilings below sum to 55 min (18+9+28);
+    # setup steps measured 58s in run 32946949070; the first cache save has never
+    # once executed in this workflow (see cache-on-failure above) so 6 min is
+    # allowed for a cold macOS target-dir save. 55 + 1 + 6 = 62.
+    #
+    # The job ceiling must stay strictly above the sum of the step ceilings.
+    # If the job ceiling fires first the run reports `cancelled`, which is the
+    # invisible state this ticket exists to eliminate; a step ceiling firing
+    # reports `failure`, which is red and blocks. Do not lower this below that
+    # sum without lowering the step ceilings too.
+    timeout-minutes: 62
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +105,23 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: integration-tests-${{ matrix.os }}
+          # AAASM-5943: without this, a job killed by `timeout-minutes` saves no
+          # cache at all, which latched this workflow into a loop it could not
+          # recover from on its own. At this exact pin, action.yml ends with
+          #   post-if: "success() || env.CACHE_ON_FAILURE == 'true'"
+          # and `cache-on-failure` is declared with no default, i.e. falsy. So
+          # every cancelled run skipped `Post Run Swatinem/rust-cache` outright
+          # (observed directly: step 32 = `skipped` in run 32946949070). Each
+          # later run then restored the last cache a *green* run had written, so
+          # `Pre-build aasm` compiled from progressively colder state — 2.7 min
+          # when green, 8.6-12 min afterwards — which kept the job over the
+          # ceiling, which kept the cache unwritten. Setting this makes
+          # src/restore.ts export CACHE_ON_FAILURE=true, so the post step runs
+          # and a truncated run still contributes its cache.
+          #
+          # `save-if: always()` is NOT a substitute at this pin: `save-if` is
+          # read inside dist/save.js, which never executes when post-if is false.
+          cache-on-failure: true
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
