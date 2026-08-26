@@ -177,6 +177,14 @@ on:
       - "scripts/qa/check-release-evidence.py"
       - "scripts/tests/release-evidence-negative-control.sh"
       - "qa/tests/evidence-fixtures/**"
+      # AAASM-5960: the CI-waiting freshness invariant as an executable. Same
+      # ADR 0028 pairing rule — both entries have a matching `qa_registry`
+      # router filter entry below. `qa/tests/fixtures/**` above already covers
+      # the new `qa/tests/fixtures/ci-watch/**` fixtures and the deliberately
+      # wrong watcher they are compared against, so only the two script files
+      # need their own entries here.
+      - "scripts/qa/ci-watch.py"
+      - "scripts/qa/ci-watch-negative-control.sh"
   pull_request:
     branches: [main]
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
@@ -472,6 +480,11 @@ jobs:
               - 'scripts/qa/check-release-evidence.py'
               - 'scripts/tests/release-evidence-negative-control.sh'
               - 'qa/tests/evidence-fixtures/**'
+              # AAASM-5960: the CI-waiting freshness invariant. Shares this
+              # router flag rather than adding a new one, for the same reason
+              # resource-lock does — same `qa/**` + `scripts/qa/**` surface.
+              - 'scripts/qa/ci-watch.py'
+              - 'scripts/qa/ci-watch-negative-control.sh'
               - '.github/workflows/ci.yml'
             # AAASM-5677: the governance surface. Before this filter existed, a
             # change to `governance/capability-manifest.yaml` selected NO job in
@@ -1291,6 +1304,46 @@ jobs:
       # silently being dropped before `execvp`.
       - name: Self-test resource-lock.py (negative control)
         run: bash scripts/qa/resource-scheduler-negative-control.sh
+
+  ci-watch-health-gate:
+    needs: [changes]
+    # AAASM-5960. `qa/CLEANUP-PROTOCOL.md`'s CI-waiting freshness invariant
+    # (AAASM-5945) was correct prose with nothing behind it: no test could
+    # fail when it was violated, and a campaign session later the same day
+    # still burned tens of minutes on blocking sleep-loop poll shells while
+    # the run it was watching had already gone terminal. This job is what
+    # makes the invariant able to fail.
+    #
+    # Its own check run rather than folded into the two gates above, on the
+    # same reasoning their own comments give for being separate: this one's
+    # subject is neither a data registry (`registry-health-gate`) nor live
+    # process/fcntl contention (`resource-lock-health-gate`) but decision
+    # logic over scripted GitHub observations. Keeping it separate means a red
+    # check names the thing that actually broke.
+    #
+    # No `pip install` step: the watcher and its harness are stdlib-only and
+    # fully hermetic — no network, no `gh`, no GitHub. That is deliberate. A
+    # CI-watching tool whose own tests needed CI to be reachable would be
+    # untestable in exactly the outage case E exists to cover.
+    if: needs.changes.outputs.qa_registry == 'true'
+    name: CI-watcher freshness gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The negative control is the whole gate here, and it runs the real
+      # implementation and a deliberately wrong one side by side across all
+      # eight cases (TEST A–F of the Story, plus `stale`-is-not-a-pass and
+      # re-run supersession). A case where both agree is failed as
+      # NON-DISCRIMINATING rather than counted as a pass, and a naive watcher
+      # that crashes instead of misbehaving is failed as HARNESS BROKEN —
+      # both guards exist because both failure modes happened during
+      # development and left the suite green while proving nothing.
+      - name: Self-test ci-watch.py (negative control)
+        run: bash scripts/qa/ci-watch-negative-control.sh
 
   detection-egress-closure:
     needs: [changes]
@@ -3821,6 +3874,12 @@ jobs:
       # silently fails, is a false PASS on the exact incident (AAASM-5877)
       # this Story exists to prevent.
       - resource-lock-health-gate
+      # AAASM-5960: blocks, for the same reason as the two above. The thing
+      # being asserted is that the freshness invariant can still fail — an
+      # advisory version would put this suite in exactly the position
+      # AAASM-5945's prose was already in, present and correct and unable to
+      # stop the behaviour it forbids.
+      - ci-watch-health-gate
       # AAASM-5738: blocks. AAASM-5270 exit criterion 6 asks for behaviour
       # *verified* under egress-denied testing, and an advisory version of this
       # would be a dependency-tree argument again — which is what the criterion
