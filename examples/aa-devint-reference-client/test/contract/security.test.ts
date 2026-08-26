@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { DevIntClient } from '../../src/client.js';
+import { DevIntClient, DI_API_MAX_SUPPORTED } from '../../src/client.js';
 import { CapabilityToken } from '../../src/credential.js';
 import { DeniedError, IncompatibleError } from '../../src/errors.js';
 import { DenyCode, NegotiationOutcome, RequestSchema, Verb } from '../../src/generated/devint_pb.js';
@@ -407,14 +407,34 @@ describe('which build answered is a v4 addition, and its absence is legible', ()
     }
   });
 
-  it('the reference client is itself an older peer, and is SUPPORTED rather than degraded', async () => {
-    // The client's window is 1–2, so it never negotiates v4 and never sees the
-    // message. v3 and v4 add what a peer can *say*, not what it can call, so
-    // this must stay a full connection — an additive change that degraded an
-    // existing client would not be additive.
+  it('a peer that stops below v4 is SUPPORTED rather than degraded', async () => {
+    // v3 and v4 add what a peer can *say*, not what it can call, so a peer that
+    // never negotiates them must still get a full connection — an additive
+    // change that degraded an existing client would not be additive.
+    //
+    // Asserted through a raw peer that names v2 explicitly. Until AAASM-5913
+    // this was asserted through the reference client itself, whose window
+    // stopped at 2 — but v6 added a field to a *request*, so that client now
+    // offers the whole window (see `DI_API_MAX_SUPPORTED`) and is no longer an
+    // older peer. Leaving the assertion there would have made it a claim about
+    // the top of the window, which is the opposite of the property.
+    const raw = await RawClient.open(harness.socket);
+    try {
+      const frame = await raw.hello([2]);
+      expect(frame.kind).toBe('hello-ack');
+      if (frame.kind !== 'hello-ack') return;
+      expect(frame.message.diApiVersion).toBe(2);
+      expect(frame.message.outcome).toBe(NegotiationOutcome.SUPPORTED);
+      expect(frame.message.unavailableVerbs).toEqual([]);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('the reference client negotiates the top of its window, not a degraded connection', async () => {
     const client = await connected(harness.tokens.full);
     try {
-      expect(client.negotiated.diApiVersion).toBe(2);
+      expect(client.negotiated.diApiVersion).toBe(DI_API_MAX_SUPPORTED);
       expect(client.negotiated.degraded).toBe(false);
       expect(client.negotiated.unavailableVerbs).toEqual([]);
     } finally {

@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { DevIntClient } from '../../src/client.js';
+import { DevIntClient, DI_API_MAX_SUPPORTED } from '../../src/client.js';
 import { CapabilityToken } from '../../src/credential.js';
 import { RuntimeNotRunningError } from '../../src/errors.js';
 import { DenyCode, Verb } from '../../src/generated/devint_pb.js';
@@ -62,7 +62,11 @@ describe('discovery and connection', () => {
   it('negotiates before any verb, and reports what was agreed', async () => {
     const client = await connect();
     try {
-      expect(client.negotiated.diApiVersion).toBe(2);
+      // The harness is built from this same tree, so agreement lands on this
+      // client's ceiling. Asserted against the constant rather than the literal
+      // it happens to hold: the number is not the property, and pinning it made
+      // this test read every ceiling change as a regression (AAASM-5913).
+      expect(client.negotiated.diApiVersion).toBe(DI_API_MAX_SUPPORTED);
       expect(client.negotiated.coreVersion).not.toBe('');
       expect(client.negotiated.lifecycleSchemaVersion).toBeGreaterThan(0);
       expect(client.negotiated.degraded).toBe(false);

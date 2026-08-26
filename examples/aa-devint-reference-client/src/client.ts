@@ -28,6 +28,7 @@ import type { CapabilityToken } from './credential.js';
 import {
   DeniedError,
   IncompatibleError,
+  ProjectRootUnsupportedError,
   RuntimeNotRunningError,
   TransportError,
   UnexpectedFrameError,
@@ -63,8 +64,54 @@ import {
 
 /** The DI-API versions this build speaks, offered whole on every connection. */
 export const DI_API_MIN_SUPPORTED = 1;
-/** @see DI_API_MIN_SUPPORTED */
-export const DI_API_MAX_SUPPORTED = 2;
+/**
+ * @see DI_API_MIN_SUPPORTED
+ *
+ * Raised from 2 to 6 by AAASM-5913, and the reason is worth stating because it
+ * is not the usual one. This client stayed at 2 through v3, v4 and v5 quite
+ * deliberately: each of those added a field to a *reply*, and a client gains
+ * nothing by claiming to understand a field it does not read. v6 adds a field to
+ * a **request** — {@link PlanOptions.projectRoot} — and that inverts the
+ * calculation. Sending a v6 field while claiming v2 is not modesty, it is a
+ * silent failure: an older runtime discards the field and substitutes its own
+ * working directory.
+ *
+ * The honest consequence, recorded rather than glossed: at v6 this client is
+ * *sent* the v3–v5 reply fields (policy posture, runtime provenance, apply
+ * outcome) and consumes none of them. Receiving a field and ignoring it is safe
+ * — it is fabricating one that is not — but a reader should not mistake this
+ * constant for a claim that all four additions are handled.
+ */
+export const DI_API_MAX_SUPPORTED = 6;
+
+/**
+ * The first DI-API version whose `plan` honours a caller-chosen project root.
+ *
+ * Mirrors `DI_API_PROJECT_ROOT_SINCE` in `aa-runtime/src/devint/negotiate.rs`.
+ * Duplicated rather than derived because the two halves are separately
+ * deployable: the whole hazard being guarded is a client and a runtime built at
+ * different times, so a constant shared between them would assume the thing it
+ * is checking.
+ */
+export const DI_API_PROJECT_ROOT_SINCE = 6;
+
+/**
+ * Whether a `plan` at `settingsScope` needs a newer runtime than was negotiated.
+ *
+ * Exported and pure so the rule can be asserted without a socket — which is the
+ * only way to assert it at all from this side, since the failure it prevents is
+ * a request that must never be written. A test that needed a live pre-v6 runtime
+ * to check this would not run, and the check would rot.
+ *
+ * `settingsScope` is compared against the literal wire vocabulary, matching
+ * `projection::parse_scope` in the runtime. A token neither side recognises
+ * returns `false` on purpose: rejecting an unknown scope is the service's job,
+ * and guessing that `"Project"` *means* project scope would answer a typo with
+ * "upgrade your runtime" instead of "that is not a scope".
+ */
+export function projectRootRequiresNewerRuntime(negotiatedVersion: number, settingsScope: string): boolean {
+  return settingsScope === 'project' && negotiatedVersion < DI_API_PROJECT_ROOT_SINCE;
+}
 
 /** The AAASM-5277 lifecycle schema versions this build can read. */
 export const LIFECYCLE_SCHEMA_VERSIONS = [1];
@@ -139,6 +186,12 @@ export interface PlanOptions {
    * This client does not pre-empt that refusal. The rule is the service's, its
    * message is the actionable one, and a second copy of it here would be a
    * second thing to keep true.
+   *
+   * It *does* pre-empt a different one. A runtime below
+   * {@link DI_API_PROJECT_ROOT_SINCE} cannot refuse, because protobuf discards
+   * the field before any handler sees it — see
+   * {@link ProjectRootUnsupportedError}. That check has to be here; there is no
+   * round trip that produces it.
    */
   readonly projectRoot: string;
 }
@@ -240,6 +293,15 @@ export class DevIntClient {
 
   /** Author a reviewable dry run. Mutates nothing. */
   async plan(toolId: string, options: PlanOptions): Promise<PlanView> {
+    // Before the write, not after the reply: an ignored root and an unsent one
+    // decode identically, so there is nothing in the response to check. The
+    // scope token is compared as the literal wire vocabulary, which is what the
+    // service parses (`projection::parse_scope`) — a token neither side
+    // recognises stays the service's to reject, so a typo is answered with "that
+    // is not a scope" rather than with "upgrade your runtime".
+    if (projectRootRequiresNewerRuntime(this.negotiated.diApiVersion, options.settingsScope)) {
+      throw new ProjectRootUnsupportedError(this.negotiated.diApiVersion, DI_API_PROJECT_ROOT_SINCE);
+    }
     const response = await this.call(Verb.PLAN, toolId, {
       plan: create(PlanArgsSchema, {
         profile: options.profile,
