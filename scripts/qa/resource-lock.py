@@ -568,8 +568,14 @@ def cmd_run(rest: list[str]) -> int:
     # How long to wait after relaying SIGTERM before escalating to SIGKILL
     # — reuses the class's own grace_secs (the same field AAASM-5951's
     # future hard-stall termination will read), so this doesn't invent a
-    # second, inconsistent grace-period concept.
-    grace_secs = cls_cfg.get("grace_secs", DEFAULT_FIELDS["grace_secs"])
+    # second, inconsistent grace-period concept. Guard against a malformed
+    # registry value (e.g. a string) crashing this deep into a run with an
+    # uncaught ValueError instead of the clean EXIT_BAD_REGISTRY path other
+    # fields get — validate_registry() doesn't type-check this field.
+    try:
+        grace_secs = int(cls_cfg.get("grace_secs", DEFAULT_FIELDS["grace_secs"]))
+    except (TypeError, ValueError):
+        grace_secs = int(DEFAULT_FIELDS["grace_secs"])
     relayed_once = False
 
     def _relay(_signum: int, _frame) -> None:
@@ -590,16 +596,23 @@ def cmd_run(rest: list[str]) -> int:
             os.killpg(child_pid, signal.SIGTERM)
         except ProcessLookupError:
             return
-        if relayed_once:
+        if relayed_once or grace_secs <= 0:
             # A second signal (e.g. an impatient double Ctrl-C) escalates
             # immediately rather than waiting out the grace period again.
+            # grace_secs <= 0 escalates immediately too, on the FIRST
+            # relay — signal.alarm(0) does not mean "fire immediately", it
+            # means "cancel any pending alarm and schedule nothing", so
+            # passing a <=0 grace_secs straight into it would silently
+            # disable escalation entirely (an admin configuring
+            # grace_secs: 0 clearly means "no grace period", not "no
+            # escalation ever").
             try:
                 os.killpg(child_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
         else:
             relayed_once = True
-            signal.alarm(int(grace_secs))
+            signal.alarm(grace_secs)
 
     def _escalate(_signum: int, _frame) -> None:
         # Fired by signal.alarm() if the child hasn't exited grace_secs

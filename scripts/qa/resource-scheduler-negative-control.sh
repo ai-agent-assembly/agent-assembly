@@ -50,6 +50,12 @@
 #           period escalation then SIGKILLs it — Ctrl-C must not hang the
 #           caller's terminal forever just because the wrapped job never
 #           reacts to SIGTERM.
+#   Case 17 (AAASM-5948) grace_secs: 0 escalates to SIGKILL on the FIRST
+#           relay rather than silently never escalating —
+#           signal.alarm(0) means "cancel any pending alarm", not "fire
+#           immediately"; passing a <=0 grace_secs straight into it would
+#           reproduce the AAASM-5948 orphan bug for any class explicitly
+#           configured with no grace period.
 #
 # Usage: bash scripts/qa/resource-scheduler-negative-control.sh
 # Run from the repo root (fixtures reference real repo-relative paths).
@@ -398,6 +404,34 @@ else
   wait "$wrapper_pid"
 fi
 rm -f "$marker16" "$AA_QA_LOCK_DIR/case16.out"
+
+echo "== Case 17 (AAASM-5948): grace_secs: 0 escalates immediately, doesn't disable escalation =="
+marker17="$(mktemp)"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-zero-grace -- bash "$IGNORE_TERM" "$marker17" >"$AA_QA_LOCK_DIR/case17.out" 2>&1 &
+wrapper_pid=$!
+if ! wait_for_start "$marker17"; then
+  echo "  ✗ job never started — cannot exercise case 17"
+  FAILED=1
+else
+  child_pid="$(awk '/^START/ {print $2; exit}' "$marker17")"
+  kill -TERM "$wrapper_pid"
+  # grace_secs=0 — the job should be gone almost immediately, well before
+  # case 16's grace_secs=1 class. Bounded poll, not a fixed sleep.
+  waited=0
+  while kill -0 "$child_pid" 2>/dev/null && [ "$waited" -lt 30 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$child_pid" 2>/dev/null; then
+    echo "  ✗ child pid $child_pid still alive ~3s after SIGTERM with grace_secs=0 — escalation never fired (the AAASM-5948 orphan bug, reproduced for this config)"
+    FAILED=1
+    kill -KILL "$child_pid" 2>/dev/null || true
+  else
+    echo "  ✓ child pid $child_pid is gone almost immediately with grace_secs=0"
+  fi
+  wait "$wrapper_pid"
+fi
+rm -f "$marker17" "$AA_QA_LOCK_DIR/case17.out"
 
 echo
 if [ "$FAILED" -eq 0 ]; then
