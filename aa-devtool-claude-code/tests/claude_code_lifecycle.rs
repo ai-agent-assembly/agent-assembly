@@ -109,6 +109,20 @@ fn request(scope: SettingsScope) -> IntegrationRequest {
     IntegrationRequest::new(DevToolKind::ClaudeCode, ProtectionProfile::Recommended, scope)
 }
 
+/// The same request, naming the project it is for when it needs to.
+///
+/// Since AAASM-5913 a project-scope request carries the project explicitly: the
+/// adapter runs inside a service shared by every client on the host, so there is
+/// nothing it could honestly substitute for a project the caller did not name.
+fn request_in(scope: SettingsScope, fixture: &Fixture) -> IntegrationRequest {
+    let request = request(scope);
+    if scope == SettingsScope::Project {
+        request.with_project_root(fixture.root().join("repo"))
+    } else {
+        request
+    }
+}
+
 // ── Contract conformance ────────────────────────────────────────────────────
 
 #[test]
@@ -294,7 +308,7 @@ async fn a_project_scoped_plan_writes_only_the_project_surface() {
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
     let plan = integration
-        .plan_integration(&request(SettingsScope::Project))
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
         .await
         .expect("plan");
     plan.validate().expect("validate");
@@ -304,6 +318,88 @@ async fn a_project_scoped_plan_writes_only_the_project_surface() {
             assert_eq!(scope, SettingsScope::Project, "step {} escaped the scope", step.id);
         }
     }
+}
+
+/// AAASM-5913, matrix row (g), at the adapter boundary: the project a plan
+/// writes into comes from the request, and the request outranks anything the
+/// adapter was configured with.
+///
+/// The fixture's own `ClaudeCodePaths` name `<root>/repo` — the stand-in for the
+/// long-lived service's idea of "the project". A caller naming `<root>/elsewhere`
+/// must be planned into `<root>/elsewhere`, and nothing may be planned into
+/// `<root>/repo`.
+#[tokio::test]
+async fn the_project_a_plan_writes_into_comes_from_the_request_not_the_adapter() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let elsewhere = fixture.root().join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join(".claude")).expect("second project");
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Project).with_project_root(&elsewhere))
+        .await
+        .expect("plan");
+    plan.validate().expect("validate");
+
+    assert_eq!(
+        plan.project_root.as_deref(),
+        Some(elsewhere.as_path()),
+        "the plan must record the project it is for, so an approver can read it"
+    );
+    let settings = plan
+        .steps
+        .iter()
+        .find(|s| s.id == STEP_MANAGED_SETTINGS)
+        .expect("settings step");
+    match &settings.action {
+        StepAction::WriteManagedSettings { path, .. } => {
+            assert_eq!(path, &elsewhere.join(".claude").join("settings.json"));
+        }
+        other => panic!("expected managed settings, got {other:?}"),
+    }
+    for step in &plan.steps {
+        for artifact in step.action.affected_paths() {
+            assert!(
+                !artifact.starts_with(fixture.root().join("repo")),
+                "step {} writes {} — the project the adapter was configured with, not the one the \
+                 caller named",
+                step.id,
+                artifact.display()
+            );
+        }
+    }
+}
+
+/// The other half of row (g): a project-scope request that names no project is
+/// refused, loudly, rather than being resolved against whatever directory the
+/// service happens to be sitting in.
+///
+/// The fixture's paths *do* carry a project, so this also pins that a configured
+/// project is not allowed to stand in for one the caller failed to name.
+#[tokio::test]
+async fn a_project_scoped_request_that_names_no_project_is_refused() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let err = integration
+        .plan_integration(&request(SettingsScope::Project))
+        .await
+        .expect_err("a project-scope request with no project must not produce a plan");
+    let message = err.to_string();
+    assert!(
+        message.contains("names no project"),
+        "the refusal must say what is missing: {message}"
+    );
+
+    // Positive control: the same fixture, same scope, with the project named,
+    // does plan — so the refusal above is about the missing project and not
+    // about the fixture being unable to plan at all.
+    integration
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
+        .await
+        .expect("naming the project makes the same request plannable");
 }
 
 // ── The one privileged step (AAASM-5298) ────────────────────────────────────
@@ -318,7 +414,7 @@ async fn a_normal_install_contains_no_privileged_step_and_cannot_claim_host_enfo
 
     for scope in [SettingsScope::User, SettingsScope::Project] {
         let plan = integration
-            .plan_integration(&request(scope).requesting_level(ProtectionLevel::HostEnforced))
+            .plan_integration(&request_in(scope, &fixture).requesting_level(ProtectionLevel::HostEnforced))
             .await
             .expect("plan");
         plan.validate().expect("validate");
