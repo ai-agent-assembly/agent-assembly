@@ -1997,6 +1997,85 @@ mod tests {
         assert_eq!(envelope.superseded[0].receipt_id, "receipt-1000");
     }
 
+    /// AAASM-5963. The receipt id survived a reapply only while the plan id
+    /// did, and the plan id is minted per authoring — so whether an install was
+    /// recognised as the one already present came down to whether two applies
+    /// happened to author the same id. Under a plan id carrying a nonce (or,
+    /// before that, two applies a clock second apart) it never did, and every
+    /// reapply minted a new receipt id and overwrote the stored receipt —
+    /// discarding the `applied_at`, the verification evidence, and the
+    /// `prior_state` that `remove` restores from.
+    #[test]
+    fn a_reapply_authored_by_a_different_plan_is_still_the_same_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+
+        let mut reauthored = plan(&f);
+        reauthored.plan_id = "plan-2".to_string();
+        let outcome = e.apply(&reauthored, &context(2_000)).unwrap();
+
+        assert!(!outcome.mutated, "the same plan content mutates nothing twice");
+        assert_eq!(
+            outcome.receipt.receipt_id, first.receipt_id,
+            "a reapply of the same installation is not a new installation"
+        );
+        assert_eq!(
+            outcome.receipt.applied_at_unix_secs, 1_000,
+            "the installation dates from when it was installed, not from the last time it was confirmed"
+        );
+        assert_eq!(
+            outcome.receipt.plan_id, first.plan_id,
+            "the stored receipt still names the authoring that installed it"
+        );
+
+        let envelope = f
+            .store
+            .load_envelope(&DevToolKind::ClaudeCode, SettingsScope::User)
+            .unwrap()
+            .unwrap();
+        assert!(
+            envelope.superseded.is_empty(),
+            "nothing was superseded, so the history has nothing to record"
+        );
+        assert_eq!(envelope.receipt.receipt_id, first.receipt_id);
+    }
+
+    /// The other half of AAASM-5963: identity has to *change* when the
+    /// installation does, and the steps are not the only thing that carries it.
+    /// The same steps under a plan that claims less are a different
+    /// installation, because the level is what the receipt is believed to
+    /// substantiate — a `status` reading `PartiallyIntegrated` where an
+    /// `Integrated` receipt is stored is a different answer to the only question
+    /// an operator asks.
+    ///
+    /// The change is downward because `validate` refuses a plan that claims a
+    /// level its steps do not substantiate, so the upward case is unreachable
+    /// here by construction rather than by omission.
+    #[test]
+    fn a_reapply_that_plans_a_different_level_is_a_different_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+        assert_eq!(first.planned_level, ProtectionLevel::Integrated);
+        assert_eq!(first.achieved_level, ProtectionLevel::Integrated);
+
+        let mut lower = plan(&f);
+        lower.planned_level = ProtectionLevel::PartiallyIntegrated;
+        let outcome = e.apply(&lower, &context(2_000)).unwrap();
+
+        assert_eq!(outcome.receipt.receipt_id, "receipt-2000");
+        assert_eq!(outcome.receipt.achieved_level, ProtectionLevel::PartiallyIntegrated);
+
+        let envelope = f
+            .store
+            .load_envelope(&DevToolKind::ClaudeCode, SettingsScope::User)
+            .unwrap()
+            .unwrap();
+        assert_eq!(envelope.superseded.len(), 1);
+        assert_eq!(envelope.superseded[0].receipt_id, first.receipt_id);
+    }
+
     #[test]
     fn a_tool_upgrade_out_of_range_is_reported_and_not_repaired_away() {
         let f = fixture();
