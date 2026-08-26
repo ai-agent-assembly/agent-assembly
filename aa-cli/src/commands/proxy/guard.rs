@@ -614,6 +614,113 @@ mod tests {
         }
     }
 
+    /// AAASM-5924 (ADR 0036 Test 8): an ambient `AA_PROXY_TRUSTED_CONFIG_PATH`
+    /// (set in this process's own environment before launch, not by this
+    /// boundary) reaches the real spawned child when no legitimate artifact
+    /// exists on disk to override it — `build_command` never `env_remove`s
+    /// this name, and `PROXY_EXCLUSION_AND_ROUTING_VARS` does not contain it.
+    ///
+    /// This is the honest, currently-true claim, not "not adopted" (see the
+    /// filed follow-up bug against ADR 0036 Test 8's row wording): the only
+    /// ambient channel into `aa-proxy`'s trusted config is this path pointer
+    /// plus `AASM_STATE_DIR` (already disclosed, gap #3), and this is the
+    /// more direct half of that same channel.
+    #[test]
+    fn ambient_trusted_config_path_reaches_the_real_child_when_no_artifact_overrides_it() {
+        let _lock = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        // AASM_STATE_DIR resolves to an empty dir — no artifact for
+        // `build_command` to find, so it sets nothing itself.
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let prior_ambient = std::env::var("AA_PROXY_TRUSTED_CONFIG_PATH").ok();
+        std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", "/attacker/controlled/path.json");
+
+        let stub = dir.path().join("aa-proxy");
+        let out = dir.path().join("env.txt");
+        std::fs::write(&stub, format!("#!/bin/sh\nenv > {}\n", out.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let opts = ProxyGuardOptions {
+            ready_file: dir.path().join("ready"),
+            ca_dir: dir.path().join("ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let mut cmd = build_command(&stub, &opts);
+        let mut child = cmd.spawn().expect("stub must spawn");
+        let status = child.wait().expect("stub must exit");
+        assert!(status.success());
+
+        std::env::remove_var("AASM_STATE_DIR");
+        match prior_ambient {
+            Some(v) => std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", v),
+            None => std::env::remove_var("AA_PROXY_TRUSTED_CONFIG_PATH"),
+        }
+
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        assert!(
+            real_env.contains("AA_PROXY_TRUSTED_CONFIG_PATH=/attacker/controlled/path.json"),
+            "the ambient value must reach the real child when no artifact overrides it \
+             (this is the currently-true claim ADR 0036 Test 8 must be corrected to state): {real_env}"
+        );
+    }
+
+    /// Row 8's sibling: when a legitimate artifact DOES exist, this
+    /// boundary's own resolved path wins over whatever ambient value was
+    /// present — proves the test above is measuring an absence of an
+    /// override, not that the ambient value always wins outright.
+    #[test]
+    fn a_real_artifact_overrides_an_ambient_trusted_config_path() {
+        let _lock = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let expected = crate::commands::trusted_upstream_path::trusted_upstream_config_path().unwrap();
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, "{}").unwrap();
+        let prior_ambient = std::env::var("AA_PROXY_TRUSTED_CONFIG_PATH").ok();
+        std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", "/attacker/controlled/path.json");
+
+        let stub = dir.path().join("aa-proxy");
+        let out = dir.path().join("env.txt");
+        std::fs::write(&stub, format!("#!/bin/sh\nenv > {}\n", out.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let opts = ProxyGuardOptions {
+            ready_file: dir.path().join("ready"),
+            ca_dir: dir.path().join("ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let mut cmd = build_command(&stub, &opts);
+        let mut child = cmd.spawn().expect("stub must spawn");
+        let status = child.wait().expect("stub must exit");
+        assert!(status.success());
+
+        std::env::remove_var("AASM_STATE_DIR");
+        match prior_ambient {
+            Some(v) => std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", v),
+            None => std::env::remove_var("AA_PROXY_TRUSTED_CONFIG_PATH"),
+        }
+
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        assert!(
+            real_env.contains(&format!("AA_PROXY_TRUSTED_CONFIG_PATH={}", expected.display())),
+            "the boundary's own resolved artifact path must win over an ambient value: {real_env}"
+        );
+        assert!(
+            !real_env.contains("/attacker/controlled/path.json"),
+            "the ambient value must not survive when a real artifact exists: {real_env}"
+        );
+    }
+
     /// `ProxyGuard::spawn` failing at the readiness stage must not leak the
     /// child it spawned — no `ProxyGuard` exists yet for `Drop` to reap it.
     /// Uses a real stub "proxy" that never writes a ready file, so the

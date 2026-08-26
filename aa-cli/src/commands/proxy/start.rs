@@ -605,6 +605,88 @@ mod tests {
         }
     }
 
+    /// AAASM-5924 (ADR 0036 Test 8): mirrors
+    /// `proxy::guard::tests::ambient_trusted_config_path_reaches_the_real_child_when_no_artifact_overrides_it`
+    /// at the `aasm proxy start` boundary — an ambient `AA_PROXY_TRUSTED_CONFIG_PATH`
+    /// reaches the real spawned child when no artifact exists to override it.
+    #[test]
+    fn ambient_trusted_config_path_reaches_the_real_child_when_no_artifact_overrides_it() {
+        let _lock = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let prior_ambient = std::env::var("AA_PROXY_TRUSTED_CONFIG_PATH").ok();
+        std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", "/attacker/controlled/path.json");
+
+        let stub = dir.path().join("aa-proxy");
+        let out = dir.path().join("env.txt");
+        std::fs::write(&stub, format!("#!/bin/sh\nenv > {}\n", out.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let args = Wrapper::parse_from(["test"]).inner;
+        let mut cmd = build_start_command(&stub, &args);
+        let status = cmd.status().expect("stub must spawn and exit");
+
+        std::env::remove_var("AASM_STATE_DIR");
+        match prior_ambient {
+            Some(v) => std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", v),
+            None => std::env::remove_var("AA_PROXY_TRUSTED_CONFIG_PATH"),
+        }
+
+        assert!(status.success());
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        assert!(
+            real_env.contains("AA_PROXY_TRUSTED_CONFIG_PATH=/attacker/controlled/path.json"),
+            "the ambient value must reach the real child when no artifact overrides it: {real_env}"
+        );
+    }
+
+    /// Row 8's sibling: a real artifact overrides an ambient value.
+    #[test]
+    fn a_real_artifact_overrides_an_ambient_trusted_config_path() {
+        let _lock = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let expected = crate::commands::trusted_upstream_path::trusted_upstream_config_path().unwrap();
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, "{}").unwrap();
+        let prior_ambient = std::env::var("AA_PROXY_TRUSTED_CONFIG_PATH").ok();
+        std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", "/attacker/controlled/path.json");
+
+        let stub = dir.path().join("aa-proxy");
+        let out = dir.path().join("env.txt");
+        std::fs::write(&stub, format!("#!/bin/sh\nenv > {}\n", out.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let args = Wrapper::parse_from(["test"]).inner;
+        let mut cmd = build_start_command(&stub, &args);
+        let status = cmd.status().expect("stub must spawn and exit");
+
+        std::env::remove_var("AASM_STATE_DIR");
+        match prior_ambient {
+            Some(v) => std::env::set_var("AA_PROXY_TRUSTED_CONFIG_PATH", v),
+            None => std::env::remove_var("AA_PROXY_TRUSTED_CONFIG_PATH"),
+        }
+
+        assert!(status.success());
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        assert!(
+            real_env.contains(&format!("AA_PROXY_TRUSTED_CONFIG_PATH={}", expected.display())),
+            "the boundary's own resolved artifact path must win over an ambient value: {real_env}"
+        );
+        assert!(
+            !real_env.contains("/attacker/controlled/path.json"),
+            "the ambient value must not survive when a real artifact exists: {real_env}"
+        );
+    }
+
     /// The record's executable field and the child's `argv[0]` have to be the
     /// same string, because on Linux `argv[0]` is the only image fact the kernel
     /// still publishes once the proxy has hardened itself (AAASM-5323). They are
