@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use wasmtime::{Caller, Config, Engine, Linker, Module, ResourceLimiter, Store, Trap, UpdateDeadline};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
-use wasmtime_wasi::{DirPerms, FilePerms, I32Exit, WasiCtx};
+use wasmtime_wasi::{FsPerms, I32Exit, WasiCtx};
 
 use crate::error::SandboxError;
 use crate::host_fn::HostFnCounter;
@@ -397,14 +397,14 @@ impl SandboxRuntime {
                 )));
             }
             // Least-privilege grant: read-only unless the policy explicitly
-            // opted this mount into read-write. Avoids the DirPerms::all() /
-            // FilePerms::all() over-grant. (AAASM-3618.)
-            let (dir_perms, file_perms) = match preopen.access {
-                PreopenAccess::ReadOnly => (DirPerms::READ, FilePerms::READ),
-                PreopenAccess::ReadWrite => (DirPerms::all(), FilePerms::all()),
+            // opted this mount into read-write. Avoids the FsPerms::ReadWrite
+            // over-grant. (AAASM-3618.)
+            let perms = match preopen.access {
+                PreopenAccess::ReadOnly => FsPerms::ReadOnly,
+                PreopenAccess::ReadWrite => FsPerms::ReadWrite,
             };
             builder
-                .preopened_dir(&preopen.host_path, &preopen.guest_path, dir_perms, file_perms)
+                .preopened_dir(&preopen.host_path, &preopen.guest_path, perms)
                 .map_err(|e| SandboxError::Wasmtime(e.to_string()))?;
         }
         Ok(())
