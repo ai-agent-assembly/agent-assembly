@@ -89,21 +89,30 @@ jobs:
     #                               min is that doubled. None of these does work
     #                               proportional to the repository, so a ceiling
     #                               on each would cost more noise than it buys.
-    #   cold cache save         6  = an ESTIMATE, not a measurement. See below.
+    #   cold cache save         2  = measured 44s, rounded up. See below.
     #                          ---
-    #                           79
+    #                           75
     #
     # The cache save is the one contributor that *cannot* be ceilinged: it is a
-    # post step, and post steps do not accept `timeout-minutes`. It has also
-    # never once executed in this workflow (that is what `cache-on-failure`
-    # below fixes), so 6 min for a cold macOS target-dir save is a guess. It is
+    # post step, and post steps do not accept `timeout-minutes`. It is therefore
     # the only remaining way the job ceiling could still fire before a step
-    # ceiling. Replace the 6 with the real figure once a run has measured it,
-    # and if that figure is materially higher, raise the job ceiling with it.
+    # ceiling, which is why it is budgeted explicitly rather than absorbed into
+    # the line above.
+    #
+    # It was an estimate of 6 min when this ceiling was first derived, because
+    # the step had never once executed here — that is the ratchet
+    # `cache-on-failure` below breaks. It has now executed: run 33000991684 step
+    # 32 `Post Run Swatinem/rust-cache`, 44s, saving a cold macOS target dir.
+    # So the 6 is replaced by its measurement, and the ceiling comes down with
+    # it rather than keeping slack that stood in for a number nobody had.
+    #
+    # 2 min is 44s with ~2.7x headroom, kept because one observation of a save
+    # is not a distribution and a cache that grows will take longer. If a later
+    # run measures materially more, raise this line and the job ceiling together.
     #
     # Do not lower this below the sum above without lowering the step ceilings
     # too, and do not add an un-ceilinged step that can do unbounded work.
-    timeout-minutes: 79
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +185,10 @@ jobs:
           # cache unwritten. Setting this makes src/restore.ts export
           # CACHE_ON_FAILURE=true, so the post step runs and a truncated run
           # still contributes its cache.
+          #
+          # Confirmed at this pin rather than argued from the source: in run
+          # 33000991684 step 32 ran to `success` in 44s, where the same step was
+          # `skipped` in every run that preceded it.
           #
           # `save-if: always()` is NOT a substitute at this pin: `save-if` is
           # read inside dist/save.js, which never executes when post-if is false.
@@ -266,11 +279,21 @@ jobs:
         run: cargo build --quiet -p aa-api --bin aa-api-server
 
       - name: Run integration tests
-        # Only clean measurement is 18.9 min (34a274da6, the last green run);
-        # under the ratchet it was truncated at 11.9-16.4 min and never
-        # finished. 28 = 1.48x the green figure. If this ceiling ever fires the
-        # suite is genuinely too slow — that is a real red failure to
-        # investigate, not a number to raise.
+        # 28 = 1.48x the 18.9 min of the last green warm run (34a274da6); under
+        # the ratchet the step was truncated at 11.9-16.4 min and never finished.
+        #
+        # Then measured at 24.5 min in run 33000991684 — 87% of this ceiling,
+        # which is the same thin-slack condition that let the *job* ceiling tip
+        # over in the first place, so it is recorded here rather than left for
+        # someone to rediscover. It is not a reason to raise the 28: that run
+        # restored a cache written by a green run several weeks of main earlier
+        # (the ratchet is why), so it compiled the test crate close to cold, and
+        # the 44s save this PR unblocks is what brings later runs back toward the
+        # warm figure. Re-measure once a run has restored a cache this workflow
+        # actually wrote.
+        #
+        # If this ceiling ever fires the suite is genuinely too slow — that is a
+        # real red failure to investigate, not a number to raise.
         timeout-minutes: 28
         env:
           PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk
