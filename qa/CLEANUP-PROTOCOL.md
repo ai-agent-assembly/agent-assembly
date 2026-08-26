@@ -118,13 +118,26 @@ minutes without a fresh query being re-verified against it.
   section said a `run_in_background` command that blocks until a condition
   becomes true was "fine as a mechanism" provided the condition was a fresh
   query. In practice that permission is what got used: campaign sessions ran
-  `sleep 110` loops and 10-minute command timeouts, and a shell that is
-  asleep cannot notice a terminal state or be corrected by anything the
-  session learns while it sleeps. The shape that works is
-  query → act if terminal → otherwise schedule a short wakeup → query
-  again, each wakeup performing its own query. First ~10 minutes at a
-  ~2–3 minute cadence, then ~5 minutes; never go more than ~10 minutes
-  without a fresh authoritative state.
+  `sleep 110` loops and 10-minute command timeouts.
+
+  Note what is and is not the objection, because the numbers alone look
+  identical: waiting ~2 minutes between queries is the prescribed cadence
+  below, so the duration of the sleep is not the defect. **Where the sleep
+  lives is.** A `sleep` inside the poll shell puts the waiting and the
+  deciding in the same process, and that process holds the decision until it
+  wakes: it cannot notice a terminal state, cannot be corrected by anything
+  the session learns meanwhile, and cannot be reasoned about by a session
+  that has moved on — the shell reports what was true when it last looked,
+  which is exactly how a failed run kept being described as pending. A sleep
+  between wakeups puts the waiting outside the decision, so each decision is
+  made from a query taken at the moment it is made.
+
+  So the shape that works is query → act if terminal → otherwise schedule a
+  short wakeup → query again, each wakeup performing its own query and each
+  ending. First ~10 minutes at a ~2–3 minute cadence, then ~5 minutes; never
+  go more than ~10 minutes without a fresh authoritative state. One
+  `scripts/qa/ci-watch.py poll` per wakeup satisfies this by construction —
+  it cannot sleep, because it exits.
 * **A failed required check ends the wait immediately and starts
   triage** (`qa/FINDING-VERIFICATION-PROTOCOL.md` classifies and drives the
   fix) — it is never a reason to keep polling in case it changes back.
@@ -150,9 +163,14 @@ remember. `scripts/qa/ci-watch-negative-control.sh` runs each rule against
 both the real implementation and a deliberately wrong watcher in
 `qa/tests/fixtures/ci-watch/`, and fails any case where the two agree — so
 a rule that stopped being load-bearing reddens `CI-watcher freshness gate`
-instead of quietly becoming prose again. Prefer the tool over hand-rolled
-`gh` calls; if this section and the tool ever disagree, the negative
-control is the tiebreaker.
+instead of quietly becoming prose again. There are two wrong watchers, not
+one: the rules have a direction, and a rule can be broken by over-repair as
+well as by neglect, which a single wrong implementation cannot demonstrate
+both of. A handful of cases are asserted against the real implementation
+only, and each says so at the point of assertion rather than being counted
+as though it discriminated. Prefer the tool over hand-rolled `gh` calls; if
+this section and the tool ever disagree, the negative control is the
+tiebreaker.
 
 ## Final-completion bar
 

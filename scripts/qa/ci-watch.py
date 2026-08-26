@@ -20,7 +20,10 @@ no memo, no "last known status" file. Every invocation re-derives the PR HEAD
 SHA and re-fetches the check runs for that exact SHA. That is not an
 implementation detail — it is the freshness invariant itself, expressed as an
 absence. A cache is the one change that would silently reintroduce the defect,
-and case D of the negative control exists to turn red if one is ever added.
+and case A of the negative control is what turns red if one is ever added:
+it is the case whose fixture *changes* between wakeups, so a cached first
+observation reports the wrong verdict. Case D cannot detect a cache — its
+world is already terminal at the first look, so caching it is harmless there.
 
 The only cross-invocation state is the fixture cursor used by the tests to
 simulate successive wakeups, and it lives under a caller-supplied temp dir

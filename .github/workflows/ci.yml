@@ -1335,13 +1335,20 @@ jobs:
           python-version: "3.12"
 
       # The negative control is the whole gate here, and it runs the real
-      # implementation and a deliberately wrong one side by side across all
-      # eight cases (TEST A–F of the Story, plus `stale`-is-not-a-pass and
-      # re-run supersession). A case where both agree is failed as
-      # NON-DISCRIMINATING rather than counted as a pass, and a naive watcher
-      # that crashes instead of misbehaving is failed as HARNESS BROKEN —
-      # both guards exist because both failure modes happened during
-      # development and left the suite green while proving nothing.
+      # implementation and a deliberately wrong one side by side: TEST A–F of
+      # the Story, plus `stale`-is-not-a-pass, re-run supersession, the
+      # `neutral` conclusion, both directions of choosing among several
+      # attempts for one context, a recorded failure alongside an in-flight
+      # re-run, and the two refusals (an empty required set, and an override
+      # that is a subset of branch protection). Two wrong watchers, because a
+      # selection rule can be broken by over-repair as well as by neglect and
+      # one implementation cannot be wrong in both directions at once.
+      #
+      # A case where the real and the wrong watcher agree is failed as
+      # NON-DISCRIMINATING rather than counted as a pass, and a wrong watcher
+      # that crashes instead of misbehaving is failed as HARNESS BROKEN — both
+      # guards exist because both failure modes happened during development and
+      # left the suite green while proving nothing.
       - name: Self-test ci-watch.py (negative control)
         run: bash scripts/qa/ci-watch-negative-control.sh
 
