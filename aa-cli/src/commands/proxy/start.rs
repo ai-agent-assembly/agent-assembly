@@ -14,13 +14,18 @@ use super::{identity, trust};
 #[derive(Debug, Args)]
 pub struct StartArgs {
     /// Address the proxy should listen on.
-    #[arg(long, default_value = "127.0.0.1:8899", env = "AA_PROXY_ADDR")]
+    #[arg(
+        long,
+        default_value = "127.0.0.1:8899",
+        env = "AA_PROXY_ADDR",
+        hide_env_values = true
+    )]
     pub listen: String,
     /// Gateway URL to forward policy decisions to.
-    #[arg(long, env = "AA_GATEWAY_URL")]
+    #[arg(long, env = "AA_GATEWAY_URL", hide_env_values = true)]
     pub gateway: Option<String>,
     /// Directory for CA certificate and key storage.
-    #[arg(long, env = "AA_CA_DIR")]
+    #[arg(long, env = "AA_CA_DIR", hide_env_values = true)]
     pub ca_dir: Option<PathBuf>,
     /// Run in the foreground instead of daemonizing.
     #[arg(long)]

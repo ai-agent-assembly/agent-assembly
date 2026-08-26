@@ -1,0 +1,29 @@
+{
+  "description": "A completed FAILURE listed before a row of the same name still in flight — the case the old rule got right for the wrong reason. 'A completed row beats an in-flight one' is the correct rule, and it must hold when the completed row is the bad news too: a re-run that is still running does not retract the failure that is already recorded, and reporting `running` here is how a wait outlives the fact that started it.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "failure",
+          "id": 930001,
+          "started_at": "2026-08-26T09:30:00Z",
+          "completed_at": "2026-08-26T09:42:14Z"
+        },
+        {
+          "name": "CI Success",
+          "status": "in_progress",
+          "conclusion": null,
+          "id": 930002,
+          "started_at": "2026-08-26T09:50:00Z",
+          "completed_at": null
+        }
+      ]
+    }
+  ]
+}

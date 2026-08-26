@@ -45,7 +45,8 @@ use super::receipt::{IntegrationReceipt, PriorSettingsState, StepReceipt};
 use super::state::ProtectionLevel;
 use super::status::VerificationResult;
 use super::step::{
-    ArtifactOperation, IntegrationStep, SettingsMerge, SettingsScope, StepAction, StepRequirement, TrustMaterialKind,
+    ArtifactOperation, DocumentFormat, IntegrationStep, SettingsMerge, SettingsScope, StepAction, StepRequirement,
+    TrustMaterialKind,
 };
 use super::store::{ReceiptStore, StoreError};
 use super::version::{ComponentVersions, ToolVersion, VersionCompatibility};
@@ -325,16 +326,9 @@ impl<E: StepExecutor> IntegrationEngine<E> {
             self.apply_step(plan, step, &mut journal, &mut step_receipts, &mut skipped, &mut mutated)?;
         }
 
-        // Reusing the prior receipt's id when the plan is the same is what stops
-        // a no-op reapply from registering as an upgrade in the store's history.
-        let receipt_id = match &existing {
-            Some(prior) if prior.plan_id == plan.plan_id => prior.receipt_id.clone(),
-            _ => context.receipt_id.clone(),
-        };
-
         let mut receipt = IntegrationReceipt {
             schema_version: super::version::LIFECYCLE_SCHEMA_VERSION,
-            receipt_id,
+            receipt_id: context.receipt_id.clone(),
             plan_id: plan.plan_id.clone(),
             tool: plan.tool.clone(),
             profile: plan.profile,
@@ -350,20 +344,51 @@ impl<E: StepExecutor> IntegrationEngine<E> {
         };
         receipt.achieved_level = configuration_level(&receipt, plan.planned_level);
 
-        // A reapply that changed nothing keeps the receipt it already had,
-        // including its `applied_at` and its verification evidence: rewriting
-        // them would make an operation that mutated nothing look like a fresh
-        // install and would discard a verification that is still valid.
-        if !mutated {
-            if let Some(prior) = &existing {
-                if prior.plan_id == plan.plan_id && receipts_agree(prior, &receipt) {
-                    self.store.delete_journal(&plan.tool, plan.settings_scope)?;
-                    return Ok(ApplyOutcome {
-                        receipt: prior.clone(),
-                        mutated: false,
-                        skipped,
-                    });
-                }
+        // Does this apply land on the installation that is already here, or does
+        // it replace it? Only the receipts answer that, and only by what they
+        // describe — never by which plan authored them (AAASM-5963). A plan id
+        // names one *authoring*; a receipt id names one *installation*. Two
+        // authorings of the identical plan are the same installation and must
+        // keep one id, or a reapply reads as a fresh install; and the two are not
+        // interchangeable even as a heuristic, because a plan id is minted per
+        // authoring and so differs on every reapply.
+        let prior_installation = existing.as_ref().filter(|prior| receipts_agree(prior, &receipt));
+
+        if let Some(prior) = prior_installation {
+            receipt.receipt_id = prior.receipt_id.clone();
+
+            // The removal baseline belongs to the installation, not to this
+            // apply. `prior_state` was just read off a document AASM had already
+            // written, so saving it would record AASM's own values as "what the
+            // user had before" — and `remove` would then restore those and leave
+            // every AASM-owned key in the file, reporting success (AAASM-5963).
+            //
+            // So it is captured once, when the installation is created, and
+            // carried forward across every later apply for this (tool, scope).
+            // Relying on the `!mutated` early return below is not enough: that
+            // path preserves the baseline only when the reapply changed nothing,
+            // and a reapply that *did* change something is exactly when the
+            // baseline matters most.
+            //
+            // Positional zip is sound here because `receipts_agree` has already
+            // established that the two step lists have equal length and equal
+            // `step_id` at every position; it is the same pairing that decided
+            // these are one installation.
+            for (fresh_step, stored_step) in receipt.steps.iter_mut().zip(&prior.steps) {
+                fresh_step.prior_state = stored_step.prior_state.clone();
+            }
+
+            // A reapply that changed nothing keeps the receipt it already had,
+            // including its `applied_at` and its verification evidence: rewriting
+            // them would make an operation that mutated nothing look like a fresh
+            // install and would discard a verification that is still valid.
+            if !mutated {
+                self.store.delete_journal(&plan.tool, plan.settings_scope)?;
+                return Ok(ApplyOutcome {
+                    receipt: prior.clone(),
+                    mutated: false,
+                    skipped,
+                });
             }
         }
 
@@ -731,15 +756,75 @@ fn configuration_level(receipt: &IntegrationReceipt, planned: ProtectionLevel) -
     level.min(planned).min(receipt.profile.max_reportable_level())
 }
 
-/// Whether a freshly computed receipt describes the same host state as a stored
-/// one, ignoring the fields that move on every run.
+/// Whether a freshly computed receipt describes the same installation as a
+/// stored one, ignoring the fields that move on every run.
+///
+/// This is the only test of installation identity the engine has, so what it
+/// leaves out is as load-bearing as what it compares:
+///
+/// - `tool` and `settings_scope` are equal by construction — together they are
+///   the key the stored receipt was just looked up under.
+/// - `plan_id` is deliberately excluded. It identifies an authoring, not an
+///   installation, and it is minted afresh on every plan, so comparing it would
+///   report every reapply as a different installation (AAASM-5963). Note that
+///   the id this function *does* rely on is not collision-free at its source:
+///   production mints `receipt-{plan_id}` over a `plan_id` of
+///   `legacy-{unix_secs}`, so two genuinely different installations inside one
+///   clock second still share a receipt id, and the store then suppresses the
+///   superseded entry. That is the same clock-second collision, one layer down,
+///   and it is AAASM-5967 rather than something this function can fix.
+/// - `applied_at_unix_secs`, `versions` and `tool_version` describe the *run*,
+///   not what it installed. A second apply is always later, and often from a
+///   newer build, without thereby installing anything different. The
+///   consequence, now that the early return fires routinely rather than almost
+///   never: a no-op reapply keeps the stored receipt's version fields, so they
+///   date the installation and not the last run that confirmed it. That is the
+///   intent here, but it is a commitment — the only current reader is
+///   `SupersededReceipt::of`, and anything that later wants "which build last
+///   confirmed this" needs its own field rather than a change to this list.
+/// - `achieved_level` is a function of `profile`, `planned_level`, and the
+///   steps' `requirement`/`applied`/`fingerprint` — every input compared below —
+///   so comparing it as well would add no discrimination. That is only true
+///   because `requirement` is compared; it was not, and the omission let a
+///   reapply that demoted every step to optional keep an `Integrated` receipt
+///   its steps could no longer substantiate.
+/// - `achieved_evidence` and `verified_at_unix_secs` come from verification
+///   rather than from apply, and preserving them across a no-op reapply is the
+///   point of the caller's early return.
+///
+/// Per step, the same discipline. `step_id`, `action`, `requirement`, `applied`
+/// and `fingerprint` are compared; the remaining three are not, each for a
+/// reason:
+///
+/// - `action` carries the destination path and the managed key set, and it must
+///   be compared even though `fingerprint` looks like it should cover it:
+///   `fingerprint` is taken over the AASM-owned *projection*, not over the file,
+///   so the identical managed content aimed at a different settings file
+///   fingerprints identically. Receipts are stored one per `(tool, scope)` with
+///   no project dimension (`store.rs`), so without this clause an install in one
+///   project silently adopts another project's receipt and leaves it naming the
+///   wrong path — after which `remove` run in the second project restores the
+///   first project's file. (That the store has no project dimension at all is
+///   AAASM-5968; this clause stops the engine from making it worse.)
+/// - `document_fingerprint` covers the whole target document, including keys
+///   AASM does not own. Comparing it would make any unrelated edit the user
+///   makes to their own settings read as a different installation.
+/// - `prior_state` is the removal baseline. It differs between the first apply
+///   and every later one by definition — that is the whole point of carrying it
+///   forward rather than recomputing it — so comparing it would report every
+///   reapply as a new installation.
+/// - `reversal` is derived from `action`, which is compared.
 fn receipts_agree(stored: &IntegrationReceipt, fresh: &IntegrationReceipt) -> bool {
-    stored.steps.len() == fresh.steps.len()
-        && stored
-            .steps
-            .iter()
-            .zip(&fresh.steps)
-            .all(|(a, b)| a.step_id == b.step_id && a.applied == b.applied && a.fingerprint == b.fingerprint)
+    stored.profile == fresh.profile
+        && stored.planned_level == fresh.planned_level
+        && stored.steps.len() == fresh.steps.len()
+        && stored.steps.iter().zip(&fresh.steps).all(|(a, b)| {
+            a.step_id == b.step_id
+                && a.action == b.action
+                && a.requirement == b.requirement
+                && a.applied == b.applied
+                && a.fingerprint == b.fingerprint
+        })
 }
 
 fn unrestorable_reason(step: &StepReceipt) -> String {
@@ -799,7 +884,12 @@ impl FilesystemExecutor {
         self
     }
 
-    fn content_for(&self, step_id: &str, expected_sha256: &str) -> Result<&str, ExecutionError> {
+    fn content_for(
+        &self,
+        step_id: &str,
+        expected_sha256: &str,
+        format: DocumentFormat,
+    ) -> Result<&str, ExecutionError> {
         let content = self
             .rendered
             .get(step_id)
@@ -812,7 +902,7 @@ impl FilesystemExecutor {
         // an adapter hashes what it produced, and the C3 constraint means the
         // canonical form is what actually survives the write.
         let matches = fingerprint::sha256_hex(content) == expected_sha256
-            || fingerprint::canonicalize(content).is_ok_and(|c| fingerprint::sha256_hex(&c) == expected_sha256);
+            || fingerprint::canonicalize(format, content).is_ok_and(|c| fingerprint::sha256_hex(&c) == expected_sha256);
         if !matches {
             return Err(ExecutionError::ContentMismatch {
                 step_id: step_id.to_string(),
@@ -828,39 +918,40 @@ impl FilesystemExecutor {
         managed_keys: &[String],
         content: &str,
         merge: SettingsMerge,
+        format: DocumentFormat,
     ) -> Result<StepOutcome, ExecutionError> {
         let label = path.display().to_string();
-        let current = read_document(path)?;
+        let current = read_document(path, format)?;
 
         let fp = |source| ExecutionError::Fingerprint {
             artifact: label.clone(),
             source,
         };
 
-        let prior_values = fingerprint::managed_projection(&current, managed_keys).map_err(fp)?;
-        let (safe_values, withheld_keys) = fingerprint::screen_managed_values(&prior_values).map_err(fp)?;
+        let prior_values = fingerprint::managed_projection(format, &current, managed_keys).map_err(fp)?;
+        let (safe_values, withheld_keys) = fingerprint::screen_managed_values(format, &prior_values).map_err(fp)?;
         let prior_state = PriorSettingsState {
             managed_values_json: safe_values,
-            absent_keys: fingerprint::absent_managed_keys(&current, managed_keys).map_err(fp)?,
+            absent_keys: fingerprint::absent_managed_keys(format, &current, managed_keys).map_err(fp)?,
             withheld_keys,
-            document_fingerprint: fingerprint::document_fingerprint(&current).map_err(fp)?,
+            document_fingerprint: fingerprint::document_fingerprint(format, &current).map_err(fp)?,
         };
 
         let next = match merge {
             SettingsMerge::MergeManagedKeys => {
-                fingerprint::merge_managed_keys(&current, content, managed_keys).map_err(fp)?
+                fingerprint::merge_managed_keys(format, &current, content, managed_keys).map_err(fp)?
             }
-            SettingsMerge::Replace => fingerprint::canonicalize(content).map_err(fp)?,
+            SettingsMerge::Replace => fingerprint::canonicalize(format, content).map_err(fp)?,
         };
 
-        let unchanged = fingerprint::canonicalize(&current).map_err(fp)? == next && path.exists();
+        let unchanged = fingerprint::canonicalize(format, &current).map_err(fp)? == next && path.exists();
         if !unchanged {
             write_preserving_mode(path, &next, step_id)?;
         }
 
         Ok(StepOutcome {
-            fingerprint: Some(fingerprint::managed_fingerprint(&next, managed_keys).map_err(fp)?),
-            document_fingerprint: Some(fingerprint::document_fingerprint(&next).map_err(fp)?),
+            fingerprint: Some(fingerprint::managed_fingerprint(format, &next, managed_keys).map_err(fp)?),
+            document_fingerprint: Some(fingerprint::document_fingerprint(format, &next).map_err(fp)?),
             prior_state: Some(prior_state),
             mutated: !unchanged,
         })
@@ -888,10 +979,11 @@ impl StepExecutor for FilesystemExecutor {
                 managed_keys,
                 content_sha256,
                 merge,
+                format,
                 ..
             } => {
-                let content = self.content_for(&step.id, content_sha256)?.to_string();
-                self.apply_settings(&step.id, path, managed_keys, &content, *merge)
+                let content = self.content_for(&step.id, content_sha256, *format)?.to_string();
+                self.apply_settings(&step.id, path, managed_keys, &content, *merge, *format)
             }
             StepAction::MaterialiseTrustMaterial {
                 kind,
@@ -907,7 +999,16 @@ impl StepExecutor for FilesystemExecutor {
                         kind: "trust-store-anchor",
                     });
                 }
-                let content = self.content_for(&step.id, content_sha256)?.to_string();
+                // Trust material (a PEM certificate) is never a settings
+                // document, so there is no `DocumentFormat` to draw from here.
+                // `DocumentFormat::Json` reproduces the pre-format behaviour
+                // exactly: the canonicalize fallback below fails to parse PEM
+                // as JSON either way, leaving the exact-hash comparison as the
+                // only path that can match, same as before this module learned
+                // about TOML.
+                let content = self
+                    .content_for(&step.id, content_sha256, DocumentFormat::Json)?
+                    .to_string();
                 self.write_blob(&step.id, path, &content)
             }
             StepAction::ManageArtifact { operation, path } => match operation {
@@ -941,7 +1042,8 @@ impl StepExecutor for FilesystemExecutor {
     }
 
     fn reverse(&mut self, step: &StepReceipt) -> Result<(), ExecutionError> {
-        if let (Some(prior), StepAction::WriteManagedSettings { path, .. }) = (&step.prior_state, &step.action) {
+        if let (Some(prior), StepAction::WriteManagedSettings { path, format, .. }) = (&step.prior_state, &step.action)
+        {
             let label = path.display().to_string();
             let fp = |source| ExecutionError::Fingerprint {
                 artifact: label.clone(),
@@ -952,14 +1054,16 @@ impl StepExecutor for FilesystemExecutor {
                 // Already gone. Removal has to be safe to run twice.
                 return Ok(());
             }
-            let current = read_document(path)?;
-            let restored = fingerprint::restore_managed_keys(&current, &prior.managed_values_json, &prior.absent_keys)
-                .map_err(fp)?;
+            let current = read_document(path, *format)?;
+            let restored =
+                fingerprint::restore_managed_keys(*format, &current, &prior.managed_values_json, &prior.absent_keys)
+                    .map_err(fp)?;
 
             // A document left holding nothing but what AASM added is a file AASM
-            // created; leaving an empty `{}` behind would be an artifact the
+            // created; leaving an empty document behind would be an artifact the
             // user never had.
-            if restored == "{}" && prior.document_fingerprint == fingerprint::fingerprint_raw("{}") {
+            let empty = fingerprint::empty_document(*format);
+            if restored == empty && prior.document_fingerprint == fingerprint::fingerprint_raw(empty) {
                 return remove_file(path);
             }
             write_preserving_mode(path, &restored, &step.step_id)?;
@@ -985,7 +1089,12 @@ impl StepExecutor for FilesystemExecutor {
 
     fn observe(&self, step: &StepReceipt) -> ArtifactObservation {
         match &step.action {
-            StepAction::WriteManagedSettings { path, managed_keys, .. } => {
+            StepAction::WriteManagedSettings {
+                path,
+                managed_keys,
+                format,
+                ..
+            } => {
                 if !path.exists() {
                     return ArtifactObservation::Missing;
                 }
@@ -994,8 +1103,8 @@ impl StepExecutor for FilesystemExecutor {
                     Err(e) => return ArtifactObservation::Unreadable { reason: e.to_string() },
                 };
                 match (
-                    fingerprint::managed_fingerprint(&raw, managed_keys),
-                    fingerprint::document_fingerprint(&raw),
+                    fingerprint::managed_fingerprint(*format, &raw, managed_keys),
+                    fingerprint::document_fingerprint(*format, &raw),
                 ) {
                     (Ok(managed_fingerprint), Ok(document)) => ArtifactObservation::Present {
                         managed_fingerprint,
@@ -1021,16 +1130,17 @@ impl StepExecutor for FilesystemExecutor {
     }
 }
 
-/// Read a JSON document, treating an absent file as an empty object.
+/// Read a document, treating an absent or blank file as `format`'s empty
+/// document.
 ///
 /// An absent settings file and an empty one mean the same thing to a merge, and
 /// collapsing them here is what makes the first install and every reinstall take
 /// the same code path.
-fn read_document(path: &Path) -> Result<String, ExecutionError> {
+fn read_document(path: &Path, format: DocumentFormat) -> Result<String, ExecutionError> {
     match std::fs::read_to_string(path) {
-        Ok(raw) if raw.trim().is_empty() => Ok("{}".to_string()),
+        Ok(raw) if raw.trim().is_empty() => Ok(fingerprint::empty_document(format).to_string()),
         Ok(raw) => Ok(raw),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(fingerprint::empty_document(format).to_string()),
         Err(e) => Err(ExecutionError::Io {
             artifact: path.display().to_string(),
             detail: e.to_string(),
@@ -1132,6 +1242,7 @@ mod tests {
                 managed_keys: managed_keys(),
                 content_sha256: fingerprint::sha256_hex(MANAGED_CONTENT),
                 merge: SettingsMerge::MergeManagedKeys,
+                format: DocumentFormat::Json,
             },
             "write the managed settings block",
         )
@@ -1956,8 +2067,12 @@ mod tests {
         let mut e = engine(&f);
         e.apply(&plan(&f), &context(1_000)).unwrap();
 
+        // A new plan id alone is not an upgrade — it is what every reapply has.
+        // The upgrade here is the profile: the same steps under a stricter
+        // policy are a different installation of the same tool.
         let mut upgraded = plan(&f);
         upgraded.plan_id = "plan-2".to_string();
+        upgraded.profile = ProtectionProfile::Strict;
         let outcome = e.apply(&upgraded, &context(2_000)).unwrap();
         assert_eq!(outcome.receipt.plan_id, "plan-2");
         assert_eq!(outcome.receipt.receipt_id, "receipt-2000");
@@ -1969,6 +2084,240 @@ mod tests {
             .unwrap();
         assert_eq!(envelope.superseded.len(), 1);
         assert_eq!(envelope.superseded[0].receipt_id, "receipt-1000");
+    }
+
+    /// AAASM-5963. The receipt id survived a reapply only while the plan id
+    /// did, and the plan id is minted per authoring — so whether an install was
+    /// recognised as the one already present came down to whether two applies
+    /// happened to author the same id. Under a plan id carrying a nonce (or,
+    /// before that, two applies a clock second apart) it never did, and every
+    /// reapply minted a new receipt id and overwrote the stored receipt —
+    /// discarding the `applied_at`, the verification evidence, and the
+    /// `prior_state` that `remove` restores from.
+    #[test]
+    fn a_reapply_authored_by_a_different_plan_is_still_the_same_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+
+        let mut reauthored = plan(&f);
+        reauthored.plan_id = "plan-2".to_string();
+        let outcome = e.apply(&reauthored, &context(2_000)).unwrap();
+
+        assert!(!outcome.mutated, "the same plan content mutates nothing twice");
+        assert_eq!(
+            outcome.receipt.receipt_id, first.receipt_id,
+            "a reapply of the same installation is not a new installation"
+        );
+        assert_eq!(
+            outcome.receipt.applied_at_unix_secs, 1_000,
+            "the installation dates from when it was installed, not from the last time it was confirmed"
+        );
+        assert_eq!(
+            outcome.receipt.plan_id, first.plan_id,
+            "the stored receipt still names the authoring that installed it"
+        );
+
+        let envelope = f
+            .store
+            .load_envelope(&DevToolKind::ClaudeCode, SettingsScope::User)
+            .unwrap()
+            .unwrap();
+        assert!(
+            envelope.superseded.is_empty(),
+            "nothing was superseded, so the history has nothing to record"
+        );
+        assert_eq!(envelope.receipt.receipt_id, first.receipt_id);
+    }
+
+    /// The other half of AAASM-5963: identity has to *change* when the
+    /// installation does, and the steps are not the only thing that carries it.
+    /// The same steps under a plan that claims less are a different
+    /// installation, because the level is what the receipt is believed to
+    /// substantiate — a `status` reading `PartiallyIntegrated` where an
+    /// `Integrated` receipt is stored is a different answer to the only question
+    /// an operator asks.
+    ///
+    /// The change tested here is downward. The upward case is constructible —
+    /// `IntegrationPlan::validate` rejects duplicate step ids, per-step scope and
+    /// privilege problems, a `planned_level` above the profile's
+    /// `max_reportable_level`, and `GatewayProtected` without an interception
+    /// probe, but it does not require the steps to substantiate the level, so a
+    /// plan claiming `Integrated` with no required step validates. It is omitted
+    /// because `planned_level` is compared symmetrically and the downward case
+    /// already falsifies that clause; the sibling case below covers the
+    /// `requirement` axis, which is the one that actually let an unsubstantiated
+    /// level survive.
+    #[test]
+    fn a_reapply_that_plans_a_different_level_is_a_different_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+        assert_eq!(first.planned_level, ProtectionLevel::Integrated);
+        assert_eq!(first.achieved_level, ProtectionLevel::Integrated);
+
+        let mut lower = plan(&f);
+        lower.planned_level = ProtectionLevel::PartiallyIntegrated;
+        let outcome = e.apply(&lower, &context(2_000)).unwrap();
+
+        assert_eq!(outcome.receipt.receipt_id, "receipt-2000");
+        assert_eq!(outcome.receipt.achieved_level, ProtectionLevel::PartiallyIntegrated);
+
+        let envelope = f
+            .store
+            .load_envelope(&DevToolKind::ClaudeCode, SettingsScope::User)
+            .unwrap()
+            .unwrap();
+        assert_eq!(envelope.superseded.len(), 1);
+        assert_eq!(envelope.superseded[0].receipt_id, first.receipt_id);
+    }
+
+    /// The `requirement` axis of the same question. Two applies of the *same*
+    /// steps, where the second demotes every required step to optional, are not
+    /// one installation: `achieved_level` is derived from how many required
+    /// steps verified, so a receipt claiming `Integrated` is claiming something
+    /// only a required step can substantiate.
+    ///
+    /// Until `requirement` was compared, `receipts_agree` returned true here and
+    /// the no-op early return fired, so the stored receipt went on reporting
+    /// `Integrated` for a plan whose steps could substantiate only
+    /// `PartiallyIntegrated`.
+    #[test]
+    fn a_reapply_that_demotes_every_required_step_is_a_different_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+        assert_eq!(first.achieved_level, ProtectionLevel::Integrated);
+
+        let mut demoted = plan(&f);
+        demoted.steps[0] = demoted.steps[0].clone().optional();
+        demoted.steps[1] = demoted.steps[1].clone().optional();
+        let outcome = e.apply(&demoted, &context(2_000)).unwrap();
+
+        assert_eq!(
+            outcome.receipt.receipt_id, "receipt-2000",
+            "steps carrying a different requirement are a different installation"
+        );
+        assert_eq!(
+            outcome.receipt.achieved_level,
+            ProtectionLevel::PartiallyIntegrated,
+            "no required step verified, so nothing substantiates Integrated"
+        );
+    }
+
+    /// The `action` axis, and the reason `fingerprint` cannot stand in for it. A
+    /// settings step's fingerprint is taken over the AASM-owned projection, not
+    /// over the file, so the same managed content aimed at a different settings
+    /// file fingerprints identically.
+    ///
+    /// Receipts are stored one per `(tool, scope)` with no project dimension, so
+    /// if identity ignored the destination, an install into a second project
+    /// would adopt the first project's receipt and leave it naming the first
+    /// project's path — after which `remove` run in the second project restores
+    /// the first project's file, and the displaced installation is never
+    /// recorded as superseded. (The missing project dimension is AAASM-5968;
+    /// this clause keeps the engine from compounding it.)
+    #[test]
+    fn a_reapply_aimed_at_a_different_settings_file_is_a_different_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+
+        // A second project whose settings already hold byte-identical managed
+        // content, so this apply changes nothing on disk and the destination is
+        // the only thing distinguishing the two installations.
+        let elsewhere = f
+            .settings
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("project-b")
+            .join("settings.json");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, MANAGED_CONTENT).unwrap();
+
+        let mut other_project = plan(&f);
+        other_project.steps[0] = settings_step(&elsewhere);
+        let outcome = e.apply(&other_project, &context(2_000)).unwrap();
+
+        assert_eq!(
+            outcome.receipt.receipt_id, "receipt-2000",
+            "a different destination is a different installation"
+        );
+        let recorded = match &outcome.receipt.steps[0].action {
+            StepAction::WriteManagedSettings { path, .. } => path.clone(),
+            other => panic!("expected the settings step, got {other:?}"),
+        };
+        assert_eq!(
+            recorded, elsewhere,
+            "the stored receipt names the file this apply actually wrote"
+        );
+
+        let envelope = f
+            .store
+            .load_envelope(&DevToolKind::ClaudeCode, SettingsScope::User)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            envelope.superseded.len(),
+            1,
+            "the displaced installation is recorded rather than vanishing"
+        );
+        assert_eq!(envelope.superseded[0].receipt_id, first.receipt_id);
+    }
+
+    /// AAASM-5963's user-visible defect, asserted on the file rather than on the
+    /// receipt: a reapply that *changes something* must not overwrite the
+    /// baseline `remove` restores from.
+    ///
+    /// The receipt-level assertions above cannot catch this — they check which
+    /// receipt id survived, and this checks what `remove` leaves in the user's
+    /// settings, which is what the ticket was filed on. Until the baseline was
+    /// carried forward, the second apply captured `prior_state` from a document
+    /// AASM had already written, so `remove` restored AASM's own
+    /// `permissionMode` and re-added the `permissions` block AASM had
+    /// introduced — while reporting an empty `residual` and a deleted receipt.
+    /// A silent partial removal is worse than a loud failure, so this asserts
+    /// absence in the file and not the exit path.
+    ///
+    /// Note that the no-op early return does not cover this case and cannot: it
+    /// preserves the baseline only when the reapply changed nothing, and a
+    /// reapply that did change something is when the baseline matters most.
+    #[test]
+    fn a_mutating_reapply_preserves_the_baseline_remove_restores_from() {
+        let f = fixture();
+        write_settings(&f, r#"{"theme":"gruvbox","permissionMode":"acceptEdits"}"#);
+        let mut e = engine(&f);
+        e.apply(&plan(&f), &context(1_000)).unwrap();
+
+        // An AASM-owned value drifts, so the reapply has something to correct.
+        let mut drifted = read_settings(&f);
+        drifted["permissionMode"] = serde_json::json!("bypassPermissions");
+        std::fs::write(&f.settings, drifted.to_string()).unwrap();
+
+        let second = e.apply(&plan(&f), &context(2_000)).unwrap();
+        assert!(second.mutated, "the drift is what this reapply exists to correct");
+        assert_eq!(
+            second.receipt.receipt_id, "receipt-1000",
+            "correcting drift is not a new installation"
+        );
+
+        let outcome = e.remove(&DevToolKind::ClaudeCode, SettingsScope::User).unwrap();
+        assert!(outcome.residual.is_empty(), "{:?}", outcome.residual);
+        assert!(outcome.receipt_deleted);
+
+        let after = read_settings(&f);
+        assert_eq!(
+            after["permissionMode"], "acceptEdits",
+            "the value restored is the one the user had before the first install — \
+             not the one AASM wrote, and not the drifted one"
+        );
+        assert!(
+            after.get("permissions").is_none(),
+            "a key AASM introduced is deleted, not restored to AASM's own value"
+        );
+        assert_eq!(after["theme"], "gruvbox", "the user's own key is untouched");
     }
 
     #[test]
@@ -2018,6 +2367,90 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "the journal survives so recovery can resume the removal"
+        );
+    }
+
+    const TOML_MANAGED_CONTENT: &str = "sandbox_mode = \"read-only\"\napproval_policy = \"untrusted\"\n";
+
+    fn toml_managed_keys() -> Vec<String> {
+        vec!["sandbox_mode".to_string(), "approval_policy".to_string()]
+    }
+
+    fn toml_settings_step(path: &Path) -> IntegrationStep {
+        IntegrationStep::new(
+            "settings",
+            StepAction::WriteManagedSettings {
+                scope: SettingsScope::User,
+                path: path.to_path_buf(),
+                managed_keys: toml_managed_keys(),
+                content_sha256: fingerprint::sha256_hex(TOML_MANAGED_CONTENT),
+                merge: SettingsMerge::MergeManagedKeys,
+                format: DocumentFormat::Toml,
+            },
+            "write the managed settings block",
+        )
+    }
+
+    #[test]
+    fn apply_settings_on_a_first_install_toml_step_writes_valid_toml() {
+        let f = fixture();
+        let toml_path = f.settings.with_extension("toml");
+        let plan = IntegrationPlan::new(
+            "plan-toml",
+            &IntegrationRequest::new(
+                DevToolKind::ClaudeCode,
+                ProtectionProfile::Recommended,
+                SettingsScope::User,
+            ),
+            ProtectionLevel::Integrated,
+            GovernanceLevel::L2Enforce,
+        )
+        .with_step(toml_settings_step(&toml_path));
+
+        let executor = FilesystemExecutor::new().with_content("settings", TOML_MANAGED_CONTENT);
+        let mut e = IntegrationEngine::new(executor, f.store.clone());
+
+        let outcome = e.apply(&plan, &context(1_000)).unwrap();
+        assert!(outcome.mutated);
+
+        let written = std::fs::read_to_string(&toml_path).unwrap();
+        let parsed: toml::Table = written.parse().expect("apply must write valid TOML");
+        assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+        assert_eq!(parsed["approval_policy"].as_str(), Some("untrusted"));
+    }
+
+    #[test]
+    fn reverse_on_a_first_install_toml_step_removes_the_file_it_created() {
+        let f = fixture();
+        let toml_path = f.settings.with_extension("toml");
+        let plan = IntegrationPlan::new(
+            "plan-toml",
+            &IntegrationRequest::new(
+                DevToolKind::ClaudeCode,
+                ProtectionProfile::Recommended,
+                SettingsScope::User,
+            ),
+            ProtectionLevel::Integrated,
+            GovernanceLevel::L2Enforce,
+        )
+        .with_step(
+            toml_settings_step(&toml_path).with_reversal(StepAction::ManageArtifact {
+                operation: ArtifactOperation::Remove,
+                path: toml_path.clone(),
+            }),
+        );
+
+        let executor = FilesystemExecutor::new().with_content("settings", TOML_MANAGED_CONTENT);
+        let mut e = IntegrationEngine::new(executor, f.store.clone());
+        e.apply(&plan, &context(1_000)).unwrap();
+        assert!(toml_path.exists());
+
+        let outcome = e.remove(&DevToolKind::ClaudeCode, SettingsScope::User).unwrap();
+        assert!(outcome.residual.is_empty(), "{:?}", outcome.residual);
+        assert!(
+            !toml_path.exists(),
+            "a TOML file that held nothing but AASM's keys is AASM's to remove, via the \
+             format-aware empty-document branch"
         );
     }
 }

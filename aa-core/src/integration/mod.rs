@@ -73,9 +73,9 @@ pub use engine::{
     RepairOutcome, StepExecutor, StepOutcome,
 };
 pub use fingerprint::{
-    absent_managed_keys, canonicalize, contains_credential_material, document_fingerprint, fingerprint_raw,
-    managed_fingerprint, managed_projection, merge_managed_keys, restore_managed_keys, screen_managed_values,
-    sha256_hex, FingerprintError, FINGERPRINT_PREFIX,
+    absent_managed_keys, canonicalize, contains_credential_material, document_fingerprint, empty_document,
+    fingerprint_raw, managed_fingerprint, managed_projection, merge_managed_keys, restore_managed_keys,
+    screen_managed_values, sha256_hex, FingerprintError, FINGERPRINT_PREFIX,
 };
 pub use journal::{recovery_action, JournalEntry, JournalOperation, OperationJournal, RecoveryAction, StepProgress};
 pub use launch_env::{installed_environment, is_valid_var_name, LaunchEnvStore};
@@ -91,8 +91,8 @@ pub use state::{
 };
 pub use status::{IntegrationStatus, LifecyclePhase, NextLevel, VerificationOutcome, VerificationResult};
 pub use step::{
-    ArtifactOperation, EnvValue, IntegrationStep, ProbeDescriptor, SettingsMerge, SettingsScope, StepAction,
-    StepPrivilege, StepRequirement, TrustMaterialKind,
+    ArtifactOperation, DocumentFormat, EnvValue, IntegrationStep, ProbeDescriptor, SettingsMerge, SettingsScope,
+    StepAction, StepPrivilege, StepRequirement, TrustMaterialKind,
 };
 #[cfg(feature = "serde")]
 pub use store::{

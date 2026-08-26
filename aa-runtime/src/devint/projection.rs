@@ -733,6 +733,7 @@ mod tests {
                     managed_keys: vec!["aasm.gatewayUrl".to_string()],
                     content_sha256: "abc123".to_string(),
                     merge: SettingsMerge::MergeManagedKeys,
+                    format: aa_core::integration::DocumentFormat::Json,
                 },
                 "Write the managed settings block",
             ),

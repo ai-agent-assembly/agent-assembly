@@ -280,6 +280,7 @@ mod tests {
                 managed_keys: vec!["sandbox_mode".to_string()],
                 content_sha256: sha256_hex(&content),
                 merge: aa_devtool_contract::SettingsMerge::MergeManagedKeys,
+                format: aa_devtool_contract::DocumentFormat::Json,
             },
             "write Codex's managed settings",
         );

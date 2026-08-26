@@ -1,0 +1,18 @@
+{
+  "description": "Supplementary to TEST F - 'stop waiting' and 'treat as success' are different conclusions. A required check concluding 'stale' is terminal but must NOT be reported as pass; stale means the result no longer applies to the current head.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "stale"
+        }
+      ]
+    }
+  ]
+}
