@@ -1632,17 +1632,18 @@ impl ProxyServer {
         let upstream_tls = self.dial_upstream_tls(host, target, authorized).await?;
 
         // AAASM-3578: credential injection. When a real, non-expired provider
-        // key is configured for this host the store builds the egress
-        // `Authorization` value (`Bearer <key>`); the serializer then strips the
-        // agent's own credential headers and injects the real one. The secret is
-        // expanded only into this local buffer, never logged. When no key is
-        // configured (or it has expired, AAASM-3586) the agent's request is
-        // forwarded unchanged (backward compatible).
-        let injected_auth: Option<Vec<u8>> = self.credentials.authorization_for(host);
+        // key is configured for this host the store builds the egress header
+        // `(name, value)` pair — `Authorization: Bearer <key>` or, for
+        // Anthropic hosts, `x-api-key: <key>` (AAASM-5926); the serializer then
+        // strips the agent's own credential headers and injects the real one.
+        // The secret is expanded only into this local buffer, never logged.
+        // When no key is configured (or it has expired, AAASM-3586) the
+        // agent's request is forwarded unchanged (backward compatible).
+        let injected_auth: Option<(&'static str, Vec<u8>)> = self.credentials.authorization_for(host);
         if injected_auth.is_some() {
             tracing::debug!(%host, "injecting real provider credential at egress");
         }
-        let injected_auth_ref = injected_auth.as_deref();
+        let injected_auth_ref = injected_auth.as_ref().map(|(name, value)| (*name, value.as_slice()));
 
         let outgoing_bytes = match verdict.decision {
             VerdictDecision::ForwardRedacted => {

@@ -1186,9 +1186,17 @@ journeys:
   # sign-off evidence of a real launch->policy->allow/deny->audit loop.
   # AAASM-5462 covers dry-run/refusal mechanics only. Currently PARTIAL —
   # launch mechanics and refusal gates verified real; a policy-gated tool call
-  # reaching an allow/deny outcome was not, and two confirmed security gaps
-  # (AAASM-5644 CA trust, AAASM-5851 network allowlist) remain open. See
-  # AAASM-5853 for the acceptance contract this journey is not yet meeting.
+  # reaching an allow/deny outcome was not.
+  #
+  # Updated 2026-08-25: both security-adversarial gaps this journey's AC 3
+  # named (AAASM-5644 CA trust, AAASM-5851 network allowlist) are now
+  # resolved on main (AAASM-5644 documented-unmediated for Windsurf's
+  # Electron/Chromium net stack; AAASM-5851 fixed via gateway-authoritative
+  # network enforcement, PR #2165, `8599ee581`, ancestor of `248e191f6`) — so
+  # AC 3 is satisfied. Still PARTIAL, not PASS: AC 2 (a deterministic,
+  # non-LLM-completion-dependent trigger for a denied tool call) is unbuilt,
+  # so no policy-gated tool call has actually been driven to a real
+  # allow/deny outcome for this journey yet. See AAASM-5853.
   lifecycle_state: partial
   gap_owner: AAASM-5853
 - id: J64

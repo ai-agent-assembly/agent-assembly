@@ -12,16 +12,16 @@
 
 | Capability | Status | Reason |
 |---|---|---|
-| network deny | Yes — sandbox | `generate_managed_settings`/`apply_settings` (`aa-devtool-codex/src/lib.rs:219-279`) writes `blocked_domains` (via `sandbox.rs::network_block_list`) into `~/.codex/config.json` alongside `sandbox_mode`/`approval_policy`. The proxy leg is separately broken (see Notes) but does not affect this row — the sandbox enforces on its own. |
-| network allowlist | Yes — sandbox | Same mechanism as network deny — `allowed_domains` synced to the sandbox config |
+| network deny | Partial — proxy | Corrected by AAASM-5856's security review: `generate_managed_settings`'s `blocked_domains` write has never been reachable through the install executor (`StepAction::ApplyLegacyManagedSettings` is `Unsupported`) and the native lifecycle deliberately omits the key — see the rendered matrix's Codex row for why. Enforcement is `aa-proxy`-only, limited to `llm_only`-classified hosts. |
+| network allowlist | Partial — proxy | Same correction and mechanism as network deny. |
 | file read | Partial — eBPF | No SDK integration; eBPF kprobes on `openat` are the only path |
 | file write | Partial — eBPF | Same as file read — eBPF only |
 | process spawn | Partial — eBPF | eBPF `sched_process_exec` tracepoint detects spawned processes |
 | MCP allowlist | No | Codex does not expose MCP server configuration; no governance surface |
 | sub-agent lineage | Partial — proxy | No SDK; `AA_AGENT_ID` can be injected as an env var via the wrapper launch command |
-| prompt redaction | No | Depends on the same unestablished proxy CA trust as network deny/allowlist above (AAASM-5644/AAASM-5856) |
-| response redaction | No | Same CA-trust gap — the proxy never sees a decrypted response to redact |
-| budget enforcement | No | Gateway spend tracking is proxy-observed; with the tunnel uninspected, nothing is observed to track |
+| prompt redaction | Partial — proxy | Proxy CA trust established via `CODEX_CA_CERTIFICATE` (AAASM-5856); limited to `llm_only` hosts |
+| response redaction | Partial — proxy | Proxy CA trust established via `CODEX_CA_CERTIFICATE` (AAASM-5856); limited to `llm_only` hosts |
+| budget enforcement | Partial — proxy | Proxy CA trust established via `CODEX_CA_CERTIFICATE` (AAASM-5856); limited to `llm_only` hosts |
 | audit ingestion | Partial — proxy | HTTP-level action events only; no SDK-level semantic events |
 
 ## Notes
@@ -34,13 +34,10 @@ earlier revision of this page named the file `.codex/config.toml`, which does
 not match the adapter's actual write path. eBPF fills the file-system and
 process-spawn gaps that the proxy cannot observe.
 
-**AAASM-5644/AAASM-5856:** prompt redaction, response redaction, and budget
-enforcement above previously read `Yes`, on the assumption that setting
-`HTTPS_PROXY` was sufficient. It is not — the proxy can only enforce or
-redact what it decrypts, and decrypting requires Codex to trust the Agent
-Assembly CA, which nothing in `build_launch_command` establishes. Unlike
-Windsurf, Codex is fixable (`CODEX_CA_CERTIFICATE`/`SSL_CERT_FILE`, a native
-mechanism its own `reqwest`/rustls stack reads), tracked in AAASM-5856. Until
-that lands, nothing currently substitutes for the proxy on redaction or
-budget enforcement. Network deny/allowlist are unaffected by this gap — they
-run on the sandbox-native path above, not the proxy.
+**AAASM-5644/AAASM-5856:** see the rendered matrix's Codex "honest boundaries"
+section for the current, evidence-cited state of the proxy leg — the CA-trust
+gap this section used to describe is closed. In short: prompt redaction,
+response redaction, and budget enforcement above now read `Partial — proxy`,
+not `Yes`, because coverage is limited to `llm_only`-classified hosts and the
+evidence is a stand-in client, not the shipped `codex` binary; see the
+rendered matrix for the full caveat and citation.

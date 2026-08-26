@@ -215,3 +215,87 @@ fn build_launch_command_fails_when_binary_not_found() {
         "must return LaunchFailed when binary is not on PATH or npm global"
     );
 }
+
+#[test]
+fn build_launch_command_normalizes_a_bare_proxy_authority_and_sets_both_vars() {
+    // AAASM-5324/AAASM-5916: `aasm run` passes a bare `host:port`, and both
+    // HTTPS_PROXY and HTTP_PROXY must be set — the adapter used to set only
+    // HTTPS_PROXY with the bare (unusable) authority.
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("codex");
+    std::fs::write(&bin, "").unwrap();
+    let adapter = CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe));
+
+    let cmd = adapter
+        .build_launch_command(&[], "agent-1", None, Some("127.0.0.1:8080"))
+        .unwrap();
+    let env: std::collections::HashMap<&OsStr, Option<&OsStr>> = cmd.get_envs().collect();
+    assert_eq!(
+        env[OsStr::new("HTTPS_PROXY")],
+        Some(OsStr::new("http://127.0.0.1:8080")),
+        "a bare authority must be normalized to a URL"
+    );
+    assert_eq!(
+        env[OsStr::new("HTTP_PROXY")],
+        Some(OsStr::new("http://127.0.0.1:8080")),
+        "HTTP_PROXY must be set alongside HTTPS_PROXY"
+    );
+}
+
+#[test]
+fn build_launch_command_carries_the_installed_launch_environment() {
+    use aa_devtool_contract::{LaunchEnvStore, SettingsScope};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("codex");
+    std::fs::write(&bin, "").unwrap();
+    let state = tmp.path().join("state");
+    let paths = aa_devtool_codex::CodexPaths::default().with_state(&state);
+    LaunchEnvStore::at(paths.launch_env_dir(SettingsScope::User).unwrap())
+        .set("CODEX_CA_CERTIFICATE", "/aasm/proxy-ca.pem")
+        .unwrap();
+
+    let adapter = CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe))
+        .with_home_dir(tmp.path().join("home"))
+        .with_state_dir(state);
+
+    let cmd = adapter.build_launch_command(&[], "agent-1", None, None).unwrap();
+    let env: std::collections::HashMap<&OsStr, Option<&OsStr>> = cmd.get_envs().collect();
+    assert_eq!(
+        env[OsStr::new("CODEX_CA_CERTIFICATE")],
+        Some(OsStr::new("/aasm/proxy-ca.pem")),
+        "the store's value must reach the child command"
+    );
+}
+
+#[test]
+fn build_launch_command_lets_a_caller_pinned_proxy_win_over_the_installed_one() {
+    use aa_devtool_contract::{LaunchEnvStore, SettingsScope};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("codex");
+    std::fs::write(&bin, "").unwrap();
+    let state = tmp.path().join("state");
+    let paths = aa_devtool_codex::CodexPaths::default().with_state(&state);
+    LaunchEnvStore::at(paths.launch_env_dir(SettingsScope::User).unwrap())
+        .set("HTTPS_PROXY", "http://installed:9000")
+        .unwrap();
+    LaunchEnvStore::at(paths.launch_env_dir(SettingsScope::User).unwrap())
+        .set("HTTP_PROXY", "http://installed:9000")
+        .unwrap();
+
+    let adapter = CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe))
+        .with_home_dir(tmp.path().join("home"))
+        .with_state_dir(state);
+
+    let cmd = adapter
+        .build_launch_command(&[], "agent-1", None, Some("http://pinned:1234"))
+        .unwrap();
+    let env: std::collections::HashMap<&OsStr, Option<&OsStr>> = cmd.get_envs().collect();
+    assert_eq!(
+        env[OsStr::new("HTTPS_PROXY")],
+        Some(OsStr::new("http://pinned:1234")),
+        "a caller-pinned proxy for this run must win over the installed one"
+    );
+    assert_eq!(env[OsStr::new("HTTP_PROXY")], Some(OsStr::new("http://pinned:1234")));
+}
