@@ -228,12 +228,20 @@ message Request {
   RemoveArgs remove = 7;
   ScopedEventsArgs events = 8;
   ApprovalRelayArgs approval = 9;
-  // Which installed integration `VERB_STATUS`, `VERB_VERIFY`, `VERB_REPAIR`
-  // and `VERB_REMOVE` are about. Ignored by every other verb.
+  // Which project the verb is about. Read by `VERB_STATUS`, `VERB_VERIFY`,
+  // `VERB_REPAIR`, `VERB_REMOVE` and `VERB_APPLY`. Ignored by every other verb.
   //
-  // Shared by four verbs rather than repeated as four one-field messages: it
-  // answers one question — *which* integration — and four copies of one
-  // question are four places for the answer to drift.
+  // Shared by five verbs rather than repeated as five one-field messages: it
+  // answers one question — *which* project — and five copies of one question
+  // are five places for the answer to drift.
+  //
+  // `VERB_APPLY` reads it for a different reason than the other four, and the
+  // difference matters when reading the service. There the target names the
+  // installation to act on; for an apply nothing is installed yet, and the
+  // target names the project the caller is applying *from*, so a plan authored
+  // for another project is refused rather than executed (AAASM-5913). A plan id
+  // is handed out by the service and can be presented later, from anywhere, so
+  // it is not on its own an answer to "may this caller execute this here".
   TargetArgs target = 10;
 }
 
@@ -307,9 +315,20 @@ message PlanArgs {
   // disclose that a nearby project configuration exists and will be left alone
   // — no destination is ever derived from it at those scopes.
   //
-  // This is not a client-supplied *destination*. The service resolves the file
-  // to write from the scope and this root together, by its own rule; a caller
-  // cannot name a settings path (matrix row 6 still holds).
+  // Matrix row 6 still holds, but not because the derivation is a suffix. A
+  // caller cannot name a settings *path* — the service appends its own relative
+  // path to this root — yet choosing the root chooses where that lands, so the
+  // suffix on its own buys nothing. Naming `$HOME` aims the derived path at the
+  // *user*-scope surface; naming `/` or a `..` traversal aims it wherever the
+  // components resolve to; and `IntegrationPlan::validate`'s containment check
+  // cannot catch either, because the destination is derived from the very root
+  // it is checked against, so containment holds trivially.
+  //
+  // What holds the row is the refusal at the boundary: the service requires this
+  // root to exist as a directory, canonicalises it, refuses a relative one, and
+  // refuses one that contains a configuration surface belonging to another
+  // scope. It does not create the directory — materialising a directory a caller
+  // named would be taking the destination from the caller after all.
   //
   // Requires DI-API 6 (`DI_API_PROJECT_ROOT_SINCE`). Adding it is additive on
   // the wire but *not* additive in behaviour: a pre-v6 runtime discards this

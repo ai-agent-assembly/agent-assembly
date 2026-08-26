@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file devint.proto.
  */
 export const file_devint: GenFile = /*@__PURE__*/
-  fileDesc("CgxkZXZpbnQucHJvdG8SEmFzc2VtYmx5LmRldmludC52MSJwCgVIZWxsbxITCgtjbGllbnRfbmFtZRgBIAEoCRIWCg5jbGllbnRfdmVyc2lvbhgCIAEoCRIXCg9kaV9hcGlfdmVyc2lvbnMYAyADKA0SIQoZbGlmZWN5Y2xlX3NjaGVtYV92ZXJzaW9ucxgEIAMoDSLFAgoISGVsbG9BY2sSNwoHb3V0Y29tZRgBIAEoDjImLmFzc2VtYmx5LmRldmludC52MS5OZWdvdGlhdGlvbk91dGNvbWUSFgoOZGlfYXBpX3ZlcnNpb24YAiABKA0SFAoMY29yZV92ZXJzaW9uGAMgASgJEiAKGGxpZmVjeWNsZV9zY2hlbWFfdmVyc2lvbhgEIAEoDRIVCg1taW5fc3VwcG9ydGVkGAUgASgNEhUKDW1heF9zdXBwb3J0ZWQYBiABKA0SGQoRdW5hdmFpbGFibGVfdmVyYnMYByADKAkSFwoPZGVncmFkZWRfcmVhc29uGAggASgJEhMKC3JlbWVkaWF0aW9uGAkgASgJEjkKCnByb3ZlbmFuY2UYCiABKAsyJS5hc3NlbWJseS5kZXZpbnQudjEuUnVudGltZVByb3ZlbmFuY2UiygEKEVJ1bnRpbWVQcm92ZW5hbmNlEhQKDGNvcmVfdmVyc2lvbhgBIAEoCRIRCglidWlsZF9zaGEYAiABKAkSCwoDcGlkGAMgASgNEhcKD2V4ZWN1dGFibGVfcGF0aBgEIAEoCRIaChJleGVjdXRhYmxlX3ByZXNlbnQYBSABKAgSEwoLc291cmNlX3BhdGgYBiABKAkSHAoUc3RhcnRlZF9hdF91bml4X3NlY3MYByABKAQSFwoPYnVpbGRfaWRfc291cmNlGAggASgJImEKDEluY29tcGF0aWJsZRIOCgZyZWFzb24YASABKAkSEwoLcmVtZWRpYXRpb24YAiABKAkSFQoNbWluX3N1cHBvcnRlZBgDIAEoDRIVCg1tYXhfc3VwcG9ydGVkGAQgASgNIukCCgdSZXF1ZXN0EhIKCnJlcXVlc3RfaWQYASABKAQSJgoEdmVyYhgCIAEoDjIYLmFzc2VtYmx5LmRldmludC52MS5WZXJiEhgKEGNhcGFiaWxpdHlfdG9rZW4YAyABKAkSDwoHdG9vbF9pZBgEIAEoCRIqCgRwbGFuGAUgASgLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlBsYW5BcmdzEiwKBWFwcGx5GAYgASgLMh0uYXNzZW1ibHkuZGV2aW50LnYxLkFwcGx5QXJncxIuCgZyZW1vdmUYByABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUmVtb3ZlQXJncxI0CgZldmVudHMYCCABKAsyJC5hc3NlbWJseS5kZXZpbnQudjEuU2NvcGVkRXZlbnRzQXJncxI3CghhcHByb3ZhbBgJIAEoCzIlLmFzc2VtYmx5LmRldmludC52MS5BcHByb3ZhbFJlbGF5QXJncyKiAQoIUGxhbkFyZ3MSDwoHcHJvZmlsZRgBIAEoCRIXCg9yZXF1ZXN0ZWRfbGV2ZWwYAiABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYAyABKAkSIwobYWxsb3dfcHJpdmlsZWdlZF9ob3N0X3N0ZXBzGAQgASgIEhkKEXBvbGljeV9wcm9maWxlX2lkGAUgASgJEhQKDHByb2plY3Rfcm9vdBgGIAEoCSIcCglBcHBseUFyZ3MSDwoHcGxhbl9pZBgBIAEoCSIdCgpSZW1vdmVBcmdzEg8KB3BsYW5faWQYASABKAkiOgoQU2NvcGVkRXZlbnRzQXJncxINCgVsaW1pdBgBIAEoDRIXCg9zaW5jZV91bml4X3NlY3MYAiABKAQiPAoRQXBwcm92YWxSZWxheUFyZ3MSEwoLYXBwcm92YWxfaWQYASABKAkSEgoKdXNlcl9pbnB1dBgCIAEoCSKMBAoIUmVzcG9uc2USEgoKcmVxdWVzdF9pZBgBIAEoBBImCgR2ZXJiGAIgASgOMhguYXNzZW1ibHkuZGV2aW50LnYxLlZlcmISLwoJdG9vbF9saXN0GAMgASgLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlRvb2xMaXN0EioKBHBsYW4YBCABKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuUGxhblZpZXcSLAoFYXBwbHkYBSABKAsyHS5hc3NlbWJseS5kZXZpbnQudjEuQXBwbHlWaWV3Ei4KBnN0YXR1cxgGIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5TdGF0dXNWaWV3EjoKDHZlcmlmaWNhdGlvbhgHIAEoCzIkLmFzc2VtYmx5LmRldmludC52MS5WZXJpZmljYXRpb25WaWV3Ei4KBnJlcGFpchgIIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5SZXBhaXJWaWV3EjAKB3JlbW92YWwYCSABKAsyHy5hc3NlbWJseS5kZXZpbnQudjEuUmVtb3ZhbFZpZXcSMwoGZXZlbnRzGAogASgLMiMuYXNzZW1ibHkuZGV2aW50LnYxLlNjb3BlZEV2ZW50TGlzdBI2CghhcHByb3ZhbBgLIAEoCzIkLmFzc2VtYmx5LmRldmludC52MS5BcHByb3ZhbFJlbGF5QWNrIm4KBkRlbmllZBISCgpyZXF1ZXN0X2lkGAEgASgEEioKBGNvZGUYAiABKA4yHC5hc3NlbWJseS5kZXZpbnQudjEuRGVueUNvZGUSDwoHbWVzc2FnZRgDIAEoCRITCgtyZW1lZGlhdGlvbhgEIAEoCSJFCg5DYXBhYmlsaXR5VmlldxISCgpjYXBhYmlsaXR5GAEgASgJEg8KB3N1cHBvcnQYAiABKAkSDgoGcmVhc29uGAMgASgJIsoBCgtUb29sU3VtbWFyeRIPCgd0b29sX2lkGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRIQCghkZXRlY3RlZBgDIAEoCBIYChBkZXRlY3RlZF92ZXJzaW9uGAQgASgJEhUKDWNvbXBhdGliaWxpdHkYBSABKAkSOAoMY2FwYWJpbGl0aWVzGAYgAygLMiIuYXNzZW1ibHkuZGV2aW50LnYxLkNhcGFiaWxpdHlWaWV3EhcKD2FkYXB0ZXJfY2VpbGluZxgHIAEoCSI6CghUb29sTGlzdBIuCgV0b29scxgBIAMoCzIfLmFzc2VtYmx5LmRldmludC52MS5Ub29sU3VtbWFyeSLuAQoIU3RlcFZpZXcSCgoCaWQYASABKAkSDwoHc3VtbWFyeRgCIAEoCRITCgthY3Rpb25fa2luZBgDIAEoCRITCgtyZXF1aXJlbWVudBgEIAEoCRIRCglwcml2aWxlZ2UYBSABKAkSFgoOY29uc2VudF9wcm9tcHQYBiABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYByABKAkSFAoMbWFuYWdlZF9rZXlzGAggAygJEhYKDmFydGlmYWN0X3BhdGhzGAkgAygJEhYKDmNvbnRlbnRfc2hhMjU2GAogASgJEhIKCnJldmVyc2libGUYCyABKAgiSAoUUG9saWN5UHJvZmlsZVJlZlZpZXcSCgoCaWQYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJEg4KBmRpZ2VzdBgDIAEoCSI+ChhVbnN1cHBvcnRlZE1lY2hhbmlzbVZpZXcSEgoKY2FwYWJpbGl0eRgBIAEoCRIOCgZyZWFzb24YAiABKAki4QIKCFBsYW5WaWV3EhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEg8KB3BsYW5faWQYAiABKAkSDwoHdG9vbF9pZBgDIAEoCRIPCgdwcm9maWxlGAQgASgJEhYKDnNldHRpbmdzX3Njb3BlGAUgASgJEkAKDnBvbGljeV9wcm9maWxlGAYgASgLMiguYXNzZW1ibHkuZGV2aW50LnYxLlBvbGljeVByb2ZpbGVSZWZWaWV3EhUKDXBsYW5uZWRfbGV2ZWwYByABKAkSFwoPYWRhcHRlcl9jZWlsaW5nGAggASgJEisKBXN0ZXBzGAkgAygLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlN0ZXBWaWV3EkEKC3Vuc3VwcG9ydGVkGAogAygLMiwuYXNzZW1ibHkuZGV2aW50LnYxLlVuc3VwcG9ydGVkTWVjaGFuaXNtVmlldxIQCgh3YXJuaW5ncxgLIAMoCSJICg9TdGVwT3V0Y29tZVZpZXcSDwoHc3RlcF9pZBgBIAEoCRIPCgdvdXRjb21lGAIgASgJEhMKC2ZpbmdlcnByaW50GAMgASgJIlcKEEFwcGx5T3V0Y29tZVZpZXcSMwoIbXV0YXRpb24YASABKA4yIS5hc3NlbWJseS5kZXZpbnQudjEuQXBwbHlNdXRhdGlvbhIOCgZkZXRhaWwYAiABKAki6AEKCUFwcGx5VmlldxIPCgdwbGFuX2lkGAEgASgJEhIKCnJlY2VpcHRfaWQYAiABKAkSHAoUYXBwbGllZF9hdF91bml4X3NlY3MYAyABKAQSMgoFc3RlcHMYBCADKAsyIy5hc3NlbWJseS5kZXZpbnQudjEuU3RlcE91dGNvbWVWaWV3EhUKDXBsYW5uZWRfbGV2ZWwYBSABKAkSFgoOYWNoaWV2ZWRfbGV2ZWwYBiABKAkSNQoHb3V0Y29tZRgHIAEoCzIkLmFzc2VtYmx5LmRldmludC52MS5BcHBseU91dGNvbWVWaWV3Im8KDEV2aWRlbmNlVmlldxIRCgltZWNoYW5pc20YASABKAkSDAoEa2luZBgCIAEoCRIPCgdvdXRjb21lGAMgASgJEh0KFW9ic2VydmVkX2F0X3VuaXhfc2VjcxgEIAEoBBIOCgZkZXRhaWwYBSABKAkiNwoNTmV4dExldmVsVmlldxINCgVsZXZlbBgBIAEoCRIXCg9ibG9ja2VkX2JlY2F1c2UYAiABKAkiOwoKUG9saWN5VmlldxINCgVzdGF0ZRgBIAEoCRIOCgZzb3VyY2UYAiABKAkSDgoGZGV0YWlsGAMgASgJIp8DCgpTdGF0dXNWaWV3Eg8KB3Rvb2xfaWQYASABKAkSDQoFcGhhc2UYAiABKAkSDQoFc3RhdGUYAyABKAkSFgoOYWNoaWV2ZWRfbGV2ZWwYBCABKAkSFQoNcGxhbm5lZF9sZXZlbBgFIAEoCRIXCg9hZGFwdGVyX2NlaWxpbmcYBiABKAkSFQoNY29tcGF0aWJpbGl0eRgHIAEoCRIyCghldmlkZW5jZRgIIAMoCzIgLmFzc2VtYmx5LmRldmludC52MS5FdmlkZW5jZVZpZXcSNQoKbmV4dF9sZXZlbBgJIAEoCzIhLmFzc2VtYmx5LmRldmludC52MS5OZXh0TGV2ZWxWaWV3Eh0KFW9ic2VydmVkX2F0X3VuaXhfc2VjcxgKIAEoBBIYChBkcmlmdF9taXNtYXRjaGVkGAsgAygJEhQKDHN0YXRlX3JlYXNvbhgMIAEoCRIZChFzdGF0ZV9yZW1lZGlhdGlvbhgNIAEoCRIuCgZwb2xpY3kYDiABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUG9saWN5VmlldyLHAQoQVmVyaWZpY2F0aW9uVmlldxIdChV2ZXJpZmllZF9hdF91bml4X3NlY3MYASABKAQSDwoHb3V0Y29tZRgCIAEoCRIPCgdtaXNzaW5nGAMgAygJEg4KBnJlYXNvbhgEIAEoCRIyCghldmlkZW5jZRgFIAMoCzIgLmFzc2VtYmx5LmRldmludC52MS5FdmlkZW5jZVZpZXcSLgoGcG9saWN5GAYgASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlBvbGljeVZpZXciowEKClJlcGFpclZpZXcSDwoHdG9vbF9pZBgBIAEoCRIQCghyZXBhaXJlZBgCIAMoCRJCCgx1bnJlcGFpcmFibGUYAyADKAsyLC5hc3NlbWJseS5kZXZpbnQudjEuVW5zdXBwb3J0ZWRNZWNoYW5pc21WaWV3Ei4KBnN0YXR1cxgEIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5TdGF0dXNWaWV3IpgBCgtSZW1vdmFsVmlldxIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIPCgdwbGFuX2lkGAIgASgJEg8KB3Rvb2xfaWQYAyABKAkSKwoFc3RlcHMYBCADKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuU3RlcFZpZXcSEAoIcmVzaWR1YWwYBSADKAkSEAoId2FybmluZ3MYBiADKAkifgoLU2NvcGVkRXZlbnQSHQoVb2NjdXJyZWRfYXRfdW5peF9zZWNzGAEgASgEEhQKDHZlcmRpY3Rfa2luZBgCIAEoCRIRCgltZWNoYW5pc20YAyABKAkSDQoFY291bnQYBCABKA0SGAoQcmVkYWN0aW9uX2xhYmVscxgFIAMoCSJCCg9TY29wZWRFdmVudExpc3QSLwoGZXZlbnRzGAEgAygLMh8uYXNzZW1ibHkuZGV2aW50LnYxLlNjb3BlZEV2ZW50Il0KEEFwcHJvdmFsUmVsYXlBY2sSEwoLYXBwcm92YWxfaWQYASABKAkSFQoNcmVsYXllZF9pbnB1dBgCIAEoCRIdChVhY2NlcHRlZF9hdF91bml4X3NlY3MYAyABKAQqfgoSTmVnb3RpYXRpb25PdXRjb21lEiMKH05FR09USUFUSU9OX09VVENPTUVfVU5TUEVDSUZJRUQQABIhCh1ORUdPVElBVElPTl9PVVRDT01FX1NVUFBPUlRFRBABEiAKHE5FR09USUFUSU9OX09VVENPTUVfREVHUkFERUQQAirFAQoEVmVyYhIUChBWRVJCX1VOU1BFQ0lGSUVEEAASEwoPVkVSQl9MSVNUX1RPT0xTEAESDQoJVkVSQl9QTEFOEAISDgoKVkVSQl9BUFBMWRADEg8KC1ZFUkJfU1RBVFVTEAQSDwoLVkVSQl9WRVJJRlkQBRIPCgtWRVJCX1JFUEFJUhAGEg8KC1ZFUkJfUkVNT1ZFEAcSFgoSVkVSQl9TQ09QRURfRVZFTlRTEAgSFwoTVkVSQl9BUFBST1ZBTF9SRUxBWRAJKpwCCghEZW55Q29kZRIZChVERU5ZX0NPREVfVU5TUEVDSUZJRUQQABIdChlERU5ZX0NPREVfVU5BVVRIRU5USUNBVEVEEAESGwoXREVOWV9DT0RFX1RPS0VOX0VYUElSRUQQAhIaChZERU5ZX0NPREVfT1VUX09GX1NDT1BFEAMSGgoWREVOWV9DT0RFX1VOS05PV05fVkVSQhAEEiAKHERFTllfQ09ERV9QUk9UT0NPTF9WSU9MQVRJT04QBRIkCiBERU5ZX0NPREVfVU5BVkFJTEFCTEVfQVRfVkVSU0lPThAGEh0KGURFTllfQ09ERV9MSUZFQ1lDTEVfRVJST1IQBxIaChZERU5ZX0NPREVfVU5LTk9XTl9UT09MEAgqpAEKDUFwcGx5TXV0YXRpb24SHgoaQVBQTFlfTVVUQVRJT05fVU5TUEVDSUZJRUQQABIaChZBUFBMWV9NVVRBVElPTl9DSEFOR0VEEAESHAoYQVBQTFlfTVVUQVRJT05fVU5DSEFOR0VEEAISGQoVQVBQTFlfTVVUQVRJT05fRkFJTEVEEAMSHgoaQVBQTFlfTVVUQVRJT05fVU5TVVBQT1JURUQQBGIGcHJvdG8z");
+  fileDesc("CgxkZXZpbnQucHJvdG8SEmFzc2VtYmx5LmRldmludC52MSJwCgVIZWxsbxITCgtjbGllbnRfbmFtZRgBIAEoCRIWCg5jbGllbnRfdmVyc2lvbhgCIAEoCRIXCg9kaV9hcGlfdmVyc2lvbnMYAyADKA0SIQoZbGlmZWN5Y2xlX3NjaGVtYV92ZXJzaW9ucxgEIAMoDSLFAgoISGVsbG9BY2sSNwoHb3V0Y29tZRgBIAEoDjImLmFzc2VtYmx5LmRldmludC52MS5OZWdvdGlhdGlvbk91dGNvbWUSFgoOZGlfYXBpX3ZlcnNpb24YAiABKA0SFAoMY29yZV92ZXJzaW9uGAMgASgJEiAKGGxpZmVjeWNsZV9zY2hlbWFfdmVyc2lvbhgEIAEoDRIVCg1taW5fc3VwcG9ydGVkGAUgASgNEhUKDW1heF9zdXBwb3J0ZWQYBiABKA0SGQoRdW5hdmFpbGFibGVfdmVyYnMYByADKAkSFwoPZGVncmFkZWRfcmVhc29uGAggASgJEhMKC3JlbWVkaWF0aW9uGAkgASgJEjkKCnByb3ZlbmFuY2UYCiABKAsyJS5hc3NlbWJseS5kZXZpbnQudjEuUnVudGltZVByb3ZlbmFuY2UiygEKEVJ1bnRpbWVQcm92ZW5hbmNlEhQKDGNvcmVfdmVyc2lvbhgBIAEoCRIRCglidWlsZF9zaGEYAiABKAkSCwoDcGlkGAMgASgNEhcKD2V4ZWN1dGFibGVfcGF0aBgEIAEoCRIaChJleGVjdXRhYmxlX3ByZXNlbnQYBSABKAgSEwoLc291cmNlX3BhdGgYBiABKAkSHAoUc3RhcnRlZF9hdF91bml4X3NlY3MYByABKAQSFwoPYnVpbGRfaWRfc291cmNlGAggASgJImEKDEluY29tcGF0aWJsZRIOCgZyZWFzb24YASABKAkSEwoLcmVtZWRpYXRpb24YAiABKAkSFQoNbWluX3N1cHBvcnRlZBgDIAEoDRIVCg1tYXhfc3VwcG9ydGVkGAQgASgNIpkDCgdSZXF1ZXN0EhIKCnJlcXVlc3RfaWQYASABKAQSJgoEdmVyYhgCIAEoDjIYLmFzc2VtYmx5LmRldmludC52MS5WZXJiEhgKEGNhcGFiaWxpdHlfdG9rZW4YAyABKAkSDwoHdG9vbF9pZBgEIAEoCRIqCgRwbGFuGAUgASgLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlBsYW5BcmdzEiwKBWFwcGx5GAYgASgLMh0uYXNzZW1ibHkuZGV2aW50LnYxLkFwcGx5QXJncxIuCgZyZW1vdmUYByABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUmVtb3ZlQXJncxI0CgZldmVudHMYCCABKAsyJC5hc3NlbWJseS5kZXZpbnQudjEuU2NvcGVkRXZlbnRzQXJncxI3CghhcHByb3ZhbBgJIAEoCzIlLmFzc2VtYmx5LmRldmludC52MS5BcHByb3ZhbFJlbGF5QXJncxIuCgZ0YXJnZXQYCiABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuVGFyZ2V0QXJncyI6CgpUYXJnZXRBcmdzEhYKDnNldHRpbmdzX3Njb3BlGAEgASgJEhQKDHByb2plY3Rfcm9vdBgCIAEoCSKiAQoIUGxhbkFyZ3MSDwoHcHJvZmlsZRgBIAEoCRIXCg9yZXF1ZXN0ZWRfbGV2ZWwYAiABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYAyABKAkSIwobYWxsb3dfcHJpdmlsZWdlZF9ob3N0X3N0ZXBzGAQgASgIEhkKEXBvbGljeV9wcm9maWxlX2lkGAUgASgJEhQKDHByb2plY3Rfcm9vdBgGIAEoCSIcCglBcHBseUFyZ3MSDwoHcGxhbl9pZBgBIAEoCSIdCgpSZW1vdmVBcmdzEg8KB3BsYW5faWQYASABKAkiOgoQU2NvcGVkRXZlbnRzQXJncxINCgVsaW1pdBgBIAEoDRIXCg9zaW5jZV91bml4X3NlY3MYAiABKAQiPAoRQXBwcm92YWxSZWxheUFyZ3MSEwoLYXBwcm92YWxfaWQYASABKAkSEgoKdXNlcl9pbnB1dBgCIAEoCSKMBAoIUmVzcG9uc2USEgoKcmVxdWVzdF9pZBgBIAEoBBImCgR2ZXJiGAIgASgOMhguYXNzZW1ibHkuZGV2aW50LnYxLlZlcmISLwoJdG9vbF9saXN0GAMgASgLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlRvb2xMaXN0EioKBHBsYW4YBCABKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuUGxhblZpZXcSLAoFYXBwbHkYBSABKAsyHS5hc3NlbWJseS5kZXZpbnQudjEuQXBwbHlWaWV3Ei4KBnN0YXR1cxgGIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5TdGF0dXNWaWV3EjoKDHZlcmlmaWNhdGlvbhgHIAEoCzIkLmFzc2VtYmx5LmRldmludC52MS5WZXJpZmljYXRpb25WaWV3Ei4KBnJlcGFpchgIIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5SZXBhaXJWaWV3EjAKB3JlbW92YWwYCSABKAsyHy5hc3NlbWJseS5kZXZpbnQudjEuUmVtb3ZhbFZpZXcSMwoGZXZlbnRzGAogASgLMiMuYXNzZW1ibHkuZGV2aW50LnYxLlNjb3BlZEV2ZW50TGlzdBI2CghhcHByb3ZhbBgLIAEoCzIkLmFzc2VtYmx5LmRldmludC52MS5BcHByb3ZhbFJlbGF5QWNrIm4KBkRlbmllZBISCgpyZXF1ZXN0X2lkGAEgASgEEioKBGNvZGUYAiABKA4yHC5hc3NlbWJseS5kZXZpbnQudjEuRGVueUNvZGUSDwoHbWVzc2FnZRgDIAEoCRITCgtyZW1lZGlhdGlvbhgEIAEoCSJFCg5DYXBhYmlsaXR5VmlldxISCgpjYXBhYmlsaXR5GAEgASgJEg8KB3N1cHBvcnQYAiABKAkSDgoGcmVhc29uGAMgASgJIsoBCgtUb29sU3VtbWFyeRIPCgd0b29sX2lkGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRIQCghkZXRlY3RlZBgDIAEoCBIYChBkZXRlY3RlZF92ZXJzaW9uGAQgASgJEhUKDWNvbXBhdGliaWxpdHkYBSABKAkSOAoMY2FwYWJpbGl0aWVzGAYgAygLMiIuYXNzZW1ibHkuZGV2aW50LnYxLkNhcGFiaWxpdHlWaWV3EhcKD2FkYXB0ZXJfY2VpbGluZxgHIAEoCSI6CghUb29sTGlzdBIuCgV0b29scxgBIAMoCzIfLmFzc2VtYmx5LmRldmludC52MS5Ub29sU3VtbWFyeSLuAQoIU3RlcFZpZXcSCgoCaWQYASABKAkSDwoHc3VtbWFyeRgCIAEoCRITCgthY3Rpb25fa2luZBgDIAEoCRITCgtyZXF1aXJlbWVudBgEIAEoCRIRCglwcml2aWxlZ2UYBSABKAkSFgoOY29uc2VudF9wcm9tcHQYBiABKAkSFgoOc2V0dGluZ3Nfc2NvcGUYByABKAkSFAoMbWFuYWdlZF9rZXlzGAggAygJEhYKDmFydGlmYWN0X3BhdGhzGAkgAygJEhYKDmNvbnRlbnRfc2hhMjU2GAogASgJEhIKCnJldmVyc2libGUYCyABKAgiSAoUUG9saWN5UHJvZmlsZVJlZlZpZXcSCgoCaWQYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJEg4KBmRpZ2VzdBgDIAEoCSI+ChhVbnN1cHBvcnRlZE1lY2hhbmlzbVZpZXcSEgoKY2FwYWJpbGl0eRgBIAEoCRIOCgZyZWFzb24YAiABKAki4QIKCFBsYW5WaWV3EhYKDnNjaGVtYV92ZXJzaW9uGAEgASgNEg8KB3BsYW5faWQYAiABKAkSDwoHdG9vbF9pZBgDIAEoCRIPCgdwcm9maWxlGAQgASgJEhYKDnNldHRpbmdzX3Njb3BlGAUgASgJEkAKDnBvbGljeV9wcm9maWxlGAYgASgLMiguYXNzZW1ibHkuZGV2aW50LnYxLlBvbGljeVByb2ZpbGVSZWZWaWV3EhUKDXBsYW5uZWRfbGV2ZWwYByABKAkSFwoPYWRhcHRlcl9jZWlsaW5nGAggASgJEisKBXN0ZXBzGAkgAygLMhwuYXNzZW1ibHkuZGV2aW50LnYxLlN0ZXBWaWV3EkEKC3Vuc3VwcG9ydGVkGAogAygLMiwuYXNzZW1ibHkuZGV2aW50LnYxLlVuc3VwcG9ydGVkTWVjaGFuaXNtVmlldxIQCgh3YXJuaW5ncxgLIAMoCSJICg9TdGVwT3V0Y29tZVZpZXcSDwoHc3RlcF9pZBgBIAEoCRIPCgdvdXRjb21lGAIgASgJEhMKC2ZpbmdlcnByaW50GAMgASgJIlcKEEFwcGx5T3V0Y29tZVZpZXcSMwoIbXV0YXRpb24YASABKA4yIS5hc3NlbWJseS5kZXZpbnQudjEuQXBwbHlNdXRhdGlvbhIOCgZkZXRhaWwYAiABKAki6AEKCUFwcGx5VmlldxIPCgdwbGFuX2lkGAEgASgJEhIKCnJlY2VpcHRfaWQYAiABKAkSHAoUYXBwbGllZF9hdF91bml4X3NlY3MYAyABKAQSMgoFc3RlcHMYBCADKAsyIy5hc3NlbWJseS5kZXZpbnQudjEuU3RlcE91dGNvbWVWaWV3EhUKDXBsYW5uZWRfbGV2ZWwYBSABKAkSFgoOYWNoaWV2ZWRfbGV2ZWwYBiABKAkSNQoHb3V0Y29tZRgHIAEoCzIkLmFzc2VtYmx5LmRldmludC52MS5BcHBseU91dGNvbWVWaWV3Im8KDEV2aWRlbmNlVmlldxIRCgltZWNoYW5pc20YASABKAkSDAoEa2luZBgCIAEoCRIPCgdvdXRjb21lGAMgASgJEh0KFW9ic2VydmVkX2F0X3VuaXhfc2VjcxgEIAEoBBIOCgZkZXRhaWwYBSABKAkiNwoNTmV4dExldmVsVmlldxINCgVsZXZlbBgBIAEoCRIXCg9ibG9ja2VkX2JlY2F1c2UYAiABKAkiOwoKUG9saWN5VmlldxINCgVzdGF0ZRgBIAEoCRIOCgZzb3VyY2UYAiABKAkSDgoGZGV0YWlsGAMgASgJIp8DCgpTdGF0dXNWaWV3Eg8KB3Rvb2xfaWQYASABKAkSDQoFcGhhc2UYAiABKAkSDQoFc3RhdGUYAyABKAkSFgoOYWNoaWV2ZWRfbGV2ZWwYBCABKAkSFQoNcGxhbm5lZF9sZXZlbBgFIAEoCRIXCg9hZGFwdGVyX2NlaWxpbmcYBiABKAkSFQoNY29tcGF0aWJpbGl0eRgHIAEoCRIyCghldmlkZW5jZRgIIAMoCzIgLmFzc2VtYmx5LmRldmludC52MS5FdmlkZW5jZVZpZXcSNQoKbmV4dF9sZXZlbBgJIAEoCzIhLmFzc2VtYmx5LmRldmludC52MS5OZXh0TGV2ZWxWaWV3Eh0KFW9ic2VydmVkX2F0X3VuaXhfc2VjcxgKIAEoBBIYChBkcmlmdF9taXNtYXRjaGVkGAsgAygJEhQKDHN0YXRlX3JlYXNvbhgMIAEoCRIZChFzdGF0ZV9yZW1lZGlhdGlvbhgNIAEoCRIuCgZwb2xpY3kYDiABKAsyHi5hc3NlbWJseS5kZXZpbnQudjEuUG9saWN5VmlldyLHAQoQVmVyaWZpY2F0aW9uVmlldxIdChV2ZXJpZmllZF9hdF91bml4X3NlY3MYASABKAQSDwoHb3V0Y29tZRgCIAEoCRIPCgdtaXNzaW5nGAMgAygJEg4KBnJlYXNvbhgEIAEoCRIyCghldmlkZW5jZRgFIAMoCzIgLmFzc2VtYmx5LmRldmludC52MS5FdmlkZW5jZVZpZXcSLgoGcG9saWN5GAYgASgLMh4uYXNzZW1ibHkuZGV2aW50LnYxLlBvbGljeVZpZXciowEKClJlcGFpclZpZXcSDwoHdG9vbF9pZBgBIAEoCRIQCghyZXBhaXJlZBgCIAMoCRJCCgx1bnJlcGFpcmFibGUYAyADKAsyLC5hc3NlbWJseS5kZXZpbnQudjEuVW5zdXBwb3J0ZWRNZWNoYW5pc21WaWV3Ei4KBnN0YXR1cxgEIAEoCzIeLmFzc2VtYmx5LmRldmludC52MS5TdGF0dXNWaWV3IpgBCgtSZW1vdmFsVmlldxIWCg5zY2hlbWFfdmVyc2lvbhgBIAEoDRIPCgdwbGFuX2lkGAIgASgJEg8KB3Rvb2xfaWQYAyABKAkSKwoFc3RlcHMYBCADKAsyHC5hc3NlbWJseS5kZXZpbnQudjEuU3RlcFZpZXcSEAoIcmVzaWR1YWwYBSADKAkSEAoId2FybmluZ3MYBiADKAkifgoLU2NvcGVkRXZlbnQSHQoVb2NjdXJyZWRfYXRfdW5peF9zZWNzGAEgASgEEhQKDHZlcmRpY3Rfa2luZBgCIAEoCRIRCgltZWNoYW5pc20YAyABKAkSDQoFY291bnQYBCABKA0SGAoQcmVkYWN0aW9uX2xhYmVscxgFIAMoCSJCCg9TY29wZWRFdmVudExpc3QSLwoGZXZlbnRzGAEgAygLMh8uYXNzZW1ibHkuZGV2aW50LnYxLlNjb3BlZEV2ZW50Il0KEEFwcHJvdmFsUmVsYXlBY2sSEwoLYXBwcm92YWxfaWQYASABKAkSFQoNcmVsYXllZF9pbnB1dBgCIAEoCRIdChVhY2NlcHRlZF9hdF91bml4X3NlY3MYAyABKAQqfgoSTmVnb3RpYXRpb25PdXRjb21lEiMKH05FR09USUFUSU9OX09VVENPTUVfVU5TUEVDSUZJRUQQABIhCh1ORUdPVElBVElPTl9PVVRDT01FX1NVUFBPUlRFRBABEiAKHE5FR09USUFUSU9OX09VVENPTUVfREVHUkFERUQQAirFAQoEVmVyYhIUChBWRVJCX1VOU1BFQ0lGSUVEEAASEwoPVkVSQl9MSVNUX1RPT0xTEAESDQoJVkVSQl9QTEFOEAISDgoKVkVSQl9BUFBMWRADEg8KC1ZFUkJfU1RBVFVTEAQSDwoLVkVSQl9WRVJJRlkQBRIPCgtWRVJCX1JFUEFJUhAGEg8KC1ZFUkJfUkVNT1ZFEAcSFgoSVkVSQl9TQ09QRURfRVZFTlRTEAgSFwoTVkVSQl9BUFBST1ZBTF9SRUxBWRAJKpwCCghEZW55Q29kZRIZChVERU5ZX0NPREVfVU5TUEVDSUZJRUQQABIdChlERU5ZX0NPREVfVU5BVVRIRU5USUNBVEVEEAESGwoXREVOWV9DT0RFX1RPS0VOX0VYUElSRUQQAhIaChZERU5ZX0NPREVfT1VUX09GX1NDT1BFEAMSGgoWREVOWV9DT0RFX1VOS05PV05fVkVSQhAEEiAKHERFTllfQ09ERV9QUk9UT0NPTF9WSU9MQVRJT04QBRIkCiBERU5ZX0NPREVfVU5BVkFJTEFCTEVfQVRfVkVSU0lPThAGEh0KGURFTllfQ09ERV9MSUZFQ1lDTEVfRVJST1IQBxIaChZERU5ZX0NPREVfVU5LTk9XTl9UT09MEAgqpAEKDUFwcGx5TXV0YXRpb24SHgoaQVBQTFlfTVVUQVRJT05fVU5TUEVDSUZJRUQQABIaChZBUFBMWV9NVVRBVElPTl9DSEFOR0VEEAESHAoYQVBQTFlfTVVUQVRJT05fVU5DSEFOR0VEEAISGQoVQVBQTFlfTVVUQVRJT05fRkFJTEVEEAMSHgoaQVBQTFlfTVVUQVRJT05fVU5TVVBQT1JURUQQBGIGcHJvdG8z");
 
 /**
  * Hello — client → server, the first frame on every connection. No lifecycle
@@ -358,6 +358,26 @@ export type Request = Message<"assembly.devint.v1.Request"> & {
    * @generated from field: assembly.devint.v1.ApprovalRelayArgs approval = 9;
    */
   approval?: ApprovalRelayArgs | undefined;
+
+  /**
+   * Which project the verb is about. Read by `VERB_STATUS`, `VERB_VERIFY`,
+   * `VERB_REPAIR`, `VERB_REMOVE` and `VERB_APPLY`. Ignored by every other verb.
+   *
+   * Shared by five verbs rather than repeated as five one-field messages: it
+   * answers one question — *which* project — and five copies of one question
+   * are five places for the answer to drift.
+   *
+   * `VERB_APPLY` reads it for a different reason than the other four, and the
+   * difference matters when reading the service. There the target names the
+   * installation to act on; for an apply nothing is installed yet, and the
+   * target names the project the caller is applying *from*, so a plan authored
+   * for another project is refused rather than executed (AAASM-5913). A plan id
+   * is handed out by the service and can be presented later, from anywhere, so
+   * it is not on its own an answer to "may this caller execute this here".
+   *
+   * @generated from field: assembly.devint.v1.TargetArgs target = 10;
+   */
+  target?: TargetArgs | undefined;
 };
 
 /**
@@ -366,6 +386,65 @@ export type Request = Message<"assembly.devint.v1.Request"> & {
  */
 export const RequestSchema: GenMessage<Request> = /*@__PURE__*/
   messageDesc(file_devint, 4);
+
+/**
+ * Which already-installed integration a read-or-reverse verb acts on.
+ *
+ * `tool_id` names the tool. Until DI-API 6 nothing named the *installation*,
+ * and the service recovered it by scanning its own store for whichever receipt
+ * happened to exist — user scope first. That is a guess with two failure modes,
+ * and both were reachable at once: on a host with a user-scope receipt and a
+ * project-scope one, every status/verify/repair/remove reported the user
+ * integration and the project one was unreachable; on a host with only a
+ * project-scope receipt, a caller standing in an unrelated repository was told
+ * that repository was protected, and `repair` and `remove` would then act on
+ * the *other* project's files (AAASM-5913).
+ *
+ * The caller knows which installation it means. It says so here.
+ *
+ * @generated from message assembly.devint.v1.TargetArgs
+ */
+export type TargetArgs = Message<"assembly.devint.v1.TargetArgs"> & {
+  /**
+   * "user" | "project" | "managed", or empty to let the service find the one
+   * installation that exists.
+   *
+   * Empty is a convenience, not an inference: it means "there should be
+   * exactly one, use it". If what it finds is project-scoped, `project_root`
+   * below still has to name that same project, so an empty scope can never
+   * widen what a caller reaches — only save them from naming it.
+   *
+   * @generated from field: string settings_scope = 1;
+   */
+  settingsScope: string;
+
+  /**
+   * The absolute path of the project this request is about, on the same terms
+   * as `PlanArgs.project_root`: mandatory at "project" scope, optional context
+   * elsewhere, and never a destination the service derives a path from.
+   *
+   * It is checked *against* the receipt rather than used to find it. A
+   * project-scope receipt records the file it wrote, so the project it belongs
+   * to is already knowable; what was missing was any statement of the project
+   * the caller meant, to compare it with. A mismatch is refused, never
+   * resolved in either direction.
+   *
+   * Requires DI-API 6 (`DI_API_PROJECT_ROOT_SINCE`). A pre-v6 runtime discards
+   * this field during decode, so it cannot compare anything and cannot report
+   * that it did not — the same undetectable substitution `PlanArgs.project_root`
+   * documents. Clients below v6 must refuse project scope rather than send it.
+   *
+   * @generated from field: string project_root = 2;
+   */
+  projectRoot: string;
+};
+
+/**
+ * Describes the message assembly.devint.v1.TargetArgs.
+ * Use `create(TargetArgsSchema)` to create a new message.
+ */
+export const TargetArgsSchema: GenMessage<TargetArgs> = /*@__PURE__*/
+  messageDesc(file_devint, 5);
 
 /**
  * What the caller wants planned. Every field is something a caller may
@@ -428,9 +507,27 @@ export type PlanArgs = Message<"assembly.devint.v1.PlanArgs"> & {
    * disclose that a nearby project configuration exists and will be left alone
    * — no destination is ever derived from it at those scopes.
    *
-   * This is not a client-supplied *destination*. The service resolves the file
-   * to write from the scope and this root together, by its own rule; a caller
-   * cannot name a settings path (matrix row 6 still holds).
+   * Matrix row 6 still holds, but not because the derivation is a suffix. A
+   * caller cannot name a settings *path* — the service appends its own relative
+   * path to this root — yet choosing the root chooses where that lands, so the
+   * suffix on its own buys nothing. Naming `$HOME` aims the derived path at the
+   * *user*-scope surface; naming `/` or a `..` traversal aims it wherever the
+   * components resolve to; and `IntegrationPlan::validate`'s containment check
+   * cannot catch either, because the destination is derived from the very root
+   * it is checked against, so containment holds trivially.
+   *
+   * What holds the row is the refusal at the boundary: the service requires this
+   * root to exist as a directory, canonicalises it, refuses a relative one, and
+   * refuses one that contains a configuration surface belonging to another
+   * scope. It does not create the directory — materialising a directory a caller
+   * named would be taking the destination from the caller after all.
+   *
+   * Requires DI-API 6 (`DI_API_PROJECT_ROOT_SINCE`). Adding it is additive on
+   * the wire but *not* additive in behaviour: a pre-v6 runtime discards this
+   * field during decode and falls back to its own working directory, producing
+   * the AAASM-5913 defect with no denial and no negotiation signal. Clients
+   * must therefore refuse "project" scope below v6 rather than send this and
+   * inspect the reply — an ignored root and an unsent one decode identically.
    *
    * @generated from field: string project_root = 6;
    */
@@ -442,7 +539,7 @@ export type PlanArgs = Message<"assembly.devint.v1.PlanArgs"> & {
  * Use `create(PlanArgsSchema)` to create a new message.
  */
 export const PlanArgsSchema: GenMessage<PlanArgs> = /*@__PURE__*/
-  messageDesc(file_devint, 5);
+  messageDesc(file_devint, 6);
 
 /**
  * @generated from message assembly.devint.v1.ApplyArgs
@@ -459,7 +556,7 @@ export type ApplyArgs = Message<"assembly.devint.v1.ApplyArgs"> & {
  * Use `create(ApplyArgsSchema)` to create a new message.
  */
 export const ApplyArgsSchema: GenMessage<ApplyArgs> = /*@__PURE__*/
-  messageDesc(file_devint, 6);
+  messageDesc(file_devint, 7);
 
 /**
  * @generated from message assembly.devint.v1.RemoveArgs
@@ -476,7 +573,7 @@ export type RemoveArgs = Message<"assembly.devint.v1.RemoveArgs"> & {
  * Use `create(RemoveArgsSchema)` to create a new message.
  */
 export const RemoveArgsSchema: GenMessage<RemoveArgs> = /*@__PURE__*/
-  messageDesc(file_devint, 7);
+  messageDesc(file_devint, 8);
 
 /**
  * @generated from message assembly.devint.v1.ScopedEventsArgs
@@ -498,7 +595,7 @@ export type ScopedEventsArgs = Message<"assembly.devint.v1.ScopedEventsArgs"> & 
  * Use `create(ScopedEventsArgsSchema)` to create a new message.
  */
 export const ScopedEventsArgsSchema: GenMessage<ScopedEventsArgs> = /*@__PURE__*/
-  messageDesc(file_devint, 8);
+  messageDesc(file_devint, 9);
 
 /**
  * The human's input on a pending approval, relayed by the client that showed
@@ -527,7 +624,7 @@ export type ApprovalRelayArgs = Message<"assembly.devint.v1.ApprovalRelayArgs"> 
  * Use `create(ApprovalRelayArgsSchema)` to create a new message.
  */
 export const ApprovalRelayArgsSchema: GenMessage<ApprovalRelayArgs> = /*@__PURE__*/
-  messageDesc(file_devint, 9);
+  messageDesc(file_devint, 10);
 
 /**
  * Response — server → client, one per accepted `Request`. Exactly one of the
@@ -597,7 +694,7 @@ export type Response = Message<"assembly.devint.v1.Response"> & {
  * Use `create(ResponseSchema)` to create a new message.
  */
 export const ResponseSchema: GenMessage<Response> = /*@__PURE__*/
-  messageDesc(file_devint, 10);
+  messageDesc(file_devint, 11);
 
 /**
  * @generated from message assembly.devint.v1.Denied
@@ -634,7 +731,7 @@ export type Denied = Message<"assembly.devint.v1.Denied"> & {
  * Use `create(DeniedSchema)` to create a new message.
  */
 export const DeniedSchema: GenMessage<Denied> = /*@__PURE__*/
-  messageDesc(file_devint, 11);
+  messageDesc(file_devint, 12);
 
 /**
  * @generated from message assembly.devint.v1.CapabilityView
@@ -667,7 +764,7 @@ export type CapabilityView = Message<"assembly.devint.v1.CapabilityView"> & {
  * Use `create(CapabilityViewSchema)` to create a new message.
  */
 export const CapabilityViewSchema: GenMessage<CapabilityView> = /*@__PURE__*/
-  messageDesc(file_devint, 12);
+  messageDesc(file_devint, 13);
 
 /**
  * @generated from message assembly.devint.v1.ToolSummary
@@ -720,7 +817,7 @@ export type ToolSummary = Message<"assembly.devint.v1.ToolSummary"> & {
  * Use `create(ToolSummarySchema)` to create a new message.
  */
 export const ToolSummarySchema: GenMessage<ToolSummary> = /*@__PURE__*/
-  messageDesc(file_devint, 13);
+  messageDesc(file_devint, 14);
 
 /**
  * @generated from message assembly.devint.v1.ToolList
@@ -737,7 +834,7 @@ export type ToolList = Message<"assembly.devint.v1.ToolList"> & {
  * Use `create(ToolListSchema)` to create a new message.
  */
 export const ToolListSchema: GenMessage<ToolList> = /*@__PURE__*/
-  messageDesc(file_devint, 14);
+  messageDesc(file_devint, 15);
 
 /**
  * A plan step, projected for review.
@@ -836,7 +933,7 @@ export type StepView = Message<"assembly.devint.v1.StepView"> & {
  * Use `create(StepViewSchema)` to create a new message.
  */
 export const StepViewSchema: GenMessage<StepView> = /*@__PURE__*/
-  messageDesc(file_devint, 15);
+  messageDesc(file_devint, 16);
 
 /**
  * A policy profile named by reference rather than by content: enough to
@@ -866,7 +963,7 @@ export type PolicyProfileRefView = Message<"assembly.devint.v1.PolicyProfileRefV
  * Use `create(PolicyProfileRefViewSchema)` to create a new message.
  */
 export const PolicyProfileRefViewSchema: GenMessage<PolicyProfileRefView> = /*@__PURE__*/
-  messageDesc(file_devint, 16);
+  messageDesc(file_devint, 17);
 
 /**
  * @generated from message assembly.devint.v1.UnsupportedMechanismView
@@ -888,7 +985,7 @@ export type UnsupportedMechanismView = Message<"assembly.devint.v1.UnsupportedMe
  * Use `create(UnsupportedMechanismViewSchema)` to create a new message.
  */
 export const UnsupportedMechanismViewSchema: GenMessage<UnsupportedMechanismView> = /*@__PURE__*/
-  messageDesc(file_devint, 17);
+  messageDesc(file_devint, 18);
 
 /**
  * @generated from message assembly.devint.v1.PlanView
@@ -955,7 +1052,7 @@ export type PlanView = Message<"assembly.devint.v1.PlanView"> & {
  * Use `create(PlanViewSchema)` to create a new message.
  */
 export const PlanViewSchema: GenMessage<PlanView> = /*@__PURE__*/
-  messageDesc(file_devint, 18);
+  messageDesc(file_devint, 19);
 
 /**
  * @generated from message assembly.devint.v1.StepOutcomeView
@@ -986,7 +1083,7 @@ export type StepOutcomeView = Message<"assembly.devint.v1.StepOutcomeView"> & {
  * Use `create(StepOutcomeViewSchema)` to create a new message.
  */
 export const StepOutcomeViewSchema: GenMessage<StepOutcomeView> = /*@__PURE__*/
-  messageDesc(file_devint, 19);
+  messageDesc(file_devint, 20);
 
 /**
  * The apply outcome, carried as a MESSAGE so its absence is explicit.
@@ -1020,7 +1117,7 @@ export type ApplyOutcomeView = Message<"assembly.devint.v1.ApplyOutcomeView"> & 
  * Use `create(ApplyOutcomeViewSchema)` to create a new message.
  */
 export const ApplyOutcomeViewSchema: GenMessage<ApplyOutcomeView> = /*@__PURE__*/
-  messageDesc(file_devint, 20);
+  messageDesc(file_devint, 21);
 
 /**
  * @generated from message assembly.devint.v1.ApplyView
@@ -1079,7 +1176,7 @@ export type ApplyView = Message<"assembly.devint.v1.ApplyView"> & {
  * Use `create(ApplyViewSchema)` to create a new message.
  */
 export const ApplyViewSchema: GenMessage<ApplyView> = /*@__PURE__*/
-  messageDesc(file_devint, 21);
+  messageDesc(file_devint, 22);
 
 /**
  * One observation, with the timestamp that makes it "verified at T" rather
@@ -1125,7 +1222,7 @@ export type EvidenceView = Message<"assembly.devint.v1.EvidenceView"> & {
  * Use `create(EvidenceViewSchema)` to create a new message.
  */
 export const EvidenceViewSchema: GenMessage<EvidenceView> = /*@__PURE__*/
-  messageDesc(file_devint, 22);
+  messageDesc(file_devint, 23);
 
 /**
  * @generated from message assembly.devint.v1.NextLevelView
@@ -1147,7 +1244,7 @@ export type NextLevelView = Message<"assembly.devint.v1.NextLevelView"> & {
  * Use `create(NextLevelViewSchema)` to create a new message.
  */
 export const NextLevelViewSchema: GenMessage<NextLevelView> = /*@__PURE__*/
-  messageDesc(file_devint, 23);
+  messageDesc(file_devint, 24);
 
 /**
  * Which policy a governed launch would run under, as the service resolved it
@@ -1192,7 +1289,7 @@ export type PolicyView = Message<"assembly.devint.v1.PolicyView"> & {
  * Use `create(PolicyViewSchema)` to create a new message.
  */
 export const PolicyViewSchema: GenMessage<PolicyView> = /*@__PURE__*/
-  messageDesc(file_devint, 24);
+  messageDesc(file_devint, 25);
 
 /**
  * @generated from message assembly.devint.v1.StatusView
@@ -1287,7 +1384,7 @@ export type StatusView = Message<"assembly.devint.v1.StatusView"> & {
  * Use `create(StatusViewSchema)` to create a new message.
  */
 export const StatusViewSchema: GenMessage<StatusView> = /*@__PURE__*/
-  messageDesc(file_devint, 25);
+  messageDesc(file_devint, 26);
 
 /**
  * @generated from message assembly.devint.v1.VerificationView
@@ -1337,7 +1434,7 @@ export type VerificationView = Message<"assembly.devint.v1.VerificationView"> & 
  * Use `create(VerificationViewSchema)` to create a new message.
  */
 export const VerificationViewSchema: GenMessage<VerificationView> = /*@__PURE__*/
-  messageDesc(file_devint, 26);
+  messageDesc(file_devint, 27);
 
 /**
  * @generated from message assembly.devint.v1.RepairView
@@ -1373,7 +1470,7 @@ export type RepairView = Message<"assembly.devint.v1.RepairView"> & {
  * Use `create(RepairViewSchema)` to create a new message.
  */
 export const RepairViewSchema: GenMessage<RepairView> = /*@__PURE__*/
-  messageDesc(file_devint, 27);
+  messageDesc(file_devint, 28);
 
 /**
  * @generated from message assembly.devint.v1.RemovalView
@@ -1417,7 +1514,7 @@ export type RemovalView = Message<"assembly.devint.v1.RemovalView"> & {
  * Use `create(RemovalViewSchema)` to create a new message.
  */
 export const RemovalViewSchema: GenMessage<RemovalView> = /*@__PURE__*/
-  messageDesc(file_devint, 28);
+  messageDesc(file_devint, 29);
 
 /**
  * An integration-scoped, already-redacted security-event projection.
@@ -1467,7 +1564,7 @@ export type ScopedEvent = Message<"assembly.devint.v1.ScopedEvent"> & {
  * Use `create(ScopedEventSchema)` to create a new message.
  */
 export const ScopedEventSchema: GenMessage<ScopedEvent> = /*@__PURE__*/
-  messageDesc(file_devint, 29);
+  messageDesc(file_devint, 30);
 
 /**
  * @generated from message assembly.devint.v1.ScopedEventList
@@ -1484,7 +1581,7 @@ export type ScopedEventList = Message<"assembly.devint.v1.ScopedEventList"> & {
  * Use `create(ScopedEventListSchema)` to create a new message.
  */
 export const ScopedEventListSchema: GenMessage<ScopedEventList> = /*@__PURE__*/
-  messageDesc(file_devint, 30);
+  messageDesc(file_devint, 31);
 
 /**
  * Acknowledgement that a human's input was relayed to the decision authority.
@@ -1520,7 +1617,7 @@ export type ApprovalRelayAck = Message<"assembly.devint.v1.ApprovalRelayAck"> & 
  * Use `create(ApprovalRelayAckSchema)` to create a new message.
  */
 export const ApprovalRelayAckSchema: GenMessage<ApprovalRelayAck> = /*@__PURE__*/
-  messageDesc(file_devint, 31);
+  messageDesc(file_devint, 32);
 
 /**
  * Whether the negotiated version gives the client the whole verb space.
