@@ -2138,6 +2138,154 @@ mod tests {
         assert_eq!(envelope.superseded[0].receipt_id, first.receipt_id);
     }
 
+    /// The `requirement` axis of the same question. Two applies of the *same*
+    /// steps, where the second demotes every required step to optional, are not
+    /// one installation: `achieved_level` is derived from how many required
+    /// steps verified, so a receipt claiming `Integrated` is claiming something
+    /// only a required step can substantiate.
+    ///
+    /// Until `requirement` was compared, `receipts_agree` returned true here and
+    /// the no-op early return fired, so the stored receipt went on reporting
+    /// `Integrated` for a plan whose steps could substantiate only
+    /// `PartiallyIntegrated`.
+    #[test]
+    fn a_reapply_that_demotes_every_required_step_is_a_different_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+        assert_eq!(first.achieved_level, ProtectionLevel::Integrated);
+
+        let mut demoted = plan(&f);
+        demoted.steps[0] = demoted.steps[0].clone().optional();
+        demoted.steps[1] = demoted.steps[1].clone().optional();
+        let outcome = e.apply(&demoted, &context(2_000)).unwrap();
+
+        assert_eq!(
+            outcome.receipt.receipt_id, "receipt-2000",
+            "steps carrying a different requirement are a different installation"
+        );
+        assert_eq!(
+            outcome.receipt.achieved_level,
+            ProtectionLevel::PartiallyIntegrated,
+            "no required step verified, so nothing substantiates Integrated"
+        );
+    }
+
+    /// The `action` axis, and the reason `fingerprint` cannot stand in for it. A
+    /// settings step's fingerprint is taken over the AASM-owned projection, not
+    /// over the file, so the same managed content aimed at a different settings
+    /// file fingerprints identically.
+    ///
+    /// Receipts are stored one per `(tool, scope)` with no project dimension, so
+    /// if identity ignored the destination, an install into a second project
+    /// would adopt the first project's receipt and leave it naming the first
+    /// project's path — after which `remove` run in the second project restores
+    /// the first project's file, and the displaced installation is never
+    /// recorded as superseded. (The missing project dimension is AAASM-5968;
+    /// this clause keeps the engine from compounding it.)
+    #[test]
+    fn a_reapply_aimed_at_a_different_settings_file_is_a_different_installation() {
+        let f = fixture();
+        let mut e = engine(&f);
+        let first = e.apply(&plan(&f), &context(1_000)).unwrap().receipt;
+
+        // A second project whose settings already hold byte-identical managed
+        // content, so this apply changes nothing on disk and the destination is
+        // the only thing distinguishing the two installations.
+        let elsewhere = f
+            .settings
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("project-b")
+            .join("settings.json");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, MANAGED_CONTENT).unwrap();
+
+        let mut other_project = plan(&f);
+        other_project.steps[0] = settings_step(&elsewhere);
+        let outcome = e.apply(&other_project, &context(2_000)).unwrap();
+
+        assert_eq!(
+            outcome.receipt.receipt_id, "receipt-2000",
+            "a different destination is a different installation"
+        );
+        let recorded = match &outcome.receipt.steps[0].action {
+            StepAction::WriteManagedSettings { path, .. } => path.clone(),
+            other => panic!("expected the settings step, got {other:?}"),
+        };
+        assert_eq!(
+            recorded, elsewhere,
+            "the stored receipt names the file this apply actually wrote"
+        );
+
+        let envelope = f
+            .store
+            .load_envelope(&DevToolKind::ClaudeCode, SettingsScope::User)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            envelope.superseded.len(),
+            1,
+            "the displaced installation is recorded rather than vanishing"
+        );
+        assert_eq!(envelope.superseded[0].receipt_id, first.receipt_id);
+    }
+
+    /// AAASM-5963's user-visible defect, asserted on the file rather than on the
+    /// receipt: a reapply that *changes something* must not overwrite the
+    /// baseline `remove` restores from.
+    ///
+    /// The receipt-level assertions above cannot catch this — they check which
+    /// receipt id survived, and this checks what `remove` leaves in the user's
+    /// settings, which is what the ticket was filed on. Until the baseline was
+    /// carried forward, the second apply captured `prior_state` from a document
+    /// AASM had already written, so `remove` restored AASM's own
+    /// `permissionMode` and re-added the `permissions` block AASM had
+    /// introduced — while reporting an empty `residual` and a deleted receipt.
+    /// A silent partial removal is worse than a loud failure, so this asserts
+    /// absence in the file and not the exit path.
+    ///
+    /// Note that the no-op early return does not cover this case and cannot: it
+    /// preserves the baseline only when the reapply changed nothing, and a
+    /// reapply that did change something is when the baseline matters most.
+    #[test]
+    fn a_mutating_reapply_preserves_the_baseline_remove_restores_from() {
+        let f = fixture();
+        write_settings(&f, r#"{"theme":"gruvbox","permissionMode":"acceptEdits"}"#);
+        let mut e = engine(&f);
+        e.apply(&plan(&f), &context(1_000)).unwrap();
+
+        // An AASM-owned value drifts, so the reapply has something to correct.
+        let mut drifted = read_settings(&f);
+        drifted["permissionMode"] = serde_json::json!("bypassPermissions");
+        std::fs::write(&f.settings, drifted.to_string()).unwrap();
+
+        let second = e.apply(&plan(&f), &context(2_000)).unwrap();
+        assert!(second.mutated, "the drift is what this reapply exists to correct");
+        assert_eq!(
+            second.receipt.receipt_id, "receipt-1000",
+            "correcting drift is not a new installation"
+        );
+
+        let outcome = e.remove(&DevToolKind::ClaudeCode, SettingsScope::User).unwrap();
+        assert!(outcome.residual.is_empty(), "{:?}", outcome.residual);
+        assert!(outcome.receipt_deleted);
+
+        let after = read_settings(&f);
+        assert_eq!(
+            after["permissionMode"], "acceptEdits",
+            "the value restored is the one the user had before the first install — \
+             not the one AASM wrote, and not the drifted one"
+        );
+        assert!(
+            after.get("permissions").is_none(),
+            "a key AASM introduced is deleted, not restored to AASM's own value"
+        );
+        assert_eq!(after["theme"], "gruvbox", "the user's own key is untouched");
+    }
+
     #[test]
     fn a_tool_upgrade_out_of_range_is_reported_and_not_repaired_away() {
         let f = fixture();
