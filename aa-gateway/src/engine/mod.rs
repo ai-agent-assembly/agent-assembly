@@ -3400,19 +3400,23 @@ mod tests {
     }
 
     #[test]
-    fn schedule_allows_full_day_window() {
-        let mut doc = empty_doc();
-        doc.schedule = Some(SchedulePolicy {
-            active_hours: Some(ActiveHours {
-                start: "00:00".to_string(),
-                end: "23:59".to_string(),
-                timezone: "UTC".to_string(),
-            }),
-        });
+    fn schedule_omitted_allows_at_any_time() {
+        // AAASM-5933: this test previously configured `active_hours`
+        // `"00:00"`–`"23:59"` and asserted Allow, on the assumption that
+        // covers the full day. It doesn't — `end` is documented exclusive
+        // (`docs/src/policy-reference.md` § schedule), so that window denies
+        // its own last minute, and the test failed deterministically
+        // whenever CI happened to run during it. The schema has no `24:00`
+        // sentinel, so no `active_hours` window can express "every instant of
+        // the day" — the documented way to get unrestricted scheduling is to
+        // omit `schedule` entirely, which `empty_doc()` already does. That
+        // needs no clock at all, so this is deterministic rather than merely
+        // "correct at the instant it happens to run" like the window version
+        // was.
+        let doc = empty_doc();
         let engine = make_engine(doc);
         let ctx = make_ctx();
         let action = tool_call("any", "");
-        // 00:00–23:59 covers almost the whole day — should Allow.
         assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
     }
 
