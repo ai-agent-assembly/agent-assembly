@@ -51,8 +51,10 @@ conclusions are terminal for the purpose of ending a wait, but only `success`
 and `skipped` are non-blocking. `stale` in particular means the result no
 longer applies to the current head — terminal, and emphatically not a pass.
 `neutral` is non-blocking-but-not-a-pass; it is treated as passing here only
-because GitHub's own branch protection treats it that way, and that choice is
-asserted in case F rather than left implicit.
+because GitHub's own branch protection treats it that way. That choice is
+asserted by case I, whose fixture is the only one in which a *required*
+context concludes `neutral` — the claim used to point at case F, which
+contains no `neutral` row at all and so asserted nothing about it.
 """
 
 from __future__ import annotations

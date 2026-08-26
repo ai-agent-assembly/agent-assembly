@@ -352,6 +352,16 @@ echo "== Case H: a completed re-run supersedes the original in-flight row =="
 assert_real_only "completed re-run must win over the original attempt's stale row" \
   case-h-rerun-supersedes.json 1 0
 
+echo "== Case I: a REQUIRED context concluding 'neutral' is not blocking =="
+echo "   Asserted here and nowhere else. The module docstring used to credit"
+echo "   case F with this claim; case F contains no 'neutral' row at all."
+echo "   Real-only by design: making it discriminating would mean adding a"
+echo "   second oddity to the fixture, and then the case would be green for"
+echo "   whichever oddity the wrong watcher tripped on — the over-determination"
+echo "   that hid the missing SHA check in case C."
+assert_real_only "a required check concluding neutral must report pass" \
+  case-i-neutral-required-is-not-blocking.json 1 0
+
 echo "== Case J: a re-run that FAILED after an original success =="
 echo "   The false green that shipped. Two completed rows for one required"
 echo "   context, oldest-first — the order this repo's check-runs responses"
