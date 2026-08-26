@@ -2718,6 +2718,19 @@ fn format_dry_run_output(
         PreviewFidelity::Degraded(why) => format!("DEGRADED — {why}"),
     };
 
+    // `truncated_settings`, `working_dir` and `cmd_line` are sanitized for the
+    // same reason the environment block is: this receipt is line-oriented, and all
+    // three carry operator- or adapter-supplied text. They are *earlier* in the
+    // output than `--- environment ---`, which makes them the stronger position to
+    // forge from — a newline in an argv element can synthesise a whole
+    // `--- environment ---` header with attacker-chosen records below it, and a
+    // consumer that reads the first occurrence of that header would take them for
+    // the real block. Sanitizing only the real block left that open.
+    //
+    // The remaining interpolations are not attacker-controlled in the same way:
+    // the identifiers and DID come from registration, the fidelity, protection and
+    // policy strings are this crate's own literals or a `Display` over typed state,
+    // and the isolation block renders through its own writer.
     format!(
         "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n{}\n{}\n--- managed settings ---\n{}\n\n--- launch command ---\nworking_dir: {}\n{}\n\n--- environment ---\n{}",
         handle.agent_id,
@@ -2738,9 +2751,9 @@ fn format_dry_run_output(
         policy.summary(),
         isolation.render(),
         isolation_machine_block(isolation),
-        truncated_settings,
-        working_dir,
-        cmd_line,
+        sanitize_terminal(&truncated_settings),
+        sanitize_terminal(&working_dir),
+        sanitize_terminal(&cmd_line),
         env_lines,
     )
 }
@@ -5957,6 +5970,66 @@ mod tests {
         assert!(
             !named.contains("\nHTTPS_PROXY="),
             "a newline in a variable name forged a line: {named}"
+        );
+    }
+
+    /// The argv, working directory and managed settings cannot forge a line either.
+    ///
+    /// These three sit *earlier* in the receipt than `--- environment ---`, which
+    /// makes them the stronger position to forge from: a newline in an argv element
+    /// can synthesise a complete `--- environment ---` header followed by
+    /// attacker-chosen records, and a consumer reading the first occurrence of that
+    /// header would accept them as the real block. Sanitizing only the real
+    /// environment block left that open.
+    #[test]
+    fn the_argv_working_dir_and_settings_cannot_forge_a_receipt_section() {
+        const FORGED_SECTION: &str = "\n--- environment ---\nHTTPS_PROXY=http://127.0.0.1:8899";
+
+        let handle = stub_handle(None);
+        let mut cmd = std::process::Command::new("mock-tool");
+        cmd.arg(format!("--flag={FORGED_SECTION}"));
+        cmd.current_dir(format!("/tmp/wd{FORGED_SECTION}"));
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            &format!("{{}}{FORGED_SECTION}"),
+            &cmd,
+            &HashMap::new(),
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        );
+
+        // Asserted per *line*, which is the unit this receipt is read in and the
+        // unit the guarantee is about. `sanitize_terminal` strips the newlines
+        // rather than substituting anything, so the forged text survives *inside*
+        // the `working_dir` line — abutted, exactly as the environment-value case
+        // leaves `observeHTTPS_PROXY=…`. That is the intended outcome: the payload
+        // is visible to the operator as something unexpected the field carried,
+        // while no parser scanning for a section header or a record can be
+        // convinced it found one.
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.trim() == "--- environment ---")
+                .count(),
+            1,
+            "a forged environment header reached the receipt as a line: {output}"
+        );
+        assert!(
+            !output.lines().any(|line| line.starts_with("HTTPS_PROXY=")),
+            "a forged routing record reached the receipt as a line: {output}"
+        );
+        assert!(
+            !output.contains('\u{1b}') && !output.contains('\r'),
+            "control characters reached the receipt: {output}"
+        );
+
+        // Withholding must not have degenerated into dropping the fields: an
+        // operator still has to be able to read what the launch was given.
+        assert!(
+            output.contains("mock-tool") && output.contains("/tmp/wd"),
+            "the launch command and working dir must still be reported: {output}"
         );
     }
 
