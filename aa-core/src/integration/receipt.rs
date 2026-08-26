@@ -17,6 +17,8 @@
 //! be indistinguishable from one where the claim had never been substantiated,
 //! and [`IntegrationReceipt::validate`] would have nothing to check.
 
+use std::path::Path;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -283,6 +285,45 @@ impl IntegrationReceipt {
         self.steps.iter().filter(|s| !s.is_provably_restorable()).collect()
     }
 
+    /// The settings file this integration actually wrote, as the step that wrote
+    /// it recorded the path.
+    ///
+    /// Read rather than re-derived: re-deriving it means resolving a scope
+    /// against the roots of whichever process is asking, and the process asking
+    /// during a later `status` or `verify` is a shared daemon whose working
+    /// directory has nothing to do with the install (AAASM-5913). The recorded
+    /// path is the only answer that cannot disagree with what is on disk.
+    pub fn settings_file_path(&self) -> Option<&Path> {
+        self.steps.iter().filter(|s| s.applied).find_map(|s| match &s.action {
+            StepAction::WriteManagedSettings { path, .. } => Some(path.as_path()),
+            _ => None,
+        })
+    }
+
+    /// The project a [`Project`](SettingsScope::Project)-scoped install wrote
+    /// into, derived from the settings file it recorded.
+    ///
+    /// # Why this is derived and not a stored field
+    ///
+    /// A stored project root and a stored settings path are two answers to one
+    /// question, and two answers can disagree — a receipt claiming project *A*
+    /// while its own step names a file under *B* is exactly the confusion
+    /// AAASM-5913 is about. Deriving from the write that happened keeps one
+    /// answer. It also keeps the receipt's serialized form, and therefore every
+    /// already-stored receipt's integrity hash, unchanged.
+    ///
+    /// The project root is the parent of the tool's configuration directory:
+    /// `<root>/.claude/settings.json` ⇒ `<root>`. `None` when this is not a
+    /// project-scoped receipt, or when its settings step never applied — in which
+    /// case there is no project binding to recover and callers must say so rather
+    /// than guess one.
+    pub fn project_root(&self) -> Option<&Path> {
+        if self.settings_scope != SettingsScope::Project {
+            return None;
+        }
+        self.settings_file_path()?.parent()?.parent()
+    }
+
     /// The runtime or gateway endpoint the applied steps pointed the tool at,
     /// when one was.
     ///
@@ -395,6 +436,59 @@ mod tests {
             achieved_evidence: evidence,
             verified_at_unix_secs: Some(1_000_000),
         }
+    }
+
+    /// AAASM-5913. `status`, `verify` and `repair` are receipt-driven: no request
+    /// reaches the adapter, so the project a project-scoped install went into has
+    /// to be recoverable from the receipt or it is recovered from the shared
+    /// daemon's working directory instead.
+    #[test]
+    fn a_project_scoped_receipt_names_the_project_it_wrote_into() {
+        let step = IntegrationStep::new(
+            "settings",
+            StepAction::WriteManagedSettings {
+                scope: SettingsScope::Project,
+                path: PathBuf::from("/home/dev/project-b/.claude/settings.json"),
+                managed_keys: vec!["permissions".to_string()],
+                content_sha256: "abc".to_string(),
+                merge: SettingsMerge::MergeManagedKeys,
+            },
+            "write the managed settings block",
+        );
+        let mut r = receipt(ProtectionLevel::Integrated, Vec::new());
+        r.settings_scope = SettingsScope::Project;
+        r.steps = vec![StepReceipt::applied(&step, Some("sha256:abc".to_string()))];
+
+        assert_eq!(
+            r.settings_file_path(),
+            Some(Path::new("/home/dev/project-b/.claude/settings.json"))
+        );
+        assert_eq!(r.project_root(), Some(Path::new("/home/dev/project-b")));
+    }
+
+    /// A user-scoped receipt has no project binding to hand out, and must not
+    /// invent one out of `$HOME` — `/home/dev/.claude/settings.json` would
+    /// otherwise "derive" the project root `/home/dev`.
+    #[test]
+    fn a_user_scoped_receipt_names_no_project() {
+        let r = receipt(ProtectionLevel::Integrated, Vec::new());
+        assert_eq!(r.settings_scope, SettingsScope::User);
+        assert_eq!(
+            r.settings_file_path(),
+            Some(Path::new("/home/dev/.claude/settings.json")),
+            "the recorded path is still readable"
+        );
+        assert_eq!(r.project_root(), None);
+    }
+
+    /// A project-scoped receipt whose settings step never applied cannot say
+    /// which project it was for, and says so rather than guessing.
+    #[test]
+    fn a_project_receipt_with_no_applied_settings_step_reports_no_project() {
+        let mut r = receipt(ProtectionLevel::Integrated, Vec::new());
+        r.settings_scope = SettingsScope::Project;
+        r.steps = Vec::new();
+        assert_eq!(r.project_root(), None);
     }
 
     fn exercised(mechanism: IntegrationCapability, outcome: ExerciseOutcome) -> ProtectionEvidence {

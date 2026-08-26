@@ -112,6 +112,29 @@ pub struct IntegrationRequest {
     /// Which configuration surface to write. Explicit and mandatory — the
     /// destination is never inferred from the caller's working directory.
     pub settings_scope: SettingsScope,
+    /// The project this request is about, as an absolute path.
+    ///
+    /// # Why the request has to carry it (AAASM-5913)
+    ///
+    /// [`settings_scope`](Self::settings_scope) says *which kind* of surface to
+    /// write; at [`Project`](SettingsScope::Project) scope it does not say
+    /// *whose*. A lifecycle service runs as a long-lived daemon shared by every
+    /// client on the host, so the only working directory it can read is its own
+    /// — the one it happened to be spawned in, which is some earlier caller's
+    /// project or none at all. Resolving the project from there wrote Agent
+    /// Assembly's managed keys into a *different* repository's checked-in
+    /// `.claude/settings.json`, and re-pointed itself every time the daemon was
+    /// restarted.
+    ///
+    /// So the caller states it, once, at invocation time. `None` at Project
+    /// scope is an error the service reports — never a fallback to its own
+    /// working directory (see [`PlanError::ProjectRootMissing`]).
+    ///
+    /// At User and Managed scope this is optional context, never a destination:
+    /// it lets the plan disclose that a project configuration also exists near
+    /// the caller and will be left alone. No step's path is ever derived from it
+    /// at those scopes.
+    pub project_root: Option<PathBuf>,
     /// Whether the caller has consented to steps that change host state. A plan
     /// containing privileged steps that were not consented to is a plan the
     /// service must not execute.
@@ -129,6 +152,7 @@ impl IntegrationRequest {
             profile,
             requested_level: ProtectionLevel::GatewayProtected,
             settings_scope,
+            project_root: None,
             allow_privileged_host_steps: false,
             policy_profile: None,
         }
@@ -138,6 +162,16 @@ impl IntegrationRequest {
     #[must_use]
     pub fn requesting_level(mut self, level: ProtectionLevel) -> Self {
         self.requested_level = level;
+        self
+    }
+
+    /// Name the project this request is about.
+    ///
+    /// Mandatory at [`SettingsScope::Project`]; see
+    /// [`project_root`](Self::project_root).
+    #[must_use]
+    pub fn with_project_root(mut self, project_root: impl Into<PathBuf>) -> Self {
+        self.project_root = Some(project_root.into());
         self
     }
 
@@ -198,6 +232,25 @@ pub enum PlanError {
         /// The scope the step named.
         found: SettingsScope,
     },
+    /// A project-scoped plan does not name the project it is about, so the only
+    /// project root available to the executing service would be its own working
+    /// directory — some other caller's repository (AAASM-5913).
+    #[error(
+        "this plan writes to the project settings scope but names no project root, and the \
+         project a change lands in must never be inferred from the working directory of the \
+         service executing it"
+    )]
+    ProjectRootMissing,
+    /// A project-scoped settings write lands outside the project the plan names.
+    #[error("step {id:?} writes {path} which is outside the project root {project_root} this plan names")]
+    ProjectRootEscape {
+        /// The offending step.
+        id: String,
+        /// Where it would write.
+        path: PathBuf,
+        /// The project the plan declared.
+        project_root: PathBuf,
+    },
     /// A privileged host step carries no consent prompt, or no way to undo it.
     #[error("privileged host step {id:?} is missing {missing}")]
     PrivilegedStepIncomplete {
@@ -243,6 +296,11 @@ pub struct IntegrationPlan {
     pub profile: ProtectionProfile,
     /// The settings surface every settings-touching step must write to.
     pub settings_scope: SettingsScope,
+    /// The project a [`Project`](SettingsScope::Project)-scoped plan writes into,
+    /// carried from [`IntegrationRequest::project_root`] so the plan can be
+    /// checked against it and so a reviewer can read which repository they are
+    /// about to change (AAASM-5913).
+    pub project_root: Option<PathBuf>,
     /// The resolved policy profile, by reference.
     pub policy_profile: Option<PolicyProfileRef>,
     /// The level this plan intends to reach if every step succeeds and verifies.
@@ -272,6 +330,7 @@ impl IntegrationPlan {
             tool: request.tool.clone(),
             profile: request.profile,
             settings_scope: request.settings_scope,
+            project_root: request.project_root.clone(),
             policy_profile: request.policy_profile.clone(),
             planned_level,
             adapter_ceiling,
@@ -346,6 +405,9 @@ impl IntegrationPlan {
     /// * duplicate ids ⇒ a receipt that cannot attribute a step;
     /// * a step writing outside the declared scope ⇒ a file written somewhere
     ///   the user did not choose;
+    /// * a project-scoped plan that names no project, or a project-scoped write
+    ///   landing outside the project it names ⇒ a checked-in file changed in a
+    ///   repository the user never named (AAASM-5913);
     /// * a privileged step with no consent prompt or no reversal ⇒ a host change
     ///   that was neither agreed to nor undoable;
     /// * a claim of [`GatewayProtected`](ProtectionLevel::GatewayProtected) with
@@ -354,6 +416,10 @@ impl IntegrationPlan {
     /// * `ObserveOnly` claiming more than `Integrated` ⇒ monitoring displayed as
     ///   protection.
     pub fn validate(&self) -> Result<(), PlanError> {
+        if self.settings_scope == SettingsScope::Project && self.project_root.is_none() {
+            return Err(PlanError::ProjectRootMissing);
+        }
+
         let mut seen_ids: Vec<&str> = Vec::new();
         for step in &self.steps {
             if seen_ids.contains(&step.id.as_str()) {
@@ -396,6 +462,34 @@ impl IntegrationPlan {
             }
         }
 
+        // A project-scoped settings write has to land inside the project the plan
+        // names. Checking the *path* and not merely the scope label is what makes
+        // this catch AAASM-5913: the defective adapter authored a step correctly
+        // labelled `project` whose path pointed at a different repository
+        // entirely, so a scope-only check called that plan consistent.
+        //
+        // Only the settings surface is checked. Every other artifact a
+        // project-scoped plan writes — the CA copy, the launch environment, the
+        // MitM host list — lives under Agent Assembly's own state root by
+        // design, and asserting those into the project would be wrong.
+        if let (
+            StepAction::WriteManagedSettings {
+                scope: SettingsScope::Project,
+                path,
+                ..
+            },
+            Some(project_root),
+        ) = (&step.action, self.project_root.as_ref())
+        {
+            if !path.starts_with(project_root) {
+                return Err(PlanError::ProjectRootEscape {
+                    id: step.id.clone(),
+                    path: path.clone(),
+                    project_root: project_root.clone(),
+                });
+            }
+        }
+
         if let super::step::StepPrivilege::PrivilegedHost { consent_prompt } = &step.privilege {
             if consent_prompt.trim().is_empty() {
                 return Err(PlanError::PrivilegedStepIncomplete {
@@ -430,6 +524,13 @@ impl IntegrationPlan {
             self.profile.enforcement_mode()
         );
         let _ = writeln!(out, "  settings scope: {}", self.settings_scope);
+        // Named only when there is one, so the shape of a user- or
+        // managed-scoped rendering is unchanged. When there is one, a reviewer
+        // gets to read *which repository* is about to be changed before they
+        // approve it (AAASM-5913).
+        if let Some(project_root) = &self.project_root {
+            let _ = writeln!(out, "  project root: {}", project_root.display());
+        }
         let _ = writeln!(
             out,
             "  planned level: {} (adapter ceiling: {})",
@@ -689,6 +790,81 @@ mod tests {
             }
             other => panic!("expected SettingsScopeMismatch, got {other:?}"),
         }
+    }
+
+    /// AAASM-5913. A project-scoped plan that names no project is not a plan
+    /// that "defaults sensibly" — it is a plan whose destination will be filled
+    /// in by whatever working directory the executing service happens to have.
+    #[test]
+    fn a_project_scoped_plan_that_names_no_project_is_rejected() {
+        let req = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        );
+        assert_eq!(req.project_root, None, "the request under test must name no project");
+
+        let plan = IntegrationPlan::new("p1", &req, ProtectionLevel::Integrated, GovernanceLevel::L2Enforce)
+            .with_step(settings_step(SettingsScope::Project));
+        assert_eq!(plan.validate(), Err(PlanError::ProjectRootMissing));
+
+        // Control: the same plan, with the project named, validates — so the
+        // rejection above is about the missing root and not about project scope
+        // being unusable.
+        let named = req.clone().with_project_root("/home/dev");
+        let plan = IntegrationPlan::new("p1", &named, ProtectionLevel::Integrated, GovernanceLevel::L2Enforce)
+            .with_step(settings_step(SettingsScope::Project));
+        assert_eq!(plan.validate(), Ok(()));
+    }
+
+    /// AAASM-5913, the defect in one assertion: the step is labelled `project`,
+    /// as the broken adapter labelled it, and writes into somebody else's
+    /// repository. A scope-only check called that consistent.
+    #[test]
+    fn a_project_scoped_write_may_not_land_outside_the_project_the_plan_names() {
+        let req = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        // The caller's project…
+        .with_project_root("/home/dev/project-b");
+
+        // …and a step writing into the *daemon's* project.
+        let plan = IntegrationPlan::new("p1", &req, ProtectionLevel::Integrated, GovernanceLevel::L2Enforce)
+            .with_step(settings_step(SettingsScope::Project));
+        match plan.validate() {
+            Err(PlanError::ProjectRootEscape { path, project_root, .. }) => {
+                assert_eq!(path, PathBuf::from("/home/dev/.claude/settings.json"));
+                assert_eq!(project_root, PathBuf::from("/home/dev/project-b"));
+            }
+            other => panic!("expected ProjectRootEscape, got {other:?}"),
+        }
+    }
+
+    /// The non-settings artifacts a project-scoped install writes live under
+    /// Agent Assembly's own state root, and must not be dragged into the project
+    /// by the check above.
+    #[test]
+    fn the_project_root_check_leaves_agent_assembly_owned_artifacts_alone() {
+        let req = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        .with_project_root("/home/dev/project-b");
+
+        let ca = IntegrationStep::new(
+            "proxy-ca",
+            StepAction::ManageArtifact {
+                operation: ArtifactOperation::Create,
+                path: PathBuf::from("/home/dev/.aasm/integrations/claude-code/project/aasm-proxy-ca.pem"),
+            },
+            "materialise the proxy certificate authority",
+        );
+        let plan =
+            IntegrationPlan::new("p1", &req, ProtectionLevel::Integrated, GovernanceLevel::L2Enforce).with_step(ca);
+        assert_eq!(plan.validate(), Ok(()));
     }
 
     #[test]
