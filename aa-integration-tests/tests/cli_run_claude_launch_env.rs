@@ -321,6 +321,74 @@ exit 0
         seen.iter().map(|(k, v)| format!("{k}={v}\n")).collect()
     }
 
+    /// Run `aasm run claude --no-proxy` (ADR 0036 Test 6c) — otherwise
+    /// identical to [`GovernedHost::run`]. A separate method rather than a
+    /// parameter on `run` because `--no-proxy` changes what preconditions the
+    /// launch even needs (no dedicated-proxy resolution), not just an extra
+    /// flag threaded through unchanged.
+    impl GovernedHost {
+        fn run_no_proxy(
+            &self,
+            gateway: &GrpcGateway,
+            proxy: &TrustedProxy,
+        ) -> anyhow::Result<BTreeMap<String, String>> {
+            let mut path_parts = vec![proxy.proxy_bin_dir().to_path_buf()];
+            path_parts.extend(std::env::split_paths(&self.path_var));
+            let path_var = std::env::join_paths(path_parts)?;
+
+            let out = std::process::Command::new(aasm_binary())
+                .current_dir(&self.project)
+                .env("AA_DATA_DIR", proxy.data_dir())
+                .env("HOME", &self.home)
+                .env("PATH", &path_var)
+                .env("CLAUDE_CONFIG_DIR", self.home.join(".claude"))
+                .env("AASM_STATE_DIR", &self.state_dir)
+                .env("AA_CA_DIR", self.root.join("ca"))
+                .env("AASM_CLAUDE_MANAGED_ROOT", self.root.join("managed"))
+                .env("AASM5327_ENV_DUMP", &self.dump)
+                .env(EMPTY_PROBE, "")
+                .env_remove("NODE_EXTRA_CA_CERTS")
+                // ADR 0036 Test 6c: ambient uppercase + lowercase proxy vars
+                // present on the `aasm` process's own environment — `--no-proxy`
+                // must leave them completely untouched at the real child, not
+                // merely skip injecting a trusted value on top of them.
+                .env("HTTPS_PROXY", "http://ambient.example:9999")
+                .env("https_proxy", "http://ambient.example:9999")
+                .env("ALL_PROXY", "socks5://ambient.example:9999")
+                .env("NO_PROXY", "ambient.example")
+                .env("AA_GATEWAY_ENDPOINT", gateway.endpoint())
+                .args([
+                    "run",
+                    "claude",
+                    "--policy",
+                    &self.policy.to_string_lossy(),
+                    "--agent-id",
+                    AGENT_ID,
+                    "--team-id",
+                    TEAM_ID,
+                    "--no-proxy",
+                ])
+                .output()
+                .expect("aasm run claude --no-proxy should execute");
+
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(
+                out.status.success(),
+                "aasm run claude --no-proxy should exit 0 (no receipt/managed-settings precondition \
+                 is installed by this fixture, so nothing should refuse the flag)\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            );
+            let raw = std::fs::read_to_string(&self.dump).unwrap_or_else(|e| {
+                panic!("the launched tool wrote no environment dump ({e})\nstdout:\n{stdout}\nstderr:\n{stderr}")
+            });
+            Ok(raw
+                .lines()
+                .filter_map(|l| l.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect())
+        }
+    }
+
     /// The claim: the variables the adapter put on the launch command are the
     /// ones the launched process actually has.
     #[tokio::test(flavor = "multi_thread")]
@@ -437,6 +505,145 @@ exit 0
             "a variable set to the empty string must be reported as empty, not as `{UNSET}` — a \
              dump that cannot tell the two apart cannot fail for the bug this file targets. \
              Saw:\n{}",
+            render(&seen),
+        );
+
+        real_home.assert_unchanged("cli_run_claude_launch_env");
+        Ok(())
+    }
+
+    /// ADR 0036 Test 6c: `--no-proxy` leaves ambient uppercase AND lowercase
+    /// proxy vars **completely** untouched at the real spawned child —
+    /// regression-tested for the pre-existing 2-variable case too, not just
+    /// the 6 D6 added (ALL_PROXY/NO_PROXY and lowercase forms).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_proxy_leaves_ambient_proxy_vars_completely_untouched_at_the_real_child() -> anyhow::Result<()> {
+        let real_home = RealHomeGuard::capture();
+        let gateway = GrpcGateway::start().await?;
+        let proxy = TrustedProxy::start()?;
+        let host = GovernedHost::create()?;
+
+        let seen = host.run_no_proxy(&gateway, &proxy)?;
+
+        for (key, expected) in [
+            ("HTTPS_PROXY", "http://ambient.example:9999"),
+            ("https_proxy", "http://ambient.example:9999"),
+            ("ALL_PROXY", "socks5://ambient.example:9999"),
+            ("NO_PROXY", "ambient.example"),
+        ] {
+            assert_eq!(
+                seen.get(key).map(String::as_str),
+                Some(expected),
+                "--no-proxy must leave `{key}` completely untouched — got:\n{}",
+                render(&seen),
+            );
+        }
+
+        real_home.assert_unchanged("cli_run_claude_launch_env");
+        Ok(())
+    }
+
+    /// Row 6c's sibling: the same ambient values, WITHOUT `--no-proxy` —
+    /// proves the test above is measuring `--no-proxy`'s effect specifically,
+    /// not that these vars always pass through untouched. Without the flag
+    /// the dedicated per-launch proxy's own endpoint must win instead.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn without_no_proxy_the_dedicated_proxy_endpoint_wins_over_ambient_values() -> anyhow::Result<()> {
+        let real_home = RealHomeGuard::capture();
+        let gateway = GrpcGateway::start().await?;
+        let proxy = TrustedProxy::start()?;
+        let host = GovernedHost::create()?;
+
+        let path_parts = {
+            let mut parts = vec![proxy.proxy_bin_dir().to_path_buf()];
+            parts.extend(std::env::split_paths(&host.path_var));
+            std::env::join_paths(parts)?
+        };
+        let out = std::process::Command::new(aasm_binary())
+            .current_dir(&host.project)
+            .env("AA_DATA_DIR", proxy.data_dir())
+            .env("HOME", &host.home)
+            .env("PATH", &path_parts)
+            .env("CLAUDE_CONFIG_DIR", host.home.join(".claude"))
+            .env("AASM_STATE_DIR", &host.state_dir)
+            .env("AA_CA_DIR", host.root.join("ca"))
+            .env("AASM_CLAUDE_MANAGED_ROOT", host.root.join("managed"))
+            .env("AASM5327_ENV_DUMP", &host.dump)
+            .env(EMPTY_PROBE, "")
+            .env_remove("NODE_EXTRA_CA_CERTS")
+            .env("HTTPS_PROXY", "http://ambient.example:9999")
+            .env("ALL_PROXY", "socks5://ambient.example:9999")
+            .env("AA_GATEWAY_ENDPOINT", gateway.endpoint())
+            .args([
+                "run",
+                "claude",
+                "--policy",
+                &host.policy.to_string_lossy(),
+                "--agent-id",
+                AGENT_ID,
+                "--team-id",
+                TEAM_ID,
+            ])
+            .output()
+            .expect("aasm run claude should execute");
+        assert!(
+            out.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let raw = std::fs::read_to_string(&host.dump)?;
+        let seen: BTreeMap<String, String> = raw
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        assert_ne!(
+            seen.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://ambient.example:9999"),
+            "without --no-proxy, the ambient value must be stripped and replaced with the \
+             dedicated proxy's own endpoint — got:\n{}",
+            render(&seen),
+        );
+        assert!(!seen.contains_key("ALL_PROXY") || seen.get("ALL_PROXY").map(String::as_str) == Some(UNSET));
+
+        real_home.assert_unchanged("cli_run_claude_launch_env");
+        Ok(())
+    }
+
+    /// ADR 0036 Test 6b: a store-written `HTTPS_PROXY` value does not survive
+    /// unmodified into the real child — the runtime-pinned dedicated proxy
+    /// (AAASM-5863: `aasm run claude` always starts one) wins on collision,
+    /// proving the D6 strip-then-reinject resolves to the winning source
+    /// rather than merging both. The ADR's literal precondition ("no runtime
+    /// proxy_addr pinned") is not reachable end-to-end post-AAASM-5863 — see
+    /// this file's own `the_adapters_launch_environment_reaches_the_launched_process`
+    /// for the store-write-path mechanism proof at the unit level
+    /// (`run.rs`'s `effective_child_env` tests), which this asserts the
+    /// consequence of at the real spawned child.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_store_written_https_proxy_value_does_not_survive_over_the_dedicated_proxy() -> anyhow::Result<()> {
+        let real_home = RealHomeGuard::capture();
+        let gateway = GrpcGateway::start().await?;
+        let proxy = TrustedProxy::start()?;
+        let host = GovernedHost::create()?;
+        host.user_launch_env_store()?
+            .set("HTTPS_PROXY", "http://store-written.example:1234")?;
+
+        let seen = host.run(&gateway, &proxy)?;
+
+        assert_ne!(
+            seen.get("HTTPS_PROXY").map(String::as_str),
+            Some("http://store-written.example:1234"),
+            "a store-written HTTPS_PROXY value must not survive over the dedicated per-launch \
+             proxy's own endpoint — got:\n{}",
+            render(&seen),
+        );
+        assert!(
+            seen.get("HTTPS_PROXY")
+                .is_some_and(|v| v.starts_with("http://127.0.0.1:")),
+            "the dedicated proxy's own endpoint must still be what the child receives — got:\n{}",
             render(&seen),
         );
 
