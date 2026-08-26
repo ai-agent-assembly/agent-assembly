@@ -1,0 +1,21 @@
+{
+  "description": "The `neutral` claim, actually asserted. A REQUIRED context concludes `neutral` and the verdict must be pass, because that is how GitHub's own branch protection treats it — the gate this program is a proxy for. The docstring used to credit case F with this, but case F contains no `neutral` row at all: it asserts that a non-required job does not block, which is a different sentence. A watcher that lumped `neutral` in with `cancelled`/`stale` would report fail here and send a mergeable PR to triage.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "neutral",
+          "id": 940001,
+          "started_at": "2026-08-26T09:00:00Z",
+          "completed_at": "2026-08-26T09:11:00Z"
+        }
+      ]
+    }
+  ]
+}

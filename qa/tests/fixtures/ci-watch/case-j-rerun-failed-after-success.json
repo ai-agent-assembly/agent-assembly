@@ -1,0 +1,29 @@
+{
+  "description": "The direction that produced a false green: a required context with two COMPLETED rows, the original a success and the newer re-run a failure, oldest first — the order this repository's own check-runs responses arrive in. Selecting by array position reports pass and exit 0 for a PR branch protection blocks.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success",
+          "id": 910001,
+          "started_at": "2026-08-26T09:00:00Z",
+          "completed_at": "2026-08-26T09:10:00Z"
+        },
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "failure",
+          "id": 910002,
+          "started_at": "2026-08-26T09:30:00Z",
+          "completed_at": "2026-08-26T09:42:14Z"
+        }
+      ]
+    }
+  ]
+}
