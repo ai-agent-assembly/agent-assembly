@@ -8,7 +8,7 @@
 **Governance level:** L2Enforce  
 **Detection:** `which codex` / `~/.npm/bin/codex`  
 **MCP support:** No  
-**Managed settings:** Yes (`~/.codex/config.json`)
+**Managed settings:** Yes (`~/.codex/config.toml`)
 
 | Capability | Status | Reason |
 |---|---|---|
@@ -26,13 +26,15 @@
 
 ## Notes
 
-Codex reaches L2Enforce declaratively via the `~/.codex/config.json`
+Codex reaches L2Enforce declaratively via the `~/.codex/config.toml`
 managed-settings surface (`aa-devtool-codex/src/lib.rs`, `apply_settings`),
 which lets the adapter push `sandbox_mode` / `allowed_domains` /
-`blocked_domains` / `approval_policy` without modifying the tool binary — an
-earlier revision of this page named the file `.codex/config.toml`, which does
-not match the adapter's actual write path. eBPF fills the file-system and
-process-spawn gaps that the proxy cannot observe.
+`blocked_domains` / `approval_policy` without modifying the tool binary —
+this page always named the file `.codex/config.toml`, but the adapter itself
+wrote `.codex/config.json` until AAASM-5336, a file the real `codex` CLI
+never reads; that mismatch is now fixed in the adapter, not just the doc.
+eBPF fills the file-system and process-spawn gaps that the proxy cannot
+observe.
 
 **AAASM-5644/AAASM-5856:** see the rendered matrix's Codex "honest boundaries"
 section for the current, evidence-cited state of the proxy leg — the CA-trust

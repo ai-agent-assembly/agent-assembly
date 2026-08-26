@@ -69,7 +69,7 @@ fn fixture_policy() -> PolicyDocument {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn apply_settings_creates_config_json_with_correct_content() {
+async fn apply_settings_creates_config_toml_with_correct_content() {
     let tmp = tempfile::tempdir().unwrap();
     let bin = tmp.path().join("codex");
     std::fs::write(&bin, "").unwrap();
@@ -80,15 +80,20 @@ async fn apply_settings_creates_config_json_with_correct_content() {
     let settings = adapter.generate_managed_settings(&fixture_policy()).await.unwrap();
     adapter.apply_settings(&settings).await.unwrap();
 
-    let config_path = tmp.path().join(".codex").join("config.json");
-    assert!(config_path.exists(), "config.json must be created");
+    // AAASM-5336: the real `codex` CLI reads `config.toml`, not `config.json`.
+    let config_path = tmp.path().join(".codex").join("config.toml");
+    assert!(config_path.exists(), "config.toml must be created");
 
-    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
 
-    assert_eq!(parsed["sandbox_mode"], "ask", "Deny rule → ask sandbox mode");
+    assert_eq!(
+        parsed["sandbox_mode"].as_str(),
+        Some("ask"),
+        "Deny rule → ask sandbox mode"
+    );
     let allowed = parsed["allowed_domains"].as_array().unwrap();
     assert!(
-        allowed.contains(&serde_json::json!("api.openai.com")),
+        allowed.contains(&toml::Value::String("api.openai.com".to_string())),
         "allowed_domains must include api.openai.com"
     );
 }
@@ -103,8 +108,8 @@ async fn apply_settings_merges_preserving_user_managed_keys() {
     let codex_dir = tmp.path().join(".codex");
     std::fs::create_dir_all(&codex_dir).unwrap();
     std::fs::write(
-        codex_dir.join("config.json"),
-        r#"{"user_theme": "dark", "sandbox_mode": "stale"}"#,
+        codex_dir.join("config.toml"),
+        "user_theme = \"dark\"\nsandbox_mode = \"stale\"\n",
     )
     .unwrap();
 
@@ -124,11 +129,19 @@ async fn apply_settings_merges_preserving_user_managed_keys() {
     let settings = adapter.generate_managed_settings(&allow_policy).await.unwrap();
     adapter.apply_settings(&settings).await.unwrap();
 
-    let config_path = codex_dir.join("config.json");
-    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let config_path = codex_dir.join("config.toml");
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
 
-    assert_eq!(parsed["user_theme"], "dark", "user-managed key must be preserved");
-    assert_eq!(parsed["sandbox_mode"], "full-auto", "AA-managed key must be updated");
+    assert_eq!(
+        parsed["user_theme"].as_str(),
+        Some("dark"),
+        "user-managed key must be preserved"
+    );
+    assert_eq!(
+        parsed["sandbox_mode"].as_str(),
+        Some("full-auto"),
+        "AA-managed key must be updated"
+    );
 }
 
 #[tokio::test]
@@ -144,9 +157,9 @@ async fn apply_settings_is_idempotent() {
     adapter.apply_settings(&settings).await.unwrap();
     adapter.apply_settings(&settings).await.unwrap(); // second write must not fail
 
-    let config_path = tmp.path().join(".codex").join("config.json");
-    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert_eq!(parsed["sandbox_mode"], "ask");
+    let config_path = tmp.path().join(".codex").join("config.toml");
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("ask"));
 }
 
 // ---------------------------------------------------------------------------

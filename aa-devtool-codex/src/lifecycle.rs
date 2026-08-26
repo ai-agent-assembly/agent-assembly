@@ -8,7 +8,7 @@
 //! adjudicating_probe, bypass}`) because Claude Code has an endpoint-managed
 //! settings surface and enough observable side channels to make those worth
 //! building. Codex has neither: one configuration file
-//! (`$HOME/.codex/config.json`), no endpoint-managed surface
+//! (`$HOME/.codex/config.toml`), no endpoint-managed surface
 //! ([`ProtectionLevel::HostEnforced`] is never reachable — see
 //! [`CodexIntegration::capabilities`]), and this plan deliberately carries no
 //! side-channel/MitM-hosts step. [`CodexIntegration::verify_integration`]
