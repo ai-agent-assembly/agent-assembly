@@ -2289,8 +2289,23 @@ fn value_may_be_previewed(key: &str) -> bool {
 /// value is still routed through [`mask_value`], so an allowlisted connection
 /// string has its userinfo stripped even though a reviewer judged the name safe.
 /// That second pass is defence in depth, not the decision.
+///
+/// A **URL-valued** allowlist entry is projected to its origin first — see
+/// [`URL_VALUED_ENV_VARS`] — because a name being safe says nothing about the
+/// positions a URL has for carrying a credential.
 fn render_env_value(key: &str, value: &str) -> String {
     if value_may_be_previewed(key) {
+        if value.is_empty() {
+            // A present-but-empty allowlisted variable is a launch state in its
+            // own right (`ambient_proxy_is_set` treats an empty `HTTPS_PROXY` as
+            // no proxy), and rendering it as a bare `KEY=` said nothing at all.
+            return PRESENCE_EMPTY.into();
+        }
+        if is_url_valued_name(key) {
+            // Fail closed: a value that does not parse as an origin is withheld,
+            // never printed raw.
+            return project_url_origin(value).unwrap_or_else(|| PRESENCE_SET.into());
+        }
         // Allowlisted. The name-based masking still runs on top: it is now a
         // backstop over a reviewed set of names rather than the whole rule.
         return mask_value(key, value);
@@ -2302,6 +2317,100 @@ fn render_env_value(key: &str, value: &str) -> String {
         return PRESENCE_EMPTY.into();
     }
     PRESENCE_SET.into()
+}
+
+/// The [`VALUE_VISIBLE_ENV_VARS`] entries whose value is a URL.
+///
+/// Separated out because a reviewed *name* says nothing about the positions its
+/// *value* has. A URL can carry a credential in userinfo, in a path segment, in
+/// a query parameter or in a fragment, and an operator's proxy URL is a place
+/// credentials genuinely live — the warning this module already prints about a
+/// proxy that "performs authentication for your environment" says so, and
+/// `build_child_env` deliberately leaves an ambient `HTTPS_PROXY` in place under
+/// `--no-proxy`.
+const URL_VALUED_ENV_VARS: [&str; 3] = ["HTTPS_PROXY", "HTTP_PROXY", "ANTHROPIC_BASE_URL"];
+
+/// Whether an allowlisted name carries a URL, and so needs [`project_url_origin`].
+fn is_url_valued_name(key: &str) -> bool {
+    URL_VALUED_ENV_VARS.iter().any(|name| key.eq_ignore_ascii_case(name))
+}
+
+/// Project a URL onto the part of it that answers "where does this traffic go",
+/// discarding every part that can carry a credential.
+///
+/// Keeps **scheme, host and port**. Discards userinfo, query and fragment
+/// outright, and replaces the path with a segment *count*.
+///
+/// ```text
+/// https://gw.example.invalid/v1?api_key=…    -> https://gw.example.invalid<path:1 segment>
+/// https://gw.example.invalid/v1/…/chat       -> https://gw.example.invalid<path:3 segments>
+/// https://…@gw.example.invalid/v1            -> https://gw.example.invalid<path:1 segment>
+/// http://…@corp-proxy.invalid:3128           -> http://corp-proxy.invalid:3128
+/// ```
+///
+/// # Why a projection and not more redaction
+///
+/// [`redact_database_url`] rewrites only the authority, and only when the
+/// userinfo contains a `:` — so a credential in a query parameter, a path
+/// segment, a fragment, or a colon-less user position survived it verbatim. The
+/// `user:pass@` case was worse than a miss: the mask landed on the *password*
+/// position while the credential sat in the *user* position and printed, which is
+/// the ordinary shape of a personal access token over basic auth.
+///
+/// The fix is not to teach `redact_database_url` more shapes. That is unbounded
+/// pattern-guessing over untrusted data — the same fail-open reasoning that
+/// produced AAASM-5935, one layer down — and it would silently change `aasm
+/// status`, which shares that function. This projection instead keeps a
+/// **structurally** credential-free subset: it never inspects the discarded
+/// parts, so there is no next shape for it to fail open on.
+///
+/// # Why a segment count rather than dropping the path silently
+///
+/// "Is there a path prefix on this route, and roughly how deep" is a real
+/// diagnostic fact — gateways routinely differ by path prefix — and a receipt
+/// that silently rendered a truncated URL as though it were complete would
+/// mislead in the same way a mask over a printed value does. A count is
+/// metadata: producing it requires no inspection of what the segments contain.
+///
+/// Returns [`None`] for anything without a parseable scheme and non-empty host,
+/// so the caller withholds rather than printing an unrecognised value raw.
+fn project_url_origin(value: &str) -> Option<String> {
+    let scheme_end = value.find("://")?;
+    let scheme = &value[..scheme_end];
+    if scheme.is_empty()
+        || !scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+    {
+        return None;
+    }
+
+    let rest = &value[scheme_end + 3..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+
+    // The whole userinfo goes, user position included — not just the password.
+    // Rightmost `@`, matching `redact_database_url`'s split point.
+    let host_port = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+    if host_port.is_empty() || host_port.contains(char::is_whitespace) {
+        return None;
+    }
+
+    // Path only. Query and fragment are discarded without a marker: unlike a
+    // path prefix, neither is a routing fact an operator verifies here.
+    let after_authority = &rest[authority_end..];
+    let path_end = after_authority.find(['?', '#']).unwrap_or(after_authority.len());
+    let segments = after_authority[..path_end].split('/').filter(|s| !s.is_empty()).count();
+
+    let path_marker = match segments {
+        0 => String::new(),
+        1 => "<path:1 segment>".to_string(),
+        n => format!("<path:{n} segments>"),
+    };
+    Some(format!("{scheme}://{host_port}{path_marker}"))
 }
 
 /// Mask a credential-bearing env value, for the names
@@ -5131,25 +5240,49 @@ mod tests {
 
     /// **Regression E** — non-secret diagnostic metadata still works.
     ///
-    /// The allowlist is not decoration: the governance identity, the route, the
-    /// CA and the model still print their values, because an operator cannot
-    /// verify a governed launch without them.
+    /// The allowlist is not decoration: the governance identity, the CA, the model
+    /// and the route still answer the operator's question, because a preview that
+    /// hid them could not verify a governed launch at all.
+    ///
+    /// `NODE_EXTRA_CA_CERTS` keeps its **full** path deliberately. The directory
+    /// is the load-bearing fact, not incidental: `aasm-ca.pem` under a project
+    /// state root versus the same basename elsewhere is exactly the distinction
+    /// behind "is the project-scope CA wired?". It is also a path to a *public*
+    /// certificate, so there is nothing credential-capable to project away.
     #[test]
     fn non_secret_governance_metadata_is_still_shown_verbatim() {
-        let cases = [
+        let verbatim = [
             ("AA_AGENT_ID", "agent-5935"),
             ("AA_SESSION_ID", "session-5935"),
             ("AA_ENFORCEMENT_MODE", "observe"),
-            ("HTTPS_PROXY", "http://127.0.0.1:8899"),
             ("NODE_EXTRA_CA_CERTS", "/tmp/aasm-ca.pem"),
-            ("ANTHROPIC_BASE_URL", "https://api.example.com/v1"),
             ("ANTHROPIC_MODEL", "a-model-name"),
         ];
-        for (name, value) in cases {
+        for (name, value) in verbatim {
             let output = preview_for(name, value);
             assert!(
                 output.contains(&format!("{name}={value}")),
                 "{name} is on the reviewed allowlist and must show its value: {output}"
+            );
+        }
+
+        // A URL-valued entry shows its origin. The route is still legible — which
+        // is the diagnostic the entry exists for — while every position a URL has
+        // for carrying a credential is gone. An origin with no path is unchanged,
+        // so a normalised proxy URL still reads exactly as it did.
+        let projected = [
+            ("HTTPS_PROXY", "http://127.0.0.1:8899", "http://127.0.0.1:8899"),
+            (
+                "ANTHROPIC_BASE_URL",
+                "https://api.example.com/v1",
+                "https://api.example.com<path:1 segment>",
+            ),
+        ];
+        for (name, value, expected) in projected {
+            let output = preview_for(name, value);
+            assert!(
+                output.contains(&format!("{name}={expected}")),
+                "{name}={value} must render as its origin ({expected}): {output}"
             );
         }
     }
