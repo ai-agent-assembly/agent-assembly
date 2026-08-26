@@ -765,24 +765,65 @@ fn configuration_level(receipt: &IntegrationReceipt, planned: ProtectionLevel) -
 ///   the key the stored receipt was just looked up under.
 /// - `plan_id` is deliberately excluded. It identifies an authoring, not an
 ///   installation, and it is minted afresh on every plan, so comparing it would
-///   report every reapply as a different installation (AAASM-5963).
+///   report every reapply as a different installation (AAASM-5963). Note that
+///   the id this function *does* rely on is not collision-free at its source:
+///   production mints `receipt-{plan_id}` over a `plan_id` of
+///   `legacy-{unix_secs}`, so two genuinely different installations inside one
+///   clock second still share a receipt id, and the store then suppresses the
+///   superseded entry. That is the same clock-second collision, one layer down,
+///   and it is AAASM-5967 rather than something this function can fix.
 /// - `applied_at_unix_secs`, `versions` and `tool_version` describe the *run*,
 ///   not what it installed. A second apply is always later, and often from a
-///   newer build, without thereby installing anything different.
-/// - `achieved_level` is a function of the steps and `planned_level`, both
-///   compared here, so comparing it as well would add no discrimination.
+///   newer build, without thereby installing anything different. The
+///   consequence, now that the early return fires routinely rather than almost
+///   never: a no-op reapply keeps the stored receipt's version fields, so they
+///   date the installation and not the last run that confirmed it. That is the
+///   intent here, but it is a commitment — the only current reader is
+///   `SupersededReceipt::of`, and anything that later wants "which build last
+///   confirmed this" needs its own field rather than a change to this list.
+/// - `achieved_level` is a function of `profile`, `planned_level`, and the
+///   steps' `requirement`/`applied`/`fingerprint` — every input compared below —
+///   so comparing it as well would add no discrimination. That is only true
+///   because `requirement` is compared; it was not, and the omission let a
+///   reapply that demoted every step to optional keep an `Integrated` receipt
+///   its steps could no longer substantiate.
 /// - `achieved_evidence` and `verified_at_unix_secs` come from verification
 ///   rather than from apply, and preserving them across a no-op reapply is the
 ///   point of the caller's early return.
+///
+/// Per step, the same discipline. `step_id`, `action`, `requirement`, `applied`
+/// and `fingerprint` are compared; the remaining three are not, each for a
+/// reason:
+///
+/// - `action` carries the destination path and the managed key set, and it must
+///   be compared even though `fingerprint` looks like it should cover it:
+///   `fingerprint` is taken over the AASM-owned *projection*, not over the file,
+///   so the identical managed content aimed at a different settings file
+///   fingerprints identically. Receipts are stored one per `(tool, scope)` with
+///   no project dimension (`store.rs`), so without this clause an install in one
+///   project silently adopts another project's receipt and leaves it naming the
+///   wrong path — after which `remove` run in the second project restores the
+///   first project's file. (That the store has no project dimension at all is
+///   AAASM-5968; this clause stops the engine from making it worse.)
+/// - `document_fingerprint` covers the whole target document, including keys
+///   AASM does not own. Comparing it would make any unrelated edit the user
+///   makes to their own settings read as a different installation.
+/// - `prior_state` is the removal baseline. It differs between the first apply
+///   and every later one by definition — that is the whole point of carrying it
+///   forward rather than recomputing it — so comparing it would report every
+///   reapply as a new installation.
+/// - `reversal` is derived from `action`, which is compared.
 fn receipts_agree(stored: &IntegrationReceipt, fresh: &IntegrationReceipt) -> bool {
     stored.profile == fresh.profile
         && stored.planned_level == fresh.planned_level
         && stored.steps.len() == fresh.steps.len()
-        && stored
-            .steps
-            .iter()
-            .zip(&fresh.steps)
-            .all(|(a, b)| a.step_id == b.step_id && a.applied == b.applied && a.fingerprint == b.fingerprint)
+        && stored.steps.iter().zip(&fresh.steps).all(|(a, b)| {
+            a.step_id == b.step_id
+                && a.action == b.action
+                && a.requirement == b.requirement
+                && a.applied == b.applied
+                && a.fingerprint == b.fingerprint
+        })
 }
 
 fn unrestorable_reason(step: &StepReceipt) -> String {
