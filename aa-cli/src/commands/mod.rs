@@ -31,6 +31,7 @@ pub mod pidfile;
 pub mod policy;
 pub mod proxy;
 pub mod run_env_sanitize;
+pub mod trusted_upstream_path;
 // strip-for-publish:begin devtool
 pub mod run;
 pub mod run_audit;

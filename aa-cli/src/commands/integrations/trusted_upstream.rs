@@ -33,6 +33,13 @@ use aa_proxy::trusted_upstream::reject_wildcard_host;
 use clap::Args;
 use serde::Serialize;
 
+// Path resolution lives in `commands::trusted_upstream_path` — that module is
+// not stripped for publish, unlike this one, because `ProxyGuard` and `aasm
+// proxy start` (real spawn boundaries in every build) need it independently
+// of whether `aasm integrations install` shipped. Re-exported here so
+// existing callers/tests in this module keep using the same name.
+pub use crate::commands::trusted_upstream_path::trusted_upstream_config_path;
+
 /// Flags accepted alongside `aasm integrations install <tool>` for
 /// configuring ADR 0036 enterprise proxy chaining. All optional — a plain
 /// `install` with none of these touches nothing here.
@@ -122,19 +129,6 @@ impl std::fmt::Display for TrustedUpstreamWriteError {
 }
 
 impl std::error::Error for TrustedUpstreamWriteError {}
-
-/// `${AASM_STATE_DIR:-~/.aasm}/integrations/trusted-upstream-proxy.json` —
-/// mirrors `aa-proxy::config`'s own `integration_state_dir()` resolution
-/// exactly (same env var, same default, same `integrations` subdirectory)
-/// so both sides of this artifact agree on where it lives without either
-/// hardcoding the other's path.
-pub fn trusted_upstream_config_path() -> Option<PathBuf> {
-    let base = match std::env::var_os("AASM_STATE_DIR") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => dirs::home_dir()?.join(".aasm"),
-    };
-    Some(base.join("integrations").join("trusted-upstream-proxy.json"))
-}
 
 fn parse_endpoint(raw: &str) -> Result<RawEndpoint, TrustedUpstreamWriteError> {
     let (scheme, rest) = raw

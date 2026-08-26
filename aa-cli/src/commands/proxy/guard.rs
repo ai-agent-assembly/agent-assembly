@@ -146,7 +146,7 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     // matching this function's existing "if the caller/environment already
     // decided this, pass it through" shape rather than adding a second place
     // to decide the same thing.
-    if let Some(path) = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path() {
+    if let Some(path) = crate::commands::trusted_upstream_path::trusted_upstream_config_path() {
         if path.exists() {
             cmd.env("AA_PROXY_TRUSTED_CONFIG_PATH", &path);
         }
@@ -504,7 +504,7 @@ mod tests {
         let _guard = crate::test_support::env_guard();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("AASM_STATE_DIR", dir.path());
-        let expected = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path().unwrap();
+        let expected = crate::commands::trusted_upstream_path::trusted_upstream_config_path().unwrap();
         std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
         std::fs::write(&expected, "{}").unwrap();
 

@@ -136,7 +136,7 @@ fn proxy_child_env(listen: &str, gateway: Option<&str>) -> Vec<(&'static str, St
     // AAASM-5923/F2: same wiring as `ProxyGuard::build_command` — see that
     // function's doc comment for why this is unconditional on the
     // artifact's existence rather than a new opt-in flag.
-    if let Some(path) = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path() {
+    if let Some(path) = crate::commands::trusted_upstream_path::trusted_upstream_config_path() {
         if path.exists() {
             env.push(("AA_PROXY_TRUSTED_CONFIG_PATH", path.display().to_string()));
         }
@@ -496,7 +496,7 @@ mod tests {
         let _guard = crate::test_support::env_guard();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("AASM_STATE_DIR", dir.path());
-        let expected = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path().unwrap();
+        let expected = crate::commands::trusted_upstream_path::trusted_upstream_config_path().unwrap();
         std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
         std::fs::write(&expected, "{}").unwrap();
 
