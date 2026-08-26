@@ -206,6 +206,39 @@ impl Negotiated {
     }
 }
 
+/// Everything a `Plan` invocation carries.
+///
+/// A struct rather than a parameter list because the two shortest fields are
+/// both `&str` and both optional-by-emptiness: `plan(tool, profile, scope, "",
+/// false, "", "")` read as a row of placeholders, and a project root added to
+/// that row (AAASM-5913) would be indistinguishable at the call site from the
+/// policy profile beside it. Named fields make the caller state which of them it
+/// is leaving empty.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlanRequest<'a> {
+    /// Which tool to author a plan for.
+    pub tool_id: &'a str,
+    /// The protection profile to author against.
+    pub profile: &'a str,
+    /// Which settings surface the plan may write: `user`, `project`, `managed`.
+    pub settings_scope: &'a str,
+    /// The policy profile to resolve, or `""` for the service's default.
+    pub policy_profile_id: &'a str,
+    /// Whether the caller has opted into the one privileged step.
+    pub allow_privileged_host_steps: bool,
+    /// The protection level asked for, or `""` for the profile's own.
+    pub requested_level: &'a str,
+    /// The absolute path of the project the **caller** is in, resolved by the
+    /// caller at invocation time.
+    ///
+    /// Mandatory at `project` scope: the service is shared and long-lived, so a
+    /// caller that does not say which project it means leaves the service with
+    /// nothing to name but whichever directory it was spawned in — which is the
+    /// defect in AAASM-5913, not a fallback. Pass `""` when there is none to
+    /// state and expect a refusal, not a default, if the scope needed one.
+    pub project_root: &'a str,
+}
+
 /// A connected, negotiated DI-API client.
 pub struct DevIntClient {
     reader: BufReader<tokio::net::unix::OwnedReadHalf>,
@@ -373,32 +406,16 @@ impl DevIntClient {
         response.tool_list.ok_or(ClientError::UnexpectedFrame)
     }
 
-    /// Author a dry run for `tool_id`.
-    ///
-    /// `project_root` is the absolute path of the project the *caller* is in,
-    /// resolved by the caller at invocation time. It is mandatory at `project`
-    /// scope: the service is shared and long-lived, so if the caller does not say
-    /// which project it means, the only project the service can name is whichever
-    /// directory it was spawned in (AAASM-5913). Pass `""` when there is none to
-    /// state, and expect a refusal rather than a default if the scope needed one.
-    pub async fn plan(
-        &mut self,
-        tool_id: &str,
-        profile: &str,
-        settings_scope: &str,
-        policy_profile_id: &str,
-        allow_privileged_host_steps: bool,
-        requested_level: &str,
-        project_root: &str,
-    ) -> Result<wire::PlanView, ClientError> {
-        let mut request = self.request(DiVerb::Plan, tool_id);
+    /// Author a dry run for [`PlanRequest::tool_id`].
+    pub async fn plan(&mut self, args: PlanRequest<'_>) -> Result<wire::PlanView, ClientError> {
+        let mut request = self.request(DiVerb::Plan, args.tool_id);
         request.plan = Some(wire::PlanArgs {
-            profile: profile.to_string(),
-            requested_level: requested_level.to_string(),
-            settings_scope: settings_scope.to_string(),
-            allow_privileged_host_steps,
-            policy_profile_id: policy_profile_id.to_string(),
-            project_root: project_root.to_string(),
+            profile: args.profile.to_string(),
+            requested_level: args.requested_level.to_string(),
+            settings_scope: args.settings_scope.to_string(),
+            allow_privileged_host_steps: args.allow_privileged_host_steps,
+            policy_profile_id: args.policy_profile_id.to_string(),
+            project_root: args.project_root.to_string(),
         });
         let response = self.call(request).await?;
         response.plan.ok_or(ClientError::UnexpectedFrame)
@@ -600,7 +617,13 @@ mod tests {
         let tool = claude_code_id();
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
         let plan = client
-            .plan(&tool, "recommended", "user", "team-default", false, "", "")
+            .plan(PlanRequest {
+                tool_id: &tool,
+                profile: "recommended",
+                settings_scope: "user",
+                policy_profile_id: "team-default",
+                ..PlanRequest::default()
+            })
             .await
             .expect("plan");
         assert_eq!(plan.plan_id, "plan-1");
@@ -636,7 +659,13 @@ mod tests {
         let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
         let mut client = connected(&server, Some(token.expose().to_string())).await;
         let plan = client
-            .plan(&claude_code_id(), "recommended", "user", "team-default", false, "", "")
+            .plan(PlanRequest {
+                tool_id: &claude_code_id(),
+                profile: "recommended",
+                settings_scope: "user",
+                policy_profile_id: "team-default",
+                ..PlanRequest::default()
+            })
             .await
             .expect("plan");
         let rendered = format!("{plan:?}");

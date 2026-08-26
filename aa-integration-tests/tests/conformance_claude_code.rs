@@ -1161,7 +1161,12 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
             (
                 "plan",
                 client
-                    .plan("claude-code", "recommended", "user", "", false, "", "")
+                    .plan(aa_runtime::devint::PlanRequest {
+                        tool_id: "claude-code",
+                        profile: "recommended",
+                        settings_scope: "user",
+                        ..Default::default()
+                    })
                     .await
                     .err(),
             ),

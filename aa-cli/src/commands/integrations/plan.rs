@@ -13,6 +13,7 @@
 
 use std::process::ExitCode;
 
+use aa_runtime::devint::PlanRequest;
 use clap::Args;
 
 use crate::output::OutputFormat;
@@ -105,18 +106,18 @@ pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<Pla
     let runtime = RuntimeInfo::from_session(session);
     let view = session
         .client
-        .plan(
-            &args.tool,
-            args.profile.as_wire(),
-            scope,
-            &args.policy_profile,
+        .plan(PlanRequest {
+            tool_id: &args.tool,
+            profile: args.profile.as_wire(),
+            settings_scope: scope,
+            policy_profile_id: &args.policy_profile,
             // The flag *is* the consent to the one privileged step; requiring a
             // second flag for the same decision would train users to pass both
             // without reading either.
-            args.allow_privileged_host_steps || args.install_managed_settings,
-            requested_level(args.install_managed_settings),
-            &project_root,
-        )
+            allow_privileged_host_steps: args.allow_privileged_host_steps || args.install_managed_settings,
+            requested_level: requested_level(args.install_managed_settings),
+            project_root: &project_root,
+        })
         .await
         .map_err(verb_failure)?;
     Ok(PlanReport::from_view(runtime, &view))
