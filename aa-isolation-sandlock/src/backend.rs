@@ -291,21 +291,8 @@ impl SandlockBackend {
         self.facts.as_ref()
     }
 
-    /// The command line a prepared execution will run, for tests that assert
-    /// argv is passed as argv.
-    ///
-    /// # Not safe for operator-visible output (AAASM-5935)
-    ///
-    /// This argv contains the `--env=NAME=VALUE` flags [`lower`](crate::lower)
-    /// emits, so it carries environment variable **values** — including, for
-    /// `ambient_unremoved`, values from credential-named variables. Printing it in
-    /// a diagnostic would reopen AAASM-5935 while bypassing the dry-run preview's
-    /// allowlist entirely, so this must not be wired into `--dry-run` or any other
-    /// operator-visible surface, which the previous wording invited. There is no
-    /// such caller today.
-    ///
-    /// A surface that needs to describe the environment should report names and
-    /// presence, as `aa_isolation::IsolationReport` already does.
+    /// The command line a prepared execution will run, for `--dry-run` output
+    /// and for tests that assert argv is passed as argv.
     pub fn command_line(&self, prepared: &PreparedExecution) -> Option<Vec<String>> {
         let held = self.prepared.lock().expect("backend state poisoned");
         held.get(prepared.token()).map(|p| p.argv.args().to_vec())
