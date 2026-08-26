@@ -9,10 +9,13 @@ AAASM-5949: liveness/ownership tracking (reusing resource-lock.py's own
 `status --json`, not duplicating its pid/start-token verification — see
 "Why this shells out" below) and a cross-platform CPU-time parser.
 
-AAASM-5950: the remaining progress signals in declared priority order —
-`cpu` (AAASM-5949), `children`, `artifact_mtime`, `log_growth` — plus
-classify_progress(), which says whether a job is *currently* showing
-activity on any signal. It deliberately does NOT decide stalled: that
+AAASM-5950: the remaining progress signals — `cpu` (AAASM-5949), `children`,
+`artifact_mtime`, `log_growth` — plus classify_progress(), which says
+whether a job is *currently* showing activity on any signal. Every signal
+is OR'd (the first one showing activity wins), so the order they're
+evaluated in doesn't change the verdict; see classify_progress()'s own
+docstring for why `children` is checked first regardless. It deliberately
+does NOT decide stalled: that
 verdict needs elapsed-time + grace-period + re-verified ownership, which
 needs a polling loop that owns snapshot persistence across calls — this
 module stays a stateless single-snapshot tool (classify_progress() takes
@@ -137,9 +140,10 @@ def get_child_pids(pid: int) -> list[int]:
         )
     except Exception:
         return []
-    # pgrep exits 1 for "no processes matched" — not a failure, just zero
-    # children; only treat other nonzero codes (e.g. 2 = usage error) as
-    # a failed lookup.
+    # pgrep exits 1 for "no processes matched" (empty stdout either way, so
+    # this branch is behaviorally a no-op against just checking stdout —
+    # kept as an explicit distinction from other nonzero codes, e.g. 2 =
+    # usage error, for readability, not because it changes what's returned).
     if out.returncode not in (0, 1):
         return []
     return [int(p) for p in out.stdout.split() if p.isdigit()]
@@ -173,9 +177,12 @@ def get_log_signal(path: str | None) -> dict | None:
 
 
 def classify_progress(prev: dict | None, curr: dict) -> str:
-    """Classify a job's progress signals, in the declared priority order
-    (cpu, children, artifact_mtime, log_growth) — any ONE signal showing
-    activity is enough to call it "progressing". `prev`/`curr` are snapshot
+    """Classify a job's progress signals — cpu, children, artifact_mtime,
+    log_growth — where any ONE signal showing activity is enough to call it
+    "progressing"; since they're OR'd, the order they're checked in doesn't
+    change the verdict (children is checked first only because, unlike the
+    others, it doesn't need a `prev` snapshot to be meaningful — see below).
+    `prev`/`curr` are snapshot
     dicts shaped like a single enriched record from cmd_list (must carry
     cpu_time_secs, child_count, artifact_mtimes, log_signal); `prev` may be
     None (first-ever snapshot — no delta signals available yet).
