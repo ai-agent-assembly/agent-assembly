@@ -121,7 +121,13 @@ mod launch_env {
 
     /// Names the stub reports. Everything the merge has to get right, plus the
     /// two probes that keep the fixture honest.
-    const REPORTED: [&str; 9] = [
+    ///
+    /// AAASM-5924 (ADR 0036 Test 6c) added `https_proxy`/`ALL_PROXY`/`NO_PROXY`
+    /// — the original 9-name list only covered the 2-variable case this
+    /// fixture was first built for; without these three, `seen.get(..)` on
+    /// them is unconditionally `None` regardless of what the real child's
+    /// environment actually contains, which silently passes the wrong thing.
+    const REPORTED: [&str; 12] = [
         "AA_AGENT_ID",
         "AA_AGENT_DID",
         "AA_TRACE_ID",
@@ -131,6 +137,9 @@ mod launch_env {
         "NODE_EXTRA_CA_CERTS",
         "HTTPS_PROXY",
         "HTTP_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "NO_PROXY",
     ];
 
     /// A `claude` stand-in that answers `--version` with a supported version and,
