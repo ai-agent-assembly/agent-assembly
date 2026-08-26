@@ -34,9 +34,26 @@
 //! already correct". So the v5 tests below assert not only that nothing is
 //! fabricated but that the specific fabrication is unreachable, from both
 //! directions.
+//!
+//! # v6 breaks the pattern, and the tests for it are shaped differently
+//!
+//! v3, v4 and v5 each added a field to a **reply**, which is why every test
+//! above can assert on an arrived frame: the client holds the evidence. v6
+//! (AAASM-5913) adds `PlanRequest.project_root` — a field on a **request** — and
+//! proto3 discards an unknown field during decode. Against a v5 runtime the root
+//! is gone before any handler runs: nothing is denied, nothing is degraded, and
+//! the plan comes back authored under whichever directory the shared daemon was
+//! spawned in. There is no frame in which that is visible, because an ignored
+//! root and an unsent one decode identically.
+//!
+//! So the v6 tests assert on something the earlier ones never needed: that the
+//! request **was not sent at all**, via
+//! [`FakeLifecycle::calls`](super::testkit::FakeLifecycle::calls). "Nothing was
+//! fabricated in the field's place" is the wrong property here — the field's
+//! place is on the other side of the wire.
 
 use super::apply_outcome::{ApplyMutation, MutationUnknown};
-use super::client::DevIntClient;
+use super::client::{ClientError, DevIntClient, PlanRequest};
 use super::negotiate::{
     DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_POLICY_POSTURE_SINCE,
     DI_API_PROJECT_ROOT_SINCE, DI_API_PROVENANCE_SINCE,
@@ -348,6 +365,187 @@ fn a_v5_peer_that_omits_the_block_is_not_read_as_unchanged() {
     assert!(!mutation.is_authoritative());
 }
 
+// ── v6: the caller's project root (AAASM-5913) ───────────────────────────────
+
+/// A directory a project-scope plan can legitimately name.
+///
+/// Real, because the server resolves and vets the root before anything else
+/// (`parse_project_root`): a placeholder string would be refused for *being a
+/// placeholder*, and every test below would then pass without ever reaching the
+/// version gate it exists to exercise.
+fn a_real_project_dir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tempdir")
+}
+
+/// **New client, old peer — refused before the send.**
+///
+/// The direction that matters, and the one v3–v5 could afford to handle after
+/// the fact. Those versions added fields to *replies*, so a new client reading
+/// an old peer sees an absent field and can name the version. `project_root`
+/// goes the other way: it is a field on the **request**, and proto3 drops an
+/// unknown field during decode. A v5 runtime therefore never learns a root was
+/// sent, does not deny, does not report a degraded connection, and answers with
+/// a plan authored under its own working directory — AAASM-5913 exactly,
+/// wearing a success.
+///
+/// Which is why this asserts on the *absence of a call*. There is no reply to
+/// inspect for the property: a v5 peer that ignored the root and a v5 peer that
+/// was never sent one produce byte-identical frames, so the only place the
+/// mistake is still visible is before it leaves.
+#[tokio::test]
+async fn v6_is_required_for_project_scope_and_an_older_peer_is_refused_before_the_send() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let project = a_real_project_dir();
+    for version in DI_API_MIN_SUPPORTED..DI_API_PROJECT_ROOT_SINCE {
+        let mut client = connect_offering(&server, &[version]).await;
+        let before = server.lifecycle().calls();
+
+        let outcome = client
+            .plan(PlanRequest {
+                tool_id: &claude_code_id(),
+                profile: "recommended",
+                settings_scope: "project",
+                project_root: project.path().to_str().expect("utf-8 tempdir"),
+                ..PlanRequest::default()
+            })
+            .await;
+
+        let Err(refused) = outcome else {
+            panic!("v{version} must refuse project scope rather than send a root it will drop");
+        };
+        let ClientError::Incompatible(reported) = &refused else {
+            panic!("v{version} must refuse on version grounds, got {refused:?}");
+        };
+        assert!(
+            reported.reason.contains(&format!("DI-API {version}")),
+            "the reason must name the version that cannot carry the root: {}",
+            reported.reason
+        );
+        assert!(
+            reported.reason.contains(&format!("DI-API {DI_API_PROJECT_ROOT_SINCE}")),
+            "the reason must name the version that can: {}",
+            reported.reason
+        );
+        assert!(
+            !reported.remediation.is_empty(),
+            "a refusal a user cannot act on is a dead end"
+        );
+
+        assert_eq!(
+            server.lifecycle().calls(),
+            before,
+            "v{version} sent the request anyway — the root was dropped on arrival and the plan \
+             was authored against the runtime's own directory"
+        );
+
+        // The refusal is local, so the connection must be untouched by it: a
+        // gate that half-wrote a frame would desync every later call on a
+        // connection the caller has every reason to keep using.
+        assert!(
+            client.status(&claude_code_id()).await.is_ok(),
+            "v{version} lost the connection to a refusal that never reached the wire"
+        );
+    }
+    server.shutdown().await;
+}
+
+/// **Positive control**: at v6 the same call reaches the service.
+///
+/// Without this, a gate that refused project scope at *every* version — or one
+/// whose comparison was inverted — would satisfy the sweep above completely.
+#[tokio::test]
+async fn project_scope_reaches_the_service_at_v6() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let project = a_real_project_dir();
+    let mut client = connect_offering(&server, &[DI_API_PROJECT_ROOT_SINCE]).await;
+    let before = server.lifecycle().calls();
+
+    let plan = client
+        .plan(PlanRequest {
+            tool_id: &claude_code_id(),
+            profile: "recommended",
+            settings_scope: "project",
+            project_root: project.path().to_str().expect("utf-8 tempdir"),
+            ..PlanRequest::default()
+        })
+        .await
+        .expect("v6 carries the project root, so the plan must be authored");
+
+    assert!(!plan.plan_id.is_empty());
+    assert!(
+        server.lifecycle().calls() > before,
+        "the plan must have been served by the lifecycle, not fabricated by the client"
+    );
+    server.shutdown().await;
+}
+
+/// **Blast-radius control**: the gate touches project scope and nothing else.
+///
+/// User and managed destinations were never the caller's to name — the service
+/// derives both from the host, so it has nothing to be told and no reason to
+/// need v6. A gate written as "below v6, refuse" rather than "below v6, refuse
+/// *project* scope" would break every older peer's entire lifecycle, which is a
+/// far larger regression than the one being fixed.
+#[tokio::test]
+async fn user_and_managed_scope_are_untouched_by_the_project_root_gate() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    for version in DI_API_MIN_SUPPORTED..DI_API_PROJECT_ROOT_SINCE {
+        for scope in ["user", "managed"] {
+            let mut client = connect_offering(&server, &[version]).await;
+            assert!(
+                client
+                    .plan(PlanRequest {
+                        tool_id: &claude_code_id(),
+                        profile: "recommended",
+                        settings_scope: scope,
+                        ..PlanRequest::default()
+                    })
+                    .await
+                    .is_ok(),
+                "v{version} lost {scope} scope to a gate that only concerns project scope"
+            );
+        }
+    }
+    server.shutdown().await;
+}
+
+/// A scope token the client cannot parse stays the **server's** to refuse.
+///
+/// `"Project"` is not a scope: the wire vocabulary is lower-case and
+/// `parse_scope` is an exact match, deliberately, because a destination must be
+/// named rather than inferred. The client could guess that this *means* project
+/// scope and refuse it on version grounds — and then a caller with a typo would
+/// be told to upgrade their runtime instead of being told the token is wrong.
+/// Two competing refusals for one mistake is worse than one correct one, so the
+/// gate declines to guess and the request travels.
+#[tokio::test]
+async fn an_unparseable_scope_token_is_refused_by_the_server_not_the_version_gate() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let project = a_real_project_dir();
+    let mut client = connect_offering(&server, &[DI_API_PROJECT_ROOT_SINCE - 1]).await;
+
+    let refused = client
+        .plan(PlanRequest {
+            tool_id: &claude_code_id(),
+            profile: "recommended",
+            settings_scope: "Project",
+            project_root: project.path().to_str().expect("utf-8 tempdir"),
+            ..PlanRequest::default()
+        })
+        .await
+        .expect_err("an unknown scope token cannot be honoured");
+
+    let ClientError::Denied(denial) = &refused else {
+        panic!("the server owns rejecting an unknown scope token, got {refused:?}");
+    };
+    assert!(
+        denial.message.contains("scope"),
+        "the denial must name what was wrong: {}",
+        denial.message
+    );
+    server.shutdown().await;
+}
+
 /// The version constants stay internally consistent.
 ///
 /// `DI_API_PROVENANCE_SINCE` naming a version outside the served window would
@@ -358,8 +556,8 @@ fn a_v5_peer_that_omits_the_block_is_not_read_as_unchanged() {
 const _: () = {
     assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
     // The project root is the newest addition. If it stops being so, the v6
-    // sweeps are pinning the wrong version and their "below this it is refused"
-    // loops silently stop covering the top of the window.
+    // sweeps above are pinning the wrong version and their "below this it is
+    // refused" loops silently stop covering the top of the window.
     assert!(DI_API_PROJECT_ROOT_SINCE == DI_API_MAX_SUPPORTED);
     // The apply outcome was the newest addition until v6 (AAASM-5913), so its
     // sweeps now run over a strict interior of the window rather than up to its
