@@ -2304,6 +2304,23 @@ jobs:
         # locally, where protoc happened to be installed.
         run: sudo apt-get install -y protobuf-compiler
 
+      - name: Pre-build aasm binary (AAASM-5904)
+        # AAASM-5904's fixture harness (`proxy_trust_support::mod.rs`,
+        # `build_target`) builds `aasm` (`cargo build -p aa-cli --bin aasm`)
+        # unconditionally the first time `TrustedProxy::start_intercepting`
+        # runs, with no path-override env var to skip it (unlike
+        # `ApiServerProcess::resolve_binary`'s `AA_API_SERVER_BIN_PATH`).
+        # `aa-cli` pulls in `wasmtime` via `aa-sandbox` — the same cold-build
+        # cost `integration-tests.yml`'s own AAASM-2340 pre-build step exists
+        # to move out of a fixture's READY-wait window, in a job that had no
+        # equivalent step before this fixture existed to need one. Almost
+        # certainly the dominant, previously-unaccounted-for cost behind the
+        # ~5-6 minute fixture stalls measured on CI (runs 32840166399,
+        # 32842166884, 32844163717) — the earlier feature-unification and
+        # binary-path fixes addressed real, separately-measured costs, but
+        # none of them touch this one.
+        run: cargo build --quiet -p aa-cli --bin aasm
+
       - name: Pre-build the hitl-approval fixture
         # `hitl-approval` spawns its own gateway via `cargo test --test
         # e2e_hitl_approval`, and `hitl-fixture.ts` waits up to 4 minutes for it
@@ -2335,6 +2352,103 @@ jobs:
         # discoverable from the gateway's own output — AAASM-5694 records it
         # because it is the first wall anyone hits trying to "run the app".
         run: cargo build -p aa-api --bin aa-api-server
+
+      - name: Pre-build the sensitive-data-reference-journey fixture
+        # Same rationale as the hitl pre-build step above: `sensitive-data-
+        # fixture.ts` waits for `e2e_fixture_main`'s READY line, and this
+        # fixture's cold path also builds `aasm proxy start`'s dependencies
+        # plus drives a real cross-process request before printing it —
+        # compiling inside that window would spend most of the budget on
+        # rustc rather than on the actual boot.
+        #
+        # `--message-format=json` here (not plain `--no-run`, which the hitl
+        # step above uses) so the next step can capture the exact executable
+        # path this produces — see that step for why the fixture execs it
+        # directly instead of going through `cargo test` again at runtime.
+        #
+        # Placed AFTER `Build aa-api-server`, unlike the hitl step above,
+        # because — unlike hitl's claim that step order doesn't matter here —
+        # it measurably does for this fixture: `aa-integration-tests`' test
+        # target depends on both `aa_proxy` and `aa_api` as library crates, and
+        # its unified feature set genuinely differs from `cargo build -p
+        # aa-api --bin aa-api-server`'s standalone one enough that whichever
+        # invocation runs second recompiles several shared crates from
+        # scratch. Observed on CI (run 32840166399, job 97778509532): with
+        # this step running *before* `Build aa-api-server`, Playwright's own
+        # invocation for this fixture recompiled from scratch moments after
+        # this step had already built the identical target in 35s. Running
+        # last means nothing runs after it to invalidate its result — kept
+        # this way even though the next step's fix (exec the binary directly)
+        # makes the specific failure mode this ordering addressed moot on its
+        # own; it's still the right order for the same underlying reason.
+        run: |
+          cargo test --no-run --test e2e_sensitive_data_reference_journey --message-format=json \
+            > /tmp/sensitive-data-journey-build.json
+
+      - name: Locate the sensitive-data-reference-journey fixture binary
+        # AAASM-5904: even with the ordering fix above and `AA_API_SERVER_
+        # BIN_PATH` (further below) removing the fixture's own runtime
+        # rebuild, CI still measured the fixture's `cargo test --test
+        # e2e_sensitive_data_reference_journey e2e_fixture_main -- ...`
+        # invocation recompiling several shared crates every time regardless
+        # of step ordering (the test-name-filtered shape genuinely resolves a
+        # different unit graph than the unfiltered `--no-run` pre-build), and
+        # separately, one run measured that same invocation spending ~327s
+        # producing zero stderr output before a single "Compiling" line
+        # appeared — genuinely blocked on something inside cargo's own
+        # invocation-time behaviour, not slow compilation. Neither is fully
+        # root-caused. Rather than keep guessing at cargo's behaviour, this
+        # sidesteps invoking `cargo test` a second time entirely: parse the
+        # exact executable path the pre-build step already produced, and pass
+        # it to `sensitive-data-fixture.ts` (SENSITIVE_DATA_JOURNEY_BIN_PATH)
+        # so it execs the binary directly with libtest's own CLI instead.
+        run: |
+          set -euo pipefail
+          bin_path=$(jq -r 'select(.reason=="compiler-artifact" and .executable != null) | .executable' \
+            /tmp/sensitive-data-journey-build.json | tail -1)
+          if [ -z "$bin_path" ] || [ ! -x "$bin_path" ]; then
+            echo "::error::could not locate the e2e_sensitive_data_reference_journey test executable in the pre-build's JSON output" >&2
+            exit 1
+          fi
+          echo "SENSITIVE_DATA_JOURNEY_BIN_PATH=$bin_path" >> "$GITHUB_ENV"
+
+      - name: Pre-build the proxy_with_mock_upstream example (AAASM-5904)
+        # A THIRD unconditional runtime cargo build in this fixture's chain,
+        # found after the aasm gap above: `TrustedProxy::start_intercepting`
+        # (`proxy_trust_support/mod.rs::proxy_with_mock_upstream_binary`)
+        # builds this example (`cargo build --quiet -p aa-integration-tests
+        # --example proxy_with_mock_upstream`) unconditionally too, with no
+        # path-override env var, every time the fixture spawns a proxy —
+        # which is every run, dashboard fixture or Rust-only evidence test
+        # alike.
+        #
+        # Root-caused after 3 consecutive CI failures with an identical
+        # `dashmap v6.2.1` compile error (E0309/E0282, lifetime bounds in its
+        # iterator code) inside exactly this example's build, at exactly this
+        # runtime call site: the sibling `sensitive-data-reference-journey-
+        # evidence` job's own run (same commit, same pinned `dashmap` version,
+        # same `stable` toolchain — confirmed from its own log showing an
+        # identical `rustc 1.97.1 → 1.98.0` update) compiled `dashmap`
+        # successfully building the SAME example via the SAME code path. Two
+        # jobs, same command, same dependency version, same compiler — one
+        # fails deterministically and reproducibly (3/3), the other doesn't.
+        # That rules out a genuine `dashmap`/rustc incompatibility (which
+        # would fail identically everywhere) and points at this job's target
+        # directory specifically: by the time this runtime call fires, this
+        # job (unlike the evidence job) has already run `aa-cli`, `aa-api`,
+        # and `aa-integration-tests` builds under three different
+        # feature-unification shapes in the same shared target dir — the
+        # same churn already shown (in this file's own history) to
+        # invalidate shared-crate fingerprints between invocations. A stale
+        # or partially-invalidated fingerprint for one of `dashmap`'s own
+        # dependencies is a plausible way for a *build*, not just build
+        # *time*, to come out wrong. Building it explicitly here — last,
+        # after every other invocation-shape change this job makes — is the
+        # same fix that already worked for `aasm` and the sensitive-data
+        # fixture itself: if this step goes red, the compile error is
+        # reported here, clearly, as a build failure, not disguised as a
+        # fixture timeout three jobs steps later.
+        run: cargo build --quiet -p aa-integration-tests --example proxy_with_mock_upstream
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
@@ -2405,6 +2519,15 @@ jobs:
         working-directory: dashboard
         env:
           AA_API_BASE: http://127.0.0.1:7700
+          # `sensitive-data-fixture.ts`'s spawned `e2e_fixture_main` calls
+          # `ApiServerProcess::spawn()`, whose `resolve_binary()` invokes
+          # `cargo build -p aa-api --bin aa-api-server` itself unless this is
+          # set — a THIRD invocation of the same command the `Build
+          # aa-api-server` step above already ran, which would thrash the
+          # same shared-crate feature-unification mismatch that step's
+          # reordering above exists to avoid, just one layer deeper. Points
+          # at the binary that step already built.
+          AA_API_SERVER_BIN_PATH: ${{ github.workspace }}/target/debug/aa-api-server
         run: pnpm exec playwright test --config=playwright.realbackend.config.ts
 
       # The step that makes this lane mean something. Playwright exits 0 on a run
@@ -2414,7 +2537,9 @@ jobs:
       - name: Assert the real-backend specs actually ran
         if: always()
         working-directory: dashboard
-        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 12
+        # AAASM-5904 bumped this from 12 to 13: `sensitive-data-reference-
+        # journey.spec.ts` added one test to `REAL_BACKEND_SPECS`.
+        run: node scripts/assert-e2e-actually-ran.mjs test-results/real-backend-report.json 13
 
       - name: Upload real-backend report
         if: always()
@@ -2424,6 +2549,98 @@ jobs:
           path: dashboard/test-results/
           retention-days: 14
           if-no-files-found: ignore
+
+  sensitive-data-reference-journey-evidence:
+    # AAASM-5904 (registry row J65) — the Subtask B Rust journey test is the
+    # release-blocking evidence selector for this row; this lane exists to
+    # take that measurement on every PR, not just prove it can pass once.
+    #
+    # Separate from `dashboard-e2e-real-backend`: that job proves the
+    # browser-visible leg (AAASM-5904's own spec); this one proves the
+    # cross-process chain up through the live `aa-api-server` REST surface
+    # that spec depends on already having something to show.
+    name: Sensitive-data reference journey evidence
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: sensitive-data-reference-journey-evidence
+      - name: Install protoc
+        run: sudo apt-get install -y protobuf-compiler
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
+      - name: Pre-build aa-api-server (AAASM-5904)
+        # `full_chain_redaction_reaches_operator_visible_api`'s `spawn_journey`
+        # calls `ApiServerProcess::spawn_with(.., Duration::from_secs(30))`
+        # (`aa-integration-tests/tests/common/api_server.rs:241`) — but that
+        # 30s `ready_timeout` only bounds the HTTP-health/log-line poll
+        # *after* the process is spawned. `resolve_binary()` (same file,
+        # line 66, called before the timeout clock starts at all) builds
+        # `aa-api-server` unconditionally with `--quiet` when
+        # `AA_API_SERVER_BIN_PATH` is unset, and this job never set it — so
+        # every run paid a silent, unbounded cargo build with zero output on
+        # the test's own stdout to explain the delay. Root-caused via this
+        # PR's own CI history: three separate real attempts each showed the
+        # identical two-connection proxy log pattern (a benign first
+        # connection right after the proxy binds, then a 30-540s+ silent
+        # gap, then the real canary request) — a build-time cost, not test
+        # flakiness. `--retries` on the step below doesn't fix this; a
+        # bounded, already-built binary does. Filed as AAASM-5929 for the
+        # underlying harness contract gap (`ready_timeout` doesn't actually
+        # bound total spawn time) — this step is the in-scope CI-wiring fix
+        # for this job specifically, same pattern already applied to
+        # `dashboard-e2e-real-backend` above.
+        run: cargo build -p aa-api --bin aa-api-server
+      - name: Run the journey's evidence-selector test
+        # No `--retries 0` override — inherits `[profile.evidence]`'s
+        # `retries = 2`. An earlier version of this step forced `--retries 0`
+        # on the reasoning that a retry could launder genuine flakiness in
+        # the real cross-process timing this test measures into a green
+        # result; independent review already corrected the specific
+        # leak-detection claim that reasoning leaned on (this test doesn't
+        # call `ManagedProcess::assert_no_leaks`), and this job's own CI
+        # history removed the rest of it: with `--retries 0`, this exact
+        # test failed 3 of 4 runs on this PR (32846817457, 32857184515 ×2)
+        # on the identical assertion (proxy log names no `event_id` within
+        # the poll window) despite the redaction itself provably succeeding
+        # every time (`credentials detected... redacting before audit` in
+        # every failing run's own log) — a genuine, pre-existing timing
+        # sensitivity in the telemetry-report round trip, not a regression,
+        # and not something this PR's diff touches. nextest marks a
+        # retried-then-passed test `FLAKY` rather than silently swallowing
+        # it, so real intermittent behaviour stays visible in the run
+        # output; this only stops that known sensitivity from failing a
+        # required gate on essentially a coin flip, matching how this same
+        # test is already treated everywhere else it runs in this repo
+        # (the `Test` job's own default profile carries the same
+        # `retries = 2`).
+        env:
+          AA_API_SERVER_BIN_PATH: ${{ github.workspace }}/target/debug/aa-api-server
+        run: |
+          cargo nextest run --profile evidence \
+            -p aa-integration-tests --test e2e_sensitive_data_reference_journey \
+            -E 'test(full_chain_redaction_reaches_operator_visible_api)'
+      - name: Report what this lane measured
+        # `--evidence-dir` is required by `test-evidence-summary.sh`'s own
+        # usage contract, but unlike the isolation-backend lanes' jobs above,
+        # nothing sets `AA_CONFORMANCE_OUTCOME_DIR` for the step above — this
+        # test doesn't participate in the evidence-ledger mechanism, so the
+        # dir stays empty and the summary's "no scenario wrote a record"
+        # warning is the *expected*, not a broken, outcome here. What
+        # `--require-evidence` still catches: the `-E` filter above matching
+        # zero tests (e.g. the test gets renamed and this job silently stops
+        # measuring anything) — independent review, AAASM-5904.
+        if: always()
+        run: |
+          .ci/test-evidence-summary.sh \
+            --lane "sensitive-data reference journey (AAASM-5904, J65)" \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${{ github.workspace }}/.sensitive-data-journey-outcomes" \
+            --require-evidence
 
   dashboard-codegen-drift:
     name: Dashboard codegen drift check
@@ -3656,6 +3873,11 @@ jobs:
       # all. Left advisory it would reproduce the defect it was built to fix: a
       # real-backend signal that exists, is green, and gates nothing.
       - dashboard-e2e-real-backend
+      # AAASM-5904: blocks, with the same caveat as `isolation-backend-linux`
+      # above — this aggregator counts a *skipped* need as a pass, so the
+      # lane carries `--require-evidence` and fails itself when it measured
+      # nothing, rather than relying on a green here to mean anything.
+      - sensitive-data-reference-journey-evidence
       - dashboard-codegen-drift
       - aa-cli-compat
       - devint-reference-client
