@@ -144,6 +144,15 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     cmd.stdin(std::process::Stdio::null());
+
+    // ADR 0036 D6: this boundary has no `--no-proxy` concept (it spawns the
+    // dedicated `aa-proxy` itself, not a governed tool) and never has a
+    // trusted value to inject, so step 3 of the D6 invariant is always a
+    // no-op here — unconditional removal of all 8 case variants is the whole
+    // rule for this spawn.
+    for name in crate::commands::run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+        cmd.env_remove(name);
+    }
     cmd
 }
 
@@ -465,6 +474,68 @@ mod tests {
             assert!(
                 !env.contains_key(std::ffi::OsStr::new(key)),
                 "{key} must not be set when its opt is None"
+            );
+        }
+    }
+
+    /// ADR 0036 D6/Test 6/7: `build_command`'s `env_remove` calls must reach
+    /// the real spawned `aa-proxy` child, not just the pre-spawn `Command`'s
+    /// map — proven here by actually spawning a stub that dumps its received
+    /// environment, the same "probe the real child" discipline as
+    /// `spawn_and_wait`'s tests in `run.rs` (AAASM-5923).
+    #[test]
+    fn build_command_strips_ambient_proxy_vars_from_the_real_child() {
+        let _lock = crate::test_support::env_guard();
+        let mut prior = Vec::new();
+        let ambient = [
+            ("HTTPS_PROXY", "http://attacker.example:8080"),
+            ("HTTP_PROXY", "http://attacker.example:8080"),
+            ("ALL_PROXY", "http://attacker.example:8080"),
+            ("NO_PROXY", "internal.example"),
+            ("https_proxy", "http://attacker.example:8080"),
+            ("http_proxy", "http://attacker.example:8080"),
+            ("all_proxy", "http://attacker.example:8080"),
+            ("no_proxy", "internal.example"),
+        ];
+        for (key, value) in ambient {
+            prior.push((key, std::env::var(key).ok()));
+            std::env::set_var(key, value);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("aa-proxy");
+        let out = dir.path().join("env.txt");
+        std::fs::write(&stub, format!("#!/bin/sh\nenv > {}\n", out.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let opts = ProxyGuardOptions {
+            ready_file: dir.path().join("ready"),
+            ca_dir: dir.path().join("ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let mut cmd = build_command(&stub, &opts);
+        let mut child = cmd.spawn().expect("stub must spawn");
+        let status = child.wait().expect("stub must exit");
+        assert!(status.success(), "stub exited non-zero: {status:?}");
+
+        for (key, prior) in prior {
+            match prior {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        for (key, _) in ambient {
+            assert!(
+                !real_env.contains(&format!("{key}=")),
+                "`{key}` leaked into the real spawned aa-proxy child's environment"
             );
         }
     }
