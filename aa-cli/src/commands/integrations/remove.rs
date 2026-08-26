@@ -49,6 +49,7 @@ use crate::output::OutputFormat;
 use super::model::{RemoveReport, RuntimeInfo};
 use super::render::{emit, Report};
 use super::session::{Failure, SessionOptions};
+use super::target::Target;
 use super::{confirm, exit::Outcome, open, resolve_tool, run_blocking, verb_failure};
 
 /// What `remove` reports, and why a teardown loop does not need to special-case
@@ -101,6 +102,7 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
         let mut session = open(options).await?;
         // Removal must work for a tool that has since been uninstalled — the
         // configuration it wrote is still there — so detection is not required.
+        let target = Target::here()?;
         resolve_tool(&mut session, &args.tool, false).await?;
         let runtime = RuntimeInfo::from_session(&session);
 
@@ -109,7 +111,11 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
         // tears down in a loop should not have to special-case the second run.
         // Decided from the lifecycle *phase* rather than by reading the error
         // the service would otherwise return — prose is for people.
-        let status = session.client.status(&args.tool).await.map_err(verb_failure)?;
+        let status = session
+            .client
+            .status(&args.tool, target.as_request())
+            .await
+            .map_err(verb_failure)?;
         if !matches!(
             status.phase.as_str(),
             "installed" | "partially_installed" | "removal_pending"
@@ -132,7 +138,11 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
 
         // Author first: no plan id means the service returns the reversal
         // without performing it.
-        let preview = session.client.remove(&args.tool, "").await.map_err(verb_failure)?;
+        let preview = session
+            .client
+            .remove(&args.tool, "", target.as_request())
+            .await
+            .map_err(verb_failure)?;
         let preview_report = RemoveReport::from_view(runtime.clone(), &preview, true);
 
         if args.dry_run {
@@ -173,7 +183,7 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
 
         let removed = session
             .client
-            .remove(&args.tool, &preview.plan_id)
+            .remove(&args.tool, &preview.plan_id, target.as_request())
             .await
             .map_err(verb_failure)?;
         emit(&RemoveReport::from_view(runtime, &removed, false), output);

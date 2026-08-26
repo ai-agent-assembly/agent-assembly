@@ -101,7 +101,7 @@ pub fn run(args: PlanArgs, options: SessionOptions, output: OutputFormat) -> Exi
 /// is how a user ends up consenting to something they were not shown.
 pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<PlanReport, Failure> {
     let scope = resolve_scope(args)?;
-    let project_root = resolve_project_root(scope)?;
+    let project_root = super::target::project_root_for_plan(scope)?;
     resolve_tool(session, &args.tool, true).await?;
     let runtime = RuntimeInfo::from_session(session);
     let view = session
@@ -121,72 +121,6 @@ pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<Pla
         .await
         .map_err(verb_failure)?;
     Ok(PlanReport::from_view(runtime, &view))
-}
-
-/// The project this invocation is in, resolved **here** rather than by the
-/// service (AAASM-5913).
-///
-/// # Why the client, and why per invocation
-///
-/// "The project" means the directory the user ran this command from. Only this
-/// process knows that. The service on the other end of the socket is a daemon
-/// shared by every client on the host and started once, from whichever directory
-/// happened to launch it — so a service that resolved the project itself was
-/// answering a different question and writing to a repository the user never
-/// named. Resolving it here, on every invocation, is what makes two callers in
-/// two projects reach two projects.
-///
-/// It is sent at every scope, not only `project`. At `user` and `managed` scope
-/// the service uses it for one thing: disclosing in the plan that a project
-/// configuration exists nearby and will be left alone. That warning was
-/// previously computed against the *daemon's* directory, which made it a
-/// statement about a repository the user was not in.
-///
-/// An unreadable working directory is reported, not silently dropped: at
-/// `project` scope the service refuses, and a user who is told "the project could
-/// not be determined" can act, where a user told nothing cannot.
-///
-/// # Why a path that is not UTF-8 is refused rather than displayed
-///
-/// The wire field is a proto `string`, so the path has to be valid UTF-8 to
-/// cross it. [`Path::display`](std::path::Path::display) will always produce
-/// *something* — it substitutes `U+FFFD` for each byte it cannot decode — and
-/// the something it produces is still absolute, still existing-looking, and a
-/// **different directory**. The service would accept it and write into a
-/// phantom sibling of the project the user is actually in. Refusing is the only
-/// answer that does not act on a path nobody named.
-fn resolve_project_root(scope: &str) -> Result<String, Failure> {
-    let dir = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(_) if scope != ScopeArg::Project.as_wire() => return Ok(String::new()),
-        Err(e) => {
-            return Err(Failure::new(
-                Outcome::Aborted,
-                format!("nothing was changed: this project's directory could not be determined ({e})"),
-                "run the command from an existing, readable directory, or choose --scope user",
-            ))
-        }
-    };
-    nameable_on_the_wire(&dir)
-}
-
-/// `dir` as the wire can carry it, or a refusal.
-///
-/// Split out from [`resolve_project_root`] so the refusal can be tested against
-/// a synthetic path: a process cannot portably put itself in a directory whose
-/// name is not UTF-8.
-fn nameable_on_the_wire(dir: &std::path::Path) -> Result<String, Failure> {
-    dir.to_str().map(str::to_string).ok_or_else(|| {
-        Failure::new(
-            Outcome::Aborted,
-            format!(
-                "nothing was changed: this directory's name is not valid UTF-8 ({}), so it cannot be \
-                 named to the service without changing which directory it refers to",
-                dir.display()
-            ),
-            "run the command from a directory whose path is valid UTF-8",
-        )
-    })
 }
 
 /// The scope this plan writes, refusing the administrator surface unless it was
@@ -244,27 +178,6 @@ mod tests {
         assert_eq!(failure.outcome, Outcome::Aborted);
         assert!(failure.remediation.contains("--install-managed-settings"), "{failure}");
         assert!(failure.to_string().contains("nothing was changed"), "{failure}");
-    }
-
-    #[test]
-    fn a_directory_that_cannot_be_named_on_the_wire_is_refused_not_approximated() {
-        use std::os::unix::ffi::OsStrExt;
-
-        let ordinary = std::path::Path::new("/synthetic/project");
-        assert_eq!(
-            nameable_on_the_wire(ordinary).expect("UTF-8 crosses the wire"),
-            "/synthetic/project"
-        );
-
-        // `Path::display` would happily render this as `/synthetic/proje?ct`,
-        // which is absolute, plausible, and a *different* directory — the
-        // service would accept it and write into a phantom sibling.
-        let undisplayable = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/synthetic/proje\xffct"));
-        assert!(undisplayable.to_str().is_none(), "the fixture must not be UTF-8");
-        let failure = nameable_on_the_wire(undisplayable).expect_err("must refuse");
-        assert_eq!(failure.outcome, Outcome::Aborted);
-        assert!(failure.to_string().contains("nothing was changed"), "{failure}");
-        assert!(failure.to_string().contains("not valid UTF-8"), "{failure}");
     }
 
     #[test]

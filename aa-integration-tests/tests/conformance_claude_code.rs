@@ -1106,7 +1106,8 @@ async fn a_tampered_receipt_is_refused_rather_than_believed() -> anyhow::Result<
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     use aa_runtime::devint::{
-        DevIntClient, DevIntServer, DevIntServerConfig, DevIntServices, TokenScope, TokenStore, ToolScope,
+        DevIntClient, DevIntServer, DevIntServerConfig, DevIntServices, TargetRequest, TokenScope, TokenStore,
+        ToolScope,
     };
 
     let h = ConformanceHarness::start().await?;
@@ -1177,8 +1178,17 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
                     .err(),
             ),
             ("apply", client.apply("claude-code", "any-plan").await.err()),
-            ("repair", client.repair("claude-code").await.err()),
-            ("remove", client.remove("claude-code", "any-plan").await.err()),
+            (
+                "repair",
+                client.repair("claude-code", TargetRequest::default()).await.err(),
+            ),
+            (
+                "remove",
+                client
+                    .remove("claude-code", "any-plan", TargetRequest::default())
+                    .await
+                    .err(),
+            ),
         ] {
             assert!(outcome.is_some(), "the {label} token performed `{verb}` on claude-code");
         }
@@ -1194,7 +1204,7 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        reader.status("claude-code").await.is_ok(),
+        reader.status("claude-code", TargetRequest::default()).await.is_ok(),
         "a read-only token must still be able to read status"
     );
     let mut stranger = DevIntClient::connect(
@@ -1205,15 +1215,15 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        stranger.status("claude-code").await.is_err(),
+        stranger.status("claude-code", TargetRequest::default()).await.is_err(),
         "a token scoped to another tool must not read this one's status"
     );
 
     // A connection with no token at all is denied every verb, with no anonymous
     // tier to fall back to.
     let mut anonymous = DevIntClient::connect(&socket, "conformance", env!("CARGO_PKG_VERSION"), None).await?;
-    assert!(anonymous.status("claude-code").await.is_err());
-    assert!(anonymous.repair("claude-code").await.is_err());
+    assert!(anonymous.status("claude-code", TargetRequest::default()).await.is_err());
+    assert!(anonymous.repair("claude-code", TargetRequest::default()).await.is_err());
 
     shutdown.cancel();
     let _ = serving.await;

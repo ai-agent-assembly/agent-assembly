@@ -50,7 +50,7 @@ use aa_core::dev_tool::DevToolKind;
 use aa_core::integration::ReceiptStore;
 use aa_runtime::devint::fixture::{FixtureContent, FixtureIntegration};
 use aa_runtime::devint::{
-    DevIntServer, DevIntServerConfig, DevIntServices, EngineLifecycle, RegisteredIntegration, TokenStore,
+    DevIntServer, DevIntServerConfig, DevIntServices, EngineLifecycle, RegisteredIntegration, TargetRequest, TokenStore,
 };
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -292,7 +292,7 @@ fn the_service_refuses_the_remove_verb_without_a_receipt() {
         // Even that is refused, which is what makes the uninstalled case
         // plan-*less* rather than holding a plan nobody named.
         let refusal = client
-            .remove("claude-code", "")
+            .remove("claude-code", "", TargetRequest::default())
             .await
             .expect_err("the service authored a removal plan for a tool it holds no receipt for");
         let rendered = format!("{refusal:?}");
@@ -303,7 +303,10 @@ fn the_service_refuses_the_remove_verb_without_a_receipt() {
 
         // …and the verb the CLI actually sends first does not refuse, which is
         // why the CLI can short-circuit before ever seeing the refusal above.
-        let status = client.status("claude-code").await.expect("status");
+        let status = client
+            .status("claude-code", TargetRequest::default())
+            .await
+            .expect("status");
         assert_eq!(status.phase, "detected_not_integrated", "{status:?}");
     });
 }

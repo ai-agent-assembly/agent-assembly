@@ -53,7 +53,7 @@
 //! place is on the other side of the wire.
 
 use super::apply_outcome::{ApplyMutation, MutationUnknown};
-use super::client::{ClientError, DevIntClient, PlanRequest};
+use super::client::{ClientError, DevIntClient, PlanRequest, TargetRequest};
 use super::negotiate::{
     DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_POLICY_POSTURE_SINCE,
     DI_API_PROJECT_ROOT_SINCE, DI_API_PROVENANCE_SINCE,
@@ -156,7 +156,7 @@ async fn an_older_peer_keeps_every_verb_it_had() {
         }
         // …and a verb actually answers, not merely reports itself available.
         assert!(
-            client.status(&claude_code_id()).await.is_ok(),
+            client.status(&claude_code_id(), TargetRequest::default()).await.is_ok(),
             "v{version} must still be able to call the lifecycle"
         );
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
@@ -442,7 +442,7 @@ async fn v6_is_required_for_project_scope_and_an_older_peer_is_refused_before_th
         // gate that half-wrote a frame would desync every later call on a
         // connection the caller has every reason to keep using.
         assert!(
-            client.status(&claude_code_id()).await.is_ok(),
+            client.status(&claude_code_id(), TargetRequest::default()).await.is_ok(),
             "v{version} lost the connection to a refusal that never reached the wire"
         );
     }
