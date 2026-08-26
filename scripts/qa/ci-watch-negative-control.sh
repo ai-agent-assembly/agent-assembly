@@ -100,6 +100,11 @@ verdict_name() {
 # Runs one implementation across a fixture for N wakeups, echoing the verdict
 # of the LAST wakeup. A fresh cursor dir per invocation of this function is
 # what makes each case independent.
+# AA_QA_CI_WATCH_SELFTEST=1 is the opt-in that unlocks fixture mode, and this
+# harness is the only thing that sets it. It is exported per command rather
+# than once at the top of the file on purpose: an exported variable that
+# outlives its intended scope is precisely how a real `poll --repo … --pr …`
+# came to be answered by a scripted `pass`.
 run_wakeups() {
   local impl="$1" fixture="$2" wakeups="$3"
   shift 3
@@ -107,6 +112,7 @@ run_wakeups() {
   cursor="$(mktemp -d)"
   local code=0
   for _ in $(seq 1 "$wakeups"); do
+    AA_QA_CI_WATCH_SELFTEST=1 \
     AA_QA_CI_WATCH_FIXTURE="$FIXTURES/$fixture" \
     AA_QA_CI_WATCH_CURSOR_DIR="$cursor" \
       python3 "$impl" poll --retries 0 "$@" >/dev/null 2>&1
@@ -185,6 +191,64 @@ assert_real_only() {
     FAILED=1
   fi
 }
+
+# Some properties are not verdicts at all — they are refusals to produce one.
+# Those cannot be asserted by comparing exit codes against a wrong watcher, so
+# they get their own shape: run the real script directly and require that it
+# declines, for the stated reason.
+# Usage: assert_refuses DESC NEEDLE VAR=VAL... -- [poll args...]
+assert_refuses() {
+  local desc="$1" needle="$2"
+  shift 2
+  local -a envs=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    envs+=("$1")
+    shift
+  done
+  [ "${1-}" = "--" ] && shift
+  local out code
+  out="$(env "${envs[@]+"${envs[@]}"}" python3 "$WATCH" poll --retries 0 "$@" 2>&1)"
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  ✗ $desc: exited 0 — it answered instead of refusing"
+    FAILED=1
+    return
+  fi
+  case "$code" in
+    20 | 21 | 22 | 23)
+      echo "  ✗ $desc: exited $code, i.e. it produced a VERDICT about a world it"
+      echo "    should have refused to answer for"
+      FAILED=1
+      return
+      ;;
+  esac
+  if printf '%s' "$out" | grep -q -- "$needle"; then
+    echo "  ✓ $desc (refused, exit $code, cites \"$needle\")"
+  else
+    echo "  ✗ $desc: refused with exit $code but did not cite \"$needle\":"
+    printf '    %s\n' "$out"
+    FAILED=1
+  fi
+}
+
+echo "== Guard: fixture mode cannot answer for a real pull request =="
+echo "   AA_QA_CI_WATCH_FIXTURE alone used to select fixture mode, ahead of"
+echo "   --repo/--pr — so a variable left exported in a shell turned a real"
+echo "   poll into a scripted replay that reported pass and exit 0 without"
+echo "   contacting GitHub. A gate whose verdict the environment can supply is"
+echo "   not a gate, so both halves of the lock are asserted here."
+assert_refuses "the self-test opt-in is required to replay a fixture" \
+  "AA_QA_CI_WATCH_SELFTEST" \
+  "AA_QA_CI_WATCH_FIXTURE=$FIXTURES/case-d-already-terminal.json" --
+# The fixture named here is case D, whose scripted world reports `pass` on the
+# very first look. That is deliberate: if the lock ever comes off, this call
+# does not merely stop refusing — it returns exit 0, which is the false green
+# in its exact original form.
+assert_refuses "a named --repo/--pr is never answered from a fixture" \
+  "refusing to answer" \
+  "AA_QA_CI_WATCH_SELFTEST=1" \
+  "AA_QA_CI_WATCH_FIXTURE=$FIXTURES/case-d-already-terminal.json" \
+  -- --repo ai-agent-assembly/agent-assembly --pr 2237
 
 echo "== Case A (TEST A): pending at wakeup 1, success at wakeup 2 =="
 echo "   Proves the watcher RE-QUERIES. A cached first observation reports"

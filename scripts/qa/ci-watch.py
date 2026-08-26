@@ -410,7 +410,37 @@ VERDICT_EXIT = {
 
 
 def build_source(args: argparse.Namespace):
+    """The observation source, with fixture mode kept out of reach of real runs.
+
+    Fixture mode used to be selected by `AA_QA_CI_WATCH_FIXTURE` alone, ahead
+    of `--repo`/`--pr` — so an exported variable left in a shell (or inherited
+    by a CI step) turned a real `poll --repo … --pr …` into a scripted replay
+    that reported `pass` and exit 0 without contacting GitHub. A gate whose
+    own verdict can be supplied by the environment is not a gate.
+
+    Two conditions now, and both are required:
+
+    * `AA_QA_CI_WATCH_SELFTEST=1` — the caller states that a simulated world is
+      what it wants. Nothing but the negative-control harness sets it.
+    * no `--repo`/`--pr` — a caller that named a real PR is asking about that
+      PR. Answering from a fixture instead is the failure mode above, so it is
+      refused loudly rather than silently preferred.
+    """
     fixture = os.environ.get("AA_QA_CI_WATCH_FIXTURE")
+    selftest = os.environ.get("AA_QA_CI_WATCH_SELFTEST") == "1"
+    if fixture and not selftest:
+        raise SystemExit(
+            "AA_QA_CI_WATCH_FIXTURE is set but AA_QA_CI_WATCH_SELFTEST=1 is "
+            "not. Fixture mode replays a scripted world and must never answer "
+            "for a real PR; unset the variable, or set the self-test opt-in if "
+            "you are running scripts/qa/ci-watch-negative-control.sh."
+        )
+    if fixture and (args.repo or args.pr):
+        raise SystemExit(
+            "refusing to answer for --repo/--pr from a fixture: you asked "
+            "about a real pull request, and a scripted reply would be a "
+            "verdict about something else. Unset AA_QA_CI_WATCH_FIXTURE."
+        )
     if fixture:
         cursor_dir = Path(
             os.environ.get("AA_QA_CI_WATCH_CURSOR_DIR", "/tmp/aa-qa-ci-watch")
