@@ -688,6 +688,16 @@ impl LaunchableTool for CodexIntegration {
     /// The launch environment the install materialised is applied first, then
     /// the caller's own [`LaunchSpec::env`], so a caller can override a
     /// variable for one run without editing what the receipt records.
+    ///
+    /// ADR 0036 D6: this method has **no production caller today** — `aasm run
+    /// codex` reaches the tool via `CodexAdapter::build_launch_command` (the
+    /// `self.adapter.build_launch_command` call below), which the outer
+    /// `aa-cli::spawn_and_wait`/`effective_child_env` boundary already
+    /// sanitizes (D6 review #8: that is the one real spawn). Do NOT add an
+    /// `env_remove` here defensively — see the identical note on
+    /// `ClaudeCodeIntegration::build_launch_command` for why duplicating
+    /// removal without a confirmed real caller repeats a mistake ADR 0036's
+    /// review process already corrected once.
     fn build_launch_command(&self, spec: &LaunchSpec) -> Result<std::process::Command, AdapterError> {
         use aa_devtool_contract::DevToolAdapter as _;
         let mut cmd =
