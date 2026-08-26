@@ -47,6 +47,10 @@ aa-devtool  = { path = "../aa-devtool" }
 # express. The override constructor is what keeps the harness off the developer's
 # real `~/.claude/settings.json`.
 aa-devtool-claude-code = { path = "../aa-devtool-claude-code" }
+# AAASM-5920: same reason as aa-devtool-claude-code above — the CA-trust
+# launch-environment test drives CodexIntegration::with_paths/with_adapter
+# directly, which the `aa-devtool` registry's `::default()` cannot express.
+aa-devtool-codex = { path = "../aa-devtool-codex" }
 aa-devtool-contract = { path = "../aa-devtool-contract" }
 aa-gateway  = { path = "../aa-gateway" }
 # AAASM-5751. The filesystem path-scope round trip crosses three crates that
@@ -89,11 +93,14 @@ libc        = { workspace = true }
 moka        = { workspace = true, features = ["future"] }
 portpicker  = "0.1"
 prost       = { workspace = true }
-reqwest     = { workspace = true, features = ["json", "rustls"] }
+reqwest     = { workspace = true, features = ["json", "rustls", "blocking"] }
 rustls      = { workspace = true, features = ["ring"] }
 tokio-rustls = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 rstest      = { workspace = true }
 serde       = { workspace = true, features = ["derive"] }
+url         = { workspace = true }
 rust_decimal = { workspace = true }
 serde_json  = { workspace = true }
 serde_yaml  = { workspace = true }

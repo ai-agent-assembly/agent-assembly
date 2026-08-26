@@ -1385,6 +1385,21 @@ mod plan {
                     "warning: --no-proxy — launching WITHOUT interception. This session's traffic is \
                      not inspected and no egress policy applies to it."
                 );
+            } else if super::ambient_proxy_is_set() {
+                // AAASM-5892: `build_child_env` always replaces an ambient
+                // `HTTPS_PROXY`/`HTTP_PROXY` with the trusted governed endpoint
+                // (correctly — an ambient value is not authoritative, see that
+                // function's doc comment). That override was previously silent,
+                // so an operator whose pre-existing proxy also performed
+                // authentication saw only a downstream auth failure with no clue
+                // AASM had touched their routing. Name-only: the value itself is
+                // never printed.
+                eprintln!(
+                    "warning: an ambient HTTPS_PROXY/HTTP_PROXY is set and will be replaced by this \
+                     launch's governed proxy endpoint. If that proxy also performs authentication for \
+                     your environment, this session may fail to authenticate; re-run with --no-proxy \
+                     to keep your own proxy instead."
+                );
             }
 
             // 3. AAASM-5350 AC 1: `--no-proxy` is refused where a party other
@@ -1979,6 +1994,16 @@ fn emit_observe_banner() {
     eprintln!("    Review captured events: aasm audit list --dry-run-only");
 }
 
+/// Whether a non-empty `HTTPS_PROXY`/`HTTP_PROXY` is already set in this
+/// process's environment — i.e. what a governed launch is about to override.
+/// Presence-only, by design: callers warn that an ambient proxy exists, never
+/// what it points at (AAASM-5892/5897).
+fn ambient_proxy_is_set() -> bool {
+    ["HTTPS_PROXY", "HTTP_PROXY"]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|v| !v.is_empty()))
+}
+
 /// Build the environment map to be inherited by the child process.
 ///
 /// Starts from the current process environment, then overlays governance
@@ -2059,14 +2084,63 @@ fn build_child_env(
 /// refusal: an unreadable receipt is not evidence that someone required managed
 /// operation, and refusing on it would turn a corrupt file into a policy. The
 /// managed-settings source is unaffected and still refuses on its own.
+///
+/// # Scope (AAASM-5907)
+///
+/// Checks the Project-scope receipt for this launch's `cwd` *before* falling
+/// back to User scope — Claude Code's own settings precedence layers Project
+/// over User, so a project explicitly installed at `--scope project` must not
+/// be silently invisible to this refusal just because it isn't the machine-wide
+/// default.
+///
+/// [`ReceiptStore`](aa_core::integration::ReceiptStore) keys a receipt on
+/// `(tool, scope)` alone, **not** on which project root it was installed
+/// into — there is exactly one Project-scope receipt slot per tool on the
+/// whole machine, shared across every project that ever installed at that
+/// scope. Trusting it here for *any* cwd would misfire in an unrelated
+/// directory that happens to have no relationship to the installed project.
+/// So the Project-scope receipt is honoured only when its
+/// `WriteManagedSettings` step's recorded `path` — the exact file the install
+/// wrote, named at install time, never inferred from `cwd`
+/// ([`StepAction::WriteManagedSettings`](aa_core::integration::step::StepAction::WriteManagedSettings))
+/// — equals the Project-scope settings path for *this* `cwd`. A path match
+/// means this cwd is (or was) the project that receipt was written for; a
+/// mismatch or unresolvable `cwd` falls through to the User-scope check
+/// unchanged.
 fn no_proxy_refusal(tool: &str) -> Option<crate::commands::run_no_proxy_guard::RefusalSource> {
-    let kind = aa_devtool::registry::kind_for(tool)?;
-    let scope = aa_core::integration::step::SettingsScope::User;
+    use aa_core::integration::step::{SettingsScope, StepAction};
 
-    let receipt_profile = aa_core::integration::ReceiptStore::default_location()
+    let kind = aa_devtool::registry::kind_for(tool)?;
+    let store = aa_core::integration::ReceiptStore::default_location().ok()?;
+
+    let project_profile = std::env::current_dir().ok().and_then(|cwd| {
+        let paths = aa_devtool_claude_code::scope::ClaudeCodePaths::from_env().with_project(cwd);
+        let expected_path = paths.settings_path(SettingsScope::Project).ok()?;
+        let receipt = store.load_receipt(&kind, SettingsScope::Project).ok().flatten()?;
+        let installed_here = receipt.steps.iter().any(|step| {
+            matches!(
+                &step.action,
+                StepAction::WriteManagedSettings { scope: SettingsScope::Project, path, .. }
+                    if *path == expected_path
+            )
+        });
+        installed_here.then_some(receipt.profile)
+    });
+
+    let user_profile = store
+        .load_receipt(&kind, SettingsScope::User)
         .ok()
-        .and_then(|store| store.load_receipt(&kind, scope).ok().flatten())
+        .flatten()
         .map(|receipt| receipt.profile);
+
+    // Project takes precedence when both exist, mirroring Claude Code's own
+    // Project-over-User settings layering. `scope` travels with whichever
+    // profile was actually used, so a reported refusal names the scope that
+    // caused it rather than always claiming User.
+    let (scope, receipt_profile) = match project_profile {
+        Some(profile) => (SettingsScope::Project, Some(profile)),
+        None => (SettingsScope::User, user_profile),
+    };
 
     let managed = aa_devtool_claude_code::managed_settings::managed_installation_evidence().ok();
 
@@ -3462,6 +3536,19 @@ mod tests {
             }
             Self { _lock: lock, prior }
         }
+
+        /// Removes both vars for the duration of the guard, so a test that
+        /// asserts "no ambient proxy" is not just inheriting whatever happened
+        /// to be unset in this process already.
+        fn clear() -> Self {
+            let lock = crate::test_support::env_guard();
+            let mut prior = Vec::new();
+            for key in ["HTTPS_PROXY", "HTTP_PROXY"] {
+                prior.push((key, std::env::var(key).ok()));
+                std::env::remove_var(key);
+            }
+            Self { _lock: lock, prior }
+        }
     }
 
     impl Drop for AmbientProxy {
@@ -3600,6 +3687,191 @@ mod tests {
         assert!(
             !env.contains_key("HTTP_PROXY"),
             "an unvouched-for ambient HTTP_PROXY must not reach the child"
+        );
+    }
+
+    // --- ambient_proxy_is_set tests (AAASM-5892/5897) ---
+
+    /// Vanilla launch, no ambient proxy: the AAASM-5897 warning must not fire.
+    #[test]
+    fn ambient_proxy_is_set_is_false_with_no_ambient_proxy() {
+        let _ambient = AmbientProxy::clear();
+        assert!(
+            !ambient_proxy_is_set(),
+            "no ambient HTTPS_PROXY/HTTP_PROXY was set; the warning's precondition must not fire"
+        );
+    }
+
+    /// The AAASM-5892 incident shape: an operator (or CC-Switch, or a corporate
+    /// shell profile) already has a proxy configured. This is exactly the case
+    /// the new warning exists to surface before `build_child_env` silently
+    /// overrides it.
+    #[test]
+    fn ambient_proxy_is_set_is_true_with_a_real_ambient_proxy() {
+        let _ambient = AmbientProxy::set("http://corporate:3128");
+        assert!(
+            ambient_proxy_is_set(),
+            "a real ambient HTTPS_PROXY/HTTP_PROXY was set; the warning's precondition must fire"
+        );
+    }
+
+    /// An empty-string env var is not a configured proxy. Some shells/CI carry
+    /// `HTTPS_PROXY=` unset-but-present; treating that as "ambient" would warn
+    /// on every such launch for nothing to report.
+    #[test]
+    fn ambient_proxy_is_set_is_false_for_an_empty_value() {
+        let _ambient = AmbientProxy::set("");
+        assert!(
+            !ambient_proxy_is_set(),
+            "an empty-string HTTPS_PROXY/HTTP_PROXY is not a configured ambient proxy"
+        );
+    }
+
+    // --- no_proxy_refusal scope-awareness tests (AAASM-5907) ---
+
+    /// Pins `AASM_STATE_DIR` and the process cwd for the duration of the guard,
+    /// so `no_proxy_refusal`'s real `ReceiptStore::default_location()` and
+    /// `std::env::current_dir()` calls land in an isolated fixture instead of
+    /// this developer's real `~/.aasm` and worktree.
+    struct ReceiptFixture {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _state_dir: tempfile::TempDir,
+        prior_state_dir: Option<String>,
+        prior_cwd: PathBuf,
+    }
+
+    impl ReceiptFixture {
+        /// `project_root` becomes the process cwd; a Project-scope receipt is
+        /// written only when `install_at` is given, with its
+        /// `WriteManagedSettings` step's `path` set to `install_at`'s
+        /// `.claude/settings.json` — deliberately *not* always `project_root`,
+        /// so a test can construct "a receipt for a different project" to prove
+        /// the path-match, not just presence, is what gates the refusal.
+        fn new(project_root: &std::path::Path, install_at: Option<&std::path::Path>) -> Self {
+            let lock = crate::test_support::env_guard();
+            let state_dir = tempfile::tempdir().expect("tempdir");
+            let prior_state_dir = std::env::var("AASM_STATE_DIR").ok();
+            let prior_cwd = std::env::current_dir().expect("current cwd");
+            std::env::set_var("AASM_STATE_DIR", state_dir.path());
+            std::env::set_current_dir(project_root).expect("set cwd to fixture project root");
+
+            // macOS's tempdir lives under a `/var/folders/...` path that is
+            // itself a symlink to `/private/var/folders/...`. `set_current_dir`
+            // above followed by the real `no_proxy_refusal`'s
+            // `std::env::current_dir()` returns the *canonical* form, so any
+            // path built from the raw tempdir path here would never string-match
+            // it — a test-harness artifact, not the production path-match logic
+            // this fixture exists to exercise. Canonicalize before building any
+            // path so the fixture agrees with what the code under test actually
+            // sees.
+            if let Some(install_root) = install_at {
+                let install_root = install_root.canonicalize().expect("canonicalize install root");
+                let settings_path = install_root.join(".claude").join("settings.json");
+                let step = aa_core::integration::step::IntegrationStep::new(
+                    "settings",
+                    aa_core::integration::step::StepAction::WriteManagedSettings {
+                        scope: aa_core::integration::step::SettingsScope::Project,
+                        path: settings_path,
+                        managed_keys: vec!["permissions".to_string()],
+                        content_sha256: "test-fixture-sha".to_string(),
+                        merge: aa_core::integration::step::SettingsMerge::MergeManagedKeys,
+                    },
+                    "write the managed settings block",
+                );
+                let receipt = aa_core::integration::IntegrationReceipt {
+                    schema_version: aa_core::integration::LIFECYCLE_SCHEMA_VERSION,
+                    receipt_id: "test-receipt".to_string(),
+                    plan_id: "test-plan".to_string(),
+                    tool: aa_core::DevToolKind::ClaudeCode,
+                    profile: aa_core::integration::ProtectionProfile::Strict,
+                    settings_scope: aa_core::integration::step::SettingsScope::Project,
+                    applied_at_unix_secs: 1_000_000,
+                    versions: aa_core::integration::version::ComponentVersions {
+                        core: aa_core::integration::version::core_version(),
+                        adapter: aa_core::integration::version::ToolVersion::new(0, 1, 0),
+                        lifecycle_schema: aa_core::integration::LIFECYCLE_SCHEMA_VERSION,
+                    },
+                    tool_version: None,
+                    steps: vec![aa_core::integration::StepReceipt::applied(&step, None)],
+                    planned_level: aa_core::integration::state::ProtectionLevel::GatewayProtected,
+                    achieved_level: aa_core::integration::state::ProtectionLevel::GatewayProtected,
+                    achieved_evidence: Vec::new(),
+                    verified_at_unix_secs: Some(1_000_000),
+                };
+                // `ReceiptStore::default_location()` — what `no_proxy_refusal`
+                // actually reads through — resolves to `$AASM_STATE_DIR/integrations`,
+                // not `$AASM_STATE_DIR` itself. Constructing the store the same way
+                // here (rather than `ReceiptStore::at(state_dir.path())`) is what
+                // makes this fixture's save land where the code under test looks.
+                aa_core::integration::store::ReceiptStore::default_location()
+                    .expect("resolve default receipt store location")
+                    .save_receipt(&receipt)
+                    .expect("save fixture receipt");
+            }
+
+            Self {
+                _lock: lock,
+                _state_dir: state_dir,
+                prior_state_dir,
+                prior_cwd,
+            }
+        }
+    }
+
+    impl Drop for ReceiptFixture {
+        fn drop(&mut self) {
+            match &self.prior_state_dir {
+                Some(v) => std::env::set_var("AASM_STATE_DIR", v),
+                None => std::env::remove_var("AASM_STATE_DIR"),
+            }
+            let _ = std::env::set_current_dir(&self.prior_cwd);
+        }
+    }
+
+    /// The AAASM-5906/5907 correctness requirement: a Project-scope receipt
+    /// exists globally per `(tool, scope)`, not per project root, so it must
+    /// only be honoured when its recorded settings path matches *this* cwd.
+    #[test]
+    fn no_proxy_refusal_honours_a_project_scope_receipt_installed_at_this_cwd() {
+        let project = tempfile::tempdir().expect("project tempdir");
+        let _fixture = ReceiptFixture::new(project.path(), Some(project.path()));
+
+        let refusal = no_proxy_refusal("claude");
+        assert!(
+            matches!(
+                refusal,
+                Some(crate::commands::run_no_proxy_guard::RefusalSource::StrictProfile { .. })
+            ),
+            "a Project-scope Strict receipt installed at this exact cwd must refuse --no-proxy, got {refusal:?}"
+        );
+    }
+
+    /// The receipt-store's lack of project-root binding (AAASM-5906 correction)
+    /// must not let a Project-scope receipt for a *different* project leak into
+    /// an unrelated directory's refusal decision.
+    #[test]
+    fn no_proxy_refusal_ignores_a_project_scope_receipt_installed_elsewhere() {
+        let other_project = tempfile::tempdir().expect("other project tempdir");
+        let this_project = tempfile::tempdir().expect("this project tempdir");
+        let _fixture = ReceiptFixture::new(this_project.path(), Some(other_project.path()));
+
+        let refusal = no_proxy_refusal("claude");
+        assert!(
+            refusal.is_none(),
+            "a Project-scope receipt installed at a different path must not refuse --no-proxy here, got {refusal:?}"
+        );
+    }
+
+    /// No receipt at all, either scope: the ordinary unconfigured case must stay
+    /// silent, exactly as before this ticket.
+    #[test]
+    fn no_proxy_refusal_is_none_with_no_receipt_at_all() {
+        let project = tempfile::tempdir().expect("project tempdir");
+        let _fixture = ReceiptFixture::new(project.path(), None);
+
+        assert!(
+            no_proxy_refusal("claude").is_none(),
+            "no receipt at either scope must mean no refusal"
         );
     }
 

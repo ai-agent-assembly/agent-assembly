@@ -125,6 +125,19 @@ jobs:
         # what pushed this workflow past the 20-minute timeout-minutes ceiling.
         run: cargo build --quiet -p aa-cli --bin aasm
 
+      - name: Pre-build aa-api-server binary (AAASM-5908)
+        # Same rationale as the aasm pre-build above, for the same reason:
+        # `common::api_server::ApiServerProcess::resolve_binary` invokes
+        # `cargo build -p aa-api --bin aa-api-server` the first time any test
+        # spawns a real server, and under nextest's per-test-binary process
+        # isolation that first invocation lands on whichever test file happens
+        # to run first — observed costing 264s in one run (job
+        # 97739259633, test e2e_api_server_graceful_shutdown), on a workflow
+        # already living close to its 30-minute ceiling. Building it here once
+        # keeps every later `cargo build` invocation a fast no-op freshness
+        # check instead of a cold compile landing unpredictably on one test.
+        run: cargo build --quiet -p aa-api --bin aa-api-server
+
       - name: Run integration tests
         env:
           PYTHON_SDK_PATH: ${{ github.workspace }}/python-sdk

@@ -1,0 +1,92 @@
+version: 1
+# AAASM-5893 (Subtask 1 of AAASM-5891's resource-aware QA-campaign scheduler).
+#
+# Declarative pool/class registry consumed by scripts/qa/resource-lock.py.
+# A `pool` owns a kernel `fcntl.flock`-backed concurrency limit against one
+# underlying machine resource; a `class` maps a kind of job onto a pool plus
+# the timeout/progress-signal metadata AAASM-5894's watchdog will read (this
+# subtask's scope stops at the slot mechanism — see that Subtask for the
+# watchdog itself; the fields below are forward-compatible groundwork, not
+# yet enforced by resource-lock.py beyond soft/hard timeout being carried
+# through to the job record).
+#
+# `duplicate_policy: suppress` + the defaults below encode the AAASM-5877
+# incident this Story exists to fix: 3 duplicate `git push` invocations each
+# spawned their own pre-push `cargo doc --workspace --no-deps`, deadlocking
+# on the single shared CARGO_TARGET_DIR lock for ~50 minutes. `resource-lock.py
+# run` refuses a second identical-fingerprint invocation (exit 76) before it
+# ever contends for a slot, rather than letting it queue behind the first.
+defaults:
+  wait_secs: 0
+  soft_timeout_secs: 600
+  hard_timeout_secs: 1800
+  max_wallclock_secs: 21600
+  grace_secs: 20
+  breaker_open_threshold: 3
+  degraded_limit: 0
+  duplicate_policy: suppress
+
+pools:
+  cargo-shared-target:
+    limit: 1
+    root: "${CARGO_TARGET_DIR:-$HOME/.cargo/shared-target}"
+    rationale: >
+      Derived, not chosen. ~/.cargo/config.toml pins one machine-global
+      target-dir, so every cargo invocation already serializes on cargo's
+      own build-directory lock. limit >1 buys no parallelism — only the
+      50-min blocked waiter measured in AAASM-5877.
+  macos-keychain:
+    limit: 1
+    root: "keychain"
+  vm-rootfs:
+    limit: 1
+    root: "${AA_VM_ROOTFS:-}"
+  node-dashboard:
+    limit: 3
+    root: "dashboard/node_modules"
+  lightweight:
+    limit: 6
+    root: null
+
+classes:
+  cargo-doc:
+    pool: cargo-shared-target
+    soft_timeout_secs: 900
+    hard_timeout_secs: 3600
+    progress_signals: [cpu, children, artifact_mtime]
+    artifact_glob: "doc/**"
+  cargo-build-workspace:
+    pool: cargo-shared-target
+    progress_signals: [cpu, children]
+  cargo-nextest-workspace:
+    pool: cargo-shared-target
+    progress_signals: [cpu, children, log_growth]
+    max_wallclock_secs: 7200
+  macos-security:
+    pool: macos-keychain
+    soft_timeout_secs: 120
+    hard_timeout_secs: 300
+    progress_signals: [cpu]
+  vm-start:
+    pool: vm-rootfs
+    soft_timeout_secs: 120
+    hard_timeout_secs: 600
+    progress_signals: [cpu, children]
+  dashboard-build:
+    pool: node-dashboard
+    progress_signals: [cpu, children, log_growth]
+  lint-unit:
+    pool: lightweight
+    soft_timeout_secs: 300
+    hard_timeout_secs: 900
+    progress_signals: [cpu]
+
+advisory:
+  qa_subagents:
+    ceiling: 10
+    enforced: false
+    note: >
+      Not enforceable — the coordinator IS the scheduler; no process sits
+      between it and the Agent tool. Listed here so one registry shows
+      every class, enforced or not, and never implies enforcement it
+      lacks. Authoritative text stays in qa/ORCHESTRATION.md.

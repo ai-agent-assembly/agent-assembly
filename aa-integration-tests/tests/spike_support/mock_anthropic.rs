@@ -35,12 +35,33 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use base64::Engine as _;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::ServerConfig;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio_rustls::TlsAcceptor;
+
+// AAASM-5902: this was one of ~4 near-duplicate `TlsCapturingUpstream`
+// implementations in this crate; it was the most mature (keep-alive handling,
+// exact-byte capture, encoding-aware secret search alongside it), so it was
+// promoted to `common::capturing_upstream` as the shared module and this file
+// now delegates to it rather than carrying its own copy. `#[path]` rather than
+// `crate::common` so binaries that pull in `spike_support` without already
+// declaring `mod common;` don't gain a new required module.
+// `#[allow(dead_code)]`: this file only exercises `start_tls`, so the
+// plain-HTTP half of the promoted module (`start_plain`/`PlainState`/
+// `plain_capture_handler`) is unused *from this compilation of the file*
+// even though `common::capturing_upstream` (compiled separately, see
+// `tests/common/mod.rs`) uses all of it.
+//
+// `#[allow(clippy::duplicate_mod)]`: in a binary that declares both `mod
+// common;` and `mod spike_support;` (only `cli_run_claude_governed_launch.rs`
+// today), `capturing_upstream.rs` is genuinely compiled twice — once as
+// `common::capturing_upstream`, once as this module. That duplication is the
+// intended trade-off described above (a binary that pulls in only
+// `spike_support` stays free of a `mod common;` requirement), not an
+// oversight.
+#[allow(dead_code)]
+#[allow(clippy::duplicate_mod)]
+#[path = "../common/capturing_upstream.rs"]
+mod capturing_upstream_impl;
 
 /// Response body the mock returns for `POST /v1/messages`.
 ///
@@ -216,116 +237,60 @@ async fn capture_handler(
 }
 
 // ── Mechanism A mock: TLS-terminating upstream behind the proxy ─────────────
+//
+// AAASM-5902: thin wrapper over the promoted `capturing_upstream_impl` module
+// (see the `#[path]` declaration above). Preserves this type's original public
+// API exactly (same method set, same `addr` field) so none of its existing
+// call sites (`cli_run_claude_governed_launch.rs`, `claude_code_integration_
+// lifecycle.rs`, `conformance_support::{harness,probe}`) needed to change.
 
 /// TLS-terminating capture upstream, signed by the proxy's own CA.
 ///
 /// `aa-proxy`'s `upstream_override` redirects every upstream dial here, so the
 /// proxy's client connects with `ServerName = api.anthropic.com` and this
-/// server's leaf cert (issued for that name by the same CA) matches. What lands
-/// in [`TlsCapturingUpstream::log`] is the post-scan body the proxy chose to
-/// forward.
+/// server's leaf cert (issued for that name by the same CA) matches. What
+/// [`TlsCapturingUpstream::bodies`] returns is the post-scan body the proxy
+/// chose to forward.
 pub struct TlsCapturingUpstream {
     /// Loopback address to hand to `ProxyConfig::upstream_override`.
     pub addr: SocketAddr,
-    /// Shared request log in arrival order.
-    pub log: RequestLog,
-    _abort: tokio::task::AbortHandle,
+    inner: capturing_upstream_impl::CapturingUpstream,
 }
 
 impl TlsCapturingUpstream {
     /// Start the upstream with a leaf certificate signed by `ca` for `hostname`.
     pub async fn start(ca: &CaStore, hostname: &str) -> anyhow::Result<Self> {
-        let ck = ca
-            .sign_cert(hostname)
-            .map_err(|e| anyhow::anyhow!("ca sign_cert: {e}"))?;
-        let cert = CertificateDer::from(ck.cert_der.clone());
-        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(ck.key_der.clone()));
-        let server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert], key)?;
-        let acceptor = TlsAcceptor::from(Arc::new(server_config));
-
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        let log: RequestLog = Arc::new(Mutex::new(Vec::new()));
-        let log_task = Arc::clone(&log);
-
-        let handle = tokio::spawn(async move {
-            loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let acceptor = acceptor.clone();
-                let log = Arc::clone(&log_task);
-                tokio::spawn(async move {
-                    let Ok(mut tls) = acceptor.accept(stream).await else {
-                        return;
-                    };
-                    // Serve requests until the peer closes: the real `claude`
-                    // binary reuses a keep-alive connection for retries and for
-                    // its side-channel fetches, and dropping after one exchange
-                    // makes those look like network failures.
-                    loop {
-                        match read_one_request(&mut tls).await {
-                            Some(recorded) => {
-                                log.lock().expect("upstream log mutex").push(recorded);
-                                let body = ANTHROPIC_MOCK_RESPONSE.as_bytes();
-                                let head = format!(
-                                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-                                    body.len()
-                                );
-                                if tls.write_all(head.as_bytes()).await.is_err() {
-                                    return;
-                                }
-                                if tls.write_all(body).await.is_err() {
-                                    return;
-                                }
-                                let _ = tls.flush().await;
-                            }
-                            None => return,
-                        }
-                    }
-                });
-            }
-        });
-
+        let opts = capturing_upstream_impl::UpstreamOptions {
+            hostname: hostname.to_owned(),
+            response_body: ANTHROPIC_MOCK_RESPONSE.as_bytes().to_vec(),
+            ..Default::default()
+        };
+        let inner = capturing_upstream_impl::CapturingUpstream::start_tls(ca, opts).await?;
         Ok(Self {
-            addr,
-            log,
-            _abort: handle.abort_handle(),
+            addr: inner.addr,
+            inner,
         })
     }
 
     /// Number of requests recorded so far.
     pub fn request_count(&self) -> usize {
-        self.log.lock().expect("upstream log mutex").len()
+        self.inner.request_count()
     }
 
     /// Snapshot of every recorded body, in arrival order.
     pub fn bodies(&self) -> Vec<Vec<u8>> {
-        self.log
-            .lock()
-            .expect("upstream log mutex")
-            .iter()
-            .map(|r| r.body.clone())
-            .collect()
+        self.inner.requests().into_iter().map(|r| r.body).collect()
     }
 
     /// `(method, path)` of every recorded request, in arrival order.
     pub fn request_lines(&self) -> Vec<(String, String)> {
-        self.log
-            .lock()
-            .expect("upstream log mutex")
-            .iter()
-            .map(|r| (r.method.clone(), r.path.clone()))
-            .collect()
+        self.inner.requests().into_iter().map(|r| (r.method, r.path)).collect()
     }
 
     /// Header names present on the most recent request, lower-cased.
     pub fn last_header_names(&self) -> Vec<String> {
-        self.log
-            .lock()
-            .expect("upstream log mutex")
+        self.inner
+            .requests()
             .last()
             .map(|r| r.headers.iter().map(|(k, _)| k.to_ascii_lowercase()).collect())
             .unwrap_or_default()
@@ -333,80 +298,14 @@ impl TlsCapturingUpstream {
 
     /// Body of the most recent request as UTF-8, when it is valid UTF-8.
     pub fn last_body(&self) -> Option<String> {
-        self.log
-            .lock()
-            .expect("upstream log mutex")
-            .last()
-            .and_then(|r| String::from_utf8(r.body.clone()).ok())
+        self.inner.last_body()
     }
 
     /// Block (async) until at least `n` requests have arrived, or the deadline
     /// expires. Returns the observed count either way.
     pub async fn wait_for_requests(&self, n: usize, timeout: Duration) -> usize {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let count = self.request_count();
-            if count >= n || tokio::time::Instant::now() >= deadline {
-                return count;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        self.inner.wait_for_requests(n, timeout).await
     }
-}
-
-/// Read exactly one `Content-Length`-framed HTTP request off a TLS stream.
-///
-/// Returns `None` on EOF or a malformed head; the caller treats that as
-/// connection close. Chunked transfer-encoding is deliberately unsupported — the
-/// proxy re-frames redacted bodies with an explicit `Content-Length`, and the
-/// real `claude` binary sends one too (measured: `Content-Length: 91153`).
-async fn read_one_request<S>(tls: &mut S) -> Option<RecordedRequest>
-where
-    S: tokio::io::AsyncRead + Unpin,
-{
-    let mut buf: Vec<u8> = Vec::new();
-    let mut tmp = [0u8; 8192];
-    let head_end = loop {
-        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break p;
-        }
-        match tls.read(&mut tmp).await {
-            Ok(0) | Err(_) => return None,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-        }
-    };
-    let head = std::str::from_utf8(&buf[..head_end]).ok()?;
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or_default();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_owned();
-    let path = parts.next().unwrap_or_default().to_owned();
-    let mut headers = Vec::new();
-    let mut content_length = 0usize;
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            let (k, v) = (k.trim().to_owned(), v.trim().to_owned());
-            if k.eq_ignore_ascii_case("content-length") {
-                content_length = v.parse().unwrap_or(0);
-            }
-            headers.push((k, v));
-        }
-    }
-
-    let body_start = head_end + 4;
-    while buf.len() < body_start + content_length {
-        match tls.read(&mut tmp).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
-        }
-    }
-    let end = (body_start + content_length).min(buf.len());
-    Some(RecordedRequest {
-        method,
-        path,
-        headers,
-        body: buf[body_start..end].to_vec(),
-    })
 }
 
 // ── Encoding-aware secret-absence assertion ─────────────────────────────────

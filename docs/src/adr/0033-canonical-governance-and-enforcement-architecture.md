@@ -208,7 +208,7 @@ must report it rather than assume it.
 | --- | --- | --- | --- | --- |
 | **E1** | **Governance Control Plane** | The authority that holds policy, identity, budgets, approvals and audit, and answers decision requests. Holds no traffic. | `aa-gateway` (gRPC: `PolicyService`, `AgentLifecycleService`, `AuditService`, `ApprovalService`, `SecretsService`, `TopologyService`, `InvalidationService` — `aa-gateway/src/server.rs:22-28`), `aa-api` (HTTP/OpenAPI read surface), `aa-storage*` | Platform-independent |
 | **E2** | **Managed Execution Checkpoints** | Points on a *managed path* where an action is presented for a decision before it runs. | `aa-runtime`'s `handle_policy_query` (`fn handle_policy_query`, `aa-runtime/src/pipeline/mod.rs:407`, dispatched from the `IpcFrame::PolicyQuery` arm at `:159-175`); `aa-sdk-client::query_policy` + `resolve_decision` (`aa-sdk-client/src/client.rs:247-279`, `aa-sdk-client/src/decision.rs:58-97`); `aasm run` managed launch (`aa-cli/src/commands/run.rs`); `aa-sandbox` for WASM-marked tools | Checkpoint reachable only if the agent opts in (see §4) |
-| **E3** | **Protocol / Transport Mediation** | A mediator placed on the wire that can refuse, redact or rewrite a request before it leaves the machine. | `aa-proxy` — CONNECT-time egress control, in-tunnel host re-check, credential/DLP scan, MCP `tools/call` adjudication | Unix only; see §5 |
+| **E3** | **Protocol / Transport Mediation** | A mediator placed on the wire that can refuse, redact or rewrite a request before it leaves the machine. | `aa-proxy` — CONNECT-time egress control, in-tunnel host re-check, credential/DLP scan, MCP `tools/call` adjudication. **As of AAASM-5857, instantiated per governed launch** (`ProxyGuard::spawn`, `aa-cli/src/commands/proxy/guard.rs`), not a single shared daemon — see §3.2 | Unix only; see §5 |
 | **E4** | **Platform-Specific Host-Level Interception Adapters** | The *abstraction* for OS-level mediation of processes, files, syscalls and TLS. Each platform needs its own mechanism, and a platform without one has none. | **Linux:** eBPF via the privileged `aa-ebpf-loaderd` (`aa-ebpf/src/bin/loaderd.rs`). **macOS:** no OS-level mediation; an opt-in, authorized managed-settings write is the route to ADR 0030's `HostEnforced` rung (§5.3). **Windows:** none. | Per-platform; see §5 |
 | **E5** | **Credential / Capability Boundary** | What a component is *allowed to ask for*, and how a credential or capability is bound to an identity. | `aa-security` (scanner, redaction, canonical policy AST — a leaf crate with no inherent authority); `credential_token` validation in `PolicyService::check_action` (`aa-gateway/src/service/policy_service.rs:1623-1625`); `did:key` registration (ADR 0004); DI-API capability tokens and the compile-time `aa-devtool-contract` boundary (ADR 0030) | Platform-independent |
 | **E6** | **Evidence & Protection-State Pipeline** | How a protection *claim* is substantiated, degraded, and reported. | ADR 0030 §4's protection-state ladder; adjudication reported by the component that actually decided (`aa-proxy/src/probe_adjudication.rs:1-14`); audit publication; `LayerDegradation` reporting | Platform-independent |
@@ -325,14 +325,43 @@ on process launch and traffic routing, not on architecture.
 | --- | --- | --- |
 | `aa-gateway` | E1 | Operator runs it (local or remote mode) |
 | `aa-runtime` | E2 chokepoint; UDS server at `/tmp/aa-runtime-{agent_id}.sock` (`aa-runtime/src/ipc/server.rs:38`) | Operator runs it |
-| `aa-proxy` | E3 | Binary on `$PATH` **and** started (`aasm proxy start`, PID file at `$AA_DATA_DIR/proxy.pid` — `aa-cli/src/commands/proxy/pid.rs:55-65`) or spawned by `aa-runtime` |
+| `aa-proxy` (standalone) | E3, shared | Binary on `$PATH` **and** started (`aasm proxy start`, PID file at `$AA_DATA_DIR/proxy.pid` — `aa-cli/src/commands/proxy/pid.rs:55-65`) |
+| `aa-proxy` (per-launch) | E3, dedicated | A managed `aasm run` launch — spawned and owned by `ProxyGuard` (`aa-cli/src/commands/proxy/guard.rs`), one instance per launch, torn down with it |
 | `aa-ebpf-loaderd` | E4 (Linux) | Linux, privileged, socket present at `/run/aa-ebpf-loaderd.sock` |
 | The agent / dev tool process | The governed subject | Launched by the operator — **on or off the managed path** |
+
+**Standalone vs per-launch, and why both exist (AAASM-5857).** A single shared
+`aa-proxy` cannot attribute a request to the launch that made it without trusting a
+client-supplied identity claim from the launched tool itself — the untrusted party.
+That would source the audit/policy identity from an unauthenticated claim instead of
+"the actual registered launch identity", the invariant §2's decision-boundary
+reasoning already depends on. Per-launch spawn is the design that keeps identity
+sourced from the launch, not the request: one governed launch, one dedicated proxy,
+one attributable policy/audit context. The standalone daemon (`aasm proxy start`/
+`stop`/`status`) still exists for the deploy-once, mediate-everything case, and is
+**deliberately invisible to** the per-launch instances — the standalone command
+family reads only the singleton PID/state-file registry at `$AA_DATA_DIR/proxy.pid`
+(design constraint C3, AAASM-5861), and a `ProxyGuard` writes no such file, so
+concurrent per-launch proxies neither clobber that registry nor each other.
+
+A per-launch proxy is scoped to its Rust value's lifetime, not to a PID file a
+later command could reap — so a launch process killed by `SIGKILL` (which no
+`Drop` can run to catch) would otherwise orphan its dedicated proxy. The chosen
+mitigation is a liveness poll, not a `getppid`-on-every-request check: the proxy is
+started with `AA_PROXY_PARENT_PID` set to the launcher's pid and polls that pid's
+liveness every 2s (`PARENT_CHECK_INTERVAL`, `aa-proxy/src/proxy/mod.rs:174-182`)
+via `kill(pid, 0)`, self-terminating once the launcher is gone. The tradeoff is a
+bounded detection window, not instant: up to ~2s of orphaned lifetime after a
+`SIGKILL`'d launcher, versus the cost of finer-grained polling for a case that is
+expected to be rare.
 
 `LayerDetector::detect` (`aa-runtime/src/layer.rs:164-179`) reports a *deployment* fact,
 and reports it weakly: `probe_proxy` is satisfied by `which::which("aa-proxy")`
 (`:142-145`), and `AA_LAYERS` (`:182-197`) overrides the probes entirely. A detected
-layer set is therefore **an availability hint, not evidence of coverage** (§7).
+layer set is therefore **an availability hint, not evidence of coverage** (§7). This
+probe answers "is the `aa-proxy` binary reachable at all", not "is a proxy — standalone
+or per-launch — mediating this launch's traffic"; it cannot see a per-launch instance
+specifically, since none is recorded in any registry it could query.
 
 #### 3.3 Platform-specific view — mechanisms, per OS
 
@@ -352,7 +381,7 @@ verified ways this happens today:
 | --- | --- | --- |
 | The agent never calls the checkpoint | `query_policy` is a voluntary call over UDS; a non-cooperating process simply does not make it | `aa-sdk-client/src/client.rs:247-279` |
 | The SDK's answer is not honoured | `resolve_decision` has **no in-tree caller that refuses to execute**; refusal lives in the out-of-repo FFI shims | `aa-sdk-client/src/decision.rs:32-33`: *"The SDK remains advisory: `aa-runtime` / proxy / eBPF are the authoritative enforcement points. This is a defense-in-depth posture, not the primary gate."* |
-| Traffic is not routed to the mediator | `HTTPS_PROXY` is injected only on the managed launch path; an ambient or removed value changes coverage | `aa-cli/src/commands/run.rs:322-326`; adapters at `aa-devtool-codex/src/lib.rs:301`, `aa-devtool-windsurf/src/lib.rs:312`, `aa-devtool-claude-code/src/lib.rs:379` |
+| Traffic is not routed to the mediator | `HTTPS_PROXY` is injected only on the managed launch path; an ambient or removed value changes coverage | `build_child_env`, `aa-cli/src/commands/run.rs:2054-2055` (moved from `:322-326` with the AAASM-5857 per-launch proxy change — re-check this citation before relying on it, this file has moved before); adapters at `aa-devtool-codex/src/lib.rs:301`, `aa-devtool-windsurf/src/lib.rs:312`, `aa-devtool-claude-code/src/lib.rs:379` |
 | The tool has no managed launch at all | `aa-devtool-copilot::build_launch_command` returns `AdapterError::LaunchFailed` (`aa-devtool-copilot/src/lib.rs:347-357`); `aa-devtool-saas` is hard-capped at `L1Observe` (`aa-devtool-saas/src/adapter.rs:66,122`) | No proxy env is injected, so no data-path mediation exists for these tools |
 | The host is mediated but the destination is not inspected | `llm_only` defaults to **true**: any host outside the built-in LLM set or operator `mitm_hosts` is **transparently tunnelled, uninspected** | `aa-proxy/src/proxy/mod.rs:1333-1336`; the default is `fn parse_llm_only` → `Err(_) => true` (`aa-proxy/src/config.rs:434-439`) |
 | The TLS stack is not hooked | The uprobes hook only OpenSSL `SSL_read`/`SSL_write`; Go `crypto/tls` and Node's statically linked BoringSSL expose no such symbols | `aa-ebpf-probes/src/ssl_probes.rs:19-27` |
