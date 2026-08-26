@@ -135,6 +135,22 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     if let Some(audit_path) = &opts.audit_jsonl_path {
         cmd.env("AA_PROXY_AUDIT_JSONL_PATH", audit_path);
     }
+    // AAASM-5923/F2 (independent review): `aa-proxy`'s own doc comment on
+    // `ProxyConfig::from_env` says explicitly that `AA_PROXY_TRUSTED_CONFIG_PATH`
+    // is what `aasm run`/`ProxyGuard` is expected to pass at spawn time — but
+    // nothing did, making `aasm integrations install ... --trusted-upstream-proxy`
+    // write an artifact no spawned proxy was ever told to read. Wired here
+    // unconditionally on existence, not behind a new opt-in flag: the
+    // artifact's presence on disk already **is** the operator's declared
+    // intent (the install command is the only thing that ever writes it),
+    // matching this function's existing "if the caller/environment already
+    // decided this, pass it through" shape rather than adding a second place
+    // to decide the same thing.
+    if let Some(path) = crate::commands::trusted_upstream_path::trusted_upstream_config_path() {
+        if path.exists() {
+            cmd.env("AA_PROXY_TRUSTED_CONFIG_PATH", &path);
+        }
+    }
     // No log file wired up in this increment (unlike standalone start's
     // --log-file): this proxy's stdout/stderr have no operator watching a
     // terminal for them the way `aasm proxy start` does. Discarding rather
@@ -144,6 +160,15 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     cmd.stdin(std::process::Stdio::null());
+
+    // ADR 0036 D6: this boundary has no `--no-proxy` concept (it spawns the
+    // dedicated `aa-proxy` itself, not a governed tool) and never has a
+    // trusted value to inject, so step 3 of the D6 invariant is always a
+    // no-op here — unconditional removal of all 8 case variants is the whole
+    // rule for this spawn.
+    for name in crate::commands::run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
+        cmd.env_remove(name);
+    }
     cmd
 }
 
@@ -465,6 +490,126 @@ mod tests {
             assert!(
                 !env.contains_key(std::ffi::OsStr::new(key)),
                 "{key} must not be set when its opt is None"
+            );
+        }
+    }
+
+    /// AAASM-5923/F2 (independent review): a written trusted-config artifact
+    /// must actually reach the spawned proxy — `aa-proxy`'s own
+    /// `ProxyConfig::from_env` reads only `AA_PROXY_TRUSTED_CONFIG_PATH`, with
+    /// no other fallback, and nothing set it before this fix, making the
+    /// whole install-flags feature inert.
+    #[test]
+    fn build_command_sets_trusted_config_path_when_the_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let expected = crate::commands::trusted_upstream_path::trusted_upstream_config_path().unwrap();
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, "{}").unwrap();
+
+        let opts = ProxyGuardOptions {
+            ready_file: PathBuf::from("/tmp/ready"),
+            ca_dir: PathBuf::from("/tmp/ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_TRUSTED_CONFIG_PATH"))
+                .copied()
+                .flatten(),
+            Some(expected.as_os_str())
+        );
+    }
+
+    /// Negative control for the test above: no artifact on disk means no env
+    /// var — proves the wiring is conditional on the file actually existing,
+    /// not merely on `AASM_STATE_DIR` being resolvable.
+    #[test]
+    fn build_command_omits_trusted_config_path_when_no_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+
+        let opts = ProxyGuardOptions {
+            ready_file: PathBuf::from("/tmp/ready"),
+            ca_dir: PathBuf::from("/tmp/ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert!(!env.contains_key(std::ffi::OsStr::new("AA_PROXY_TRUSTED_CONFIG_PATH")));
+    }
+
+    /// ADR 0036 D6/Test 6/7: `build_command`'s `env_remove` calls must reach
+    /// the real spawned `aa-proxy` child, not just the pre-spawn `Command`'s
+    /// map — proven here by actually spawning a stub that dumps its received
+    /// environment, the same "probe the real child" discipline as
+    /// `spawn_and_wait`'s tests in `run.rs` (AAASM-5923).
+    #[test]
+    fn build_command_strips_ambient_proxy_vars_from_the_real_child() {
+        let _lock = crate::test_support::env_guard();
+        let mut prior = Vec::new();
+        let ambient = [
+            ("HTTPS_PROXY", "http://attacker.example:8080"),
+            ("HTTP_PROXY", "http://attacker.example:8080"),
+            ("ALL_PROXY", "http://attacker.example:8080"),
+            ("NO_PROXY", "internal.example"),
+            ("https_proxy", "http://attacker.example:8080"),
+            ("http_proxy", "http://attacker.example:8080"),
+            ("all_proxy", "http://attacker.example:8080"),
+            ("no_proxy", "internal.example"),
+        ];
+        for (key, value) in ambient {
+            prior.push((key, std::env::var(key).ok()));
+            std::env::set_var(key, value);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("aa-proxy");
+        let out = dir.path().join("env.txt");
+        std::fs::write(&stub, format!("#!/bin/sh\nenv > {}\n", out.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let opts = ProxyGuardOptions {
+            ready_file: dir.path().join("ready"),
+            ca_dir: dir.path().join("ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let mut cmd = build_command(&stub, &opts);
+        let mut child = cmd.spawn().expect("stub must spawn");
+        let status = child.wait().expect("stub must exit");
+        assert!(status.success(), "stub exited non-zero: {status:?}");
+
+        for (key, prior) in prior {
+            match prior {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        let real_env = std::fs::read_to_string(&out).expect("read captured env");
+        for (key, _) in ambient {
+            assert!(
+                !real_env.contains(&format!("{key}=")),
+                "`{key}` leaked into the real spawned aa-proxy child's environment"
             );
         }
     }
