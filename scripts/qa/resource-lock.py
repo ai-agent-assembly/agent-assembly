@@ -498,15 +498,32 @@ def cmd_run(rest: list[str]) -> int:
     # thing lost when the parent dies is the SIGINT relay itself (no
     # supervisor left to forward Ctrl-C) — strictly better than today,
     # where nothing ever relays it.
+    # Ignore (not KeyboardInterrupt-raise) SIGINT/SIGTERM for the brief
+    # window between fork() returning and the parent re-arming its real
+    # handler below. Without this, a signal landing in that window hits
+    # Python's default SIGINT disposition and kills the PARENT via an
+    # uncaught KeyboardInterrupt before it ever relays anything —
+    # reproducing this same subtask's orphan bug in a narrower window.
+    # Ignoring (rather than leaving unset) means a signal here is simply
+    # dropped, not relayed — strictly better than an orphaned job with no
+    # possible recovery.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
     child_pid = os.fork()
 
     if child_pid == 0:
-        # Child: becomes the actual job. Own process group first (must
-        # happen before exec, and before any signal could plausibly race
-        # in) — os.setsid() raises EPERM if this process is already a
-        # group leader (e.g. backgrounded with `&` under job control
-        # already making it one); that's not a failure, the pgid is ours
-        # either way.
+        # Child inherits the parent's SIG_IGN above via fork — reset to
+        # default so the job's own signal handling (or lack thereof)
+        # behaves normally, not silently ignoring Ctrl-C forever.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+        # Own process group first (must happen before exec, and before any
+        # signal could plausibly race in) — os.setsid() raises EPERM if
+        # this process is already a group leader (e.g. backgrounded with
+        # `&` under job control already making it one); that's not a
+        # failure, the pgid is ours either way.
         try:
             os.setsid()
         except OSError:
@@ -548,23 +565,56 @@ def cmd_run(rest: list[str]) -> int:
     # open for this process's own lifetime for no reason.
     os.close(fd)
 
+    # How long to wait after relaying SIGTERM before escalating to SIGKILL
+    # — reuses the class's own grace_secs (the same field AAASM-5951's
+    # future hard-stall termination will read), so this doesn't invent a
+    # second, inconsistent grace-period concept.
+    grace_secs = cls_cfg.get("grace_secs", DEFAULT_FIELDS["grace_secs"])
+    relayed_once = False
+
     def _relay(_signum: int, _frame) -> None:
-        # Always relay as SIGTERM, regardless of which signal we ourselves
-        # received. Verified empirically: a shell (e.g. `bash -c ...`) that
-        # becomes a session/process-group leader via the child's setsid()
-        # above puts itself into job-control mode and sets SIGINT to
-        # SIG_IGN for itself — killpg(..., SIGINT) into that group is
-        # silently swallowed, while killpg(..., SIGTERM) is not (bash does
-        # not similarly special-case SIGTERM). A plain non-shell command
-        # (e.g. `cargo`, `rustdoc`) reacts to SIGTERM the same as SIGINT —
-        # there is no correctness downside to normalizing here.
+        nonlocal relayed_once
+        # Relay as SIGTERM, not necessarily the signal we ourselves
+        # received. Observed on this platform/shell: a shell (e.g.
+        # `bash -c ...`) that becomes a session/process-group leader via
+        # the child's setsid() above can end up not reacting to a relayed
+        # SIGINT into that group the way it reacts to SIGTERM — exact
+        # conditions not fully pinned down across shells/platforms, and
+        # not load-bearing either way: a plain non-shell command (cargo,
+        # rustdoc) reacts to SIGTERM the same as SIGINT, so normalizing to
+        # SIGTERM here has no correctness downside regardless of why the
+        # observation held. Case 15 in resource-scheduler-negative-control
+        # .sh is the actual regression guard (child genuinely terminates,
+        # no orphan) — treat its exit-code assertion as secondary to that.
         try:
             os.killpg(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        if relayed_once:
+            # A second signal (e.g. an impatient double Ctrl-C) escalates
+            # immediately rather than waiting out the grace period again.
+            try:
+                os.killpg(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            relayed_once = True
+            signal.alarm(int(grace_secs))
+
+    def _escalate(_signum: int, _frame) -> None:
+        # Fired by signal.alarm() if the child hasn't exited grace_secs
+        # after the first relay — a job that ignores or is slow to react
+        # to SIGTERM must not hang the caller's terminal indefinitely
+        # (Ctrl-C pre-AAASM-5948 always returned control instantly; this
+        # keeps that property bounded rather than giving it up entirely).
+        try:
+            os.killpg(child_pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
 
     signal.signal(signal.SIGINT, _relay)
     signal.signal(signal.SIGTERM, _relay)
+    signal.signal(signal.SIGALRM, _escalate)
 
     while True:
         try:
@@ -572,6 +622,7 @@ def cmd_run(rest: list[str]) -> int:
             break
         except InterruptedError:
             continue  # a relayed signal's own delivery can interrupt waitpid
+    signal.alarm(0)  # cancel a pending escalation if the child already exited
 
     if os.WIFEXITED(status):
         return os.WEXITSTATUS(status)

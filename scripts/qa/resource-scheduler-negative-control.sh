@@ -45,6 +45,11 @@
 #           into it — this case is the one that turns red if the
 #           fork+relay supervisor in AAASM-5948's fix is reverted back to
 #           that shape.
+#   Case 16 (AAASM-5948) A job that ignores SIGTERM (traps it as a no-op)
+#           survives the relay supervisor's first SIGTERM; the grace-
+#           period escalation then SIGKILLs it — Ctrl-C must not hang the
+#           caller's terminal forever just because the wrapped job never
+#           reacts to SIGTERM.
 #
 # Usage: bash scripts/qa/resource-scheduler-negative-control.sh
 # Run from the repo root (fixtures reference real repo-relative paths).
@@ -53,6 +58,7 @@ set -uo pipefail
 FIXTURES_DIR="qa/tests/fixtures/sched"
 LOCK_PY="scripts/qa/resource-lock.py"
 QUICK="$FIXTURES_DIR/quick.sh"
+IGNORE_TERM="$FIXTURES_DIR/ignore_term.sh"
 REAL_REGISTRY="qa/resource-classes.yaml"
 TEST_REGISTRY="$FIXTURES_DIR/registry-test.yaml"
 FAILED=0
@@ -348,12 +354,50 @@ else
   wait "$wrapper_pid"
   wrapper_code=$?
   # The relay always forwards SIGTERM regardless of which signal the
-  # wrapper itself received (see resource-lock.py's _relay docstring —
-  # a shell job-control leader silently swallows a relayed SIGINT), so
-  # the child dies of SIGTERM (128+15) even though we sent SIGINT here.
+  # wrapper itself received (see resource-lock.py's _relay comment) — the
+  # child dies of SIGTERM (128+15) even though we sent SIGINT here. This
+  # assertion is secondary to the two orphan-detection ones above: it
+  # locks in the current SIGTERM-normalization choice, not the underlying
+  # regression those two already prove on their own.
   assert_eq "wrapper's own exit code reflects the child's SIGTERM death (128+15)" "$wrapper_code" "143"
 fi
 rm -f "$marker15" "$AA_QA_LOCK_DIR/case15.out"
+
+echo "== Case 16 (AAASM-5948): SIGTERM-ignoring job escalates to SIGKILL =="
+marker16="$(mktemp)"
+start_ts=$(date +%s)
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-fast-grace -- bash "$IGNORE_TERM" "$marker16" >"$AA_QA_LOCK_DIR/case16.out" 2>&1 &
+wrapper_pid=$!
+if ! wait_for_start "$marker16"; then
+  echo "  ✗ job never started — cannot exercise case 16"
+  FAILED=1
+else
+  child_pid="$(awk '/^START/ {print $2; exit}' "$marker16")"
+  kill -TERM "$wrapper_pid"
+  # grace_secs=1 for this class (registry-test.yaml) — bound the poll well
+  # above that so the escalation has time to fire, but still bounded.
+  waited=0
+  while kill -0 "$child_pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  elapsed=$(($(date +%s) - start_ts))
+  if kill -0 "$child_pid" 2>/dev/null; then
+    echo "  ✗ child pid $child_pid still alive ~10s after SIGTERM — escalation never fired"
+    FAILED=1
+    kill -KILL "$child_pid" 2>/dev/null || true
+  else
+    echo "  ✓ child pid $child_pid is gone (SIGKILL escalation fired) after ~${elapsed}s"
+  fi
+  if [ "$elapsed" -lt 1 ]; then
+    echo "  ✗ died in <1s — suspiciously fast for a SIGTERM-ignoring job with grace_secs=1 (relay itself may have used SIGKILL, not escalation)"
+    FAILED=1
+  else
+    echo "  ✓ took >=1s (the configured grace_secs), consistent with a real escalation, not an immediate kill"
+  fi
+  wait "$wrapper_pid"
+fi
+rm -f "$marker16" "$AA_QA_LOCK_DIR/case16.out"
 
 echo
 if [ "$FAILED" -eq 0 ]; then
