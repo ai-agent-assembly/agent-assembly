@@ -25,6 +25,12 @@ hyper-util   = { version = "0.1", features = ["tokio", "server"] }
 rustls       = { workspace = true, features = ["ring"] }
 tokio-rustls       = { workspace = true }
 rustls-native-certs = "0.8"
+# AAASM-5928: x509-parser 0.18.1 is already resolved in the workspace lock
+# (rcgen's own "x509-parser" feature above pulls it in transitively), so
+# depending on it directly here adds no new crate to the tree — it lets
+# `CaStore::load_or_create` compare a loaded cert's SubjectPublicKeyInfo
+# against the loaded key's raw public key to detect a torn/mismatched pair.
+x509-parser  = "0.18"
 rcgen        = { workspace = true, features = ["x509-parser"] }
 time         = { workspace = true }
 lru          = "0.18"
@@ -56,6 +62,11 @@ bytes = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+# AAASM-5931: parses a minted leaf's DER to assert the serverAuth EKU extension
+# is actually present, not just that signing didn't error. Already resolved in
+# the workspace lock (aa-gateway pins the same version), so this adds no new
+# crate to the tree — same version pin for consistency.
+x509-parser = "0.18"
 # AAASM-5449: the MCP `tools/call` refusal is only reachable through a real
 # gateway — `GatewayClient::connect` performs the h2 handshake eagerly and
 # `mcp_fail_open = false` makes the proxy refuse to start otherwise — so the
