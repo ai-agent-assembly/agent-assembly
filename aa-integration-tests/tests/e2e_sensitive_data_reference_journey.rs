@@ -484,20 +484,37 @@ async fn full_chain_redaction_reaches_operator_visible_api() {
     // Bounded by a deadline rather than an iteration count: each iteration does
     // two file reads and a sleep, so `for _ in 0..200` bounds the iterations and
     // not the time, and what needs bounding here is the wait.
-    let mut proxy_log = String::new();
-    let mut api_log = String::new();
-    let mut correlated: Option<String> = None;
-    for _ in 0..200 {
-        proxy_log = read_file(journey.proxy.log_path());
-        api_log = journey.api.logs();
+    // The loop yields the observations it stopped on, rather than writing them
+    // into variables declared before it: with `loop` the compiler can prove a
+    // placeholder initializer is never read, and a placeholder that is never
+    // read is one the assertions below could accidentally run against.
+    enum Correlation {
+        Converged,
+        ReportFailed,
+        TimedOut,
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let (proxy_log, api_log, correlation) = loop {
+        let proxy_log = read_file(journey.proxy.log_path());
+        let api_log = journey.api.logs();
         if let Some(id) = extract_reported_event_id(&proxy_log) {
             if strip_ansi(&api_log).contains(&id) {
-                correlated = Some(id);
-                break;
+                break (proxy_log, api_log, Correlation::Converged);
             }
         }
+        // The proxy logs a *failed* report with the same `event_id` but a
+        // different message, and `extract_reported_event_id` matches only the
+        // success one. Waiting the window out would then end in "the proxy never
+        // named an event_id" — true, and useless: the report was attempted and
+        // rejected, so no later iteration can change the outcome.
+        if strip_ansi(&proxy_log).contains("redaction telemetry report failed") {
+            break (proxy_log, api_log, Correlation::ReportFailed);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break (proxy_log, api_log, Correlation::TimedOut);
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    };
 
     // Leak-safe checks first — see the equivalent note on the forwarded-bytes
     // check above. Run on the last observed contents whether or not the
@@ -506,22 +523,31 @@ async fn full_chain_redaction_reaches_operator_visible_api() {
     journey.canary.assert_absent("proxy log file", &proxy_log);
     journey.canary.assert_absent("api-server log", &api_log);
 
-    // Distinguish the two ways the poll can time out: the proxy never
-    // reporting at all is a different defect from the two processes reporting
-    // ids that do not match, and collapsing them would send the next reader
-    // to the wrong process.
-    correlated.unwrap_or_else(|| match extract_reported_event_id(&proxy_log) {
-        None => panic!(
-            "proxy log must name the event_id it reported to aa-api's telemetry ingest, \
-             within the poll window; full log:\n{proxy_log}"
+    // Distinguish the three ways this can end without a correlated pair. They
+    // send the next reader to different places: the proxy's RPC failing is an
+    // aa-api reachability problem, no event_id at all is a proxy-side one, and
+    // an id the api-server never echoed means the two processes' evidence
+    // cannot be joined even though both sides reported.
+    match correlation {
+        Correlation::Converged => {}
+        Correlation::ReportFailed => panic!(
+            "the proxy's telemetry report RPC failed, so no event_id was ever accepted \
+             for aa-api to echo; proxy log:\n{}",
+            strip_ansi(&proxy_log)
         ),
-        Some(id) => panic!(
-            "the event_id the proxy reported ({id}) must also appear in the api-server's \
-             own ingest log — otherwise the two processes' evidence cannot be correlated \
-             back to the same redaction event; api log:\n{}",
-            strip_ansi(&api_log)
-        ),
-    });
+        Correlation::TimedOut => match extract_reported_event_id(&proxy_log) {
+            None => panic!(
+                "proxy log must name the event_id it reported to aa-api's telemetry ingest, \
+                 within the poll window; full log:\n{proxy_log}"
+            ),
+            Some(id) => panic!(
+                "the event_id the proxy reported ({id}) must also appear in the api-server's \
+                 own ingest log — otherwise the two processes' evidence cannot be correlated \
+                 back to the same redaction event; api log:\n{}",
+                strip_ansi(&api_log)
+            ),
+        },
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
