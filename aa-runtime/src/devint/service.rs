@@ -242,8 +242,121 @@ impl EngineLifecycle {
             .find(|scope| self.store.receipt_exists(tool, *scope))
     }
 
-    fn scope_or_default(&self, tool: &DevToolKind) -> SettingsScope {
-        self.installed_scope(tool).unwrap_or(SettingsScope::User)
+    /// The scope to act on, and the receipt if one is stored there.
+    ///
+    /// Two questions the callers used to answer separately, joined because the
+    /// second one validates the first: the scope a caller named is not a scope
+    /// until the receipt found there is confirmed to be the installation they
+    /// meant.
+    ///
+    /// A caller that named no scope gets [`Self::installed_scope`]'s answer —
+    /// "there should be exactly one, use it". That was the whole of the old
+    /// behaviour, and on a host with one installation it is still right.
+    fn resolve_target(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+    ) -> Result<(SettingsScope, Option<IntegrationReceipt>), LifecycleError> {
+        let scope = self.target_scope(tool, target);
+        let receipt = self
+            .store
+            .load_receipt(tool, scope)
+            .map_err(|e| LifecycleError::Failed {
+                detail: format!("the integration receipt could not be read: {e}"),
+            })?;
+        if let Some(receipt) = &receipt {
+            Self::confirm_project(tool, receipt, target)?;
+        }
+        Ok((scope, receipt))
+    }
+
+    /// As [`Self::resolve_target`], for the verbs that have nothing to do
+    /// without a receipt.
+    fn require_target(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+    ) -> Result<(SettingsScope, IntegrationReceipt), LifecycleError> {
+        let scope = self.target_scope(tool, target);
+        let receipt = self.receipt(tool, scope)?;
+        Self::confirm_project(tool, &receipt, target)?;
+        Ok((scope, receipt))
+    }
+
+    fn target_scope(&self, tool: &DevToolKind, target: &LifecycleTarget) -> SettingsScope {
+        target
+            .settings_scope
+            .or_else(|| self.installed_scope(tool))
+            .unwrap_or(SettingsScope::User)
+    }
+
+    /// Refuse a project-scope receipt the request does not name (AAASM-5913).
+    ///
+    /// A project-scope receipt belongs to one project, and until now nothing in
+    /// a `status`/`verify`/`repair`/`remove` request said which project the
+    /// caller had in mind. There is exactly one project-scope receipt slot per
+    /// tool on a host, so a caller standing in an unrelated repository was told
+    /// that repository was protected — and `repair` and `remove`, which act on
+    /// the paths the receipt records, would then have written to and deleted
+    /// from the *other* project's files.
+    ///
+    /// So the request has to name the project, and the name has to match. The
+    /// three ways it can fail are all refusals, deliberately:
+    ///
+    /// - **Nothing named.** A pre-DI-API-6 client, or one whose working
+    ///   directory could not be read. Nothing here can honestly stand in for
+    ///   it; this daemon's own directory least of all.
+    /// - **A different project named.** The caller is somewhere else. Neither
+    ///   answer — reporting the stored project, or reporting "not installed" —
+    ///   is true of what they asked, so neither is given.
+    /// - **The receipt cannot say.** A project-scope receipt with no applied
+    ///   settings write records no project, so there is nothing to compare and
+    ///   the comparison cannot be skipped.
+    ///
+    /// User and managed scope are unaffected: their destinations were never the
+    /// caller's to name, so there is nothing to disagree about.
+    ///
+    /// None of the refusals name the other project's path. These details reach
+    /// a client verbatim as `DENY_CODE_LIFECYCLE_ERROR`, and "which other
+    /// repository this developer has on disk" is not something the caller asked
+    /// about or is owed.
+    fn confirm_project(
+        tool: &DevToolKind,
+        receipt: &IntegrationReceipt,
+        target: &LifecycleTarget,
+    ) -> Result<(), LifecycleError> {
+        if receipt.settings_scope != SettingsScope::Project {
+            return Ok(());
+        }
+        let Some(requested) = target.project_root.as_deref() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "{} is installed at project scope, and this request does not say which project it is \
+                     about; re-run from the project's directory with a client that speaks DI-API {}",
+                    tool_id(tool),
+                    crate::devint::negotiate::DI_API_PROJECT_ROOT_SINCE
+                ),
+            });
+        };
+        let Some(recorded) = receipt.project_root() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "the stored project-scope receipt for {} does not record which project it wrote, so it \
+                     cannot be shown to be this one; remove and re-install the integration",
+                    tool_id(tool)
+                ),
+            });
+        };
+        if same_project(recorded, requested) {
+            return Ok(());
+        }
+        Err(LifecycleError::Refused {
+            detail: format!(
+                "the project-scope integration for {} belongs to another project, not this one; run this \
+                 command from the project it was installed into",
+                tool_id(tool)
+            ),
+        })
     }
 
     /// An engine whose executor holds the content `plan` describes.
@@ -394,6 +507,26 @@ fn finding_mechanism(kind: DriftKind) -> IntegrationCapability {
     }
 }
 
+/// Whether two paths name the same project directory.
+///
+/// The caller's root arrives canonicalized, and a receipt written since
+/// AAASM-5913 recorded a canonical one — but a receipt written *before* it
+/// recorded whatever the daemon's working directory happened to be spelled as,
+/// and on macOS `/tmp` and `/private/tmp` are the same directory under two
+/// names. Comparing the raw strings would refuse a legitimately installed
+/// project on the strength of a symlink, which reads to the developer as "your
+/// install is broken".
+///
+/// Canonicalizing here rather than migrating the receipt keeps the receipt's
+/// serialized form — and therefore every already-stored receipt's integrity
+/// hash — untouched. A directory that no longer exists cannot be canonicalized;
+/// the raw path is then all there is, and comparing it is still strictly better
+/// than not comparing.
+fn same_project(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    a == b || canonical(a) == canonical(b)
+}
+
 fn engine_error(e: EngineError) -> LifecycleError {
     match e {
         EngineError::NoReceipt { scope } => LifecycleError::Refused {
@@ -526,15 +659,9 @@ impl IntegrationLifecycle for EngineLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind, _target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = self
-            .store
-            .load_receipt(tool, scope)
-            .map_err(|e| LifecycleError::Failed {
-                detail: format!("the integration receipt could not be read: {e}"),
-            })?;
+        let (scope, receipt) = self.resolve_target(tool, target)?;
 
         let mut status = registered
             .integration
@@ -555,14 +682,9 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(status)
     }
 
-    async fn verify(
-        &self,
-        tool: &DevToolKind,
-        _target: &LifecycleTarget,
-    ) -> Result<VerificationResult, LifecycleError> {
+    async fn verify(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<VerificationResult, LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = self.receipt(tool, scope)?;
+        let (scope, receipt) = self.require_target(tool, target)?;
 
         let result = registered
             .integration
@@ -588,8 +710,7 @@ impl IntegrationLifecycle for EngineLifecycle {
         target: &LifecycleTarget,
     ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = self.receipt(tool, scope)?;
+        let (scope, receipt) = self.require_target(tool, target)?;
         let plan = self.plan_from_receipt(registered, &receipt).await?;
 
         let status_before = registered
@@ -624,12 +745,11 @@ impl IntegrationLifecycle for EngineLifecycle {
     async fn remove(
         &self,
         tool: &DevToolKind,
-        _target: &LifecycleTarget,
+        target: &LifecycleTarget,
         plan_id: Option<&str>,
     ) -> Result<RemovalPlan, LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = self.receipt(tool, scope)?;
+        let (scope, receipt) = self.require_target(tool, target)?;
 
         let mut plan = registered
             .integration
@@ -1046,6 +1166,180 @@ mod tests {
             Err(LifecycleError::UnknownTool { tool_id }) => assert_eq!(tool_id, "codex"),
             other => panic!("expected UnknownTool, got {other:?}"),
         }
+    }
+
+    // ── AAASM-5913: which project a read-or-reverse verb is about ──────────
+
+    /// A harness whose fixture writes where a project-scope install writes.
+    ///
+    /// The path matters: [`IntegrationReceipt::project_root`] derives the
+    /// project from the settings file's grandparent, so a fixture writing
+    /// `<dir>/settings.json` produces a receipt that records the *tempdir's
+    /// parent* as its project. Writing `<project>/.claude/settings.json` is what
+    /// a real project-scope install does, and the only shape these tests can
+    /// honestly assert against.
+    fn project_harness() -> (Harness, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        let settings = project.join(".claude").join("settings.json");
+        std::fs::create_dir_all(settings.parent().expect("parent")).expect("mkdir");
+        let store_root = dir.path().join("store");
+        let fixture = FixtureIntegration::new(DevToolKind::ClaudeCode, &settings);
+        let content = Arc::new(FixtureContent::new(fixture.rendered()));
+        let service = EngineLifecycle::new(
+            vec![RegisteredIntegration::new(DevToolKind::ClaudeCode, Arc::new(fixture)).with_content(content)],
+            ReceiptStore::at(&store_root),
+        );
+        (
+            Harness {
+                _dir: dir,
+                settings,
+                store_root,
+                service,
+            },
+            project,
+        )
+    }
+
+    /// Install at project scope, naming `project`, and return the harness.
+    async fn installed_into_project() -> (Harness, std::path::PathBuf) {
+        let (h, project) = project_harness();
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        .with_project_root(&project);
+        let plan = h.service.plan(request).await.expect("plan");
+        let applied = h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .await
+            .expect("apply");
+        assert_eq!(
+            applied.receipt.project_root(),
+            Some(project.as_path()),
+            "the receipt must record the project it wrote, or these tests assert nothing"
+        );
+        (h, project)
+    }
+
+    fn target_for(project: &std::path::Path) -> LifecycleTarget {
+        LifecycleTarget {
+            settings_scope: None,
+            project_root: Some(project.to_path_buf()),
+        }
+    }
+
+    /// The project the request names is the project that is reported on.
+    #[tokio::test]
+    async fn the_project_a_request_names_is_the_one_reported_on() {
+        let (h, project) = installed_into_project().await;
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &target_for(&project))
+            .await
+            .expect("status");
+        assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
+    }
+
+    /// AAASM-5913: a request that names no project cannot be answered from a
+    /// project-scope receipt, because there is nothing to compare it to. The
+    /// daemon's own working directory is not a substitute — it is the defect.
+    #[tokio::test]
+    async fn a_project_scope_installation_is_not_reported_to_a_request_that_names_no_project() {
+        let (h, _project) = installed_into_project().await;
+        match h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+        {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("does not say which project"),
+                    "the refusal must say what is missing: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// The defect as a user met it: standing in an unrelated repository, being
+    /// told it was protected. Every read-or-reverse verb refuses now, because
+    /// `repair` and `remove` would have written to and deleted from the other
+    /// project's files.
+    #[tokio::test]
+    async fn every_read_or_reverse_verb_refuses_a_project_that_is_not_the_installed_one() {
+        let (h, project) = installed_into_project().await;
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let other = target_for(elsewhere.path());
+        let tool = DevToolKind::ClaudeCode;
+
+        let refusals = [
+            ("status", h.service.status(&tool, &other).await.err()),
+            ("verify", h.service.verify(&tool, &other).await.err()),
+            ("repair", h.service.repair(&tool, &other).await.err()),
+            ("remove", h.service.remove(&tool, &other, None).await.err()),
+        ];
+        for (verb, error) in refusals {
+            match error {
+                Some(LifecycleError::Refused { detail }) => {
+                    assert!(
+                        detail.contains("another project"),
+                        "{verb} must say the installation belongs elsewhere: {detail}"
+                    );
+                    assert!(
+                        !detail.contains(&project.display().to_string()),
+                        "{verb} disclosed the other project's path: {detail}"
+                    );
+                }
+                other => panic!("{verb} must be refused, got {other:?}"),
+            }
+        }
+
+        // And nothing was written to or removed from the installed project on
+        // the way to those refusals.
+        assert!(h.settings.exists(), "a refused verb touched the other project's files");
+    }
+
+    /// Two spellings of one directory are one project. A receipt written before
+    /// this fix recorded whatever path the daemon's own directory was spelled
+    /// as, and on macOS `/tmp` and `/private/tmp` are the same place.
+    #[tokio::test]
+    async fn a_second_spelling_of_the_same_project_is_the_same_project() {
+        let (h, project) = installed_into_project().await;
+        let link = h
+            .settings
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .expect("tempdir root")
+            .join("link-to-project");
+        std::os::unix::fs::symlink(&project, &link).expect("symlink");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &target_for(&link))
+            .await
+            .expect("a symlink to the installed project is the installed project");
+        assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
+    }
+
+    /// User scope is unaffected: its destination was never the caller's to name,
+    /// so there is nothing to disagree about and nothing new to supply.
+    #[tokio::test]
+    async fn a_user_scope_installation_still_needs_no_project_named() {
+        let h = harness(|f| f);
+        let plan = h.service.plan(request()).await.expect("plan");
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .await
+            .expect("apply");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("a user-scope installation answers an unspecified target");
+        assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
     }
 
     /// Nothing this service returns can carry the rendered settings body, so a

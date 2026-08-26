@@ -154,9 +154,16 @@ impl FixtureIntegration {
         &self.settings_path
     }
 
-    fn step(&self) -> IntegrationStep {
+    /// The one settings write every fixture plan carries, at `scope`.
+    ///
+    /// `scope` is the request's, not a constant: `IntegrationPlan::validate`
+    /// refuses a plan whose step writes a scope the plan did not declare, so a
+    /// fixture that always said `User` could not author a project-scope plan at
+    /// all — and the project-scope behaviour AAASM-5913 is about would have no
+    /// fixture to exercise it.
+    fn step(&self, scope: aa_core::integration::SettingsScope) -> IntegrationStep {
         let action = StepAction::WriteManagedSettings {
-            scope: aa_core::integration::SettingsScope::User,
+            scope,
             path: self.settings_path.clone(),
             managed_keys: self.managed_keys.clone(),
             content_sha256: sha256_hex(&self.rendered),
@@ -256,7 +263,7 @@ impl DevToolIntegration for FixtureIntegration {
             ProtectionLevel::Integrated,
             GovernanceLevel::L2Enforce,
         )
-        .with_step(self.step());
+        .with_step(self.step(request.settings_scope));
         if let CapabilitySupport::Unsupported { reason } = self.host_enforcement_support() {
             plan = plan.declaring_unsupported(IntegrationCapability::HostEnforcement, reason);
         }
