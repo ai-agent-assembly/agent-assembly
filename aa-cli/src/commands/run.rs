@@ -5661,6 +5661,42 @@ mod tests {
         }
     }
 
+    /// An empty allowlisted value reports emptiness, not a bare `KEY=`.
+    ///
+    /// "Set to empty" and "set to something" are different launch states —
+    /// `ambient_proxy_is_set` treats an empty `HTTPS_PROXY` as no proxy at all —
+    /// and the entries most likely to be empty are precisely the allowlisted
+    /// routing ones. Rendering `HTTPS_PROXY=` left the operator unable to tell an
+    /// empty value from a rendering bug.
+    ///
+    /// Not a disclosure oracle: a credential-named variable returns `MASKED`
+    /// before emptiness is ever consulted, which the last case pins.
+    #[test]
+    fn an_empty_value_reports_emptiness_whether_allowlisted_or_not() {
+        for name in [
+            "HTTPS_PROXY",
+            "ANTHROPIC_BASE_URL",
+            "AA_AGENT_ID",
+            "NODE_EXTRA_CA_CERTS",
+        ] {
+            assert_eq!(
+                render_env_value(name, ""),
+                PRESENCE_EMPTY,
+                "{name} is allowlisted and empty, which is a launch state worth naming"
+            );
+        }
+        // Unchanged for the non-allowlisted case.
+        assert_eq!(render_env_value("SOME_OTHER_VAR", ""), PRESENCE_EMPTY);
+        // A credential-named variable says nothing about its emptiness.
+        for name in ["GITHUB_TOKEN", "DB_PASSWORD"] {
+            assert_eq!(
+                render_env_value(name, ""),
+                MASKED,
+                "{name} must not reveal emptiness — that would be an oracle"
+            );
+        }
+    }
+
     /// An env value cannot forge a line in the receipt.
     ///
     /// The environment section is one variable per line, so a value carrying a
