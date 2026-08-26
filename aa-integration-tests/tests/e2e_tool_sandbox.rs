@@ -58,6 +58,7 @@ fn proxy_config(ca_dir: &std::path::Path, network_allowlist: Vec<String>) -> Pro
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: true,
+        trusted_config_path: None,
     }
 }
 

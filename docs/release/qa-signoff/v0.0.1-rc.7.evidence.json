@@ -1,0 +1,259 @@
+{
+  "artifacts": {},
+  "candidate": {
+    "candidate_sha": "b76193f3a7ec9ea15384402d8cce480258a703a1",
+    "repo": "ai-agent-assembly/agent-assembly"
+  },
+  "catalog": {
+    "catalog_version": "1",
+    "path": "qa/golden-journeys.yaml",
+    "requirements_digest": "sha256:a330480586d75d756dc218b25a30d48346b69f661bbfc23eac00e4193640270a"
+  },
+  "evidence_version": "1",
+  "generated_at": "2026-08-26T08:15:00Z",
+  "harness": {
+    "scripts/qa/build-release-evidence.py": "git-blob:3389166ffa1368b3b53024b896da7cd251b8042b",
+    "scripts/qa/registry_digest.py": "git-blob:ec56fce1497743a7fce684ca54991e3da67da880",
+    "scripts/qa/validate-golden-journeys.py": "git-blob:bd5c5ad6dbdf3fc5ea5506f3af94b3d3262553c1"
+  },
+  "journeys": [
+    {
+      "digest": "sha256:b98853769ac0230c2ef8e29c7ae04ac4fcefa7022378c9253fae1bd4ff10d23b",
+      "evidence_cell": "Real Homebrew install: `brew install ai-agent-assembly/tap/aasm` (already current at 0.0.1-rc.6); `/opt/homebrew/bin/aasm --version` \u2192 `aasm 0.0.1-rc.6`. Published-artifact path, not source build.",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "release"
+      ],
+      "fidelity": "published_artifact",
+      "id": "J04",
+      "lifecycle_state": "manual_live",
+      "negative_control": null,
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:8041d58baff01ca27ea3dc14b236c07b4bd63d3394dab82e602ee649881461c9",
+      "evidence_cell": "Live `aa-gateway` + `aa-api-server` stood up locally (127.0.0.1:50351 / :8180); real Python SDK (`agent-assembly==0.0.1rc6` from PyPI) registered a live agent against the gateway \u2014 `ctx.registered == True`, agent visible in `aasm agent list` (real REST call, real table output).",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [],
+      "fidelity": null,
+      "id": "J08",
+      "lifecycle_state": "gap",
+      "negative_control": null,
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:1528190960abcdf2c54c40677e48d2d5e8a79c026b840b9e63e9c30ac952cbbc",
+      "evidence_cell": "Real pull of the published gateway artifact: `docker pull ghcr.io/ai-agent-assembly/aa-gateway:latest` succeeded; ran it (`docker run ... --policy /policy.yaml --listen 0.0.0.0:50051`), confirmed real startup log sequence (policy load, audit writer, gRPC server bound) and host-side TCP reachability on the mapped port. Published-artifact path, not source build.",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "release"
+      ],
+      "fidelity": "published_artifact",
+      "id": "J17",
+      "lifecycle_state": "manual_live",
+      "negative_control": null,
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:44cfb13939edd52a3a99640321b35096888e9eb928ff2dc93512add192c49f56",
+      "evidence_cell": "Live gateway + `aa-api-server`: `aasm policy apply policy-examples/low-risk.yaml` \u2192 real \"Policy applied successfully\" with version/timestamp; `aasm policy get` immediately after returned the exact applied YAML content back \u2014 genuine round-trip, not just exit-0. `aasm policy validate` also exercised on 2 distinct real policy files (low-risk.yaml clean, strict.yaml with a real warning on an unenforced capability).",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "main",
+        "pr",
+        "release"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J19",
+      "lifecycle_state": "automated",
+      "negative_control": "aa-cli/tests/run_policy_fail_closed.rs (fail-closed regression)",
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:585ede3f9d095789413c9ba1872b3f536a8736b3592d1f4f031676564b6086dc",
+      "evidence_cell": "`mdbook build` of `docs/` succeeded; every documented command in `docs/src/quick-start/*.md` (requirements/installation/configuration/first-run) executed for real and matched documented output; 10-command spot-check of `docs/src/cli/*.md` flags/subcommands against real `--help` output \u2014 no discrepancies.",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "pr"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J21",
+      "lifecycle_state": "partial",
+      "negative_control": null,
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:d8d37023b94f5ea1f7b5d0736d334f7fca2f98c51c92de9bb3c4c1efb779b99b",
+      "evidence_cell": "Live gateway with `policy-examples/low-risk.yaml` loaded at startup, confirmed via real startup log (`loading policy`) and `aasm gateway status` cross-checked against `lsof`/PID.",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "main",
+        "pr",
+        "release"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J24",
+      "lifecycle_state": "automated",
+      "negative_control": "aa-gateway/tests/cross_layer_policy_consistency_test.rs::policy_without_the_guard_clause_produces_no_deny \u2014 a real differential: two structurally different real policy documents through the same real lower_to_ebpf, asserting the deny is present for one and absent for the other (AAASM-5877)",
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:1072376c9c9fa0460b5e2d2b16fb5346387f4de5ca4c112d8146efebd1170b25",
+      "evidence_cell": null,
+      "evidence_ref": null,
+      "execution_lanes": [
+        "main",
+        "pr"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J27",
+      "lifecycle_state": "partial",
+      "negative_control": "aa-gateway/tests/sensitive_data_producer_test.rs::primary_a_write_failure_leaves_the_decision_intact_and_is_counted \u2014 genuine fault injection via FailingStore: asserts the lost row is actually counted (written=0, write_failures=1) while the enforcement decision stays unaffected, proving projection-write failures are observable rather than silently dropped (AAASM-5877)",
+      "platforms": [],
+      "priority": "P0",
+      "status": "NOT_RUN"
+    },
+    {
+      "digest": "sha256:de46e9dc10419e7a6164a7b2431bc0f64a93b02237f6b32f8ac1d66ceae4b979",
+      "evidence_cell": "Original basis (struck through): SDK+proxy+eBPF exercised together not attempted \u2014 macOS dogfood host, eBPF Linux-only. **Re-verification (2026-08-23):** `e2e \u2014 eBPF (Linux)` CI job's \"Run AAASM-1523 e2e three-layer suite\" step \u2014 the exact SDK/proxy/eBPF combined-audit-stream acceptance contract for this journey \u2014 ran on Linux CI for PR #2140 (part of the tested SHA's ancestry) and returned SUCCESS. This was a session-scoped execution gap (no Linux runner used), not a true product gap: Linux CI has covered this journey on every eBPF-touching PR all along.",
+      "evidence_ref": "~~UNTESTED_OR_BLOCKED~~ \u2192 **PASS (re-verified)**",
+      "execution_lanes": [
+        "main",
+        "pr",
+        "release"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J41",
+      "lifecycle_state": "automated",
+      "negative_control": "aa-integration-tests/tests/e2e_ebpf.rs::ebpf_catches_traffic_that_bypasses_proxy \u2014 simulates the SDK/proxy layers being absent and asserts the eBPF layer independently observes the traffic they would otherwise have caught (AAASM-5877)",
+      "platforms": [
+        "linux"
+      ],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:634288e343a6b808d15e8b78f712fb59f4e957e8f023fe92e48901f38d079459",
+      "evidence_cell": "Real pull + real run of `ghcr.io/ai-agent-assembly/aa-gateway:latest` (see J17 \u2014 same container, this journey's own ID). Container reached a healthy listening state, confirmed via `docker logs` and a real TCP connect from the host. Torn down after.",
+      "evidence_ref": "**PASS**",
+      "execution_lanes": [
+        "release"
+      ],
+      "fidelity": "published_artifact",
+      "id": "J53",
+      "lifecycle_state": "automated",
+      "negative_control": null,
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:1b3c5ae7adb89f4fc5192f2a8e7736d0ec7be4b9c41552a5c2e9e911f954d74a",
+      "evidence_cell": "Original (struck through): registration-only smoke, no framework tool call attempted. **Full investigation (2026-08-23):** built the real, officially-documented path \u2014 published PyPI `agent-assembly==0.0.1rc6` (native `_core` extension present) + real `langchain`/`langchain-core` + a real standalone `aa-runtime` sidecar + real `aa-gateway`, all wired per `init_assembly(mode=\"sdk-only\")` + `agent_assembly.adapters.langchain.AssemblyCallbackHandler` (a companion docs finding, AAASM-5836, was filed and then **retracted** the same day \u2014 a `WebFetch` summarization artifact, not a real docs defect). Result at the time: **every** governed LangChain tool call failed \u2014 including the canonical ALLOWED `read_file` action \u2014 with `ToolExecutionBlockedError('credential token registered to a different agent')`. Decisive isolating check: the Rust `e2e_runtime_gateway_deny` test (same runtime\u2192gateway wire, bypassing Python) **passed**, proving the defect was specifically in the Python SDK's connection/credential-relay layer. **Filed as [AAASM-5835](https://lightning-dust-mite.atlassian.net/browse/AAASM-5835), High, confirmed defect; root-caused, fixed, tested (105/105 unit + 1/1 differential e2e), independently reviewed, merged to `main` at `79ac000f7db4fa27220ade16bbe39e123a26a5e0` (PR #2147), post-merge verified, Jira Done.** **Post-merge re-reproduction (2026-08-23) against the unchanged, currently-published PyPI wheel still fails identically** \u2014 expected, not a regression: that wheel's native extension is built from `python-sdk`'s `native/aa-ffi-python` crate, pinned to an old `aa-sdk-client` git SHA independent of this repo's `main`. This distribution gap is filed separately as **[AAASM-5839](https://lightning-dust-mite.atlassian.net/browse/AAASM-5839)** (`python-sdk`, High). **AAASM-5839's code-level fix is now also merged** (`python-sdk` PR #324) and end-to-end verified: a wheel built from the re-pinned `aa-ffi-python` against real `aa-gateway`/`aa-runtime` binaries reproduces the exact same scenario with `read_file` **executing** and `delete_file` **blocked** on a real policy decision \u2014 the strongest evidence available short of an actual PyPI release that the fix is complete. J56 AC #4 (\"Execute the canonical ALLOWED action \u2192 succeeds\") **still fails today for any real `pip install` user**, purely because that release has not shipped yet (out of this session's authority per Release Operations Policy) \u2014 not because of any remaining code defect.",
+      "evidence_ref": "~~CONFIRMED DEFECT (AAASM-5835)~~ \u2192 **FIXED UPSTREAM, STILL FAILS FOR PUBLISHED ARTIFACT (AAASM-5839)**",
+      "execution_lanes": [
+        "release"
+      ],
+      "fidelity": "published_artifact",
+      "id": "J56",
+      "lifecycle_state": "manual_live",
+      "negative_control": null,
+      "platforms": [],
+      "priority": "P0",
+      "status": "FAIL"
+    },
+    {
+      "digest": "sha256:e01f447fb9487f93fbbb1aaf71c8f16fb2eeeeb5df9e3c99552200beac4a80d7",
+      "evidence_cell": "Deploy/observe/govern legs PASS (unchanged). Original recover leg (struck through): **2 real defects found here** (AAASM-5832 / AAASM-5833). **Re-verification (2026-08-23):** both independently reproduced fixed against a locally built release `aasm` binary at `9c17c594a`. F-1: held port 18099 with a controlled Python listener (confirmed via `lsof` before launch), `aasm gateway start` correctly reported `error: aa-gateway (pid \u2026) exited before becoming ready \u2014 it did not bind 127.0.0.1:18099`, exit code 1 (previously: false \"started\" + live PID). F-2: started a real gateway, `kill -9`'d its PID, confirmed via `ps -p` the process was gone, then `aasm gateway status` correctly reported `Gateway: not running (stale PID file \u2014 process \u2026 is no longer alive)`, exit code 1 (previously: false \"pid exists but port is unreachable\"). Recover leg now tells the truth; journey PASS.",
+      "evidence_ref": "~~PARTIAL~~ \u2192 **PASS (re-verified)**",
+      "execution_lanes": [
+        "release"
+      ],
+      "fidelity": "published_artifact",
+      "id": "J59",
+      "lifecycle_state": "manual_live",
+      "negative_control": null,
+      "platforms": [],
+      "priority": "P0",
+      "status": "PASS"
+    },
+    {
+      "digest": "sha256:a43a5e1ec143f2e1fb3a39d9274c30f5e67a34e8c2202230880c1e5774568342",
+      "evidence_cell": null,
+      "evidence_ref": null,
+      "execution_lanes": [
+        "main",
+        "pr",
+        "release"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J62",
+      "lifecycle_state": "automated",
+      "negative_control": "lane fails on decline, per-scenario recorded",
+      "platforms": [
+        "linux"
+      ],
+      "priority": "P0",
+      "status": "NOT_RUN"
+    },
+    {
+      "digest": "sha256:4053b0003663cb0143a565b9903473f0a95437b4e8a45292b4bcf33283957e33",
+      "evidence_cell": null,
+      "evidence_ref": null,
+      "execution_lanes": [
+        "release"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J64",
+      "lifecycle_state": "manual_live",
+      "negative_control": "aa-isolation-macos-vm/tests/adversarial_boundary_macos_vm_guest.rs::a_symlink_inside_the_grant_pointing_at_the_forbidden_half_is_still_confined (real hardware, 2026-08-24 independent QA pass \u2014 proves the guest's Landlock ruleset resolves symlinks before applying the rule rather than being fooled by one)",
+      "platforms": [
+        "macos-apple-silicon"
+      ],
+      "priority": "P1",
+      "status": "NOT_RUN"
+    },
+    {
+      "digest": "sha256:3f16a14e5f7fd243cae96a8f14daab1fe21492283017cc17d6aa0594d108fda7",
+      "evidence_cell": null,
+      "evidence_ref": null,
+      "execution_lanes": [
+        "main",
+        "pr",
+        "release"
+      ],
+      "fidelity": "real_local_process",
+      "id": "J65",
+      "lifecycle_state": "automated",
+      "negative_control": "aa-integration-tests/tests/e2e_sensitive_data_reference_journey.rs::alert_only_forwards_the_canary_and_produces_no_alert \u2014 same harness with AA_PROXY_CREDENTIAL_ACTION=alert_only, asserting the opposite outcome (raw canary reaches upstream, no dashboard alert fires), proving this row's \"the alert is visible\" evidence is load-bearing rather than vacuously true regardless of what the proxy actually does",
+      "platforms": [],
+      "priority": "P0",
+      "status": "NOT_RUN"
+    }
+  ],
+  "published": null,
+  "signoffs": {
+    "qa": {
+      "path": "/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-aaasm5901-evidence/docs/release/qa-signoff/v0.0.1-rc.7.md",
+      "verdict": "BLOCK"
+    },
+    "security": {
+      "path": "/Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-aaasm5901-evidence/docs/release/security-signoff/v0.0.1-rc.7.md",
+      "verdict": "PASS"
+    }
+  },
+  "verdict": "BLOCK",
+  "version": "0.0.1-rc.7"
+}

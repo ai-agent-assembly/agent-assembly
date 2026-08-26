@@ -121,6 +121,7 @@ fn proxy_config_with_gateway(ca_dir: &Path, gateway_addr: SocketAddr, network_fa
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: true,
+        trusted_config_path: None,
     }
 }
 

@@ -196,6 +196,67 @@ whenever it cannot measure:
 Read exit `6` on an otherwise-clean install as **"not measured"**, not as
 **"measured and failed"** — and read `status` for which it is.
 
+## `AASM_STATE_DIR` can redirect the Claude Code launch-env store — a named, un-closed gap (Core ADR 036 D6, gap #3)
+
+A governed `aasm run` launch strips ambient `HTTP_PROXY`/`HTTPS_PROXY`/
+`ALL_PROXY`/`NO_PROXY` (and their lowercase forms) from the child it spawns,
+then — if `--no-proxy` was not passed — reinjects only a supervisor-owned
+trusted value: either a runtime-pinned endpoint, or the receipted
+`HTTPS_PROXY`/`HTTP_PROXY` value `aasm integrations install claude-code`
+wrote into the launch-env store (`StepAction::ConfigureProxy`). This removal
+now happens once, at the `Command` level, immediately before spawn
+(`aa-cli/src/commands/run.rs`'s `spawn_and_wait`) — closing a pre-existing
+defect where the removal was only ever applied to an intermediate map the
+spawned process never actually inherited from (AAASM-5923).
+
+What this does **not** close: the launch-env store itself —
+`launch_env::installed_environment`, read by both
+`ClaudeCodeAdapter::build_launch_command`
+(`aa-devtool-claude-code/src/lib.rs`) and
+`ClaudeCodeIntegration::build_launch_command`
+(`aa-devtool-claude-code/src/lifecycle.rs`) — is rooted in the ambient
+`AASM_STATE_DIR` environment variable (or its `$HOME/.aasm` default), read
+fresh by `ClaudeCodePaths::from_env()` in-process, with no supervisor/callee
+boundary across which a resolved path could instead be carried. An attacker
+able to set `AASM_STATE_DIR` before `aasm run` starts can point it at a
+directory containing a file named `all_proxy` (or `HTTPS_PROXY` pointed at an
+attacker-controlled proxy) under `<state>/claude-code/<scope>/launch-env/`,
+and that file reaches the governed child's real environment exactly as a
+legitimately-installed receipted value would — bypassing `aa-proxy` entirely,
+while the launch still reports as governed. This is the more severe sibling
+of the pre-existing `mitm_hosts`-widening gap (an `AASM_STATE_DIR`-redirected
+`mitm-hosts.d/*.hosts` file widens *what `aa-proxy` decrypts*; this gap
+redirects traffic *around `aa-proxy` altogether*) — both bottom out in the
+same ambient state-root read, and the same attacker precondition
+(`AASM_STATE_DIR` set before the launch begins) reaches the new
+`TrustedUpstreamProxyEndpoint`/`DeclaredEnterpriseDestination` trusted-config
+artifact too: `aa-proxy`'s validation (`trusted_upstream::load_and_validate`)
+refuses a malformed or wildcarded artifact regardless of who authored it, but
+it validates well-formedness, not authorship — an attacker who controls the
+pre-launch state root can author their own well-formed artifact at that root.
+
+This is **not fixed by design**, not an oversight left for a later pass under
+this ticket: no supervisor/callee process boundary exists in
+`ClaudeCodeIntegration`'s construction to relocate the read across, so "the
+supervisor resolves the path and passes it down" would read the identical
+variable through the identical fallback chain one stack frame apart — it
+relocates the read, not the trust boundary. Genuinely closing it needs either
+an operator-facing `--state-dir` flag that takes precedence over
+`AASM_STATE_DIR` everywhere in the tree, or per-read receipt-fingerprint
+verification (the executor already computes one per `ConfigureProxy` step, so
+this is buildable) — both are materially larger changes than adding a spawn-
+boundary env-sanitization invariant, touching every existing `AASM_STATE_DIR`
+consumer, not just the two new artifacts Core ADR 036 introduces. Closing this is
+tracked as separate, not-yet-approved follow-up scope (Core ADR 036, "named
+un-closed gaps" #3, alongside gap #1's identical `mitm_hosts`-widening
+channel).
+
+**Practical implication:** treat `AASM_STATE_DIR` itself as trusted input on
+any host where `aasm run` governs a launch — anyone who can set it before the
+launch starts can redirect where the launch-env store, the `mitm-hosts.d`
+allowlist, and the trusted-upstream-proxy artifact are all read from,
+independent of anything the proxy's own validation catches.
+
 ## The managed-settings file can be installed; its enforcement is still unmeasured
 
 `/Library/Application Support/ClaudeCode/managed-settings.json` is the endpoint

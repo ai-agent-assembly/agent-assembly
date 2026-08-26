@@ -99,6 +99,7 @@ impl ProxyHarness {
             ready_file: None,
             parent_pid: None,
             allow_private_connect_targets: false,
+            trusted_config_path: None,
         };
         let (tx, events) = broadcast::channel(256);
         let server = ProxyServer::new_with_audit_sink(config, ca, tx, audit_tx);
