@@ -3400,20 +3400,68 @@ mod tests {
     }
 
     #[test]
-    fn schedule_allows_full_day_window() {
+    fn schedule_omitted_allows_at_any_time() {
+        // AAASM-5933: this test previously configured `active_hours`
+        // `"00:00"`–`"23:59"` and asserted Allow, on the assumption that
+        // covers the full day. It doesn't — `end` is documented exclusive
+        // (`docs/src/policy-reference.md` § schedule), so that window denies
+        // its own last minute, and the test failed deterministically
+        // whenever CI happened to run during it. The schema has no `24:00`
+        // sentinel, so no `active_hours` window can express "every instant of
+        // the day" — the documented way to get unrestricted scheduling is to
+        // omit `schedule` entirely, which `empty_doc()` already does. That
+        // needs no clock at all, so this is deterministic rather than merely
+        // "correct at the instant it happens to run" like the window version
+        // was.
+        let doc = empty_doc();
+        let engine = make_engine(doc);
+        let ctx = make_ctx();
+        let action = tool_call("any", "");
+        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+    }
+
+    #[test]
+    fn schedule_wide_active_hours_window_allows_through_the_full_pipeline() {
+        // Independent review of AAASM-5933 (PR #2218) flagged that the fix
+        // above removed the only `engine::evaluate()`-level test exercising a
+        // *real* (non-`None`) `active_hours` window through the production
+        // live-clock path and asserting Allow — every remaining
+        // `ActiveHours { .. }` case in this file asserts Deny. `evaluate()`
+        // has no seam to inject a fixed instant (unlike `stage_schedule_at`
+        // in `decision.rs`, added by the same PR, which only covers the
+        // stage-level comparison, not dispatch/caching — the thing AAASM-3893
+        // cares about: a cached verdict computed inside active-hours must not
+        // outlive the window).
+        //
+        // A live-clock window test necessarily keeps *some* wall-clock
+        // dependence, which is exactly what AAASM-5933 exists to eliminate —
+        // so this deliberately follows `schedule_denies_outside_active_hours`
+        // above's already-established, already-accepted pattern for that
+        // trade-off (tolerate the near-certain case, name the rare one)
+        // rather than inventing a new one. Unlike the original bug, this
+        // window's excluded minutes (`23:58`, `23:59`) are far from its
+        // `start` and stated purpose is "wide", so an `Allow` failure here
+        // names the actual gap instead of masking it as "flaky".
         let mut doc = empty_doc();
         doc.schedule = Some(SchedulePolicy {
             active_hours: Some(ActiveHours {
                 start: "00:00".to_string(),
-                end: "23:59".to_string(),
+                end: "23:58".to_string(),
                 timezone: "UTC".to_string(),
             }),
         });
         let engine = make_engine(doc);
         let ctx = make_ctx();
         let action = tool_call("any", "");
-        // 00:00–23:59 covers almost the whole day — should Allow.
-        assert_eq!(engine.evaluate(&ctx, &action).decision, PolicyResult::Allow);
+        let result = engine.evaluate(&ctx, &action);
+        match result.decision {
+            PolicyResult::Allow => {}
+            PolicyResult::Deny { reason } => {
+                // Only expected in the 2 minutes/day this window excludes.
+                assert_eq!(reason, "outside active hours");
+            }
+            other => panic!("unexpected result: {:?}", other),
+        }
     }
 
     #[test]
