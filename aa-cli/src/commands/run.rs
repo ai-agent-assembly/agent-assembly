@@ -21,6 +21,7 @@ use crate::commands::run_registration::{self, GovernedRegistration};
 use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 use aa_policy::resolve as run_policy;
 
 /// Arguments for the `aasm run <tool> [args...]` subcommand.
@@ -2606,13 +2607,24 @@ fn format_dry_run_output(
          <set> = present, value withheld; <set:empty> = present and empty; \
          ***MASKED*** = present, name says credential\n",
     );
-    env_lines.extend(
-        effective
-            .iter()
-            .map(|(k, v)| format!("{}={}\n", k, render_env_value(k, v))),
-    );
+    // One variable per line, so anything carrying a newline could otherwise forge
+    // a line in a security artifact — `ANTHROPIC_MODEL` set to
+    // `a-model\nHTTPS_PROXY=http://127.0.0.1:1` would forge a routing fact. Not
+    // hypothetical for an allowlisted name: in Enforce mode `build_child_env`
+    // does not set `AA_ENFORCEMENT_MODE`, so an arbitrary ambient string under
+    // that name reaches this renderer. `sanitize_terminal` is the crate's
+    // existing rule for untrusted operator-facing text; it strips newlines and
+    // C0/C1 controls, and also the ANSI/OSC sequences that could repaint the
+    // receipt to say something other than what it computed.
+    env_lines.extend(effective.iter().map(|(k, v)| {
+        format!(
+            "{}={}\n",
+            sanitize_terminal(k),
+            sanitize_terminal(&render_env_value(k, v))
+        )
+    }));
     for name in &removed {
-        env_lines.push_str(&format!("{name}=<removed by adapter>\n"));
+        env_lines.push_str(&format!("{}=<removed by adapter>\n", sanitize_terminal(name)));
     }
 
     let fidelity_line = match fidelity {
@@ -5647,6 +5659,47 @@ mod tests {
                 "{value} is unparseable and must be withheld, not printed"
             );
         }
+    }
+
+    /// An env value cannot forge a line in the receipt.
+    ///
+    /// The environment section is one variable per line, so a value carrying a
+    /// newline could otherwise invent a *second* record — and a forged
+    /// `HTTPS_PROXY=` line inside a security artifact asserts a routing fact the
+    /// launch does not have. Reachable through an allowlisted name: in Enforce
+    /// mode `build_child_env` does not set `AA_ENFORCEMENT_MODE`, so an arbitrary
+    /// ambient string under that name reaches the renderer.
+    #[test]
+    fn an_env_value_cannot_forge_a_line_in_the_receipt() {
+        let forged = "observe\nHTTPS_PROXY=http://127.0.0.1:8899";
+        let output = preview_for("AA_ENFORCEMENT_MODE", forged);
+
+        assert!(
+            !output.contains("\nHTTPS_PROXY=http://127.0.0.1:8899"),
+            "a newline in an allowlisted value forged a routing line: {output}"
+        );
+        // The value is still reported, collapsed onto one line. `sanitize_terminal`
+        // strips the control character rather than substituting a space, so the
+        // two fragments abut — safe, and legible enough that the operator can see
+        // the variable carried something unexpected.
+        assert!(
+            output.contains("AA_ENFORCEMENT_MODE=observeHTTPS_PROXY=http://127.0.0.1:8899\n"),
+            "the value must survive on a single line: {output}"
+        );
+
+        // Carriage returns and ANSI sequences cannot repaint the receipt either.
+        let repainted = preview_for("AA_AGENT_ID", "real-agent\r\u{1b}[2Kdifferent-agent");
+        assert!(
+            !repainted.contains('\r') && !repainted.contains('\u{1b}'),
+            "control characters reached the receipt: {repainted}"
+        );
+
+        // A forged line cannot arrive through the variable *name* either.
+        let named = preview_for("AA_AGENT_ID\nHTTPS_PROXY", "agent-5935");
+        assert!(
+            !named.contains("\nHTTPS_PROXY="),
+            "a newline in a variable name forged a line: {named}"
+        );
     }
 
     /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has
