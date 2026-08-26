@@ -145,16 +145,48 @@ pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<Pla
 /// An unreadable working directory is reported, not silently dropped: at
 /// `project` scope the service refuses, and a user who is told "the project could
 /// not be determined" can act, where a user told nothing cannot.
+///
+/// # Why a path that is not UTF-8 is refused rather than displayed
+///
+/// The wire field is a proto `string`, so the path has to be valid UTF-8 to
+/// cross it. [`Path::display`](std::path::Path::display) will always produce
+/// *something* — it substitutes `U+FFFD` for each byte it cannot decode — and
+/// the something it produces is still absolute, still existing-looking, and a
+/// **different directory**. The service would accept it and write into a
+/// phantom sibling of the project the user is actually in. Refusing is the only
+/// answer that does not act on a path nobody named.
 fn resolve_project_root(scope: &str) -> Result<String, Failure> {
-    match std::env::current_dir() {
-        Ok(dir) => Ok(dir.display().to_string()),
-        Err(_) if scope != ScopeArg::Project.as_wire() => Ok(String::new()),
-        Err(e) => Err(Failure::new(
+    let dir = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(_) if scope != ScopeArg::Project.as_wire() => return Ok(String::new()),
+        Err(e) => {
+            return Err(Failure::new(
+                Outcome::Aborted,
+                format!("nothing was changed: this project's directory could not be determined ({e})"),
+                "run the command from an existing, readable directory, or choose --scope user",
+            ))
+        }
+    };
+    nameable_on_the_wire(&dir)
+}
+
+/// `dir` as the wire can carry it, or a refusal.
+///
+/// Split out from [`resolve_project_root`] so the refusal can be tested against
+/// a synthetic path: a process cannot portably put itself in a directory whose
+/// name is not UTF-8.
+fn nameable_on_the_wire(dir: &std::path::Path) -> Result<String, Failure> {
+    dir.to_str().map(str::to_string).ok_or_else(|| {
+        Failure::new(
             Outcome::Aborted,
-            format!("nothing was changed: this project's directory could not be determined ({e})"),
-            "run the command from an existing, readable directory, or choose --scope user",
-        )),
-    }
+            format!(
+                "nothing was changed: this directory's name is not valid UTF-8 ({}), so it cannot be \
+                 named to the service without changing which directory it refers to",
+                dir.display()
+            ),
+            "run the command from a directory whose path is valid UTF-8",
+        )
+    })
 }
 
 /// The scope this plan writes, refusing the administrator surface unless it was
@@ -212,6 +244,27 @@ mod tests {
         assert_eq!(failure.outcome, Outcome::Aborted);
         assert!(failure.remediation.contains("--install-managed-settings"), "{failure}");
         assert!(failure.to_string().contains("nothing was changed"), "{failure}");
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_named_on_the_wire_is_refused_not_approximated() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let ordinary = std::path::Path::new("/synthetic/project");
+        assert_eq!(
+            nameable_on_the_wire(ordinary).expect("UTF-8 crosses the wire"),
+            "/synthetic/project"
+        );
+
+        // `Path::display` would happily render this as `/synthetic/proje?ct`,
+        // which is absolute, plausible, and a *different* directory — the
+        // service would accept it and write into a phantom sibling.
+        let undisplayable = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/synthetic/proje\xffct"));
+        assert!(undisplayable.to_str().is_none(), "the fixture must not be UTF-8");
+        let failure = nameable_on_the_wire(undisplayable).expect_err("must refuse");
+        assert_eq!(failure.outcome, Outcome::Aborted);
+        assert!(failure.to_string().contains("nothing was changed"), "{failure}");
+        assert!(failure.to_string().contains("not valid UTF-8"), "{failure}");
     }
 
     #[test]
