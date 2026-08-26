@@ -762,7 +762,7 @@ async fn auth_over_an_https_scheme_endpoint_reaches_the_corp_proxy() {
 /// nothing (no direct-dial fallback).
 #[tokio::test]
 async fn an_unreachable_trusted_proxy_fails_closed_with_no_direct_dial_fallback() {
-    let (dest_addr, received) = capturing_destination().await;
+    let (_dest_addr, received) = capturing_destination().await;
     // A corp-proxy address that is bound-but-refusing (never accepts), so the
     // TCP connect itself blocks until `TRUSTED_PROXY_DIAL_TIMEOUT` — using an
     // address nobody listens on would let the OS RST immediately, which is a
@@ -886,7 +886,7 @@ async fn a_trusted_endpoint_on_a_different_port_is_not_a_loop() {
 /// an unreachable trusted proxy still fails closed even with the flag set.
 #[tokio::test]
 async fn network_fail_open_bypasses_only_the_gateway_stage_not_the_chained_dial() {
-    let (dest_addr, received) = capturing_destination().await;
+    let (_dest_addr, received) = capturing_destination().await;
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let unreachable_addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
