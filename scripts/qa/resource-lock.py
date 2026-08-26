@@ -220,15 +220,34 @@ def git_common_dir() -> str | None:
     return os.path.abspath(d) if d else None
 
 
+def git_toplevel() -> str | None:
+    """The current worktree's own root — distinct per worktree, unlike
+    `git_common_dir()` above (AAASM-5947). `--git-common-dir` resolves to
+    the SAME shared `.git` for every worktree of a repo, so hashing only
+    that into the fingerprint made two different worktrees running the
+    same class/argv collide as "duplicates" of each other — a real defect
+    found once the pre-push doc hook (AAASM-5895) started giving every
+    push the same fixed class+argv. `--show-toplevel` is per-worktree, so
+    including it keeps AAASM-5877's original fix intact (same worktree,
+    same class/argv still collides) while distinguishing siblings.
+    """
+    d = _run_git(["rev-parse", "--show-toplevel"])
+    return os.path.abspath(d) if d else None
+
+
 def git_branch() -> str | None:
     return _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
 
 
-def compute_fingerprint(cls_name: str, gcd: str | None, argv: list[str]) -> str:
+def compute_fingerprint(
+    cls_name: str, gcd: str | None, toplevel: str | None, argv: list[str]
+) -> str:
     h = hashlib.sha256()
     h.update(cls_name.encode())
     h.update(b"\x00")
     h.update((gcd or "").encode())
+    h.update(b"\x00")
+    h.update((toplevel or "").encode())
     h.update(b"\x00")
     h.update("\x00".join(argv).encode())
     return "sha256:" + h.hexdigest()
@@ -381,7 +400,8 @@ def cmd_run(rest: list[str]) -> int:
     ensure_dirs(base)
 
     gcd = git_common_dir()
-    fingerprint = compute_fingerprint(args.cls, gcd, cmd)
+    toplevel = git_toplevel()
+    fingerprint = compute_fingerprint(args.cls, gcd, toplevel, cmd)
 
     duplicate_policy = cls_cfg.get("duplicate_policy", "suppress")
     if duplicate_policy == "suppress":
@@ -453,6 +473,7 @@ def cmd_run(rest: list[str]) -> int:
         "proc_start_token": ps_start_token(pid),
         "repo": os.getcwd(),
         "git_common_dir": gcd,
+        "git_toplevel": toplevel,
         "branch": git_branch(),
         "fingerprint": fingerprint,
         "argv": cmd,
