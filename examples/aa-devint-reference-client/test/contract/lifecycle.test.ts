@@ -15,8 +15,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DevIntClient } from '../../src/client.js';
 import { CapabilityToken } from '../../src/credential.js';
 import { RuntimeNotRunningError } from '../../src/errors.js';
-import { Verb } from '../../src/generated/devint_pb.js';
+import { DenyCode, Verb } from '../../src/generated/devint_pb.js';
 import { discover } from '../../src/discovery.js';
+import { projectRoot } from '../../src/project.js';
 import {
   HOST_ENFORCED_UNAVAILABLE,
   levelLabel,
@@ -97,6 +98,9 @@ describe('the lifecycle flows', () => {
         profile: 'recommended',
         settingsScope: 'user',
         policyProfileId: 'team-default',
+        // User scope: the project root is optional context, and this plan states
+        // it has none rather than borrowing the test runner's directory.
+        projectRoot: '',
       });
       expect(plan.planId).toBe('plan-1');
       // The policy profile arrives by reference: an id, a name and a digest,
@@ -129,6 +133,64 @@ describe('the lifecycle flows', () => {
       // The acknowledgement has no verdict field to render as one.
       expect(Object.keys(ack)).not.toContain('decision');
       expect(Object.keys(ack)).not.toContain('granted');
+    } finally {
+      client.close();
+    }
+  });
+});
+
+describe('the project a request is for', () => {
+  /**
+   * AAASM-5913, from the client's side of the socket.
+   *
+   * The service is the thing that refuses here, and these assertions run against
+   * it rather than against a re-statement of its rule in TypeScript — the client
+   * would still compile if it dropped the field, so what needs proving is that
+   * the value reaches the far side and that the far side is what adjudicates it.
+   */
+  it('plans at project scope when the caller names the project', async () => {
+    const client = await connect();
+    try {
+      const plan = await client.plan(CLAUDE, {
+        profile: 'recommended',
+        settingsScope: 'project',
+        projectRoot: projectRoot('project', {}, () => scratch),
+      });
+      expect(plan.planId).toBe('plan-1');
+    } finally {
+      client.close();
+    }
+  });
+
+  it('sends the project root it was given, and no value of its own', async () => {
+    const client = await connect();
+    try {
+      // The service quotes the root back when it refuses a relative one, which
+      // is the only place this harness echoes the field at all. A client that
+      // dropped it would be refused for naming *nothing*, with a different
+      // message; a client that substituted its own cwd would be refused with
+      // that path quoted instead.
+      await expect(
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'user', projectRoot: 'not/absolute' }),
+      ).rejects.toThrow(/"not\/absolute" is not absolute/);
+    } finally {
+      client.close();
+    }
+  });
+
+  it('is refused at project scope when no project was named, rather than defaulted', async () => {
+    const client = await connect();
+    try {
+      // The refusal is the fix. A service that fell back to its own working
+      // directory wrote one caller's managed keys into an unrelated repository's
+      // checked-in settings, and this client must not talk it into doing that by
+      // sending an empty root at the one scope where the root is the answer.
+      await expect(
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '' }),
+      ).rejects.toMatchObject({ code: DenyCode.LIFECYCLE_ERROR });
+      await expect(
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '' }),
+      ).rejects.toThrow(/will not guess/);
     } finally {
       client.close();
     }

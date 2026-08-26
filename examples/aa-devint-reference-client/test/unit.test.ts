@@ -13,6 +13,7 @@ import { CapabilityToken } from '../src/credential.js';
 import { SOCKET_PATH_ENV, socketPath } from '../src/discovery.js';
 import { MAX_FRAME_LEN, TAG_DENIED, decodeServerFrame } from '../src/framing.js';
 import { DenyCodeSchema, DeniedSchema, StatusViewSchema } from '../src/generated/devint_pb.js';
+import { PROJECT_ROOT_ENV, projectRoot } from '../src/project.js';
 import { HOST_ENFORCED_UNAVAILABLE, renderStatus, splitEvidence } from '../src/render.js';
 
 const scratch = mkdtempSync(join(tmpdir(), 'devint-unit-'));
@@ -29,6 +30,47 @@ describe('socket path resolution', () => {
 
   it('treats an empty override as unset rather than as the empty path', () => {
     expect(socketPath({ [SOCKET_PATH_ENV]: '', HOME: '/h' })).toBe('/h/.aa/run/devint.sock');
+  });
+});
+
+describe('project root resolution', () => {
+  it('answers with the working directory of the process that asked, which only it knows', () => {
+    // Not the runtime's: that is a shared daemon, and its directory is a fact
+    // about whoever started it (AAASM-5913).
+    expect(projectRoot('project', {})).toBe(process.cwd());
+  });
+
+  it('honours the override, and makes a relative one absolute', () => {
+    expect(projectRoot('project', { [PROJECT_ROOT_ENV]: '/workspace/repo' })).toBe('/workspace/repo');
+    // A relative path is refused by the service, because relative to *its*
+    // directory is not relative to ours. Here is the only place it can be
+    // resolved to what the caller meant.
+    expect(projectRoot('project', { [PROJECT_ROOT_ENV]: 'repo' })).toBe(join(process.cwd(), 'repo'));
+  });
+
+  it('treats an empty override as unset rather than as the empty path', () => {
+    expect(projectRoot('user', { [PROJECT_ROOT_ENV]: '' }, () => '/workspace/repo')).toBe('/workspace/repo');
+  });
+
+  it('refuses a project-scoped request whose directory cannot be determined', () => {
+    const deleted = (): string => {
+      throw new Error('ENOENT: no such file or directory, uv_cwd');
+    };
+    // The alternative is sending "" and letting the service refuse. It would,
+    // but the user would learn nothing they can act on: only this side knows
+    // *why* there is no project to name.
+    expect(() => projectRoot('project', {}, deleted)).toThrow(/could not be determined/);
+    expect(() => projectRoot('project', {}, deleted)).toThrow(new RegExp(PROJECT_ROOT_ENV));
+  });
+
+  it('still proceeds at user scope, where the root is context and not a destination', () => {
+    const deleted = (): string => {
+      throw new Error('ENOENT: no such file or directory, uv_cwd');
+    };
+    // The service uses it there only to disclose that a nearby project config
+    // exists, so losing that disclosure must not cost the user the operation.
+    expect(projectRoot('user', {}, deleted)).toBe('');
+    expect(projectRoot('managed', {}, deleted)).toBe('');
   });
 });
 

@@ -93,7 +93,9 @@ describe('a token scoped to tool A cannot act on tool B', () => {
   it('a status-only token cannot even plan on its own tool', async () => {
     const client = await connected(harness.tokens.statusOnly);
     try {
-      await expect(client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'user' })).rejects.toMatchObject({
+      await expect(
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'user', projectRoot: '' }),
+      ).rejects.toMatchObject({
         code: DenyCode.OUT_OF_SCOPE,
       });
     } finally {
@@ -110,6 +112,7 @@ describe('no response the client receives carries a secret', () => {
         profile: 'recommended',
         settingsScope: 'user',
         policyProfileId: 'team-default',
+        projectRoot: '',
       });
 
       // The wire message, everything derived from it, and everything rendered
