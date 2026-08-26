@@ -325,16 +325,9 @@ impl<E: StepExecutor> IntegrationEngine<E> {
             self.apply_step(plan, step, &mut journal, &mut step_receipts, &mut skipped, &mut mutated)?;
         }
 
-        // Reusing the prior receipt's id when the plan is the same is what stops
-        // a no-op reapply from registering as an upgrade in the store's history.
-        let receipt_id = match &existing {
-            Some(prior) if prior.plan_id == plan.plan_id => prior.receipt_id.clone(),
-            _ => context.receipt_id.clone(),
-        };
-
         let mut receipt = IntegrationReceipt {
             schema_version: super::version::LIFECYCLE_SCHEMA_VERSION,
-            receipt_id,
+            receipt_id: context.receipt_id.clone(),
             plan_id: plan.plan_id.clone(),
             tool: plan.tool.clone(),
             profile: plan.profile,
@@ -350,20 +343,30 @@ impl<E: StepExecutor> IntegrationEngine<E> {
         };
         receipt.achieved_level = configuration_level(&receipt, plan.planned_level);
 
-        // A reapply that changed nothing keeps the receipt it already had,
-        // including its `applied_at` and its verification evidence: rewriting
-        // them would make an operation that mutated nothing look like a fresh
-        // install and would discard a verification that is still valid.
-        if !mutated {
-            if let Some(prior) = &existing {
-                if prior.plan_id == plan.plan_id && receipts_agree(prior, &receipt) {
-                    self.store.delete_journal(&plan.tool, plan.settings_scope)?;
-                    return Ok(ApplyOutcome {
-                        receipt: prior.clone(),
-                        mutated: false,
-                        skipped,
-                    });
-                }
+        // Does this apply land on the installation that is already here, or does
+        // it replace it? Only the receipts answer that, and only by what they
+        // describe — never by which plan authored them (AAASM-5963). A plan id
+        // names one *authoring*; a receipt id names one *installation*. Two
+        // authorings of the identical plan are the same installation and must
+        // keep one id, or a reapply reads as a fresh install; and the two are not
+        // interchangeable even as a heuristic, because a plan id is minted per
+        // authoring and so differs on every reapply.
+        let prior_installation = existing.as_ref().filter(|prior| receipts_agree(prior, &receipt));
+
+        if let Some(prior) = prior_installation {
+            receipt.receipt_id = prior.receipt_id.clone();
+
+            // A reapply that changed nothing keeps the receipt it already had,
+            // including its `applied_at` and its verification evidence: rewriting
+            // them would make an operation that mutated nothing look like a fresh
+            // install and would discard a verification that is still valid.
+            if !mutated {
+                self.store.delete_journal(&plan.tool, plan.settings_scope)?;
+                return Ok(ApplyOutcome {
+                    receipt: prior.clone(),
+                    mutated: false,
+                    skipped,
+                });
             }
         }
 
@@ -731,10 +734,29 @@ fn configuration_level(receipt: &IntegrationReceipt, planned: ProtectionLevel) -
     level.min(planned).min(receipt.profile.max_reportable_level())
 }
 
-/// Whether a freshly computed receipt describes the same host state as a stored
-/// one, ignoring the fields that move on every run.
+/// Whether a freshly computed receipt describes the same installation as a
+/// stored one, ignoring the fields that move on every run.
+///
+/// This is the only test of installation identity the engine has, so what it
+/// leaves out is as load-bearing as what it compares:
+///
+/// - `tool` and `settings_scope` are equal by construction — together they are
+///   the key the stored receipt was just looked up under.
+/// - `plan_id` is deliberately excluded. It identifies an authoring, not an
+///   installation, and it is minted afresh on every plan, so comparing it would
+///   report every reapply as a different installation (AAASM-5963).
+/// - `applied_at_unix_secs`, `versions` and `tool_version` describe the *run*,
+///   not what it installed. A second apply is always later, and often from a
+///   newer build, without thereby installing anything different.
+/// - `achieved_level` is a function of the steps and `planned_level`, both
+///   compared here, so comparing it as well would add no discrimination.
+/// - `achieved_evidence` and `verified_at_unix_secs` come from verification
+///   rather than from apply, and preserving them across a no-op reapply is the
+///   point of the caller's early return.
 fn receipts_agree(stored: &IntegrationReceipt, fresh: &IntegrationReceipt) -> bool {
-    stored.steps.len() == fresh.steps.len()
+    stored.profile == fresh.profile
+        && stored.planned_level == fresh.planned_level
+        && stored.steps.len() == fresh.steps.len()
         && stored
             .steps
             .iter()
@@ -1956,8 +1978,12 @@ mod tests {
         let mut e = engine(&f);
         e.apply(&plan(&f), &context(1_000)).unwrap();
 
+        // A new plan id alone is not an upgrade — it is what every reapply has.
+        // The upgrade here is the profile: the same steps under a stricter
+        // policy are a different installation of the same tool.
         let mut upgraded = plan(&f);
         upgraded.plan_id = "plan-2".to_string();
+        upgraded.profile = ProtectionProfile::Strict;
         let outcome = e.apply(&upgraded, &context(2_000)).unwrap();
         assert_eq!(outcome.receipt.plan_id, "plan-2");
         assert_eq!(outcome.receipt.receipt_id, "receipt-2000");
