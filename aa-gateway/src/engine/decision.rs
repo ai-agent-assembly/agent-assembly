@@ -93,12 +93,32 @@ pub(crate) fn evaluate_single_doc(
 /// The caller runs it on every request so a cached verdict computed inside an
 /// active-hours window cannot outlive that window.
 pub(crate) fn evaluate_schedule_cascade(cascade: &[Arc<PolicyDocument>]) -> Option<PolicyDecision> {
-    cascade.iter().find_map(|doc| stage_schedule(doc))
+    // Single `now` for the whole cascade, not one per doc: two docs evaluated
+    // a heartbeat apart could otherwise straddle a minute boundary and see
+    // different verdicts for what should be one consistent instant.
+    let now = chrono::Utc::now();
+    cascade.iter().find_map(|doc| stage_schedule_at(doc, now))
 }
 
 /// Stage 1 — Schedule: deny when the current time is outside the doc's
-/// active-hours window.
+/// active-hours window. Thin wrapper over [`stage_schedule_at`] for the one
+/// caller (`stage_schedule_invalid_timezone_fails_closed`) that doesn't care
+/// what instant is used.
+#[cfg(test)]
 fn stage_schedule(doc: &PolicyDocument) -> Option<PolicyDecision> {
+    stage_schedule_at(doc, chrono::Utc::now())
+}
+
+/// As [`evaluate_schedule_cascade`]'s per-doc check, but with `now` supplied
+/// by the caller rather than read from the system clock — the seam that lets
+/// tests pin an exact instant instead of depending on when they happen to
+/// run. AAASM-5933: the two tests documenting a "00:00"–"23:59" active-hours
+/// config as covering the full day read live `Utc::now()`, so both failed
+/// deterministically whenever CI happened to run during the 23:59 minute —
+/// `[start, end)` is the documented contract (`docs/src/policy-reference.md`
+/// § schedule), so the 23:59 minute is correctly denied; the tests' own
+/// premise, not the comparison below, was wrong.
+fn stage_schedule_at(doc: &PolicyDocument, now: chrono::DateTime<chrono::Utc>) -> Option<PolicyDecision> {
     let ah = doc.schedule.as_ref()?.active_hours.as_ref()?;
     use chrono::Timelike;
     // AAASM-3133: an unparseable timezone must fail closed. Silently falling
@@ -112,7 +132,7 @@ fn stage_schedule(doc: &PolicyDocument) -> Option<PolicyDecision> {
             source_scope: doc.scope.clone(),
         });
     };
-    let now = chrono::Utc::now().with_timezone(&tz);
+    let now = now.with_timezone(&tz);
     let current_hhmm = format!("{:02}:{:02}", now.hour(), now.minute());
     if current_hhmm < ah.start || current_hhmm >= ah.end {
         return Some(PolicyDecision::Deny {
@@ -724,10 +744,93 @@ mod tests {
         }
     }
 
+    // ── Stage 1: schedule active-hours boundary (AAASM-5933) ────────────────
+    //
+    // `[start, end)` is the documented contract (`docs/src/policy-reference.md`
+    // § schedule: "permitted to run only inside the `[start, end)` window";
+    // "Omitting `schedule` entirely means the agent is always active" is the
+    // documented way to express unrestricted, not a `"00:00"`–`"23:59"` window
+    // — `end` is exclusive, so that window still denies the `23:59` minute.
+    // These pin an exact instant via `stage_schedule_at` instead of reading
+    // the system clock, so they assert the boundary deterministically rather
+    // than depending on what minute CI happens to run in (the bug the two
+    // prior versions of this test had: both used live `Utc::now()` against a
+    // `"00:00"`–`"23:59"` window and asserted `Allow`, which is simply false
+    // during the `23:59` minute).
+
+    fn at(hh: u32, mm: u32) -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone;
+        chrono::Utc
+            .with_ymd_and_hms(2026, 6, 15, hh, mm, 0)
+            .single()
+            .expect("valid UTC instant")
+    }
+
     #[test]
-    fn stage_schedule_valid_timezone_full_day_window_allows() {
-        // A valid tz with an all-day window must not deny on the tz check.
+    fn stage_schedule_one_minute_before_start_denies() {
+        let doc = doc_with_schedule("UTC", "09:00", "17:00");
+        let d = stage_schedule_at(&doc, at(8, 59)).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_schedule_exactly_at_start_allows() {
+        let doc = doc_with_schedule("UTC", "09:00", "17:00");
+        assert_eq!(stage_schedule_at(&doc, at(9, 0)), None);
+    }
+
+    #[test]
+    fn stage_schedule_one_minute_inside_allows() {
+        let doc = doc_with_schedule("UTC", "09:00", "17:00");
+        assert_eq!(stage_schedule_at(&doc, at(9, 1)), None);
+    }
+
+    #[test]
+    fn stage_schedule_one_minute_before_end_allows() {
+        let doc = doc_with_schedule("UTC", "09:00", "17:00");
+        assert_eq!(stage_schedule_at(&doc, at(16, 59)), None);
+    }
+
+    #[test]
+    fn stage_schedule_exactly_at_end_denies() {
+        // `end` is exclusive — the documented contract, not an accident.
+        let doc = doc_with_schedule("UTC", "09:00", "17:00");
+        let d = stage_schedule_at(&doc, at(17, 0)).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_schedule_one_minute_after_end_denies() {
+        let doc = doc_with_schedule("UTC", "09:00", "17:00");
+        let d = stage_schedule_at(&doc, at(17, 1)).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_schedule_midnight_start_allows_at_midnight() {
         let doc = doc_with_schedule("UTC", "00:00", "23:59");
-        assert_eq!(stage_schedule(&doc), None);
+        assert_eq!(stage_schedule_at(&doc, at(0, 0)), None);
+    }
+
+    #[test]
+    fn stage_schedule_widest_expressible_window_still_denies_its_own_last_minute() {
+        // `"23:59"` is the widest `end` the schema allows (`HH` capped at 23,
+        // no `24:00` sentinel) — even the widest possible window denies its
+        // own final minute under the exclusive-end contract. A config wanting
+        // genuinely unrestricted scheduling omits `schedule` entirely instead.
+        let doc = doc_with_schedule("UTC", "00:00", "23:59");
+        let d = stage_schedule_at(&doc, at(23, 59)).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn stage_schedule_converts_to_the_configured_timezone_before_comparing() {
+        // 09:30 UTC is 17:30 Asia/Taipei (+8) — outside a Taipei 09:00-17:00
+        // window despite being inside the same clock-digits window in UTC.
+        let doc = doc_with_schedule("Asia/Taipei", "09:00", "17:00");
+        let d = stage_schedule_at(&doc, at(9, 30)).expect("deny");
+        assert!(matches!(d, PolicyDecision::Deny { .. }));
+        // The Taipei-local equivalent of that same instant (01:30 UTC) allows.
+        assert_eq!(stage_schedule_at(&doc, at(1, 30)), None);
     }
 }
