@@ -39,7 +39,7 @@ use super::apply_outcome::{ApplyMutation, MutationUnknown};
 use super::client::DevIntClient;
 use super::negotiate::{
     DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_POLICY_POSTURE_SINCE,
-    DI_API_PROVENANCE_SINCE,
+    DI_API_PROJECT_ROOT_SINCE, DI_API_PROVENANCE_SINCE,
 };
 use super::provenance::ProvenanceVerdict;
 use super::scope::{TokenScope, ToolScope};
@@ -357,13 +357,18 @@ fn a_v5_peer_that_omits_the_block_is_not_read_as_unchanged() {
 /// for a test run.
 const _: () = {
     assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
-    // The apply outcome is the newest addition. If it stops being so, the v5
-    // sweeps below are pinning the wrong version and their "nothing below
-    // receives one" loops silently stop covering the top of the window.
-    assert!(DI_API_APPLY_OUTCOME_SINCE == DI_API_MAX_SUPPORTED);
-    // Provenance is no longer the newest addition — the apply outcome is
-    // (AAASM-5674) — so the "nothing below receives one" sweep for provenance
-    // now runs over a strict interior of the window rather than up to its top.
+    // The project root is the newest addition. If it stops being so, the v6
+    // sweeps are pinning the wrong version and their "below this it is refused"
+    // loops silently stop covering the top of the window.
+    assert!(DI_API_PROJECT_ROOT_SINCE == DI_API_MAX_SUPPORTED);
+    // The apply outcome was the newest addition until v6 (AAASM-5913), so its
+    // sweeps now run over a strict interior of the window rather than up to its
+    // top — as provenance's already did after AAASM-5674.
+    assert!(DI_API_APPLY_OUTCOME_SINCE < DI_API_MAX_SUPPORTED);
+    assert!(DI_API_APPLY_OUTCOME_SINCE > DI_API_PROVENANCE_SINCE);
     assert!(DI_API_PROVENANCE_SINCE < DI_API_MAX_SUPPORTED);
     assert!(DI_API_PROVENANCE_SINCE > DI_API_POLICY_POSTURE_SINCE);
+    // The v6 sweep loops `MIN..PROJECT_ROOT_SINCE`; at equality that range is
+    // empty and every assertion in it would vacuously hold.
+    assert!(DI_API_PROJECT_ROOT_SINCE > DI_API_MIN_SUPPORTED);
 };

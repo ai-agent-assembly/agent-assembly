@@ -264,6 +264,13 @@ message PlanArgs {
   // This is not a client-supplied *destination*. The service resolves the file
   // to write from the scope and this root together, by its own rule; a caller
   // cannot name a settings path (matrix row 6 still holds).
+  //
+  // Requires DI-API 6 (`DI_API_PROJECT_ROOT_SINCE`). Adding it is additive on
+  // the wire but *not* additive in behaviour: a pre-v6 runtime discards this
+  // field during decode and falls back to its own working directory, producing
+  // the AAASM-5913 defect with no denial and no negotiation signal. Clients
+  // must therefore refuse "project" scope below v6 rather than send this and
+  // inspect the reply — an ignored root and an unsent one decode identically.
   string project_root = 6;
 }
 
