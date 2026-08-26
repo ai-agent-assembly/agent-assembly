@@ -67,6 +67,25 @@ fn build_ca_params() -> Result<CertificateParams, ProxyError> {
     Ok(ca_params)
 }
 
+/// Return whether `ca_key_pem` is the private key belonging to `ca_cert_pem`.
+///
+/// AAASM-5928: compares the key's raw EC public key point against the
+/// certificate's SubjectPublicKeyInfo rather than any weaker heuristic (e.g.
+/// just successfully parsing both) — both `rcgen::KeyPair::public_key_raw`
+/// and x509-parser's `SubjectPublicKeyInfo::subject_public_key` store the
+/// same raw uncompressed EC point for a P-256 key (the only curve this CA
+/// ever generates), so a direct byte comparison is a correct and cheap
+/// matched-pair check with no extra crypto operations needed.
+fn ca_pair_matches(ca_cert_pem: &str, ca_key_pem: &str) -> Result<bool, ProxyError> {
+    let key = KeyPair::from_pem(ca_key_pem).map_err(|e| ProxyError::CertGen(e.to_string()))?;
+
+    let (_, pem) =
+        x509_parser::pem::parse_x509_pem(ca_cert_pem.as_bytes()).map_err(|e| ProxyError::CertGen(e.to_string()))?;
+    let cert = pem.parse_x509().map_err(|e| ProxyError::CertGen(e.to_string()))?;
+
+    Ok(cert.public_key().subject_public_key.data.as_ref() == key.public_key_raw())
+}
+
 /// A signed TLS certificate and its corresponding private key in DER encoding.
 ///
 /// Used as the value stored in [`super::cert::CertCache`].
@@ -96,44 +115,166 @@ pub struct CaStore {
 impl CaStore {
     /// Load the CA from `ca_dir` if it exists, or generate a new self-signed CA
     /// and persist it before returning.
+    ///
+    /// AAASM-5862 deliberately keeps `ca_dir` SHARED across every launch on a
+    /// machine (a per-launch dir would mint a fresh CA — and trigger a macOS
+    /// Keychain trust re-prompt — every run). That means this method must be
+    /// safe when multiple processes race to initialize the same shared dir
+    /// for the first time. AAASM-5928 found a real corrupted pair on a
+    /// multi-session dev machine caused by exactly that race: two processes'
+    /// non-atomic, uncoordinated cert/key writes interleaved into a torn
+    /// mismatched pair, which broke every downstream TLS handshake with
+    /// `CERT_SIGNATURE_FAILURE`. This method now (1) verifies a loaded pair
+    /// is actually matched before trusting it, and (2) serializes
+    /// generate-and-persist across processes via an O_EXCL lock file plus
+    /// temp-file-then-atomic-rename, so no reader can ever observe a torn
+    /// write.
     pub async fn load_or_create(ca_dir: &Path) -> Result<Self, ProxyError> {
         let cert_path = ca_dir.join("ca-cert.pem");
         let key_path = ca_dir.join("ca-key.pem");
+        let lock_path = ca_dir.join(".ca-lock");
 
-        // Attempt to load existing CA; fall through to generation only on NotFound.
-        match (
-            tokio::fs::read_to_string(&cert_path).await,
-            tokio::fs::read_to_string(&key_path).await,
-        ) {
-            (Ok(ca_cert_pem), Ok(ca_key_pem)) => {
-                // AAASM-4936 (L4): 0600 is enforced only at creation time, so a
-                // key written by an older build, restored from a backup, or
-                // copied in with loose perms would be served group/other-
-                // readable. Re-assert 0600 on every load so the private key can
-                // never be left world-readable across a proxy restart.
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let key_path_clone = key_path.clone();
-                    tokio::task::spawn_blocking(move || {
-                        std::fs::set_permissions(&key_path_clone, std::fs::Permissions::from_mode(0o600))
-                    })
-                    .await
-                    .map_err(|e| ProxyError::Io(std::io::Error::other(e)))??;
+        // AAASM-5928 CI regression: `ca_dir` is a fresh, never-created Docker
+        // volume mount on a container's first-ever start — every existing test
+        // here used `TempDir::new()`, which always pre-exists, so this path was
+        // never exercised locally. Without this, the O_EXCL lock-file
+        // `create_new` below is the first filesystem operation against a
+        // missing parent directory and fails with `ErrorKind::NotFound`, which
+        // isn't handled by the `AlreadyExists` retry arm and falls through to
+        // the generic `Err` arm that returns immediately — so `run()` errors
+        // out before the TCP listener ever binds. The container's restart
+        // policy then crash-loops on the same immediate failure forever, which
+        // from outside the container looks identical to "the proxy is hanging
+        // and never accepts connections."
+        tokio::fs::create_dir_all(ca_dir).await?;
+
+        // Bounds on how long a caller will wait for another process's
+        // in-flight generation before giving up, and how old an unreleased
+        // lock file must be before it's treated as abandoned by a crashed
+        // holder rather than a live one. A crashed holder that never gets
+        // reclaimed would wedge this shared, multi-session directory for
+        // every subsequent launch forever — exactly the kind of persistent
+        // breakage this ticket exists to prevent.
+        const MAX_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+        const LOCK_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+        let started = std::time::Instant::now();
+        let mut backoff = std::time::Duration::from_millis(10);
+
+        loop {
+            if let Some(store) = Self::try_load_matched_pair(ca_dir, &cert_path, &key_path).await? {
+                return Ok(store);
+            }
+
+            // No matched pair on disk (missing, or a real mismatch that must
+            // be treated as absent and regenerated). Acquire the lock via an
+            // O_EXCL create — atomic file creation as the mutual-exclusion
+            // primitive, rather than pulling in an flock crate (fs2/fd-lock)
+            // for the one call site that needs it.
+            match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+                .await
+            {
+                Ok(_lock_file) => {
+                    // Re-check under the lock: the previous holder may have
+                    // finished generating while we were racing to acquire it.
+                    let result = if let Some(store) = Self::try_load_matched_pair(ca_dir, &cert_path, &key_path).await?
+                    {
+                        Ok(store)
+                    } else {
+                        Self::generate_and_persist(ca_dir, &cert_path, &key_path).await
+                    };
+                    // Always release, even on error — a failed generation
+                    // must not leave the shared dir locked out forever.
+                    let _ = tokio::fs::remove_file(&lock_path).await;
+                    return result;
                 }
-                return Ok(Self {
-                    ca_dir: ca_dir.to_path_buf(),
-                    ca_cert_pem,
-                    ca_key_pem,
-                });
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let lock_is_stale = tokio::fs::metadata(&lock_path)
+                        .await
+                        .ok()
+                        .and_then(|meta| meta.modified().ok())
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_some_and(|age| age > LOCK_STALE_AFTER);
+                    if lock_is_stale {
+                        let _ = tokio::fs::remove_file(&lock_path).await;
+                        continue;
+                    }
+                    if started.elapsed() > MAX_LOCK_WAIT {
+                        return Err(ProxyError::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "timed out waiting for CA store lock",
+                        )));
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(std::time::Duration::from_millis(200));
+                }
+                Err(e) => return Err(ProxyError::Io(e)),
             }
-            (Err(e), _) | (_, Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                // fall through to generate
-            }
+        }
+    }
+
+    /// Load `cert_path`/`key_path` if both exist and are a genuinely matched
+    /// pair; return `None` if either is missing or they don't match.
+    ///
+    /// AAASM-5928: file existence alone was the pre-fix bug — a cert and key
+    /// found on disk were never checked to actually belong together, so a
+    /// torn write from a concurrent first-time init was silently served as
+    /// valid. A mismatch here must be handled exactly like "not generated
+    /// yet" by the caller, never returned as-is.
+    async fn try_load_matched_pair(
+        ca_dir: &Path,
+        cert_path: &Path,
+        key_path: &Path,
+    ) -> Result<Option<Self>, ProxyError> {
+        let (ca_cert_pem, ca_key_pem) = match (
+            tokio::fs::read_to_string(cert_path).await,
+            tokio::fs::read_to_string(key_path).await,
+        ) {
+            (Ok(ca_cert_pem), Ok(ca_key_pem)) => (ca_cert_pem, ca_key_pem),
+            (Err(e), _) | (_, Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             (Err(e), _) | (_, Err(e)) => return Err(ProxyError::Io(e)),
+        };
+
+        if !ca_pair_matches(&ca_cert_pem, &ca_key_pem)? {
+            return Ok(None);
         }
 
-        // Generate a new EC P-256 CA key pair.
+        // AAASM-4936 (L4): 0600 is enforced only at creation time, so a
+        // key written by an older build, restored from a backup, or
+        // copied in with loose perms would be served group/other-
+        // readable. Re-assert 0600 on every load so the private key can
+        // never be left world-readable across a proxy restart.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let key_path_clone = key_path.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                std::fs::set_permissions(&key_path_clone, std::fs::Permissions::from_mode(0o600))
+            })
+            .await
+            .map_err(|e| ProxyError::Io(std::io::Error::other(e)))??;
+        }
+
+        Ok(Some(Self {
+            ca_dir: ca_dir.to_path_buf(),
+            ca_cert_pem,
+            ca_key_pem,
+        }))
+    }
+
+    /// Generate a fresh CA key pair and persist it to `cert_path`/`key_path`.
+    ///
+    /// Only ever called by the caller holding `load_or_create`'s lock, so
+    /// there is exactly one writer. Still writes through a per-process temp
+    /// file and an atomic same-directory rename (AAASM-5928) so a losing
+    /// racer that reloads after the lock is released — or any other
+    /// reader — can never observe a partially-written file, and so a
+    /// process that crashes mid-write leaves only a stray temp file rather
+    /// than a torn final file.
+    async fn generate_and_persist(ca_dir: &Path, cert_path: &Path, key_path: &Path) -> Result<Self, ProxyError> {
         let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| ProxyError::CertGen(e.to_string()))?;
 
         let ca_params = build_ca_params()?;
@@ -144,25 +285,28 @@ impl CaStore {
         let ca_cert_pem = ca_cert.pem();
         let ca_key_pem = ca_key.serialize_pem();
 
-        // Persist to disk.
         tokio::fs::create_dir_all(ca_dir).await?;
 
-        // Write the cert file (world-readable is fine for public cert).
-        tokio::fs::write(&cert_path, &ca_cert_pem).await?;
+        let pid = std::process::id();
+        let cert_tmp = ca_dir.join(format!("ca-cert.pem.tmp-{pid}"));
+        let key_tmp = ca_dir.join(format!("ca-key.pem.tmp-{pid}"));
 
-        // Write the key file with restricted permissions from the start (mode 0o600).
+        // Write the cert temp file (world-readable is fine for public cert).
+        tokio::fs::write(&cert_tmp, &ca_cert_pem).await?;
+
+        // Write the key temp file with restricted permissions from the start (mode 0o600).
         #[cfg(unix)]
         {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
-            let key_path_clone = key_path.clone();
+            let key_tmp_clone = key_tmp.clone();
             let key_pem_bytes = ca_key_pem.as_bytes().to_vec();
             tokio::task::spawn_blocking(move || {
                 let mut f = std::fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .mode(0o600)
-                    .open(&key_path_clone)?;
+                    .open(&key_tmp_clone)?;
                 f.write_all(&key_pem_bytes)
             })
             .await
@@ -170,8 +314,13 @@ impl CaStore {
         }
         #[cfg(not(unix))]
         {
-            tokio::fs::write(&key_path, &ca_key_pem).await?;
+            tokio::fs::write(&key_tmp, &ca_key_pem).await?;
         }
+
+        // Rename is atomic on the same filesystem — this is the point at
+        // which each file becomes visible to other readers, never before.
+        tokio::fs::rename(&cert_tmp, cert_path).await?;
+        tokio::fs::rename(&key_tmp, key_path).await?;
 
         Ok(Self {
             ca_dir: ca_dir.to_path_buf(),
@@ -317,12 +466,104 @@ mod tests {
         );
     }
 
+    /// AAASM-5928 CI regression repro: the real proxy's `ca_dir` is a fresh,
+    /// never-created Docker volume mount on first-ever container start — unlike
+    /// every other test here, which uses `TempDir::new()` (always pre-existing).
+    /// Reproduces against a `ca_dir` path that does not exist yet.
+    #[tokio::test]
+    async fn load_or_create_succeeds_when_ca_dir_does_not_exist_yet() {
+        let parent = TempDir::new().unwrap();
+        let ca_dir = parent.path().join("does").join("not").join("exist");
+        assert!(!ca_dir.exists(), "test fixture must start absent");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), CaStore::load_or_create(&ca_dir)).await;
+
+        let ca = result
+            .expect("load_or_create must not hang when ca_dir does not exist yet")
+            .expect("load_or_create must succeed when ca_dir does not exist yet");
+        assert!(
+            ca_pair_matches(&ca.ca_cert_pem, &ca.ca_key_pem).unwrap(),
+            "must return a matched pair even on a first-ever cold start"
+        );
+    }
+
     #[tokio::test]
     async fn load_or_create_reload_returns_same_cert() {
         let dir = TempDir::new().unwrap();
         let ca1 = CaStore::load_or_create(dir.path()).await.unwrap();
         let ca2 = CaStore::load_or_create(dir.path()).await.unwrap();
         assert_eq!(ca1.ca_cert_pem, ca2.ca_cert_pem, "reload must return identical cert");
+    }
+
+    /// AAASM-5928: reproduces the real mismatched-keypair race — many
+    /// processes on a shared multi-session machine can all reach
+    /// `load_or_create` for the very first time against the same shared
+    /// `ca_dir` simultaneously. Every caller must observe a matched pair,
+    /// and what ends up persisted on disk afterward must also be matched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn load_or_create_is_race_safe_under_concurrent_first_init() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..16 {
+            let path = path.clone();
+            tasks.spawn(async move { CaStore::load_or_create(&path).await });
+        }
+
+        let mut results = Vec::new();
+        while let Some(res) = tasks.join_next().await {
+            results.push(res.unwrap().unwrap());
+        }
+        assert_eq!(results.len(), 16, "every concurrent caller must succeed");
+
+        for ca in &results {
+            assert!(
+                ca_pair_matches(&ca.ca_cert_pem, &ca.ca_key_pem).unwrap(),
+                "every concurrent caller must observe a matched cert/key pair"
+            );
+        }
+
+        let persisted_cert = tokio::fs::read_to_string(path.join("ca-cert.pem")).await.unwrap();
+        let persisted_key = tokio::fs::read_to_string(path.join("ca-key.pem")).await.unwrap();
+        assert!(
+            ca_pair_matches(&persisted_cert, &persisted_key).unwrap(),
+            "the persisted cert/key pair on disk must be matched"
+        );
+    }
+
+    /// AAASM-5928: simulates the actual corruption found on a real shared dev
+    /// machine — a cert from one CA generation paired with the key from a
+    /// different, unrelated generation. `load_or_create` must detect the
+    /// mismatch and regenerate through the locked path rather than serving
+    /// the corrupt pair.
+    #[tokio::test]
+    async fn load_or_create_recovers_from_mismatched_pair_on_disk() {
+        let dir = TempDir::new().unwrap();
+
+        let key_a = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+        let params_a = build_ca_params().unwrap();
+        let cert_a = params_a.self_signed(&key_a).unwrap();
+
+        let key_b = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+
+        // Cert from generation A, key from unrelated generation B.
+        tokio::fs::write(dir.path().join("ca-cert.pem"), cert_a.pem())
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("ca-key.pem"), key_b.serialize_pem())
+            .await
+            .unwrap();
+        assert!(
+            !ca_pair_matches(&cert_a.pem(), &key_b.serialize_pem()).unwrap(),
+            "test fixture must actually be mismatched"
+        );
+
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        assert!(
+            ca_pair_matches(&ca.ca_cert_pem, &ca.ca_key_pem).unwrap(),
+            "load_or_create must return a self-consistent pair even when disk started mismatched"
+        );
     }
 
     #[tokio::test]

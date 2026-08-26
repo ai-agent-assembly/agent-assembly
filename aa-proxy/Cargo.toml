@@ -25,6 +25,12 @@ hyper-util   = { version = "0.1", features = ["tokio", "server"] }
 rustls       = { workspace = true, features = ["ring"] }
 tokio-rustls       = { workspace = true }
 rustls-native-certs = "0.8"
+# AAASM-5928: x509-parser 0.18.1 is already resolved in the workspace lock
+# (rcgen's own "x509-parser" feature above pulls it in transitively), so
+# depending on it directly here adds no new crate to the tree — it lets
+# `CaStore::load_or_create` compare a loaded cert's SubjectPublicKeyInfo
+# against the loaded key's raw public key to detect a torn/mismatched pair.
+x509-parser  = "0.18"
 rcgen        = { workspace = true, features = ["x509-parser"] }
 time         = { workspace = true }
 lru          = "0.18"
