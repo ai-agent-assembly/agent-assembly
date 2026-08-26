@@ -250,6 +250,47 @@ assert_refuses "a named --repo/--pr is never answered from a fixture" \
   "AA_QA_CI_WATCH_FIXTURE=$FIXTURES/case-d-already-terminal.json" \
   -- --repo ai-agent-assembly/agent-assembly --pr 2237
 
+echo "== Guard: classify() itself refuses an empty required set =="
+echo "   Case M covers the CLI path, where cmd_poll refuses to guess the"
+echo "   contexts. It cannot cover the importable one: classify() is called"
+echo "   directly by the wrong watchers here and by anything else that imports"
+echo "   this module, and over an empty required set every loop in it is"
+echo "   vacuous — it would answer 'all 0 required check(s) completed"
+echo "   successfully'. A caller that reaches the function without going"
+echo "   through cmd_poll must not be able to earn that green."
+if ! python3 - <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_file_location(
+    "ci_watch_real", pathlib.Path("scripts/qa/ci-watch.py")
+)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+observation = {
+    "head_sha": "a" * 40,
+    "base_ref": "main",
+    "check_runs": [
+        {"name": "CI Success", "status": "completed", "conclusion": "success"}
+    ],
+}
+try:
+    verdict, reason = mod.classify(observation, [], None)
+except mod.QueryError as exc:
+    if "vacuous" in str(exc):
+        print("  ✓ classify() raises QueryError over an empty required set")
+        sys.exit(0)
+    print(f"  ✗ classify() raised, but not about the vacuous pass: {exc}")
+    sys.exit(1)
+print(f"  ✗ classify() returned {verdict!r} ({reason}) instead of refusing")
+sys.exit(1)
+PY
+then
+  FAILED=1
+fi
+
 echo "== Case A (TEST A): pending at wakeup 1, success at wakeup 2 =="
 echo "   Proves the watcher RE-QUERIES. A cached first observation reports"
 echo "   running forever — that is the AAASM-5930/5945 behaviour."
@@ -332,6 +373,24 @@ echo "   completed row is the bad news too. Reporting 'running' here is how a"
 echo "   wait outlives the fact that started it."
 assert_real_only "a completed failure is not retracted by an in-flight re-run" \
   case-l-completed-failure-plus-in-flight.json 1 20
+
+echo "== Case M: an empty required set is not a green =="
+echo "   Protection unreadable and no override: 'all 0 required check(s)"
+echo "   completed successfully' is a pass earned by asking nothing. Refusing"
+echo "   to guess is the verdict. The naive watcher guesses the other way and"
+echo "   answers pass off one unrelated job."
+assert_discriminating "refusal to guess the required set" \
+  case-m-no-required-contexts.json 1 23
+
+echo "== Case N: an override may not be a subset of the real gate =="
+echo "   Protection requires two contexts, the caller named one, and BOTH are"
+echo "   green — so letting the override replace protection would produce a"
+echo "   confident pass over a strict subset of the gate. Branch protection is"
+echo "   consulted even when an override is supplied, so the two can be"
+echo "   compared instead of one quietly winning."
+assert_real_only "an override omitting a protected context is refused" \
+  case-n-override-omits-a-protected-context.json 1 23 \
+  --required-context "CI Success"
 
 echo
 if [ "$FAILED" -eq 0 ]; then

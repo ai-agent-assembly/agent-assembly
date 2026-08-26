@@ -345,6 +345,17 @@ def classify(
             "observations bound to the old SHA are void; rebind and re-query",
         )
 
+    # An empty required set makes every loop below vacuous and returns "all 0
+    # required check(s) completed successfully" — a pass earned by asking
+    # nothing. `cmd_poll` already refuses to guess the contexts, but this
+    # function is called directly by the negative control's wrong watchers and
+    # by anything that imports it, so the guard belongs here too.
+    if not required:
+        raise QueryError(
+            "no required contexts were given; a pass over an empty required "
+            "set is vacuous, not green"
+        )
+
     grouped: dict[str, list[dict]] = {}
     for run in observation["check_runs"]:
         name = run.get("name")
@@ -478,9 +489,28 @@ def cmd_poll(args: argparse.Namespace) -> int:
         emit(args, verdict, reason, None, [])
         return VERDICT_EXIT[verdict]
 
-    required = args.required_context or source.required_contexts(
-        observation["base_ref"]
-    )
+    # Branch protection is consulted even when an override was given, so the
+    # override can be checked against it rather than quietly replacing it. An
+    # override that omits a protected context produces a `pass` over a strict
+    # subset of the real gate — a vacuous green, and the more plausible mistake
+    # here is a caller naming the one context they were thinking about.
+    protected = source.required_contexts(observation["base_ref"])
+    override = args.required_context
+    if override and protected:
+        omitted = [c for c in protected if c not in override]
+        if omitted:
+            emit(
+                args,
+                "query-error",
+                "--required-context omits context(s) branch protection "
+                f"requires: {', '.join(sorted(omitted))}. A pass over a subset "
+                "of the real gate is not a pass. Add them, or drop the "
+                "override and let branch protection answer.",
+                observation["head_sha"],
+                override,
+            )
+            return EXIT_QUERY_ERROR
+    required = override or protected
     if not required:
         emit(
             args,
