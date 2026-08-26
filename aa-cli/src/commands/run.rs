@@ -2199,7 +2199,9 @@ const MASKED: &str = "***MASKED***";
 /// and `AA_API_KEY` are `AA_`-prefixed *secrets*, so a prefix rule would hand the
 /// allowlist a class it was never reviewed for, and it would keep doing so for
 /// every future `AA_`-prefixed variable nobody looked at. Exact names mean the
-/// allowlist can only grow through a diff a human reads.
+/// allowlist can only grow through a diff a human reads — but only if the
+/// comparison is exact, which is why [`value_may_be_previewed`] folds ASCII-only:
+/// under full Unicode folding this list grew silently, by Unicode table.
 ///
 /// # Adding to this list
 ///
@@ -2238,9 +2240,22 @@ const VALUE_VISIBLE_ENV_VARS: [&str; 17] = [
 ///
 /// Case-insensitive on the name only. It does not look at the value, so it
 /// cannot be steered by one — see [`render_env_value`].
+///
+/// # Why the comparison is ASCII-only
+///
+/// [`str::to_uppercase`] performs *full Unicode* case conversion, and several
+/// non-ASCII characters uppercase **into** ASCII: U+0131 (dotless i) becomes
+/// `I`, U+017F (long s) becomes `S`. Folding the name that way and then matching
+/// it against this list is fail-**open** — it admits names nobody put on the
+/// allowlist. `anthropıc_model`, `httpſ_proxy` and `aa_ſession_id` all fold onto
+/// real entries, and a payload planted under one of them would have been printed
+/// verbatim: the allowlist would have grown silently, by Unicode table, rather
+/// than through a diff a human reads.
+///
+/// [`str::eq_ignore_ascii_case`] folds `A`–`Z` only, so a name is on the
+/// allowlist only if it is that name.
 fn value_may_be_previewed(key: &str) -> bool {
-    let upper = key.to_uppercase();
-    VALUE_VISIBLE_ENV_VARS.contains(&upper.as_str())
+    VALUE_VISIBLE_ENV_VARS.iter().any(|name| key.eq_ignore_ascii_case(name))
 }
 
 /// How one environment variable is rendered in the `--dry-run` preview.
@@ -2313,7 +2328,15 @@ fn render_env_value(key: &str, value: &str) -> String {
 /// because [`render_env_value`] no longer reaches this function except for names
 /// on the reviewed allowlist. Do not call it directly on an arbitrary variable.
 fn mask_value(key: &str, value: &str) -> String {
-    let upper = key.to_uppercase();
+    // ASCII-only folding, as in `value_may_be_previewed` and
+    // `looks_like_credential_name`. Here the fail-open direction is the mirror of
+    // the allowlist's: full Unicode folding *adds* matches (`PAſſWORD` folds onto
+    // `PASSWORD`), so it over-masks rather than under-masks. The reason to fold
+    // ASCII-only anyway is that one function on this path must not disagree with
+    // another about what a name is — a name that is `KEY`-shaped to
+    // `looks_like_credential_name` and not to `mask_value` is how a value slips
+    // between two correct-looking checks.
+    let upper = key.to_ascii_uppercase();
     if is_connection_string_name(&upper) {
         return redact_database_url(value);
     }
@@ -2328,6 +2351,10 @@ const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PAS
 
 /// Whether an already-uppercased name is a connection string — the shapes that
 /// carry `user:pass@host` userinfo (AAASM-4936).
+///
+/// Expects a name folded with [`str::to_ascii_uppercase`], not
+/// [`str::to_uppercase`]: every caller on this path folds ASCII-only so that all
+/// of them agree on what a name is. See [`looks_like_credential_name`].
 fn is_connection_string_name(upper: &str) -> bool {
     upper.ends_with("_URL") || upper.ends_with("_DSN") || upper.ends_with("_URI")
 }
@@ -2344,8 +2371,21 @@ fn is_connection_string_name(upper: &str) -> bool {
 /// value before printing it in the `--dry-run` preview, the other records which
 /// inherited authority reaches the launched child unvetted. Over-masking a
 /// non-secret is harmless; under-recording ambient authority is not.
+///
+/// # Why the comparison is ASCII-only
+///
+/// The fail-open direction here is the opposite of the allowlist's. This function
+/// answers "must this be withheld harder", so the dangerous answer is a false
+/// **negative** — a credential-named variable that evades the mask. Full Unicode
+/// folding does not cause that: it only ever adds matches, because the ASCII
+/// needles can only be reached, never left. So ASCII-only folding is not closing
+/// a leak at this site; it is keeping every name-classifying function on this
+/// path folding identically, so that no value can fall through a disagreement
+/// between two of them. A variable whose name stops matching under ASCII folding
+/// is still withheld — [`render_env_value`] renders it presence-only, because
+/// deny-by-default does not depend on this predicate to withhold.
 fn looks_like_credential_name(key: &str) -> bool {
-    let upper = key.to_uppercase();
+    let upper = key.to_ascii_uppercase();
     is_connection_string_name(&upper) || SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle))
 }
 
