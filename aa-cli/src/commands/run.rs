@@ -2788,16 +2788,27 @@ fn format_dry_run_output(
     // consumer that reads the first occurrence of that header would take them for
     // the real block. Sanitizing only the real block left that open.
     //
-    // The remaining interpolations are not attacker-controlled in the same way:
-    // the identifiers and DID come from registration, the fidelity, protection and
-    // policy strings are this crate's own literals or a `Display` over typed state,
-    // and the isolation block renders through its own writer.
+    // The four identity fields are sanitized for that same reason, and they are
+    // the *strongest* forging position in the whole receipt because they are its
+    // first four lines — everything a consumer might anchor on comes after them.
+    // "they come from registration" was true only of the launch path: on the
+    // preview path `agent_id` is `--agent-id` verbatim (`RunPlan::agent_id`
+    // returns the operator's string when they gave one, minting a UUID only when
+    // they did not), and `registration_did` is a derivation *of that string*.
+    // Sanitizing all four rather than the one that is provably reachable keeps
+    // the rule "every interpolation into this receipt is sanitized" checkable by
+    // reading the format call, instead of requiring the reader to re-derive
+    // which fields are operator-influenced on which path.
+    //
+    // The remaining interpolations are this crate's own literals or a `Display`
+    // over typed state (fidelity, protection, policy), and the isolation block
+    // renders through its own writer.
     format!(
         "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n{}\n{}\n--- managed settings ---\n{}\n\n--- launch command ---\nworking_dir: {}\n{}\n\n--- environment ---\n{}",
-        handle.agent_id,
-        handle.registration_did,
-        handle.trace_id,
-        handle.session_id,
+        sanitize_terminal(&handle.agent_id),
+        sanitize_terminal(&handle.registration_did),
+        sanitize_terminal(&handle.trace_id),
+        sanitize_terminal(&handle.session_id),
         fidelity_line,
         crate::commands::run_audit::protection_label(no_proxy),
         if no_proxy {
