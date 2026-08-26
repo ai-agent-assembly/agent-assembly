@@ -356,6 +356,27 @@ impl<E: StepExecutor> IntegrationEngine<E> {
         if let Some(prior) = prior_installation {
             receipt.receipt_id = prior.receipt_id.clone();
 
+            // The removal baseline belongs to the installation, not to this
+            // apply. `prior_state` was just read off a document AASM had already
+            // written, so saving it would record AASM's own values as "what the
+            // user had before" — and `remove` would then restore those and leave
+            // every AASM-owned key in the file, reporting success (AAASM-5963).
+            //
+            // So it is captured once, when the installation is created, and
+            // carried forward across every later apply for this (tool, scope).
+            // Relying on the `!mutated` early return below is not enough: that
+            // path preserves the baseline only when the reapply changed nothing,
+            // and a reapply that *did* change something is exactly when the
+            // baseline matters most.
+            //
+            // Positional zip is sound here because `receipts_agree` has already
+            // established that the two step lists have equal length and equal
+            // `step_id` at every position; it is the same pairing that decided
+            // these are one installation.
+            for (fresh_step, stored_step) in receipt.steps.iter_mut().zip(&prior.steps) {
+                fresh_step.prior_state = stored_step.prior_state.clone();
+            }
+
             // A reapply that changed nothing keeps the receipt it already had,
             // including its `applied_at` and its verification evidence: rewriting
             // them would make an operation that mutated nothing look like a fresh
