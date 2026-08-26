@@ -1,0 +1,28 @@
+{
+  "description": "TEST F - the single required context (CI Success) has passed while a NON-required evidence job is still in flight and another has been cancelled. Verdict must be pass: a non-required job is not a gate. required_status_checks.contexts on main is exactly ['CI Success'].",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Integration tests (macos-latest)",
+          "status": "completed",
+          "conclusion": "cancelled"
+        },
+        {
+          "name": "Benchmark",
+          "status": "in_progress",
+          "conclusion": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "description": "The same shape with the array order reversed and the outcomes swapped: the newer re-run succeeded and appears FIRST. Together with case J this pins the selection to the timestamps rather than to a position, in both directions — a rule that merely preferred the blocking row would pass J and fail here, and would leave every fixed re-run reported as a failure.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success",
+          "id": 920002,
+          "started_at": "2026-08-26T10:05:00Z",
+          "completed_at": "2026-08-26T10:19:00Z"
+        },
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "failure",
+          "id": 920001,
+          "started_at": "2026-08-26T09:30:00Z",
+          "completed_at": "2026-08-26T09:44:00Z"
+        }
+      ]
+    }
+  ]
+}

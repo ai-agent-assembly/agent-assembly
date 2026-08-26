@@ -1,0 +1,19 @@
+{
+  "description": "Branch protection unreadable and no --required-context given. The verdict must be query-error, not pass: with an empty required set every loop is vacuous and 'all 0 required check(s) completed successfully' is a green earned by asking nothing. What this case discriminates is refusing to guess versus guessing — the naive watcher assumes every observed job is a gate and answers pass off a single unrelated success. It does NOT pin which of the two guards produced the verdict: deleting cmd_poll's refusal leaves this case green, because classify()'s own guard then raises and the verdict is query-error either way. The two differ in the message a human reads, not in the exit code, and the importable guard has its own assertion in the harness.",
+  "required_contexts": [],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "Benchmark",
+          "status": "completed",
+          "conclusion": "success",
+          "id": 950001,
+          "started_at": "2026-08-26T09:00:00Z",
+          "completed_at": "2026-08-26T09:04:00Z"
+        }
+      ]
+    }
+  ]
+}

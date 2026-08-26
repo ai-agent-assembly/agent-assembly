@@ -1,0 +1,28 @@
+{
+  "description": "TEST D - GitHub reached a terminal state several polls ago. A fresh query must report it immediately, so a local waiter still claiming running is declared stale and cancelled.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}

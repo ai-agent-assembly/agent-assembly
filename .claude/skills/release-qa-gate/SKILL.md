@@ -155,6 +155,21 @@ campaign's final-completion bar (0 stale worktrees, 0 unnecessary background
 processes, 0 leftover listeners/servers, 0 leftover temp folders). Apply it
 before reporting the campaign complete, not only at the very end.
 
+**CI waiting is not a judgement call — use the tool.**
+`scripts/qa/ci-watch.py poll --repo <slug> --pr <n> --expect-head <sha>`
+(AAASM-5960) performs one fresh query and exits `0` pass / `20` fail / `21`
+running / `22` head-changed / `23` query-error. Never use a long blocking
+wait shell: no `sleep` loops, no `gh pr checks --watch`, no multi-minute
+command timeouts whose purpose is to wait. A shell that is asleep cannot
+notice a terminal state, which is how AAASM-5930's campaign burned tens of
+minutes reporting an already-failed run as pending. The shape that works is
+query → act if terminal → otherwise short wakeup → query again, each wakeup
+querying for itself. Exit `20` ends the wait and starts triage; exit `22`
+means the run you were watching is obsolete. Only the repository's real
+required contexts gate a merge — on `main` that is exactly `["CI Success"]`,
+so a non-required evidence job still in flight or `cancelled` is not a
+reason to wait.
+
 ## What this skill does NOT do
 
 - It does not cut the tag (`/release-tag-cut`).
