@@ -5535,6 +5535,120 @@ mod tests {
         }
     }
 
+    /// **Regression H** — a credential in *any* position of an allowlisted URL is
+    /// not recoverable from the receipt.
+    ///
+    /// A reviewed variable *name* says nothing about the positions its *value*
+    /// has. `redact_database_url` rewrote only the authority, and only when the
+    /// userinfo carried a `:`, so every other position survived verbatim — and the
+    /// `user:pass@` case put the mask on the password while printing the user,
+    /// which is where a personal access token actually sits.
+    ///
+    /// Asserted on **recoverability**: the synthetic sentinel must be absent from
+    /// the whole receipt. A test that only looked for `***` would have passed
+    /// against the vulnerable rendering, which printed `user:***@host` with the
+    /// credential intact beside it.
+    #[test]
+    fn a_credential_in_any_url_position_is_not_recoverable_from_the_receipt() {
+        const SENTINEL: &str = "synthetic-not-a-real-credential-CCCC";
+
+        // Every position a URL offers, over each URL-valued allowlist entry.
+        let shapes = [
+            format!("https://gw.example.invalid/v1?api_key={SENTINEL}"),
+            format!("https://gw.example.invalid/v1/{SENTINEL}/chat"),
+            format!("https://{SENTINEL}@gw.example.invalid/v1"),
+            format!("https://gw.example.invalid/v1#token={SENTINEL}"),
+            format!("http://{SENTINEL}@corp-proxy.invalid:3128"),
+            format!("https://{SENTINEL}:x-oauth-basic@gw.example.invalid/v1"),
+        ];
+
+        for name in URL_VALUED_ENV_VARS {
+            for shape in &shapes {
+                let output = preview_for(name, shape);
+                assert!(
+                    !output.contains(SENTINEL),
+                    "{name}: a credential in this URL position is recoverable from the receipt \
+                     ({shape} rendered into): {output}"
+                );
+                // The host survives, so the receipt still answers "where does this
+                // traffic go" — withholding must not have degenerated into hiding
+                // the route.
+                let host = if shape.contains("corp-proxy") {
+                    "corp-proxy.invalid:3128"
+                } else {
+                    "gw.example.invalid"
+                };
+                assert!(
+                    output.contains(host),
+                    "{name}: the route must stay legible ({host} expected): {output}"
+                );
+            }
+        }
+    }
+
+    /// The projection keeps the origin and reports path depth as metadata.
+    ///
+    /// Pinned separately from the leak test so that a change to the rendering is
+    /// a deliberate edit here rather than an incidental side effect.
+    #[test]
+    fn a_url_value_renders_as_scheme_host_port_and_a_path_segment_count() {
+        let cases = [
+            (
+                "https://gw.example.invalid/v1?api_key=x",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            (
+                "https://gw.example.invalid/v1/x/chat",
+                "https://gw.example.invalid<path:3 segments>",
+            ),
+            (
+                "https://u@gw.example.invalid/v1",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            (
+                "https://gw.example.invalid/v1#token=x",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            ("http://u@corp-proxy.invalid:3128", "http://corp-proxy.invalid:3128"),
+            (
+                "https://u:p@gw.example.invalid/v1",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            // No path, no marker — a normalised proxy URL is unchanged.
+            ("http://127.0.0.1:8899", "http://127.0.0.1:8899"),
+            // A bare `/` is zero segments, not one empty one.
+            ("http://127.0.0.1:8899/", "http://127.0.0.1:8899"),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                project_url_origin(value).as_deref(),
+                Some(expected),
+                "projecting {value}"
+            );
+        }
+
+        // Fail closed: no parseable scheme and host means withhold, never print
+        // the value raw.
+        for value in [
+            "127.0.0.1:8080",
+            "not-a-url",
+            "://host/v1",
+            "https:///v1",
+            "https://@/v1",
+        ] {
+            assert_eq!(
+                project_url_origin(value),
+                None,
+                "{value} must not project to a printable origin"
+            );
+            assert_eq!(
+                render_env_value("HTTPS_PROXY", value),
+                PRESENCE_SET,
+                "{value} is unparseable and must be withheld, not printed"
+            );
+        }
+    }
+
     /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has
     /// to *say* it is unprotected. Before this the reader had to notice that
     /// `HTTPS_PROXY` was absent from the environment listing and infer the rest
