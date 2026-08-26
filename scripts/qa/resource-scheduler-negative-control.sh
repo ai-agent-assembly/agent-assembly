@@ -28,6 +28,12 @@
 #           execvp() and let the second attempt wrongly succeed.
 #   Case 12 Registry validation: 3 malformed fixtures exit 78, 1 valid one
 #           exits 0.
+#   Case 14 (AAASM-5947) Two different worktrees of the same repo, same
+#           class/argv, must NOT hash to the same fingerprint — the defect
+#           found once the doc hook (AAASM-5895) gives every push a fixed
+#           class+argv, discovered by design review before AAASM-5895
+#           landed. Same worktree, same class/argv must still collide
+#           (that's case 2b, unchanged).
 #
 # Usage: bash scripts/qa/resource-scheduler-negative-control.sh
 # Run from the repo root (fixtures reference real repo-relative paths).
@@ -238,6 +244,65 @@ python3 "$LOCK_PY" validate "$FIXTURES_DIR/valid-minimal.yaml" >/dev/null 2>&1
 assert_eq "validate valid-minimal.yaml exits 0" "$?" "0"
 python3 "$LOCK_PY" validate "$REAL_REGISTRY" >/dev/null 2>&1
 assert_eq "validate real qa/resource-classes.yaml exits 0" "$?" "0"
+
+echo "== Case 14 (AAASM-5947): worktree-scoped fingerprint =="
+scratch_repo="$(mktemp -d)"
+worktree_b="$(mktemp -d)"
+rmdir "$worktree_b"  # git worktree add requires the target not exist yet
+(
+  cd "$scratch_repo" || exit 1
+  git init -q
+  git config user.email "test@example.com"
+  git config user.name "test"
+  git commit -q --allow-empty -m "root"
+  git worktree add -q "$worktree_b" -b scratch-sibling >/dev/null 2>&1
+)
+fp_a="$(cd "$scratch_repo" && python3 -c "
+import sys
+sys.path.insert(0, '$OLDPWD/$(dirname "$LOCK_PY")')
+import importlib.util
+spec = importlib.util.spec_from_file_location('resource_lock', '$OLDPWD/$LOCK_PY')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+gcd = m.git_common_dir()
+top = m.git_toplevel()
+print(m.compute_fingerprint('cargo-doc', gcd, top, ['cargo', 'doc', '--workspace']))
+print('GCD=' + (gcd or ''), file=sys.stderr)
+print('TOP=' + (top or ''), file=sys.stderr)
+")"
+fp_b="$(cd "$worktree_b" && python3 -c "
+import sys
+sys.path.insert(0, '$OLDPWD/$(dirname "$LOCK_PY")')
+import importlib.util
+spec = importlib.util.spec_from_file_location('resource_lock', '$OLDPWD/$LOCK_PY')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+gcd = m.git_common_dir()
+top = m.git_toplevel()
+print(m.compute_fingerprint('cargo-doc', gcd, top, ['cargo', 'doc', '--workspace']))
+print('GCD=' + (gcd or ''), file=sys.stderr)
+print('TOP=' + (top or ''), file=sys.stderr)
+")"
+if [ "$fp_a" != "$fp_b" ]; then
+  echo "  ✓ two worktrees of the same repo, same class/argv, hash distinctly"
+else
+  echo "  ✗ two worktrees of the same repo, same class/argv, hashed IDENTICALLY (would collide as duplicates)"
+  FAILED=1
+fi
+fp_a_again="$(cd "$scratch_repo" && python3 -c "
+import sys
+sys.path.insert(0, '$OLDPWD/$(dirname "$LOCK_PY")')
+import importlib.util
+spec = importlib.util.spec_from_file_location('resource_lock', '$OLDPWD/$LOCK_PY')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+gcd = m.git_common_dir()
+top = m.git_toplevel()
+print(m.compute_fingerprint('cargo-doc', gcd, top, ['cargo', 'doc', '--workspace']))
+")"
+assert_eq "same worktree, same class/argv, still hashes identically (AAASM-5877 fix intact)" "$fp_a_again" "$fp_a"
+git -C "$scratch_repo" worktree remove --force "$worktree_b" >/dev/null 2>&1
+rm -rf "$scratch_repo" "$worktree_b"
 
 echo
 if [ "$FAILED" -eq 0 ]; then
