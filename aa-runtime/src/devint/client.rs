@@ -374,6 +374,13 @@ impl DevIntClient {
     }
 
     /// Author a dry run for `tool_id`.
+    ///
+    /// `project_root` is the absolute path of the project the *caller* is in,
+    /// resolved by the caller at invocation time. It is mandatory at `project`
+    /// scope: the service is shared and long-lived, so if the caller does not say
+    /// which project it means, the only project the service can name is whichever
+    /// directory it was spawned in (AAASM-5913). Pass `""` when there is none to
+    /// state, and expect a refusal rather than a default if the scope needed one.
     pub async fn plan(
         &mut self,
         tool_id: &str,
@@ -382,6 +389,7 @@ impl DevIntClient {
         policy_profile_id: &str,
         allow_privileged_host_steps: bool,
         requested_level: &str,
+        project_root: &str,
     ) -> Result<wire::PlanView, ClientError> {
         let mut request = self.request(DiVerb::Plan, tool_id);
         request.plan = Some(wire::PlanArgs {
@@ -390,6 +398,7 @@ impl DevIntClient {
             settings_scope: settings_scope.to_string(),
             allow_privileged_host_steps,
             policy_profile_id: policy_profile_id.to_string(),
+            project_root: project_root.to_string(),
         });
         let response = self.call(request).await?;
         response.plan.ok_or(ClientError::UnexpectedFrame)
@@ -591,7 +600,7 @@ mod tests {
         let tool = claude_code_id();
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
         let plan = client
-            .plan(&tool, "recommended", "user", "team-default", false, "")
+            .plan(&tool, "recommended", "user", "team-default", false, "", "")
             .await
             .expect("plan");
         assert_eq!(plan.plan_id, "plan-1");
@@ -627,7 +636,7 @@ mod tests {
         let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
         let mut client = connected(&server, Some(token.expose().to_string())).await;
         let plan = client
-            .plan(&claude_code_id(), "recommended", "user", "team-default", false, "")
+            .plan(&claude_code_id(), "recommended", "user", "team-default", false, "", "")
             .await
             .expect("plan");
         let rendered = format!("{plan:?}");

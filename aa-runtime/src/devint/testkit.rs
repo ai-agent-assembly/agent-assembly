@@ -538,6 +538,9 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             settings_scope: "user".to_string(),
             allow_privileged_host_steps: false,
             policy_profile_id: "team-default".to_string(),
+            // User scope, so no project is named — the field is only mandatory
+            // at project scope (AAASM-5913).
+            project_root: String::new(),
         }),
         apply: matches!(verb, DiVerb::Apply).then(|| wire::ApplyArgs {
             plan_id: "plan-1".to_string(),

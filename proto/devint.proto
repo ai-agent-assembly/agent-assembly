@@ -247,6 +247,24 @@ message PlanArgs {
   // The policy profile *by name*. The document is resolved inside the trusted
   // layers and never crosses this boundary (matrix row 6).
   string policy_profile_id = 5;
+  // The absolute path of the project this request is about (AAASM-5913).
+  //
+  // `settings_scope` says which *kind* of surface to write; at "project" scope
+  // it does not say *whose*. The service is a long-lived daemon shared by every
+  // client on the host, so the only working directory it can read is its own —
+  // whichever directory it happened to be spawned in. Left to infer, it wrote
+  // one caller's managed keys into another repository's checked-in
+  // `.claude/settings.json`, and re-pointed itself on every daemon restart.
+  //
+  // Mandatory at "project" scope: empty there is refused, never defaulted. At
+  // "user" and "managed" scope it is optional context used only so the plan can
+  // disclose that a nearby project configuration exists and will be left alone
+  // — no destination is ever derived from it at those scopes.
+  //
+  // This is not a client-supplied *destination*. The service resolves the file
+  // to write from the scope and this root together, by its own rule; a caller
+  // cannot name a settings path (matrix row 6 still holds).
+  string project_root = 6;
 }
 
 message ApplyArgs {

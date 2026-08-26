@@ -580,6 +580,7 @@ fn build_plan_request(
     };
 
     let mut request = IntegrationRequest::new(tool.clone(), profile, scope).requesting_level(requested_level);
+    request.project_root = parse_project_root(scope, &args.project_root)?;
     request.allow_privileged_host_steps = args.allow_privileged_host_steps;
     // The client names a profile; the *document* is resolved inside the trusted
     // layers (ADR 0030 matrix row 6). The reference here carries the name only,
@@ -592,6 +593,51 @@ fn build_plan_request(
         });
     }
     Ok(request)
+}
+
+/// Resolve `PlanArgs::project_root` for `scope`, refusing rather than defaulting.
+///
+/// # Why this is a refusal and not a fallback (AAASM-5913)
+///
+/// The obvious fallback for an absent project root is this process's own working
+/// directory. This process is a daemon shared by every client on the host, spawned
+/// once from whichever directory started it: that fallback wrote one caller's
+/// managed keys into an unrelated repository's checked-in `.claude/settings.json`
+/// and changed its mind on every daemon restart. There is no working directory
+/// here that means what the caller means, so a Project-scope request that names no
+/// project is refused with a message that says why.
+///
+/// A relative path is refused for the same reason: relative to *what* would be
+/// this process's working directory again, so accepting one reintroduces the
+/// defect through the back door.
+fn parse_project_root(
+    scope: aa_core::integration::SettingsScope,
+    raw: &str,
+) -> Result<Option<std::path::PathBuf>, LifecycleError> {
+    use aa_core::integration::SettingsScope;
+
+    if raw.is_empty() {
+        if scope == SettingsScope::Project {
+            return Err(LifecycleError::Refused {
+                detail: "a project-scoped plan must name the project it is for. This service is \
+                         shared by every client on this host and cannot tell which project a \
+                         caller means from its own working directory, so it will not guess one"
+                    .to_string(),
+            });
+        }
+        return Ok(None);
+    }
+
+    let path = std::path::PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(LifecycleError::Refused {
+            detail: format!(
+                "the project root {raw:?} is not absolute, and a relative path would be resolved \
+                 against this service's own working directory rather than the caller's"
+            ),
+        });
+    }
+    Ok(Some(path))
 }
 
 fn denied(request_id: u64, code: wire::DenyCode, message: &str, remediation: &str) -> DiResponseFrame {

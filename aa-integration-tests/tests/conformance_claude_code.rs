@@ -1161,7 +1161,7 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
             (
                 "plan",
                 client
-                    .plan("claude-code", "recommended", "user", "", false, "")
+                    .plan("claude-code", "recommended", "user", "", false, "", "")
                     .await
                     .err(),
             ),
