@@ -104,6 +104,63 @@ else
   FAILED=1
 fi
 
+echo "== live_jobs: never raises (review finding — was unguarded, now matches get_cpu_time's convention) =="
+timeout_probe="$(python3 - <<'PY'
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location("qa_watchdog", "scripts/qa/qa-watchdog.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# Monkeypatch subprocess.run to simulate a hung/timed-out
+# `resource-lock.py status --json` — the exact failure mode the review
+# finding reproduced against the unguarded call.
+def fake_run(*args, **kwargs):
+    raise subprocess.TimeoutExpired(cmd="resource-lock.py", timeout=10)
+
+m.subprocess.run = fake_run
+try:
+    result = m.live_jobs()
+    print("ok" if result == [] else f"unexpected-non-empty: {result!r}")
+except Exception as e:
+    print(f"raised: {type(e).__name__}: {e}")
+PY
+)"
+if [ "$timeout_probe" = "ok" ]; then
+  echo "  ✓ live_jobs() returns [] (not a raised exception) when the status subprocess times out"
+else
+  echo "  ✗ live_jobs() on a simulated timeout: $timeout_probe"
+  FAILED=1
+fi
+
+missing_probe="$(python3 - <<'PY'
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location("qa_watchdog", "scripts/qa/qa-watchdog.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# A plain nonexistent script path (e.g. python3 /nonexistent/x.py) does NOT
+# raise in the parent — python3 itself starts fine and just exits nonzero,
+# already covered by the pre-existing returncode!=0 path. FileNotFoundError
+# is what get_cpu_time()'s subprocess.run raises when the EXECUTABLE itself
+# can't be found — simulate that directly, the actual gap this fix closes.
+def fake_run(*args, **kwargs):
+    raise FileNotFoundError("simulated: sys.executable not found")
+
+m.subprocess.run = fake_run
+try:
+    result = m.live_jobs()
+    print("ok" if result == [] else f"unexpected-non-empty: {result!r}")
+except Exception as e:
+    print(f"raised: {type(e).__name__}: {e}")
+PY
+)"
+if [ "$missing_probe" = "ok" ]; then
+  echo "  ✓ live_jobs() returns [] when the status subprocess can't even be started"
+else
+  echo "  ✗ live_jobs() with a simulated FileNotFoundError: $missing_probe"
+  FAILED=1
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
   echo "All qa-watchdog.py CPU-time-parser cases passed."

@@ -98,12 +98,19 @@ def live_jobs(cls: str | None = None) -> list[dict]:
     args = [sys.executable, _LOCK_PY, "status", "--json"]
     if cls:
         args += ["--class", cls]
-    out = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except Exception:
+        # Matches get_cpu_time()'s convention below — a watchdog observing
+        # jobs must not itself crash because resource-lock.py hung, timed
+        # out, or wasn't found. Caught this exact gap in review: this call
+        # was unguarded while get_cpu_time()'s equivalent call already was.
+        return []
     if out.returncode != 0:
         return []
     try:
         return json.loads(out.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:  # json.JSONDecodeError is a ValueError subclass
         return []
 
 
