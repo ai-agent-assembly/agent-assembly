@@ -355,7 +355,7 @@ async fn serve_connection(
         };
 
         let response = match frame {
-            DiFrame::Request(request) => connection.serve(request).await,
+            DiFrame::Request(request) => connection.serve(*request).await,
             // Step 2's other half: a second `Hello` is a renegotiation attempt,
             // which is how a downgrade would be staged. Refused, audited, and
             // the negotiated version stands.

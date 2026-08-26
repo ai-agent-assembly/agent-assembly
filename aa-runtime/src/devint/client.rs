@@ -491,7 +491,7 @@ impl DevIntClient {
 
     async fn call(&mut self, request: wire::Request) -> Result<wire::Response, ClientError> {
         self.next_request_id += 1;
-        codec::write_client_frame(&mut self.writer, DiFrame::Request(request)).await?;
+        codec::write_client_frame(&mut self.writer, DiFrame::Request(Box::new(request))).await?;
         match codec::read_response_frame(&mut self.reader).await? {
             DiResponseFrame::Response(response) => Ok(*response),
             DiResponseFrame::Denied(denied) => Err(ClientError::Denied(denied)),

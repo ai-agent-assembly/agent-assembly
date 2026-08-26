@@ -490,7 +490,7 @@ impl RawClient {
 
     /// Send a fully-specified request.
     pub async fn send_raw(&mut self, request: wire::Request) {
-        codec::write_client_frame(&mut self.writer, DiFrame::Request(request))
+        codec::write_client_frame(&mut self.writer, DiFrame::Request(Box::new(request)))
             .await
             .expect("write request");
     }
