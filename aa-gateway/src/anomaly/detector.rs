@@ -89,12 +89,16 @@ impl AnomalyDetector {
     /// Detect unknown external connection: host not in the network allowlist.
     ///
     /// Returns `Some(AnomalyEvent)` with [`AnomalyResponse::Block`] when the
-    /// URL's host is not present in the provided allowlist. An empty allowlist
-    /// means all hosts are allowed (open policy).
+    /// URL's host does not match the provided allowlist. Delegates to
+    /// [`aa_core::policy::is_host_allowed_by_egress_allowlist`] (AAASM-5927) —
+    /// the same wildcard-aware matcher the primary policy stage
+    /// (`engine/decision.rs::network_request_url_allowed`) uses — so this
+    /// anomaly check and the primary policy stage evaluate the same
+    /// `network.allowlist` input identically. An empty allowlist means all
+    /// hosts are allowed (open policy), matching that matcher's semantics
+    /// (the non-fail-closed variant is used deliberately to preserve this
+    /// function's pre-existing empty-allowlist behavior).
     pub fn check_unknown_connection(&self, agent_id: AgentId, url: &str, allowlist: &[String]) -> Option<AnomalyEvent> {
-        if allowlist.is_empty() {
-            return None;
-        }
         let host_port = url
             .split_once("://")
             .map(|x| x.1)
@@ -111,7 +115,7 @@ impl AnomalyDetector {
             Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
             _ => host_port,
         };
-        if allowlist.iter().any(|entry| entry == host) {
+        if aa_core::policy::is_host_allowed_by_egress_allowlist(host, allowlist) {
             return None;
         }
         Some(AnomalyEvent {
@@ -417,6 +421,98 @@ mod tests {
         assert!(detector
             .check_unknown_connection(id, "https://anything.com", &[])
             .is_none());
+    }
+
+    #[test]
+    fn unknown_connection_wildcard_allowlist_allows_matching_subdomain() {
+        // AAASM-5927: the exact-`==` bug this ticket fixes — a wildcard allowlist
+        // entry must match the same way it does in the primary policy stage
+        // (`engine/decision.rs::network_request_url_allowed`).
+        let detector = default_detector();
+        let id = agent(30);
+        let allowlist = vec!["*.anthropic.com".to_string()];
+
+        assert!(detector
+            .check_unknown_connection(id, "https://api.anthropic.com/v1", &allowlist)
+            .is_none());
+    }
+
+    #[test]
+    fn unknown_connection_wildcard_allowlist_denies_bare_apex() {
+        // Mirrors `stage_network_wildcard_denies_bare_apex` in `engine/decision.rs`:
+        // `*.anthropic.com` must NOT match the bare apex `anthropic.com`.
+        let detector = default_detector();
+        let id = agent(31);
+        let allowlist = vec!["*.anthropic.com".to_string()];
+
+        let result = detector.check_unknown_connection(id, "https://anthropic.com/", &allowlist);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
+    }
+
+    #[test]
+    fn unknown_connection_wildcard_allowlist_denies_malicious_near_match() {
+        // Mirrors `leftmost_wildcard_does_not_match_attacker_crafted_suffix` in
+        // `aa-core/src/policy.rs`: a suffix-confusion attempt must not match.
+        let detector = default_detector();
+        let id = agent(32);
+        let allowlist = vec!["*.anthropic.com".to_string()];
+
+        let result = detector.check_unknown_connection(id, "https://evil-api.anthropic.com.attacker.com/x", &allowlist);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
+    }
+
+    #[test]
+    fn unknown_connection_exact_allowlist_denies_malicious_near_match() {
+        // Same attack shape against an exact-match entry (not just a wildcard one).
+        let detector = default_detector();
+        let id = agent(33);
+        let allowlist = vec!["api.anthropic.com".to_string()];
+
+        let result = detector.check_unknown_connection(id, "https://evil-api.anthropic.com.attacker.com/x", &allowlist);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
+    }
+
+    #[test]
+    fn unknown_connection_malformed_wildcard_entry_fails_closed_without_panic() {
+        // A malformed/invalid pattern (not `*` and not `*.`-prefixed) is outside
+        // the matcher's narrow grammar (see `aa_core::policy::egress_pattern_matches`
+        // doc comment) and falls back to a literal exact-string compare — it must
+        // never panic and must never accidentally allow everything.
+        let detector = default_detector();
+        let id = agent(34);
+        let allowlist = vec!["*a.example.com".to_string()];
+
+        let result = detector.check_unknown_connection(id, "https://api.example.com/v1", &allowlist);
+        assert!(
+            result.is_some(),
+            "malformed wildcard entry must not accidentally allow-all"
+        );
+        assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
+
+        // A second, unrelated host is still evaluated independently and safely.
+        let result2 = detector.check_unknown_connection(id, "https://evil.com/", &allowlist);
+        assert!(result2.is_some());
+    }
+
+    #[test]
+    fn unknown_connection_wildcard_allowlisted_host_with_port_is_in_allowlist() {
+        // Mirrors `stage_network_wildcard_host_with_port_allows` in
+        // `engine/decision.rs`: port stripping (AAASM-3367/AAASM-3350) must
+        // compose correctly with wildcard matching, not just exact matching.
+        let detector = default_detector();
+        let id = agent(35);
+        let allowlist = vec!["*.anthropic.com".to_string()];
+
+        assert!(detector
+            .check_unknown_connection(id, "https://api.anthropic.com:443/v1", &allowlist)
+            .is_none());
+
+        let result = detector.check_unknown_connection(id, "https://evil.com:8443/data", &allowlist);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
     }
 
     // ── 3. Credential leak ───────────────────────────────────────────

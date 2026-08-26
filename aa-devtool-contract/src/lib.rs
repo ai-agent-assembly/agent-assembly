@@ -156,3 +156,10 @@ pub use aa_core::integration::{ArtifactObservation, ExecutionError, FilesystemEx
 // hashed with its own copy of SHA-256 would be one dependency bump away from a
 // mismatch it could not explain, so it uses the same function the check does.
 pub use aa_core::integration::sha256_hex;
+
+// `LaunchEnvStore` backs `StepAction::InjectLaunchEnvironment` and
+// `ConfigureProxy` for every adapter that owns a launch command — originally
+// `aa-devtool-claude-code`-only (AAASM-5276), promoted here (AAASM-5914) once
+// `aa-devtool-codex` needed the identical mechanism for `CODEX_CA_CERTIFICATE`.
+// One implementation, not a second copy per adapter crate.
+pub use aa_core::integration::{installed_environment, is_valid_var_name, LaunchEnvStore};

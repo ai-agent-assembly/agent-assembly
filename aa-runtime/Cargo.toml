@@ -45,6 +45,10 @@ aa-devtool                  = { path = "../aa-devtool" }
 # refuses. Named directly for those; `aa_devtool::registry` remains the one place
 # that decides *which* tools exist.
 aa-devtool-claude-code      = { path = "../aa-devtool-claude-code" }
+# AAASM-5918: Codex is the second natively migrated adapter, for the same
+# reason as Claude Code above — its plan's InjectLaunchEnvironment/
+# ConfigureProxy steps need an executor `FilesystemExecutor` refuses.
+aa-devtool-codex            = { path = "../aa-devtool-codex" }
 # strip-for-publish:end devtool
 aa-security                 = { path = "../aa-security", version = "0.0.1-rc.6", features = ["serde"] }
 aa-proto                    = { path = "../aa-proto", version = "0.0.1-rc.6" }
