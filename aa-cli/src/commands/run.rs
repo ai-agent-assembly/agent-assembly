@@ -6229,11 +6229,21 @@ mod tests {
     /// the whole receipt. A test that only looked for `***` would have passed
     /// against the vulnerable rendering, which printed `user:***@host` with the
     /// credential intact beside it.
+    ///
+    /// Asserted over the **whole allowlist**, not over the URL-*named* subset.
+    /// This test first covered only [`URL_VALUED_ENV_VARS`], because projection
+    /// was gated on the name — which left the same reasoning unapplied to the
+    /// other 14 entries, whose values reached `mask_value` and printed a URL
+    /// credential in full. Two of those 14 are not operator-set at all
+    /// (`AA_ENFORCEMENT_MODE` is injected in Enforce mode; `NO_PROXY` survives
+    /// ambiently under `--no-proxy`), so "that variable would never hold a URL"
+    /// was not a property anyone controlled. Projection is now decided by the
+    /// value's shape, and the loop below is what holds it to that.
     #[test]
     fn a_credential_in_any_url_position_is_not_recoverable_from_the_receipt() {
         const SENTINEL: &str = "synthetic-not-a-real-credential-CCCC";
 
-        // Every position a URL offers, over each URL-valued allowlist entry.
+        // Every position a URL offers, over every allowlist entry.
         let shapes = [
             format!("https://gw.example.invalid/v1?api_key={SENTINEL}"),
             format!("https://gw.example.invalid/v1/{SENTINEL}/chat"),
@@ -6243,7 +6253,7 @@ mod tests {
             format!("https://{SENTINEL}:x-oauth-basic@gw.example.invalid/v1"),
         ];
 
-        for name in URL_VALUED_ENV_VARS {
+        for name in VALUE_VISIBLE_ENV_VARS {
             for shape in &shapes {
                 let output = preview_for(name, shape);
                 assert!(
@@ -6251,6 +6261,22 @@ mod tests {
                     "{name}: a credential in this URL position is recoverable from the receipt \
                      ({shape} rendered into): {output}"
                 );
+                // Some allowlisted names never reach the rendered block at all:
+                // `effective_child_env` *removes* every routing variable unless
+                // `--no-proxy` was given, and `preview_for` previews the governed
+                // path. Absence is a stronger outcome than projection, so it is
+                // accepted — but only for a name that is on the removal list, so
+                // a variable that vanishes for some other reason still fails
+                // rather than quietly skipping its own assertion.
+                if !output.contains(&format!("{name}=")) {
+                    assert!(
+                        run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS.contains(&name),
+                        "{name}: absent from the preview for a reason this test does not account \
+                         for: {output}"
+                    );
+                    continue;
+                }
+
                 // The host survives, so the receipt still answers "where does this
                 // traffic go" — withholding must not have degenerated into hiding
                 // the route.
