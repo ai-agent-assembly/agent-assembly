@@ -18,7 +18,25 @@ pools:
   test-single:
     limit: 1
     root: null
+  test-single-2:
+    limit: 1
+    root: null
 classes:
   test-class:
     pool: test-single
+    progress_signals: [cpu]
+  # AAASM-5948 case 16: a short grace_secs so the SIGKILL-escalation test
+  # doesn't wait out the real default (20s) — a separate pool from
+  # test-single so it can't contend with the other cases' jobs.
+  test-class-fast-grace:
+    pool: test-single-2
+    grace_secs: 1
+    progress_signals: [cpu]
+  # AAASM-5948 case 17: grace_secs: 0 must escalate to SIGKILL immediately
+  # on the FIRST relay, not silently disable escalation (signal.alarm(0)
+  # means "cancel", not "fire now"). Shares test-single-2's pool — case 16
+  # and case 17 never run concurrently, so no contention.
+  test-class-zero-grace:
+    pool: test-single-2
+    grace_secs: 0
     progress_signals: [cpu]

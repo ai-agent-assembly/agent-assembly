@@ -34,6 +34,28 @@
 #           class+argv, discovered by design review before AAASM-5895
 #           landed. Same worktree, same class/argv must still collide
 #           (that's case 2b, unchanged).
+#   Case 15 (AAASM-5948) SIGINT sent to the wrapper's own PID (as an
+#           interactive terminal's Ctrl-C would deliver to a foreground
+#           `git push`) is relayed into the execvp'd job's process group —
+#           the job actually dies (no natural completion), instead of
+#           running orphaned in the background for its full duration. The
+#           regression this proves against: a bare os.setsid() + execvp()
+#           in the SAME process moves the job out of the terminal's
+#           foreground process group with nothing left to relay signals
+#           into it — this case is the one that turns red if the
+#           fork+relay supervisor in AAASM-5948's fix is reverted back to
+#           that shape.
+#   Case 16 (AAASM-5948) A job that ignores SIGTERM (traps it as a no-op)
+#           survives the relay supervisor's first SIGTERM; the grace-
+#           period escalation then SIGKILLs it — Ctrl-C must not hang the
+#           caller's terminal forever just because the wrapped job never
+#           reacts to SIGTERM.
+#   Case 17 (AAASM-5948) grace_secs: 0 escalates to SIGKILL on the FIRST
+#           relay rather than silently never escalating —
+#           signal.alarm(0) means "cancel any pending alarm", not "fire
+#           immediately"; passing a <=0 grace_secs straight into it would
+#           reproduce the AAASM-5948 orphan bug for any class explicitly
+#           configured with no grace period.
 #
 # Usage: bash scripts/qa/resource-scheduler-negative-control.sh
 # Run from the repo root (fixtures reference real repo-relative paths).
@@ -42,6 +64,7 @@ set -uo pipefail
 FIXTURES_DIR="qa/tests/fixtures/sched"
 LOCK_PY="scripts/qa/resource-lock.py"
 QUICK="$FIXTURES_DIR/quick.sh"
+IGNORE_TERM="$FIXTURES_DIR/ignore_term.sh"
 REAL_REGISTRY="qa/resource-classes.yaml"
 TEST_REGISTRY="$FIXTURES_DIR/registry-test.yaml"
 FAILED=0
@@ -303,6 +326,112 @@ print(m.compute_fingerprint('cargo-doc', gcd, top, ['cargo', 'doc', '--workspace
 assert_eq "same worktree, same class/argv, still hashes identically (AAASM-5877 fix intact)" "$fp_a_again" "$fp_a"
 git -C "$scratch_repo" worktree remove --force "$worktree_b" >/dev/null 2>&1
 rm -rf "$scratch_repo" "$worktree_b"
+
+echo "== Case 15 (AAASM-5948): SIGINT to the wrapper relays into the job, no orphan =="
+marker15="$(mktemp)"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class -- bash "$QUICK" "$marker15" 30 >"$AA_QA_LOCK_DIR/case15.out" 2>&1 &
+wrapper_pid=$!
+if ! wait_for_start "$marker15"; then
+  echo "  ✗ job never started — cannot exercise case 15"
+  FAILED=1
+else
+  child_pid="$(awk '/^START/ {print $2; exit}' "$marker15")"
+  kill -INT "$wrapper_pid"
+  # Bounded wait for the relay to take effect and the child to actually
+  # die — not a fixed sleep guessing at timing; poll liveness directly.
+  waited=0
+  while kill -0 "$child_pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$child_pid" 2>/dev/null; then
+    echo "  ✗ child pid $child_pid still alive ~5s after SIGINT — orphaned, not relayed"
+    FAILED=1
+    kill -KILL "$child_pid" 2>/dev/null || true  # don't leak it into the rest of the suite
+  else
+    echo "  ✓ child pid $child_pid is gone shortly after SIGINT to the wrapper"
+  fi
+  if grep -q '^END' "$marker15"; then
+    echo "  ✗ job ran to natural completion (END line present) — SIGINT had no effect"
+    FAILED=1
+  else
+    echo "  ✓ job never reached natural completion — genuinely terminated, not just outlived the poll"
+  fi
+  wait "$wrapper_pid"
+  wrapper_code=$?
+  # The relay always forwards SIGTERM regardless of which signal the
+  # wrapper itself received (see resource-lock.py's _relay comment) — the
+  # child dies of SIGTERM (128+15) even though we sent SIGINT here. This
+  # assertion is secondary to the two orphan-detection ones above: it
+  # locks in the current SIGTERM-normalization choice, not the underlying
+  # regression those two already prove on their own.
+  assert_eq "wrapper's own exit code reflects the child's SIGTERM death (128+15)" "$wrapper_code" "143"
+fi
+rm -f "$marker15" "$AA_QA_LOCK_DIR/case15.out"
+
+echo "== Case 16 (AAASM-5948): SIGTERM-ignoring job escalates to SIGKILL =="
+marker16="$(mktemp)"
+start_ts=$(date +%s)
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-fast-grace -- bash "$IGNORE_TERM" "$marker16" >"$AA_QA_LOCK_DIR/case16.out" 2>&1 &
+wrapper_pid=$!
+if ! wait_for_start "$marker16"; then
+  echo "  ✗ job never started — cannot exercise case 16"
+  FAILED=1
+else
+  child_pid="$(awk '/^START/ {print $2; exit}' "$marker16")"
+  kill -TERM "$wrapper_pid"
+  # grace_secs=1 for this class (registry-test.yaml) — bound the poll well
+  # above that so the escalation has time to fire, but still bounded.
+  waited=0
+  while kill -0 "$child_pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  elapsed=$(($(date +%s) - start_ts))
+  if kill -0 "$child_pid" 2>/dev/null; then
+    echo "  ✗ child pid $child_pid still alive ~10s after SIGTERM — escalation never fired"
+    FAILED=1
+    kill -KILL "$child_pid" 2>/dev/null || true
+  else
+    echo "  ✓ child pid $child_pid is gone (SIGKILL escalation fired) after ~${elapsed}s"
+  fi
+  if [ "$elapsed" -lt 1 ]; then
+    echo "  ✗ died in <1s — suspiciously fast for a SIGTERM-ignoring job with grace_secs=1 (relay itself may have used SIGKILL, not escalation)"
+    FAILED=1
+  else
+    echo "  ✓ took >=1s (the configured grace_secs), consistent with a real escalation, not an immediate kill"
+  fi
+  wait "$wrapper_pid"
+fi
+rm -f "$marker16" "$AA_QA_LOCK_DIR/case16.out"
+
+echo "== Case 17 (AAASM-5948): grace_secs: 0 escalates immediately, doesn't disable escalation =="
+marker17="$(mktemp)"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-zero-grace -- bash "$IGNORE_TERM" "$marker17" >"$AA_QA_LOCK_DIR/case17.out" 2>&1 &
+wrapper_pid=$!
+if ! wait_for_start "$marker17"; then
+  echo "  ✗ job never started — cannot exercise case 17"
+  FAILED=1
+else
+  child_pid="$(awk '/^START/ {print $2; exit}' "$marker17")"
+  kill -TERM "$wrapper_pid"
+  # grace_secs=0 — the job should be gone almost immediately, well before
+  # case 16's grace_secs=1 class. Bounded poll, not a fixed sleep.
+  waited=0
+  while kill -0 "$child_pid" 2>/dev/null && [ "$waited" -lt 30 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$child_pid" 2>/dev/null; then
+    echo "  ✗ child pid $child_pid still alive ~3s after SIGTERM with grace_secs=0 — escalation never fired (the AAASM-5948 orphan bug, reproduced for this config)"
+    FAILED=1
+    kill -KILL "$child_pid" 2>/dev/null || true
+  else
+    echo "  ✓ child pid $child_pid is gone almost immediately with grace_secs=0"
+  fi
+  wait "$wrapper_pid"
+fi
+rm -f "$marker17" "$AA_QA_LOCK_DIR/case17.out"
 
 echo
 if [ "$FAILED" -eq 0 ]; then
