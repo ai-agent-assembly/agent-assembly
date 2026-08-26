@@ -37,6 +37,7 @@ fn test_config(ca_dir: &std::path::Path) -> ProxyConfig {
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: true,
+        trusted_config_path: None,
     }
 }
 
@@ -533,6 +534,7 @@ mod attacker {
             ready_file: None,
             parent_pid: None,
             allow_private_connect_targets: true,
+            trusted_config_path: None,
         }
     }
 

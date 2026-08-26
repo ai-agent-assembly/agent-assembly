@@ -122,6 +122,20 @@ resync canonical main -> independent post-merge reproduction against
 the merged base -> continue the same campaign.
 ```
 
+**"required CI green" means a fresh query returned terminal-and-passing, at
+the current PR HEAD SHA** — not that a poller has been running for a while
+without reporting a problem. This is the step where AAASM-5930's campaign
+lost tens of minutes: the run had already gone terminal while the loop was
+still reporting it as pending. Use `scripts/qa/ci-watch.py poll` (AAASM-5960)
+rather than hand-rolled `gh` calls; it exits `0` pass, `20` fail, `21`
+running, `22` head-changed, `23` query-error, and holds no state across
+invocations, so every call is necessarily fresh. Exit `20` advances the loop
+to triage immediately — a failed required check is never a reason to keep
+waiting, since it cannot come back green without a new HEAD. Exit `22` means
+the branch moved and the run being watched is obsolete: rebind and re-query,
+never wait on it. Full rules in `qa/CLEANUP-PROTOCOL.md`, "Freshness
+invariant".
+
 This does **not** require a separate human-initiated Claude Code session for
 ordinary Bugs. Independence is achieved through separate sub-agent roles and
 evidence (an implementer instance and a reviewer instance that never share

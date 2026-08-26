@@ -1,0 +1,30 @@
+{
+  "description": "Branch protection requires two contexts and the caller's --required-context names only one — the plausible mistake of overriding with the context you happen to be thinking about. Both named-and-omitted contexts here are green, so a watcher that let the override replace protection outright would report a perfectly confident pass over a strict subset of the real gate. The verdict must be query-error: the override is checked against protection rather than trusted in place of it.",
+  "required_contexts": [
+    "CI Success",
+    "Docs build"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success",
+          "id": 960001,
+          "started_at": "2026-08-26T09:00:00Z",
+          "completed_at": "2026-08-26T09:12:00Z"
+        },
+        {
+          "name": "Docs build",
+          "status": "completed",
+          "conclusion": "success",
+          "id": 960002,
+          "started_at": "2026-08-26T09:00:00Z",
+          "completed_at": "2026-08-26T09:03:00Z"
+        }
+      ]
+    }
+  ]
+}

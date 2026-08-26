@@ -34,6 +34,7 @@ pub mod proxy;
 pub mod ssrf;
 pub mod tls;
 pub mod transmission_evidence;
+pub mod trusted_upstream;
 
 pub use config::ProxyConfig;
 pub use error::ProxyError;

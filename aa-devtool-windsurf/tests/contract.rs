@@ -208,7 +208,18 @@ fn build_launch_command_injects_identity_and_proxy() {
         .collect();
     assert_eq!(envs.get("AA_AGENT_ID").map(String::as_str), Some("agent-42"));
     assert_eq!(envs.get("AA_TEAM_ID").map(String::as_str), Some("team-pioneer"));
-    assert_eq!(envs.get("HTTPS_PROXY").map(String::as_str), Some("127.0.0.1:8443"));
+    // AAASM-5923: a bare host:port authority is normalized to a URL, and
+    // both HTTPS_PROXY and HTTP_PROXY are set (ADR 0036 D6 item 6, matching
+    // ClaudeCodeAdapter/CodexAdapter's AAASM-5324/5916 normalization) — this
+    // assertion previously expected the pre-normalization bare authority.
+    assert_eq!(
+        envs.get("HTTPS_PROXY").map(String::as_str),
+        Some("http://127.0.0.1:8443")
+    );
+    assert_eq!(
+        envs.get("HTTP_PROXY").map(String::as_str),
+        Some("http://127.0.0.1:8443")
+    );
     let args: Vec<&str> = cmd.get_args().filter_map(|a| a.to_str()).collect();
     assert_eq!(args, vec!["--workspace", "/code"]);
 }

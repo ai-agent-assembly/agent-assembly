@@ -1,0 +1,23 @@
+{
+  "description": "Supplementary - the same context appearing twice (original attempt plus a completed re-run) must resolve to the completed row, so a finished re-run is not masked by the original's stale in_progress entry.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "in_progress",
+          "conclusion": null
+        },
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}

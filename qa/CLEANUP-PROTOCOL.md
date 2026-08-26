@@ -70,9 +70,11 @@ than guessing.
 Never state "monitoring" or "watching" CI without a real, checkable
 mechanism behind the claim. Only two mechanisms count:
 
-1. **A harness-tracked background task** — a `run_in_background` command, or
-   a blocking watch command (e.g. `gh pr checks --watch`) moved to
-   background by the harness, whose process/task ID is recorded.
+1. **A scheduled wakeup that re-queries on each firing** — the wakeup's
+   identity (PR number *and* HEAD SHA) is recorded, and every firing runs a
+   fresh query. A harness-tracked background task also counts, provided it
+   is not merely sleeping; see the freshness invariant below, which rules
+   out `gh pr checks --watch` and `sleep`-loop shells as the mechanism.
 2. **Continued active re-polling within the same turn** — repeated,
    observable polling calls, not a single check followed by a claim of
    ongoing monitoring.
@@ -80,6 +82,99 @@ mechanism behind the claim. Only two mechanisms count:
 If challenged on a "monitoring" claim, the completed or in-flight background
 task's process/task ID must be citable as proof. A claim that cannot produce
 that citation was not a real watch and must not be made again the same way.
+
+### Freshness invariant
+
+A real background task satisfies "is this a real watch" (above) but not
+"is what it reports still true" — a long-lived polling loop can itself go
+stale: it keeps re-checking, but nothing forces it to distinguish "GitHub
+still says pending" from "GitHub reached a terminal state several polls ago
+and I haven't looked since." AAASM-5930's own campaign hit exactly this: a
+`gh pr checks` background poller was treated as authoritative for tens of
+minutes without a fresh query being re-verified against it.
+
+* **No CI status may be trusted across wakeups without a fresh query.**
+  Re-querying the checks/runs API for the current PR is what makes a status
+  claim current — a prior poll result, however recently it looked "still
+  pending," is not evidence of the present state on its own.
+* **Terminal GitHub state immediately cancels local wait state.** A
+  check-run's `status` field, not just its `conclusion`, is what's
+  authoritative here — a `conclusion` only exists once `status:
+  "completed"`. The Checks API's completed-conclusion values are `success`,
+  `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`,
+  and `stale`; all of them are terminal. (`startup_failure` is a
+  workflow-*run*-level conclusion, not a check-run conclusion — don't
+  conflate the two API shapes when scripting a query.) The moment a fresh
+  query returns a completed status for a required check, stop waiting on it
+  — do not keep a background
+  poller alive "just in case," and do not wait for every non-required job
+  to also finish.
+* **The watcher's identity must include the current PR HEAD SHA**, not just
+  the PR number. A PR whose branch was amended, rebased, or force-pushed
+  mid-wait invalidates observations bound to the old SHA — a query that
+  does not name the SHA it's asking about can't tell an in-progress old run
+  from a completed new one. Re-derive the HEAD SHA before trusting a result.
+* **Do not use a long blocking wait shell.** An earlier version of this
+  section said a `run_in_background` command that blocks until a condition
+  becomes true was "fine as a mechanism" provided the condition was a fresh
+  query. In practice that permission is what got used: campaign sessions ran
+  `sleep 110` loops and 10-minute command timeouts.
+
+  Note what is and is not the objection, because the numbers alone look
+  identical: waiting ~2 minutes between queries is the prescribed cadence
+  below, so the duration of the sleep is not the defect. **Where the sleep
+  lives is.** A `sleep` inside the poll shell puts the waiting and the
+  deciding in the same process, and that process holds the decision until it
+  wakes: it cannot notice a terminal state, cannot be corrected by anything
+  the session learns meanwhile, and cannot be reasoned about by a session
+  that has moved on — the shell reports what was true when it last looked,
+  which is exactly how a failed run kept being described as pending. A sleep
+  between wakeups puts the waiting outside the decision, so each decision is
+  made from a query taken at the moment it is made.
+
+  So the shape that works is query → act if terminal → otherwise schedule a
+  short wakeup → query again, each wakeup performing its own query and each
+  ending. First ~10 minutes at a ~2–3 minute cadence, then ~5 minutes; never
+  go more than ~10 minutes without a fresh authoritative state. One
+  `scripts/qa/ci-watch.py poll` per wakeup satisfies this by construction: it
+  observes once and exits, so it holds no state between wakeups and cannot
+  wait for CI. It does sleep in one place — between retry attempts at a failed
+  `gh` query, bounded by `--retries`/`--retry-backoff` and under 3s at the
+  defaults — but that is a bounded retry inside a single observation, not
+  waiting between observations, which is the thing this rule forbids.
+* **A failed required check ends the wait immediately and starts
+  triage** (`qa/FINDING-VERIFICATION-PROTOCOL.md` classifies and drives the
+  fix) — it is never a reason to keep polling in case it changes back.
+* **A terminal state that is not `success` is still not a failure to
+  triage blindly.** `stale` means the result no longer applies to the
+  current head; `neutral` is non-blocking without being a pass. Stop
+  waiting is one conclusion; treat as passed is a different one.
+* **Only the repository's actual required contexts gate a merge.** On this
+  repo `required_status_checks.contexts` for `main` is exactly
+  `["CI Success"]`. Every other job — including
+  `Integration tests (macos-latest)` — is a non-required evidence job, and a
+  non-required job still in flight or `cancelled` (AAASM-5943) is not a
+  reason to keep waiting. Read the protection rules; do not infer required
+  status from a job's name or apparent importance.
+
+**Enforcement (AAASM-5960).** Everything above is executable, not just
+written down: `scripts/qa/ci-watch.py poll` performs exactly one fresh
+observation and exits with a verdict the caller has to act on — `0` pass,
+`20` fail, `21` running, `22` head-changed, `23` query-error. It holds no
+observation state across invocations at all, which is the freshness
+invariant expressed as an absence rather than as a rule someone has to
+remember. `scripts/qa/ci-watch-negative-control.sh` runs each rule against
+both the real implementation and a deliberately wrong watcher in
+`qa/tests/fixtures/ci-watch/`, and fails any case where the two agree — so
+a rule that stopped being load-bearing reddens `CI-watcher freshness gate`
+instead of quietly becoming prose again. There are two wrong watchers, not
+one: the rules have a direction, and a rule can be broken by over-repair as
+well as by neglect, which a single wrong implementation cannot demonstrate
+both of. A handful of cases are asserted against the real implementation
+only, and each says so at the point of assertion rather than being counted
+as though it discriminated. Prefer the tool over hand-rolled `gh` calls; if
+this section and the tool ever disagree, the negative control is the
+tiebreaker.
 
 ## Final-completion bar
 

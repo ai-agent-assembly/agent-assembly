@@ -44,6 +44,7 @@ pub mod repair;
 pub mod session;
 pub mod status;
 pub mod target;
+pub mod trusted_upstream;
 pub mod verify;
 
 use exit::{ChangeOutcome, Outcome};

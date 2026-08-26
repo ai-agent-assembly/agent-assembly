@@ -1,0 +1,28 @@
+{
+  "description": "TEST A - a check pending at wakeup N and success at N+1 must be detected as success at N+1. Proves the watcher re-queries instead of trusting its prior observation.",
+  "required_contexts": [
+    "CI Success"
+  ],
+  "steps": [
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "in_progress",
+          "conclusion": null
+        }
+      ]
+    },
+    {
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "check_runs": [
+        {
+          "name": "CI Success",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}

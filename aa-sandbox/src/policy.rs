@@ -12,8 +12,8 @@ use std::path::PathBuf;
 
 /// Least-privilege access level granted to a single preopened directory.
 ///
-/// `DirPerms::all()` / `FilePerms::all()` is an over-grant: a tool that only
-/// needs to read a mounted directory would also get write/create/delete,
+/// `FsPerms::ReadWrite` is an over-grant: a tool that only needs to read a
+/// mounted directory would also get write/create/delete,
 /// widening both intra-sandbox impact (overwrite host files in the mount) and
 /// post-escape blast radius. This enum makes every grant explicit and defaults
 /// to the most-restrictive [`PreopenAccess::ReadOnly`]; write access is opt-in
@@ -161,7 +161,7 @@ impl Default for HostFnRateLimit {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SandboxConfig {
     /// WASI preopened-directory allowlist. Each entry is presented to the
-    /// guest as one mount point with full `DirPerms` / `FilePerms`. Empty
+    /// guest as one mount point with its own `FsPerms` grant. Empty
     /// (the [`Default`]) means "no filesystem visibility" — every WASI
     /// `path_open` returns `EBADF`.
     pub preopened_dirs: Vec<PreopenedDir>,

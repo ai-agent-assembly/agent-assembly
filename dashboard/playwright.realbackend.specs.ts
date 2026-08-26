@@ -26,6 +26,10 @@ const REAL_BACKEND_SPECS = [
   'verify-aaasm-5360.spec.ts',
   // The one pre-existing spec that asserts a genuine round trip.
   'hitl-approval.spec.ts',
+  // AAASM-5904's operator-visible browser proof for registry row J65: a real
+  // canary through a real proxy must reach neither the rendered DOM nor a
+  // captured network response, and the resulting alert must render.
+  'sensitive-data-reference-journey.spec.ts',
 ]
 
 export default REAL_BACKEND_SPECS

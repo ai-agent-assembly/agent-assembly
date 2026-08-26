@@ -1467,6 +1467,19 @@ impl LaunchableTool for ClaudeCodeIntegration {
     /// The launch environment the install materialised is applied first, then the
     /// caller's own [`LaunchSpec::env`], so a caller can override a variable for
     /// one run without editing what the receipt records.
+    ///
+    /// ADR 0036 D6: this method has **no production caller today** — `aasm run
+    /// claude` reaches the tool via [`ClaudeCodeAdapter::build_launch_command`]
+    /// (the `self.adapter.build_launch_command` call below), which the outer
+    /// `aa-cli::spawn_and_wait`/`effective_child_env` boundary already
+    /// sanitizes (D6 review #8: that is the one real spawn, and removal must
+    /// happen exactly once, at that outer site). Do NOT add an `env_remove`
+    /// here defensively "just in case" — a future caller of this trait method
+    /// may or may not route through that same boundary, and duplicating
+    /// removal without knowing which is exactly the ordering mistake ADR
+    /// 0036's review #8 spent a full round correcting. If this method ever
+    /// gains a real caller, re-derive the correct removal site from that
+    /// caller's actual spawn path first.
     fn build_launch_command(&self, spec: &LaunchSpec) -> Result<std::process::Command, AdapterError> {
         use aa_devtool_contract::DevToolAdapter as _;
         // The adapter resolves its own launch environment from the ambient
