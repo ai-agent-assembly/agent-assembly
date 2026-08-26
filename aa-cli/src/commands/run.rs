@@ -4866,6 +4866,448 @@ mod tests {
         );
     }
 
+    // --- AAASM-5935: deny-by-default env value emission ---------------------
+    //
+    // Every value in this block is synthetic and non-functional. No real
+    // credential, and no fragment, length or fingerprint of one, is stored here,
+    // decoded here, or read from the host environment — which is regression F,
+    // and is a property of the fix rather than a discipline the tests impose on
+    // themselves: the classifier is a pure function of the variable *name*.
+
+    /// A synthetic, non-functional stand-in for a token. Not a credential, and
+    /// not derived from one.
+    const SYNTH_TOKEN: &str = "synthetic-not-a-real-token-AAAA";
+
+    /// A second synthetic stand-in, so a container can hold more than one and the
+    /// test can prove *each* is withheld rather than one of them incidentally.
+    const SYNTH_TOKEN_2: &str = "synthetic-not-a-real-token-BBBB";
+
+    /// Minimal RFC 4648 base64 encoder, test-only.
+    ///
+    /// Present so regression C can build its own encoded container from synthetic
+    /// input rather than embedding an opaque literal — the test then knows
+    /// exactly what the blob would yield if anyone decoded it, which is what
+    /// makes "the blob itself must not be emitted" a meaningful assertion.
+    ///
+    /// Note the direction: the *test* encodes. Nothing in the production path
+    /// decodes, which is AAASM-5935 AC 4.
+    fn base64_encode(input: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in input.chunks(3) {
+            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    /// The **pre-fix** renderer, retained in tests only, as the negative control.
+    ///
+    /// This is the exact branch structure `format_dry_run_output` used to apply to
+    /// every variable: classify by name, and — when no name pattern matches — fall
+    /// through to a redactor that returns the value unchanged unless it finds URL
+    /// userinfo. The final branch was documented as a "fail-closed backstop" and
+    /// is structurally fail-*open*.
+    ///
+    /// It is kept because a suite that only exercised the new code could keep
+    /// passing if the allowlist were widened back to "everything": the negative
+    /// controls below assert that this function *does* leak what
+    /// [`render_env_value`] withholds, which pins the difference rather than the
+    /// implementation.
+    fn legacy_name_based_render(key: &str, value: &str) -> String {
+        let upper = key.to_uppercase();
+        if is_connection_string_name(&upper) {
+            return redact_database_url(value);
+        }
+        if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
+            return "***MASKED***".into();
+        }
+        // The defect: an unrecognised name reaches here and the value is returned
+        // verbatim, because there is no `user:pass@host` userinfo to strip.
+        redact_database_url(value)
+    }
+
+    /// A synthetic serialized environment snapshot: the shape a tool that
+    /// publishes the environment into a single variable produces. Built from the
+    /// synthetic tokens above, never from the real environment.
+    fn synthetic_env_snapshot() -> String {
+        format!("export FORGE_TOKEN={SYNTH_TOKEN};export COVERAGE_TOKEN={SYNTH_TOKEN_2};")
+    }
+
+    /// The dry-run environment section for one synthetic `name=value` pair.
+    ///
+    /// Goes through the real `format_dry_run_output`, so the assertion is about
+    /// the artefact an operator reads, not about a helper in isolation.
+    fn preview_for(name: &str, value: &str) -> String {
+        let handle = stub_handle(None);
+        let cmd = std::process::Command::new("mock-tool");
+        let mut env = HashMap::new();
+        env.insert(name.to_string(), value.to_string());
+        format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        )
+    }
+
+    /// **Regression A** — a conventionally-named secret-bearing variable is not
+    /// emitted. The AAASM-4894 case, still held.
+    #[test]
+    fn a_conventionally_named_secret_bearing_variable_is_never_emitted() {
+        for name in ["FORGE_TOKEN", "AA_JWT_SECRET", "DB_PASSWORD", "SONAR_CREDENTIAL"] {
+            let output = preview_for(name, SYNTH_TOKEN);
+            assert!(
+                !output.contains(SYNTH_TOKEN),
+                "{name}: the synthetic token value reached the preview: {output}"
+            );
+            assert!(
+                output.contains(&format!("{name}=***MASKED***")),
+                "{name}: must be reported as a masked credential, not omitted: {output}"
+            );
+        }
+    }
+
+    /// **Regression B** — a container variable holding token values is not
+    /// emitted in a form the tokens are recoverable from.
+    ///
+    /// The container's name matches no credential pattern, which is precisely why
+    /// the old logic printed it. Both synthetic tokens are asserted absent
+    /// individually, and so is the container payload as a whole: emitting the
+    /// payload *is* the exposure, whether or not a reader bothers to parse it.
+    #[test]
+    fn a_container_variable_holding_token_values_is_not_emitted_in_recoverable_form() {
+        let snapshot = synthetic_env_snapshot();
+        let output = preview_for("AA_5935_ENV_SNAPSHOT", &snapshot);
+
+        for token in [SYNTH_TOKEN, SYNTH_TOKEN_2] {
+            assert!(
+                !output.contains(token),
+                "a token inside the container reached the preview: {output}"
+            );
+        }
+        assert!(
+            !output.contains(&snapshot),
+            "the container payload must not be emitted at all: {output}"
+        );
+        assert!(
+            output.contains("AA_5935_ENV_SNAPSHOT=<set>"),
+            "the container must still be reported as present — the operator needs to \
+             know the child inherits it: {output}"
+        );
+    }
+
+    /// **Regression C** — encoded container metadata cannot bypass masking through
+    /// an unrecognised variable name.
+    ///
+    /// The exposure this ticket records: an encoded environment snapshot in a
+    /// blandly-named variable. The test asserts the encoded blob is absent, not
+    /// just its plaintext — a blob in the output is recoverable content, and the
+    /// fix must hold *without* the product having decoded anything to find out.
+    #[test]
+    fn an_encoded_container_cannot_bypass_masking_through_an_unrecognised_name() {
+        let encoded = base64_encode(synthetic_env_snapshot().as_bytes());
+
+        // Names carrying no credential signal whatsoever — the class, not one
+        // vendor's spelling. `_WATCHES` and `_STATE` are included because fixing
+        // only the one variable that happened to leak would leave the class open.
+        for name in ["AA_5935_DIFF", "TOOLING_WATCHES", "SHELL_HOOK_STATE", "XYZZY"] {
+            let output = preview_for(name, &encoded);
+            assert!(
+                !output.contains(&encoded),
+                "{name}: the encoded container reached the preview verbatim: {output}"
+            );
+            for token in [SYNTH_TOKEN, SYNTH_TOKEN_2] {
+                assert!(
+                    !output.contains(token),
+                    "{name}: a contained token reached the preview: {output}"
+                );
+            }
+            assert!(
+                output.contains(&format!("{name}=<set>")),
+                "{name}: presence must still be reported: {output}"
+            );
+        }
+    }
+
+    /// **Regression D** — presence-only diagnostics remain usable.
+    ///
+    /// AC 3. Withholding values is only acceptable if the preview still answers
+    /// the question it exists for: which variables the child inherits. Every name
+    /// must be listed, the removals must still read as removals, and the legend
+    /// must explain the markers — an operator seeing `FOO=<set>` for the first
+    /// time must not have to guess whether that is a literal value.
+    #[test]
+    fn presence_only_diagnostics_still_name_every_inherited_variable() {
+        let handle = stub_handle(None);
+        let mut cmd = std::process::Command::new("mock-tool");
+        cmd.env_remove("ANTHROPIC_API_KEY");
+        let mut env = HashMap::new();
+        env.insert("AA_5935_ENV_SNAPSHOT".into(), synthetic_env_snapshot());
+        env.insert("EDITOR".into(), "vi".into());
+        env.insert("EMPTY_BUT_PRESENT".into(), String::new());
+        env.insert("AA_AGENT_ID".into(), "test-agent".into());
+
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        );
+
+        for name in ["AA_5935_ENV_SNAPSHOT", "EDITOR", "EMPTY_BUT_PRESENT", "AA_AGENT_ID"] {
+            assert!(output.contains(name), "{name} must be listed by name: {output}");
+        }
+        assert!(output.contains("EDITOR=<set>"), "{output}");
+        assert!(
+            output.contains("EMPTY_BUT_PRESENT=<set:empty>"),
+            "present-but-empty is a distinct launch state and must be distinguishable \
+             from present-with-a-value: {output}"
+        );
+        assert!(
+            output.contains("ANTHROPIC_API_KEY=<removed by adapter>"),
+            "a removal must still read as a removal, not as a withheld value: {output}"
+        );
+        assert!(
+            output.contains("<set> = present, value withheld"),
+            "the markers must be explained in the output itself: {output}"
+        );
+    }
+
+    /// **Regression E** — non-secret diagnostic metadata still works.
+    ///
+    /// The allowlist is not decoration: the governance identity, the route, the
+    /// CA and the model still print their values, because an operator cannot
+    /// verify a governed launch without them.
+    #[test]
+    fn non_secret_governance_metadata_is_still_shown_verbatim() {
+        let cases = [
+            ("AA_AGENT_ID", "agent-5935"),
+            ("AA_SESSION_ID", "session-5935"),
+            ("AA_ENFORCEMENT_MODE", "observe"),
+            ("HTTPS_PROXY", "http://127.0.0.1:8899"),
+            ("NODE_EXTRA_CA_CERTS", "/tmp/aasm-ca.pem"),
+            ("ANTHROPIC_BASE_URL", "https://api.example.com/v1"),
+            ("ANTHROPIC_MODEL", "a-model-name"),
+        ];
+        for (name, value) in cases {
+            let output = preview_for(name, value);
+            assert!(
+                output.contains(&format!("{name}={value}")),
+                "{name} is on the reviewed allowlist and must show its value: {output}"
+            );
+        }
+    }
+
+    /// **Regression F** — the protection needs neither to store nor to decode a
+    /// credential.
+    ///
+    /// Asserted as the property that makes it true rather than by inspection: the
+    /// render of a non-allowlisted variable is a pure function of its *name*, so
+    /// three structurally unrelated values render identically. A classifier that
+    /// carried any information out of the value could not satisfy this, and one
+    /// that decoded the value to decide would have to.
+    ///
+    /// This is also why the fix has no frontier: there is no encoding it has to
+    /// recognise, so there is no next encoding it can fail open on (AC 4).
+    #[test]
+    fn the_protection_neither_stores_nor_decodes_any_credential() {
+        let values = [
+            SYNTH_TOKEN.to_string(),
+            synthetic_env_snapshot(),
+            base64_encode(synthetic_env_snapshot().as_bytes()),
+            "plain".to_string(),
+            "postgresql://user:synthetic-not-a-real-pw@host:5432/db".to_string(),
+        ];
+
+        let rendered: Vec<String> = values
+            .iter()
+            .map(|v| render_env_value("AA_5935_OPAQUE_CONTAINER", v))
+            .collect();
+        assert!(
+            rendered.iter().all(|r| r == PRESENCE_SET),
+            "the render must depend only on the name, so it can carry nothing out of \
+             the value: {rendered:?}"
+        );
+
+        // And the closed marker set: whatever the value, a withheld render is one
+        // of three fixed strings, none of which is derived from the input.
+        for value in &values {
+            let r = render_env_value("SOME_OPAQUE_NAME", value);
+            assert!(
+                [PRESENCE_SET, PRESENCE_EMPTY, MASKED].contains(&r.as_str()),
+                "unexpected marker {r:?} — a withheld value must render as a constant"
+            );
+        }
+    }
+
+    /// **Negative control**, B and C: the pre-fix name-based logic leaks exactly
+    /// what the allowlist withholds.
+    ///
+    /// Without this, nothing in the suite would show that the regression tests
+    /// above are testing a real change rather than a tautology.
+    #[test]
+    fn the_old_name_based_logic_leaks_what_the_allowlist_withholds() {
+        let snapshot = synthetic_env_snapshot();
+        let encoded = base64_encode(snapshot.as_bytes());
+
+        // B, under the old logic: the container's plaintext was returned verbatim.
+        let old_b = legacy_name_based_render("AA_5935_ENV_SNAPSHOT", &snapshot);
+        assert_eq!(
+            old_b, snapshot,
+            "negative control is not reproducing the defect: the old renderer is \
+             expected to return the container unchanged"
+        );
+        assert!(
+            old_b.contains(SYNTH_TOKEN),
+            "the old renderer leaked the contained token — that is the defect"
+        );
+
+        // C, under the old logic: so was the encoded container.
+        let old_c = legacy_name_based_render("AA_5935_DIFF", &encoded);
+        assert_eq!(old_c, encoded, "the old renderer emitted the encoded blob verbatim");
+
+        // The new renderer withholds both, and emits neither payload.
+        for (name, payload) in [("AA_5935_ENV_SNAPSHOT", &snapshot), ("AA_5935_DIFF", &encoded)] {
+            let new = render_env_value(name, payload);
+            assert_eq!(new, PRESENCE_SET, "{name} must render presence-only");
+            assert!(!new.contains(SYNTH_TOKEN), "{name}: {new}");
+        }
+    }
+
+    /// **Negative control**, table-driven: for every input the old logic printed,
+    /// the new classifier withholds — and the two agree only where the old logic
+    /// was already correct.
+    ///
+    /// Table-driven so the *class* is pinned rather than a handful of names: any
+    /// future change that reintroduces value emission for an off-allowlist name
+    /// fails here regardless of which name it picks.
+    #[test]
+    fn the_classifier_rejects_every_input_the_old_name_based_logic_accepted() {
+        struct Case {
+            name: &'static str,
+            value: String,
+            /// Whether the old, name-based-only logic emitted the value verbatim.
+            old_emitted_verbatim: bool,
+        }
+
+        let snapshot = synthetic_env_snapshot();
+        let encoded = base64_encode(snapshot.as_bytes());
+
+        let cases = vec![
+            // The defect class: bland names, secret-bearing values.
+            Case {
+                name: "AA_5935_ENV_SNAPSHOT",
+                value: snapshot.clone(),
+                old_emitted_verbatim: true,
+            },
+            Case {
+                name: "AA_5935_DIFF",
+                value: encoded.clone(),
+                old_emitted_verbatim: true,
+            },
+            Case {
+                name: "TOOLING_WATCHES",
+                value: encoded.clone(),
+                old_emitted_verbatim: true,
+            },
+            Case {
+                name: "SHELL_SNAPSHOT",
+                value: snapshot.clone(),
+                old_emitted_verbatim: true,
+            },
+            // Bland name, ordinary value — leaked too, and no longer emitted.
+            // Harmless in itself, but it is the same branch, so it is the same bug.
+            Case {
+                name: "EDITOR",
+                value: "vi".to_string(),
+                old_emitted_verbatim: true,
+            },
+            // Where the old logic was already right: the name says credential.
+            Case {
+                name: "FORGE_TOKEN",
+                value: SYNTH_TOKEN.to_string(),
+                old_emitted_verbatim: false,
+            },
+            Case {
+                name: "AA_JWT_SECRET",
+                value: SYNTH_TOKEN.to_string(),
+                old_emitted_verbatim: false,
+            },
+        ];
+
+        for case in &cases {
+            let old = legacy_name_based_render(case.name, &case.value);
+            assert_eq!(
+                old == case.value,
+                case.old_emitted_verbatim,
+                "{}: the negative control no longer reproduces the old behaviour it \
+                 is here to contrast with",
+                case.name
+            );
+
+            let new = render_env_value(case.name, &case.value);
+            assert_ne!(
+                new, case.value,
+                "{}: the new classifier must not emit an off-allowlist value verbatim",
+                case.name
+            );
+            assert!(
+                [PRESENCE_SET, PRESENCE_EMPTY, MASKED].contains(&new.as_str()),
+                "{}: expected a constant withholding marker, got {new:?}",
+                case.name
+            );
+        }
+    }
+
+    /// The allowlist is the reviewed surface, so its contents are asserted rather
+    /// than left to whoever edits the array next.
+    ///
+    /// Two properties: nothing on it may carry a credential-shaped name — which
+    /// would mean a reviewer allowlisted a value the masker then has to catch —
+    /// and it stays small, because "small and reviewed" is the whole security
+    /// argument. `ANTHROPIC_BASE_URL` is the one deliberate exception: it is a
+    /// `_URL`, it is a route rather than a credential, and [`mask_value`] still
+    /// strips userinfo from it.
+    #[test]
+    fn the_preview_value_allowlist_stays_small_and_carries_no_credential_names() {
+        assert!(
+            VALUE_VISIBLE_ENV_VARS.len() <= 20,
+            "the allowlist has grown past the point where 'explicit and reviewed' is \
+             a meaningful claim: {VALUE_VISIBLE_ENV_VARS:?}"
+        );
+        for name in VALUE_VISIBLE_ENV_VARS {
+            assert!(
+                !SECRET_SUBSTRINGS.iter().any(|needle| name.contains(needle)),
+                "{name} has a credential-shaped name and must not be value-visible"
+            );
+            assert_eq!(name, name.to_uppercase(), "{name} must be stored uppercased");
+            assert!(
+                value_may_be_previewed(name) && value_may_be_previewed(&name.to_lowercase()),
+                "{name} must match case-insensitively"
+            );
+        }
+        assert!(
+            !value_may_be_previewed("ANTHROPIC_API_KEY"),
+            "a credential must never be on the allowlist"
+        );
+    }
+
     /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has
     /// to *say* it is unprotected. Before this the reader had to notice that
     /// `HTTPS_PROXY` was absent from the environment listing and infer the rest
