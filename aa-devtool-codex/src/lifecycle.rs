@@ -66,7 +66,7 @@ const CA_ENV_VAR: &str = "CODEX_CA_CERTIFICATE";
 
 // `allowed_domains`/`blocked_domains` are deliberately absent (AAASM-5856
 // security review): `IntegrationRequest` carries a policy only by reference
-// (ADR 0030 §5.5), so `managed_settings_json` has no `PolicyDocument` to
+// (ADR 0030 §5.5), so `managed_settings_toml` has no `PolicyDocument` to
 // derive a real list from — and `MergeManagedKeys` overwrites whatever is
 // on disk with whatever key is present, so writing `[]` here would silently
 // erase a real list a human (or a future policy-aware mechanism) had set.
@@ -191,7 +191,7 @@ impl CodexIntegration {
         for step in &plan.steps {
             match &step.action {
                 StepAction::WriteManagedSettings { .. } => {
-                    rendered.insert(step.id.clone(), managed_settings_json(plan.profile)?);
+                    rendered.insert(step.id.clone(), managed_settings_toml(plan.profile)?);
                 }
                 StepAction::MaterialiseTrustMaterial { .. } => {
                     rendered.insert(step.id.clone(), self.read_ca_pem()?);
@@ -358,11 +358,11 @@ impl DevToolIntegration for CodexIntegration {
         );
 
         // 1. Managed settings — sandbox_mode / approval_policy in
-        //    $HOME/.codex/config.json. Unlike Claude Code there is no
+        //    $HOME/.codex/config.toml. Unlike Claude Code there is no
         //    privileged endpoint-managed variant: Codex has one configuration
         //    surface, and it is always the developer's own file. Domain
         //    lists are not written here — see the `MANAGED_KEYS` comment.
-        let settings = managed_settings_json(request.profile)?;
+        let settings = managed_settings_toml(request.profile)?;
         plan = plan.with_step(IntegrationStep::new(
             STEP_MANAGED_SETTINGS,
             StepAction::WriteManagedSettings {
@@ -719,11 +719,11 @@ impl LaunchableTool for CodexIntegration {
 ///
 /// Derived from the **profile**, not from a full policy document: a plan
 /// carries a policy only by reference (ADR 0030 §5.5), mirroring
-/// `aa_devtool_claude_code::lifecycle::managed_settings_json`. Deliberately
+/// `aa_devtool_claude_code::lifecycle::managed_settings_toml`. Deliberately
 /// omits `allowed_domains`/`blocked_domains` — see the `MANAGED_KEYS`
 /// comment for why a policy-derived list can't be produced here, and why
 /// writing an empty one would be worse than omitting the key.
-pub fn managed_settings_json(profile: ProtectionProfile) -> Result<String, AdapterError> {
+pub fn managed_settings_toml(profile: ProtectionProfile) -> Result<String, AdapterError> {
     let (sandbox_mode, approval) = match profile {
         ProtectionProfile::Strict => (
             CodexSandboxMode::Ask,
@@ -744,11 +744,16 @@ pub fn managed_settings_json(profile: ProtectionProfile) -> Result<String, Adapt
             },
         ),
     };
-    let doc = serde_json::json!({
-        "sandbox_mode": sandbox_mode,
-        "approval_policy": approval,
-    });
-    serde_json::to_string(&doc).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
+    let mut doc = toml::value::Table::new();
+    doc.insert(
+        "sandbox_mode".to_string(),
+        toml::Value::try_from(sandbox_mode).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?,
+    );
+    doc.insert(
+        "approval_policy".to_string(),
+        toml::Value::try_from(approval).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?,
+    );
+    toml::to_string(&doc).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
 }
 
 fn scope_error(e: ScopeError) -> AdapterError {
