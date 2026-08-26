@@ -719,7 +719,9 @@ impl LaunchableTool for CodexIntegration {
 ///
 /// Derived from the **profile**, not from a full policy document: a plan
 /// carries a policy only by reference (ADR 0030 §5.5), mirroring
-/// `aa_devtool_claude_code::lifecycle::managed_settings_toml`. Deliberately
+/// `aa_devtool_claude_code::lifecycle::managed_settings_json` (Claude Code's
+/// own managed-settings surface is JSON, not TOML — this crate's function
+/// was only renamed, Claude Code's was not). Deliberately
 /// omits `allowed_domains`/`blocked_domains` — see the `MANAGED_KEYS`
 /// comment for why a policy-derived list can't be produced here, and why
 /// writing an empty one would be worse than omitting the key.

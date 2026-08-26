@@ -162,6 +162,41 @@ async fn apply_settings_is_idempotent() {
     assert_eq!(parsed["sandbox_mode"].as_str(), Some("ask"));
 }
 
+/// A real `config.toml` is not flat: `codex mcp add` writes sub-tables like
+/// `[mcp_servers.foo]`. `apply_settings`'s merge must preserve one across an
+/// AA-managed write, not just scalar top-level keys — the shape every other
+/// test in this file happens to exercise.
+#[tokio::test]
+async fn apply_settings_preserves_a_user_written_sub_table() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("codex");
+    std::fs::write(&bin, "").unwrap();
+
+    let codex_dir = tmp.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(codex_dir.join("config.toml"), "[mcp_servers.foo]\ncommand = \"bar\"\n").unwrap();
+
+    let adapter =
+        CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe)).with_home_dir(tmp.path().to_path_buf());
+
+    let settings = adapter.generate_managed_settings(&fixture_policy()).await.unwrap();
+    adapter.apply_settings(&settings).await.unwrap();
+
+    let config_path = codex_dir.join("config.toml");
+    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+
+    assert_eq!(
+        parsed["mcp_servers"]["foo"]["command"].as_str(),
+        Some("bar"),
+        "a user-written MCP server sub-table must survive an AA-managed settings write"
+    );
+    assert_eq!(
+        parsed["sandbox_mode"].as_str(),
+        Some("ask"),
+        "AA-managed key must still be applied"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // build_launch_command
 // ---------------------------------------------------------------------------

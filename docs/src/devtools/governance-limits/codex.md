@@ -30,9 +30,11 @@ Codex reaches L2Enforce declaratively via the `~/.codex/config.toml`
 managed-settings surface (`aa-devtool-codex/src/lib.rs`, `apply_settings`),
 which lets the adapter push `sandbox_mode` / `allowed_domains` /
 `blocked_domains` / `approval_policy` without modifying the tool binary —
-this page always named the file `.codex/config.toml`, but the adapter itself
-wrote `.codex/config.json` until AAASM-5336, a file the real `codex` CLI
-never reads; that mismatch is now fixed in the adapter, not just the doc.
+this page named the file `.codex/config.toml` when first written, was
+changed to `.codex/config.json` in a later correction to match the
+adapter's actual (buggy) write path, and is back to `.toml` now that
+AAASM-5336 fixed the adapter itself — the file the real `codex` CLI reads —
+rather than editing the doc to match a wrong implementation a second time.
 eBPF fills the file-system and process-spawn gaps that the proxy cannot
 observe.
 
