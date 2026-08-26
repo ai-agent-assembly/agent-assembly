@@ -2348,6 +2348,20 @@ fn is_url_valued_name(key: &str) -> bool {
     URL_VALUED_ENV_VARS.iter().any(|name| key.eq_ignore_ascii_case(name))
 }
 
+/// The URL schemes [`project_url_origin`] will echo into a receipt.
+///
+/// A **closed vocabulary**, not a charset or a length cap. The previous charset
+/// rule accepted any run of ASCII alphanumerics, so an arbitrarily long attacker
+/// chosen scheme printed verbatim. A cap would only bound how much of it printed,
+/// and picking the bound means picking an arbitrary threshold; a fixed list is a
+/// bounded reviewed decision that fails closed on everything absent from it —
+/// the same discipline as [`VALUE_VISIBLE_ENV_VARS`] itself.
+///
+/// The socks entries are here because proxy variables legitimately carry them.
+/// Matched ASCII-case-insensitively, so a Unicode lookalike scheme cannot fold
+/// into a member (AAASM-5935, the same bypass as the name allowlist).
+const PREVIEWABLE_URL_SCHEMES: [&str; 4] = ["http", "https", "socks5", "socks5h"];
+
 /// Whether an optional trailing `:port` is a port and nothing else.
 ///
 /// An empty string is fine — the port is optional. A `:` must be followed by at
@@ -2444,11 +2458,7 @@ fn is_host_shaped(host_port: &str) -> bool {
 fn project_url_origin(value: &str) -> Option<String> {
     let scheme_end = value.find("://")?;
     let scheme = &value[..scheme_end];
-    if scheme.is_empty()
-        || !scheme
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
-    {
+    if !PREVIEWABLE_URL_SCHEMES.iter().any(|s| scheme.eq_ignore_ascii_case(s)) {
         return None;
     }
 
@@ -5739,6 +5749,9 @@ mod tests {
             format!("https://gw.example.invalid\0{SENTINEL}"),
             // An `@` inside an IPv6 literal leaves a `]` with no opening bracket.
             format!("https://[::1@{SENTINEL}]/x"),
+            // An unrecognised scheme is attacker-chosen text of any length, and
+            // the old charset rule echoed it verbatim.
+            format!("{SENTINEL}://gw.example.invalid/v1"),
         ];
 
         for name in URL_VALUED_ENV_VARS {
@@ -5809,6 +5822,11 @@ mod tests {
             // Proxy variables legitimately carry socks schemes.
             ("socks5://127.0.0.1:1080", "socks5://127.0.0.1:1080"),
             ("socks5h://corp-proxy.invalid:1080", "socks5h://corp-proxy.invalid:1080"),
+            // The scheme allowlist matches case-insensitively, and the receipt
+            // echoes the spelling that was actually set rather than normalising
+            // it — the value is now drawn from a closed four-entry vocabulary, so
+            // reporting it faithfully costs nothing.
+            ("HTTPS://gw.example.invalid", "HTTPS://gw.example.invalid"),
         ];
         for (value, expected) in cases {
             assert_eq!(
@@ -5843,6 +5861,14 @@ mod tests {
             "https://[::1]:80x",
             // Not a hex/colon/dot IPv6 body.
             "https://[gw.example.invalid]",
+            // Off the closed scheme vocabulary. An unbounded run of alphanumerics
+            // used to satisfy the old charset rule and print verbatim.
+            "synthetic-not-a-real-scheme-0123456789abcdef://gw.example.invalid",
+            "file://gw.example.invalid",
+            "javascript://gw.example.invalid",
+            "ftp://gw.example.invalid",
+            // A Unicode lookalike must not fold into an allowlisted scheme.
+            "httpſ://gw.example.invalid",
         ] {
             assert_eq!(
                 project_url_origin(value),
