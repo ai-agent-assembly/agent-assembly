@@ -62,3 +62,4 @@ verification-reports/__pycache__/
 /.conformance-outcomes/
 .qa/
 scripts/qa/__pycache__/
+target-isolated/

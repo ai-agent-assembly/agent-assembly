@@ -210,6 +210,7 @@ async fn start_proxy(
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: true,
+        trusted_config_path: None,
     };
 
     let (event_tx, _event_rx) = broadcast::channel::<PipelineEvent>(16);

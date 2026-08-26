@@ -200,6 +200,7 @@ async fn start_proxy(
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: false,
+        trusted_config_path: None,
     };
     let bind_addr = config.bind_addr;
     let (tx, rx) = broadcast::channel(64);
