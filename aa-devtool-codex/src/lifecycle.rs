@@ -335,7 +335,7 @@ impl DevToolIntegration for CodexIntegration {
 
     async fn plan_integration(&self, request: &IntegrationRequest) -> Result<IntegrationPlan, AdapterError> {
         let scope = request.settings_scope;
-        let settings_path = self.paths.settings_path().map_err(scope_error)?;
+        let settings_path = self.paths.settings_path(scope).map_err(scope_error)?;
         let launch_env = self.paths.launch_env_dir(scope).map_err(scope_error)?;
         let ca_pem = self.paths.proxy_ca_pem(scope).map_err(scope_error)?;
         let capabilities = self.capabilities();
@@ -895,6 +895,33 @@ mod tests {
         assert!(ca_index < env_index);
         plan.validate()
             .expect("a GatewayProtected plan needs a protection-test step, and this carries one");
+    }
+
+    /// AAASM-5913: a project-scope request produced a plan whose managed-settings
+    /// step wrote `$HOME/.codex/config.json` — a **user**-scoped file — while
+    /// every other step used the project scope. The caller was told its project
+    /// had been configured; what had been configured was every project on the
+    /// host. No plan is the honest answer, so there is no plan.
+    #[tokio::test]
+    async fn a_scope_codex_cannot_address_produces_no_plan_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let integration = integration(dir.path());
+        for scope in [SettingsScope::Project, SettingsScope::Managed] {
+            let request = IntegrationRequest::new(DevToolKind::Codex, ProtectionProfile::Recommended, scope);
+            let err = integration
+                .plan_integration(&request)
+                .await
+                .expect_err("Codex has no configuration surface for this scope");
+            let message = err.to_string();
+            assert!(
+                message.contains(&scope.to_string()) && message.contains("no"),
+                "the error must name the scope it cannot address: {message}"
+            );
+            assert!(
+                !message.contains("HOME is not set"),
+                "the refusal must not be reported as a host misconfiguration: {message}"
+            );
+        }
     }
 
     #[tokio::test]

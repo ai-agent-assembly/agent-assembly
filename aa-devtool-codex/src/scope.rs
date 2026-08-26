@@ -31,6 +31,17 @@ pub enum ScopeError {
         /// What is missing.
         detail: String,
     },
+    /// Codex has no configuration surface for the requested scope, so honouring
+    /// the request would mean writing somewhere else.
+    #[error(
+        "Codex has no {scope}-scoped configuration surface; its only settings file is the \
+         user-scoped $HOME/.codex/config.json, and writing {scope} settings there would change \
+         every project on this host"
+    )]
+    UnsupportedScope {
+        /// The scope Codex cannot address.
+        scope: SettingsScope,
+    },
 }
 
 /// Every path the Codex integration reads or writes, resolved from explicit
@@ -86,16 +97,30 @@ impl CodexPaths {
 
     /// The Codex CLI's own configuration file — `$HOME/.codex/config.json`.
     ///
-    /// Unlike Claude Code's `settings_path`, this does not vary by `scope`:
-    /// Codex has one configuration surface, not three. A caller still names a
-    /// scope when authoring a plan step (`StepAction::WriteManagedSettings`
-    /// carries one), and this always resolves to the same file regardless of
-    /// which scope was asked for.
+    /// Codex has one configuration surface where Claude Code has three, and
+    /// that one is **user-scoped**. So a `scope` this integration cannot address
+    /// is refused rather than resolved: returning the same user file for a
+    /// project-scope request would tell the caller its project had been
+    /// configured while in fact every project on the host had been (AAASM-5913).
+    /// The scope is still a parameter, because the caller names one when
+    /// authoring a plan step (`StepAction::WriteManagedSettings` carries one)
+    /// and the mismatch has to be caught somewhere.
+    ///
+    /// Consequently no Codex plan for a non-user scope exists at all —
+    /// `plan_integration` resolves this path first — which is also why the
+    /// project/managed launch-environment directories `owned_root` still
+    /// separates are unreachable for Codex in practice.
     ///
     /// # Errors
     ///
+    /// [`ScopeError::UnsupportedScope`] for any scope but
+    /// [`SettingsScope::User`], checked before anything host-dependent so the
+    /// refusal does not depend on whether `$HOME` happens to be resolvable.
     /// [`ScopeError::Unresolvable`] when `$HOME` is unknown on this host.
-    pub fn settings_path(&self) -> Result<PathBuf, ScopeError> {
+    pub fn settings_path(&self, scope: SettingsScope) -> Result<PathBuf, ScopeError> {
+        if scope != SettingsScope::User {
+            return Err(ScopeError::UnsupportedScope { scope });
+        }
         let home = self.home.as_ref().ok_or_else(|| ScopeError::Unresolvable {
             scope: SettingsScope::User,
             detail: "HOME is not set".to_string(),
@@ -198,7 +223,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
         assert_eq!(
-            p.settings_path().unwrap(),
+            p.settings_path(SettingsScope::User).unwrap(),
             dir.path().join("home").join(".codex").join("config.json")
         );
     }
@@ -206,7 +231,10 @@ mod tests {
     #[test]
     fn an_unresolvable_root_is_an_error_not_a_guess() {
         let bare = CodexPaths::default();
-        assert!(matches!(bare.settings_path(), Err(ScopeError::Unresolvable { .. })));
+        assert!(matches!(
+            bare.settings_path(SettingsScope::User),
+            Err(ScopeError::Unresolvable { .. })
+        ));
         assert!(matches!(
             bare.owned_root(SettingsScope::User),
             Err(ScopeError::Unresolvable { .. })
@@ -241,12 +269,33 @@ mod tests {
     }
 
     #[test]
-    fn settings_path_does_not_vary_by_scope() {
-        // Codex has one configuration surface, unlike Claude's three.
+    fn a_scope_codex_cannot_address_is_refused_not_redirected() {
+        // Codex has one configuration surface, and it is the user's. Returning
+        // it for a project-scope request would report the project as configured
+        // while having configured every project on the host (AAASM-5913).
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
-        let path = p.settings_path().unwrap();
-        assert_eq!(path, p.settings_path().unwrap());
-        assert!(path.ends_with(".codex/config.json"));
+        assert!(p.settings_path(SettingsScope::User).is_ok());
+        for scope in [SettingsScope::Project, SettingsScope::Managed] {
+            assert_eq!(
+                p.settings_path(scope),
+                Err(ScopeError::UnsupportedScope { scope }),
+                "{scope} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_does_not_depend_on_a_resolvable_home() {
+        // A host without $HOME must still get "Codex cannot do project scope",
+        // not "your host is misconfigured" — the caller's request is wrong
+        // either way, and the diagnosis must not vary with ambient state.
+        let bare = CodexPaths::default();
+        assert_eq!(
+            bare.settings_path(SettingsScope::Project),
+            Err(ScopeError::UnsupportedScope {
+                scope: SettingsScope::Project
+            })
+        );
     }
 }
