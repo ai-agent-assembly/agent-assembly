@@ -12,7 +12,7 @@ use super::pid;
 #[derive(Debug, Args)]
 pub struct OpenArgs {
     /// Port to connect to (overrides config and AASM_DASHBOARD_PORT env var).
-    #[arg(long, env = "AASM_DASHBOARD_PORT")]
+    #[arg(long, env = "AASM_DASHBOARD_PORT", hide_env_values = true)]
     pub port: Option<u16>,
 }
 
