@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 """Mechanical liveness/ownership watchdog for resource-lock.py jobs
-(AAASM-5949, first slice of AAASM-5891's resource-aware QA-campaign
-scheduler — split from the original AAASM-5894 subtask by opus-architect
-design review, since watchdog + progress signals + stall termination +
-breaker + harness wiring was too large for one commit).
+(AAASM-5949/5950, first two slices of AAASM-5891's resource-aware
+QA-campaign scheduler — split from the original AAASM-5894 subtask by
+opus-architect design review, since watchdog + progress signals + stall
+termination + breaker + harness wiring was too large for one commit).
 
-This slice: liveness/ownership tracking (reusing resource-lock.py's own
+AAASM-5949: liveness/ownership tracking (reusing resource-lock.py's own
 `status --json`, not duplicating its pid/start-token verification — see
-"Why this shells out" below) and a cross-platform CPU-time parser, the
-first of the progress signals AAASM-5950 builds on (`cpu`, `children`,
-`artifact_mtime`, `log_growth`). Soft-timeout classification and hard-stall
-termination are AAASM-5951's scope; the `breaker` subcommand is AAASM-5952's.
+"Why this shells out" below) and a cross-platform CPU-time parser.
+
+AAASM-5950: the remaining progress signals in declared priority order —
+`cpu` (AAASM-5949), `children`, `artifact_mtime`, `log_growth` — plus
+classify_progress(), which says whether a job is *currently* showing
+activity on any signal. It deliberately does NOT decide stalled: that
+verdict needs elapsed-time + grace-period + re-verified ownership, which
+needs a polling loop that owns snapshot persistence across calls — this
+module stays a stateless single-snapshot tool (classify_progress() takes
+both snapshots as arguments; nothing here is written to disk). That loop,
+and the actual kill decision, are AAASM-5951's scope. The `breaker`
+subcommand is AAASM-5952's.
 
 Why this shells out to `resource-lock.py status --json` instead of
 importing its liveness functions directly: `resource-lock.py` is a script
@@ -114,16 +122,137 @@ def live_jobs(cls: str | None = None) -> list[dict]:
         return []
 
 
+def get_child_pids(pid: int) -> list[int]:
+    """Direct child pids of `pid`, via `pgrep -P` — POSIX, identical on macOS
+    and Linux, unlike listing all processes and filtering by ppid (which
+    needs OS-specific `ps` column names/flags). Empty list when the process
+    has no children, `pgrep` itself is unavailable, or the lookup fails —
+    never raises. Matches this module's other liveness helpers: a watchdog
+    checking for children must not crash, and "no children found" and
+    "genuinely childless" are the same actionable state to the caller
+    (absence of a children-signal), so they don't need to be distinguished."""
+    try:
+        out = subprocess.run(
+            ["pgrep", "-P", str(pid)], capture_output=True, text=True, timeout=5
+        )
+    except Exception:
+        return []
+    # pgrep exits 1 for "no processes matched" — not a failure, just zero
+    # children; only treat other nonzero codes (e.g. 2 = usage error) as
+    # a failed lookup.
+    if out.returncode not in (0, 1):
+        return []
+    return [int(p) for p in out.stdout.split() if p.isdigit()]
+
+
+def get_artifact_mtimes(paths: list[str]) -> dict[str, float | None]:
+    """mtime (epoch seconds) for each path in `paths`, or None if it doesn't
+    exist yet — a build that hasn't produced output yet isn't an error, it's
+    just "no artifact-signal yet"."""
+    result: dict[str, float | None] = {}
+    for p in paths:
+        try:
+            result[p] = os.stat(p).st_mtime
+        except OSError:
+            result[p] = None
+    return result
+
+
+def get_log_signal(path: str | None) -> dict | None:
+    """(size, mtime) for a job's `--log` file (resource-lock.py records this
+    path on the job but doesn't act on it yet — AAASM-5894's forward-compat
+    groundwork this signal now consumes). None if no log path was recorded
+    on the job, or the file doesn't exist yet."""
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return {"size": st.st_size, "mtime": st.st_mtime}
+
+
+def classify_progress(prev: dict | None, curr: dict) -> str:
+    """Classify a job's progress signals, in the declared priority order
+    (cpu, children, artifact_mtime, log_growth) — any ONE signal showing
+    activity is enough to call it "progressing". `prev`/`curr` are snapshot
+    dicts shaped like a single enriched record from cmd_list (must carry
+    cpu_time_secs, child_count, artifact_mtimes, log_signal); `prev` may be
+    None (first-ever snapshot — no delta signals available yet).
+
+    Returns "progressing" or "no_signal" — deliberately never "stalled".
+    A stall verdict needs elapsed-time + grace-period + re-verified
+    ownership before killing anything; that needs a polling loop that owns
+    snapshot persistence across calls, which is AAASM-5951's scope. This
+    function only names what the signals say about the two snapshots it was
+    given.
+    """
+    # children: presence alone counts, not a transition — a process whose
+    # own CPU time is near-zero because the real work happens in forked
+    # children (cargo doc's rustdoc-per-crate shape) is progressing for as
+    # long as it currently has live children, not only at the instant a new
+    # one appears. Checked before the prev-snapshot-gated signals below so a
+    # first-ever (prev=None) snapshot can still classify a children-having
+    # job as progressing.
+    if curr.get("child_count", 0) > 0:
+        return "progressing"
+
+    if prev is None:
+        return "no_signal"
+
+    # cpu: an increase since the last reading proves scheduler activity
+    # happened, regardless of what that activity was.
+    prev_cpu, curr_cpu = prev.get("cpu_time_secs"), curr.get("cpu_time_secs")
+    if prev_cpu is not None and curr_cpu is not None and curr_cpu > prev_cpu:
+        return "progressing"
+
+    # artifact_mtime: any tracked artifact whose mtime advanced, or that
+    # appeared since the last snapshot.
+    prev_artifacts = prev.get("artifact_mtimes") or {}
+    for path, curr_mtime in (curr.get("artifact_mtimes") or {}).items():
+        if curr_mtime is None:
+            continue
+        prev_mtime = prev_artifacts.get(path)
+        if prev_mtime is None or curr_mtime > prev_mtime:
+            return "progressing"
+
+    # log_growth: the job's --log file grew or its mtime advanced, or it
+    # appeared since the last snapshot.
+    prev_log, curr_log = prev.get("log_signal"), curr.get("log_signal")
+    if curr_log is not None:
+        if prev_log is None:
+            return "progressing"
+        if curr_log["size"] > prev_log["size"] or curr_log["mtime"] > prev_log["mtime"]:
+            return "progressing"
+
+    return "no_signal"
+
+
 def cmd_list(rest: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="qa-watchdog.py list")
     parser.add_argument("--class", dest="cls", default=None)
+    parser.add_argument(
+        "--artifact",
+        dest="artifacts",
+        action="append",
+        default=[],
+        help="path to watch for the artifact_mtime signal; may be repeated",
+    )
     args = parser.parse_args(rest)
 
     enriched = []
     for rec in live_jobs(args.cls):
         pid = rec.get("pid")
-        cpu = get_cpu_time(pid) if isinstance(pid, int) else None
-        enriched.append({**rec, "cpu_time_secs": cpu})
+        is_pid = isinstance(pid, int)
+        enriched.append(
+            {
+                **rec,
+                "cpu_time_secs": get_cpu_time(pid) if is_pid else None,
+                "child_count": len(get_child_pids(pid)) if is_pid else 0,
+                "artifact_mtimes": get_artifact_mtimes(args.artifacts),
+                "log_signal": get_log_signal(rec.get("log")),
+            }
+        )
 
     print(json.dumps(enriched, indent=2))
     return EXIT_OK
