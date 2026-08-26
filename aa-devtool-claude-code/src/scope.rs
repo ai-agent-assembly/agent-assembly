@@ -110,8 +110,8 @@ impl ClaudeCodePaths {
             config_dir: non_empty_var("CLAUDE_CONFIG_DIR"),
             home: non_empty_var("HOME"),
             project: std::env::current_dir().ok(),
-            state: Some(state_root()),
-            ca_source: Some(ca_source()),
+            state: state_root(),
+            ca_source: ca_source(),
             managed_root: non_empty_var("AASM_CLAUDE_MANAGED_ROOT"),
         }
     }
@@ -317,25 +317,70 @@ fn non_empty_var(name: &str) -> Option<PathBuf> {
 
 /// `${AASM_STATE_DIR:-$HOME/.aasm}/integrations`, matching the receipt store's
 /// own root so an integration's artifacts and its receipt share a lifetime.
-fn state_root() -> PathBuf {
-    let base = non_empty_var("AASM_STATE_DIR").unwrap_or_else(|| {
-        non_empty_var("HOME")
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".aasm")
-    });
-    base.join("integrations")
+///
+/// `None` when neither root is known, which is what makes
+/// [`ClaudeCodePaths::owned_root`]'s [`ScopeError::Unresolvable`] reachable.
+fn state_root() -> Option<PathBuf> {
+    state_root_from(non_empty_var("AASM_STATE_DIR"), non_empty_var("HOME"))
 }
 
 /// `${AA_CA_DIR:-$HOME/.aa/ca}/ca-cert.pem` — where `aa-proxy` persists the CA
 /// it signs intercepted leaf certificates with.
-fn ca_source() -> PathBuf {
-    let dir = non_empty_var("AA_CA_DIR").unwrap_or_else(|| {
-        non_empty_var("HOME")
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".aa")
-            .join("ca")
-    });
-    dir.join("ca-cert.pem")
+///
+/// `None` when neither root is known, which is what makes `read_ca_pem`'s
+/// "location is unknown" error reachable.
+fn ca_source() -> Option<PathBuf> {
+    ca_source_from(non_empty_var("AA_CA_DIR"), non_empty_var("HOME"))
+}
+
+/// The resolution rule for [`state_root`], with the environment passed in.
+///
+/// # Why there is no `.` fallback
+///
+/// This used to end in `unwrap_or_else(|| PathBuf::from("."))`, so an unset
+/// `HOME` produced `./.aasm/integrations` — resolved against the *daemon's*
+/// spawn-time working directory, since [`ClaudeCodePaths::from_env`] runs once
+/// at boot. Install receipts then landed somewhere a later `integrations remove`
+/// resolving a different cwd would not find, leaving managed keys merged into a
+/// user-owned settings file with no recorded `prior_state` to reverse: an
+/// unreversible edit, arrived at silently (AAASM-5956, same root cause as
+/// AAASM-5913).
+///
+/// Nothing legitimate is lost. `AASM_STATE_DIR` or `HOME` is set for every
+/// ordinary invocation; when neither is, there is no correct answer to guess,
+/// and the caller already has a fail-closed path for that.
+///
+/// # Why the environment is an argument
+///
+/// A function not *given* the process environment cannot resolve against it, so
+/// the removed fallback cannot return by accident — and the rule stays assertable
+/// without any test mutating process-global state.
+fn state_root_from(override_dir: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    let base = override_dir.or_else(|| home.map(|home| home.join(".aasm")))?;
+    Some(base.join("integrations"))
+}
+
+/// The resolution rule for [`ca_source`], with the environment passed in.
+///
+/// # Why there is no `.` fallback
+///
+/// The stakes here are higher than for [`state_root_from`]. `read_ca_pem` reads
+/// this path and embeds its contents into the governed tool's settings as
+/// **trust material**. With a `.` fallback that path was
+/// `./.aa/ca/ca-cert.pem` relative to the daemon's cwd, so anyone able to write
+/// a file into a directory the daemon might boot from could have a certificate
+/// authority of their choosing installed as trusted by Claude Code — the
+/// attacker-substitution shape of AAASM-4020 and AAASM-5937, on trust material
+/// rather than on an executable.
+///
+/// The `is_file()` filter on [`ClaudeCodePaths::ca_source`] did not mitigate
+/// that: it made an *absent* planted file report the capability unsupported,
+/// while a *present* one reported Supported and was read. Removing the guessed
+/// root is what closes the vector, because no relative path can be synthesised
+/// at all.
+fn ca_source_from(override_dir: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    let dir = override_dir.or_else(|| home.map(|home| home.join(".aa").join("ca")))?;
+    Some(dir.join("ca-cert.pem"))
 }
 
 #[cfg(test)]
