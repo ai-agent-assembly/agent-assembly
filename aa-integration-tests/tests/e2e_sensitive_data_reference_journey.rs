@@ -455,28 +455,63 @@ async fn full_chain_redaction_reaches_operator_visible_api() {
         "audit JSONL must record the ForwardedRedacted decision; got: {audit_content}",
     );
 
-    // ── Destination 4: the proxy's own log file ────────────────────────────
-    let proxy_log = read_file(journey.proxy.log_path());
-    journey.canary.assert_absent("proxy log file", &proxy_log);
+    // ── Destinations 4 and 5 + cross-process event_id correlation, via logs
+    //     only (AAASM-5905: event_id is dropped before reaching the alert
+    //     store, so this is not reachable through the API — it is the fact
+    //     this journey exists partly to make visible) ──────────────────────
+    //
+    // Both log lines are written asynchronously, so neither may exist yet at
+    // the instant Destination 2 observed the alert. `emit_redaction_telemetry`
+    // (aa-proxy/src/proxy/mod.rs) reports on a *detached* `tokio::spawn` task
+    // and logs the `event_id` only after the RPC resolves, while aa-api stores
+    // the alert *before* it responds. So the guaranteed ordering is
+    //
+    //     alert stored → response sent → proxy logs event_id
+    //
+    // and the Destination 2 poll above can legitimately succeed while both
+    // log lines are still unwritten. Reading either log once and requiring
+    // the line to be present is therefore a race, which is what AAASM-5934
+    // recorded after it reddened four unrelated Dependabot PRs. Poll for the
+    // correlated pair the same way Destination 3 polls for the audit JSONL,
+    // re-reading both logs each iteration because they grow after this point.
+    let mut proxy_log = String::new();
+    let mut api_log = String::new();
+    let mut correlated: Option<String> = None;
+    for _ in 0..200 {
+        proxy_log = read_file(journey.proxy.log_path());
+        api_log = journey.api.logs();
+        if let Some(id) = extract_reported_event_id(&proxy_log) {
+            if strip_ansi(&api_log).contains(&id) {
+                correlated = Some(id);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
-    // ── Destination 5: the api-server's own log file ──────────────────────
-    let api_log = journey.api.logs();
+    // Leak-safe checks first — see the equivalent note on the forwarded-bytes
+    // check above. Run on the last observed contents whether or not the
+    // correlation converged, so a canary leak is reported as a leak rather
+    // than being masked by the correlation panic below.
+    journey.canary.assert_absent("proxy log file", &proxy_log);
     journey.canary.assert_absent("api-server log", &api_log);
 
-    // ── Cross-process event_id correlation, via logs only (AAASM-5905:
-    //     event_id is dropped before reaching the alert store, so this is
-    //     not reachable through the API — it is the fact this journey
-    //     exists partly to make visible) ────────────────────────────────────
-    let reported_event_id = extract_reported_event_id(&proxy_log).unwrap_or_else(|| {
-        panic!("proxy log must name the event_id it reported to aa-api's telemetry ingest; full log:\n{proxy_log}")
+    // Distinguish the two ways the poll can time out: the proxy never
+    // reporting at all is a different defect from the two processes reporting
+    // ids that do not match, and collapsing them would send the next reader
+    // to the wrong process.
+    correlated.unwrap_or_else(|| match extract_reported_event_id(&proxy_log) {
+        None => panic!(
+            "proxy log must name the event_id it reported to aa-api's telemetry ingest, \
+             within the poll window; full log:\n{proxy_log}"
+        ),
+        Some(id) => panic!(
+            "the event_id the proxy reported ({id}) must also appear in the api-server's \
+             own ingest log — otherwise the two processes' evidence cannot be correlated \
+             back to the same redaction event; api log:\n{}",
+            strip_ansi(&api_log)
+        ),
     });
-    let clean_api_log = strip_ansi(&api_log);
-    assert!(
-        clean_api_log.contains(&reported_event_id),
-        "the event_id the proxy reported ({reported_event_id}) must also appear in the \
-         api-server's own ingest log — otherwise the two processes' evidence cannot be \
-         correlated back to the same redaction event; api log:\n{clean_api_log}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
