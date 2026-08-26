@@ -1193,12 +1193,54 @@ journeys:
   # resolved on main (AAASM-5644 documented-unmediated for Windsurf's
   # Electron/Chromium net stack; AAASM-5851 fixed via gateway-authoritative
   # network enforcement, PR #2165, `8599ee581`, ancestor of `248e191f6`) — so
-  # AC 3 is satisfied. Still PARTIAL, not PASS: AC 2 (a deterministic,
-  # non-LLM-completion-dependent trigger for a denied tool call) is unbuilt,
-  # so no policy-gated tool call has actually been driven to a real
-  # allow/deny outcome for this journey yet. See AAASM-5853.
+  # AC 3 is satisfied.
+  #
+  # Updated 2026-08-26: AC 2 (a deterministic, non-LLM-completion-dependent
+  # trigger for a denied tool call) is now satisfied for Claude Code
+  # (AAASM-5930, merged `26ba2c698`,
+  # cli_run_claude_deterministic_conformance.rs) — real `claude` binary, real
+  # `aasm run`, real per-launch proxy, real gateway `PolicyService`
+  # adjudication, real MCP `tools/call` interception, both a real allow and a
+  # real deny outcome, real persisted audit-attribution evidence for the deny
+  # leg. Still PARTIAL, not PASS: the journey's own PASS bar requires ≥2
+  # materially distinct real adapters, and a second adapter is not currently
+  # achievable. Codex was investigated as the candidate second adapter this
+  # session and found not currently viable for two independent reasons: (1)
+  # its CA-trust launch-env plumbing does not exist yet (AAASM-5856, split
+  # from AAASM-5644, unimplemented) — `aa-proxy` cannot intercept a real
+  # Codex launch's traffic at all today; (2) independently, headless/`exec`
+  # MCP tool-call execution is gated by an internal codex safety
+  # approval/guardian mechanism that cannot be bypassed without either human
+  # interaction or reverse-engineering a private protocol — out of scope per
+  # product-owner decision (AAASM-5853 comment 21771), same disposition as
+  # Claude Code's own client-side allow-leg limit (AAASM-5930). Per that same
+  # decision, this journey's evidence now follows an explicit tier model:
+  # Tier A (real-binary integration evidence, mandatory wherever the binary
+  # can deterministically produce it — DENY legs especially), Tier B
+  # (deterministic Agent Assembly ALLOW/DENY contract via the reusable
+  # conformance harness, mocking only the external client/model — labeled
+  # DETERMINISTIC_HARNESS_EVIDENCE, never REAL_BINARY_EVIDENCE), Tier C
+  # (optional human-approved real-binary ALLOW smoke, never a required
+  # deterministic gate). See AAASM-5853 comment 21771 for full detail. Not
+  # closing PASS by further codex-approval-gate spiking; re-open the
+  # second-adapter question once AAASM-5856 ships or another currently-viable
+  # adapter is confirmed (Copilot's proxy interception is documented
+  # "Partial" and unverified for this journey — not yet a confirmed
+  # candidate).
   lifecycle_state: partial
   gap_owner: AAASM-5853
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_claude_deterministic_conformance.rs::deterministic_conformance::real_binary_reaches_a_real_allow_and_a_real_deny_via_gateway_policy
+  execution_lanes:
+  - release
+  fidelity: real_local_process
+  platforms:
+  - macos-apple-silicon
+  negative_control: deny leg's sentinel-file absence, cross-checked against the persisted
+    proxy audit.jsonl RefusalRule::McpToolCall/Blocked entry naming why (both must agree
+    the forbidden side effect did not occur, not just that the sentinel is missing)
 - id: J64
   jira: AAASM-5889
   feature_refs:
