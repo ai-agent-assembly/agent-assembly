@@ -175,6 +175,9 @@ on:
       # consumes `resource-lock.py status --json`, not a separate registry.
       - "scripts/qa/qa-watchdog.py"
       - "scripts/qa/qa-watchdog-cpu-parser-test.sh"
+      # AAASM-5950: the watchdog's remaining progress-classification signals
+      # (children, artifact_mtime, log_growth) — same qa_registry router.
+      - "scripts/qa/qa-watchdog-progress-signals-test.sh"
       # AAASM-5878/5899: the release-evidence freshness checker and its
       # digest module. Same ADR 0028 pairing rule as above — every path here
       # has a matching `qa_registry` router filter entry below.
@@ -483,6 +486,8 @@ jobs:
               # AAASM-5949: watchdog liveness/ownership + CPU-time parser.
               - 'scripts/qa/qa-watchdog.py'
               - 'scripts/qa/qa-watchdog-cpu-parser-test.sh'
+              # AAASM-5950: watchdog progress-classification signals.
+              - 'scripts/qa/qa-watchdog-progress-signals-test.sh'
               # AAASM-5878/5899: the release-evidence freshness checker.
               - 'scripts/qa/registry_digest.py'
               - 'scripts/qa/build-release-evidence.py'
@@ -1320,6 +1325,13 @@ jobs:
       # time; the multi-hour/multi-day shapes are exercised as fixtures.
       - name: Self-test qa-watchdog.py CPU-time parser
         run: bash scripts/qa/qa-watchdog-cpu-parser-test.sh
+
+      # AAASM-5950: negative-control tests for the remaining progress signals
+      # (children, artifact_mtime, log_growth) and classify_progress() —
+      # including the fixture proving the cargo-doc shape (near-zero own CPU
+      # time, live children) classifies as progressing, not stalled.
+      - name: Self-test qa-watchdog.py progress-classification signals
+        run: bash scripts/qa/qa-watchdog-progress-signals-test.sh
 
   ci-watch-health-gate:
     needs: [changes]
