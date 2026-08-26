@@ -4634,6 +4634,7 @@ mod tests {
                         managed_keys: vec!["permissions".to_string()],
                         content_sha256: "test-fixture-sha".to_string(),
                         merge: aa_core::integration::step::SettingsMerge::MergeManagedKeys,
+                        format: aa_core::integration::step::DocumentFormat::Json,
                     },
                     "write the managed settings block",
                 );
