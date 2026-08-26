@@ -90,6 +90,15 @@ fn kill_process(pid: u32, signal: libc::c_int) {
 /// test suite (not the full workspace) has been built (e.g. the `Test` CI
 /// job which runs `cargo nextest run --workspace` without a prior
 /// `cargo build -p aa-gateway`).
+///
+/// The mirror has to track that function's search order, not merely its
+/// outcome: a lookup listed here that `resolve_binary` does not perform makes
+/// these tests *run* against a CLI that will refuse to start the gateway, which
+/// surfaces as a puzzling assertion failure instead of a skip. AAASM-5937
+/// removed the `./target/{release,debug}/aa-gateway` cwd-relative fallback from
+/// both, and added the exe-sibling lookup here — which is the one that actually
+/// fires in CI, since the `aasm` under test is `target/<profile>/aasm` and the
+/// gateway is built next to it.
 fn gateway_binary_available() -> bool {
     #[cfg(unix)]
     fn binary_runnable(path: &std::path::Path) -> bool {
@@ -99,6 +108,22 @@ fn gateway_binary_available() -> bool {
     #[cfg(not(unix))]
     fn binary_runnable(path: &std::path::Path) -> bool {
         path.exists()
+    }
+
+    // Sibling of the `aasm` these tests will actually invoke. `AASM_BIN_PATH`
+    // is what CI stages (see `common::cli::aasm_command`); without it the
+    // invocation is `cargo run`, which execs `target/<profile>/aasm` — the
+    // directory two levels above this test binary in `target/<profile>/deps/`.
+    let aasm_dir = match std::env::var_os("AASM_BIN_PATH") {
+        Some(bin) => std::path::PathBuf::from(bin).parent().map(|p| p.to_path_buf()),
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().and_then(|deps| deps.parent()).map(|p| p.to_path_buf())),
+    };
+    if let Some(dir) = aasm_dir {
+        if binary_runnable(&dir.join("aa-gateway")) {
+            return true;
+        }
     }
 
     if let Ok(path_var) = std::env::var("PATH") {
@@ -114,11 +139,6 @@ fn gateway_binary_available() -> bool {
             .join("bin")
             .join("aa-gateway");
         if binary_runnable(&p) {
-            return true;
-        }
-    }
-    for rel in ["./target/release/aa-gateway", "./target/debug/aa-gateway"] {
-        if binary_runnable(std::path::Path::new(rel)) {
             return true;
         }
     }
