@@ -105,7 +105,14 @@ pub const DI_API_PROVENANCE_SINCE: u32 = 4;
 /// is entitled to consume (AAASM-5674).
 pub const DI_API_APPLY_OUTCOME_SINCE: u32 = 5;
 
-/// The first DI-API version whose `plan` honours a caller-chosen project root.
+/// The first DI-API version whose requests honour a caller-chosen project root.
+///
+/// It covers `PlanArgs.project_root` and `TargetArgs.project_root` together —
+/// one constant, because they are one promise read from two directions. `plan`
+/// uses the root to *choose* the project it writes; `status`, `verify`, `repair`
+/// and `remove` use it to *confirm* the project they were asked about is the one
+/// the receipt records. Splitting them into two versions would let a peer
+/// promise to write the right project while still reporting on the wrong one.
 ///
 /// Below this, the absence of `PlanRequest.project_root` on the wire means the
 /// peer **will substitute its own working directory** — not that it will ask,

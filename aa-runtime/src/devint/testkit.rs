@@ -556,6 +556,9 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             approval_id: "approval-1".to_string(),
             user_input: "approve".to_string(),
         }),
+        // The fixture's receipts are user-scoped, so a plain request names no
+        // project and needs no target; a test about project scope builds one.
+        target: None,
     }
 }
 
