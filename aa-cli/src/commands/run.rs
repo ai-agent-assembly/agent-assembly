@@ -2164,10 +2164,133 @@ fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
     resolution
 }
 
-/// Mask a credential-bearing env value before it is printed in the dry-run
-/// preview. `build_child_env` seeds the child environment from the operator's
-/// whole shell environment, so the preview would otherwise echo secrets
-/// (`AA_JWT_SECRET`, `DB_PASSWORD`, connection URLs, …) in cleartext.
+/// The presence marker for a variable whose value the preview withholds.
+const PRESENCE_SET: &str = "<set>";
+
+/// The presence marker for a variable that is present but carries the empty
+/// string. Distinct from [`PRESENCE_SET`] because "set to empty" and "set to
+/// something" are different launch states — `ambient_proxy_is_set` treats an
+/// empty `HTTPS_PROXY` as no proxy at all — and collapsing them would make the
+/// preview unable to explain a behaviour the operator is looking at.
+const PRESENCE_EMPTY: &str = "<set:empty>";
+
+/// The marker for a variable whose *name* says it carries credential material.
+///
+/// Deliberately distinct from [`PRESENCE_SET`]: both withhold the value, but
+/// this one additionally tells the operator that AASM recognised the variable as
+/// secret-bearing, which is the receipt AAASM-4894 introduced and which a bare
+/// presence marker would silently retire.
+const MASKED: &str = "***MASKED***";
+
+/// The **explicit, reviewed allowlist** of environment variables whose value the
+/// dry-run preview prints verbatim (AAASM-5935 AC 1).
+///
+/// Every name here was chosen because the preview's whole purpose is to let an
+/// operator confirm *this* value before a real launch: the governance identity
+/// the session registers under, the route the traffic takes, the CA that makes
+/// interception work, and which model the tool will talk to. Nothing else needs
+/// a value to be verifiable — that is answerable with the name plus presence,
+/// which is what every other variable now gets.
+///
+/// # Why exact names and not a prefix rule
+///
+/// An `AA_*` (or any) prefix rule would be name-shaped reasoning again, and
+/// name-shaped reasoning is exactly the defect AAASM-5935 records: `AA_JWT_SECRET`
+/// and `AA_API_KEY` are `AA_`-prefixed *secrets*, so a prefix rule would hand the
+/// allowlist a class it was never reviewed for, and it would keep doing so for
+/// every future `AA_`-prefixed variable nobody looked at. Exact names mean the
+/// allowlist can only grow through a diff a human reads.
+///
+/// # Adding to this list
+///
+/// A name belongs here only if an operator genuinely cannot verify the governed
+/// launch without seeing the value, and the value is *structurally* not a
+/// credential (an identifier, a route, a filesystem path, a model name). If the
+/// answer is "it would be convenient", the answer is no.
+const VALUE_VISIBLE_ENV_VARS: [&str; 17] = [
+    // Governance identity — the whole point of the receipt: the operator is
+    // checking that the session registers as who they expect.
+    "AA_AGENT_ID",
+    "AA_AGENT_DID",
+    "AA_TRACE_ID",
+    "AA_SESSION_ID",
+    "AA_REGISTRATION_ID",
+    "AA_TEAM_ID",
+    "AA_ENFORCEMENT_MODE",
+    // Routing and interception — whether the launch is actually protected. A
+    // preview that hid these could not answer the question it exists to answer
+    // (AAASM-5329 AC 2, `the_preview_shows_the_ca_and_the_normalised_proxy_url`).
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "ANTHROPIC_BASE_URL",
+    // Model selection — a redirected or downgraded model is a governance fact,
+    // and these carry model *names*, never credentials.
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+];
+
+/// Whether the dry-run preview may print this variable's value at all.
+///
+/// Case-insensitive on the name only. It does not look at the value, so it
+/// cannot be steered by one — see [`render_env_value`].
+fn value_may_be_previewed(key: &str) -> bool {
+    let upper = key.to_uppercase();
+    VALUE_VISIBLE_ENV_VARS.contains(&upper.as_str())
+}
+
+/// How one environment variable is rendered in the `--dry-run` preview.
+///
+/// **Deny-by-default** (AAASM-5935): a value is emitted only for a name on
+/// [`VALUE_VISIBLE_ENV_VARS`]. Every other variable is rendered presence-only —
+/// its name, and whether it is set — which is what the preview's job actually
+/// requires: confirming *which* variables the child inherits and that the
+/// governed ones are right.
+///
+/// # Why the previous name-based masking was not enough
+///
+/// `mask_value` classified by variable *name* and, failing to recognise one,
+/// fell through to printing the value. That is structurally fail-**open**: a
+/// variable with a bland name whose value is an encoded or serialized snapshot
+/// of the environment — `direnv` publishes exactly this shape, and it is not
+/// unique to `direnv` — matched no credential pattern and was printed verbatim,
+/// so secrets the *same output* had masked by name became recoverable from it.
+/// The mask was defeated inside its own output.
+///
+/// # What this deliberately does not do
+///
+/// It does not decode, unwrap, or otherwise inspect the value to decide
+/// (AAASM-5935 AC 4). A detector built that way is unbounded — it has to know
+/// every container format that exists — and it fails open on the next encoding
+/// anyone invents. Deciding on the name against a closed allowlist has no such
+/// frontier: an unrecognised name withholds the value, whatever is in it.
+///
+/// A credential-named variable keeps its [`MASKED`] marker rather than becoming
+/// an anonymous `<set>`, so the AAASM-4894 receipt survives; and an allowlisted
+/// value is still routed through [`mask_value`], so an allowlisted connection
+/// string has its userinfo stripped even though a reviewer judged the name safe.
+/// That second pass is defence in depth, not the decision.
+fn render_env_value(key: &str, value: &str) -> String {
+    if value_may_be_previewed(key) {
+        // Allowlisted. The name-based masking still runs on top: it is now a
+        // backstop over a reviewed set of names rather than the whole rule.
+        return mask_value(key, value);
+    }
+    if looks_like_credential_name(key) {
+        return MASKED.into();
+    }
+    if value.is_empty() {
+        return PRESENCE_EMPTY.into();
+    }
+    PRESENCE_SET.into()
+}
+
+/// Mask a credential-bearing env value, for the names
+/// [`VALUE_VISIBLE_ENV_VARS`] allows a value for.
 ///
 /// Two masking strategies, by key name (case-insensitive):
 /// * keys naming a connection string (`*_URL` / `*_DSN` / `*_URI`) keep their
@@ -2179,22 +2302,23 @@ fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
 ///   credential, auth) have the entire value replaced — the value has no
 ///   structure worth preserving.
 ///
-/// As a final fail-closed backstop, any value not caught by the rules above is
-/// still routed through [`redact_database_url`]: a value in an unrecognised key
-/// may itself be a `scheme://user:pass@host` connection string, and the
-/// redactor returns the value unchanged unless it finds userinfo credentials to
-/// strip — so ordinary values are untouched while an embedded credential is not
-/// printed verbatim.
+/// Anything else is returned via [`redact_database_url`], which strips userinfo
+/// if it finds any and otherwise returns the value unchanged.
 ///
-/// The denylist is intentionally broad and errs toward over-masking: a masked
-/// non-secret in a diagnostic preview is harmless, a leaked secret is not.
+/// # Not a detector, and no longer load-bearing on its own (AAASM-5935)
+///
+/// That last branch is fail-**open** for any value that is not a
+/// `scheme://user:pass@host` URL, which is how an encoded environment snapshot
+/// in a blandly-named variable used to be printed verbatim. It is safe here only
+/// because [`render_env_value`] no longer reaches this function except for names
+/// on the reviewed allowlist. Do not call it directly on an arbitrary variable.
 fn mask_value(key: &str, value: &str) -> String {
     let upper = key.to_uppercase();
     if is_connection_string_name(&upper) {
         return redact_database_url(value);
     }
     if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
-        return "***MASKED***".into();
+        return MASKED.into();
     }
     redact_database_url(value)
 }
@@ -2325,10 +2449,19 @@ fn format_dry_run_output(
     // cannot claim a variable the launch would not have — including one the
     // adapter removes, which a naive union of the two sources would still show.
     let (effective, removed) = effective_child_env(cmd, env);
-    let mut env_lines: String = effective
-        .iter()
-        .map(|(k, v)| format!("{}={}\n", k, mask_value(k, v)))
-        .collect();
+    // Deny-by-default on values (AAASM-5935). The legend is part of the output
+    // rather than documentation, because an operator reading `FOO=<set>` for the
+    // first time needs to know it is a withheld value and not a literal one.
+    let mut env_lines = String::from(
+        "# values are withheld unless the variable is on the preview allowlist: \
+         <set> = present, value withheld; <set:empty> = present and empty; \
+         ***MASKED*** = present, name says credential\n",
+    );
+    env_lines.extend(
+        effective
+            .iter()
+            .map(|(k, v)| format!("{}={}\n", k, render_env_value(k, v))),
+    );
     for name in &removed {
         env_lines.push_str(&format!("{name}=<removed by adapter>\n"));
     }
@@ -4487,12 +4620,24 @@ mod tests {
             "missing environment header: {output}"
         );
         assert!(
-            output.contains("***MASKED***"),
+            output.contains("MY_API_KEY=***MASKED***"),
             "MY_API_KEY value should be masked: {output}"
         );
+        // AAASM-5935: a variable off the preview allowlist is rendered
+        // presence-only. Its name is still there — which is what the preview is
+        // for — but `hello` is not, because deciding by name whether a value is
+        // safe to print is the defect this closes.
         assert!(
-            output.contains("NORMAL_VAR=hello"),
-            "NORMAL_VAR should be unmasked: {output}"
+            output.contains("NORMAL_VAR=<set>"),
+            "NORMAL_VAR should be presence-only: {output}"
+        );
+        assert!(
+            !output.contains("hello"),
+            "NORMAL_VAR's value must be withheld: {output}"
+        );
+        assert!(
+            output.contains("AA_AGENT_ID=agent-xyz"),
+            "an allowlisted governance identifier must still show its value: {output}"
         );
     }
 
@@ -4627,9 +4772,17 @@ mod tests {
             !output.contains("hunter2"),
             "DATABASE_URL password must not appear in cleartext: {output}"
         );
+        // AAASM-4936 redacted the userinfo and kept the rest of the URL. Since
+        // AAASM-5935 the preview withholds the whole value for any name off the
+        // allowlist — strictly more than 4936 asked for, and asserted as such so
+        // a later change cannot quietly loosen it back to a structural render.
         assert!(
-            output.contains("DATABASE_URL=postgresql://aasm:***@db:5432/aasm"),
-            "DATABASE_URL password should be redacted while preserving structure: {output}"
+            output.contains("DATABASE_URL=***MASKED***"),
+            "DATABASE_URL is off the preview allowlist and must be withheld entirely: {output}"
+        );
+        assert!(
+            !output.contains("db:5432"),
+            "not even the surviving URL structure may be emitted: {output}"
         );
     }
 
@@ -4637,7 +4790,14 @@ mod tests {
     /// `MONGODB_URI` / `REDIS_URI` / `AMQP_URI` / `DATABASE_URI` — carry
     /// `user:pass@host` userinfo just like `*_URL`, but the previous denylist
     /// only matched `_URL` / `_DSN`, so a `MONGODB_URI` password printed in the
-    /// clear in the dry-run preview. It must be redacted like a `_URL`.
+    /// clear in the dry-run preview.
+    ///
+    /// Since AAASM-5935 it is withheld outright rather than structurally
+    /// redacted, because `MONGODB_URI` is off the preview allowlist. The
+    /// userinfo-stripping behaviour 4936 introduced is still asserted directly
+    /// against [`mask_value`] in
+    /// `mask_value_strips_userinfo_for_an_allowlisted_connection_string`, which is
+    /// where it is still reachable.
     #[test]
     fn dry_run_redacts_uri_connection_strings() {
         let handle = RegistrationHandle {
@@ -4668,31 +4828,40 @@ mod tests {
             "MONGODB_URI password must not appear in cleartext: {output}"
         );
         assert!(
-            output.contains("MONGODB_URI=mongodb://user:***@host:27017/db"),
-            "MONGODB_URI password should be redacted while preserving structure: {output}"
+            output.contains("MONGODB_URI=***MASKED***"),
+            "MONGODB_URI is off the preview allowlist and must be withheld entirely: {output}"
+        );
+        assert!(
+            !output.contains("host:27017"),
+            "not even the surviving URI structure may be emitted: {output}"
         );
     }
 
-    /// The fail-closed backstop: a value carrying `user:pass@` userinfo must be
-    /// redacted even when its key name matches none of the connection-string
-    /// suffixes or secret substrings, since the value is itself a credential.
+    /// AAASM-4936, at the layer where it is still reachable: [`mask_value`] runs
+    /// as defence in depth over an allowlisted name, so a value carrying
+    /// `user:pass@` userinfo has the password stripped even though a reviewer
+    /// judged the name safe to show.
     #[test]
-    fn mask_value_redacts_connection_string_in_unrecognised_key() {
-        let masked = mask_value("PRIMARY_BROKER", "amqp://svc:s3cr3t@rabbit:5672/vhost");
+    fn mask_value_strips_userinfo_for_an_allowlisted_connection_string() {
+        let masked = mask_value("ANTHROPIC_BASE_URL", "https://svc:s3cr3t@proxy.internal:8443/v1");
         assert!(
             !masked.contains("s3cr3t"),
             "userinfo password must be redacted: {masked}"
         );
-        assert_eq!(masked, "amqp://svc:***@rabbit:5672/vhost");
+        assert_eq!(masked, "https://svc:***@proxy.internal:8443/v1");
     }
 
     /// The backstop must not mangle an ordinary non-credential value: a plain
-    /// value with no `scheme://user:pass@` shape passes through untouched.
+    /// value with no `scheme://user:pass@` shape passes through untouched, so an
+    /// allowlisted model name or CA path is shown as it is.
     #[test]
     fn mask_value_leaves_plain_value_unchanged() {
-        assert_eq!(mask_value("LOG_LEVEL", "debug"), "debug");
         assert_eq!(
-            mask_value("ENDPOINT", "https://api.example.com/v1"),
+            mask_value("NODE_EXTRA_CA_CERTS", "/tmp/aasm-ca.pem"),
+            "/tmp/aasm-ca.pem"
+        );
+        assert_eq!(
+            mask_value("ANTHROPIC_BASE_URL", "https://api.example.com/v1"),
             "https://api.example.com/v1"
         );
     }
