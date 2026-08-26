@@ -9,8 +9,15 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { create, toBinary } from '@bufbuild/protobuf';
 
+import {
+  DI_API_MAX_SUPPORTED,
+  DI_API_MIN_SUPPORTED,
+  DI_API_PROJECT_ROOT_SINCE,
+  projectRootRequiresNewerRuntime,
+} from '../src/client.js';
 import { CapabilityToken } from '../src/credential.js';
 import { SOCKET_PATH_ENV, socketPath } from '../src/discovery.js';
+import { ProjectRootUnsupportedError, actionable } from '../src/errors.js';
 import { MAX_FRAME_LEN, TAG_DENIED, decodeServerFrame } from '../src/framing.js';
 import { DenyCodeSchema, DeniedSchema, StatusViewSchema } from '../src/generated/devint_pb.js';
 import { PROJECT_ROOT_ENV, projectRoot } from '../src/project.js';
@@ -71,6 +78,58 @@ describe('project root resolution', () => {
     // exists, so losing that disclosure must not cost the user the operation.
     expect(projectRoot('user', {}, deleted)).toBe('');
     expect(projectRoot('managed', {}, deleted)).toBe('');
+  });
+});
+
+/**
+ * The version gate that resolving a root correctly is not sufficient for.
+ *
+ * Asserted through the exported predicate rather than through `plan()`, because
+ * the constructor is private and the failure being prevented is a request that
+ * must never be written: there is no reply to inspect, and a test that needed a
+ * live pre-v6 runtime to reach this rule would not run at all.
+ */
+describe('the project-root version gate', () => {
+  it('refuses project scope at every version below the one that honours a root', () => {
+    for (let version = DI_API_MIN_SUPPORTED; version < DI_API_PROJECT_ROOT_SINCE; version += 1) {
+      expect(projectRootRequiresNewerRuntime(version, 'project')).toBe(true);
+    }
+  });
+
+  it('allows project scope from that version upward', () => {
+    expect(projectRootRequiresNewerRuntime(DI_API_PROJECT_ROOT_SINCE, 'project')).toBe(false);
+    expect(projectRootRequiresNewerRuntime(DI_API_PROJECT_ROOT_SINCE + 1, 'project')).toBe(false);
+  });
+
+  it('leaves user and managed scope alone, because their destination was never ours to name', () => {
+    for (let version = DI_API_MIN_SUPPORTED; version <= DI_API_MAX_SUPPORTED; version += 1) {
+      expect(projectRootRequiresNewerRuntime(version, 'user')).toBe(false);
+      expect(projectRootRequiresNewerRuntime(version, 'managed')).toBe(false);
+    }
+  });
+
+  it('does not claim an unrecognised token means project scope', () => {
+    // The wire vocabulary is lowercase (`projection::parse_scope`). Answering a
+    // typo with "upgrade your runtime" would send the user after the wrong
+    // thing; rejecting an unknown scope stays the service's job, and its
+    // message is the one that names the actual mistake.
+    expect(projectRootRequiresNewerRuntime(DI_API_MIN_SUPPORTED, 'Project')).toBe(false);
+    expect(projectRootRequiresNewerRuntime(DI_API_MIN_SUPPORTED, 'PROJECT')).toBe(false);
+    expect(projectRootRequiresNewerRuntime(DI_API_MIN_SUPPORTED, '')).toBe(false);
+  });
+
+  it('says which side to upgrade, and that two of the three scopes still work', () => {
+    // The whole value of raising this before the write is the sentence it
+    // produces, so the sentence is part of the contract: an error naming only
+    // the version would leave a user unable to tell whether AASM is unusable
+    // against this runtime or merely unusable at one scope.
+    const error = new ProjectRootUnsupportedError(2, DI_API_PROJECT_ROOT_SINCE);
+    expect(error).toBeInstanceOf(ProjectRootUnsupportedError);
+    expect(error.message).toContain('DI-API 2');
+    expect(error.message).toContain(`DI-API ${DI_API_PROJECT_ROOT_SINCE}`);
+    expect(error.remediation).toContain(`DI-API ${DI_API_PROJECT_ROOT_SINCE} or later`);
+    expect(error.remediation).toMatch(/user and managed scope are unaffected/i);
+    expect(actionable(error)).toBe(`${error.message} — ${error.remediation}`);
   });
 });
 
