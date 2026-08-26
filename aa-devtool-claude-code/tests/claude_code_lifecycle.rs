@@ -371,6 +371,92 @@ async fn the_project_a_plan_writes_into_comes_from_the_request_not_the_adapter()
     }
 }
 
+/// AAASM-5913 review finding N-2: a plan id has to tell two authorings apart,
+/// because the service caches authored plans in a process-global map keyed by it.
+///
+/// Both halves are checked here and each is the other's control. Two plans for
+/// *different* projects must not share an id, or the caller in one applies the
+/// plan of the other and writes Agent Assembly's keys into a repository it never
+/// named. Two plans for the *same* project must not share one either: the id was
+/// `claude-code-{scope}-{unix_secs}`, so **any** two authorings inside one second
+/// collided and the later silently replaced the earlier in the cache — the
+/// projects they named never entered into it.
+#[tokio::test]
+async fn two_authorings_never_share_a_plan_id_and_each_names_its_own_project() {
+    // Everything before the final `-` is what the id says it is about; the final
+    // segment is the nonce that makes this authoring distinct. Read that way
+    // rather than by recomputing the digest, so the test cannot agree with a
+    // wrong implementation by repeating it.
+    fn about(id: &str) -> &str {
+        id.rsplit_once('-').expect("a plan id ends in a nonce").0
+    }
+    fn nonce(id: &str) -> &str {
+        id.rsplit_once('-').expect("a plan id ends in a nonce").1
+    }
+
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let elsewhere = fixture.root().join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join(".claude")).expect("second project");
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let first_here = integration
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
+        .await
+        .expect("plan");
+    let again_here = integration
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
+        .await
+        .expect("plan");
+    let there = integration
+        .plan_integration(&request(SettingsScope::Project).with_project_root(&elsewhere))
+        .await
+        .expect("plan");
+    for plan in [&first_here, &again_here, &there] {
+        plan.validate().expect("validate");
+    }
+
+    assert_ne!(
+        first_here.plan_id, again_here.plan_id,
+        "two authorings of the same project must stay separately applyable, or approving one \
+         executes the other"
+    );
+    assert_ne!(
+        first_here.plan_id, there.plan_id,
+        "two projects must never share a plan id"
+    );
+
+    assert_eq!(
+        about(&first_here.plan_id),
+        about(&again_here.plan_id),
+        "the same installation must be recognisable across authorings"
+    );
+    assert_ne!(
+        about(&first_here.plan_id),
+        about(&there.plan_id),
+        "the id must name which installation it is about, so two plans in one log can be told apart"
+    );
+
+    // Shape, not value: 128 bits of hex is what makes a concurrent authoring
+    // unable to repeat this id. Asserting the digits rather than a literal keeps
+    // the nonce free to be entropy.
+    let n = nonce(&first_here.plan_id);
+    assert_eq!(n.len(), 32, "expected a 128-bit hex nonce, got {n:?}");
+    assert!(n.chars().all(|c| c.is_ascii_hexdigit()), "{n:?}");
+
+    // A host-wide plan is about no project, so it must not be labelled with one —
+    // the caller's directory is optional context at user scope, not identity.
+    let user = integration
+        .plan_integration(&request(SettingsScope::User))
+        .await
+        .expect("plan");
+    assert!(
+        about(&user.plan_id).ends_with("hostwide"),
+        "a user-scope plan must not be labelled with a project: {}",
+        user.plan_id
+    );
+}
+
 /// The other half of row (g): a project-scope request that names no project is
 /// refused, loudly, rather than being resolved against whatever directory the
 /// service happens to be sitting in.

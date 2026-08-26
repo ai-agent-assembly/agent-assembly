@@ -897,7 +897,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         let planned_level = request.effective_target_level().min(ceiling);
 
         let mut plan = IntegrationPlan::new(
-            format!("claude-code-{scope}-{}", now_unix_secs()),
+            authored_plan_id(scope, request.project_root.as_deref()),
             request,
             planned_level,
             GovernanceLevel::L2Enforce,
@@ -1413,6 +1413,52 @@ fn reversal_for(step: &StepReceipt) -> StepAction {
 /// review a removal and then execute the plan it reviewed.
 pub fn removal_plan_id(receipt: &IntegrationReceipt) -> String {
     format!("remove-{}", receipt.receipt_id)
+}
+
+/// The id of a newly authored plan: which installation it is about, and a nonce
+/// that makes it this authoring and no other.
+///
+/// # Why a clock was the wrong identity (AAASM-5913)
+///
+/// The id used to be `claude-code-{scope}-{unix_secs}`, and the service caches
+/// authored plans in a process-global map keyed by it. Two clients planning
+/// `--scope project` within the same second — one in project A, one in project B
+/// — produced the *same* id, so the second authoring silently replaced the
+/// first. The client in A would then apply the id it had been handed and write
+/// Agent Assembly's managed keys into B's checked-in `.claude/settings.json`:
+/// its own consent, another repository's tracked file, and no `prior_state`
+/// recorded against A to reverse.
+///
+/// A clock cannot distinguish two projects because it is not about them. So the
+/// id names the project, and carries 128 bits of OS entropy that no concurrent
+/// authoring can repeat.
+///
+/// # Why the project is a digest and not the path
+///
+/// A plan id is rendered to the terminal, carried in log lines, and embedded in
+/// the receipt id. None of those places need a developer's directory layout, and
+/// a path in an identifier is a path that leaks by being copied.
+///
+/// The digest is **identity, not the check**. It is truncated, and it is taken
+/// from a lossy rendering of the path — neither is safe to authorise on. What
+/// actually refuses another project's plan is the full canonical-path comparison
+/// at apply time; a fingerprint nobody compares would be decoration, and one
+/// that is compared does not need to be short.
+fn authored_plan_id(scope: SettingsScope, project_root: Option<&Path>) -> String {
+    // Only a project-scope plan *is about* a project. At user and managed scope a
+    // root is optional context for a disclosure, and digesting it would say this
+    // host-wide plan belongs to whichever directory the caller happened to be in.
+    let about = match (scope, project_root) {
+        (SettingsScope::Project, Some(root)) => {
+            let digest = sha256_hex(&root.to_string_lossy());
+            format!("p{}", &digest[..16])
+        }
+        // Refused by `IntegrationPlan::validate`, which is where the refusal
+        // belongs. The id still has to be constructible to get there.
+        (SettingsScope::Project, None) => "punnamed".to_string(),
+        _ => "hostwide".to_string(),
+    };
+    format!("claude-code-{scope}-{about}-{}", uuid::Uuid::new_v4().simple())
 }
 
 impl LaunchableTool for ClaudeCodeIntegration {
