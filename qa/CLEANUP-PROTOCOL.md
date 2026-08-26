@@ -81,6 +81,41 @@ If challenged on a "monitoring" claim, the completed or in-flight background
 task's process/task ID must be citable as proof. A claim that cannot produce
 that citation was not a real watch and must not be made again the same way.
 
+### Freshness invariant
+
+A real background task satisfies "is this a real watch" (above) but not
+"is what it reports still true" — a long-lived polling loop can itself go
+stale: it keeps re-checking, but nothing forces it to distinguish "GitHub
+still says pending" from "GitHub reached a terminal state several polls ago
+and I haven't looked since." AAASM-5930's own campaign hit exactly this: a
+`gh pr checks` background poller was treated as authoritative for tens of
+minutes without a fresh query being re-verified against it.
+
+* **No CI status may be trusted across wakeups without a fresh query.**
+  Re-querying the checks/runs API for the current PR is what makes a status
+  claim current — a prior poll result, however recently it looked "still
+  pending," is not evidence of the present state on its own.
+* **Terminal GitHub state immediately cancels local wait state.** `success`,
+  `failure`, `cancelled`, `skipped`, `timed_out`, `action_required`, and
+  `startup_failure` are all terminal. The moment a fresh query returns one
+  for a required check, stop waiting on it — do not keep a background
+  poller alive "just in case," and do not wait for every non-required job
+  to also finish.
+* **The watcher's identity must include the current PR HEAD SHA**, not just
+  the PR number. A PR whose branch was amended, rebased, or force-pushed
+  mid-wait invalidates observations bound to the old SHA — a query that
+  does not name the SHA it's asking about can't tell an in-progress old run
+  from a completed new one. Re-derive the HEAD SHA before trusting a result.
+* **Prefer short, bounded, re-query polling over one long blocking wait.**
+  A single `run_in_background` command that blocks until some condition
+  becomes true is fine as a mechanism (see above), but the condition it
+  blocks on must itself be "did a fresh query just now return terminal,"
+  checked on a short cadence (low single-digit minutes) — not a one-shot
+  check taken once and then trusted for the command's entire runtime.
+* **A failed required check ends the wait immediately and starts
+  triage** (`qa/FINDING-VERIFICATION-PROTOCOL.md` classifies and drives the
+  fix) — it is never a reason to keep polling in case it changes back.
+
 ## Final-completion bar
 
 A campaign using this policy is not complete until all of the following
