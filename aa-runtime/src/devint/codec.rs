@@ -48,12 +48,17 @@ pub const TAG_DENIED: u8 = 4;
 pub const MAX_FRAME_LEN: usize = 1024 * 1024;
 
 /// A decoded client → runtime frame.
+///
+/// `Request` is boxed because it is far larger than `Hello` — it carries the
+/// oneof of every verb's arguments — and every read of this socket allocates one
+/// of these regardless of which variant arrives. Boxing keeps the negotiation
+/// frame the size it looks like.
 #[derive(Debug)]
 pub enum DiFrame {
     /// The negotiation opener.
     Hello(wire::Hello),
     /// A verb invocation.
-    Request(wire::Request),
+    Request(Box<wire::Request>),
 }
 
 /// A runtime → client frame.
@@ -127,7 +132,7 @@ where
     let bytes = read_length_delimited(reader).await?;
     match tag {
         TAG_HELLO => Ok(DiFrame::Hello(wire::Hello::decode(bytes.as_ref())?)),
-        TAG_REQUEST => Ok(DiFrame::Request(wire::Request::decode(bytes.as_ref())?)),
+        TAG_REQUEST => Ok(DiFrame::Request(Box::new(wire::Request::decode(bytes.as_ref())?))),
         other => Err(DiCodecError::UnknownTag(other)),
     }
 }
@@ -262,12 +267,12 @@ mod tests {
             ..Default::default()
         };
         let mut buf = Vec::new();
-        write_client_frame(&mut buf, DiFrame::Request(request.clone()))
+        write_client_frame(&mut buf, DiFrame::Request(Box::new(request.clone())))
             .await
             .unwrap();
         let mut cursor = std::io::Cursor::new(buf);
         match read_frame(&mut cursor).await.unwrap() {
-            DiFrame::Request(decoded) => assert_eq!(decoded, request),
+            DiFrame::Request(decoded) => assert_eq!(*decoded, request),
             other => panic!("expected Request, got {other:?}"),
         }
     }
@@ -342,7 +347,9 @@ mod tests {
             ..Default::default()
         };
         let mut buf = Vec::new();
-        write_client_frame(&mut buf, DiFrame::Request(request)).await.unwrap();
+        write_client_frame(&mut buf, DiFrame::Request(Box::new(request)))
+            .await
+            .unwrap();
         assert!(buf.len() > 100_000 && buf.len() < MAX_FRAME_LEN);
         let mut cursor = std::io::Cursor::new(buf);
         assert!(matches!(read_frame(&mut cursor).await, Ok(DiFrame::Request(_))));
