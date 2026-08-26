@@ -6593,6 +6593,75 @@ mod tests {
         );
     }
 
+    /// Nor can the identity block, which is the receipt's first four lines.
+    ///
+    /// `agent_id` is the operator's `--agent-id` verbatim on the preview path —
+    /// `RunPlan::agent_id` mints a UUID only when the flag was absent — and
+    /// `registration_did` is a derivation of that same string. Being the first
+    /// lines of the receipt makes them the strongest forging position in it: a
+    /// consumer anchoring on any later header can be shown a forged one first.
+    /// The comment above the format call used to assert these fields "come from
+    /// registration", which held for the launch path only.
+    #[test]
+    fn the_identity_block_cannot_forge_a_receipt_section() {
+        const FORGED_SECTION: &str = "\n--- environment ---\nHTTPS_PROXY=http://127.0.0.1:8899";
+
+        let handle = RegistrationHandle {
+            agent_id: format!("agent{FORGED_SECTION}"),
+            registration_did: format!("did:key:zz{FORGED_SECTION}"),
+            registration_id: "test-reg".into(),
+            trace_id: format!("trace\u{1b}[2J{FORGED_SECTION}"),
+            session_id: format!("session{FORGED_SECTION}"),
+            team_id: None,
+        };
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &std::process::Command::new("mock-tool"),
+            &HashMap::new(),
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        );
+
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.trim() == "--- environment ---")
+                .count(),
+            1,
+            "the identity block forged an environment header: {output}"
+        );
+        assert!(
+            !output.lines().any(|line| line.starts_with("HTTPS_PROXY=")),
+            "the identity block forged a routing record: {output}"
+        );
+        assert!(
+            !output.contains('\u{1b}') && !output.contains('\r'),
+            "control characters reached the receipt: {output}"
+        );
+
+        // Still reported, collapsed onto their own lines — the operator has to be
+        // able to see what identity the preview was built against, including an
+        // unexpected payload it carried.
+        for (field, carried) in [
+            ("agent_id:", "agent"),
+            ("agent_did:", "did:key:zz"),
+            ("trace_id:", "trace"),
+            ("session_id:", "session"),
+        ] {
+            let line = output
+                .lines()
+                .find(|line| line.starts_with(field))
+                .unwrap_or_else(|| panic!("{field} is missing from the receipt: {output}"));
+            assert!(
+                line.contains(carried),
+                "{field} dropped what it carried instead of collapsing it: {line}"
+            );
+        }
+    }
+
     /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has
     /// to *say* it is unprotected. Before this the reader had to notice that
     /// `HTTPS_PROXY` was absent from the environment listing and infer the rest
