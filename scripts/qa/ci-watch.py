@@ -38,6 +38,12 @@ that production runs never set.
 waiting" is the specific defect this program exists to prevent: `fail` must
 start triage, and `head-changed` must rebind to the new SHA.
 
+`fail` is terminal for *this observation*, which is not the same as permanent.
+A re-run against the same HEAD can turn a required check green without any new
+commit. That does not license waiting: a re-run is something a person or a
+workflow deliberately starts, and after starting one the correct move is to
+poll again on the ordinary cadence — not to have never stopped.
+
 ## Why "terminal" is not the same as "pass"
 
 A `conclusion` only exists once `status == "completed"`. All eight completed
@@ -151,13 +157,22 @@ class GhSource:
         # ~113 check runs on a full PR, so two pages is already generous, and
         # an unbounded loop is a hang waiting to happen inside a watcher whose
         # entire purpose is not to hang.
+        #
+        # `filter=latest` is stated rather than left to the default, so the
+        # request says what it depends on. It is NOT sufficient on its own:
+        # `latest` deduplicates per name *within a check suite*, and the same
+        # context name reaching this endpoint from two suites (or from a
+        # re-triggered workflow) still arrives as several rows. Choosing among
+        # them is `_select_run`'s job, and it needs the identity and timestamps
+        # carried below to do it — dropping them here is what made a re-run's
+        # outcome unrecoverable downstream.
         runs: list[dict] = []
         for page in (1, 2, 3):
             payload = self._gh(
                 [
                     "api",
                     f"repos/{self.repo}/commits/{head}/check-runs"
-                    f"?per_page=100&page={page}",
+                    f"?per_page=100&page={page}&filter=latest",
                 ]
             )
             if not isinstance(payload, dict):
@@ -175,6 +190,9 @@ class GhSource:
                     "name": r.get("name"),
                     "status": r.get("status"),
                     "conclusion": r.get("conclusion"),
+                    "id": r.get("id"),
+                    "started_at": r.get("started_at"),
+                    "completed_at": r.get("completed_at"),
                 }
                 for r in runs
             ],
@@ -245,6 +263,69 @@ class FixtureSource:
 # ── Evaluation ───────────────────────────────────────────────────────────────
 
 
+def _attempt_key(run: dict) -> tuple[str, str, int]:
+    """How recent a row is, from the only fields GitHub gives us to say so.
+
+    `completed_at` first because a finished attempt's finish time is the
+    strongest ordering available; `started_at` next for rows still in flight;
+    the check-run `id` last, since it is monotonic per repository and so
+    breaks a tie between two rows stamped within the same second.
+
+    Missing fields sort *low* rather than raising. A row with no timestamps is
+    not a broken row — the fixtures deliberately contain some — it is a row
+    that carries no evidence of being the newest, which is exactly how it
+    should rank.
+    """
+    return (
+        str(run.get("completed_at") or ""),
+        str(run.get("started_at") or ""),
+        int(run.get("id") or 0),
+    )
+
+
+def _blocks(run: dict) -> bool:
+    """Whether this row, taken at face value, would block a merge."""
+    if run.get("status") != "completed":
+        return False
+    return run.get("conclusion") not in NON_BLOCKING_CONCLUSIONS
+
+
+def _select_run(rows: list[dict]) -> dict:
+    """The one row that represents a context, given several rows for its name.
+
+    A context legitimately appears more than once: a re-run, a check suite
+    re-triggered by another workflow, or the same job name reported by two
+    apps. Which row is chosen decides the verdict, and the previous rule —
+    "keep the first `completed` one seen" — decided it by *array order*, which
+    GitHub does not promise and which for this repository's own PRs happens to
+    be oldest-first. A re-run that failed after an original success therefore
+    reported `pass`, green-lighting a PR that branch protection blocks. That is
+    the worst direction for this program to be wrong in.
+
+    So: a completed attempt beats one still in flight (a finished re-run is not
+    masked by the original's stale row), and among equals the most recent wins.
+
+    When the most recent cannot be identified — several rows tie on every field
+    that could order them — the choice is **fail-closed**: the blocking row is
+    taken. Not because it is likelier to be current, but because the two
+    mistakes are not symmetrical. Reporting `fail` for a PR that is really
+    green costs one unnecessary triage; reporting `pass` for a PR that is really
+    red is the defect.
+    """
+    completed = [r for r in rows if r.get("status") == "completed"]
+    pool = completed or rows
+    if len(pool) == 1:
+        return pool[0]
+    top = max(_attempt_key(r) for r in pool)
+    newest = [r for r in pool if _attempt_key(r) == top]
+    if len(newest) == 1:
+        return newest[0]
+    for run in newest:
+        if _blocks(run):
+            return run
+    return newest[0]
+
+
 def classify(
     observation: dict,
     required: list[str],
@@ -264,18 +345,13 @@ def classify(
             "observations bound to the old SHA are void; rebind and re-query",
         )
 
-    by_name: dict[str, dict] = {}
+    grouped: dict[str, list[dict]] = {}
     for run in observation["check_runs"]:
         name = run.get("name")
         if name is None:
             continue
-        # Same context can appear more than once (re-runs, matrix legs). A
-        # completed entry beats an in-flight one for the same name, so a
-        # re-run that has finished is not masked by the original attempt's
-        # stale row.
-        prev = by_name.get(name)
-        if prev is None or (prev.get("status") != "completed"):
-            by_name[name] = run
+        grouped.setdefault(name, []).append(run)
+    by_name = {name: _select_run(rows) for name, rows in grouped.items()}
 
     missing = [c for c in required if c not in by_name]
     if missing:
@@ -310,8 +386,10 @@ def classify(
             blocking.append(f"{context} ({conclusion})")
 
     # A terminal failure wins over a still-pending sibling. Waiting for the
-    # rest to finish before starting triage is waiting for no reason: the
-    # required gate cannot come back green without a new HEAD.
+    # rest to finish before starting triage is waiting for no reason: nothing
+    # a pending sibling can conclude will unblock the gate, and the two things
+    # that could — a new commit or a deliberate re-run — are both actions
+    # someone takes rather than states that arrive.
     if blocking:
         return (
             "fail",
@@ -420,8 +498,10 @@ def emit(
     if verdict == "fail":
         print(
             "\nA failed required check ends the wait immediately and starts "
-            "triage (qa/FINDING-VERIFICATION-PROTOCOL.md). Do NOT keep "
-            "polling in case it changes back — it cannot without a new HEAD."
+            "triage (qa/FINDING-VERIFICATION-PROTOCOL.md). Do NOT keep polling "
+            "in case it changes back: only a new commit or a re-run someone "
+            "deliberately starts can change it, and after starting one you "
+            "poll again — you do not carry on from a wait that never stopped."
         )
     elif verdict == "head-changed":
         print(

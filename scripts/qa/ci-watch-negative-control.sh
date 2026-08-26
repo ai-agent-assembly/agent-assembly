@@ -7,23 +7,39 @@
 # violated, and a campaign session the same day still burned tens of minutes
 # on blocking sleep-loop poll shells. This harness is the enforcement.
 #
-# Every case runs TWICE: once against the real implementation, and once
-# against qa/tests/fixtures/ci-watch/naive-watcher.py — a deliberately wrong
-# watcher that caches its first observation, ignores the HEAD SHA, decays
-# outages into "still pending", and cannot tell a required gate from a
-# non-required evidence job. The real one must produce the correct verdict
-# AND the naive one must produce a different (wrong) verdict. A case where
-# both agree is not discriminating, and the harness fails it as
-# NON-DISCRIMINATING rather than quietly counting it as a pass — a green
-# assertion that would stay green after the fix is reverted is the exact
-# defect this file exists to prevent.
+# Every case runs at least TWICE: once against the real implementation, and
+# once against a deliberately wrong one. There are two wrong ones, because the
+# mistakes are not all in the same direction:
+#
+#   qa/tests/fixtures/ci-watch/naive-watcher.py — caches its first observation,
+#   ignores the HEAD SHA, decays outages into "still pending", cannot tell a
+#   required gate from a non-required evidence job, and picks among several rows
+#   for one context by array order. That last one is a transcription of what
+#   `classify` actually did before this ticket, not an invented strawman.
+#
+#   qa/tests/fixtures/ci-watch/overcorrecting-watcher.py — correct about all of
+#   the above, and wrong in exactly one way: it prefers any blocking row over a
+#   newer clean one. That is the plausible over-repair of the previous flaw, and
+#   it is why a case discriminating against the naive watcher alone is not
+#   enough to pin the selection rule.
+#
+# The real one must produce the correct verdict AND the wrong one must produce
+# a different (wrong) verdict. A case where both agree is not discriminating,
+# and the harness fails it as NON-DISCRIMINATING rather than quietly counting
+# it as a pass — a green assertion that would stay green after the fix is
+# reverted is the exact defect this file exists to prevent.
 #
 #   Case A  pending at wakeup 1, success at wakeup 2 -> real detects success
-#           (it re-queried); naive still reports running (it cached).
+#           (it re-queried); naive still reports running (it cached). This is
+#           the only case a cache can fail, and so the only one that guards
+#           against one being added.
 #   Case B  pending then failure -> real exits wait mode with `fail`; naive
 #           reports running, i.e. keeps waiting on an already-failed run.
-#   Case C  PR HEAD moves mid-wait -> real reports head-changed and refuses
-#           to reason about the dead run; naive ignores the SHA entirely.
+#   Case C  the PR HEAD has ALREADY moved at the first look -> real reports
+#           head-changed and refuses to reason about the dead run; naive
+#           ignores --expect-head entirely. ONE wakeup, deliberately: with two,
+#           the naive watcher's cache alone made it disagree, so the case
+#           stayed green with the SHA check deleted and flaw 2 had no cover.
 #   Case D  GitHub already terminal at the first look, and stays terminal ->
 #           real reports it on every wakeup, so a local waiter claiming
 #           "running" is provably stale. (Both implementations agree here by
@@ -41,6 +57,18 @@
 #           conflating them would encode the bug.
 #   Case H  a completed re-run row must supersede the original attempt's
 #           stale in_progress row for the same context name.
+#   Case I  a REQUIRED context concluding `neutral` -> pass, because branch
+#           protection treats it that way. The docstring used to credit case F
+#           with this; case F has no `neutral` row in it.
+#   Case J  two completed rows for one context, success then failure,
+#           oldest-first -> real reports fail; the naive watcher's array-order
+#           rule reports pass. This is the false green that shipped.
+#   Case K  the mirror: the newer re-run succeeded and is listed FIRST -> real
+#           reports pass; the OVERCORRECTING watcher reports fail, because
+#           preferring blockers never lets a fixed re-run clear the gate.
+#   Case L  a completed failure alongside a still-running re-run of the same
+#           name -> real reports fail. A re-run someone has just started does
+#           not retract the failure already recorded.
 #
 # Usage: bash scripts/qa/ci-watch-negative-control.sh
 # Run from the repo root. Fully hermetic — no network, no `gh`, no GitHub.
@@ -48,6 +76,7 @@ set -uo pipefail
 
 WATCH="scripts/qa/ci-watch.py"
 NAIVE="qa/tests/fixtures/ci-watch/naive-watcher.py"
+OVERCORRECTING="qa/tests/fixtures/ci-watch/overcorrecting-watcher.py"
 FIXTURES="qa/tests/fixtures/ci-watch"
 FAILED=0
 
@@ -88,13 +117,19 @@ run_wakeups() {
 }
 
 # The core assertion shape: the real implementation must produce `expected`,
-# and the naive one must produce something DIFFERENT. Both halves matter.
-assert_discriminating() {
-  local desc="$1" fixture="$2" wakeups="$3" expected="$4"
-  shift 4
+# and the named wrong one must produce something DIFFERENT. Both halves matter.
+#
+# Which wrong watcher a case is measured against is part of the case, not a
+# detail: a case that discriminates against the array-order flaw says nothing
+# about the opposite over-repair, and vice versa. Naming it at the call site
+# keeps that visible instead of leaving "the naive watcher" to stand in for
+# "any wrong watcher".
+assert_discriminating_against() {
+  local wrong="$1" desc="$2" fixture="$3" wakeups="$4" expected="$5"
+  shift 5
   local real_code naive_code
   real_code="$(run_wakeups "$WATCH" "$fixture" "$wakeups" "$@")"
-  naive_code="$(run_wakeups "$NAIVE" "$fixture" "$wakeups" "$@")"
+  naive_code="$(run_wakeups "$wrong" "$fixture" "$wakeups" "$@")"
 
   if [ "$real_code" = "$expected" ]; then
     echo "  ✓ real implementation reports $(verdict_name "$real_code") (expected $(verdict_name "$expected"))"
@@ -104,30 +139,35 @@ assert_discriminating() {
     return
   fi
 
-  # A crash is not a wrong verdict. If the naive watcher merely fails to run,
+  # A crash is not a wrong verdict. If the wrong watcher merely fails to run,
   # every case would look "discriminating" for a reason that has nothing to do
   # with watcher behaviour — the harness would be green while proving nothing.
   # This guard is here because that is exactly what happened during
   # development: a bad relative path in naive-watcher.py made it exit 1
-  # everywhere, and all eight cases reported success.
+  # everywhere, and every case in the file then reported success.
   case "$naive_code" in
     0 | 20 | 21 | 22 | 23) ;;
     *)
-      echo "  ✗ HARNESS BROKEN: naive watcher exited $naive_code, which is not a"
-      echo "    verdict code — it crashed rather than misbehaved, so this case"
-      echo "    is not testing watcher behaviour at all. Fix the naive watcher."
+      echo "  ✗ HARNESS BROKEN: $wrong exited $naive_code, which is not a verdict"
+      echo "    code — it crashed rather than misbehaved, so this case is not"
+      echo "    testing watcher behaviour at all. Fix the wrong watcher."
       FAILED=1
       return
       ;;
   esac
 
   if [ "$naive_code" != "$real_code" ]; then
-    echo "  ✓ naive watcher disagrees — reports $(verdict_name "$naive_code"), so the case is discriminating"
+    echo "  ✓ $(basename "$wrong") disagrees — reports $(verdict_name "$naive_code"), so the case is discriminating"
   else
-    echo "  ✗ NON-DISCRIMINATING: naive watcher also reports $(verdict_name "$naive_code")."
+    echo "  ✗ NON-DISCRIMINATING: $(basename "$wrong") also reports $(verdict_name "$naive_code")."
     echo "    This case would stay green with the fix reverted, so it proves nothing about $desc."
     FAILED=1
   fi
+}
+
+# Most cases are measured against the array-order/caching watcher.
+assert_discriminating() {
+  assert_discriminating_against "$NAIVE" "$@"
 }
 
 # For cases where both implementations legitimately agree, assert only the
@@ -202,6 +242,32 @@ assert_real_only "a required check concluding stale must not report pass" \
 echo "== Case H: a completed re-run supersedes the original in-flight row =="
 assert_real_only "completed re-run must win over the original attempt's stale row" \
   case-h-rerun-supersedes.json 1 0
+
+echo "== Case J: a re-run that FAILED after an original success =="
+echo "   The false green that shipped. Two completed rows for one required"
+echo "   context, oldest-first — the order this repo's check-runs responses"
+echo "   arrive in — so choosing by array position reports pass and exit 0 for"
+echo "   a PR branch protection blocks."
+assert_discriminating "recency-ordered selection among completed attempts" \
+  case-j-rerun-failed-after-success.json 1 20
+
+echo "== Case K: a re-run that FIXED a failure, newest listed first =="
+echo "   Measured against the OVERCORRECTING watcher, not the naive one: the"
+echo "   naive rule happens to get this right, and 'prefer any blocking row' —"
+echo "   the obvious repair for case J — gets it wrong forever, since no"
+echo "   re-run could ever clear the gate. Only ordering by recency passes"
+echo "   both J and K, which is what makes _select_run's fail-closed step a"
+echo "   tie-break rather than a preference."
+assert_discriminating_against "$OVERCORRECTING" \
+  "recency beating a stale blocking row" \
+  case-k-rerun-fixed-newest-first.json 1 0
+
+echo "== Case L: a recorded failure plus a re-run still in flight =="
+echo "   A completed row beats an in-flight one, and that must hold when the"
+echo "   completed row is the bad news too. Reporting 'running' here is how a"
+echo "   wait outlives the fact that started it."
+assert_real_only "a completed failure is not retracted by an in-flight re-run" \
+  case-l-completed-failure-plus-in-flight.json 1 20
 
 echo
 if [ "$FAILED" -eq 0 ]; then
