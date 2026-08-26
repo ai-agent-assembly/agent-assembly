@@ -1,6 +1,6 @@
 //! `aasm gateway start` — spawn aa-gateway as a detached background process.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,19 @@ use super::pid;
 const DEFAULT_LISTEN: &str = "127.0.0.1:50051";
 const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const READINESS_POLL: Duration = Duration::from_millis(200);
+
+/// What to tell an operator when `aa-gateway` cannot be found.
+///
+/// A named constant rather than an inline literal so a test can assert that it
+/// lists only lookups [`resolve_binary`] actually performs. The two drifted
+/// before: the message advertised `./target/release/aa-gateway` for as long as
+/// the fallback existed, and an error that names a lookup which no longer
+/// happens is worse than terse — here it would have read as an instruction to
+/// reinstate the AAASM-5937 vulnerability by hand.
+const BINARY_NOT_FOUND_HELP: &str = "error: aa-gateway binary not found.\n\
+     Tried: alongside aasm, $PATH, ~/.cargo/bin/aa-gateway\n\
+     A path relative to the current directory is deliberately not tried (AAASM-5937);\n\
+     install aa-gateway alongside aasm, or put it on $PATH.";
 
 /// Arguments for `aasm gateway start`.
 #[derive(Debug, Args)]
@@ -45,10 +58,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     let binary = match resolve_binary() {
         Some(b) => b,
         None => {
-            eprintln!(
-                "error: aa-gateway binary not found.\n\
-                 Tried: alongside aasm, $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
-            );
+            eprintln!("{BINARY_NOT_FOUND_HELP}");
             return ExitCode::FAILURE;
         }
     };
@@ -163,20 +173,63 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 /// Resolve the `aa-gateway` binary path.
 ///
 /// Search order: directory of the running `aasm` executable →
-/// directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
-/// `./target/release/aa-gateway` → `./target/debug/aa-gateway`.
+/// directories in `$PATH` → `~/.cargo/bin/aa-gateway`. Every candidate is an
+/// absolute location derived from the *installation*, never from where the
+/// process happens to have been started.
 ///
 /// The exe-dir lookup is first so a release / Homebrew install — where
 /// `aa-gateway` ships alongside `aasm` in the same directory (AAASM-2975) —
 /// works even when that directory is not on `$PATH` (e.g. a tarball unpacked
-/// to an arbitrary location).
+/// to an arbitrary location). It is also what ADR 0030 §6.4 requires: `aasm`
+/// and its children ship as one versioned unit, so a `$PATH` hit from some
+/// other installation must not win over the sibling that was shipped with
+/// this one.
+///
+/// # Why there is no `./target/...` fallback
+///
+/// This function used to end with `./target/release/aa-gateway` →
+/// `./target/debug/aa-gateway`, which is the exact pattern AAASM-4020 removed
+/// from the `aa-proxy` launcher on security grounds and which AAASM-5937
+/// removed here. Resolving relative to the current working directory lets
+/// whoever controls where `aasm` is invoked substitute an attacker-planted
+/// `aa-gateway`, and `./target/` is the conventional Rust build output path, so
+/// a planted file there looks unremarkable.
+///
+/// The population it exposed is the one least able to notice: the fallback is
+/// only reached when `aa-gateway` is absent from the exe directory, `$PATH`
+/// *and* `~/.cargo/bin`, which is precisely the state of a `cargo build`-only
+/// checkout — a developer or CI job sitting in a repository root.
+///
+/// Nothing legitimate is lost. A `cargo build` puts `aasm` and `aa-gateway`
+/// side by side in the same `target/<profile>/` directory, so the sibling
+/// lookup above already finds it, and finds *the matching build* rather than
+/// whichever `target/` the cwd happened to contain. The only case the fallback
+/// uniquely served was an *installed* `aasm` picking a `target/` gateway out of
+/// an unrelated repository, which is a version-mismatch hazard as much as a
+/// substitution one.
 pub fn resolve_binary() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(candidate) = sibling_binary(&exe) {
-            return Some(candidate);
-        }
+    resolve_from(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+/// The search itself, over the three facts [`resolve_binary`] reads from the
+/// environment.
+///
+/// Split out so the search order and the absence of a cwd-relative fallback can
+/// both be asserted without mutating process-global state: a test names the exe
+/// path, the `$PATH` string and the home directory it wants, and this function
+/// has no other input. That is also the structural half of AAASM-5937 — a
+/// function that is not given the current directory cannot resolve against it,
+/// so the removed fallback cannot come back by accident. The behavioural half is
+/// still pinned by a test that plants a binary under a temporary cwd.
+fn resolve_from(exe: Option<&Path>, path_var: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(candidate) = exe.and_then(sibling_binary) {
+        return Some(candidate);
     }
-    if let Ok(path_var) = std::env::var("PATH") {
+    if let Some(path_var) = path_var {
         for dir in path_var.split(':') {
             let candidate = PathBuf::from(dir).join("aa-gateway");
             if is_executable(&candidate) {
@@ -184,14 +237,8 @@ pub fn resolve_binary() -> Option<PathBuf> {
             }
         }
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         let candidate = home.join(".cargo").join("bin").join("aa-gateway");
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-    for rel in &["./target/release/aa-gateway", "./target/debug/aa-gateway"] {
-        let candidate = PathBuf::from(rel);
         if is_executable(&candidate) {
             return Some(candidate);
         }
