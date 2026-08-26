@@ -27,6 +27,7 @@ export {
   UnexpectedFrameError,
   VerbUnavailableError,
 } from './errors.js';
+export { projectRoot, PROJECT_ROOT_ENV } from './project.js';
 export {
   HOST_ENFORCED_UNAVAILABLE,
   LEVEL_LABELS,

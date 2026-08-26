@@ -125,6 +125,22 @@ export interface PlanOptions {
   readonly requestedLevel?: string;
   /** Whether the user consented to steps that change host state (§6.6). */
   readonly allowPrivilegedHostSteps?: boolean;
+  /**
+   * The absolute path of the project this plan is for, resolved by the caller —
+   * `src/project.ts`, or a plugin's workspace folder (AAASM-5913).
+   *
+   * Required, and not optional like the three fields above it, because the whole
+   * point of the field is that the *caller* states it. An optional project root
+   * is one a call site reaches by forgetting, and forgetting is what left the
+   * shared runtime with nothing to name but the directory it was spawned in.
+   * Pass `""` to say there is none: mandatory at `project` scope, where the
+   * service refuses rather than guesses, and optional context elsewhere.
+   *
+   * This client does not pre-empt that refusal. The rule is the service's, its
+   * message is the actionable one, and a second copy of it here would be a
+   * second thing to keep true.
+   */
+  readonly projectRoot: string;
 }
 
 /**
@@ -231,6 +247,10 @@ export class DevIntClient {
         policyProfileId: options.policyProfileId ?? '',
         requestedLevel: options.requestedLevel ?? '',
         allowPrivilegedHostSteps: options.allowPrivilegedHostSteps ?? false,
+        // Sent verbatim, at every scope, with no default of this client's own:
+        // the caller resolved it against the directory the *user* is in, and any
+        // value substituted here would be about a different project.
+        projectRoot: options.projectRoot,
       }),
     });
     return required(response.plan, 'plan');
