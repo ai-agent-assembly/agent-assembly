@@ -173,6 +173,35 @@ mod deterministic_conformance {
 
     const SCENARIO: &str = "aaasm5930_deterministic_allow_and_deny";
 
+    /// Find every `audit.jsonl` this launch's dedicated proxy could have
+    /// written under `${AASM_STATE_DIR}/runs/*/audit.jsonl`
+    /// (`aa-cli/src/commands/proxy/launch_state.rs::allocate`). A plain
+    /// directory walk rather than the `glob` crate: one extra dependency for
+    /// a two-level, non-recursive listing this test only needs once.
+    fn glob_audit_jsonl(state_dir: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+        let runs = state_dir.join("runs");
+        if !runs.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(&runs)? {
+            let candidate = entry?.path().join("audit.jsonl");
+            if candidate.is_file() {
+                found.push(candidate);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Parse a proxy audit JSONL file into its entries, in file order.
+    fn read_audit_entries(path: &Path) -> anyhow::Result<Vec<aa_proxy::audit_jsonl::ProxyAuditEntry>> {
+        let raw = std::fs::read_to_string(path)?;
+        raw.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).map_err(|e| anyhow::anyhow!("parsing audit.jsonl line: {e}\nline: {l}")))
+            .collect()
+    }
+
     /// The scenario AAASM-5930 exists for: a real `claude` binary, launched
     /// through a real `aasm run`, reaches a real allow and a real deny
     /// outcome for two MCP tool calls — both adjudicated by a real gateway
@@ -433,6 +462,92 @@ mod deterministic_conformance {
         let allow_sentinel = sentinel_path(&sentinel_dir, ALLOW_TOOL);
         let deny_sentinel = sentinel_path(&sentinel_dir, DENY_TOOL);
 
+        // ── deny-leg audit-attribution evidence ─────────────────────────────
+        //
+        // Read *before* the allow-leg bail below, deliberately: the deny
+        // leg's evidence (proxy refused the call before dialing upstream) is
+        // independent of whether the allow leg's connection-reuse gap
+        // (AAASM-5930) happens to be open on this run. Gating this behind
+        // the allow-leg bail would mean a real deny-side regression could
+        // hide for as long as the allow gap stays open — the two claims
+        // must be checked independently of each other's outcome.
+        //
+        // This proves the proxy's own persisted audit record correctly names
+        // *why* the deny leg's sentinel is absent — the same evidence chain a
+        // real operator would read after the fact, not just what this test's
+        // own mock observed. Read from
+        // `${AASM_STATE_DIR}/runs/<label>-<suffix>/audit.jsonl`
+        // (`aa-cli/src/commands/proxy/launch_state.rs::allocate`) rather than
+        // a fixed path, since the suffix is `tempfile`'s own collision-proof
+        // generation; this launch is the only thing that wrote under `state`
+        // in this test, so exactly one match is expected.
+        let audit_paths: Vec<_> = glob_audit_jsonl(&state)?;
+        assert_eq!(
+            audit_paths.len(),
+            1,
+            "expected exactly one per-launch audit.jsonl under {}: {audit_paths:?}",
+            state.display()
+        );
+        let audit_entries = read_audit_entries(&audit_paths[0])?;
+        assert!(
+            !audit_entries.is_empty(),
+            "the proxy wrote an audit.jsonl but it recorded nothing — the deny leg must have \
+             produced at least one entry"
+        );
+
+        // The deny leg's refusal, as the persisted record — not the proxy's
+        // in-process log line, which a future refactor could change without
+        // this test noticing. `RefusalRule::McpToolCall` is the same
+        // discriminant `aa-proxy/src/proxy/mod.rs::emit_rule_refusal` writes
+        // for exactly this branch (a gateway-denied `tools/call`, or one that
+        // could not be evaluated and was refused fail-closed).
+        let deny_refusals: Vec<_> = audit_entries
+            .iter()
+            .filter(|e| e.host == MCP_HOST && e.refusal_rule == Some(aa_proxy::audit_jsonl::RefusalRule::McpToolCall))
+            .collect();
+        assert!(
+            !deny_refusals.is_empty(),
+            "no audit entry attributes a refusal to RefusalRule::McpToolCall on {MCP_HOST} — the \
+             deny leg's sentinel-absence proves nothing reached the MCP server, but without this \
+             the persisted evidence trail doesn't say *why*: {audit_entries:?}"
+        );
+        for entry in &deny_refusals {
+            assert_eq!(
+                entry.decision,
+                aa_proxy::audit_jsonl::ProxyAuditDecision::Blocked,
+                "an McpToolCall-refused entry must carry decision=Blocked, not a decision that \
+                 implies the bytes went anywhere: {entry:?}"
+            );
+            assert_eq!(
+                entry.agent_id.as_deref(),
+                Some(AGENT_ID),
+                "the audit record must attribute the refusal to the agent identity that made the \
+                 call, not leave it unattributed: {entry:?}"
+            );
+        }
+        // The negative half of the same claim: exactly one refusal, not one
+        // per leg. `path` is the bare `/mcp` HTTP target for every MCP call
+        // regardless of which tool (the tool name lives in the JSON-RPC
+        // body, which a rule-refused entry never persists — refused before
+        // any body-level inspection would help), so "one call refused" is
+        // the strongest claim this record shape can make; the allow leg's
+        // own evidence is the sentinel + upstream-request assertions above,
+        // not this file.
+        assert_eq!(
+            deny_refusals.len(),
+            1,
+            "expected exactly one McpToolCall refusal (the deny leg) on {MCP_HOST}, found {}: \
+             {audit_entries:?}",
+            deny_refusals.len()
+        );
+        assert!(
+            !deny_sentinel.exists(),
+            "the denied MCP tool call must NEVER reach the real MCP server — its sentinel existing means \
+             the gateway policy adjudication (or the proxy's enforcement of it) failed to block a call it \
+             was configured to deny"
+        );
+
+        // ── allow-leg evidence (AAASM-5930 gap tracked separately) ─────────
         if !allow_sentinel.exists() {
             println!("NOT MEASURED aasm stdout tail: {}", tail(&stdout));
             println!("NOT MEASURED aasm stderr tail: {}", tail(&stderr));
@@ -445,17 +560,9 @@ mod deterministic_conformance {
                 tail(&stderr),
             );
         }
-
-        // ── the assertions this scenario exists to make ────────────────────
         assert!(
             allow_sentinel.exists(),
             "the allowed MCP tool call must actually reach the real MCP server and write its sentinel"
-        );
-        assert!(
-            !deny_sentinel.exists(),
-            "the denied MCP tool call must NEVER reach the real MCP server — its sentinel existing means \
-             the gateway policy adjudication (or the proxy's enforcement of it) failed to block a call it \
-             was configured to deny"
         );
 
         // The registered identity, as the same durable IdentityStore `aasm run`
