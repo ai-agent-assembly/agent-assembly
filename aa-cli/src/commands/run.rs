@@ -5348,6 +5348,60 @@ mod tests {
         );
     }
 
+    /// **Regression G** — a name that merely *folds* onto an allowlist entry is
+    /// not on the allowlist.
+    ///
+    /// `str::to_uppercase` performs full Unicode case conversion, and some
+    /// non-ASCII characters uppercase into ASCII — so classifying a name that way
+    /// let the allowlist grow by Unicode table rather than by review. Asserted on
+    /// **recoverability** end to end, not on the presence of a mask token: the
+    /// pre-fix code emitted the value verbatim, so an assertion that merely
+    /// searched for `***MASKED***` would have passed on it.
+    #[test]
+    fn a_unicode_lookalike_of_an_allowlisted_name_is_not_value_visible() {
+        // U+0131 LATIN SMALL LETTER DOTLESS I uppercases to ASCII `I`.
+        // U+017F LATIN SMALL LETTER LONG S uppercases to ASCII `S`.
+        let lookalikes = [
+            ("anthrop\u{0131}c_base_url", "ANTHROPIC_BASE_URL"),
+            ("anthropic_ba\u{017F}e_url", "ANTHROPIC_BASE_URL"),
+            ("anthrop\u{0131}c_model", "ANTHROPIC_MODEL"),
+            ("http\u{017F}_proxy", "HTTPS_PROXY"),
+            ("node_extra_ca_cert\u{017F}", "NODE_EXTRA_CA_CERTS"),
+            ("aa_\u{017F}ession_id", "AA_SESSION_ID"),
+        ];
+
+        for (lookalike, entry) in lookalikes {
+            // The premise of the test, asserted so that a change to Rust's case
+            // tables makes this fail loudly rather than pass vacuously.
+            assert_eq!(
+                lookalike.to_uppercase(),
+                entry,
+                "{lookalike} no longer folds onto {entry}; this test's premise is stale"
+            );
+            assert!(
+                !value_may_be_previewed(lookalike),
+                "{lookalike} folds onto the allowlisted {entry} and was treated as value-visible"
+            );
+            // And the value is withheld in the real receipt, not merely
+            // classified as withheld.
+            let output = preview_for(lookalike, SYNTH_TOKEN);
+            assert!(
+                !output.contains(SYNTH_TOKEN),
+                "{lookalike}: a value planted under a Unicode lookalike of {entry} reached the \
+                 preview: {output}"
+            );
+            // Presence is still reported. Either withholding marker is correct:
+            // a lookalike ending `_URL` is additionally credential-named by
+            // suffix, so it earns the stronger `MASKED` receipt rather than a
+            // bare `PRESENCE_SET`.
+            assert!(
+                output.contains(&format!("{lookalike}={PRESENCE_SET}"))
+                    || output.contains(&format!("{lookalike}={MASKED}")),
+                "{lookalike}: presence must still be reported: {output}"
+            );
+        }
+    }
+
     /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has
     /// to *say* it is unprotected. Before this the reader had to notice that
     /// `HTTPS_PROXY` was absent from the environment listing and infer the rest
