@@ -363,6 +363,48 @@ async fn mitm_post(proxy: SocketAddr, host: &str, body: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Open a CONNECT tunnel to `authority` through `proxy`, then attempt the
+/// destination-TLS handshake `dial_upstream_tls` layers on top, and report
+/// whether it completed. `aa-proxy` sends `200 Connection Established` to
+/// the client as soon as the CONNECT authority is accepted — *before* it
+/// dials the trusted upstream proxy, so a fail-closed chained route is never
+/// visible as a non-200 status; it surfaces as the client-side TLS
+/// handshake never completing once the trusted-proxy dial times out (D7)
+/// and the tunnel is torn down. Bounded at `TRUSTED_PROXY_DIAL_TIMEOUT` (10s)
+/// plus margin.
+async fn tls_handshake_completes_through_tunnel(proxy: SocketAddr, host: &str) -> bool {
+    let mut stream = TcpStream::connect(proxy).await.unwrap();
+    let connect = format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n");
+    stream.write_all(connect.as_bytes()).await.unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.contains("200"), "client-side tunnel not opened: {line}");
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).await.unwrap_or(0) == 0 {
+            return false; // Connection closed before headers finished.
+        }
+        if header.trim().is_empty() {
+            break;
+        }
+    }
+    let client_config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(accept_any_cert::AcceptAnyCert))
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).unwrap();
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(12),
+            connector.connect(server_name, reader.into_inner()),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
 mod accept_any_cert {
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -757,9 +799,13 @@ async fn auth_over_an_https_scheme_endpoint_reaches_the_corp_proxy() {
 
 // ── Row 10 ───────────────────────────────────────────────────────────────
 
-/// Row 10: an unreachable trusted proxy fails closed — the CONNECT to a
-/// declared destination fails, and the destination behind it receives
-/// nothing (no direct-dial fallback).
+/// Row 10: an unreachable trusted proxy fails closed — the client-side
+/// tunnel opens (200 is sent as soon as the CONNECT authority is accepted,
+/// *before* `aa-proxy` dials the trusted proxy — see
+/// [`tls_handshake_completes_through_tunnel`]'s doc), but the
+/// destination-TLS handshake layered on top of it never completes once the
+/// trusted-proxy dial times out (D7), and the destination behind it
+/// receives nothing (no direct-dial fallback).
 #[tokio::test]
 async fn an_unreachable_trusted_proxy_fails_closed_with_no_direct_dial_fallback() {
     let (_dest_addr, received) = capturing_destination().await;
@@ -778,8 +824,7 @@ async fn an_unreachable_trusted_proxy_fails_closed_with_no_direct_dial_fallback(
         loop {
             match listener.accept().await {
                 Ok((sock, _)) => {
-                    // Accept but never speak — the client-side CONNECT never
-                    // gets a status line.
+                    // Accept but never speak.
                     std::mem::forget(sock);
                 }
                 Err(_) => break,
@@ -791,15 +836,10 @@ async fn an_unreachable_trusted_proxy_fails_closed_with_no_direct_dial_fallback(
     let artifact = write_artifact(artifact_dir.path(), unreachable_addr, DEST_HOST, DEST_PORT);
     let proxy = start_proxy(Some(artifact), false).await;
 
-    let line = tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        connect_status_line(proxy, &format!("{DEST_HOST}:{DEST_PORT}")),
-    )
-    .await
-    .unwrap_or_default();
+    let handshake_completed = tls_handshake_completes_through_tunnel(proxy, DEST_HOST).await;
     assert!(
-        !line.contains("200"),
-        "an unreachable trusted proxy must never result in a successfully opened tunnel: {line}"
+        !handshake_completed,
+        "an unreachable trusted proxy must never result in a completed destination-TLS handshake"
     );
     assert!(
         received.lock().unwrap().is_empty(),
@@ -936,15 +976,10 @@ async fn network_fail_open_bypasses_only_the_gateway_stage_not_the_chained_dial(
     });
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-    let line = tokio::time::timeout(
-        std::time::Duration::from_secs(12),
-        connect_status_line(addr, &format!("{DEST_HOST}:{DEST_PORT}")),
-    )
-    .await
-    .unwrap_or_default();
+    let handshake_completed = tls_handshake_completes_through_tunnel(addr, DEST_HOST).await;
     assert!(
-        !line.contains("200"),
-        "network_fail_open must not defeat the chained dial's own fail-closed behaviour: {line}"
+        !handshake_completed,
+        "network_fail_open must not defeat the chained dial's own fail-closed behaviour"
     );
     assert!(received.lock().unwrap().is_empty());
 }
