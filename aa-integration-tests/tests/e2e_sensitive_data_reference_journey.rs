@@ -455,28 +455,99 @@ async fn full_chain_redaction_reaches_operator_visible_api() {
         "audit JSONL must record the ForwardedRedacted decision; got: {audit_content}",
     );
 
-    // ── Destination 4: the proxy's own log file ────────────────────────────
-    let proxy_log = read_file(journey.proxy.log_path());
-    journey.canary.assert_absent("proxy log file", &proxy_log);
+    // ── Destinations 4 and 5 + cross-process event_id correlation, via logs
+    //     only (AAASM-5905: event_id is dropped before reaching the alert
+    //     store, so this is not reachable through the API — it is the fact
+    //     this journey exists partly to make visible) ──────────────────────
+    //
+    // Nothing orders either log line against the alert Destination 2 observed.
+    // `emit_redaction_telemetry` (aa-proxy/src/proxy/mod.rs) reports on a
+    // *detached* `tokio::spawn` task and logs the `event_id` only after the RPC
+    // resolves. On the aa-api side (aa-api/src/redaction_telemetry.rs) the
+    // ingest line is logged and the alert republished onto the in-process
+    // channel, and only then is the response sent — while the alert reaches the
+    // store Destination 2 reads from in a *separate* capture task. So the two
+    // lines this section needs and the alert it already saw all fan out from
+    // one point:
+    //
+    //     api logs ingest line → alert republished ─┬→ response → proxy logs event_id
+    //                                              └→ capture task → alert visible
+    //
+    // The two branches race, so observing the alert says nothing about whether
+    // the proxy has logged yet; and the api line, though earlier in program
+    // order than both, still has to reach this process's captured output.
+    // Reading either log once and requiring the line to be present is therefore
+    // a race, which is what AAASM-5934 recorded after it reddened four unrelated
+    // Dependabot PRs. Poll for the correlated pair, re-reading both logs each
+    // iteration because they grow after this point.
+    //
+    // Bounded by a deadline rather than an iteration count: each iteration does
+    // two file reads and a sleep, so `for _ in 0..200` bounds the iterations and
+    // not the time, and what needs bounding here is the wait.
+    // The loop yields the observations it stopped on, rather than writing them
+    // into variables declared before it: with `loop` the compiler can prove a
+    // placeholder initializer is never read, and a placeholder that is never
+    // read is one the assertions below could accidentally run against.
+    enum Correlation {
+        Converged,
+        ReportFailed,
+        TimedOut,
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let (proxy_log, api_log, correlation) = loop {
+        let proxy_log = read_file(journey.proxy.log_path());
+        let api_log = journey.api.logs();
+        if let Some(id) = extract_reported_event_id(&proxy_log) {
+            if strip_ansi(&api_log).contains(&id) {
+                break (proxy_log, api_log, Correlation::Converged);
+            }
+        }
+        // The proxy logs a *failed* report with the same `event_id` but a
+        // different message, and `extract_reported_event_id` matches only the
+        // success one. Waiting the window out would then end in "the proxy never
+        // named an event_id" — true, and useless: the report was attempted and
+        // rejected, so no later iteration can change the outcome.
+        if strip_ansi(&proxy_log).contains("redaction telemetry report failed") {
+            break (proxy_log, api_log, Correlation::ReportFailed);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break (proxy_log, api_log, Correlation::TimedOut);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
 
-    // ── Destination 5: the api-server's own log file ──────────────────────
-    let api_log = journey.api.logs();
+    // Leak-safe checks first — see the equivalent note on the forwarded-bytes
+    // check above. Run on the last observed contents whether or not the
+    // correlation converged, so a canary leak is reported as a leak rather
+    // than being masked by the correlation panic below.
+    journey.canary.assert_absent("proxy log file", &proxy_log);
     journey.canary.assert_absent("api-server log", &api_log);
 
-    // ── Cross-process event_id correlation, via logs only (AAASM-5905:
-    //     event_id is dropped before reaching the alert store, so this is
-    //     not reachable through the API — it is the fact this journey
-    //     exists partly to make visible) ────────────────────────────────────
-    let reported_event_id = extract_reported_event_id(&proxy_log).unwrap_or_else(|| {
-        panic!("proxy log must name the event_id it reported to aa-api's telemetry ingest; full log:\n{proxy_log}")
-    });
-    let clean_api_log = strip_ansi(&api_log);
-    assert!(
-        clean_api_log.contains(&reported_event_id),
-        "the event_id the proxy reported ({reported_event_id}) must also appear in the \
-         api-server's own ingest log — otherwise the two processes' evidence cannot be \
-         correlated back to the same redaction event; api log:\n{clean_api_log}"
-    );
+    // Distinguish the three ways this can end without a correlated pair. They
+    // send the next reader to different places: the proxy's RPC failing is an
+    // aa-api reachability problem, no event_id at all is a proxy-side one, and
+    // an id the api-server never echoed means the two processes' evidence
+    // cannot be joined even though both sides reported.
+    match correlation {
+        Correlation::Converged => {}
+        Correlation::ReportFailed => panic!(
+            "the proxy's telemetry report RPC failed, so no event_id was ever accepted \
+             for aa-api to echo; proxy log:\n{}",
+            strip_ansi(&proxy_log)
+        ),
+        Correlation::TimedOut => match extract_reported_event_id(&proxy_log) {
+            None => panic!(
+                "proxy log must name the event_id it reported to aa-api's telemetry ingest, \
+                 within the poll window; full log:\n{proxy_log}"
+            ),
+            Some(id) => panic!(
+                "the event_id the proxy reported ({id}) must also appear in the api-server's \
+                 own ingest log — otherwise the two processes' evidence cannot be correlated \
+                 back to the same redaction event; api log:\n{}",
+                strip_ansi(&api_log)
+            ),
+        },
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
