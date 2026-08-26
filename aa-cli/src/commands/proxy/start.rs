@@ -133,6 +133,14 @@ fn proxy_child_env(listen: &str, gateway: Option<&str>) -> Vec<(&'static str, St
         env.push(("AA_PROXY_GATEWAY_ENDPOINT", gw.to_string()));
         env.push(("AA_PROXY_LLM_ONLY", "false".to_string()));
     }
+    // AAASM-5923/F2: same wiring as `ProxyGuard::build_command` — see that
+    // function's doc comment for why this is unconditional on the
+    // artifact's existence rather than a new opt-in flag.
+    if let Some(path) = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path() {
+        if path.exists() {
+            env.push(("AA_PROXY_TRUSTED_CONFIG_PATH", path.display().to_string()));
+        }
+    }
     env
 }
 
@@ -478,6 +486,42 @@ mod tests {
         assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_LLM_ONLY"));
         // The listen address is always exported.
         assert!(env.contains(&("AA_PROXY_ADDR", "127.0.0.1:8899".to_string())));
+    }
+
+    /// AAASM-5923/F2 (independent review): same wiring/rationale as
+    /// `ProxyGuard::build_command`'s equivalent test — see that test for why
+    /// this is unconditional on the artifact's existence.
+    #[test]
+    fn proxy_child_env_sets_trusted_config_path_when_the_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let expected = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path().unwrap();
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, "{}").unwrap();
+
+        let env = proxy_child_env("127.0.0.1:8899", None);
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert!(
+            env.contains(&("AA_PROXY_TRUSTED_CONFIG_PATH", expected.display().to_string())),
+            "got: {env:?}"
+        );
+    }
+
+    /// Negative control: no artifact on disk means no env var.
+    #[test]
+    fn proxy_child_env_omits_trusted_config_path_when_no_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+
+        let env = proxy_child_env("127.0.0.1:8899", None);
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert!(!env.iter().any(|(k, _)| *k == "AA_PROXY_TRUSTED_CONFIG_PATH"));
     }
 
     /// ADR 0036 D6 (map level): `build_start_command`'s `env_remove` calls

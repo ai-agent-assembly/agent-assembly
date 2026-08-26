@@ -135,6 +135,22 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     if let Some(audit_path) = &opts.audit_jsonl_path {
         cmd.env("AA_PROXY_AUDIT_JSONL_PATH", audit_path);
     }
+    // AAASM-5923/F2 (independent review): `aa-proxy`'s own doc comment on
+    // `ProxyConfig::from_env` says explicitly that `AA_PROXY_TRUSTED_CONFIG_PATH`
+    // is what `aasm run`/`ProxyGuard` is expected to pass at spawn time — but
+    // nothing did, making `aasm integrations install ... --trusted-upstream-proxy`
+    // write an artifact no spawned proxy was ever told to read. Wired here
+    // unconditionally on existence, not behind a new opt-in flag: the
+    // artifact's presence on disk already **is** the operator's declared
+    // intent (the install command is the only thing that ever writes it),
+    // matching this function's existing "if the caller/environment already
+    // decided this, pass it through" shape rather than adding a second place
+    // to decide the same thing.
+    if let Some(path) = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path() {
+        if path.exists() {
+            cmd.env("AA_PROXY_TRUSTED_CONFIG_PATH", &path);
+        }
+    }
     // No log file wired up in this increment (unlike standalone start's
     // --log-file): this proxy's stdout/stderr have no operator watching a
     // terminal for them the way `aasm proxy start` does. Discarding rather
@@ -476,6 +492,64 @@ mod tests {
                 "{key} must not be set when its opt is None"
             );
         }
+    }
+
+    /// AAASM-5923/F2 (independent review): a written trusted-config artifact
+    /// must actually reach the spawned proxy — `aa-proxy`'s own
+    /// `ProxyConfig::from_env` reads only `AA_PROXY_TRUSTED_CONFIG_PATH`, with
+    /// no other fallback, and nothing set it before this fix, making the
+    /// whole install-flags feature inert.
+    #[test]
+    fn build_command_sets_trusted_config_path_when_the_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+        let expected = crate::commands::integrations::trusted_upstream::trusted_upstream_config_path().unwrap();
+        std::fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        std::fs::write(&expected, "{}").unwrap();
+
+        let opts = ProxyGuardOptions {
+            ready_file: PathBuf::from("/tmp/ready"),
+            ca_dir: PathBuf::from("/tmp/ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_TRUSTED_CONFIG_PATH"))
+                .copied()
+                .flatten(),
+            Some(expected.as_os_str())
+        );
+    }
+
+    /// Negative control for the test above: no artifact on disk means no env
+    /// var — proves the wiring is conditional on the file actually existing,
+    /// not merely on `AASM_STATE_DIR` being resolvable.
+    #[test]
+    fn build_command_omits_trusted_config_path_when_no_artifact_exists() {
+        let _guard = crate::test_support::env_guard();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_STATE_DIR", dir.path());
+
+        let opts = ProxyGuardOptions {
+            ready_file: PathBuf::from("/tmp/ready"),
+            ca_dir: PathBuf::from("/tmp/ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+        };
+        let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        std::env::remove_var("AASM_STATE_DIR");
+
+        assert!(!env.contains_key(std::ffi::OsStr::new("AA_PROXY_TRUSTED_CONFIG_PATH")));
     }
 
     /// ADR 0036 D6/Test 6/7: `build_command`'s `env_remove` calls must reach
