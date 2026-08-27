@@ -21,6 +21,12 @@ pools:
   test-single-2:
     limit: 1
     root: null
+  # AAASM-5951's stall-termination tests: a dedicated pool so they never
+  # contend with the SIGINT-relay (test-single-2) or fingerprint (test-single)
+  # cases above.
+  test-single-3:
+    limit: 1
+    root: null
 classes:
   test-class:
     pool: test-single
@@ -39,4 +45,24 @@ classes:
   test-class-zero-grace:
     pool: test-single-2
     grace_secs: 0
+    progress_signals: [cpu]
+  # AAASM-5951: short soft/hard timeouts so the stall-classification tests
+  # don't wait out the real defaults (600s/1800s). soft_timeout_secs=1,
+  # hard_timeout_secs=2 gives a narrow but reliable window for a real
+  # sleep-based test: an owned hung job crosses hard within ~2-3s, a
+  # healthy busy job stays under 1s of no-progress on every poll.
+  test-class-stall:
+    pool: test-single-3
+    soft_timeout_secs: 1
+    hard_timeout_secs: 2
+    grace_secs: 1
+    progress_signals: [cpu]
+  # AAASM-5951: soft_timeout_secs reachable, hard_timeout_secs effectively
+  # unreachable within a test's lifetime — isolates the soft-only path from
+  # the hard/kill path.
+  test-class-soft-only:
+    pool: test-single-3
+    soft_timeout_secs: 1
+    hard_timeout_secs: 9999
+    grace_secs: 1
     progress_signals: [cpu]
