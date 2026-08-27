@@ -21,13 +21,20 @@
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 REPO_ROOT="$(pwd)"
-FAILED=0
 WORK="$(mktemp -d)"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
+# FAILED is a FILE, not a shell variable — several cases below call pass/fail
+# from inside `( cd "$FIXDIR/repo"; ... )` subshells (needed so the cd/env
+# changes for one fixture don't leak into the next case), and a subshell's
+# variable writes never propagate back to the parent shell. A plain
+# FAILED=1 inside one of those blocks would be silently lost, turning a real
+# assertion failure into an overall PASS. Appending a byte to a file has no
+# such scoping problem.
+FAILED_MARKER="$WORK/.failed"
 pass() { printf '  \xe2\x9c\x93 %s\n' "$1"; }
-fail() { printf '  \xe2\x9c\x97 %s\n' "$1"; FAILED=1; }
+fail() { printf '  \xe2\x9c\x97 %s\n' "$1"; printf 'x' >> "$FAILED_MARKER"; }
 
 assert_contains() { # assert_contains <haystack> <needle-regex> <description>
   if printf '%s' "$1" | grep -qE "$2"; then pass "$3"; else fail "$3 (did not find /$2/)"; fi
@@ -316,6 +323,38 @@ else
   pass "release-tag-guard.sh defines no skip/force flag"
 fi
 
+echo "== Case 8b: --remote cannot be used to point at the real org remote =="
+# An explicit --remote is meant ONLY for a throwaway fixture — it must not
+# become a way to reuse the "explicit opt-out" branch while still resolving
+# to the real ai-agent-assembly/agent-assembly remote (e.g. `--remote
+# remote` naming the default remote explicitly). Build a local bare repo
+# whose path literally contains "ai-agent-assembly/agent-assembly" — good
+# enough to fool a URL substring check — and confirm the guard refuses
+# rather than silently skipping the org-identity check for it.
+FIX8B="$WORK/fx8b"
+mkdir -p "$FIX8B/ai-agent-assembly/agent-assembly.git"
+git init --bare -q "$FIX8B/ai-agent-assembly/agent-assembly.git"
+git init -q "$FIX8B/repo"
+(
+  cd "$FIX8B/repo"
+  git remote add lookalike "$FIX8B/ai-agent-assembly/agent-assembly.git"
+  git config user.email t@t.com
+  git config user.name t
+  mkdir -p scripts
+  cp "$REPO_ROOT/scripts/release-tag-guard.sh" scripts/release-tag-guard.sh
+  cat > scripts/release-readiness.sh <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x scripts/release-tag-guard.sh scripts/release-readiness.sh
+  echo base > README.md
+  git add -A
+  git commit -qm base
+  OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx8b --remote lookalike 2>&1)"
+  EXIT=$?
+  if [ "$EXIT" -ne 0 ]; then pass "guard refuses an explicit --remote whose URL resolves to the real org repo"; else fail "guard allowed --remote to point at a URL matching the real org repo: $OUT"; fi
+)
+
 # ---------------------------------------------------------------------------
 # Case 9 (self-check): this harness never touches the real remote. Grep this
 # file itself for a literal push to the real remote name outside the
@@ -341,7 +380,7 @@ else
 fi
 
 echo
-if [ "$FAILED" -ne 0 ]; then
+if [ -f "$FAILED_MARKER" ]; then
   echo "release-relay-negative-control: FAILED"
   exit 1
 fi

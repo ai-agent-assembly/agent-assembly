@@ -56,19 +56,28 @@ fail() {
   exit 1
 }
 
-# --- 1. Remote identity — refuse a non-canonical remote unless the caller
-# explicitly opted out via --remote. This is what keeps a fixture/dry-run
-# invocation from ever reaching the real org remote by accident: the
-# negative-control harness MUST pass --remote to point at its own throwaway
-# bare repo, and every other caller gets the real-remote check for free.
-if [ "$REMOTE_EXPLICIT" -eq 0 ]; then
-  REMOTE_URL="$(git remote get-url "$REMOTE_NAME" 2>/dev/null || true)"
-  case "$REMOTE_URL" in
-    *ai-agent-assembly/agent-assembly*) : ;;
-    *)
-      fail "remote '$REMOTE_NAME' does not resolve to ai-agent-assembly/agent-assembly (got: '${REMOTE_URL:-<missing>}') — pass --remote explicitly only for a throwaway fixture repo, never for a real push"
-      ;;
-  esac
+# --- 1. Remote identity. The URL is always resolved and always checked —
+# there is no code path where it is skipped — because a caller passing
+# `--remote remote` (same name as the default) must not be able to silently
+# reuse the org-remote-check-skipping branch while still pointing at the
+# real org remote. The two outcomes:
+#   - No --remote passed (default path): the resolved URL MUST match the
+#     real org repo, else refuse. This is the normal-caller case.
+#   - --remote passed explicitly: the resolved URL MUST NOT match the real
+#     org repo, else refuse. An explicit override is, by construction, only
+#     ever legitimate against a throwaway fixture remote — pointing it at
+#     the real org repo (accidentally or otherwise) is refused outright,
+#     not silently allowed through the "explicit opt-out" branch.
+REMOTE_URL="$(git remote get-url "$REMOTE_NAME" 2>/dev/null || true)"
+case "$REMOTE_URL" in
+  *ai-agent-assembly/agent-assembly*) REMOTE_IS_ORG=1 ;;
+  *) REMOTE_IS_ORG=0 ;;
+esac
+if [ "$REMOTE_EXPLICIT" -eq 0 ] && [ "$REMOTE_IS_ORG" -eq 0 ]; then
+  fail "remote '$REMOTE_NAME' does not resolve to ai-agent-assembly/agent-assembly (got: '${REMOTE_URL:-<missing>}') — pass --remote explicitly only for a throwaway fixture repo, never for a real push"
+fi
+if [ "$REMOTE_EXPLICIT" -eq 1 ] && [ "$REMOTE_IS_ORG" -eq 1 ]; then
+  fail "--remote '$REMOTE_NAME' was passed explicitly but resolves to the real ai-agent-assembly/agent-assembly remote — an explicit --remote override is only for a throwaway fixture repo; refusing rather than silently allowing it against the real org remote"
 fi
 
 # --- 2. Clean tree + fetch. A dirty tree or a stale local main risks tagging
