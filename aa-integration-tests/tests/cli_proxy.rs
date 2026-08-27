@@ -331,15 +331,45 @@ fn proxy_status_stale_pid_cleans_up() {
 
 // ─────────────────────────────────────── start (needs aa-proxy binary) ───────
 
+/// Returns `true` when the `aa-proxy` binary can be located on the ambient
+/// `PATH`/`HOME` (i.e. `resolve_binary()` in `start.rs` would succeed here).
+///
+/// Mirrors `aa_cli::commands::proxy::start::resolve_binary`'s search order —
+/// `which aa-proxy` then `~/.cargo/bin/aa-proxy` — so this guard cannot drift
+/// from what the CLI under test actually does (see `gateway_binary_available`
+/// in `cli_gateway.rs`, the AAASM-5937 precedent for this pattern). AAASM-4020
+/// dropped the `./target/release/aa-proxy` cwd-relative fallback from
+/// `resolve_binary()`; a workspace `target/` build no longer affects
+/// resolution at all, so this guard must not consult any `target/` path.
+fn proxy_binary_available() -> bool {
+    #[cfg(unix)]
+    {
+        if let Ok(out) = std::process::Command::new("which").arg("aa-proxy").output() {
+            if out.status.success() {
+                let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
+                if p.exists() {
+                    return true;
+                }
+            }
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        if PathBuf::from(home).join(".cargo").join("bin").join("aa-proxy").exists() {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[test]
 fn proxy_start_exits_failure_when_binary_not_found() {
-    // `resolve_binary()` in start.rs also checks `./target/release/aa-proxy`;
-    // skip gracefully on machines where a release build already exists there.
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace parent");
-    if workspace.join("target").join("release").join("aa-proxy").exists() {
-        eprintln!("proxy_start_exits_failure_when_binary_not_found: skipping — release build exists");
+    if proxy_binary_available() {
+        eprintln!(
+            "proxy_start_exits_failure_when_binary_not_found: skipping — \
+             aa-proxy resolvable via `which`/~/.cargo/bin on this host"
+        );
         return;
     }
 
