@@ -240,6 +240,45 @@ RC7_LOOSE=$?
 check "T7 status exits zero when well under a generous budget" \
   "$RC7_LOOSE" "0"
 
+# ---------------------------------------------------------------------------
+# T8: resolve_effective_target_dir precedence — env override > worktree-local
+# .cargo/config.toml > global ~/.cargo/config.toml > default "<wt>/target".
+# Sourced directly (function-level test) rather than through status/reclaim:
+# an env var set in THIS process cannot be attributed to a DIFFERENT lane's
+# process from outside, so status/reclaim deliberately never read
+# CARGO_TARGET_DIR from their own environment when resolving another
+# worktree's target dir — only the durable, worktree-local
+# .cargo/config.toml is a scannable-from-outside signal (exercised by T2-T7
+# above via real .cargo/config.toml files). This test instead proves the
+# function's own precedence contract directly, which is what a caller
+# resolving ITS OWN target dir (e.g. before running reclaim from inside a
+# lane) actually depends on.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC1090
+source <(sed -n '/^resolve_effective_target_dir()/,/^}/p' "$TOOL")
+
+T8_WT="$WORKDIR/t8-wt"
+mkdir -p "$T8_WT"
+check "T8a default: no override, no local config, no global -> <wt>/target" \
+  "$(resolve_effective_target_dir "$T8_WT" "" "")" "$T8_WT/target"
+
+check "T8b global fallback: no override, no local config, global set -> global" \
+  "$(resolve_effective_target_dir "$T8_WT" "" "$WORKDIR/some-global-dir")" \
+  "$WORKDIR/some-global-dir"
+
+mkdir -p "$T8_WT/.cargo"
+cat >"$T8_WT/.cargo/config.toml" <<EOF
+[build]
+target-dir = "$WORKDIR/t8-local-override"
+EOF
+check "T8c worktree-local config beats global" \
+  "$(resolve_effective_target_dir "$T8_WT" "" "$WORKDIR/some-global-dir")" \
+  "$WORKDIR/t8-local-override"
+
+check "T8d explicit override beats everything, including local config" \
+  "$(resolve_effective_target_dir "$T8_WT" "$WORKDIR/env-override" "$WORKDIR/some-global-dir")" \
+  "$WORKDIR/env-override"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
   echo "All rust-target-lifecycle negative-control cases passed."

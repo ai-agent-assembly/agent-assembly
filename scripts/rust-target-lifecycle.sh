@@ -78,6 +78,16 @@ resolve_global_target_dir() {
 
 # Resolve the effective target-dir for a worktree at $1, given optional
 # CARGO_TARGET_DIR env override at $2 (empty string if unset).
+#
+# NOTE on $2: status/reclaim always pass "" here for OTHER worktrees, on
+# purpose. An env var set in one process cannot be attributed to a
+# DIFFERENT lane's process from outside — there's no durable, scannable
+# record of what CARGO_TARGET_DIR a lane's shell session used. The only
+# durable, worktree-attributable override this tool can see from outside is
+# the worktree-local .cargo/config.toml, so that's what precedence below is
+# actually built to read for other lanes. A caller resolving ITS OWN target
+# dir (from inside that lane, where $CARGO_TARGET_DIR is a real env var) can
+# pass it as $2 and get the same precedence Cargo itself uses.
 resolve_effective_target_dir() {
   local worktree="$1" env_override="$2" global_dir="$3"
   if [ -n "$env_override" ]; then
