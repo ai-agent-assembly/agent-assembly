@@ -137,29 +137,42 @@ if ! bash scripts/release-readiness.sh "$VERSION"; then
   fail "scripts/release-readiness.sh reported failing check(s) — see output above"
 fi
 
-# --- 5. Strict candidate_sha == HEAD binding. release-readiness.sh check 14
-# already runs check-release-evidence.py's R1 range check, which
-# deliberately RELAXES for mechanical-only drift between the evidence's
-# candidate_sha and the tag_target (e.g. version-bump/CHANGELOG commits made
-# after QA captured its candidate) — that relaxation is correct for THAT
-# checker's purpose (it does not want mechanical churn to force a full QA
-# re-run). This guard is defense-in-depth on top of it, not a replacement:
-# the literal commit this script is about to tag must be the exact commit
-# the evidence record names, with zero drift of any kind, mechanical or not.
-# A HEAD~1 candidate that R1 would still pass (mechanical-only diff to HEAD)
-# must still be refused here.
-EVIDENCE_FILE="docs/release/qa-signoff/v${VERSION}.evidence.json"
-if [ ! -f "$EVIDENCE_FILE" ]; then
-  fail "release-evidence record missing ($EVIDENCE_FILE) — run /release-qa-gate $VERSION first"
-fi
-CANDIDATE_SHA="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['candidate']['candidate_sha'])" "$EVIDENCE_FILE" 2>/dev/null || true)"
-if [ -z "$CANDIDATE_SHA" ]; then
-  fail "could not read candidate.candidate_sha from $EVIDENCE_FILE"
+# --- 5. Fresh candidate-binding re-verification, immediately before tagging.
+# release-readiness.sh check 14 (step 4 above) already ran
+# check-release-evidence.py's R1/R1b against HEAD — this step exists only as
+# TOCTOU defense-in-depth for the narrow window between that check and the
+# `git tag` below, re-running the exact same authoritative check fresh
+# rather than reinventing a stricter rule.
+#
+# AAASM-5998 (fixed here): an earlier version of this step required literal
+# `candidate_sha == HEAD` with zero tolerance for ANY drift, reasoning that
+# R1's mechanical-drift relaxation was too permissive for this final gate.
+# That was wrong, not just stricter: `build-release-evidence.py` captures
+# `candidate_sha` as HEAD *before* the evidence file is committed (nobody
+# can know a commit's own hash before making it), so committing that file —
+# which `qa-verification-manifest-schema.md` requires — necessarily
+# advances HEAD past the `candidate_sha` just written inside it. Literal
+# equality is therefore unreachable for any real, committed evidence
+# record; the old check could never pass on a genuine candidate.
+#
+# R1/R1b (AAASM-5878/5899, already accepted product design, already the
+# authoritative check release-readiness.sh runs) solve exactly this: R1
+# excludes the evidence file's own *creation* commit from its path
+# classification (there's no prior record for that commit to have edited),
+# and requires everything else between candidate_sha and tag_target to be
+# release-mechanical (version bump, CHANGELOG) or absent. R1b separately
+# refuses if the evidence file is later *modified* (not just added) in that
+# range — catching a rewritten authorization record. Together they bind the
+# tag target to the real candidate with the same rigor a literal-equality
+# check intended, without the impossible constraint. Re-verifying them here
+# is strictly stronger than the old step: every case the old check refused
+# (a materially different HEAD, a tampered evidence file, a candidate that
+# isn't even an ancestor) still refuses; the only case that changes is a
+# genuine evidence-commit-then-tag flow, which now correctly passes.
+if ! python3 scripts/qa/check-release-evidence.py --version "$VERSION" --tag-target HEAD; then
+  fail "check-release-evidence.py refused HEAD as the tag target — see output above"
 fi
 HEAD_SHA="$(git rev-parse HEAD)"
-if [ "$CANDIDATE_SHA" != "$HEAD_SHA" ]; then
-  fail "candidate SHA mismatch — evidence names $CANDIDATE_SHA, HEAD is $HEAD_SHA (release-readiness.sh check 14's R1 relaxation permits mechanical-only drift here; this guard does not — re-run /release-qa-gate $VERSION on the exact commit you intend to tag)"
-fi
 
 # --- 6. Create and push the annotated tag. This is the ONLY write this
 # script performs, and only after every check above passed.
