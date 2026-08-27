@@ -122,9 +122,22 @@ This is the point of no return. Tag pushes can be deleted but the bytes
 they trigger downstream (crates.io, npm, PyPI) **cannot be unpublished**.
 
 ```bash
-git tag -a v<version> -m "Release v<version>"
-git push remote v<version>
+bash scripts/release-tag-guard.sh <version>
 ```
+
+**Do not run `git tag` / `git push` directly for this step** (AAASM-5879).
+`scripts/release-tag-guard.sh` is the only sanctioned way to create/push
+the tag: it re-runs `scripts/release-readiness.sh` (all 14 checks,
+including sections 1.5/1.6's security/QA sign-off PASS), enforces a strict
+`candidate_sha == HEAD` binding against the committed release-evidence
+record, refuses if the tag already exists, and refuses on a remote that
+doesn't resolve to `ai-agent-assembly/agent-assembly`. A raw `git tag -a`
++ `git push remote <tag>` bypasses every one of those checks — the exact
+kind of undocumented second path this project's release automation is
+built to not have. See
+[`release-tag-guard.sh`](../../scripts/release-tag-guard.sh) and the
+[`release-tag-cut` skill](../../.claude/skills/release-tag-cut/SKILL.md)
+step 4 for the full contract.
 
 Note: branches and tags push to `remote` (`ai-agent-assembly/agent-assembly`),
 **not** `origin` (the operator's personal fork).
