@@ -161,6 +161,15 @@ class GitRepo:
             return None
         return result.stdout.strip()
 
+    def first_add_commit(self, ref: str, path: str) -> str | None:
+        """The earliest commit reachable from `ref` that ADDS `path` — its
+        first-ever appearance in that history. None if `path` has no history
+        reachable from `ref` at all."""
+        out = self.run(
+            "log", "--format=%H", "--diff-filter=A", "--reverse", ref, "--", path,
+        ).stdout.splitlines()
+        return out[0] if out else None
+
     def show_file(self, ref: str, path: str) -> str | None:
         result = self.run("show", f"{ref}:{path}", check=False)
         if result.returncode != 0:
@@ -419,13 +428,36 @@ def rule_r1_candidate_binding(
 def rule_r1b_self_protection(
     git: GitRepo, evidence: dict[str, Any], tag_target: str, evidence_relpath: str,
 ) -> list[str]:
-    candidate_sha = evidence["candidate"]["candidate_sha"]
+    """Refuses if the evidence file's content has ever changed since its own
+    first appearance in history — anchored on that first-add commit, NOT on
+    `evidence["candidate"]["candidate_sha"]`.
+
+    AAASM-5998 (fixed here, second iteration): the first version of this
+    content-comparison rewrite anchored the search range on candidate_sha —
+    a field READ FROM THE EVIDENCE FILE ITSELF, i.e. attacker-controlled
+    input, since forging that field is exactly what this rule exists to
+    catch. An independent re-verification found this made the rule
+    trivially defeatable: a single commit that both rewrites the evidence
+    content AND repoints candidate_sha at that same commit shrinks the
+    search range to zero, so no second content state is ever observed
+    (reproduced end-to-end against the real, unmodified guard — a forged
+    PASS verdict for a genuinely FAILED journey got tagged and pushed).
+    Anchoring on the file's own real first-add commit instead removes the
+    attacker's ability to choose the search boundary at all: the invariant
+    checked is "this specific v<X>.evidence.json's content has never
+    changed since it was first created," independent of what any field
+    inside it claims.
+    """
     tag_target_sha = git.rev_parse(tag_target)
-    commits = git.log_commits_touching(candidate_sha, tag_target_sha, evidence_relpath)
-    if not commits:
+    first_add = git.first_add_commit(tag_target_sha, evidence_relpath)
+    if first_add is None:
+        # No history for this path reachable from tag_target at all — main()
+        # already refused earlier if the file doesn't exist on disk at
+        # tag_target; this is here only as a defensive no-op, never expected
+        # to be hit in practice.
         return []
-    # Distinct content states the file held across every commit that
-    # touched it in range, excluding states where it didn't exist (e.g. an
+    # Distinct content states the file held from its own first-add commit
+    # through tag_target, excluding states where it didn't exist (e.g. an
     # intermediate delete) — content-based, not commit-status-based, so a
     # delete-then-re-add with different content (typed D then A by git,
     # never M) is caught exactly the same as a direct edit. The file is
@@ -433,13 +465,15 @@ def rule_r1b_self_protection(
     # never show a second, different one afterward — the post-publish
     # appender (Subtask C, AAASM-5900) does not exist yet, so there is no
     # legitimate reason for a second state to appear at all yet.
-    blobs = {blob for commit in commits if (blob := git.blob_at(commit, evidence_relpath))}
+    commits = git.log_commits_touching(first_add, tag_target_sha, evidence_relpath)
+    blobs = {b for c in [first_add, *commits] if (b := git.blob_at(c, evidence_relpath))}
     if len(blobs) <= 1:
         return []
     return [
-        "R1b: authorization record modified after the candidate it authorizes — "
-        f"{evidence_relpath} held {len(blobs)} distinct content states across commit(s) "
-        f"{', '.join(commits)} in {candidate_sha}..{tag_target_sha}"
+        "R1b: authorization record modified after it was first created — "
+        f"{evidence_relpath} held {len(blobs)} distinct content states since its own "
+        f"first-add commit {first_add} through {tag_target_sha} (independent of what "
+        f"candidate_sha inside the file itself claims)"
     ]
 
 

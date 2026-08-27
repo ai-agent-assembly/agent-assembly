@@ -478,6 +478,33 @@ C=$(commit_all "$dir" "attack: edit the qa sign-off after candidate was captured
 assert_exit "T2h" 1 "$dir" "$C"
 
 # ---------------------------------------------------------------------------
+# T2i: evidence tampered AND candidate_sha repointed at the tamper commit
+# itself, in the SAME commit -> BLOCK (R1b). This is the exact attack an
+# independent re-verification of AAASM-5998's first R1b rewrite found: that
+# rewrite anchored its search range on evidence["candidate"]["candidate_sha"]
+# — a field READ FROM the file R1b exists to protect, i.e. attacker-
+# controlled — so a single commit that both forges the verdict AND
+# repoints candidate_sha at that same commit shrank the search range to
+# zero and evaded detection entirely (a genuinely-FAILED journey got
+# tagged and pushed in the reproduction). Fixed by anchoring on the file's
+# own real first-add commit instead, which the attacker cannot choose.
+# ---------------------------------------------------------------------------
+echo "== T2i: forged evidence with candidate_sha repointed at the forgery itself -> BLOCK (R1b) =="
+dir=$(new_repo t2i)
+write_common_files "$dir"
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+B=$(commit_all "$dir" "record evidence")
+# Sanity: the honest evidence, unmodified, passes.
+assert_exit "T2i sanity (honest evidence passes)" 0 "$dir" "$B"
+patch_evidence "$dir" "doc['journeys'][0]['status'] = 'PASS'; doc['verdict'] = 'PASS'; doc['candidate']['candidate_sha'] = '$B'"
+D=$(commit_all "$dir" "attack: forge PASS and repoint candidate_sha at this same commit")
+assert_exit "T2i" 1 "$dir" "$D"
+assert_output_contains "T2i names R1b" "authorization record modified"
+
+# ---------------------------------------------------------------------------
 # T3a: catalog gains a new release-blocking journey at target not in evidence -> BLOCK
 # ---------------------------------------------------------------------------
 echo "== T3a: new required journey added to catalog at target -> BLOCK =="
