@@ -100,12 +100,19 @@ fn spawn_devint(tracker: &TaskTracker, token: &CancellationToken, config: &Runti
 #[cfg(test)]
 mod devint_wiring_tests {
     use super::*;
+    use crate::test_env::EnvGuard;
 
-    /// Build the config the way the binary does, so the test also pins that
-    /// `AA_DEVINT_ENABLED` is what turns the surface on.
-    fn config_with_devint(enabled: bool) -> RuntimeConfig {
-        std::env::set_var("AA_AGENT_ID", "devint-wiring-test");
-        std::env::set_var("AA_DEVINT_ENABLED", if enabled { "1" } else { "0" });
+    /// Set the env vars the config load reads, on an already-held guard, so
+    /// the test also pins that `AA_DEVINT_ENABLED` is what turns the surface
+    /// on.
+    ///
+    /// Takes `&mut EnvGuard` rather than acquiring its own — the crate-wide
+    /// lock (AAASM-5970) is held for a guard's whole lifetime and is not
+    /// reentrant, so a helper called while `redirect_into`'s guard is still
+    /// alive must extend that guard instead of trying to take the lock again.
+    fn config_with_devint(env: &mut EnvGuard, enabled: bool) -> RuntimeConfig {
+        env.set("AA_AGENT_ID", "devint-wiring-test");
+        env.set("AA_DEVINT_ENABLED", if enabled { "1" } else { "0" });
         let config = RuntimeConfig::from_env().expect("config");
         assert_eq!(config.devint_enabled, enabled);
         config
@@ -113,10 +120,16 @@ mod devint_wiring_tests {
 
     /// Redirect every path the DI-API touches into `dir`, so no test ever reads
     /// or writes the developer's real `~/.aa` or `~/.aasm`.
-    fn redirect_into(dir: &std::path::Path) {
-        std::env::set_var("AA_DEVINT_SOCKET", dir.join("run/devint.sock"));
-        std::env::set_var("AA_DEVINT_TOKEN_FILE", dir.join("run/devint.token"));
-        std::env::set_var("AASM_STATE_DIR", dir.join("state"));
+    ///
+    /// Returns the guard so callers keep it alive for the rest of the test
+    /// (and can add more vars to it, e.g. via [`config_with_devint`]) rather
+    /// than each acquiring their own lock.
+    fn redirect_into(dir: &std::path::Path) -> EnvGuard {
+        let mut env = EnvGuard::new();
+        env.set("AA_DEVINT_SOCKET", dir.join("run/devint.sock"));
+        env.set("AA_DEVINT_TOKEN_FILE", dir.join("run/devint.token"));
+        env.set("AASM_STATE_DIR", dir.join("state"));
+        env
     }
 
     /// The wiring, end to end: a runtime asked for the DI-API enrols the CLI,
@@ -124,11 +137,11 @@ mod devint_wiring_tests {
     #[tokio::test]
     async fn an_enabled_runtime_serves_the_di_api_to_a_real_client() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect_into(dir.path());
+        let mut env = redirect_into(dir.path());
 
         let tracker = TaskTracker::new();
         let token = CancellationToken::new();
-        spawn_devint(&tracker, &token, &config_with_devint(true));
+        spawn_devint(&tracker, &token, &config_with_devint(&mut env, true));
 
         let socket = crate::devint::devint_socket_path().expect("socket path");
         let token_file = crate::devint::enrolment_path().expect("token path");
@@ -155,11 +168,11 @@ mod devint_wiring_tests {
     #[tokio::test]
     async fn a_runtime_that_does_not_want_the_di_api_binds_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect_into(dir.path());
+        let mut env = redirect_into(dir.path());
 
         let tracker = TaskTracker::new();
         let token = CancellationToken::new();
-        let config = config_with_devint(false);
+        let config = config_with_devint(&mut env, false);
         if config.devint_enabled {
             spawn_devint(&tracker, &token, &config);
         }
@@ -175,14 +188,15 @@ mod devint_wiring_tests {
     #[tokio::test]
     async fn an_unbindable_di_api_is_skipped_rather_than_fatal() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect_into(dir.path());
-        // A socket path whose parent cannot be created.
-        std::env::set_var("AA_DEVINT_SOCKET", dir.path().join("not-a-dir/run/devint.sock"));
+        let mut env = redirect_into(dir.path());
+        // A socket path whose parent cannot be created — overrides the value
+        // `redirect_into` just set, on the same already-held guard.
+        env.set("AA_DEVINT_SOCKET", dir.path().join("not-a-dir/run/devint.sock"));
         std::fs::write(dir.path().join("not-a-dir"), b"file").expect("seed");
 
         let tracker = TaskTracker::new();
         let token = CancellationToken::new();
-        spawn_devint(&tracker, &token, &config_with_devint(true));
+        spawn_devint(&tracker, &token, &config_with_devint(&mut env, true));
 
         tracker.close();
         tracker.wait().await;
@@ -1243,6 +1257,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
+    use crate::test_env::EnvGuard;
+
     /// Verifies that `load_policy(None)` returns empty rules (enforcement disabled).
     #[test]
     fn load_policy_none_returns_empty_rules() {
@@ -1408,9 +1424,13 @@ mod tests {
 
     #[test]
     fn spawn_proxy_binary_not_found_emits_degradation() {
-        // Temporarily set PATH to empty so `which("aa-proxy")` fails.
-        let orig_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", "");
+        // Temporarily set PATH to empty so `which("aa-proxy")` fails. Goes
+        // through `EnvGuard` (AAASM-5970) rather than a bare `set_var` +
+        // manual restore: the manual restore only ran on the success path,
+        // so a panicking assertion below used to leave PATH blank for every
+        // test the harness scheduled afterwards.
+        let mut env = EnvGuard::new();
+        env.set("PATH", "");
 
         let tracker = TaskTracker::new();
         let (tx, mut rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
@@ -1418,8 +1438,6 @@ mod tests {
         let mut degraded = Vec::new();
 
         super::spawn_proxy(&tracker, &tx, active_layers, None, &mut degraded);
-
-        std::env::set_var("PATH", &orig_path);
 
         // Binary not found should immediately degrade.
         assert!(degraded.contains(&"proxy".to_string()));
@@ -1452,8 +1470,9 @@ mod tests {
             return;
         }
 
+        let mut env = EnvGuard::new();
         let orig_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{orig_path}", tmp.path().display()));
+        env.set("PATH", format!("{}:{orig_path}", tmp.path().display()));
 
         let tracker = TaskTracker::new();
         let (tx, mut rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
@@ -1471,8 +1490,6 @@ mod tests {
             .await
             .expect("proxy task did not exit within timeout");
 
-        std::env::set_var("PATH", &orig_path);
-
         let event = rx.try_recv().unwrap();
         match event {
             crate::pipeline::PipelineEvent::LayerDegradation(info) => {
@@ -1482,6 +1499,47 @@ mod tests {
             }
             _ => panic!("expected LayerDegradation event"),
         }
+    }
+
+    /// Falsifiability check for AAASM-5970 AC5: a test that panics mid-body
+    /// while it holds an `EnvGuard` over `PATH` must not leave `PATH`
+    /// mutated for whatever the test harness schedules next.
+    ///
+    /// This is exactly the property the two `spawn_proxy_*` tests above
+    /// need and the pre-fix code did not have: `spawn_proxy_binary_not_found_emits_degradation`
+    /// used to call `std::env::set_var("PATH", &orig_path)` only after its
+    /// assertions ran, so a failing assertion left `PATH` blank for every
+    /// later test. Verified manually: temporarily replacing `EnvGuard`'s
+    /// `Drop` impl with a no-op reddens this test (`PATH` stays
+    /// `"/definitely-not-the-real-path"` after the panic); restoring the
+    /// real `Drop` impl turns it green again. See AAASM-5970 for the
+    /// before/after record.
+    #[test]
+    fn a_panic_while_path_is_guarded_still_restores_path() {
+        let original = std::env::var_os("PATH");
+
+        // Run the panicking body on its own thread: `std::thread::spawn` +
+        // `.join()` gives a real unwind through `EnvGuard`'s `Drop`, and
+        // isolates that panic from this test's own pass/fail (the default
+        // panic hook still prints it, which is expected and fine).
+        let panicked = std::thread::spawn(|| {
+            let mut env = EnvGuard::new();
+            env.set("PATH", "/definitely-not-the-real-path");
+            panic!("AAASM-5970 negative control: simulated mid-body failure while PATH is guarded");
+        })
+        .join()
+        .is_err();
+        assert!(
+            panicked,
+            "the spawned closure must have panicked for this to be a real check"
+        );
+
+        assert_eq!(
+            std::env::var_os("PATH"),
+            original,
+            "PATH must be exactly what it was before the panic — a guard that only restores \
+             on its owner's success path (the pre-AAASM-5970 behaviour) leaves it corrupted here"
+        );
     }
 
     /// Verify the broadcast channel integration: send a PipelineEvent through
