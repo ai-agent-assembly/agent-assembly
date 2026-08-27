@@ -473,6 +473,12 @@ holder5_pid=$!
 if ! wait_for_start "$marker5"; then
   echo "  ✗ holder never started — cannot exercise case 5"
   FAILED=1
+  # --mode hang blocks in signal.pause() forever — without this the holder
+  # outlives the script (the EXIT trap only removes AA_QA_LOCK_DIR, it
+  # never kills background PIDs) and, since it's still on test-single-3,
+  # would falsely saturate that pool for case 7.
+  kill "$holder5_pid" 2>/dev/null
+  wait "$holder5_pid" 2>/dev/null
 else
   # While the holder is stalled but not yet killed, the pool is genuinely
   # saturated — the setup this case's retry claim depends on (same
@@ -504,6 +510,8 @@ echo "== Case 7 (AAASM-5953): an unrelated class continues (and can still acquir
 AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" breaker record-failure test-class-stall 1 >/dev/null 2>&1  # threshold override: trips on the first failure
 tripped_code=$?
 assert_eq "test-class-stall's breaker trips open" "$tripped_code" "6"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" breaker check test-class-stall >/dev/null 2>&1
+assert_eq "test-class-stall's breaker reads back OPEN (the actual precondition the rest of this case depends on, not just record-failure's own return code)" "$?" "6"
 AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" breaker check test-class-soft-only >/dev/null 2>&1
 assert_eq "test-class-soft-only (shares test-single-3 with the tripped class) still checks closed" "$?" "0"
 marker7="$(mktemp)"
