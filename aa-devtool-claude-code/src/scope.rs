@@ -563,14 +563,22 @@ mod tests {
         assert_eq!(ca_source_from(Some(over), None), Some(PathBuf::from("/o/ca-cert.pem")));
     }
 
-    /// A CA certificate planted at the *old* guessed location cannot be selected
-    /// as trust material (AAASM-5956 AC6).
+    /// A CA certificate is reachable only when a root explicitly names it
+    /// (AAASM-5956 AC6).
     ///
     /// The substitution vector needed one specific input — no `AA_CA_DIR` and no
     /// `HOME` — to make the resolver name a cwd-relative path. A real file is
     /// planted at exactly the layout the old code would have produced, and the
-    /// assertion is that the resolver names nothing at all, so the plant cannot
-    /// be reached however the daemon's working directory is arranged.
+    /// test turns the root on and off around it: with a root, this very file is
+    /// what the rule names, which is what makes the plant a faithful stand-in for
+    /// the old `.` fallback's target rather than an arbitrary temporary file;
+    /// with no root, that same file becomes unnameable, so no arrangement of the
+    /// daemon's working directory can select it.
+    ///
+    /// Both halves are needed. Asserting only that nothing is named would hold
+    /// just as well for a rule that had stopped resolving anything at all, and
+    /// the plant would then be decorative — created, but causally absent from
+    /// every assertion.
     ///
     /// The plant is deliberately a file that *exists*: `ClaudeCodePaths::ca_source`
     /// filters on `is_file()`, which meant an absent plant reported the
@@ -578,7 +586,7 @@ mod tests {
     /// read. Testing with an absent file would therefore have tested the case
     /// that was never the problem.
     #[test]
-    fn a_certificate_planted_at_the_old_guessed_location_cannot_be_selected() {
+    fn a_certificate_is_reachable_only_when_a_root_explicitly_names_it() {
         let dir = tempfile::tempdir().unwrap();
         let planted = dir.path().join(".aa").join("ca").join("ca-cert.pem");
         std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
@@ -586,14 +594,25 @@ mod tests {
         assert!(planted.is_file(), "the plant must exist for this test to mean anything");
 
         assert_eq!(
+            ca_source_from(None, Some(dir.path().to_path_buf())),
+            Some(planted.clone()),
+            "given a root, the rule must name exactly the planted layout — otherwise the \
+             plant is not the file the old fallback would have selected"
+        );
+
+        assert_eq!(
             ca_source_from(None, None),
             None,
-            "with no AA_CA_DIR and no HOME the resolver must name no CA path, so no \
-             relative plant is reachable from any working directory"
+            "with no AA_CA_DIR and no HOME the resolver must name no CA path, so that same \
+             file is unreachable from any working directory"
         );
 
         // And the same for the state root, whose guessed form was the sibling
         // `./.aasm/integrations` under that same directory.
+        assert_eq!(
+            state_root_from(None, Some(dir.path().to_path_buf())),
+            Some(dir.path().join(".aasm").join("integrations"))
+        );
         assert_eq!(state_root_from(None, None), None);
     }
 }
