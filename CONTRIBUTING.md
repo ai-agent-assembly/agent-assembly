@@ -38,6 +38,12 @@ cargo nextest run --workspace
 
 ## Faster builds (optional)
 
+> For the full picture — fast edit loop, targeted tests, multi-agent/worktree
+> scheduling, sccache, disk-pressure handling — see
+> [`docs/bench-5992/rust-dev-performance-policy.md`](docs/bench-5992/rust-dev-performance-policy.md)
+> (AAASM-5991). This section and the next cover the two habits worth knowing
+> day-to-day; that doc is the reference.
+
 Two optimizations cut local build / rebuild time. The profile tuning is always
 on; the faster linker is opt-in.
 

@@ -21,8 +21,9 @@
 # Deliberately-excluded directories (not book content by design):
 #   docs/release/       -- per-release runbooks/signoffs, referenced by name/URL only
 #   docs/superpowers/    -- planning/spec scratch space, never published
-#   docs/bench-5992/     -- AAASM-5992 benchmark spike evidence, cited by Jira/PR
-#                            comment links, not meant to be published in the book
+#   docs/bench-5992/     -- AAASM-5992 benchmark evidence + the resulting Rust
+#                            dev performance policy, cited by Jira/PR/CONTRIBUTING.md
+#                            links, not meant to be published in the book
 #
 # Scope is Markdown files only (mirrors check-doc-links.sh); non-.md assets
 # under docs/ (book.toml, theme/, *.js, *.json, ...) are book plumbing, not
