@@ -64,8 +64,23 @@ fn default_audit_dir() -> Option<PathBuf> {
     audit_dir_from(non_empty_env("AA_AUDIT_DIR"), dirs::data_dir())
 }
 
+/// Screen an override value, treating empty as absent.
+///
+/// # Why this is separate from [`non_empty_env`]
+///
+/// This screen is the *only* thing standing between an empty `AA_AUDIT_DIR` and a
+/// cwd-relative audit sink: [`audit_dir_from`] uses an override verbatim, so
+/// `Some("")` becomes the audit directory itself and `audit_file_path` joins the
+/// governance JSONL onto `""` — the forked-hash-chain outcome described below,
+/// reached without any `.` fallback existing. A screen that reads the variable
+/// itself cannot be asserted without a test mutating a process-global, which is
+/// the same reason [`audit_dir_from`] takes its environment as arguments.
+fn non_empty(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 fn non_empty_env(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
+    non_empty(std::env::var_os(name))
 }
 
 /// The resolution rule for [`default_audit_dir`], with the environment passed in.
