@@ -661,10 +661,19 @@ mod tests {
     /// lookups deliberately empty — the state the old fallback existed to
     /// serve — and requires `None`.
     ///
+    /// It also plants a bare `./aa-gateway`, which is the candidate an **empty
+    /// `$PATH` entry** produces: `PathBuf::from("").join("aa-gateway")` is the
+    /// relative path `aa-gateway`, and POSIX defines a zero-length `$PATH` entry
+    /// as the current directory. Without that plant this test passes `Some("")`
+    /// — the very input that opens the door — and never looks at the path that
+    /// comes out of it, so it would assert the property while being blind to a
+    /// live instance of the defect.
+    ///
     /// Verified to fail against the previous implementation rather than assumed
-    /// to: restoring the deleted `for rel in &["./target/release/aa-gateway",
-    /// ...]` loop in `resolve_from` reddens this test with the planted
-    /// `./target/release/aa-gateway`, and reddens nothing else in this module.
+    /// to. Restoring the deleted `for rel in &["./target/release/aa-gateway",
+    /// ...]` loop reddens this test on the `./target/release` plant; dropping the
+    /// `is_absolute` filter from the `$PATH` loop reddens it on the bare plant.
+    /// Neither reddens anything else in this module.
     ///
     /// `resolve_from` is called rather than `resolve_binary` so the exe path,
     /// `$PATH` and home directory are all named by the test. `resolve_binary`'s
@@ -683,6 +692,8 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             touch_executable(&dir.join("aa-gateway"));
         }
+        // The empty-`$PATH`-entry candidate.
+        touch_executable(&cwd.path().join("aa-gateway"));
 
         // Empty, not absent: an empty `$PATH` and a home directory with no
         // `.cargo/bin` are the "three trusted lookups all miss" state.
@@ -702,6 +713,76 @@ mod tests {
             resolved, None,
             "resolved a gateway relative to the current directory — the AAASM-5937 fallback is back"
         );
+    }
+
+    /// A relative `$PATH` entry contributes no candidate, and the absolute
+    /// entries beside it still do (AAASM-5937).
+    ///
+    /// The second half is what makes the first safe to ship. A filter that
+    /// dropped *every* entry would pass a "nothing relative is resolved" test
+    /// just as well as a correct one while breaking the `$PATH` lookup outright —
+    /// so the same `$PATH` string that carries the unsafe entries also carries a
+    /// real directory, and the real directory must still win.
+    ///
+    /// The `PATH="/usr/bin:"` and `PATH="/a::/b"` shapes are covered rather than
+    /// only `""` because a stray trailing or doubled `:` is how this reaches real
+    /// hosts — a shell profile appending to an unset variable — and it is the
+    /// shape most likely to survive review as harmless.
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_path_entry_contributes_no_candidate() {
+        let _lock = crate::test_support::env_guard();
+
+        let cwd = tempfile::tempdir().unwrap();
+        // What an empty entry resolves to, and what a relative entry resolves to.
+        touch_executable(&cwd.path().join("aa-gateway"));
+        let rel_dir = cwd.path().join("rel").join("bin");
+        std::fs::create_dir_all(&rel_dir).unwrap();
+        touch_executable(&rel_dir.join("aa-gateway"));
+
+        // A genuine, absolute `$PATH` directory to prove the lookup still works.
+        let real = tempfile::tempdir().unwrap();
+        let real_gateway = real.path().join("aa-gateway");
+        touch_executable(&real_gateway);
+        let real_dir = real.path().to_str().unwrap();
+
+        let empty_home = tempfile::tempdir().unwrap();
+        let exe_dir = tempfile::tempdir().unwrap();
+        let exe = exe_dir.path().join("aasm");
+        touch_executable(&exe);
+
+        let prior_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd.path()).unwrap();
+        let results: Vec<_> = [
+            // Unsafe entries only: nothing may resolve.
+            ("", None),
+            (":", None),
+            ("rel/bin", None),
+            ("./rel/bin", None),
+            // Unsafe entries alongside a real one: the real one resolves, and
+            // does so even when the unsafe entry comes first and would have won.
+            (&*format!(":{real_dir}"), Some(real_gateway.clone())),
+            (&*format!("{real_dir}:"), Some(real_gateway.clone())),
+            (&*format!("rel/bin:{real_dir}"), Some(real_gateway.clone())),
+        ]
+        .into_iter()
+        .map(|(path_var, want)| {
+            (
+                path_var.to_string(),
+                resolve_from(Some(&exe), Some(path_var), Some(empty_home.path())),
+                want,
+            )
+        })
+        .collect();
+        std::env::set_current_dir(&prior_cwd).unwrap();
+
+        for (path_var, got, want) in results {
+            assert_eq!(
+                got, want,
+                "PATH={path_var:?} resolved {got:?}, expected {want:?} — a non-absolute $PATH \
+                 entry is a cwd-relative lookup by another name (AAASM-5937)"
+            );
+        }
     }
 
     /// The surviving search order is exe-dir → `$PATH` → `~/.cargo/bin`, and
