@@ -616,8 +616,7 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4612 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: gap
-  gap_owner: AAASM-5884
+  lifecycle_state: automated
 - id: J34
   jira: AAASM-4617
   name: Understand "what is it / why / for whom / the goal" in 5 minutes (non-technical)
