@@ -177,14 +177,36 @@ mod tests {
     }
 
     /// An empty `AA_DATA_DIR` is screened out before it can produce a bare
-    /// relative `policy-history`, which was the same defect by a second route.
+    /// relative `policy-history`, which is the same defect by a second route.
+    ///
+    /// The screen is the only guard against that route: `history_base_from` uses
+    /// whatever override it is handed, so `Some("")` would reach
+    /// `base.join(HISTORY_DIR_NAME)` and yield the relative `policy-history`. The
+    /// assertion below is therefore on a *real* empty value, which is what
+    /// `non_empty` exists to make possible — an earlier version of this test passed
+    /// a deliberately unset variable name instead, so `var_os` returned `None`
+    /// before the filter was consulted and deleting the filter left it green.
+    ///
+    /// Removing `.filter(|v| !v.is_empty())` from `non_empty` reddens exactly the
+    /// first assertion.
     #[test]
     fn an_empty_override_is_not_treated_as_a_root() {
-        assert_eq!(non_empty_var("AA_DATA_DIR_DELIBERATELY_UNSET_FOR_THIS_TEST"), None);
-        // With the empty override screened out, the rule falls through to the home
-        // directory rather than joining onto "".
         assert_eq!(
-            history_base_from(None, Some(PathBuf::from("/h"))),
+            non_empty(Some(OsString::new())),
+            None,
+            "an empty override must be screened out, not returned as a root — it would join to \
+             the relative \"policy-history\""
+        );
+
+        // The two halves that make that refusal safe: a set value is still
+        // honoured, and an absent one is still absent.
+        assert_eq!(non_empty(Some(OsString::from("/o"))), Some(PathBuf::from("/o")));
+        assert_eq!(non_empty(None), None);
+
+        // And with the empty override screened out, the rule falls through to the
+        // home directory rather than joining onto "".
+        assert_eq!(
+            history_base_from(non_empty(Some(OsString::new())), Some(PathBuf::from("/h"))),
             Some(PathBuf::from("/h/.aa")),
             "an empty override must fall through, not yield the relative \"policy-history\""
         );
