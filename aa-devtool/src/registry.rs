@@ -97,26 +97,33 @@ pub fn launch_warnings(tool: &str, tool_args: &[String]) -> Vec<String> {
     }
 }
 
-/// Construct one adapter per [`SUPPORTED_TOOLS`] entry, in that order.
+/// Construct one adapter per [`SUPPORTED_TOOLS`] entry that could be built in
+/// this environment, in that order.
 ///
 /// This is what `DiscoveryService::new()` runs, and it returns the same adapter
 /// instances `aasm run` resolves — that shared origin is what the
 /// discovery/launch parity regression test in `aa-cli` pins.
 ///
-/// # Panics
-///
-/// Panics if a [`SUPPORTED_TOOLS`] entry has no [`adapter_for`] arm. That is a
-/// programming error in this module (the two lists must stay in step), not a
-/// runtime condition, and is covered by a unit test below.
+/// A [`SUPPORTED_TOOLS`] entry is silently omitted, not panicked on, when
+/// [`adapter_for`] returns `None` for it (AAASM-5976): since that adapter's
+/// own construction can legitimately fail at runtime (e.g. Windsurf's
+/// `$HOME`-derived paths being unresolvable), `adapter_for`'s `None` no
+/// longer means only "programming error — no match arm for this token".
+/// Conflating the two here would mean an unset `$HOME` takes down discovery
+/// for every other tool along with it, and the whole process at boot for any
+/// consumer that calls this during startup (`aa-api`'s `AppState`) — a
+/// materially worse failure than the misgoverned-Windsurf bug this ticket
+/// fixes. A genuine `SUPPORTED_TOOLS`/`adapter_for` arm mismatch is still
+/// caught, just by `every_supported_tool_resolves_to_an_adapter_and_a_kind`
+/// below rather than by a panic here.
 pub fn built_in_adapters() -> Vec<Box<dyn DevToolAdapter>> {
-    SUPPORTED_TOOLS
-        .iter()
-        .map(|tool| adapter_for(tool).expect("every SUPPORTED_TOOLS entry must have an adapter_for arm"))
-        .collect()
+    SUPPORTED_TOOLS.iter().filter_map(|tool| adapter_for(tool)).collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     #[test]
@@ -130,6 +137,38 @@ mod tests {
     #[test]
     fn built_in_adapters_covers_every_supported_tool() {
         assert_eq!(built_in_adapters().len(), SUPPORTED_TOOLS.len());
+    }
+
+    /// AAASM-5976 regression: an environment where one tool's adapter cannot
+    /// be constructed (Windsurf's `$HOME`-derived paths, here) must not take
+    /// discovery for the *other* tools down with it — `built_in_adapters()`
+    /// used to `.expect()` on every `adapter_for` call, so this would have
+    /// panicked (and, transitively, taken `aa-api`'s `AppState` construction
+    /// down at boot) before `built_in_adapters` switched to `filter_map`.
+    #[test]
+    fn an_unavailable_adapter_is_omitted_not_a_panic() {
+        static HOME_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("HOME");
+        // SAFETY: serialized by HOME_LOCK; no other test in this binary
+        // mutates HOME.
+        unsafe { std::env::set_var("HOME", "") };
+
+        assert!(adapter_for("windsurf").is_none());
+        let adapters = built_in_adapters();
+        assert_eq!(
+            adapters.len(),
+            SUPPORTED_TOOLS.len() - 1,
+            "every other tool must still discover with HOME unresolvable"
+        );
+
+        // SAFETY: same reasoning as above.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
     }
 
     #[test]
