@@ -488,6 +488,105 @@ check "T19 regex-metacharacter path still detects a live process reference" \
 check "T19 reported as refused (live process reference), not silently reclaimed" \
   "$(echo "$OUT19" | grep -c "live process")" "1"
 
+# ---------------------------------------------------------------------------
+# T20-T22: AAASM-5981 AC2 (bound enforcement), AC5 (no lock-contention
+# regression), AC6 (disk exhaustion named directly).
+# ---------------------------------------------------------------------------
+
+# T20 (AC2): --auto-reclaim --yes brings the reclaimable-eligible total back
+# under budget by reclaiming exactly the ORPHANED candidates found — never
+# an active lane (T20b proves that half).
+ROOT20="$WORKDIR/t20-root"
+mkdir -p "$ROOT20"
+MAIN20="$ROOT20/main-repo"
+init_repo "$MAIN20"
+WT20_ORPHAN="$ROOT20/wt-orphan"
+WT20_ACTIVE="$ROOT20/wt-active"
+git -C "$MAIN20" worktree add -q "$WT20_ORPHAN" -b t20a-branch >/dev/null 2>&1
+git -C "$MAIN20" worktree add -q "$WT20_ACTIVE" -b t20b-branch >/dev/null 2>&1
+make_target_dir "$WT20_ORPHAN/target" 1
+make_target_dir "$WT20_ACTIVE/target" 1
+git -C "$MAIN20" worktree remove --force "$WT20_ORPHAN" >/dev/null 2>&1 || true
+mkdir -p "$WT20_ORPHAN"; make_target_dir "$WT20_ORPHAN/target" 1
+
+run_tool status --root "$ROOT20" --max-total-gib 0 --auto-reclaim --yes >/tmp/t20_out.txt 2>&1
+check "T20a --auto-reclaim --yes: the orphaned candidate IS reclaimed" \
+  "$([ -d "$WT20_ORPHAN/target" ] && echo present || echo absent)" "absent"
+check "T20b --auto-reclaim --yes: the active worktree's target is UNTOUCHED" \
+  "$([ -d "$WT20_ACTIVE/target" ] && echo present)" "present"
+
+# T20c: without --yes, --auto-reclaim reports what it WOULD do but deletes
+# nothing (dry-run is still the default even in enforcement mode).
+ROOT20C="$WORKDIR/t20c-root"
+mkdir -p "$ROOT20C"
+MAIN20C="$ROOT20C/main-repo"
+init_repo "$MAIN20C"
+WT20C="$ROOT20C/wt-orphan"
+git -C "$MAIN20C" worktree add -q "$WT20C" -b t20c-branch >/dev/null 2>&1
+make_target_dir "$WT20C/target" 1
+git -C "$MAIN20C" worktree remove --force "$WT20C" >/dev/null 2>&1 || true
+mkdir -p "$WT20C"; make_target_dir "$WT20C/target" 1
+
+run_tool status --root "$ROOT20C" --max-total-gib 0 --auto-reclaim >/dev/null 2>&1
+check "T20c --auto-reclaim WITHOUT --yes does not delete anything" \
+  "$([ -d "$WT20C/target" ] && echo present)" "present"
+
+# T21 (AC6): --min-free-gib names disk exhaustion directly and distinctly
+# from the reclaimable-budget signal (exit 2, not 1).
+ROOT21="$WORKDIR/t21-root"
+mkdir -p "$ROOT21"
+run_tool status --root "$ROOT21" --min-free-gib 999999999 >/tmp/t21_out.txt 2>&1
+RC21=$?
+check "T21 --min-free-gib impossibly high: reports DISK EXHAUSTION" \
+  "$(grep -c "DISK EXHAUSTION" /tmp/t21_out.txt)" "1"
+check "T21 --min-free-gib impossibly high: exit code is 2 (distinct from budget's 1)" \
+  "$RC21" "2"
+
+run_tool status --root "$ROOT21" --min-free-gib 0 >/dev/null 2>&1
+check "T21b --min-free-gib 0: never triggered, exits 0" "$?" "0"
+
+# T22 (AC5): this tool introduces no locking of its own between distinct
+# target-dirs — two reclaim-one calls against two DIFFERENT orphaned
+# worktrees, launched concurrently, both complete without waiting on each
+# other. Proven by construction (no flock/lockfile anywhere in the script),
+# exercised here with a real concurrent invocation rather than just static
+# code inspection.
+ROOT22="$WORKDIR/t22-root"
+mkdir -p "$ROOT22"
+MAIN22="$ROOT22/main-repo"
+init_repo "$MAIN22"
+WT22A="$ROOT22/wt-lane-a"
+WT22B="$ROOT22/wt-lane-b"
+git -C "$MAIN22" worktree add -q "$WT22A" -b t22a-branch >/dev/null 2>&1
+git -C "$MAIN22" worktree add -q "$WT22B" -b t22b-branch >/dev/null 2>&1
+make_target_dir "$WT22A/target" 1
+make_target_dir "$WT22B/target" 1
+git -C "$MAIN22" worktree remove --force "$WT22A" >/dev/null 2>&1 || true
+git -C "$MAIN22" worktree remove --force "$WT22B" >/dev/null 2>&1 || true
+mkdir -p "$WT22A" "$WT22B"
+make_target_dir "$WT22A/target" 1
+make_target_dir "$WT22B/target" 1
+
+T22_START=$SECONDS
+run_tool reclaim-one --worktree "$WT22A" --yes >/tmp/t22a.txt 2>&1 &
+PID_A=$!
+run_tool reclaim-one --worktree "$WT22B" --yes >/tmp/t22b.txt 2>&1 &
+PID_B=$!
+wait "$PID_A" "$PID_B"
+T22_ELAPSED=$((SECONDS - T22_START))
+
+check "T22 concurrent reclaim-one: lane A's orphan reclaimed" \
+  "$([ -d "$WT22A/target" ] && echo present || echo absent)" "absent"
+check "T22 concurrent reclaim-one: lane B's orphan reclaimed" \
+  "$([ -d "$WT22B/target" ] && echo present || echo absent)" "absent"
+# Loose bound, not a tight timing assertion (CI/local machines vary): both
+# calls together complete in well under what serialized execution plus any
+# lock-wait would take on these trivial fixtures. Generous ceiling avoids
+# flakiness while still catching an accidentally-introduced serialization
+# point (e.g. a lockfile) that would make this hang or take much longer.
+check "T22 concurrent calls complete quickly (no serialization introduced)" \
+  "$([ "$T22_ELAPSED" -le 10 ] && echo fast)" "fast"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
   echo "All rust-target-lifecycle negative-control cases passed."

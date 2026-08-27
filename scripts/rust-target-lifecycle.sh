@@ -107,7 +107,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 usage() {
-  echo "Usage: $0 status      [--root DIR] [--max-total-gib N] [--include-global-size]" >&2
+  echo "Usage: $0 status      [--root DIR] [--max-total-gib N] [--auto-reclaim] [--yes]" >&2
+  echo "                      [--min-free-gib N] [--include-global-size]" >&2
   echo "       $0 reclaim     [--root DIR] [--yes]" >&2
   echo "       $0 reclaim-one --worktree DIR [--yes]" >&2
   exit 2
@@ -366,7 +367,7 @@ is_safe_to_reclaim() {
 # --- commands -----------------------------------------------------------------
 
 cmd_status() {
-  local root="" max_total_gib="" include_global_size=0
+  local root="" max_total_gib="" include_global_size=0 auto_reclaim=0 do_delete=0 min_free_gib=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) root="$2"; shift 2 ;;
@@ -377,6 +378,22 @@ cmd_status() {
       # exit signal below (both are computed from reclaim-eligible dirs
       # only), so it's opt-in rather than paid by every `status` call.
       --include-global-size) include_global_size=1; shift ;;
+      # AAASM-5981 AC2: bound ENFORCEMENT, not just a WARN signal. When the
+      # reclaimable-eligible total exceeds --max-total-gib, reclaim exactly
+      # the ORPHANED candidates this same scan already found — never an
+      # active lane, since orphan status (and every other is_safe_to_reclaim
+      # gate) is re-verified per-candidate, identically to `reclaim`. This is
+      # what makes "the bound holds as lane count grows" true for the
+      # realistic growth vector (orphaned dirs nobody happened to reclaim
+      # yet), without weakening any existing safety property.
+      --auto-reclaim) auto_reclaim=1; shift ;;
+      --yes) do_delete=1; shift ;;
+      # AAASM-5981 AC6: disk exhaustion reported AS disk exhaustion, not
+      # left to surface later as an unrelated build/link failure. This is a
+      # different question from --max-total-gib (this tool's own
+      # reclaimable-dir accounting): it checks REAL filesystem free space at
+      # --root, independent of whether anything here is reclaimable at all.
+      --min-free-gib) min_free_gib="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -391,6 +408,7 @@ cmd_status() {
   echo
 
   local total_reclaimable_bytes=0
+  local orphan_worktrees=()
   printf '%-60s %-10s %-12s %s\n' "WORKTREE/TARGET-DIR" "SIZE" "CLASS" "REASON"
 
   local wt
@@ -423,6 +441,7 @@ cmd_status() {
     if [ $? -eq 0 ]; then
       class="ORPHANED"
       total_reclaimable_bytes=$((total_reclaimable_bytes + size_bytes))
+      orphan_worktrees+=("$wt")
       reason="worktree removed, no live references, CACHEDIR.TAG present"
     elif is_orphaned_worktree "$wt"; then
       class="CANDIDATE"
@@ -445,12 +464,54 @@ cmd_status() {
   echo "reclaimable-eligible total: $(human_size "$total_reclaimable_bytes")"
   echo "note: du under-reports vs actual reclaimable space on very large trees (AAASM-5909 field evidence, ~25% on the largest observed lane) — treat this as a floor, not an exact figure."
 
+  local over_budget=0
   if [ -n "$max_total_gib" ]; then
     local max_bytes=$((max_total_gib * 1024 * 1024 * 1024))
     if [ "$total_reclaimable_bytes" -gt "$max_bytes" ]; then
+      over_budget=1
       echo "WARN: reclaimable-eligible total exceeds --max-total-gib ${max_total_gib}GiB budget"
-      return 1
+      if [ "$auto_reclaim" -eq 1 ]; then
+        echo
+        echo "--auto-reclaim: bringing reclaimable-eligible dirs down (only the ORPHANED candidates found above — never an active lane):"
+        local owt
+        for owt in "${orphan_worktrees[@]:-}"; do
+          [ -n "$owt" ] || continue
+          cmd_reclaim_one --worktree "$owt" $([ "$do_delete" -eq 1 ] && echo --yes)
+        done
+      else
+        echo "(pass --auto-reclaim --yes to reclaim the ORPHANED candidates above and bring this under budget; --auto-reclaim alone dry-runs)"
+      fi
     fi
+  fi
+
+  # AAASM-5981 AC6: a distinct, explicitly-named condition — real filesystem
+  # free space, not this tool's own reclaimable-dir accounting. A caller
+  # (human or agent) staring at a mysterious build/link failure can run this
+  # to get a direct yes/no on "is this actually disk exhaustion" instead of
+  # inferring it from an unrelated-looking Cargo error.
+  local disk_exhausted=0
+  if [ -n "$min_free_gib" ]; then
+    local free_kb free_gib_int
+    free_kb="$(df -Pk "$root" 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [ -n "$free_kb" ]; then
+      free_gib_int=$((free_kb / 1024 / 1024))
+      echo
+      echo "filesystem free space at $root: ${free_gib_int}GiB (floor, integer GiB)"
+      if [ "$free_gib_int" -lt "$min_free_gib" ]; then
+        disk_exhausted=1
+        echo "DISK EXHAUSTION: free space (${free_gib_int}GiB) is below --min-free-gib ${min_free_gib}GiB — treat any concurrent build/link failure as a disk-space symptom first, not a code regression"
+      fi
+    else
+      echo
+      echo "WARN: could not determine filesystem free space at $root (df failed) — --min-free-gib check skipped"
+    fi
+  fi
+
+  if [ "$disk_exhausted" -eq 1 ]; then
+    return 2
+  fi
+  if [ "$over_budget" -eq 1 ] && [ "$auto_reclaim" -eq 0 ]; then
+    return 1
   fi
   return 0
 }
