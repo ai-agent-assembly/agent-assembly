@@ -39,7 +39,14 @@
 #![forbid(unsafe_code)]
 
 // --- DevToolAdapter capability surface (aa_core::dev_tool) ---------------
-pub use aa_core::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo};
+// MANAGED_SETTINGS_DIR (AAASM-5987): a single flat &'static str, not adapter
+// logic — aa-devtool-claude-code re-exports it rather than defining it, so
+// aa-runtime's published (devtool-less) build can name the same surface in
+// its DI-API project-root refusal without depending on any publish = false
+// adapter crate.
+pub use aa_core::{
+    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, MANAGED_SETTINGS_DIR,
+};
 
 // --- Policy value types the adapters read at apply()/settings time -------
 pub use aa_core::{EnforcementMode, PolicyDecision, PolicyDocument, PolicyRule};

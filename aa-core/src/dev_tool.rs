@@ -15,6 +15,16 @@ use std::path::PathBuf;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// The directory macOS reserves for Claude Code's endpoint-managed settings.
+///
+/// Owned here rather than in `aa-devtool-claude-code` because the DI-API's
+/// project-root refusal (`aa_runtime::devint::server::surfaces_not_owned_by_a_project`)
+/// has to name this surface in a published runtime, where no `publish = false`
+/// adapter crate exists (AAASM-5987 / AAASM-2340) — `aa-devtool-claude-code`
+/// re-exports this constant rather than defining it, so there is exactly one
+/// definition for both the adapter's own use and the runtime's.
+pub const MANAGED_SETTINGS_DIR: &str = "/Library/Application Support/ClaudeCode";
+
 /// Governance level applied to a managed AI dev tool or agent.
 ///
 /// Variants are ordered such that

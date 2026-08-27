@@ -759,6 +759,15 @@ fn owned_surface_within(root: &std::path::Path, surfaces: &[std::path::PathBuf])
 /// where they exist so the comparison is against the same form the project root
 /// was resolved to; a path that does not exist cannot be an alias for anything
 /// and is compared as written.
+///
+/// The managed-settings default comes from `aa_core::dev_tool`, not
+/// `aa-devtool-claude-code` — this module (`devint`) is unconditionally
+/// compiled into the published `aa-runtime` crate (ADR 0030 §6.3: adapters
+/// are out-of-tree-consumable, so this refusal boundary is reachable even
+/// when no `aa-devtool-*` crate is compiled in), and `aa-devtool-claude-code`
+/// is `publish = false` (AAASM-2340). A stripped-region default here would
+/// make the refusal set adapter-dependent, contradicting the "holds for
+/// *every* adapter" invariant above (AAASM-5987).
 fn surfaces_not_owned_by_a_project() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
 
@@ -769,8 +778,8 @@ fn surfaces_not_owned_by_a_project() -> Vec<std::path::PathBuf> {
     let codex_config = home.as_ref().map(|h| h.join(".codex"));
     let state = var("AASM_STATE_DIR").or_else(|| home.as_ref().map(|h| h.join(".aasm")));
     let ca = var("AA_CA_DIR").or_else(|| home.as_ref().map(|h| h.join(".aa")));
-    let managed = var("AASM_CLAUDE_MANAGED_ROOT")
-        .unwrap_or_else(|| PathBuf::from(aa_devtool_claude_code::scope::MANAGED_SETTINGS_DIR));
+    let managed =
+        var("AASM_CLAUDE_MANAGED_ROOT").unwrap_or_else(|| PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR));
 
     [claude_config, codex_config, state, ca, Some(managed)]
         .into_iter()
@@ -833,6 +842,12 @@ mod tests {
     use crate::devint::testkit::{connect_and_negotiate, hello_offering, FakeLifecycle, TestServer};
 
     use aa_core::integration::SettingsScope;
+
+    // AAASM-5987: `AASM_CLAUDE_MANAGED_ROOT` is process-global; this mutex
+    // serializes the two tests below that set/read it so they cannot race
+    // under a multi-threaded test runner, matching the established pattern in
+    // `aa-runtime/src/config.rs`'s own `ENV_LOCK`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Every adversarial project root the AAASM-5913 review put through the
     /// production logic, and what each one is an attempt at.
@@ -898,7 +913,7 @@ mod tests {
         let surfaces = vec![
             home.join(".claude"),
             home.join(".aasm"),
-            std::path::PathBuf::from("/Library/Application Support/ClaudeCode"),
+            std::path::PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR),
         ];
 
         // `$HOME` itself: `--scope project` from a dotfiles repository checked out
@@ -917,6 +932,50 @@ mod tests {
         assert!(owned_surface_within(&home.join("code").join("repo"), &surfaces).is_none());
         // Nor does a sibling that merely shares a prefix with one.
         assert!(owned_surface_within(&home.join(".claude-notes"), &surfaces).is_none());
+    }
+
+    /// AAASM-5987: proves `surfaces_not_owned_by_a_project()` — the PRODUCTION
+    /// list, not the synthetic table the tests above build by hand — actually
+    /// reaches `parse_project_root`'s refusal. `/` alone is not discriminating
+    /// (every absolute surface refuses it regardless of what
+    /// `MANAGED_SETTINGS_DIR` resolves to), so this points
+    /// `AASM_CLAUDE_MANAGED_ROOT` at a real temp directory and asserts that
+    /// *exact* directory — reachable only through the constant this PR moved —
+    /// is what parse_project_root refuses when named as a project root.
+    #[test]
+    fn the_root_directory_is_refused_by_the_real_surface_list() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
+        let refusal = parse_project_root(SettingsScope::Project, dir.path().to_str().unwrap())
+            .expect_err("the managed-settings root is not a project");
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+        assert!(matches!(refusal, LifecycleError::Refused { .. }), "{refusal:?}");
+    }
+
+    /// AAASM-5987: the managed surface has to be in the refusal set of a runtime
+    /// with no `aa-devtool-*` crate compiled into it — which is every published
+    /// one (ADR 0030 §6.3: this module is unconditionally compiled in, adapters
+    /// are consumed out-of-tree). Reading the default from `aa_core::dev_tool`
+    /// rather than `aa_devtool_claude_code::scope` is exactly what makes that
+    /// possible; this test would not compile against the pre-fix import.
+    #[test]
+    fn the_managed_surface_is_in_the_refusal_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+        let raw = std::path::PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR);
+        let expected = raw.canonicalize().unwrap_or_else(|_| raw.clone());
+        assert!(surfaces_not_owned_by_a_project().contains(&expected));
+
+        // An operator override is honoured instead of the default, not in
+        // addition to it — the env var exists so a host that keeps managed
+        // settings somewhere else still gets a correct refusal set.
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
+        let surfaces = surfaces_not_owned_by_a_project();
+        assert!(surfaces.contains(&dir.path().canonicalize().unwrap()));
+        assert!(!surfaces.contains(&raw));
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
     }
 
     #[test]
