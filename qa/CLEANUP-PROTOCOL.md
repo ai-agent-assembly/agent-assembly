@@ -185,6 +185,17 @@ hold:
 - **0** unnecessary campaign background processes.
 - **0** leftover test listeners/servers.
 - **0** leftover campaign temp folders, where safe to remove.
+- **`python3 scripts/qa/resource-lock.py sweep --strict` exits 0** (AAASM-5895)
+  — no stale AAASM-5891 resource-lock job records (a campaign-started
+  `cargo-doc`/`cargo-build-workspace`/`macos-security`/etc. job whose
+  process died without a clean exit) left holding a slot or a `jobs/*.json`
+  record. This is the mechanical replacement for "did any resource-lock
+  state get left behind" — `sweep --strict` returns nonzero if it had to
+  remove anything, so it is a pass/fail check, not a claim to take on
+  faith. `qa-watchdog.py breaker reset <class>` similarly clears any
+  circuit breaker this campaign's own contention may have tripped, so a
+  later, unrelated campaign doesn't inherit a reduced concurrency ceiling
+  it never earned.
 
 This is a literal exit condition, not a target to approximate — a campaign
 that reports completion while any of the above is nonzero has not actually
