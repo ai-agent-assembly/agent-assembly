@@ -182,11 +182,32 @@ fn active_hours_denies_a_call_outside_the_window() {
 /// worktrees, so a margin of only a few minutes was observed to flake here
 /// (verified empirically: a several-minute scheduling stall pushed `now`
 /// outside a +/-3min window before `evaluate()` re-read the clock).
+///
+/// `stage_schedule_at`'s `HH:MM` comparator has no midnight-wraparound
+/// support (`current < start || current >= end`, compared lexicographically
+/// as strings) — a naive `now - 90min .. now + 90min` window that crosses
+/// `00:00` produces a `start > end` pair the comparator reads as "outside"
+/// for nearly the entire window, which is a *deterministic* failure for any
+/// run between ~22:30 and ~01:30 UTC, not a flake. Clamp each bound to stay
+/// within `now`'s own calendar day instead of wrapping past it — `now`
+/// always remains inside `[start, end)` either way, since clamping only
+/// moves a bound *toward* `now`'s day, never past it.
 #[test]
 fn active_hours_allows_a_call_inside_the_window() {
     let now = Utc::now();
-    let start = hhmm(now - Duration::minutes(90));
-    let end = hhmm(now + Duration::minutes(90));
+    let raw_start = now - Duration::minutes(90);
+    let raw_end = now + Duration::minutes(90);
+
+    let start = if raw_start.date_naive() != now.date_naive() {
+        "00:00".to_string()
+    } else {
+        hhmm(raw_start)
+    };
+    let end = if raw_end.date_naive() != now.date_naive() {
+        "23:59".to_string()
+    } else {
+        hhmm(raw_end)
+    };
 
     let mut engine = make_engine();
     engine.load_policy(schedule_doc(PolicyScope::Global, &start, &end));
@@ -197,6 +218,6 @@ fn active_hours_allows_a_call_inside_the_window() {
     assert_eq!(
         result,
         PolicyResult::Allow,
-        "a +/-3min window around now must include the current instant"
+        "a 90min window clamped to now's calendar day must include the current instant"
     );
 }
