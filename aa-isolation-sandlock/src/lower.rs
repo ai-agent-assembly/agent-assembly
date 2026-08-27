@@ -818,15 +818,14 @@ mod tests {
             delegated: Vec::new(),
             ambient_unremoved: vec!["PATH".to_string()],
         });
-        // Evidence still names the residue — refusing to expose the value is
-        // not the same as refusing to report the debt. `environment_replaced:
-        // false` is correct here, not incidental: `credential_flags` is about
-        // to refuse, so nothing replaces the environment, and
-        // `unremoved_ambient` folds `removed` in on that path by design (see
-        // its own doc comment) — a caller that ignored the refusal and ran
-        // anyway would still inherit AWS_SECRET_ACCESS_KEY unremoved, and the
-        // residue list says so.
-        assert_eq!(unremoved_ambient(&kept, false), ["AWS_SECRET_ACCESS_KEY", "PATH"]);
+        // No `unremoved_ambient` assertion here: `SandlockBackend::prepare`
+        // propagates this refusal with `?` and never proceeds to the point
+        // where `environment_replaced` would be read, so a refused posture
+        // paired with `environment_replaced: false` is a combination
+        // production never reaches — pinning it would assert an unreachable
+        // state rather than designed behaviour. Residue-reporting semantics
+        // for a genuinely-not-replaced environment are already covered by
+        // `without_a_replacement_a_removed_name_is_reported_as_residue`.
         let refusal = credential_flags(&kept).expect_err("a name resolving to a real value must be refused");
         assert_eq!(refusal.names, ["PATH"]);
         // Recoverability-absence, not marker-presence: the refusal must not
