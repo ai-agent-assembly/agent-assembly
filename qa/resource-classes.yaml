@@ -10,6 +10,13 @@ version: 1
 # yet enforced by resource-lock.py beyond soft/hard timeout being carried
 # through to the job record).
 #
+# Field consumption status (qa-watchdog.py, AAASM-5949-5952): soft_timeout_secs/
+# hard_timeout_secs/grace_secs are consumed by `enforce` (AAASM-5951);
+# breaker_open_threshold is consumed by `breaker` (AAASM-5952, resolve_breaker_threshold()).
+# max_wallclock_secs/progress_signals/artifact_glob remain unconsumed — a
+# genuinely-progressing job currently has no wall-clock cap, and every
+# progress signal is OR'd rather than filtered per-class.
+#
 # `duplicate_policy: suppress` + the defaults below encode the AAASM-5877
 # incident this Story exists to fix: 3 duplicate `git push` invocations each
 # spawned their own pre-push `cargo doc --workspace --no-deps`, deadlocking

@@ -58,6 +58,11 @@ resolved once.
 - Never open a Jira Bug yourself. A suspected finding goes into your result's
   `SUSPECTED_FINDINGS`; only the coordinator, after the AAASM-5827
   verification protocol, files it.
+- A workspace-wide `cargo build`/`cargo doc`/`cargo nextest` you DO need to
+  run (not one CI on this HEAD already covers) goes through
+  `scripts/qa/resource-lock.py run --class <name> -- <cmd...>`, per
+  `qa/ORCHESTRATION.md`'s "Resource classes" — never invoke it bare.
+  `EXIT_SATURATED`/`EXIT_DUPLICATE` is contention, not a finding.
 
 ## Output
 
