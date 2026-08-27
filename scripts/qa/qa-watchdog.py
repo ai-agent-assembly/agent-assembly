@@ -423,11 +423,12 @@ def write_state(job_id: str, state: dict) -> None:
     os.replace(tmp, path)
 
 
-def gc_state(cls: str | None = None) -> None:
+def gc_state() -> None:
     """Delete watchdog state for any job_id that no longer has a live
-    record — mirrors resource-lock.py's own `sweep`. Filter-independent
-    (always considers every state file) so a `--class`-scoped `enforce`
-    invocation doesn't accumulate orphaned state for other classes."""
+    record — mirrors resource-lock.py's own `sweep`. Deliberately takes no
+    `cls` filter and always considers every state file, so a
+    `--class`-scoped `enforce` invocation doesn't accumulate orphaned state
+    for other classes it isn't currently looking at."""
     m = _lock_mod()
     d = os.path.join(m.lock_dir(), _STATE_DIR_NAME)
     if not os.path.isdir(d):
@@ -482,7 +483,16 @@ def terminate_job(job_id: str, grace_secs, dry_run: bool) -> tuple[str, str]:
     if dry_run:
         return "would_terminate", ""
 
+    # A second, independent read — verify_owned() above validated against
+    # its own internal read, not this one. The record can legitimately
+    # disappear in this narrow window (e.g. a concurrent `resource-lock.py
+    # sweep`, since nothing prevents one running alongside a repeatedly-
+    # invoked `enforce`) — review found this dereferenced unguarded,
+    # crashing the whole enforce invocation instead of reporting a clean
+    # outcome for this one job.
     rec = read_job_record(job_id)
+    if rec is None:
+        return "already_gone", ""
     pgid = rec["pgid"]
     try:
         os.killpg(pgid, m.signal.SIGTERM)
@@ -507,6 +517,16 @@ def terminate_job(job_id: str, grace_secs, dry_run: bool) -> tuple[str, str]:
 
 
 def cmd_enforce(rest: list[str]) -> int:
+    """Deliberately narrower than cmd_list()'s signal set: `enforce` has no
+    `--artifact` flag, so the `artifact_mtime` progress signal is always
+    empty here (`cpu`/`children`/`log_growth` are the only signals that can
+    ever classify a job as progressing under `enforce`). A caller-supplied
+    watched-path set would need to be identical across every enforce
+    invocation for a given job to behave correctly — classify_progress()
+    treats a path present in `curr` but absent from `prev` as progress by
+    itself, so an inconsistent set would silently reset last_progress_at
+    and could defer termination indefinitely. Revisit only alongside a
+    design for keeping that path set stable per-job across invocations."""
     parser = argparse.ArgumentParser(prog="qa-watchdog.py enforce")
     parser.add_argument("--class", dest="cls", default=None)
     parser.add_argument(
@@ -593,7 +613,7 @@ def cmd_enforce(rest: list[str]) -> int:
             saw_soft = True
         results.append(entry)
 
-    gc_state(args.cls)
+    gc_state()
     print(json.dumps(results, indent=2))
 
     if saw_hard:
