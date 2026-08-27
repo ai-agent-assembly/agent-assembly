@@ -257,6 +257,74 @@ launch starts can redirect where the launch-env store, the `mitm-hosts.d`
 allowlist, and the trusted-upstream-proxy artifact are all read from,
 independent of anything the proxy's own validation catches.
 
+**AAASM-5924 addendum:** `AASM_STATE_DIR` is not the only ambient channel to
+the trusted-upstream-proxy artifact. `aa-proxy`'s `ProxyConfig::from_env`
+reads `AA_PROXY_TRUSTED_CONFIG_PATH` directly — a raw path, not derived from
+`AASM_STATE_DIR` at all — and `ProxyGuard::build_command`
+(`aa-cli/src/commands/proxy/guard.rs`) and `aasm proxy start`'s
+`proxy_child_env` (`aa-cli/src/commands/proxy/start.rs`) both set it only
+when a real artifact exists on disk but never `env_remove` it otherwise, so
+an ambient `AA_PROXY_TRUSTED_CONFIG_PATH` set before either boundary spawns
+reaches the child proxy unchanged when no legitimate artifact overrides it.
+This is a second, more direct route to the identical effect this section
+already discloses (an attacker who controls the pre-launch environment can
+point the spawned `aa-proxy` at their own well-formed artifact) — same
+precondition, same consequence, not a new attacker capability. Filed as a
+wording correction against Core ADR 036's own Test 8 row, which currently
+(incorrectly) claims this channel is "not adopted".
+
+## Trusted upstream proxy chaining only ever routes explicitly declared destinations (Core ADR 036 D-F)
+
+Chaining routes a CONNECT to the trusted upstream proxy only when the
+authority exact-matches a `DeclaredEnterpriseDestination` host **and** port in
+the validated trusted-config artifact (D-A/D-D). There is no "send everything
+through the corporate proxy" mode: a non-declared destination always takes
+the unchanged direct-dial path, with the unchanged SSRF guard
+(`connect_revalidated`) and the unchanged egress-allowlist/denylist checks —
+chaining being configured changes nothing about how those destinations are
+handled. Full-egress routing through an operator's corporate proxy is
+deliberately out of v1 scope, tracked as a separate, not-yet-approved Spike,
+not something this feature quietly does not finish.
+
+**The published `aasm` binary has no command that writes this artifact.**
+`aasm integrations install`'s `--trusted-upstream-proxy`/
+`--enterprise-destination`/`--llm-endpoint` flags live inside the
+`strip-for-publish:begin/end devtool` region of `aa-cli/src/commands/mod.rs`
+(AAASM-2340) and are removed entirely from the crates.io-published crate an
+operator installs via `cargo install aasm`. Any statement that an operator
+"can configure chaining" with the released CLI is false unless it names this:
+today, only a source checkout (`cargo run -p aa-cli -- integrations install
+...`) can write the artifact; the released binary can only *consume* one
+placed on disk by some other means.
+
+## A chained forward carries no chained-specific evidence tier (Core ADR 036 D9/M2)
+
+A request that traverses the trusted upstream proxy produces the identical
+`ProtectionState` a direct forward does — there is no distinct evidence tier
+recording that a request specifically went through the second hop. The
+locally-terminated adjudicating probe (see "What `verify` adjudicates" above)
+can justify `GatewayProtected` on chained traffic exactly as it does on
+direct traffic; neither its passing nor its failing says anything about
+whether the chained hop was actually used for that request. This is not
+blocked by anything chaining adds — a chained-specific evidence tier was
+never built for v1, and is not implied by anything this feature's naming
+suggests.
+
+## Declaring a destination widens MITM eligibility on its host, not its declared port (Core ADR 036 D2b)
+
+`should_mitm`'s chained-destination check (`aa-proxy/src/proxy/mod.rs`)
+matches a declared destination's **host** only — the same host-keyed
+(not host+port) matching every other `mitm_hosts`-derived MITM-eligibility
+check in this proxy already uses. Chained *routing* itself is stricter
+(host **and** port, exact match, D-D) — so declaring
+`corp.llm.internal:443` as an enterprise destination makes
+`corp.llm.internal:8443` MITM-eligible (decrypted and DLP-scanned) even
+though it is **not** chain-eligible (it still direct-dials, unchanged). An
+operator who expects "MITM-eligible" and "chain-eligible" to track the same
+port is surprised by this: declaring one port on a host widens what gets
+decrypted on every port that host is reached on. Accepted as part of Core ADR
+036's own R3 fix, not a defect this Story introduces or is expected to close.
+
 ## The managed-settings file can be installed; its enforcement is still unmeasured
 
 `/Library/Application Support/ClaudeCode/managed-settings.json` is the endpoint
