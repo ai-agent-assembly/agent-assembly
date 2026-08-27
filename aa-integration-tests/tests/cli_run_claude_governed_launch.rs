@@ -742,16 +742,23 @@ mod real_binary_governed_launch {
             ReceiptStore::at(integrations.join("store")),
         );
         let tool = DevToolKind::ClaudeCode;
+        let user_config_home = home.join(".claude");
         let plan = service
-            .plan(IntegrationRequest::new(
-                tool.clone(),
-                ProtectionProfile::Recommended,
-                SettingsScope::User,
-            ))
+            .plan(
+                IntegrationRequest::new(tool.clone(), ProtectionProfile::Recommended, SettingsScope::User)
+                    .with_user_config_home(&user_config_home),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
         service
-            .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(
+                &tool,
+                &plan.plan_id,
+                &LifecycleTarget {
+                    user_config_home: Some(user_config_home),
+                    ..LifecycleTarget::unspecified()
+                },
+            )
             .await
             .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
 

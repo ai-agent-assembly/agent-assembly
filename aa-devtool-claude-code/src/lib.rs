@@ -209,10 +209,26 @@ impl ClaudeCodeAdapter {
     ///
     /// Resolved from the environment, with this adapter's home override applied
     /// so a test never reaches the developer's real state directory.
+    ///
+    /// The configuration home is supplied explicitly (AAASM-5957): `from_env()`
+    /// no longer reads `$CLAUDE_CONFIG_DIR` itself, so a launch — which is this
+    /// process reading its *own* environment, not a daemon answering for an
+    /// unrelated caller — has to state it the same way `aa-cli`'s `target.rs`
+    /// does. `self.home_dir()` already folds in the override, so the same value
+    /// backs both halves of the precedence `user_config_home_from` applies.
     fn launch_paths(&self) -> ClaudeCodePaths {
         let paths = ClaudeCodePaths::from_env();
-        match &self.home_dir_override {
+        let paths = match &self.home_dir_override {
             Some(home) => paths.with_home(home.clone()),
+            None => paths,
+        };
+        match crate::scope::user_config_home_from(
+            std::env::var_os("CLAUDE_CONFIG_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            self.home_dir(),
+        ) {
+            Some(config_dir) => paths.with_config_dir(config_dir),
             None => paths,
         }
     }

@@ -272,6 +272,10 @@ pub struct LifecycleTarget {
     pub settings_scope: Option<aa_core::integration::SettingsScope>,
     /// The canonical root of the project the caller means, when it named one.
     pub project_root: Option<std::path::PathBuf>,
+    /// The canonical Claude Code configuration home the caller means, when it
+    /// named one (AAASM-5957). `None` is not "the daemon's own `$HOME`" —
+    /// substituting it is the AAASM-5957 defect this field exists to close.
+    pub user_config_home: Option<std::path::PathBuf>,
 }
 
 impl LifecycleTarget {

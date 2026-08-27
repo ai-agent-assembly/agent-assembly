@@ -35,7 +35,9 @@ use aa_proto::assembly::devint::v1 as wire;
 
 use super::apply_outcome::ApplyMutation;
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
-use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE};
+use super::negotiate::{
+    DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE, DI_API_USER_CONFIG_HOME_SINCE,
+};
 use super::projection::parse_scope;
 use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
 use super::socket::{self, SocketDiscovery};
@@ -126,6 +128,52 @@ fn refuse_project_scope_below_v6(negotiated_version: u32, settings_scope: &str) 
         remediation: format!(
             "upgrade the running AASM runtime to one speaking DI-API \
              {DI_API_PROJECT_ROOT_SINCE} or later, then retry; user and managed scope are \
+             unaffected and work against this runtime as-is"
+        ),
+        min_supported: DI_API_MIN_SUPPORTED,
+        max_supported: DI_API_MAX_SUPPORTED,
+    }))
+}
+
+/// Refuse `user` scope — and an unspecified scope, since that means "the one
+/// installation that exists" and may turn out to be user-scoped — on a
+/// connection whose peer cannot carry a user configuration home (AAASM-5957).
+///
+/// Mirrors [`refuse_project_scope_below_v6`] exactly, one scope over: same
+/// discard-on-decode hazard, same reasoning for checking before the send
+/// rather than after the reply, same locally-built [`ClientError::Incompatible`]
+/// rather than a new enum variant (AAASM-5669).
+///
+/// The wider match than `refuse_project_scope_below_v6`'s (`Project` only) is
+/// deliberate, not an oversight: `TargetArgs.settings_scope == ""` cannot be
+/// distinguished from `"user"` at this layer, and treating empty as "not user"
+/// would let an ambiguous target through to a peer that would substitute its
+/// own configuration home the moment it turned out to resolve to one.
+fn refuse_user_scope_below_v7(negotiated_version: u32, settings_scope: &str) -> Result<(), ClientError> {
+    if negotiated_version >= DI_API_USER_CONFIG_HOME_SINCE {
+        return Ok(());
+    }
+    match parse_scope(settings_scope) {
+        Some(SettingsScope::Project) | Some(SettingsScope::Managed) => return Ok(()),
+        Some(SettingsScope::User) => {}
+        None => {
+            // Unrecognised scope tokens are the server's to reject; an empty
+            // token specifically means "let the service find it", which this
+            // gate treats as "may be user scope" rather than "is not".
+            if !settings_scope.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+    Err(ClientError::Incompatible(wire::Incompatible {
+        reason: format!(
+            "this connection negotiated DI-API {negotiated_version}; a caller-chosen user \
+             configuration home arrived in DI-API {DI_API_USER_CONFIG_HOME_SINCE}, so a user-scope \
+             request made over it would be resolved against the runtime's own $HOME rather than yours"
+        ),
+        remediation: format!(
+            "upgrade the running AASM runtime to one speaking DI-API \
+             {DI_API_USER_CONFIG_HOME_SINCE} or later, then retry; project and managed scope are \
              unaffected and work against this runtime as-is"
         ),
         min_supported: DI_API_MIN_SUPPORTED,
@@ -306,6 +354,16 @@ pub struct PlanRequest<'a> {
     /// defect in AAASM-5913, not a fallback. Pass `""` when there is none to
     /// state and expect a refusal, not a default, if the scope needed one.
     pub project_root: &'a str,
+    /// The caller's Claude Code configuration home — `$CLAUDE_CONFIG_DIR`, or
+    /// `$HOME/.claude` — resolved by the caller at invocation time, on the same
+    /// terms as `project_root` but for `user` scope (AAASM-5957).
+    ///
+    /// Mandatory at `user` scope: the service is shared and long-lived, so a
+    /// caller that does not say which configuration home it means leaves the
+    /// service with nothing to name but whichever `$HOME` it was spawned under —
+    /// the defect in AAASM-5957, not a fallback. Pass `""` when there is none to
+    /// state and expect a refusal, not a default, if the scope needed one.
+    pub user_config_home: &'a str,
 }
 
 /// Which installed integration a read-or-reverse invocation is about.
@@ -336,6 +394,11 @@ pub struct TargetRequest<'a> {
     /// apply, where nothing is installed yet. Either way a project-scope
     /// operation the caller cannot name is refused.
     pub project_root: &'a str,
+    /// The caller's Claude Code configuration home, or `""` when it has none
+    /// to state, on the same terms as `project_root` but for `user` scope
+    /// (AAASM-5957). Compared against the receipt, never resolved into a
+    /// destination — a user-scope operation the caller cannot name is refused.
+    pub user_config_home: &'a str,
 }
 
 /// A connected, negotiated DI-API client.
@@ -512,6 +575,7 @@ impl DevIntClient {
     /// [`refuse_project_scope_below_v6`].
     pub async fn plan(&mut self, args: PlanRequest<'_>) -> Result<wire::PlanView, ClientError> {
         refuse_project_scope_below_v6(self.negotiated.di_api_version, args.settings_scope)?;
+        refuse_user_scope_below_v7(self.negotiated.di_api_version, args.settings_scope)?;
         let mut request = self.request(DiVerb::Plan, args.tool_id);
         request.plan = Some(wire::PlanArgs {
             profile: args.profile.to_string(),
@@ -520,6 +584,7 @@ impl DevIntClient {
             allow_privileged_host_steps: args.allow_privileged_host_steps,
             policy_profile_id: args.policy_profile_id.to_string(),
             project_root: args.project_root.to_string(),
+            user_config_home: args.user_config_home.to_string(),
         });
         let response = self.call(request).await?;
         response.plan.ok_or(ClientError::UnexpectedFrame)
@@ -640,10 +705,12 @@ impl DevIntClient {
     /// branch by not trying.
     fn targeted(&self, verb: DiVerb, tool_id: &str, target: TargetRequest<'_>) -> Result<wire::Request, ClientError> {
         refuse_project_scope_below_v6(self.negotiated.di_api_version, target.settings_scope)?;
+        refuse_user_scope_below_v7(self.negotiated.di_api_version, target.settings_scope)?;
         let mut request = self.request(verb, tool_id);
         request.target = Some(wire::TargetArgs {
             settings_scope: target.settings_scope.to_string(),
             project_root: target.project_root.to_string(),
+            user_config_home: target.user_config_home.to_string(),
         });
         Ok(request)
     }
@@ -768,12 +835,21 @@ mod tests {
 
         let tool = claude_code_id();
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
+        // Mandatory at user scope, and an unspecified TargetRequest scope is
+        // treated as possibly-user (AAASM-5957) — a real path with an existing
+        // parent, since the server canonicalizes it for real.
+        let home = std::env::temp_dir().join(".claude").to_string_lossy().into_owned();
+        let target = || TargetRequest {
+            user_config_home: &home,
+            ..TargetRequest::default()
+        };
         let plan = client
             .plan(PlanRequest {
                 tool_id: &tool,
                 profile: "recommended",
                 settings_scope: "user",
                 policy_profile_id: "team-default",
+                user_config_home: &home,
                 ..PlanRequest::default()
             })
             .await
@@ -781,42 +857,23 @@ mod tests {
         assert_eq!(plan.plan_id, "plan-1");
         assert_eq!(
             client
-                .apply(&tool, &plan.plan_id, TargetRequest::default())
+                .apply(&tool, &plan.plan_id, target())
                 .await
                 .expect("apply")
                 .receipt_id,
             "receipt-1"
         );
         assert_eq!(
-            client
-                .status(&tool, TargetRequest::default())
-                .await
-                .expect("status")
-                .achieved_level,
+            client.status(&tool, target()).await.expect("status").achieved_level,
             "integrated"
         );
+        assert_eq!(client.verify(&tool, target()).await.expect("verify").outcome, "passed");
         assert_eq!(
-            client
-                .verify(&tool, TargetRequest::default())
-                .await
-                .expect("verify")
-                .outcome,
-            "passed"
-        );
-        assert_eq!(
-            client
-                .repair(&tool, TargetRequest::default())
-                .await
-                .expect("repair")
-                .repaired,
+            client.repair(&tool, target()).await.expect("repair").repaired,
             vec!["settings"]
         );
         assert_eq!(
-            client
-                .remove(&tool, "plan-1", TargetRequest::default())
-                .await
-                .expect("remove")
-                .plan_id,
+            client.remove(&tool, "plan-1", target()).await.expect("remove").plan_id,
             "removal-1"
         );
         assert_eq!(
@@ -839,12 +896,15 @@ mod tests {
         let server = TestServer::start(FakeLifecycle::default()).await;
         let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
         let mut client = connected(&server, Some(token.expose().to_string())).await;
+        // Mandatory at user scope (AAASM-5957); see the sibling test above.
+        let home = std::env::temp_dir().join(".claude").to_string_lossy().into_owned();
         let plan = client
             .plan(PlanRequest {
                 tool_id: &claude_code_id(),
                 profile: "recommended",
                 settings_scope: "user",
                 policy_profile_id: "team-default",
+                user_config_home: &home,
                 ..PlanRequest::default()
             })
             .await

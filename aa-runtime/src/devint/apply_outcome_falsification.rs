@@ -125,10 +125,15 @@ async fn the_rejected_bool_field_reports_a_false_unchanged_for_every_older_peer(
     let server = TestServer::start(FakeLifecycle::default()).await;
     for version in DI_API_MIN_SUPPORTED..DI_API_APPLY_OUTCOME_SINCE {
         let mut client = connect_offering(&server, &[version]).await;
-        let applied = client
-            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
-            .await
-            .expect("apply");
+        // Managed scope explicitly: an empty/user-scope target is refused by
+        // the client below DI_API_USER_CONFIG_HOME_SINCE (AAASM-5957), which
+        // this test's whole loop is below — this test is about apply_outcome
+        // fabrication across old versions, not about the user-scope gate.
+        let target = TargetRequest {
+            settings_scope: "managed",
+            ..TargetRequest::default()
+        };
+        let applied = client.apply(&claude_code_id(), "plan-1", target).await.expect("apply");
 
         // The fabrication, produced on demand.
         assert_eq!(

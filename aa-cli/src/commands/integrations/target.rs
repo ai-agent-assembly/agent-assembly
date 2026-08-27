@@ -38,10 +38,12 @@ use super::{exit::Outcome, ScopeArg};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Target {
     project_root: String,
+    user_config_home: String,
 }
 
 impl Target {
-    /// The installation reachable from *this* invocation's directory.
+    /// The installation reachable from *this* invocation's directory and
+    /// environment.
     ///
     /// The scope is deliberately left unstated. These commands act on whatever
     /// is installed, and there is exactly one installation of a tool per scope
@@ -49,18 +51,33 @@ impl Target {
     /// can already see, and naming it *wrongly* would turn "here is your
     /// integration" into "nothing is installed". Empty means "find the one that
     /// exists", and the service refuses rather than guesses if what it finds
-    /// needs a project this invocation did not name.
+    /// needs a project — or a configuration home (AAASM-5957) — this invocation
+    /// did not name.
     ///
-    /// A working directory that cannot be determined is not an error here.
-    /// A user-scope integration is answerable without one, and the service says
-    /// so precisely when it is not — where aborting locally would refuse
-    /// `aasm integrations status` on a host with nothing project-scoped on it.
+    /// A working directory or configuration home that cannot be determined is
+    /// not an error here. Whichever *other* scope is actually installed is
+    /// answerable without it, and the service says so precisely when it is
+    /// not — where aborting locally would refuse `aasm integrations status` on
+    /// a host with nothing user-scoped, or nothing project-scoped, on it.
     pub(crate) fn here() -> Result<Self, Failure> {
-        let Ok(dir) = std::env::current_dir() else {
-            return Ok(Self::default());
+        let project_root = match std::env::current_dir() {
+            Ok(dir) => nameable_on_the_wire(&dir)?,
+            Err(_) => String::new(),
+        };
+        let user_config_home = match aa_devtool_claude_code::scope::user_config_home_from(
+            std::env::var_os("CLAUDE_CONFIG_DIR")
+                .filter(|v| !v.is_empty())
+                .map(std::path::PathBuf::from),
+            std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(std::path::PathBuf::from),
+        ) {
+            Some(dir) => nameable_on_the_wire(&dir)?,
+            None => String::new(),
         };
         Ok(Self {
-            project_root: nameable_on_the_wire(&dir)?,
+            project_root,
+            user_config_home,
         })
     }
 
@@ -69,6 +86,7 @@ impl Target {
         TargetRequest {
             settings_scope: "",
             project_root: &self.project_root,
+            user_config_home: &self.user_config_home,
         }
     }
 }
@@ -95,6 +113,39 @@ pub(crate) fn project_root_for_plan(scope: &str) -> Result<String, Failure> {
                 "run the command from an existing, readable directory, or choose --scope user",
             ))
         }
+    };
+    nameable_on_the_wire(&dir)
+}
+
+/// The configuration home a plan writes into, or a refusal (AAASM-5957).
+///
+/// Sent at every scope, not only `user`, on the same terms as
+/// [`project_root_for_plan`]: at `project` and `managed` scope the service
+/// uses it only to disclose that a user configuration exists nearby and will
+/// be left alone.
+///
+/// Unresolvable — `CLAUDE_CONFIG_DIR` and `HOME` both unset — is reported, not
+/// silently dropped: at `user` scope the service refuses, and a user told
+/// "nothing was changed: ... could not be determined" can act, where one told
+/// nothing cannot.
+pub(crate) fn user_config_home_for_plan(scope: &str) -> Result<String, Failure> {
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
+    let Some(dir) = aa_devtool_claude_code::scope::user_config_home_from(config_dir, home) else {
+        if scope != ScopeArg::User.as_wire() {
+            return Ok(String::new());
+        }
+        return Err(Failure::new(
+            Outcome::Aborted,
+            "nothing was changed: this configuration home could not be determined (neither \
+             CLAUDE_CONFIG_DIR nor HOME is set)"
+                .to_string(),
+            "set CLAUDE_CONFIG_DIR or HOME, or choose --scope project",
+        ));
     };
     nameable_on_the_wire(&dir)
 }
