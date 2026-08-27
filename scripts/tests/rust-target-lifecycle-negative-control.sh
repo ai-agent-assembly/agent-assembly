@@ -279,6 +279,148 @@ check "T8d explicit override beats everything, including local config" \
   "$(resolve_effective_target_dir "$T8_WT" "$WORKDIR/env-override" "$WORKDIR/some-global-dir")" \
   "$WORKDIR/env-override"
 
+# ---------------------------------------------------------------------------
+# T9-T16: reclaim-one — the AAASM-5981 AC3 post-merge-close integration
+# point. Ownership-scoped to exactly one worktree path; never sweeps a
+# shared --root. Numbered to match the 8 scenarios the ticket's AC3 disposal
+# explicitly asked for regression coverage of.
+# ---------------------------------------------------------------------------
+
+# T9 (scenario 1): merged + removed owned worktree -> orphan reclaimed.
+ROOT9="$WORKDIR/t9-root"
+mkdir -p "$ROOT9"
+MAIN9="$ROOT9/main-repo"
+init_repo "$MAIN9"
+WT9="$ROOT9/wt-owned"
+git -C "$MAIN9" worktree add -q "$WT9" -b t9-branch >/dev/null 2>&1
+make_target_dir "$WT9/target" 1
+git -C "$MAIN9" worktree remove --force "$WT9" >/dev/null 2>&1 || true
+mkdir -p "$WT9"; make_target_dir "$WT9/target" 1
+
+OUT9="$(run_tool reclaim-one --worktree "$WT9" --yes 2>&1)"
+check "T9 scenario1: owned+removed worktree's orphan target IS reclaimed" \
+  "$([ -d "$WT9/target" ] && echo present || echo absent)" "absent"
+check "T9 scenario1: reported as reclaimed" \
+  "$(echo "$OUT9" | grep -c "reclaiming")" "1"
+
+# T10 (scenario 2): active worktree -> retained.
+ROOT10="$WORKDIR/t10-root"
+mkdir -p "$ROOT10"
+MAIN10="$ROOT10/main-repo"
+init_repo "$MAIN10"
+WT10="$ROOT10/wt-active"
+git -C "$MAIN10" worktree add -q "$WT10" -b t10-branch >/dev/null 2>&1
+make_target_dir "$WT10/target" 1
+
+OUT10="$(run_tool reclaim-one --worktree "$WT10" --yes 2>&1)"
+check "T10 scenario2: active worktree target is retained" \
+  "$([ -d "$WT10/target" ] && echo present)" "present"
+check "T10 scenario2: reported as refused, not an error" \
+  "$(echo "$OUT10" | grep -c "refused")" "1"
+
+# T11 (scenario 3): live process holding the target dir open -> retained.
+ROOT11="$WORKDIR/t11-root"
+mkdir -p "$ROOT11"
+MAIN11="$ROOT11/main-repo"
+init_repo "$MAIN11"
+WT11="$ROOT11/wt-live-process"
+git -C "$MAIN11" worktree add -q "$WT11" -b t11-branch >/dev/null 2>&1
+make_target_dir "$WT11/target" 1
+git -C "$MAIN11" worktree remove --force "$WT11" >/dev/null 2>&1 || true
+mkdir -p "$WT11"; make_target_dir "$WT11/target" 1
+# Hold a file open under the target dir with a background `sleep`-backed fd,
+# simulating a live cargo/rustc/nextest process referencing it.
+exec 9<"$WT11/target/CACHEDIR.TAG"
+OUT11="$(run_tool reclaim-one --worktree "$WT11" --yes 2>&1)"
+exec 9<&-
+check "T11 scenario3: target with a live process reference is retained" \
+  "$([ -d "$WT11/target" ] && echo present)" "present"
+check "T11 scenario3: reported as refused (live process reference)" \
+  "$(echo "$OUT11" | grep -c "live process")" "1"
+
+# T12 (scenario 4): unrelated-session target -> retained, by construction.
+# reclaim-one only ever inspects the ONE --worktree path given — prove a
+# second, equally-orphaned worktree elsewhere is never touched.
+ROOT12="$WORKDIR/t12-root"
+mkdir -p "$ROOT12"
+MAIN12="$ROOT12/main-repo"
+init_repo "$MAIN12"
+WT12A="$ROOT12/wt-owned-by-this-call"
+WT12B="$ROOT12/wt-unrelated-session"
+git -C "$MAIN12" worktree add -q "$WT12A" -b t12a-branch >/dev/null 2>&1
+git -C "$MAIN12" worktree add -q "$WT12B" -b t12b-branch >/dev/null 2>&1
+make_target_dir "$WT12A/target" 1
+make_target_dir "$WT12B/target" 1
+git -C "$MAIN12" worktree remove --force "$WT12A" >/dev/null 2>&1 || true
+git -C "$MAIN12" worktree remove --force "$WT12B" >/dev/null 2>&1 || true
+mkdir -p "$WT12A" "$WT12B"
+make_target_dir "$WT12A/target" 1
+make_target_dir "$WT12B/target" 1
+
+run_tool reclaim-one --worktree "$WT12A" --yes >/dev/null 2>&1
+check "T12 scenario4: the targeted worktree's orphan IS reclaimed" \
+  "$([ -d "$WT12A/target" ] && echo present || echo absent)" "absent"
+check "T12 scenario4: an unrelated, equally-orphaned worktree is UNTOUCHED" \
+  "$([ -d "$WT12B/target" ] && echo present)" "present"
+
+# T13 (scenario 5): shared/ambiguous ownership (global target-dir) -> retained.
+ROOT13="$WORKDIR/t13-root"
+mkdir -p "$ROOT13"
+FAKE_HOME13="$WORKDIR/t13-home"
+mkdir -p "$FAKE_HOME13/.cargo"
+GLOBAL13="$WORKDIR/t13-shared-target"
+mkdir -p "$GLOBAL13"
+cat >"$FAKE_HOME13/.cargo/config.toml" <<EOF
+[build]
+target-dir = "$GLOBAL13"
+EOF
+make_target_dir "$GLOBAL13" 1
+MAIN13="$ROOT13/main-repo"
+init_repo "$MAIN13"
+WT13="$ROOT13/wt-shares-global"
+git -C "$MAIN13" worktree add -q "$WT13" -b t13-branch >/dev/null 2>&1
+git -C "$MAIN13" worktree remove --force "$WT13" >/dev/null 2>&1 || true
+mkdir -p "$WT13"
+
+OUT13="$(HOME="$FAKE_HOME13" "$TOOL" reclaim-one --worktree "$WT13" --yes 2>&1)"
+check "T13 scenario5: ambiguous/shared ownership target is retained fail-safe" \
+  "$([ -d "$GLOBAL13" ] && echo present)" "present"
+check "T13 scenario5: global dir contents untouched" \
+  "$([ -f "$GLOBAL13/CACHEDIR.TAG" ] && echo present)" "present"
+
+# T14 (scenario 6): repeated post-merge cleanup is idempotent.
+ROOT14="$WORKDIR/t14-root"
+mkdir -p "$ROOT14"
+MAIN14="$ROOT14/main-repo"
+init_repo "$MAIN14"
+WT14="$ROOT14/wt-idempotent"
+git -C "$MAIN14" worktree add -q "$WT14" -b t14-branch >/dev/null 2>&1
+make_target_dir "$WT14/target" 1
+git -C "$MAIN14" worktree remove --force "$WT14" >/dev/null 2>&1 || true
+mkdir -p "$WT14"; make_target_dir "$WT14/target" 1
+
+run_tool reclaim-one --worktree "$WT14" --yes >/dev/null 2>&1
+FIRST_RC=$?
+OUT14_SECOND="$(run_tool reclaim-one --worktree "$WT14" --yes 2>&1)"
+SECOND_RC=$?
+check "T14 scenario6: first call succeeds (exit 0)" "$FIRST_RC" "0"
+check "T14 scenario6: second call on already-reclaimed target also exits 0" "$SECOND_RC" "0"
+check "T14 scenario6: second call reports already-clean, not an error" \
+  "$(echo "$OUT14_SECOND" | grep -c "already clean")" "1"
+
+# T15 (scenario 7): already-missing target/worktree does not break the lifecycle.
+run_tool reclaim-one --worktree "$WORKDIR/t15-never-existed" --yes >/dev/null 2>&1
+check "T15 scenario7: reclaim-one on a path that never existed exits 0" "$?" "0"
+
+# T16 (scenario 8): a genuine usage error (missing --worktree) is reported
+# clearly and distinctly from an expected refusal — never silently a no-op,
+# never something that should be interpreted as "the merge failed".
+OUT16="$(run_tool reclaim-one --yes 2>&1)"
+RC16=$?
+check "T16 scenario8: missing --worktree is a clear, non-zero usage error" "$RC16" "2"
+check "T16 scenario8: usage error message names the missing flag" \
+  "$(echo "$OUT16" | grep -c -- "--worktree DIR is required")" "1"
+
 echo
 if [ "$FAILED" -eq 0 ]; then
   echo "All rust-target-lifecycle negative-control cases passed."

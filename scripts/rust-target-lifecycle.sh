@@ -21,8 +21,9 @@
 # this script has no network dependency by design, so it refuses to guess.
 #
 # Usage:
-#   rust-target-lifecycle.sh status  [--root DIR] [--max-total-gib N]
-#   rust-target-lifecycle.sh reclaim [--root DIR] [--yes]
+#   rust-target-lifecycle.sh status     [--root DIR] [--max-total-gib N]
+#   rust-target-lifecycle.sh reclaim    [--root DIR] [--yes]
+#   rust-target-lifecycle.sh reclaim-one --worktree DIR [--yes]
 #
 # status:  read-only. Lists every git worktree found by walking one level
 #          below --root (default: the parent directory of the repo this
@@ -38,7 +39,31 @@
 # reclaim: dry-run by default (prints exactly what would be deleted and why).
 #          --yes actually deletes ONLY orphaned target dirs (see above) that
 #          pass every safety gate in is_safe_to_reclaim(). Every other
-#          candidate is reported, never touched.
+#          candidate is reported, never touched. Sweeps every worktree under
+#          --root — appropriate for a human/operator running a broad check,
+#          NOT for automatic post-merge cleanup (see reclaim-one).
+#
+# reclaim-one: the AAASM-5981 AC3 integration point for `post-merge-close`
+#          (or any other single-lane cleanup step). Takes exactly ONE
+#          worktree path — the one THE CALLER JUST REMOVED — and applies the
+#          same safety gates to only that path. This is the ownership-scoped
+#          shape: it never walks a shared --root, so it structurally cannot
+#          touch another session's worktree/target no matter how old it
+#          looks. Idempotent — a worktree/target that's already gone is a
+#          clean no-op (exit 0), not an error, so repeated post-merge
+#          cleanup calls are always safe. Suggested call site:
+#
+#            git worktree remove <path>
+#            bash scripts/rust-target-lifecycle.sh reclaim-one --worktree <path> --yes
+#
+#          A refusal (still-active, live process, unproven ownership, or
+#          already gone) prints its reason and exits 0 — reclaim-one never
+#          signals failure for an expected refusal, so a caller can invoke
+#          it unconditionally after worktree removal without risking that a
+#          refusal gets mistaken for (or corrupts) a completed merge's
+#          success state. A non-zero exit means something unexpected (bad
+#          arguments, filesystem error) — worth surfacing, still never
+#          something to let block or unwind the merge itself.
 #
 # Safety gates (ALL must hold before any deletion, in is_safe_to_reclaim):
 #   1. Path is not, and is not inside, the resolved GLOBAL shared target-dir.
@@ -61,8 +86,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 usage() {
-  echo "Usage: $0 status [--root DIR] [--max-total-gib N] [--include-global-size]" >&2
-  echo "       $0 reclaim [--root DIR] [--yes]" >&2
+  echo "Usage: $0 status      [--root DIR] [--max-total-gib N] [--include-global-size]" >&2
+  echo "       $0 reclaim     [--root DIR] [--yes]" >&2
+  echo "       $0 reclaim-one --worktree DIR [--yes]" >&2
   exit 2
 }
 
@@ -137,7 +163,14 @@ human_size() {
 has_live_process_reference() {
   local dir="$1"
   if command -v lsof >/dev/null 2>&1; then
-    if lsof +D "$dir" >/dev/null 2>&1; then
+    # `lsof +D` can exit non-zero on an unrelated warning (e.g. a permission-
+    # denied stat somewhere else in the recursive walk) even when it DID
+    # find and print an open-file match — its exit code is not a reliable
+    # "found something" signal on macOS. Check output instead: any line
+    # beyond the header means at least one process has a file open there.
+    local out
+    out="$(lsof +D "$dir" 2>/dev/null)"
+    if [ "$(printf '%s\n' "$out" | wc -l)" -gt 1 ]; then
       return 0
     fi
   fi
@@ -354,6 +387,64 @@ cmd_reclaim() {
   return 0
 }
 
+# AAASM-5981 AC3 integration point. Ownership-scoped to exactly one
+# worktree path (the one the caller just removed) — never walks --root, so
+# it structurally cannot act on a different lane's state. See the usage
+# comment at the top of this file for the full contract (idempotent,
+# refusals exit 0, never fatal to a caller's merge flow).
+cmd_reclaim_one() {
+  local worktree="" do_delete=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --worktree) worktree="$2"; shift 2 ;;
+      --yes) do_delete=1; shift ;;
+      *) usage ;;
+    esac
+  done
+  if [ -z "$worktree" ]; then
+    echo "reclaim-one: --worktree DIR is required" >&2
+    exit 2
+  fi
+  # Normalize trailing slash so string comparisons elsewhere (e.g. the
+  # global-target-dir prefix check) behave the same as the other commands'.
+  worktree="${worktree%/}"
+
+  # Scenario 7 (already-missing target/worktree does not break the
+  # lifecycle): a worktree gone AND never had a resolvable target, or one
+  # already reclaimed by an earlier call, is success — there is nothing to
+  # do, not an error. This is the idempotency contract repeated post-merge
+  # cleanup calls depend on (scenario 6).
+  if [ ! -e "$worktree" ]; then
+    echo "reclaim-one: $worktree does not exist — nothing to do (already clean)"
+    return 0
+  fi
+
+  local global_dir
+  global_dir="$(resolve_global_target_dir)"
+  local target_dir
+  target_dir="$(resolve_effective_target_dir "$worktree" "" "$global_dir")"
+
+  if [ ! -d "$target_dir" ]; then
+    echo "reclaim-one: $target_dir does not exist — nothing to do (already clean)"
+    return 0
+  fi
+
+  local reason
+  reason="$(is_safe_to_reclaim "$target_dir" "$global_dir" "$worktree" 2>&1)"
+  if [ $? -ne 0 ]; then
+    echo "reclaim-one: refused — $reason ($target_dir)"
+    return 0  # an expected refusal is not a failure — see contract above
+  fi
+
+  if [ "$do_delete" -eq 1 ]; then
+    echo "reclaim-one: reclaiming $target_dir (worktree: $worktree)"
+    rm -rf "$target_dir"
+  else
+    echo "reclaim-one: would reclaim (dry-run, pass --yes to delete): $target_dir (worktree: $worktree)"
+  fi
+  return 0
+}
+
 # --- entrypoint ---------------------------------------------------------------
 
 [ $# -ge 1 ] || usage
@@ -361,5 +452,6 @@ subcommand="$1"; shift
 case "$subcommand" in
   status) cmd_status "$@" ;;
   reclaim) cmd_reclaim "$@" ;;
+  reclaim-one) cmd_reclaim_one "$@" ;;
   *) usage ;;
 esac
