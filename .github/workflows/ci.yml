@@ -161,6 +161,13 @@ on:
       - "qa/tests/fixtures/**"
       - "scripts/qa/validate-golden-journeys.py"
       - "scripts/qa/validate-golden-journeys-negative-control.sh"
+      # AAASM-5884: community-health file completeness (J33). Paired with the
+      # `community_health` router filter below — a router filter without a
+      # matching `on.*.paths` entry is a dead trigger (ADR 0028).
+      - "CODE_OF_CONDUCT.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "scripts/qa/validate-community-health.py"
       # AAASM-5893: the resource-lock slot mechanism (Subtask 1 of AAASM-5891's
       # resource-aware QA-campaign scheduler). Paired with the `qa_registry`
       # router filter below — `qa/tests/fixtures/**` above already covers the
@@ -265,6 +272,7 @@ jobs:
       release_completeness_gate: ${{ steps.filter.outputs.release_completeness_gate }}
       docs_governance_gate: ${{ steps.filter.outputs.docs_governance_gate }}
       qa_registry: ${{ steps.filter.outputs.qa_registry }}
+      community_health: ${{ steps.filter.outputs.community_health }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -509,6 +517,17 @@ jobs:
               # resource-lock does — same `qa/**` + `scripts/qa/**` surface.
               - 'scripts/qa/ci-watch.py'
               - 'scripts/qa/ci-watch-negative-control.sh'
+              - '.github/workflows/ci.yml'
+            # AAASM-5884: community-health file completeness (J33). A
+            # dedicated flag rather than folding into `qa_registry` above —
+            # this gate reads repo-root prose files, not `qa/**`, so
+            # keeping it separate keeps each router flag's glob set legible
+            # as "what actually changed triggers what".
+            community_health:
+              - 'CODE_OF_CONDUCT.md'
+              - 'CONTRIBUTING.md'
+              - 'SECURITY.md'
+              - 'scripts/qa/validate-community-health.py'
               - '.github/workflows/ci.yml'
             # AAASM-5677: the governance surface. Before this filter existed, a
             # change to `governance/capability-manifest.yaml` selected NO job in
@@ -1289,6 +1308,27 @@ jobs:
       # produces one.
       - name: Self-test the release-evidence checker (negative control)
         run: bash scripts/tests/release-evidence-negative-control.sh
+
+  community-health-gate:
+    needs: [changes]
+    # AAASM-5884. Journey J33 (`qa/golden-journeys.yaml`) claims
+    # community-contributor viability via CODE_OF_CONDUCT.md, CONTRIBUTING.md
+    # and SECURITY.md, but nothing checked their presence or content —
+    # `docs-governance-gate` only builds the mdBook under `docs/`. Its own
+    # job/filter for the same reason `registry-health-gate` above is: these
+    # inputs match no `rust`/`dashboard`/`governance`/`qa_registry` path, so
+    # a community-health-only PR would otherwise skip every existing gate.
+    if: needs.changes.outputs.community_health == 'true'
+    name: Community-health file completeness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate community-health files
+        run: python3 scripts/qa/validate-community-health.py .
 
   resource-lock-health-gate:
     needs: [changes]
@@ -3931,6 +3971,11 @@ jobs:
       # not a metric — an advisory version would be exactly the "false PASS"
       # this Epic exists to prevent.
       - registry-health-gate
+      # AAASM-5884: blocks, like `registry-health-gate` above and for the
+      # same reason — a community-health file that validates while empty,
+      # missing, or stripped of its required sections is a false PASS on
+      # exactly the gap AAASM-5873's audit named (J33: NOT_COVERED).
+      - community-health-gate
       # AAASM-5893: blocks, like `registry-health-gate` above and for the
       # same reason — a resource-lock mechanism that validates against a
       # broken registry, or whose exec-lock-survival regression case (11)
