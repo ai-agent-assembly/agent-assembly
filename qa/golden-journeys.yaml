@@ -1348,3 +1348,60 @@ journeys:
     opposite outcome (raw canary reaches upstream, no dashboard alert fires),
     proving this row's "the alert is visible" evidence is load-bearing rather
     than vacuously true regardless of what the proxy actually does
+- id: J66
+  jira: AAASM-5924
+  feature_refs:
+  - AAASM-5922
+  - AAASM-5923
+  name: A declared enterprise destination reaches its corporate proxy through the chained path with the secret redacted at the destination; nothing else gains reachability
+  priority: P0
+  persona_track: Function
+  surfaces:
+  - aa-proxy
+  - aa-cli
+  entry_point: proxy
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: A CONNECT to a declared enterprise destination is routed through the trusted upstream
+    proxy and the secret in its body is redacted before the destination behind that proxy sees
+    it; an undeclared destination, an RFC1918 literal, and an unreachable/self-referential
+    trusted proxy are all still refused exactly as they would be with chaining unconfigured.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/trusted_upstream_chaining.rs::declared_destination_redacts_the_secret_at_the_destination_behind_the_trusted_proxy
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/trusted_upstream_chaining.rs::chaining_configured_and_not_produce_identical_outcomes_for_non_declared_traffic
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/src/ssrf.rs::tests
+  - repo: agent-assembly
+    kind: test
+    selector: aa-core/src/net.rs::tests
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::spawn_and_wait_strips_ambient_uppercase_proxy_vars_from_the_real_child
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  # controlled_fake, not real_local_process: `aa-proxy/tests/trusted_upstream_chaining.rs`
+  # drives a real `ProxyServer::run()` with real listeners, real TLS, and a
+  # real dial path — but in-process, against loopback mocks of the
+  # corporate proxy and the enterprise destination, not a spawned `aa-proxy`
+  # binary talking to a genuinely separate process the way J65's
+  # `real_local_process` rows do. Promoting to `real_local_process` needs a
+  # second evidence leg in `aa-integration-tests` driving the spawned
+  # `aa-proxy` binary end-to-end (AAASM-5924's own plan scopes this as a
+  # follow-up, not this Story's ask).
+  negative_control: aa-proxy/tests/trusted_upstream_chaining.rs::alert_only_forwards_the_secret_unredacted_through_the_chain
+    — same mock-proxy/mock-destination harness with CredentialAction::AlertOnly,
+    asserting the opposite outcome (the raw secret DOES reach the destination
+    behind the trusted proxy), proving this row's redaction evidence is
+    load-bearing rather than vacuously true regardless of what the proxy
+    actually does with the body.

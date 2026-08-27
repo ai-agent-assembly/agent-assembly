@@ -483,6 +483,7 @@ mod tests {
                 managed_keys: vec!["permissions".to_string()],
                 content_sha256: "abc".to_string(),
                 merge: SettingsMerge::MergeManagedKeys,
+                format: crate::integration::step::DocumentFormat::Json,
             },
             "write the managed settings block",
         )
@@ -743,6 +744,7 @@ mod tests {
             managed_keys: vec!["permissions".to_string()],
             content_sha256: "abc".to_string(),
             merge: SettingsMerge::Replace,
+            format: crate::integration::step::DocumentFormat::Json,
         };
         let compat = compatible();
         let obs = observed("sha256:managed", "sha256:different");

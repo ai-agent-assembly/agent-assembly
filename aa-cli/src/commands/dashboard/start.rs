@@ -49,7 +49,7 @@ object-src 'none'";
 #[derive(Debug, Args)]
 pub struct StartArgs {
     /// Port to listen on (overrides config and AASM_DASHBOARD_PORT env var).
-    #[arg(long, env = "AASM_DASHBOARD_PORT")]
+    #[arg(long, env = "AASM_DASHBOARD_PORT", hide_env_values = true)]
     pub port: Option<u16>,
     /// Open the system browser after the server is ready.
     #[arg(long)]
