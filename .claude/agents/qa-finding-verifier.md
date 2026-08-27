@@ -58,6 +58,11 @@ isn't primed to confirm a hypothesis.
 - Never open the Jira Bug yourself — you return a verdict; the coordinator
   files it (or doesn't) per AAASM-5827.
 - Never spawn your own sub-agents.
+- If reproduction needs a workspace-wide `cargo` build/doc/test or another
+  registered resource class, wrap it via `scripts/qa/resource-lock.py run
+  --class <name> -- <cmd...>` per `qa/ORCHESTRATION.md`'s "Resource
+  classes" rather than running it bare — `EXIT_SATURATED`/`EXIT_DUPLICATE`
+  is contention, not evidence for or against the finding.
 
 ## Output
 

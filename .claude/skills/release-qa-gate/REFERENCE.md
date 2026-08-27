@@ -297,6 +297,17 @@ commands — and respect each recipe's public-artifact vs. source-development
 label; never let a source-dev recipe silently stand in for an unavailable
 public golden-journey path.
 
+**Resource-class supervision (AAASM-5891/5895).** The 10-worker ceiling
+above bounds Agent-tool concurrency, not machine-resource concurrency — a
+worker that runs a workspace-wide `cargo build`/`cargo doc`/`cargo
+nextest`, a macOS Keychain operation, or a VM start should wrap it through
+`scripts/qa/resource-lock.py run --class <name> -- <cmd...>` per
+`qa/ORCHESTRATION.md`'s "Resource classes" section, not invoke it bare. A
+worker that gets `EXIT_SATURATED`/`EXIT_DUPLICATE` back has hit
+contention, not failed its verification — record it as retryable and move
+to other in-scope work rather than reporting it as a finding or blocking
+the whole wave on it.
+
 ## Step 6: finding verification
 
 For every `SUSPECTED_FINDINGS` entry across all workers' results, follow

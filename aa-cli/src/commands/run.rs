@@ -3859,6 +3859,19 @@ mod tests {
     /// — so `aasm tools list` advertised governance the launcher could not
     /// deliver. This fails if either consumer is ever pointed somewhere other
     /// than `aa_devtool::registry`.
+    ///
+    /// AAASM-5946: this used to also compare two independent `detect()` calls
+    /// (one per side) against each other. `detect()` does live filesystem +
+    /// subprocess I/O, so under load one call could transiently return `None`
+    /// where the other returned `Some`, failing the assertion for reasons that
+    /// have nothing to do with which registry each side resolved from. The
+    /// invariant this test exists to pin is a property of the *code path*
+    /// (`aa_devtool::registry`), not of host installation state at the moment
+    /// of the call — so it is checked here via `governance_level()` (a static,
+    /// non-probing property of the resolved adapter) and
+    /// `registry::kind_for(tool)` (the registry's own declared mapping,
+    /// AAASM-5274's `every_supported_tool_resolves_to_an_adapter_and_a_kind`
+    /// sibling) instead of by calling `detect()` twice and diffing the result.
     #[test]
     fn discovery_and_run_resolve_the_same_adapter_metadata() {
         let discovery = aa_devtool::DiscoveryService::new();
@@ -3884,23 +3897,78 @@ mod tests {
                 discovery_adapter.governance_level(),
             );
 
-            // Detection identity. On a host without the tool both sides return
-            // None, which still proves they agree; when the tool *is* installed
-            // this pins the concrete DevToolKind each side reports.
-            let run_kind = run_adapter.detect().map(|i| i.kind);
-            let discovery_kind = discovery_adapter.detect().map(|i| i.kind);
-            assert_eq!(
-                run_kind, discovery_kind,
-                "{tool}: `aasm run` detects {run_kind:?} but discovery detects {discovery_kind:?}"
+            // Sanity companion to the assertion above: every tool both
+            // consumers can resolve must also have a registry-declared
+            // `DevToolKind` (see `registry::every_supported_tool_resolves_to_an_adapter_and_a_kind`)
+            // — a tool token that resolves an adapter but has no declared
+            // kind would be a registry gap neither `governance_level()`
+            // equality nor that sibling test alone would surface here.
+            assert!(
+                aa_devtool::registry::kind_for(tool).is_some(),
+                "{tool}: registry must declare a DevToolKind for a tool both consumers resolve"
             );
-            if let Some(kind) = run_kind {
-                assert_eq!(
-                    Some(&kind),
-                    aa_devtool::registry::kind_for(tool).as_ref(),
-                    "{tool}: detected kind disagrees with the registry's declared kind"
-                );
+        }
+    }
+
+    /// AAASM-5946 AC2's negative control: every real adapter currently
+    /// reports [`GovernanceLevel::L2Enforce`] (see each crate's own
+    /// `governance_level_is_l2_enforce` test), so
+    /// `discovery_and_run_resolve_the_same_adapter_metadata`'s `governance_level`
+    /// comparison is vacuously true across today's adapter set unless the
+    /// comparison itself is proven capable of catching a real divergence.
+    /// Pairs `MockAdapter` (the existing `L2Enforce` double) against a second,
+    /// deliberately wrong double and asserts the same equality check that
+    /// test performs actually fails on the pair — proving a genuine "pointed
+    /// at a different adapter source" regression would still be caught, not
+    /// silently accepted.
+    #[test]
+    #[should_panic(expected = "governance level")]
+    fn the_metadata_parity_check_actually_catches_a_governance_level_divergence() {
+        struct WrongGovernanceAdapter;
+        #[async_trait]
+        impl DevToolAdapter for WrongGovernanceAdapter {
+            fn detect(&self) -> Option<DevToolInfo> {
+                None
+            }
+            async fn generate_managed_settings(&self, _p: &PolicyDocument) -> Result<String, AdapterError> {
+                unimplemented!("not exercised by this test")
+            }
+            async fn apply_settings(&self, _s: &str) -> Result<(), AdapterError> {
+                unimplemented!("not exercised by this test")
+            }
+            fn build_launch_command(
+                &self,
+                _a: &[String],
+                _b: &str,
+                _c: Option<&str>,
+                _d: Option<&str>,
+            ) -> Result<std::process::Command, AdapterError> {
+                unimplemented!("not exercised by this test")
+            }
+            async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+                unimplemented!("not exercised by this test")
+            }
+            async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> {
+                unimplemented!("not exercised by this test")
+            }
+            fn governance_level(&self) -> GovernanceLevel {
+                // Any variant other than `L2Enforce` — every real adapter in
+                // this workspace currently reports `L2Enforce`, so the exact
+                // choice here doesn't need to match a real adapter, only to
+                // genuinely differ.
+                GovernanceLevel::L1Observe
             }
         }
+
+        let expected: Box<dyn DevToolAdapter> = Box::new(MockAdapter {
+            apply_called: Arc::new(AtomicBool::new(false)),
+        });
+        let wrong: Box<dyn DevToolAdapter> = Box::new(WrongGovernanceAdapter);
+        assert_eq!(
+            expected.governance_level(),
+            wrong.governance_level(),
+            "governance level must match — this assertion is expected to fail in this test"
+        );
     }
 
     /// Pins each CLI tool token to the [`DevToolKind`] the registry declares for

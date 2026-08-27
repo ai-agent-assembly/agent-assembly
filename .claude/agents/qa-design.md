@@ -45,6 +45,11 @@ Out of scope: non-visual functional QA (`qa-functional`), SDK journeys
   requires one, note it as `UNTESTED_OR_BLOCKED` with the reason rather than
   forcing past it.
 - Never open a Jira Bug yourself.
+- A dashboard build you need locally (not already covered by CI's) goes
+  through `scripts/qa/resource-lock.py run --class dashboard-build --
+  <cmd...>` per `qa/ORCHESTRATION.md`'s "Resource classes" — the
+  `node-dashboard` pool is shared, and a bare invocation can contend with a
+  build another worker or campaign step is running.
 
 ## Output
 

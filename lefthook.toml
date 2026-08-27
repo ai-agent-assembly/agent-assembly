@@ -124,5 +124,41 @@ parallel = true
 #     check, which is worse than the slow-but-correct fallback it replaces.
 files = 'git diff --name-only --merge-base @{u} HEAD 2>/dev/null || git diff --name-only --merge-base remote/main HEAD 2>/dev/null || git diff --name-only --merge-base origin/main HEAD 2>/dev/null || git ls-files'
 glob = ["*.rs", "*Cargo.toml", "*Cargo.lock"]
-run = "cargo doc --workspace --no-deps"
-fail_text = "Documentation build failed. Fix rustdoc errors before pushing."
+
+# AAASM-5895: wrapped through the `cargo-doc` resource class
+# (qa/resource-classes.yaml, pool `cargo-shared-target`, limit 1) — this is
+# the exact hook whose 3+ concurrent invocations deadlocked on the shared
+# CARGO_TARGET_DIR flock for ~50 minutes in the AAASM-5877 incident this
+# whole Story (AAASM-5891) exists to fix. Blocked on AAASM-5947 (worktree-
+# scoped fingerprint) and AAASM-5948 (Ctrl-C orphan containment) landing
+# first — wrapping before those existed would have made a foreground
+# `git push` fail or hang on this machine, per design review.
+#
+# No queueing, no fail-open, no wrapper script: resource-lock.py's `run`
+# already gives exactly the behavior the product-owner decision thread
+# specified, with zero extra flags —
+#   - fail-fast: `cargo-doc`'s wait_secs is unset, so it inherits the
+#     registry defaults' wait_secs: 0 — a saturated slot returns
+#     immediately (EXIT_SATURATED=75), never queues.
+#   - fail-closed: EXIT_SATURATED/EXIT_DUPLICATE (76) are as nonzero as any
+#     other failure to lefthook, so a saturated slot REJECTS the push —
+#     there is no code path here that swallows either exit code into a
+#     passed hook.
+#   - distinguishable message, no custom wrapper needed: resource-lock.py's
+#     own `eprint` on both paths ("pool '...' saturated ...",
+#     "duplicate job already running ...") is prefixed `aa-qa-lock:` and
+#     inherited straight through to this hook's stderr (fork+execvp, no fd
+#     redirection) — visibly distinct from rustdoc's own error output on a
+#     genuine build failure, without this file inventing a second
+#     classification scheme.
+#   - no blocked foreground shell: same reasoning — wait_secs: 0 means this
+#     process never sleeps waiting for the slot.
+#
+# What this hook does NOT do: retry. Point 4 of the decision thread (retry
+# belongs to the orchestration/scheduler layer, not the hook) is documented
+# in qa/ORCHESTRATION.md's "Resource classes" section — an automated QA
+# campaign hitting EXIT_SATURATED here should record the retryable state,
+# continue other dependency-ready work, and retry the push later, not stop
+# and ask a human merely because another worktree holds the slot.
+run = "python3 scripts/qa/resource-lock.py run --class cargo-doc -- cargo doc --workspace --no-deps"
+fail_text = "Documentation build failed, OR another push/worktree currently holds the cargo-doc build slot (see the 'aa-qa-lock:' line above — 'saturated'/'duplicate' means contention, not a build error). Fix rustdoc errors before pushing; wait or retry shortly if this is resource contention."
