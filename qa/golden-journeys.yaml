@@ -173,9 +173,28 @@ journeys:
   - golden-journey
   browser_required: false
   outcome: See AAASM-4530 for the full acceptance contract; this row is a selection index only.
+  # AAASM-5882: this row previously read gap/gap_owner as if no evidence
+  # existed. `aa-integration-tests/tests/e2e_sdk_python.rs` exists but runs
+  # in AA_SELFTEST=1 hermetic mode (no real gateway contact per its own
+  # module doc comment) — that doesn't satisfy "govern a real agent
+  # end-to-end", so it isn't cited as automated evidence here. What does
+  # satisfy it: docs/release/qa-signoff/v0.0.1-rc.7.md's J08 row records a
+  # dated, real manual/live verification — a live aa-gateway + aa-api-server
+  # stood up locally, a real published Python SDK registering a live agent
+  # against the gateway (ctx.registered == True, confirmed in aasm agent
+  # list). Note this covers the registration flow this journey's own name
+  # names ("govern your first agent... end-to-end"), not the full 16-
+  # framework compatibility matrix AAASM-4530's `outcome` field points at
+  # as "the full acceptance contract" — those are a broader, separate claim.
   release_blocking: true
-  lifecycle_state: gap
-  gap_owner: AAASM-5882
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J09
   jira: AAASM-4533
   name: Govern your first agent with the Node SDK, end-to-end
@@ -389,7 +408,20 @@ journeys:
   evidence:
   - repo: agent-assembly
     kind: ci_job
-    selector: 'doc-links.yml (link integrity only, not full command matrix)'
+    selector: 'doc-links.yml (link integrity only, not the command matrix)'
+  - repo: agent-assembly
+    kind: ci_job
+    selector: 'docs.yml/docs-governance.yml verify-commands: scripts/qa/verify-documented-commands.py
+      --run extracts and classifies every fenced sh/bash/console command in
+      docs/src/quick-start/ and README''s onboarding sections; each is either
+      executed with an assertion on its documented outcome, or allowlisted
+      with a stated reason (network installers, Homebrew, release-tarball +
+      cosign verification, `make dev-setup`/`dev-verify`, `docker compose
+      up`) — an unclassified command fails the job (AAASM-5888). Still
+      `partial`, not `automated`: the allowlisted commands genuinely do not
+      run, so the journey name (''every documented command'') is not yet
+      fully true — the gap is now a machine-enforced, documented boundary
+      instead of an unowned hole.'
   execution_lanes:
   - pr
   fidelity: real_local_process
@@ -539,8 +571,22 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4596 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: gap
-  gap_owner: AAASM-5883
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::limit_per_hour_allows_within_limit_then_denies_when_exceeded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::active_hours_denies_a_call_outside_the_window
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::active_hours_allows_a_call_inside_the_window
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  negative_control: aa-gateway/tests/rate_limit_active_hours_test.rs (AAASM-5883; falsified by temporarily removing the Stage 1 active_hours check and the rate-limit consume call from PolicyEngine::evaluate())
 - id: J29
   jira: AAASM-4597
   name: Verify enforcement modes (Enforce / Observe / Disabled)
@@ -616,8 +662,7 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4612 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: gap
-  gap_owner: AAASM-5884
+  lifecycle_state: automated
 - id: J34
   jira: AAASM-4617
   name: Understand "what is it / why / for whom / the goal" in 5 minutes (non-technical)
@@ -833,9 +878,18 @@ journeys:
   browser_required: false
   outcome: See AAASM-4610 for the full acceptance contract; this row is a selection index only.
   lifecycle_state: automated
+# AAASM-5885: this row previously claimed SCIM coverage no crate in this repo
+# implements (`grep -rli scim aa-api/src aa-gateway/src` returns nothing) —
+# per the product-north-star spec and the workspace-root repo map, SCIM is
+# tiered as a closed-source SaaS/Enterprise capability owned by the `cloud`
+# repo's own release-QA registry, not this monorepo's. Narrowed to the
+# multi-tenancy/RBAC claim this repo actually owns and has real coverage
+# for (aa-api/tests/{iam,policy_rbac_integration,capability}.rs,
+# aa-gateway/tests/{inter_team_fixture,tokenless_tenancy_neutralized}_test.rs
+# — all present, none `#[ignore]`d, run by the required workspace test job).
 - id: J47
   jira: AAASM-4614
-  name: Org / team admin — multi-tenancy, teams, RBAC, SCIM (SaaS control plane)
+  name: Org / team admin — multi-tenancy, teams, RBAC
   priority: P1
   persona_track: Function
   surfaces:
@@ -849,8 +903,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4614 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: partial
-  gap_owner: AAASM-5885
+  lifecycle_state: automated
 - id: J48
   jira: AAASM-4616
   name: Enterprise self-hosted governance onboarding
@@ -930,8 +983,16 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4750 for the full acceptance contract; this row is a selection index only.
+  # AAASM-5886 closed the sidecar-enforcement gap (governed_call_probe now
+  # proves the containerized aa-runtime sidecar itself enforces allow/deny for
+  # real). Still `partial`, not `automated`: J52 is "govern a containerized
+  # AGENT", and the agent's own path stays transport=offline until the
+  # published base images ship the SDK's native _core client — tracked by
+  # AAASM-4764 (open, filed at the journey level for exactly this class of
+  # gap), not AAASM-1202 (a different, already-Done, Python-only ticket that
+  # would leave this row silently orphaned).
   lifecycle_state: partial
-  gap_owner: AAASM-5886
+  gap_owner: AAASM-4764
 - id: J53
   jira: AAASM-4751
   name: Pull, configure & operate the aa-gateway container image

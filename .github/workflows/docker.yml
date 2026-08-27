@@ -106,6 +106,15 @@ jobs:
           # Without this, buildx pushes provenance but `.SBOM == {}`, leaving
           # consumers with no machine-readable inventory of the image's contents
           # for vulnerability scanning / supply-chain audit.
+          # AAASM-5887: cosign signing of this image is NOT committed product
+          # scope — recorded as an intentional gap, not a silent one. The
+          # `contents: read` + `packages: write` permission floor these
+          # publish jobs hold is a deliberate least-privilege boundary
+          # (AAASM-4022 above); granting `id-token: write` for keyless OIDC
+          # signing is a permission-scope escalation on an already-privileged
+          # release-lane job and needs its own security review, not a bundled
+          # "just add signing" change. Cosign already signs release *blobs*
+          # (CLI/eBPF checksums, `release.yml`) — that scope is unaffected.
           sbom: true
           tags: |
             ghcr.io/ai-agent-assembly/aa-runtime:${{ github.ref_name }}
@@ -155,6 +164,10 @@ jobs:
           # Without this, buildx pushes provenance but `.SBOM == {}`, leaving
           # consumers with no machine-readable inventory of the image's contents
           # for vulnerability scanning / supply-chain audit.
+          # AAASM-5887: cosign image signing is not committed scope for this
+          # job either — see the aa-runtime publish step above for the full
+          # rationale (least-privilege permission floor, blob-signing already
+          # covered by release.yml).
           sbom: true
           tags: |
             ghcr.io/ai-agent-assembly/aa-gateway:${{ github.ref_name }}
@@ -335,6 +348,9 @@ jobs:
           # published language image. Without this, buildx pushes provenance but
           # `.SBOM == {}`, leaving consumers with no machine-readable inventory of
           # the image's contents for vulnerability scanning / supply-chain audit.
+          # AAASM-5887: cosign image signing is not committed scope for this job
+          # either — see the aa-runtime publish step's comment above for the
+          # full rationale.
           sbom: true
           build-args: |
             SDK_VERSION=${{ steps.sdkver.outputs.version }}

@@ -48,11 +48,14 @@ cannot prove today.
    The agent opens the **genuine native transport** to the runtime **when the
    image ships the SDK's compiled native client**. See "Governance path" below
    for why `transport=offline` is the honest result for the base images today.
-5. **Deny enforcement (Tier C — load-bearing AC, currently a product gap)** — the
-   policy fixture genuinely denies the restricted action (`PROCESS_EXEC`) and
-   permits the allowed one; this is asserted offline (real). Asserting the BLOCK
-   **end-to-end from inside the base image** is gated on two open product gaps —
-   see "Deny path" below.
+5. **Governed-call enforcement (Tier C — real, AAASM-5886)** — a standalone probe
+   (`aa-sdk-client/examples/governed_call_probe.rs`, built into
+   `probe/Dockerfile.probe`) drives one real `TOOL_CALL` (expect ALLOW) and one
+   real `PROCESS_EXEC` (expect DENY) `CheckAction` through the running,
+   containerized `aa-runtime` sidecar over the same shared UDS, and the runner
+   fails the leg if either lands on the wrong decision. See "Governed-call
+   enforcement" below for why this doesn't need to wait on the base image's own
+   SDK build.
 
 ## Governance path — why `transport=offline` is honest, not a cop-out
 
@@ -83,45 +86,50 @@ the real runtime and waits for its socket**, so once the live IPC path lands
 `transport=live` — mirroring the live integration harness
 `tests/live/test_e2e_python.py`.
 
-## Sidecar currently down — AAASM-3527
+## Sidecar startup — AAASM-3527 (fixed)
 
-A run of this harness immediately surfaced a real defect: the `aa-runtime` image's
-`ENTRYPOINT` path `/aa-runtime` is built as a **directory**, not the binary
-(`COPY . .` with no `.dockerignore` makes `/app/aa-runtime` a pre-existing source
-dir, so the `cp` of the binary lands *inside* it and the final `COPY` ships the
-whole dir). The container fails with `exec: "/aa-runtime": is a directory`, so the
-sidecar cannot start. Filed as **AAASM-3527** (under Epic AAASM-3198).
+An early run of this harness surfaced a real defect: the `aa-runtime` image's
+`ENTRYPOINT` path `/aa-runtime` was built as a **directory**, not the binary, so
+the container failed with `exec: "/aa-runtime": is a directory` and the sidecar
+never started. Filed and fixed as **AAASM-3527** (under Epic AAASM-3198) — the
+Dockerfile now stages the binary through a path that cannot collide with the
+copied-in source tree. A leg where the socket still doesn't bind is now treated
+as a real failure (`SIDECAR_UNREACHABLE`), not a tolerated known-gap.
 
-Until AAASM-3527 is fixed, every smoke run reports `sidecar=down` and the agent
-runs its offline path — but this does **not** fail the base-image smoke, because
-Tier A (the AC's "agent runs with no manual config") is independent of the
-sidecar. The harness is the thing that caught this, which is the point.
+## Governed-call enforcement — AAASM-5886
 
-## Deny path — the known product gap
+Tier A/B above prove the base image's *own* SDK build runs and (where it ships a
+native client) can dial the sidecar. Neither proves the sidecar actually
+**enforces** anything — the gap AAASM-5886 (a follow-up to AAASM-3524) found.
+Since the published base images don't yet ship the SDK's native `_core`
+transport (AAASM-1202), waiting on the base image's own agent to prove
+enforcement would leave Tier C permanently unprovable through no fault of the
+sidecar. Instead, `governed_call_probe` (`aa-sdk-client/examples/`) is a
+standalone client speaking the exact same handshake + `CheckAction` wire the SDK
+uses (mirroring `aa-integration-tests/tests/e2e_runtime_gateway_deny.rs`), run as
+a throwaway container against the compose stack's shared UDS. It sends a
+`TOOL_CALL` (not in `policy.toml`'s `blocked_actions` — must come back ALLOW) and
+a `PROCESS_EXEC` (the fixture's restricted action — must come back DENY); a
+wrong decision on either fails the leg. This proves the **containerized
+`aa-runtime` sidecar's own enforcement**, independent of what any particular
+language's published SDK build currently ships.
 
-Asserting that a *denied* action is *blocked* from inside the base image is the
-load-bearing AC, and it is **unprovable today** for the same reason the live
-integration harness pins it as a `strict=True` xfail:
-
-- **AAASM-3000** — SDK⇄`aa-runtime` IPC deadlock (`close()` hangs, no events
-  delivered).
-- **AAASM-3021** — SDK pre-execution `check()` is unwired/stubbed, so a denied
-  action is not blocked at the SDK layer even against a reachable core.
-
-**AAASM-3172** flips this to a hard assert once a fixed SDK release ships. Until
-then the harness asserts the *fixture* denies (real, offline) and records the
-end-to-end gap rather than faking a green.
+The two product bugs that used to block this (**AAASM-3000** SDK⇄runtime IPC
+deadlock, **AAASM-3021** SDK pre-execution check unwired) are both fixed; only
+**AAASM-3172** (flipping the *SDK-level* python/node/go behavioral xfails to hard
+asserts once a published SDK release carries the fix) remains open, and it does
+not block this probe — the probe never goes through those SDKs' wrapper code.
 
 ## What was actually validated (and what is pending)
 
 | Check | Status |
 |---|---|
-| `aa-runtime` sidecar image builds | ✅ builds (and surfaced AAASM-3527 below) |
+| `aa-runtime` sidecar image builds and starts | ✅ (AAASM-3527 fixed) |
 | Base images build from `docker/Dockerfile.*` | ✅ exercised locally (go 1.26 confirmed end-to-end; the other 8 build the same two-stage way, gated only by Docker VM disk — see below) |
 | `aasm --version` on the image (hygiene) | ✅ |
 | Tier A — minimal agent runs with no manual config, clean exit | ✅ |
-| Tier B — live `SDK → aa-runtime` transport | ⏳ blocked: sidecar `down` (AAASM-3527) + base images ship no native client |
-| Tier C — deny enforcement from inside the image | ⏳ product gap (AAASM-3000 / AAASM-3021), pending AAASM-3172; fixture-denies asserted offline |
+| Tier B — live `SDK → aa-runtime` transport from the base image's own agent | ⏳ base images ship no native client yet (AAASM-1202); honestly reported `transport=offline` |
+| Tier C — governed-call enforcement by the containerized sidecar | ✅ real ALLOW + real DENY via `governed_call_probe` (AAASM-5886) |
 
 The full 9-image sweep on a single machine is **disk-bound**: each base image's
 stage 1 rebuilds the `aasm` Rust CLI from source (multi-GB target dirs), so the
@@ -149,7 +157,8 @@ IMAGE_MODE=pull GHCR_TAG=v0.0.1 docker/smoke/run-smoke.sh --all
 KEEP_STACK=1 docker/smoke/run-smoke.sh --lang python --version 3.14-slim
 ```
 
-Exit code is non-zero if any image fails Tier A, hygiene, or the build.
+Exit code is non-zero if any image fails Tier A, hygiene, the build, sidecar
+startup, or the governed-call probe (AAASM-5886).
 
 The `aa-runtime` sidecar is built once and **reused if already present** (so
 `--all` and CI don't rebuild it per image). To force a fresh sidecar build after
@@ -175,6 +184,8 @@ already supports it via `IMAGE_MODE=pull`.
 | `policy.toml` | Allow/deny enforcement policy mounted into the sidecar |
 | `agents/<lang>/agent.*` | Minimal per-language agent run ON the base image |
 | `agents/<lang>/Dockerfile.agent` | Overlay that adds ONLY the agent onto the base image |
+| `probe/Dockerfile.probe` | Builds `governed_call_probe` (AAASM-5886) — the real allow/deny assertion |
+| `../../aa-sdk-client/examples/governed_call_probe.rs` | The probe's source — real handshake + `CheckAction` wire |
 
 ## Reproducibility — pinned vs moving sources
 

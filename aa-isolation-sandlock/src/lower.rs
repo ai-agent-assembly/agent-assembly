@@ -403,38 +403,89 @@ pub fn unexpressible_limit(limits: &ResourceLimits) -> Option<&'static str> {
     None
 }
 
+/// A delegated or ambient-unremoved credential name whose *value* this
+/// lowering refuses to place on the confinement executable's own command
+/// line.
+///
+/// # Why this is a refusal and not a redaction
+///
+/// AAASM-5940: the only vocabulary this backend has for putting a value into
+/// the child's environment is `--env=NAME=VALUE`, an argument of the
+/// **confinement executable**, not the confined program — so the value sits
+/// in a place `ps`/`/proc/<pid>/cmdline`/a process listing can read for as
+/// long as the supervisor runs. Whether the mechanism's own environment
+/// *inheritance* (running with no `--clean-env`) would deliver the same value
+/// without exposing it is not established here or anywhere in this crate —
+/// [`crate::capability::credential`]'s own report says as much with a
+/// permanently `Unchecked` prerequisite. Trading a *measured* argv leak for
+/// an *unverified* inheritance channel would not be a fix, so this returns a
+/// refusal instead of either one. A caller that has a value it must deliver
+/// out-of-band should build the environment itself and hand it to
+/// [`crate::SandlockBackend::set_child_environment`] via
+/// [`explicit_environment_flags`] — same argv shape, but a decision the
+/// caller made explicitly rather than one this lowering made silently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialArgvRefusal {
+    /// The names whose values would have had to appear on the command line.
+    pub names: Vec<String>,
+}
+
+impl core::fmt::Display for CredentialArgvRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "refusing to place the value(s) of {} on the confinement executable's command line; the \
+             only channel this mechanism exposes for a name-value pair is `--env=NAME=VALUE`, which is \
+             visible to anything that can read the supervisor process's argv",
+            self.names.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for CredentialArgvRefusal {}
+
 /// The flags that realise the spec's credential posture.
 ///
 /// Returned separately from the per-requirement lowering because the posture
 /// lives on the spec rather than on any one requirement, and because it must be
 /// emitted exactly once however many requirements a spec carries.
 ///
-/// # Why the unremoved-ambient names are passed through too
+/// # Errors
+///
+/// [`CredentialArgvRefusal`] when a name in
+/// [`CredentialPosture::delegated`](aa_isolation::CredentialPosture) or
+/// [`CredentialPosture::ambient_unremoved`](aa_isolation::CredentialPosture)
+/// resolves to a real value on this process — see that type's own
+/// documentation for why this is a refusal rather than a redaction.
+///
+/// # Why the unremoved-ambient names are named in the refusal too
 ///
 /// [`CredentialPosture::ambient_unremoved`](aa_isolation::CredentialPosture)
-/// means *this name reaches the child even though policy asked that it not*. On
-/// a launch that replaces the environment, that is only true if this lowering
-/// actually puts the name back — otherwise the posture would say the child holds
-/// something the command line withheld, which is the same class of lie as
-/// reporting a kept variable as removed, with the sign flipped. So a name in
-/// that list is emitted exactly like a delegated one, and the *difference*
-/// between the two travels where it belongs: in evidence, where a delegation
-/// reads as a decision and an unremoved name reads as a debt.
-pub fn credential_flags(spec: &ExecutionSpec) -> Vec<String> {
+/// means *this name reaches the child even though policy asked that it not*.
+/// Putting its value on the command line would be the same exposure as a
+/// delegated name's, with the sign flipped, so it is refused on the same
+/// terms.
+pub fn credential_flags(spec: &ExecutionSpec) -> Result<Vec<String>, CredentialArgvRefusal> {
     let credentials = spec.credentials();
     if credentials.removed.is_empty() && credentials.delegated.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // Start empty and add back only what was named. Removing the named
     // variables from an inherited environment would leave everything nobody
     // thought to name, which is the opposite of least authority.
-    let mut flags = vec![FLAG_CLEAN_ENV.to_string()];
+    let flags = vec![FLAG_CLEAN_ENV.to_string()];
+    let mut exposed: Vec<String> = Vec::new();
     for name in credentials.delegated.iter().chain(credentials.ambient_unremoved.iter()) {
-        if let Some(value) = std::env::var_os(name).and_then(|v| v.into_string().ok()) {
-            flags.push(flag_with_value(FLAG_ENV, &format!("{name}={value}")));
+        if std::env::var_os(name).is_some() {
+            exposed.push(name.clone());
         }
     }
-    flags
+    if !exposed.is_empty() {
+        exposed.sort();
+        exposed.dedup();
+        return Err(CredentialArgvRefusal { names: exposed });
+    }
+    Ok(flags)
 }
 
 /// Names that policy asked to keep out of the child and that this lowering
@@ -727,8 +778,9 @@ mod tests {
             delegated: Vec::new(),
             ambient_unremoved: Vec::new(),
         });
-        assert_eq!(credential_flags(&spec), [FLAG_CLEAN_ENV]);
-        assert!(unremoved_ambient(&spec, !credential_flags(&spec).is_empty()).is_empty());
+        let flags = credential_flags(&spec).expect("no delegated or ambient-unremoved name to refuse");
+        assert_eq!(flags, [FLAG_CLEAN_ENV]);
+        assert!(unremoved_ambient(&spec, !flags.is_empty()).is_empty());
     }
 
     /// A posture that names nothing leaves the environment inherited, and that
@@ -736,51 +788,69 @@ mod tests {
     #[test]
     fn an_empty_posture_reports_no_flags_and_no_false_removal() {
         let spec = spec("/bin/true", &[]);
-        assert!(credential_flags(&spec).is_empty());
-        assert!(unremoved_ambient(&spec, !credential_flags(&spec).is_empty()).is_empty());
+        let flags = credential_flags(&spec).expect("an empty posture never refuses");
+        assert!(flags.is_empty());
+        assert!(unremoved_ambient(&spec, !flags.is_empty()).is_empty());
     }
 
-    /// **The property this Epic exists for, at the lowering layer.** A name the
-    /// posture says could not be removed must come out of `unremoved_ambient`,
-    /// and must not be silently absent because the environment was replaced.
+    /// **The property AAASM-5940 exists for, at the lowering layer.** A name
+    /// whose value would have to reach the child through the confinement
+    /// executable's own argv must refuse rather than expose it — not be passed
+    /// through with a mask string, and not be silently dropped either: the
+    /// caller must be told, in an `Err` it cannot ignore.
     ///
     /// The negative control is the same variable moved from
-    /// `ambient_unremoved` to `removed`: it then reports as removed and out of
-    /// the residue, so the assertion below is about which list the name is in
-    /// and not about the function returning everything it is given.
+    /// `ambient_unremoved` to `removed`: `removed` never adds a value back, so
+    /// lowering succeeds and the command line is unaffected — proving the
+    /// refusal above is about which list the name is in and not about
+    /// `credential_flags` refusing unconditionally.
     #[test]
-    fn a_compatibility_exception_is_reported_as_residue_and_reaches_the_child() {
+    fn a_compatibility_exception_refuses_rather_than_exposing_its_value() {
         // `PATH` rather than a fabricated name: it is set on every host this
         // runs on, and mutating the process environment from a test is a data
         // race against every other test in the binary. It is also the realistic
         // exception — a child that cannot resolve a program name is a child that
-        // does not run.
+        // does not run — which is exactly why it must be refused here rather
+        // than quietly written into argv.
         assert!(std::env::var_os("PATH").is_some(), "this host sets no PATH");
         let kept = spec("/bin/true", &[]).with_credentials(aa_isolation::CredentialPosture {
             removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
             delegated: Vec::new(),
             ambient_unremoved: vec!["PATH".to_string()],
         });
-        assert_eq!(unremoved_ambient(&kept, !credential_flags(&kept).is_empty()), ["PATH"]);
+        // No `unremoved_ambient` assertion here: `SandlockBackend::prepare`
+        // propagates this refusal with `?` and never proceeds to the point
+        // where `environment_replaced` would be read, so a refused posture
+        // paired with `environment_replaced: false` is a combination
+        // production never reaches — pinning it would assert an unreachable
+        // state rather than designed behaviour. Residue-reporting semantics
+        // for a genuinely-not-replaced environment are already covered by
+        // `without_a_replacement_a_removed_name_is_reported_as_residue`.
+        let refusal = credential_flags(&kept).expect_err("a name resolving to a real value must be refused");
+        assert_eq!(refusal.names, ["PATH"]);
+        // Recoverability-absence, not marker-presence: the refusal must not
+        // itself carry the value in any form, masked or otherwise.
+        let rendered = format!("{refusal:?} {refusal}");
         assert!(
-            credential_flags(&kept).iter().any(|f| f.starts_with("--env=PATH=")),
-            "the name reported as still reaching the child was withheld from it: {:?}",
-            credential_flags(&kept)
+            !std::env::var_os("PATH")
+                .and_then(|v| v.into_string().ok())
+                .is_some_and(|value| rendered.contains(&value)),
+            "the refusal itself carried the value it refused to expose: {rendered}"
         );
 
-        // Negative control: the same variable moved into `removed`. It leaves
-        // the residue *and* leaves the command line, so the assertion above is
-        // about which list the name is in.
+        // Negative control: the same variable moved into `removed`. `removed`
+        // never adds a value back, so lowering succeeds and PATH is absent
+        // from both the flags and the residue.
         let removed = spec("/bin/true", &[]).with_credentials(aa_isolation::CredentialPosture {
             removed: vec!["AWS_SECRET_ACCESS_KEY".to_string(), "PATH".to_string()],
             delegated: Vec::new(),
             ambient_unremoved: Vec::new(),
         });
-        assert!(unremoved_ambient(&removed, !credential_flags(&removed).is_empty()).is_empty());
+        assert!(unremoved_ambient(&removed, true).is_empty());
+        let flags = credential_flags(&removed).expect("a removed name is never a candidate for exposure");
         assert!(
-            !credential_flags(&removed).iter().any(|f| f.contains("PATH=")),
-            "a removed name reached the child: {:?}",
-            credential_flags(&removed)
+            !flags.iter().any(|f| f.contains("PATH=")),
+            "a removed name reached the child: {flags:?}"
         );
     }
 
@@ -796,11 +866,9 @@ mod tests {
             delegated: Vec::new(),
             ambient_unremoved: vec!["SSH_AUTH_SOCK".to_string()],
         });
-        assert!(credential_flags(&spec).is_empty());
-        assert_eq!(
-            unremoved_ambient(&spec, !credential_flags(&spec).is_empty()),
-            ["SSH_AUTH_SOCK"]
-        );
+        let flags = credential_flags(&spec).expect("no `removed`/`delegated` name to refuse");
+        assert!(flags.is_empty());
+        assert_eq!(unremoved_ambient(&spec, !flags.is_empty()), ["SSH_AUTH_SOCK"]);
     }
 
     /// A permitted destination naming the metadata service is credential
@@ -880,7 +948,11 @@ mod tests {
                 delegated: vec!["Y".to_string()],
                 ambient_unremoved: Vec::new(),
             });
-        emitted.extend(credential_flags(&spec));
+        // Neither `X` nor `Y` resolves to a real environment value, so this is
+        // not a candidate for `CredentialArgvRefusal` — the sweep is about
+        // whether a *successful* lowering can ever emit a boundary-weakening
+        // flag, which is orthogonal to AAASM-5940's refusal.
+        emitted.extend(credential_flags(&spec).expect("neither X nor Y resolves to a real value"));
         let argv = build_argv(&spec, emitted);
         for flag in BOUNDARY_WEAKENING_FLAGS
             .iter()

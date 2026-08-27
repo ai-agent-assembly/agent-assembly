@@ -84,6 +84,30 @@ this skill.
    and report the run URL — propagation cannot complete if `release.yml` did
    not finish successfully.
 
+## Check 0 — post-publish evidence binding (AAASM-5879)
+
+Before probing any of the nine channels below, re-verify the release
+evidence against what was *actually* published, not just what was approved
+to be tagged:
+
+```bash
+python3 scripts/qa/check-release-evidence.py \
+  --version "$VERSION" --tag-target "$TAG" --post-publish
+```
+
+This runs R9 (post-publish tag binding — the published tag's commit still
+matches the evidence's authorized candidate, on the real `remote`/GitHub
+repo) and R10 (post-publish artifact identity — the published
+`SHA256SUMS`/cosign bundle correspond to this candidate) in addition to the
+R1–R8 checks `scripts/release-readiness.sh` check 14 already ran pre-tag.
+Before AAASM-5879, `--post-publish` existed in the checker's own CLI but was
+never invoked by any skill — R9/R10 were unreachable dead code. A non-zero
+exit here is a hard red: stop and report the exact BLOCK line(s) before
+probing channels 1–9; a tag whose published artifacts don't match its own
+evidence record invalidates the premise the rest of this skill's matrix
+depends on. This check is read-only, like every other probe in this skill —
+it re-verifies, it does not re-publish or re-sign anything.
+
 ## The nine channels
 
 `VERSION="${TAG#v}"`; `PEP440`: `-alpha.N`→`aN`, `-beta.N`→`bN`, `-rc.N`→`rcN`
@@ -134,6 +158,11 @@ Release validation for <TAG>:
 Replace `✓` with `✗` for any red channel and, on the line beneath, append the
 exact failing command and its literal output. A fully worked alpha-9 run is
 in [EXAMPLES.md](EXAMPLES.md).
+
+A red check 0 is reported before the table (see above) and is a hard stop —
+it means the matrix below would be validating a published artifact set that
+no longer corresponds to what was actually evidence-approved, so do not run
+channels 1–9 past a check 0 failure.
 
 ## What's expected when done
 

@@ -346,10 +346,10 @@ def _load_catalog_text(git: GitRepo, ref: str, catalog_relpath: str) -> list[dic
 
 
 def _required(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        e for e in entries
-        if e.get("release_blocking", False) and e.get("lifecycle_state") != "retired"
-    ]
+    # Delegates to registry_digest.required_entries — the same predicate
+    # map-risk.py's `--mode release` selection uses (AAASM-5879) — so the two
+    # can never independently drift on what "release-required" means.
+    return registry_digest.required_entries(entries)
 
 
 def _resolve_waiver_ref(qa_signoff_text: str, ref: str, journey_id: str) -> bool:

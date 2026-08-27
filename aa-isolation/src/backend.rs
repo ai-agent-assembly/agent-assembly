@@ -260,6 +260,20 @@ impl std::error::Error for SpawnError {}
 /// delegate to [`crate::plan::negotiate`] rather than decide for itself which
 /// requirements it can meet; the refusal rules belong to the contract, not to
 /// the mechanism.
+///
+/// # A type carrying the confined program's environment must not derive `Debug`
+///
+/// AAASM-5942: every concrete backend in this workspace holds an explicit
+/// `child_environment` (or equivalent — see `Message::LaunchRequest::env` in
+/// `aa-isolation-vm-proto`, and `aa_core::integration::LaunchSpec::env`), and
+/// that map or its equivalent carries whatever credential material a caller
+/// resolved for the launch. A derived `Debug` on the struct that holds it
+/// prints every `NAME=VALUE` pair into the first log line, panic message or
+/// `{:?}` a maintainer reaches for. Any implementor holding such a field must
+/// write its own `Debug` impl that reports presence/count only (e.g.
+/// `child_environment: <14 vars>`) — see `aa_isolation_macos_vm::MacosVmBackend`,
+/// `aa_isolation_native::NativeBackend` and `aa_isolation_sandlock::SandlockBackend`
+/// for the pattern to mirror.
 pub trait IsolationBackend: Send + Sync {
     /// What this backend is, and where it came from.
     fn identity(&self) -> BackendIdentity;
