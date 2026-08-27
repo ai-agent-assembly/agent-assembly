@@ -84,6 +84,10 @@ specific. Pick a different path in any of the following cases:
   `docs/release/security-signoff/v<X>.md` is missing or its verdict is not
   `PASS`, stop. Run `/release-security-gate <X>` (stage 0) first; do not cut a tag
   past an unaddressed High/Critical finding.
+- **No PASS QA sign-off for `<X>`** — if `docs/release/qa-signoff/v<X>.md` is
+  missing or its verdict is not `PASS`, stop. Run `/release-qa-gate <X>` in
+  `release` depth first; a security PASS never substitutes for a missing/
+  non-PASS QA sign-off.
 
 ## Downstream SDK coordination
 
@@ -135,6 +139,12 @@ remediate from inside this skill. Full detail in
 5. **Security sign-off PASS for `<X>`** — `docs/release/security-signoff/v<X>.md`
    exists and contains `Verdict: PASS` (stage 0, `/release-security-gate <X>`).
    `scripts/release-readiness.sh` check 11 enforces this.
+6. **QA sign-off PASS for `<X>`** — `docs/release/qa-signoff/v<X>.md` exists and
+   contains `Verdict: PASS` (stage 0, `/release-qa-gate <X>` run in `release`
+   depth per [RUNBOOK section 1.6](../../../docs/release/RUNBOOK.md#16-qa-gate--release-qa-sign-off-blocks-the-tag-push-independently-of-15)).
+   `scripts/release-readiness.sh` check 12 enforces this **independently of**
+   check 5/11 above — a security PASS never substitutes for a missing/non-PASS
+   QA sign-off, in either direction.
 
 ## Executable plan
 
@@ -156,16 +166,29 @@ no-op guard rationale are in
    `sonar-project.properties`; verify the old literal is gone.
 4. **Commit `Cargo.lock` separately** —
    `🔧 (release): Regenerate Cargo.lock for v<X>` (reviewable in isolation).
-5. **Create the annotated tag** — ensure `docs/release/v<X>.md` exists (copy
-   from the previous release + edit), commit it, then
-   `git tag -a "v<X>"` referencing the notes file.
-6. **Push the tag** — `LEFTHOOK=0 git push remote "v<X>"` (the `LEFTHOOK=0`
-   bypasses the macOS `cargo doc` pre-push hook; tag-only, touches no branch).
+5. **Finalize release notes** — ensure `docs/release/v<X>.md` exists (copy
+   from the previous release + edit) and commit it. Version metadata,
+   CHANGELOG, and release notes must all be finalized on this commit
+   **before** the gate in step 6 runs — that ordering is what lets step 7's
+   candidate-binding check require the evidence's `candidate_sha` to equal
+   this exact commit with zero drift.
+6. **Run the release gate** — `bash scripts/release-readiness.sh <X>` from
+   this exact commit. All 14 checks (mechanical version/CHANGELOG/notes
+   state, secrets, stale tap PRs, security sign-off PASS, QA sign-off PASS,
+   and release-evidence binding to HEAD) must report ✓. Any ✗ stops the run
+   here — do not proceed to step 7, and do not skip a check to get to green.
+7. **Create and push the annotated tag** —
+   `bash scripts/release-tag-guard.sh <X>`. This is the only sanctioned way
+   this skill creates/pushes the tag: the guard re-verifies remote identity,
+   clean tree, re-runs step 6's readiness gate, enforces a strict
+   `candidate_sha == HEAD` binding (stricter than the readiness gate's own
+   R1 mechanical-drift relaxation), refuses if the tag already exists, and
+   has no skip flag. See [`release-tag-guard.sh`](../../../scripts/release-tag-guard.sh).
    This triggers `release.yml`.
 
 ## Post-conditions
 
-After step 6, both MUST hold (full detail in
+After step 7, both MUST hold (full detail in
 [REFERENCE.md → Post-conditions](REFERENCE.md#post-conditions)):
 
 1. **Tag exists on remote** — `git ls-remote --tags remote "v<X>"` returns one line.
