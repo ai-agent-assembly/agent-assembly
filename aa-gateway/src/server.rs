@@ -1324,6 +1324,46 @@ mod tests {
         );
     }
 
+    /// An empty `AA_AUDIT_DIR` is screened out before it can become the audit
+    /// directory (AAASM-5959 AC 1/AC 5).
+    ///
+    /// This screen is the only guard on that route, and the route does not need a
+    /// `.` fallback to exist. `audit_dir_from` uses an override verbatim rather
+    /// than joining onto it — AAASM-1601's per-test isolation depends on the
+    /// variable naming the audit directory itself — so `Some("")` would *be* the
+    /// audit directory, `audit_file_path` would join the governance JSONL onto
+    /// `""`, and the trail would land under whatever directory the gateway was
+    /// launched from. That is the forked-hash-chain outcome `audit_dir_from`
+    /// documents, reached by a second route.
+    ///
+    /// Removing `.filter(|v| !v.is_empty())` from `non_empty` reddens exactly the
+    /// first assertion.
+    #[test]
+    fn an_empty_audit_dir_override_is_not_treated_as_a_root() {
+        assert_eq!(
+            non_empty(Some(std::ffi::OsString::new())),
+            None,
+            "an empty AA_AUDIT_DIR must be screened out, not used verbatim as the audit directory"
+        );
+
+        // The two halves that make that refusal safe: a set value is still
+        // honoured verbatim, and an absent one is still absent.
+        assert_eq!(
+            non_empty(Some(std::ffi::OsString::from("/o"))),
+            Some(PathBuf::from("/o"))
+        );
+        assert_eq!(non_empty(None), None);
+
+        // With the empty override screened out, the rule falls through to the
+        // system data directory rather than becoming "".
+        assert_eq!(
+            audit_dir_from(non_empty(Some(std::ffi::OsString::new())), Some(PathBuf::from("/d"))),
+            Some(PathBuf::from("/d/aa/audit")),
+            "an empty override must fall through to the data directory, not become the audit \
+             directory itself"
+        );
+    }
+
     fn new_tracker() -> Arc<BudgetTracker> {
         Arc::new(BudgetTracker::new(
             crate::budget::PricingTable::default_table(),
