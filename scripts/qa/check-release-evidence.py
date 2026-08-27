@@ -72,6 +72,7 @@ a silent trust decision.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import importlib.util
 import json
@@ -80,6 +81,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from typing import Any
 
 import yaml
@@ -135,20 +137,29 @@ class GitRepo:
         return [line for line in out.splitlines() if line]
 
     def log_commits_touching(self, a: str, b: str, path: str) -> list[str]:
-        """Commits in `a..b` that MODIFY `path` (`--diff-filter=M`) — not the
-        commit that first creates it. The evidence file is necessarily
-        committed some time after the candidate commit it describes (nobody
-        can know a commit's own hash before making it), so the commit that
-        first adds the file is not an "edit of the authorization record" —
-        there is no prior record yet for it to edit. R1b exists to catch a
-        record being rewritten after it already authorized something, which
-        `--diff-filter=M` captures precisely."""
+        """Every commit in `a..b` that touches `path` at all — added,
+        modified, deleted, or renamed. NOT filtered to `--diff-filter=M`:
+        an earlier version of this filtered to modify-only, reasoning the
+        commit that first creates the evidence file isn't an "edit of the
+        authorization record" (there's no prior record yet to edit) — true,
+        but a delete-then-re-add with DIFFERENT content is typed D then A by
+        git, never M, so that filter silently missed exactly the tamper
+        case R1b exists to catch (found via this fix's own adversarial
+        review, AAASM-5998). Callers determine what actually changed by
+        comparing blob content via `blob_at()`, not by trusting git's
+        add/modify/delete status labels."""
         if a == b:
             return []
-        out = self.run(
-            "log", "--format=%H", "--diff-filter=M", f"{a}..{b}", "--", path
-        ).stdout
+        out = self.run("log", "--format=%H", f"{a}..{b}", "--", path).stdout
         return [line for line in out.splitlines() if line]
+
+    def blob_at(self, ref: str, path: str) -> str | None:
+        """Git blob SHA of `path` as it exists at `ref`, or None if the
+        path doesn't exist there (deleted, or not yet created)."""
+        result = self.run("rev-parse", "-q", "--verify", f"{ref}:{path}", check=False)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
 
     def show_file(self, ref: str, path: str) -> str | None:
         result = self.run("show", f"{ref}:{path}", check=False)
@@ -164,11 +175,95 @@ class GitRepo:
 # R1 — candidate binding: path classification
 # ---------------------------------------------------------------------------
 
-_VERSION_LINE_RE = re.compile(r'^[+-]version = "[^"]+"$')
-
-# Paths that are release-mechanical no matter their diff content.
+# Paths that are release-mechanical no matter their diff content. Sign-off
+# files are deliberately carved OUT of the blanket docs/release/ prefix
+# (AAASM-5998 adversarial review): they are the authorization record's own
+# supporting evidence, not incidental docs — R7 only cross-checks
+# evidence.json's recorded verdict against whatever the sign-off .md
+# *currently* says, so if the sign-off text itself were freely editable
+# post-candidate (as "docs" would make it), a forged sign-off plus a
+# regenerated evidence.json would pass both R1 and R7 self-consistently.
+# Any post-candidate change to a sign-off file must block R1, the same way
+# a change to the evidence file itself is excluded and handled by R1b.
 _MECHANICAL_PREFIXES = ("docs/release/",)
+_MECHANICAL_EXCLUDED_PREFIXES = (
+    "docs/release/qa-signoff/",
+    "docs/release/security-signoff/",
+)
 _MECHANICAL_EXACT = {"CHANGELOG.md", "sonar-project.properties"}
+
+
+def _is_mechanical_cargo_toml_bump(old_text: str | None, new_text: str | None) -> tuple[bool, str | None]:
+    """True iff the only structural difference between old/new Cargo.toml is
+    the package's own release version (`package.version` or
+    `workspace.package.version`) — anything else, including a DEPENDENCY's
+    own version pin (`[dependencies.foo]` / `[dependencies.foo.version]`,
+    which a line-level `version = "..."` regex cannot distinguish from the
+    package's own version field — the exact gap AAASM-5998's adversarial
+    review found let a real dependency swap through as "mechanical"), makes
+    this EXECUTABLE. Structural (parsed-TOML) comparison rather than
+    line-diffing, so formatting/reordering differences that touch no real
+    field never falsely block. Returns (is_mechanical, new_version) —
+    new_version is the bumped value, used to cross-check Cargo.lock below.
+    """
+    if old_text is None or new_text is None:
+        return False, None
+    try:
+        old_doc = tomllib.loads(old_text)
+        new_doc = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError:
+        return False, None
+
+    def neutralize(doc: dict) -> dict:
+        doc = copy.deepcopy(doc)
+        if "package" in doc and "version" in doc["package"]:
+            doc["package"]["version"] = "__VERSION__"
+        if "version" in doc.get("workspace", {}).get("package", {}):
+            doc["workspace"]["package"]["version"] = "__VERSION__"
+        return doc
+
+    if neutralize(old_doc) != neutralize(new_doc):
+        return False, None
+    new_version = new_doc.get("package", {}).get("version") or \
+        new_doc.get("workspace", {}).get("package", {}).get("version")
+    return True, new_version
+
+
+def _is_mechanical_cargo_lock_change(
+    old_text: str | None, new_text: str | None, target_version: str | None,
+) -> bool:
+    """True iff Cargo.lock's only changes are workspace-local packages'
+    (no `source` field — i.e. not fetched from crates.io or any other
+    registry) own version field moving to `target_version` (the same
+    version the paired Cargo.toml bump targets). ANY change to an
+    externally-sourced package — version, checksum, or anything else — is
+    EXECUTABLE, closing the gap where a real dependency swap (e.g. a
+    poisoned `serde` pin + checksum) rode along as "coupled to a mechanical
+    version bump" merely because *some* Cargo.toml in range also bumped a
+    version (AAASM-5998 adversarial review, reproduced end-to-end against
+    the guard's own real tag-creation path)."""
+    if old_text is None or new_text is None or target_version is None:
+        return False
+    try:
+        old_doc = tomllib.loads(old_text)
+        new_doc = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError:
+        return False
+    old_pkgs = {(p["name"], p.get("source")): p for p in old_doc.get("package", [])}
+    new_pkgs = {(p["name"], p.get("source")): p for p in new_doc.get("package", [])}
+    if set(old_pkgs) != set(new_pkgs):
+        return False  # a package was added/removed/re-sourced — not pure mechanical
+    for key, new_p in new_pkgs.items():
+        old_p = old_pkgs[key]
+        if old_p == new_p:
+            continue
+        if new_p.get("source") is not None:
+            return False  # any change to an externally-sourced package at all
+        if old_p.get("version") == new_p.get("version"):
+            return False  # something other than this local entry's version changed
+        if new_p.get("version") != target_version:
+            return False  # local entry bumped to a DIFFERENT version than the toml bump
+    return True
 
 
 def classify_paths(
@@ -192,20 +287,18 @@ def classify_paths(
 
     # First pass: which Cargo.toml paths in this range are themselves
     # MECHANICAL (pure version bumps)? Cargo.lock's classification below
-    # depends on this set, so it must be computed before Cargo.lock is
-    # classified — order of iteration over changed_paths is not guaranteed
-    # to put Cargo.toml files before Cargo.lock.
-    mechanical_toml_paths: set[str] = set()
+    # depends on this set (and the version each one bumps to), so it must
+    # be computed before Cargo.lock is classified — order of iteration over
+    # changed_paths is not guaranteed to put Cargo.toml files before
+    # Cargo.lock.
+    mechanical_toml_paths: dict[str, str] = {}  # path -> new_version
     for path in changed_paths:
         if os.path.basename(path) == "Cargo.toml":
-            diff_text = git.run("diff", "-U0", candidate_sha, tag_target_sha, "--", path).stdout
-            changed_lines = [
-                line for line in diff_text.splitlines()
-                if line.startswith("+") or line.startswith("-")
-                if not line.startswith("+++") and not line.startswith("---")
-            ]
-            if changed_lines and all(_VERSION_LINE_RE.match(line) for line in changed_lines):
-                mechanical_toml_paths.add(path)
+            old_text = git.show_file(candidate_sha, path)
+            new_text = git.show_file(tag_target_sha, path)
+            is_mechanical, new_version = _is_mechanical_cargo_toml_bump(old_text, new_text)
+            if is_mechanical and new_version is not None:
+                mechanical_toml_paths[path] = new_version
 
     for path in changed_paths:
         if path == evidence_path:
@@ -214,27 +307,35 @@ def classify_paths(
         if path == catalog_path:
             rows.append((path, "EXCLUDED", "release-blocking catalog — checked by R2, not R1"))
             continue
+        if path.startswith(_MECHANICAL_EXCLUDED_PREFIXES):
+            rows.append((path, "EXECUTABLE", "sign-off record — authorization evidence, not incidental docs"))
+            any_executable = True
+            continue
         if path.startswith(_MECHANICAL_PREFIXES) or path in _MECHANICAL_EXACT:
             rows.append((path, "MECHANICAL", "release-notes/docs/config allowlist"))
             continue
         if os.path.basename(path) == "Cargo.toml":
             if path in mechanical_toml_paths:
-                rows.append((path, "MECHANICAL", "every changed line is a bare version bump"))
+                rows.append((path, "MECHANICAL", "the package's own release version, structurally isolated"))
             else:
-                rows.append((path, "EXECUTABLE", "Cargo.toml changed beyond the version field"))
+                rows.append((path, "EXECUTABLE", "Cargo.toml changed beyond the package's own version field"))
                 any_executable = True
             continue
         if os.path.basename(path) == "Cargo.lock":
-            if mechanical_toml_paths:
+            target_version = next(iter(mechanical_toml_paths.values()), None)
+            old_text = git.show_file(candidate_sha, path)
+            new_text = git.show_file(tag_target_sha, path)
+            if mechanical_toml_paths and _is_mechanical_cargo_lock_change(old_text, new_text, target_version):
                 rows.append((
                     path, "MECHANICAL",
-                    f"coupled to mechanical version bump in {sorted(mechanical_toml_paths)}",
+                    f"only local workspace-member version(s) moved to {target_version}, "
+                    f"coupled to the bump in {sorted(mechanical_toml_paths)}",
                 ))
             else:
                 rows.append((
                     path, "EXECUTABLE",
-                    "Cargo.lock changed with no corresponding mechanical Cargo.toml bump "
-                    "in range — treated as a real dependency change",
+                    "Cargo.lock changed beyond local workspace-member versions matching a "
+                    "mechanical Cargo.toml bump — treated as a real dependency change",
                 ))
                 any_executable = True
             continue
@@ -323,13 +424,22 @@ def rule_r1b_self_protection(
     commits = git.log_commits_touching(candidate_sha, tag_target_sha, evidence_relpath)
     if not commits:
         return []
-    # The post-publish appender (Subtask C, AAASM-5900) does not exist yet —
-    # there is no way for a commit in this range to legitimately touch only
-    # `artifacts.published`, so every commit found here is a violation.
+    # Distinct content states the file held across every commit that
+    # touched it in range, excluding states where it didn't exist (e.g. an
+    # intermediate delete) — content-based, not commit-status-based, so a
+    # delete-then-re-add with different content (typed D then A by git,
+    # never M) is caught exactly the same as a direct edit. The file is
+    # legitimately created once (its very first content state) and must
+    # never show a second, different one afterward — the post-publish
+    # appender (Subtask C, AAASM-5900) does not exist yet, so there is no
+    # legitimate reason for a second state to appear at all yet.
+    blobs = {blob for commit in commits if (blob := git.blob_at(commit, evidence_relpath))}
+    if len(blobs) <= 1:
+        return []
     return [
         "R1b: authorization record modified after the candidate it authorizes — "
-        f"{evidence_relpath} was touched by commit(s) {', '.join(commits)} in "
-        f"{candidate_sha}..{tag_target_sha}"
+        f"{evidence_relpath} held {len(blobs)} distinct content states across commit(s) "
+        f"{', '.join(commits)} in {candidate_sha}..{tag_target_sha}"
     ]
 
 
@@ -926,21 +1036,32 @@ def main() -> int:
     )
     all_blocks += r1_blocks
 
-    # R1b's git-log range query assumes candidate_sha..tag_target is a valid,
-    # resolvable range — true whenever candidate_sha is an ancestor of
-    # tag_target, false for "not-ancestor" (a candidate_sha that doesn't
-    # even reach tag_target, e.g. a bogus/unrelated SHA). Without this
-    # guard, that case reaches `git log --diff-filter=M candidate..target`
-    # with an unrelated/invalid range and git exits non-zero, which
-    # surfaces as an uncaught CalledProcessError traceback instead of the
-    # clean "BLOCK — ..." report every other refusal produces (found via
-    # AAASM-5998's own falsification testing of the not-ancestor case).
-    # R1 has already refused in this case; R1b's "was it modified after
-    # the fact" question doesn't apply to a candidate that was never a
-    # valid ancestor to begin with.
+    # Every rule below that resolves candidate_sha directly via a git call
+    # (R1b's --diff-filter=M log, R2/R3's _load_catalog_text(candidate_sha)
+    # on a drifted digest, R6's committer_date) assumes candidate_sha is a
+    # real ancestor of tag_target — true whenever R1 accepted the candidate,
+    # false for "not-ancestor" (a candidate_sha that doesn't even reach
+    # tag_target, e.g. a bogus/unrelated SHA). Without this guard, that case
+    # reaches an unresolvable git range/ref and either crashes with an
+    # uncaught CalledProcessError (R1b, R6) or exits early via a bare
+    # SystemExit that skips the normal "BLOCK — N rule violation(s)"
+    # reporting and gives a misleading "does not exist" message for a file
+    # that does exist at tag_target (R2/R3) — found via AAASM-5998's own
+    # falsification testing of the not-ancestor case, both in the original
+    # fix and in this PR's own review. R1 has already refused in this case
+    # ("R1 has already refused" below); none of R1b/R2/R3/R6's questions
+    # (was the record modified after the fact / has the catalog drifted
+    # since candidate / does the candidate predate the evidence) are
+    # answerable for a candidate that was never a valid ancestor to begin
+    # with, so skip all three rather than let any of them crash or mislead.
+    # R4/R5 are unaffected — both resolve only tag_target_sha, never
+    # candidate_sha — so they still run and still contribute a genuine
+    # finding regardless.
+    candidate_is_ancestor = reuse_class != "not-ancestor"
+
     r1b_blocks = (
         rule_r1b_self_protection(git, evidence, args.tag_target, evidence_relpath)
-        if reuse_class != "not-ancestor"
+        if candidate_is_ancestor
         else []
     )
     all_blocks += r1b_blocks
@@ -954,7 +1075,11 @@ def main() -> int:
         print("R1 BLOCKED — all journey statuses in this evidence are STALE for "
               f"tag_target {args.tag_target}")
 
-    r2_r3_blocks = rule_r2_r3(git, evidence, args.tag_target, catalog_relpath, qa_signoff_text)
+    r2_r3_blocks = (
+        rule_r2_r3(git, evidence, args.tag_target, catalog_relpath, qa_signoff_text)
+        if candidate_is_ancestor
+        else []
+    )
     all_blocks += r2_r3_blocks
 
     r4_blocks = rule_r4_platforms(git, evidence, args.tag_target, catalog_relpath)
@@ -963,10 +1088,7 @@ def main() -> int:
     r5_blocks = rule_r5_negative_control(git, evidence, args.tag_target, catalog_relpath)
     all_blocks += r5_blocks
 
-    # Same not-ancestor guard as R1b above — R6 also resolves candidate_sha
-    # directly (committer_date), which crashes on a bogus/unrelated SHA that
-    # R1 has already refused.
-    r6_blocks = rule_r6_temporal(git, evidence) if reuse_class != "not-ancestor" else []
+    r6_blocks = rule_r6_temporal(git, evidence) if candidate_is_ancestor else []
     all_blocks += r6_blocks
 
     r7_blocks = rule_r7_signoff_consistency(
