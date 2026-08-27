@@ -63,7 +63,12 @@ use std::sync::Arc;
 use aa_devtool_contract::{sha256_hex, AdapterError, ProtectionProfile};
 
 /// The directory macOS reserves for Claude Code's endpoint-managed settings.
-pub const MANAGED_SETTINGS_DIR: &str = "/Library/Application Support/ClaudeCode";
+///
+/// Re-exported from `aa-core` (via `aa-devtool-contract`), not defined here
+/// — `aa-runtime`'s DI-API project-root refusal needs to name this surface
+/// in a published (devtool-less) build, which cannot depend on this crate
+/// (`publish = false`, AAASM-2340). AAASM-5987.
+pub use aa_devtool_contract::MANAGED_SETTINGS_DIR;
 
 /// The managed settings file name.
 pub const MANAGED_SETTINGS_FILE: &str = "managed-settings.json";
