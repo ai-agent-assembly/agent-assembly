@@ -25,8 +25,12 @@ impl FsHistoryStore {
     }
 
     /// Create a store using the default configuration.
-    pub fn with_defaults() -> Self {
-        Self::new(HistoryConfig::default_config())
+    ///
+    /// # Errors
+    ///
+    /// As [`HistoryConfig::default_config`].
+    pub fn with_defaults() -> Result<Self, PolicyHistoryError> {
+        Ok(Self::new(HistoryConfig::default_config()?))
     }
 
     /// Ensure the history directory exists.
