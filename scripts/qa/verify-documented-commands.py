@@ -57,17 +57,20 @@ Usage:
         this is what to run locally.
 
     python3 scripts/qa/verify-documented-commands.py --run
-        Coverage check, then actually execute every EXECUTORS entry in order
-        against a built `aasm` CLI on $PATH. This is what CI runs, after
-        `cargo build --workspace --exclude aa-ebpf` and
-        `cargo install --path aa-cli --force`.
+        Coverage check, then actually execute every EXECUTORS entry in
+        order against `./target/debug/aasm`. Builds it itself
+        (`cargo build -p aa-cli`) if `cargo build --workspace --exclude
+        aa-ebpf` hasn't already. This is what CI runs.
 
     python3 scripts/qa/verify-documented-commands.py --selftest
-        Proves the detector actually fails in both directions, using inline
-        fixtures (not the real docs): (a) a fenced block with no matching
-        ALLOWLIST/EXECUTORS entry is reported uncovered, and (b) an
-        EXECUTORS entry whose command fails is reported as a failure. Fast,
-        no build required.
+        Proves the two load-bearing mechanisms in isolation, using inline
+        fixtures rather than the real docs or a build: (a) collect_units() +
+        check_coverage() report a fenced block with no matching
+        ALLOWLIST/EXECUTORS entry as uncovered, and (b) run_executors()
+        correctly collects and reports a failure raised by an executor
+        function. This does not prove any *specific* real executor's
+        assertion is correct against the live CLI — that is what --run
+        against a real build proves. Fast, no build required.
 
 Exit codes: 0 clean, 1 a block is unclassified / stale entry / execution
 failed, 2 usage or I/O error.
@@ -86,13 +89,12 @@ from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Files this script scans in full.
-QUICK_START_FILES = [
-    "docs/src/quick-start/installation.md",
-    "docs/src/quick-start/first-run.md",
-    "docs/src/quick-start/configuration.md",
-    "docs/src/quick-start/requirements.md",
-]
+# Every file under docs/src/quick-start/ is in scope, discovered by glob
+# rather than a hardcoded list — a new file in that directory must be
+# scanned automatically, not silently skipped until someone remembers to
+# add it here (the exact "2 of many" failure mode this ticket exists to fix,
+# one level up).
+QUICK_START_DIR = "docs/src/quick-start"
 
 # README.md headings (## or ###) whose content counts as "Getting Started"
 # material. Everything outside these headings (Overview, Ecosystem, Crate
@@ -221,10 +223,48 @@ def _split_console(file_rel: str, heading: str, lang: str, body_lines: list[str]
     return out
 
 
+def _all_headings(file_rel: str) -> set[str]:
+    """Every heading / data-title label extract_blocks() would attribute a
+    block to in this file, whether or not that heading actually holds a
+    fenced block — used to catch README_HEADINGS_IN_SCOPE going stale."""
+    path = REPO_ROOT / file_rel
+    headings: set[str] = set()
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        m = HEADING_RE.match(raw)
+        if m:
+            headings.add(m.group(2))
+        dt = DATA_TITLE_RE.search(raw)
+        if dt:
+            headings.add(dt.group(1))
+    return headings
+
+
 def collect_units() -> list[Unit]:
     units: list[Unit] = []
-    for f in QUICK_START_FILES:
+
+    quick_start_files = sorted(
+        str(p.relative_to(REPO_ROOT)) for p in (REPO_ROOT / QUICK_START_DIR).glob("*.md")
+    )
+    if not quick_start_files:
+        print(f"error: no *.md files found under {QUICK_START_DIR}/ — scan target is empty", file=sys.stderr)
+        sys.exit(1)
+    for f in quick_start_files:
         units.extend(extract_blocks(f))
+
+    # README_HEADINGS_IN_SCOPE names headings by exact string; if README.md
+    # is restructured (a heading renamed, removed, or its level changed) a
+    # stale entry here would silently stop scanning that section instead of
+    # failing loudly — assert every configured heading still exists.
+    readme_headings = _all_headings("README.md")
+    missing = README_HEADINGS_IN_SCOPE - readme_headings
+    if missing:
+        print(
+            "error: README_HEADINGS_IN_SCOPE names heading(s) no longer found in "
+            f"README.md (renamed/removed?): {sorted(missing)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     for u in extract_blocks("README.md"):
         if u.heading in README_HEADINGS_IN_SCOPE:
             units.append(u)
@@ -249,6 +289,14 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
      'export PATH="$HOME/.local/bin:$PATH"'):
         "a PATH hint fragment printed by the installer, not a standalone "
         "command with an outcome to assert.",
+    ("docs/src/quick-start/installation.md", "Build from source",
+     "cargo install --path aa-cli      # installs `aasm` into ~/.cargo/bin"):
+        "`cargo install` builds in its own separate target directory, so it "
+        "gets no benefit from the rust-cache / `cargo build --workspace` "
+        "steps above — running it here would add a full, uncached release "
+        "build to every docs-touching PR. The `cargo build -p aa-cli` step "
+        "right above it already produces the binary every other executor "
+        "in this file invokes directly.",
     ("docs/src/quick-start/installation.md", "Pin a version or change the install directory",
      "# Install a specific release tag (default: latest)\n"
      "AASM_VERSION=v0.0.1-rc.6 curl -sSf https://agent-assembly.com/install.sh | sh\n"
@@ -434,19 +482,15 @@ def _exec_build_aa_cli() -> None:
         raise AssertionError(f"expected binary at {binary}, not found")
 
 
-@_executor(
-    "docs/src/quick-start/installation.md", "Build from source",
-    "cargo install --path aa-cli      # installs `aasm` into ~/.cargo/bin",
-    "install `aasm` onto PATH via cargo install, as documented",
-)
-def _exec_cargo_install() -> None:
-    r = _run(["cargo", "install", "--path", "aa-cli", "--force"], cwd=REPO_ROOT, timeout=1800)
-    if r.returncode != 0:
-        raise AssertionError(f"cargo install --path aa-cli failed:\n{r.stderr}")
-
-
 def _aasm(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
-    return _run(["aasm", *args], cwd=REPO_ROOT, timeout=timeout)
+    # `cargo install --path aa-cli` (the doc's own next step) triggers its own
+    # uncached release build in a separate target dir — the rust-cache /
+    # `cargo build --workspace` steps above buy it nothing, so it would add a
+    # full cold release build to every docs-touching PR. Everything below
+    # exercises the binary `cargo build -p aa-cli` already produced instead;
+    # `cargo install` itself is ALLOWLISTED (see below) with that reasoning.
+    binary = REPO_ROOT / "target" / "debug" / "aasm"
+    return _run([str(binary), *args], cwd=REPO_ROOT, timeout=timeout)
 
 
 @_executor(
@@ -547,15 +591,25 @@ def _exec_context_list() -> None:
     "(no control plane reachable on any of the three targets yet)",
 )
 def _exec_status_context_variants() -> None:
+    # The default-context variant targets 127.0.0.1:8080 (the doc's own
+    # scenario, and what this script's other steps also target), so its
+    # exact "unreachable" wording is asserted. The other two resolve to
+    # off-box hosts (api.example.com, an arbitrary local port) whose failure
+    # mode (DNS, connection-refused, timeout) is not something these docs
+    # promise a specific string for — only that the CLI fails closed rather
+    # than reporting success.
+    r = _aasm("status", timeout=15)
+    if r.returncode == 0:
+        raise AssertionError(f"aasm status unexpectedly succeeded:\n{r.stdout}")
+    _assert_in(r.stdout + r.stderr, "unreachable", "aasm status")
+
     for args in (
-        [],
         ["--context", "production"],
         ["--api-url", "http://localhost:9090"],
     ):
         r = _aasm("status", *args, timeout=15)
         if r.returncode == 0:
             raise AssertionError(f"aasm status {args} unexpectedly succeeded:\n{r.stdout}")
-        _assert_in(r.stdout + r.stderr, "unreachable", f"aasm status {args}")
 
 
 @_executor(
